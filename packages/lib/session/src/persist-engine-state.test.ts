@@ -75,6 +75,10 @@ const completedDone: EngineEvent = {
 
 const captured: EngineState = { engineId: "test-engine", data: { cursor: 42 } };
 
+// Tests that don't care about persist errors get a no-op handler. Tests
+// that DO assert on errors override this with their own collector below.
+const noopOnPersistError: (e: KoiError | Error) => void = () => {};
+
 describe("wrapAdapterWithStatePersistence", () => {
   let store: SessionPersistence;
   beforeEach(() => {
@@ -86,6 +90,7 @@ describe("wrapAdapterWithStatePersistence", () => {
     const wrapped = wrapAdapterWithStatePersistence(inner, {
       persistence: store,
       recordTemplate: template,
+      onPersistError: noopOnPersistError,
       now: () => 5_000,
     });
 
@@ -107,6 +112,7 @@ describe("wrapAdapterWithStatePersistence", () => {
     const wrapped = wrapAdapterWithStatePersistence(inner, {
       persistence: store,
       recordTemplate: template,
+      onPersistError: noopOnPersistError,
     });
     for await (const _ of wrapped.stream({ kind: "text", text: "hi" }));
 
@@ -121,6 +127,7 @@ describe("wrapAdapterWithStatePersistence", () => {
     const cancelWrap = wrapAdapterWithStatePersistence(cancelAdapter, {
       persistence: store,
       recordTemplate: template,
+      onPersistError: noopOnPersistError,
     });
     for await (const _ of cancelWrap.stream({ kind: "text", text: "hi" }));
     const afterCancel = await store.loadSession(SID);
@@ -132,6 +139,7 @@ describe("wrapAdapterWithStatePersistence", () => {
     const successWrap = wrapAdapterWithStatePersistence(successAdapter, {
       persistence: store,
       recordTemplate: template,
+      onPersistError: noopOnPersistError,
     });
     for await (const _ of successWrap.stream({ kind: "text", text: "hi" }));
     const afterSuccess = await store.loadSession(SID);
@@ -160,6 +168,7 @@ describe("wrapAdapterWithStatePersistence", () => {
     const wrapped = wrapAdapterWithStatePersistence(inner, {
       persistence: store,
       recordTemplate: staleTemplate,
+      onPersistError: noopOnPersistError,
       now: () => 9_999,
     });
     for await (const _ of wrapped.stream({ kind: "text", text: "hi" }));
@@ -179,6 +188,7 @@ describe("wrapAdapterWithStatePersistence", () => {
     const wrapped = wrapAdapterWithStatePersistence(inner, {
       persistence: store,
       recordTemplate: template,
+      onPersistError: noopOnPersistError,
     });
     expect(wrapped).toBe(inner);
     for await (const _ of wrapped.stream({ kind: "text", text: "hi" }));
@@ -244,6 +254,7 @@ describe("wrapAdapterWithStatePersistence", () => {
     const wrapped = wrapAdapterWithStatePersistence(inner, {
       persistence: store,
       recordTemplate: template,
+      onPersistError: noopOnPersistError,
     });
 
     for await (const e of wrapped.stream({ kind: "text", text: "hi" })) {
@@ -287,16 +298,19 @@ describe("wrapAdapterWithStatePersistence", () => {
     }
   });
 
-  test("error terminal preserves the prior cancel checkpoint (does NOT clear)", async () => {
+  test("error terminal clears the prior cancel checkpoint (transcript advanced past it)", async () => {
     // Cancel once → row has lastEngineState.
     const cancelWrap = wrapAdapterWithStatePersistence(makeAdapter([interruptedDone], captured), {
       persistence: store,
       recordTemplate: template,
+      onPersistError: noopOnPersistError,
     });
     for await (const _ of cancelWrap.stream({ kind: "text", text: "hi" }));
 
-    // Subsequent error terminal must NOT erase the checkpoint — the resume
-    // path needs that state for the next attempt.
+    // Any non-interrupted terminal advances the transcript past the cancel
+    // cursor, so the saved EngineState is no longer coherent. The wrapper
+    // must drop it to prevent the next resume from replaying stale state
+    // against an extended transcript.
     const errorDone: EngineEvent = {
       kind: "done",
       output: {
@@ -308,18 +322,20 @@ describe("wrapAdapterWithStatePersistence", () => {
     const errorWrap = wrapAdapterWithStatePersistence(makeAdapter([errorDone], captured), {
       persistence: store,
       recordTemplate: template,
+      onPersistError: noopOnPersistError,
     });
     for await (const _ of errorWrap.stream({ kind: "text", text: "hi" }));
 
     const loaded = await store.loadSession(SID);
     if (!loaded.ok) throw new Error("expected ok");
-    expect(loaded.value.lastEngineState).toEqual(captured);
+    expect(loaded.value.lastEngineState).toBeUndefined();
   });
 
-  test("max_turns terminal preserves the prior cancel checkpoint", async () => {
+  test("max_turns terminal clears the prior cancel checkpoint", async () => {
     const cancelWrap = wrapAdapterWithStatePersistence(makeAdapter([interruptedDone], captured), {
       persistence: store,
       recordTemplate: template,
+      onPersistError: noopOnPersistError,
     });
     for await (const _ of cancelWrap.stream({ kind: "text", text: "hi" }));
 
@@ -334,12 +350,13 @@ describe("wrapAdapterWithStatePersistence", () => {
     const wrap = wrapAdapterWithStatePersistence(makeAdapter([maxTurnsDone], captured), {
       persistence: store,
       recordTemplate: template,
+      onPersistError: noopOnPersistError,
     });
     for await (const _ of wrap.stream({ kind: "text", text: "hi" }));
 
     const loaded = await store.loadSession(SID);
     if (!loaded.ok) throw new Error("expected ok");
-    expect(loaded.value.lastEngineState).toEqual(captured);
+    expect(loaded.value.lastEngineState).toBeUndefined();
   });
 
   test("late-finishing timed-out persist does NOT overwrite a newer terminal's state", async () => {
@@ -402,6 +419,7 @@ describe("wrapAdapterWithStatePersistence", () => {
     const wrapped = wrapAdapterWithStatePersistence(makeAdapter([interruptedDone], captured), {
       persistence: trackingStore,
       recordTemplate: template,
+      onPersistError: noopOnPersistError,
     });
     for await (const _ of wrapped.stream({ kind: "text", text: "hi" }));
 
@@ -491,6 +509,7 @@ describe("wrapAdapterWithStatePersistence", () => {
     const wrapped = wrapAdapterWithStatePersistence(inner, {
       persistence: store,
       recordTemplate: dynamicTemplate,
+      onPersistError: noopOnPersistError,
     });
     currentSeq = 99; // mutated after wrapping, before stream
 
@@ -499,5 +518,45 @@ describe("wrapAdapterWithStatePersistence", () => {
     const loaded = await store.loadSession(SID);
     if (!loaded.ok) throw new Error("expected ok");
     expect(loaded.value.seq).toBe(99);
+  });
+
+  test("initialEngineState is applied via inner.loadState exactly once before first stream", async () => {
+    const loaded: EngineState[] = [];
+    const inner: EngineAdapter = {
+      ...makeAdapter([completedDone], captured),
+      loadState: async (s) => {
+        loaded.push(s);
+      },
+    };
+    const initial: EngineState = { engineId: "test-engine", data: { resumed: true } };
+    const wrapped = wrapAdapterWithStatePersistence(inner, {
+      persistence: store,
+      recordTemplate: template,
+      onPersistError: noopOnPersistError,
+      initialEngineState: initial,
+    });
+    for await (const _ of wrapped.stream({ kind: "text", text: "a" }));
+    for await (const _ of wrapped.stream({ kind: "text", text: "b" }));
+    expect(loaded).toEqual([initial]);
+  });
+
+  test("initialEngineState loadState failure routes through onPersistError; stream still runs", async () => {
+    const inner: EngineAdapter = {
+      ...makeAdapter([completedDone], captured),
+      loadState: async () => {
+        throw new Error("decode failed");
+      },
+    };
+    const errors: Array<KoiError | Error> = [];
+    const wrapped = wrapAdapterWithStatePersistence(inner, {
+      persistence: store,
+      recordTemplate: template,
+      onPersistError: (e) => errors.push(e),
+      initialEngineState: { engineId: "test-engine", data: {} },
+    });
+    const events: EngineEvent[] = [];
+    for await (const e of wrapped.stream({ kind: "text", text: "hi" })) events.push(e);
+    expect(errors).toHaveLength(1);
+    expect(events.at(-1)?.kind).toBe("done");
   });
 });

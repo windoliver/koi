@@ -65,15 +65,16 @@ export interface PersistEngineStateOptions {
    */
   readonly recordTemplate: () => SessionRecordTemplate;
   /**
-   * Fired when persistence fails (`saveState` throw, `saveSession` returning
-   * an error, or stale-checkpoint clear failing). Cancellation itself always
-   * succeeds — persist failures never escalate the terminal outcome — so
-   * callers that promise durable resume to their users MUST supply a handler
-   * here and treat its invocation as "checkpoint lost; downgrade UX to
-   * transcript-only resume". The default merely logs to `console.error`,
-   * which is appropriate for tests but NOT for production hosts.
+   * Required. Fired when persistence fails (`saveState` throw, `saveSession`
+   * returning an error, stale-checkpoint clear failing, or persist sequence
+   * timing out). Cancellation itself always succeeds — persist failures never
+   * escalate the terminal outcome — so the host MUST observe this signal to
+   * treat the next resume as "checkpoint lost; downgrade UX to transcript-only
+   * resume". This is required (not optional) because durable cancel-resume is
+   * the entire point of the wrapper: silently swallowing checkpoint loss would
+   * let the host show "Resume" without being able to honor it.
    */
-  readonly onPersistError?: (error: KoiError | Error) => void;
+  readonly onPersistError: (error: KoiError | Error) => void;
   /**
    * Optional clock for tests. Default: Date.now.
    */
@@ -86,6 +87,17 @@ export interface PersistEngineStateOptions {
    * Default: 5_000.
    */
   readonly persistTimeoutMs?: number;
+  /**
+   * Optional EngineState to feed into `inner.loadState` BEFORE the first
+   * stream call. Set this to the `lastEngineState` returned by
+   * `resumeWithEngineState` so the adapter resumes from the cancel cursor
+   * instead of replaying transcript-only. Loaded exactly once: the wrapper
+   * tracks a "loaded" flag so subsequent streams don't re-apply it.
+   *
+   * No-op when `inner.loadState` is undefined OR `initialEngineState` is
+   * undefined (the wrapper degrades to transcript-only resume).
+   */
+  readonly initialEngineState?: EngineState;
 }
 
 const DEFAULT_PERSIST_TIMEOUT_MS = 5_000 as const;
@@ -101,14 +113,8 @@ export function wrapAdapterWithStatePersistence(
   inner: EngineAdapter,
   options: PersistEngineStateOptions,
 ): EngineAdapter {
-  const { persistence, recordTemplate } = options;
+  const { persistence, recordTemplate, onPersistError } = options;
   const now = options.now ?? Date.now;
-  const onPersistError =
-    options.onPersistError ??
-    ((e: KoiError | Error): void => {
-      const msg = "message" in e ? e.message : String(e);
-      console.error(`[@koi/session:persist-engine-state] persistence failed: ${msg}`);
-    });
 
   const saveState = inner.saveState;
   if (saveState === undefined) {
@@ -128,10 +134,28 @@ export function wrapAdapterWithStatePersistence(
   // so any stale write checking it sees a mismatch and aborts.
   const gen: GenRef = { current: 0 };
 
+  // Lazily apply initialEngineState exactly once before the first stream.
+  // Done at first stream rather than wrap time so an async loadState
+  // failure surfaces through onPersistError rather than throwing through
+  // the synchronous wrap call site.
+  const loadState = inner.loadState;
+  let pendingInitial: EngineState | undefined =
+    options.initialEngineState !== undefined && loadState !== undefined
+      ? options.initialEngineState
+      : undefined;
+
   return {
     ...inner,
     stream: (input: EngineInput): AsyncIterable<EngineEvent> => {
-      const innerStream = inner.stream(input);
+      const initialToApply = pendingInitial;
+      pendingInitial = undefined;
+      const innerStream = streamWithLazyLoad(
+        inner,
+        input,
+        initialToApply,
+        loadState,
+        onPersistError,
+      );
       return wrapStreamForCancelPersist(innerStream, gen, {
         saveState,
         persistence,
@@ -142,6 +166,26 @@ export function wrapAdapterWithStatePersistence(
       });
     },
   };
+}
+
+async function* streamWithLazyLoad(
+  inner: EngineAdapter,
+  input: EngineInput,
+  initial: EngineState | undefined,
+  loadState: ((s: EngineState) => Promise<void>) | undefined,
+  onPersistError: (e: KoiError | Error) => void,
+): AsyncIterable<EngineEvent> {
+  if (initial !== undefined && loadState !== undefined) {
+    try {
+      await loadState(initial);
+    } catch (e: unknown) {
+      // loadState failure means the cancel checkpoint can't be applied —
+      // surface it as a persist-error signal (host should treat as
+      // "checkpoint lost; transcript-only resume") and continue without it.
+      onPersistError(e instanceof Error ? e : new Error(extractMessage(e)));
+    }
+  }
+  for await (const ev of inner.stream(input)) yield ev;
 }
 
 interface WrapStreamDeps {
@@ -202,10 +246,14 @@ async function* wrapStreamForCancelPersist(
       const myGen = gen.current;
       if (event.output.stopReason === "interrupted") {
         await persistOnInterrupted(deps, gen, myGen);
-      } else if (event.output.stopReason === "completed") {
-        // Only `completed` supersedes a prior cancel checkpoint. `error` and
-        // `max_turns` MUST preserve the previous checkpoint so a later
-        // resume can still recover from the last known-good state.
+      } else {
+        // Any non-interrupted terminal (`completed`, `error`, `max_turns`)
+        // advances the transcript past the cancel checkpoint, so the saved
+        // EngineState is no longer coherent with what `resumeWithEngineState`
+        // would replay. Clearing here prevents handing a stale snapshot back
+        // on the next resume and silently re-running tool calls / replaying
+        // already-yielded output. Recovery for non-cancel terminals falls
+        // back to transcript-only resume, which is the documented contract.
         await clearStaleCheckpoint(deps, gen, myGen);
       }
     }

@@ -714,10 +714,11 @@ export interface KoiRuntimeConfig {
    * writes patch the existing row atomically; caller-owned fields
    * (`seq`, `remoteSeq`, `metadata`, `status`) are preserved.
    *
-   * `onPersistError` fires on any persistence failure (saveState throw,
-   * store error, timeout). Hosts that promise durable resume MUST supply
-   * one and treat invocation as "checkpoint lost; downgrade to
-   * transcript-only resume".
+   * `onPersistError` is REQUIRED. It fires on any persistence failure
+   * (saveState throw, store error, timeout, stale-clear failure). Treat
+   * invocation as "checkpoint lost; downgrade to transcript-only resume"
+   * and surface a structured signal to the host UI — the wrapper never
+   * fails the cancel itself, so this is the only signal of checkpoint loss.
    *
    * Resume side: callers using `resumeSessionFromJsonl` should pass
    * `{ persistence, expectedEngineId }` so the returned `ResumedSession`
@@ -729,10 +730,15 @@ export interface KoiRuntimeConfig {
         readonly persistence: import("@koi/core").SessionPersistence;
         readonly agentId: import("@koi/core").AgentId;
         readonly manifestSnapshot: import("@koi/core").AgentManifest;
-        readonly onPersistError?:
-          | ((error: import("@koi/core").KoiError | Error) => void)
-          | undefined;
+        readonly onPersistError: (error: import("@koi/core").KoiError | Error) => void;
         readonly persistTimeoutMs?: number | undefined;
+        /**
+         * Pass the `lastEngineState` returned by `resumeWithEngineState` here so
+         * the wrapped adapter calls `inner.loadState(state)` once before the
+         * first stream — restoring the cancel cursor instead of replaying
+         * transcript-only.
+         */
+        readonly initialEngineState?: import("@koi/core").EngineState | undefined;
       }
     | undefined;
   /**
@@ -2336,11 +2342,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             status: "running",
             metadata: {},
           }),
-          ...(sessionPersistenceCfg.onPersistError !== undefined
-            ? { onPersistError: sessionPersistenceCfg.onPersistError }
-            : {}),
+          onPersistError: sessionPersistenceCfg.onPersistError,
           ...(sessionPersistenceCfg.persistTimeoutMs !== undefined
             ? { persistTimeoutMs: sessionPersistenceCfg.persistTimeoutMs }
+            : {}),
+          ...(sessionPersistenceCfg.initialEngineState !== undefined
+            ? { initialEngineState: sessionPersistenceCfg.initialEngineState }
             : {}),
         })
       : timeoutInjectedAdapter;

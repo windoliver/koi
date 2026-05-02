@@ -908,6 +908,7 @@ describe("createKoiRuntime — sessionPersistence wiring (#1683)", () => {
           version: "0",
           model: { name: "stub" },
         },
+        onPersistError: () => {},
       },
     });
     expect(runtimeHandle.runtime).toBeDefined();
