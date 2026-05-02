@@ -59,4 +59,16 @@ describe("renderDistillationPrompt", () => {
   test("PROMPT_VERSION is exported and stable", () => {
     expect(PROMPT_VERSION).toBe("1");
   });
+
+  test("caps total prompt size for long valid traces (multi-turn growth)", () => {
+    // 1000 turns each with ~150 bytes of valid (well within per-turn limit)
+    // text. Without a global cap this would balloon past the provider window.
+    const turns = Array.from({ length: 1000 }, (_, i) => ({
+      role: "assistant" as const,
+      text: `step ${i}: do a small chunk of work and report back to the user`,
+    }));
+    const out = renderDistillationPrompt({ traceId: "huge", turns });
+    expect(out.length).toBeLessThanOrEqual(32 * 1024);
+    expect(out).toContain("trace truncated");
+  });
 });

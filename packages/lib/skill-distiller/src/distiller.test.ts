@@ -131,13 +131,23 @@ describe("createDistiller", () => {
     if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_TOOL_NOT_GROUNDED");
   });
 
-  test("accepts draft that is an ordered subset (gaps allowed)", async () => {
-    // TRACE invokes read_file then write_file. Sub-procedure of just write_file
-    // is a valid ordered subsequence (skipping read_file is OK).
-    const subset = okLLM({ ...VALID_DRAFT, toolSequence: ["write_file"] });
-    const d = createDistiller({ allowUnredactedTrace: true, llm: subset });
+  test("accepts draft that is a contiguous prefix of the observed sequence", async () => {
+    // TRACE observed = [read_file, write_file]. A draft of just [read_file]
+    // captures the leading sub-procedure and is a valid contiguous prefix.
+    const prefix = okLLM({ ...VALID_DRAFT, toolSequence: ["read_file"] });
+    const d = createDistiller({ allowUnredactedTrace: true, llm: prefix });
     const r = await d.distill(TRACE);
     expect(r.ok).toBe(true);
+  });
+
+  test("rejects draft that is a suffix (drops leading guard/setup steps)", async () => {
+    // TRACE observed = [read_file, write_file]. Distilling to just [write_file]
+    // would silently strip the read_file prerequisite — disallowed.
+    const suffix = okLLM({ ...VALID_DRAFT, toolSequence: ["write_file"] });
+    const d = createDistiller({ allowUnredactedTrace: true, llm: suffix });
+    const r = await d.distill(TRACE);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_TOOL_NOT_GROUNDED");
   });
 
   test("rejects draft that burns a trace-specific path into description", async () => {
@@ -431,6 +441,29 @@ describe("createDistiller", () => {
       expect(r.error.context?.errorKind).toBe("LLM_THREW");
       expect(r.error.retryable).toBe(false);
     }
+  });
+
+  test("detects literal leak even when source tool args are malformed JSON", async () => {
+    // The arg string is invalid JSON but still rendered into the prompt
+    // verbatim. The leak detector must tokenize the raw string, otherwise
+    // a truncated tool call could smuggle a tenant id past validation.
+    const trace: DistillationTrace = {
+      traceId: "t-bad-args",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "read_file", argsJson: '{"id":"acct-77c19ab3"' }],
+        },
+        { role: "assistant", toolCalls: [{ name: "write_file", argsJson: "{}" }] },
+      ],
+    };
+    const burned = okLLM({
+      ...VALID_DRAFT,
+      description: "Cleans up account acct-77c19ab3 once a day.",
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: burned }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_LITERAL_LEAKED");
   });
 
   test("still marks transient thrown LLM exceptions (timeout, 429) as retryable", async () => {

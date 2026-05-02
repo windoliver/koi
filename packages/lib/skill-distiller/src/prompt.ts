@@ -29,6 +29,12 @@ Do not include any prose outside the JSON object. Do not wrap in markdown.`;
 
 const MAX_TURN_TEXT_BYTES = 1200;
 const MAX_TOOL_ARGS_BYTES = 400;
+// Whole-prompt ceiling. Per-field clipping bounds individual turns, but a
+// long valid session can still concatenate to a context-overflowing prompt.
+// 32 KiB keeps us well inside any modern provider window with budget left
+// for the model's own response, while big enough to fit ~50–100 typical turns.
+const MAX_PROMPT_BYTES = 32 * 1024;
+const TRUNCATION_NOTICE = "\n  …[trace truncated to fit prompt budget]";
 
 function clip(value: string, maxBytes: number): string {
   return value.length > maxBytes ? `${value.slice(0, maxBytes)}…` : value;
@@ -49,7 +55,37 @@ function summarizeTurn(turn: DistillationTrace["turns"][number], index: number):
   return `[${index}] ${role}: ${body}${tools}`;
 }
 
+// Concatenate turn summaries up to the byte budget. Earliest turns are kept
+// (they typically carry the user request and the first tool calls — the
+// signal grounding + the leak detector both anchor on); later turns are
+// dropped with an explicit truncation notice so the LLM knows the trace was
+// elided rather than ended.
+function joinTurnsWithinBudget(summaries: readonly string[], budget: number): string {
+  // Reserve room for the truncation notice up front so the cap is honored
+  // even when we're forced to elide the tail.
+  const reserve = TRUNCATION_NOTICE.length + 1; // +1 for the "\n" separator
+  const safeBudget = Math.max(0, budget - reserve);
+  let used = 0;
+  const kept: string[] = [];
+  let truncated = false;
+  for (const s of summaries) {
+    const cost = (kept.length === 0 ? 0 : 1) + s.length;
+    if (used + cost > safeBudget) {
+      truncated = true;
+      break;
+    }
+    kept.push(s);
+    used += cost;
+  }
+  if (truncated) kept.push(TRUNCATION_NOTICE);
+  return kept.join("\n");
+}
+
 export function renderDistillationPrompt(trace: DistillationTrace): string {
-  const turns = trace.turns.map(summarizeTurn).join("\n");
-  return `${SYSTEM_INSTRUCTIONS}\n\nTRACE id=${trace.traceId} turns=${trace.turns.length}\n${turns}\n\nReturn the JSON now.`;
+  const summaries = trace.turns.map(summarizeTurn);
+  const header = `${SYSTEM_INSTRUCTIONS}\n\nTRACE id=${trace.traceId} turns=${trace.turns.length}\n`;
+  const footer = "\n\nReturn the JSON now.";
+  const turnsBudget = MAX_PROMPT_BYTES - header.length - footer.length;
+  const turns = joinTurnsWithinBudget(summaries, Math.max(0, turnsBudget));
+  return `${header}${turns}${footer}`;
 }

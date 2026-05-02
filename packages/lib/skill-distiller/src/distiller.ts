@@ -125,10 +125,13 @@ function collectTraceLiterals(trace: DistillationTrace): readonly string[] {
       let parsed: unknown;
       try {
         parsed = JSON.parse(call.argsJson);
+        visit(parsed);
       } catch {
-        continue; // malformed args contribute no parseable literals
+        // Malformed args still get rendered into the prompt verbatim, so
+        // tokenize the raw string the same way we do turn.text. Otherwise a
+        // truncated tool call could smuggle a tenant ID past the leak gate.
+        for (const token of tokenize(call.argsJson)) visit(token);
       }
-      visit(parsed);
     }
   }
   return [...literals];
@@ -170,29 +173,27 @@ function ungroundedError(reason: string, errorKind: string): KoiError {
   };
 }
 
-// Contiguous-window match: `needle` must appear as a contiguous run inside
-// `haystack`. Gaps are NOT allowed — dropping prerequisite tools (auth checks,
-// validations, setup steps) from the middle of a procedure would otherwise
-// produce a replayable but behaviorally incomplete skill. Sub-procedures are
-// still expressible by emitting a contiguous prefix/suffix window of the
-// observed sequence.
-function isContiguousSubsequence(needle: readonly string[], haystack: readonly string[]): boolean {
+// Strict prefix match: `needle` must equal the first `needle.length` items of
+// `haystack`. Without semantic knowledge of which observed tool calls are
+// guards / setup / authorization steps, the conservative rule is to forbid
+// distilled skills that begin AFTER the trace did. Suffix or middle windows
+// would silently strip whatever leading work the original session relied on
+// (auth checks, lock acquisition, validation), producing a replayable skill
+// that performs side effects without the original preconditions.
+function isContiguousPrefix(needle: readonly string[], haystack: readonly string[]): boolean {
   if (needle.length === 0) return true;
   if (needle.length > haystack.length) return false;
-  outer: for (let i = 0; i + needle.length <= haystack.length; i += 1) {
-    for (let j = 0; j < needle.length; j += 1) {
-      if (haystack[i + j] !== needle[j]) continue outer;
-    }
-    return true;
+  for (let i = 0; i < needle.length; i += 1) {
+    if (haystack[i] !== needle[i]) return false;
   }
-  return false;
+  return true;
 }
 
 // Reject hallucinated drafts: the emitted toolSequence must be a contiguous
-// run of the trace's actual tool-call stream (the prompt declares toolSequence
-// as the *ordered* procedure; allowing gaps would let an LLM omit prerequisite
-// guard/validation steps and still pass grounding). Triggers and a non-empty
-// toolSequence are required so the skill remains discoverable and replayable.
+// PREFIX of the trace's actual tool-call stream. Allowing arbitrary windows
+// would let an LLM start the skill after the session's leading guard/setup
+// steps and still pass grounding. Triggers and a non-empty toolSequence are
+// required so the skill remains discoverable and replayable.
 function groundDraftInTrace(
   draft: SkillDraft,
   trace: DistillationTrace,
@@ -204,11 +205,11 @@ function groundDraftInTrace(
     return { ok: false, error: ungroundedError("triggers is empty", "DRAFT_TRIGGERS_EMPTY") };
   }
   const observed = flattenToolCalls(trace);
-  if (!isContiguousSubsequence(draft.toolSequence, observed)) {
+  if (!isContiguousPrefix(draft.toolSequence, observed)) {
     return {
       ok: false,
       error: ungroundedError(
-        `toolSequence ${JSON.stringify(draft.toolSequence)} is not a contiguous run of the trace's tool calls ${JSON.stringify(observed)} — distilled skills may not omit intermediate prerequisite steps`,
+        `toolSequence ${JSON.stringify(draft.toolSequence)} is not a contiguous prefix of the trace's tool calls ${JSON.stringify(observed)} — distilled skills may not omit leading prerequisite steps (auth, setup, validation)`,
         "DRAFT_TOOL_NOT_GROUNDED",
       ),
     };
