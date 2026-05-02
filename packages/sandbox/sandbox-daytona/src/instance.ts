@@ -106,6 +106,18 @@ export function createDaytonaInstance(
             "would buffer unbounded output before any cap could apply.",
         );
       }
+      // Reject malformed caps fail-closed: a negative value would make
+      // Uint8Array.slice keep almost the entire buffer; NaN/Infinity skip
+      // the comparison entirely.
+      if (
+        options?.maxOutputBytes !== undefined &&
+        (!Number.isInteger(options.maxOutputBytes) || options.maxOutputBytes < 0)
+      ) {
+        throw new Error(
+          `sandbox-daytona: SandboxExecOptions.maxOutputBytes must be a non-negative ` +
+            `integer; got ${String(options.maxOutputBytes)}.`,
+        );
+      }
       if (options?.signal !== undefined && sdk.commands.supportsAbort !== true) {
         throw new Error(
           "sandbox-daytona: SandboxExecOptions.signal was provided but the injected SDK " +
@@ -264,19 +276,21 @@ export function createDaytonaInstance(
     destroy: async (): Promise<void> => {
       if (destroyed) return;
       if (destroyPending !== undefined) return destroyPending;
-      if (sdk.delete === undefined) {
+      // `delete` is required on DaytonaSdkSandbox; the runtime check is
+      // defence-in-depth for JS callers that bypass the type contract.
+      if (typeof sdk.delete !== "function") {
         throw new Error(
           "sandbox-daytona: destroy() requires sdk.delete to permanently delete the " +
-            "remote workspace. The injected SDK exposes only close(), which in several " +
-            "Daytona versions is a client-side detach that leaves the workspace running " +
-            "and billable. Inject a delete-capable wrapper.",
+            "remote workspace. The adapter never falls back to close() because in " +
+            "several Daytona SDK versions it is a client-side detach that leaves the " +
+            "workspace running and billable.",
         );
       }
       destroyPending = (async () => {
         try {
           // Call as a method so real SDK implementations that depend on `this`
           // get the correct receiver; copying into a local would lose it.
-          await sdk.delete?.();
+          await sdk.delete();
           destroyed = true;
         } finally {
           destroyPending = undefined;

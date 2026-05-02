@@ -174,18 +174,17 @@ describe("createDaytonaInstance", () => {
     expect(sdk.closed()).toBe(false);
   });
 
-  test("destroy fails closed when sdk.delete is not provided (no close-only fallback)", async () => {
-    // Some Daytona SDK versions implement close() as a client-side detach
-    // that leaves the workspace running and billable. Falling back to close
-    // here would mark the instance destroyed locally while the remote
-    // workspace silently keeps running, so the adapter must refuse and
-    // propagate the failure to the caller.
+  test("destroy runtime-guards against JS callers that pass an SDK without delete()", async () => {
+    // The DaytonaSdkSandbox type now requires delete(), so well-typed code
+    // cannot reach this branch. The runtime guard remains as defence in
+    // depth for JS callers (or wrappers that lie about their shape).
     const base = createFakeSandbox();
-    const { delete: _omit, ...sdk } = base;
-    const instance = createDaytonaInstance(sdk);
+    const { delete: _omit, ...stripped } = base;
+    // @ts-expect-error -- intentionally violating the type contract to exercise the runtime guard
+    const instance = createDaytonaInstance(stripped);
     await expect(instance.destroy()).rejects.toThrow(/sdk\.delete/);
     expect(base.closed()).toBe(false);
-    // Subsequent ops must still work (instance is not marked destroyed).
+    // Instance must not be marked destroyed; subsequent ops remain usable.
     await instance.exec("ls", []);
     expect(base.runCalls).toHaveLength(1);
   });
@@ -285,6 +284,17 @@ describe("createDaytonaInstance", () => {
     const instance = createDaytonaInstance(sdk);
     await instance.exec("cat", [], { stdin: "payload" });
     expect(base.runCalls[0]?.opts?.stdin).toBe("payload");
+  });
+
+  test("exec rejects malformed maxOutputBytes (negative, NaN, Infinity, fractional)", async () => {
+    const sdk = createFakeSandbox();
+    const instance = createDaytonaInstance(sdk);
+    for (const bad of [-1, -1_000, Number.NaN, Number.POSITIVE_INFINITY, 0.5]) {
+      await expect(instance.exec("ls", [], { maxOutputBytes: bad })).rejects.toThrow(
+        /non-negative integer/,
+      );
+    }
+    expect(sdk.runCalls).toHaveLength(0);
   });
 
   test("exec rejects fail-closed when SDK does not advertise supportsMaxOutputBytes", async () => {

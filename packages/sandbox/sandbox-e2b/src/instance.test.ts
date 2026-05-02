@@ -308,6 +308,20 @@ describe("createE2bInstance", () => {
     expect(base.runCalls[0]?.opts?.stdin).toBe("payload");
   });
 
+  test("exec rejects malformed maxOutputBytes (negative, NaN, Infinity, fractional)", async () => {
+    // A negative cap would make Uint8Array.slice(0, -1) keep almost the
+    // entire buffer; NaN/Infinity skip the byte comparison; fractional
+    // values are ambiguous. All must fail-closed before dispatch.
+    const sdk = createFakeSandbox();
+    const instance = createE2bInstance(sdk);
+    for (const bad of [-1, -1_000, Number.NaN, Number.POSITIVE_INFINITY, 0.5]) {
+      await expect(instance.exec("ls", [], { maxOutputBytes: bad })).rejects.toThrow(
+        /non-negative integer/,
+      );
+    }
+    expect(sdk.runCalls).toHaveLength(0);
+  });
+
   test("exec rejects fail-closed when SDK does not advertise supportsMaxOutputBytes", async () => {
     // The SandboxExecOptions contract guarantees a 1 MB default cap on
     // stdout+stderr. Without server-side enforcement the adapter would have

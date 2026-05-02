@@ -143,6 +143,20 @@ export function createE2bInstance(
             "SDK wrapper.",
         );
       }
+      // Reject malformed caps before they can defeat the trim. A negative
+      // value collapses Uint8Array.slice(0, negative) into "keep almost
+      // everything" and re-opens the unbounded-output path; NaN/Infinity
+      // skip the comparison and surface oversized payloads. Validate fail-
+      // closed instead of clamping silently.
+      if (
+        options?.maxOutputBytes !== undefined &&
+        (!Number.isInteger(options.maxOutputBytes) || options.maxOutputBytes < 0)
+      ) {
+        throw new Error(
+          `sandbox-e2b: SandboxExecOptions.maxOutputBytes must be a non-negative ` +
+            `integer; got ${String(options.maxOutputBytes)}.`,
+        );
+      }
       if (options?.signal !== undefined && sdk.commands.supportsAbort !== true) {
         // Fail-closed: returning before the remote command was actually killed
         // would let callers retry while the original is still running, leading

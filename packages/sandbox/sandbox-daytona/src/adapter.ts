@@ -36,25 +36,22 @@ export function createDaytonaAdapter(
         ...(resolved.apiUrl !== undefined ? { apiUrl: resolved.apiUrl } : {}),
       };
       const sdk = await resolved.client.createSandbox(opts);
-      // Fail fast on lifecycle capability mismatch BEFORE handing the
-      // instance to callers. If we proceeded, the workspace would be live
-      // and billable but unkillable: destroy() would later refuse without
-      // sdk.delete, and close() may be a client-side detach that leaks the
-      // remote workspace. Tear down what we just provisioned and surface
-      // the misconfiguration immediately.
-      if (sdk.delete === undefined) {
-        try {
-          await sdk.close();
-        } catch {
-          // Best-effort — even if close fails, the originating error is
-          // the lifecycle gap, not the cleanup attempt.
-        }
+      // Runtime check for JS callers (TS types already require delete()).
+      // We deliberately do NOT call sdk.close() on failure: in several
+      // Daytona SDK versions close() is a client-side detach that leaves
+      // the remote workspace running and billable, so attempting it would
+      // hide the leak instead of preventing it. Surface the lifecycle gap
+      // loudly so operators can revoke the workspace out-of-band; do not
+      // pretend to clean up.
+      if (typeof sdk.delete !== "function") {
         throw new Error(
-          "sandbox-daytona: createSandbox returned an SDK handle without delete(). " +
-            "This adapter requires delete-capable wrappers because close() in several " +
-            "Daytona SDK versions is a client-side detach that leaves the workspace " +
-            "running and billable. The just-provisioned workspace was best-effort " +
-            "closed; inject a delete-capable wrapper before retrying.",
+          "sandbox-daytona: createSandbox returned an SDK handle without a callable " +
+            "delete() method. This adapter requires delete-capable wrappers because " +
+            "close() in several Daytona SDK versions is a client-side detach that " +
+            "leaves the remote workspace running and billable; falling back to it " +
+            "would silently leak. The workspace just provisioned cannot be safely " +
+            "torn down through this client — revoke it out-of-band and inject a " +
+            "delete-capable wrapper before retrying.",
         );
       }
       return createDaytonaInstance(sdk, extractProfileDefaults(profile));

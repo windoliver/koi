@@ -116,25 +116,25 @@ describe("createDaytonaAdapter", () => {
     expect(client.sandbox.runCalls[0]?.opts?.timeoutMs).toBe(7777);
   });
 
-  test("create() fails fast when SDK handle has no delete() and tears down the workspace", async () => {
+  test("create() fails fast when SDK handle has no delete() (no close-fallback leak)", async () => {
     // Lifecycle capability gap: a delete-less SDK would let create() succeed
     // but destroy() later refuse, leaking a billable workspace. The adapter
-    // must reject before exposing the instance and best-effort-close the
-    // just-provisioned workspace.
+    // rejects before exposing the instance — and does NOT call close() as
+    // a cleanup, since close() in several Daytona SDK versions is a
+    // client-side detach that would also leak. Operators must revoke the
+    // workspace out-of-band.
     const client = createFakeClient();
-    // Strip `delete` from the sandbox the client will return.
     const original = client.sandbox;
     const { delete: _omit, ...stripped } = original;
-    Object.defineProperty(client, "sandbox", { value: stripped });
-    const orig = client.createSandbox;
     Object.defineProperty(client, "createSandbox", {
       value: async () => stripped,
     });
     const result = createDaytonaAdapter({ apiKey: "k", client });
     if (!result.ok) throw new Error("validate failed");
     await expect(result.value.create(openProfile)).rejects.toThrow(/delete-capable/);
-    expect(original.closed()).toBe(true);
-    void orig;
+    // Adapter must NOT call close() — it cannot be trusted to actually
+    // delete the workspace, so calling it would hide the leak.
+    expect(original.closed()).toBe(false);
   });
 
   test("per-call exec options override profile defaults", async () => {
