@@ -562,6 +562,35 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
     }
   };
 
+  // Emit a structured decision into the trace stream so policy-cache spans
+  // carry brickId/scope/source/cap-overflow alongside the synthetic
+  // permission deny dispatched separately. The trace wrapper injects
+  // `ctx.reportDecision` into the TurnContext only when a tracer is wired;
+  // when absent this is a silent no-op.
+  const reportDecision = (
+    ctx: TurnContext,
+    entry: PolicyEntry,
+    request: ToolRequest,
+    source: "executor" | "quarantine",
+    capExceeded: boolean,
+  ): void => {
+    const report = ctx.reportDecision;
+    if (report === undefined) return;
+    try {
+      report({
+        middleware: NAME,
+        action: "deny",
+        toolId: request.toolId,
+        brickId: entry.brickId,
+        scope: entry.scope,
+        source,
+        capExceeded,
+      });
+    } catch {
+      // Swallow trace failures; observability cannot break enforcement.
+    }
+  };
+
   // structuredClone is the simplest defense against an executor mutating
   // request.input in place (TypeScript's `readonly` only enforces at compile
   // time). JsonObject is JSON-shaped, so structuredClone is safe and cheap.
@@ -598,12 +627,16 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       // block; on overflow we throw so the engine loop terminates rather
       // than staying soft forever. The counter is keyed per-turn so
       // legitimate retries across separate turns are not penalized.
+      // Cleanup is lifecycle-tied (onAfterTurn / onSessionEnd) so blocked
+      // traffic cannot accumulate for the lifetime of the process.
       const turnId = ctx.turnId as unknown as string;
-      const blockKey = `${turnId}\0${request.toolId}\0${entry.brickId}`;
-      const enforcePerTurnCap = (): void => {
+      const sessionId = ctx.session.sessionId as unknown as string;
+      const blockKey = `${sessionId}\0${turnId}\0${request.toolId}\0${entry.brickId}`;
+      const enforcePerTurnCap = (source: "executor" | "quarantine"): void => {
         const count = (perTurnBlocks.get(blockKey) ?? 0) + 1;
         perTurnBlocks.set(blockKey, count);
         if (count > perTurnBlockCap) {
+          reportDecision(ctx, entry, request, source, true);
           throw new Error(
             `policy-cache: per-turn block cap ${String(perTurnBlockCap)} exceeded for tool "${request.toolId}" (brick ${entry.brickId}); aborting runaway loop`,
           );
@@ -614,7 +647,8 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       // even after their executor faults. Cleared by re-register or
       // external eviction (StoreChangeNotifier `removed` / `quarantined`).
       if (quarantined.has(entry.brickId)) {
-        enforcePerTurnCap();
+        enforcePerTurnCap("quarantine");
+        reportDecision(ctx, entry, request, "quarantine", false);
         dispatchSyntheticDeny(ctx, entry, request);
         return blockResponse(request.toolId);
       }
@@ -639,15 +673,41 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
         }
         // Cap and dispatch happen OUTSIDE the executor try/catch so a cap
         // overflow throws cleanly to the engine loop (not re-caught here).
-        enforcePerTurnCap();
+        enforcePerTurnCap("quarantine");
+        reportDecision(ctx, entry, request, "quarantine", false);
         dispatchSyntheticDeny(ctx, entry, request);
         return blockResponse(request.toolId);
       }
       if (decision.action === "allow") return next(request);
-      enforcePerTurnCap();
+      enforcePerTurnCap("executor");
+      reportDecision(ctx, entry, request, "executor", false);
       // `decision.reason` is intentionally NOT forwarded — see SYNTHETIC_DENY_REASON.
       dispatchSyntheticDeny(ctx, entry, request);
       return blockResponse(request.toolId);
+    },
+
+    onAfterTurn: async (ctx) => {
+      // Reap counters for the completed turn so blocked traffic cannot
+      // accumulate for the lifetime of the handle. Per-turn counters are
+      // keyed by `<sessionId>\0<turnId>\0...` so the prefix match cleanly
+      // identifies entries to drop.
+      const turnId = ctx.turnId as unknown as string;
+      const sessionId = ctx.session.sessionId as unknown as string;
+      const prefix = `${sessionId}\0${turnId}\0`;
+      for (const key of perTurnBlocks.keys()) {
+        if (key.startsWith(prefix)) perTurnBlocks.delete(key);
+      }
+    },
+
+    onSessionEnd: async (sessionCtx) => {
+      // Defense-in-depth: if a session ends mid-turn (cancellation,
+      // timeout) the per-turn reaper above won't fire for the active
+      // turn. Drop everything for this session.
+      const sessionId = sessionCtx.sessionId as unknown as string;
+      const prefix = `${sessionId}\0`;
+      for (const key of perTurnBlocks.keys()) {
+        if (key.startsWith(prefix)) perTurnBlocks.delete(key);
+      }
     },
 
     describeCapabilities(ctx: TurnContext): CapabilityFragment | undefined {

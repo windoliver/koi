@@ -1345,6 +1345,40 @@ describe("createPolicyCacheMiddleware: per-turn block cap (anti-loop)", () => {
     await expect(wrap(CTX, makeReq("rm"), next as ToolHandler)).rejects.toThrow();
   });
 
+  test("onAfterTurn reaps the completed turn's counters (anti-leak)", async () => {
+    // Round 7 review: a long-lived shared handle would otherwise keep
+    // one perTurnBlocks entry per blocked tuple forever. The middleware
+    // implements onAfterTurn to drop counters for the completed turn so
+    // blocked traffic cannot accumulate for the lifetime of the process.
+    const handle = mw({ perTurnBlockCap: 1 });
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    const wrap = handle.middleware.wrapToolCall;
+    const reap = handle.middleware.onAfterTurn;
+    if (wrap === undefined || reap === undefined) throw new Error("hooks missing");
+    const next = mock(async () => makeResp());
+    // 1st hit consumes the only-1 budget.
+    await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    // 2nd would throw — but reap the turn first and the budget resets.
+    await reap(CTX);
+    const r = await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    expect(r.metadata?.policyDenied).toBe(true);
+  });
+
+  test("onSessionEnd reaps every counter for the session", async () => {
+    const handle = mw({ perTurnBlockCap: 1 });
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    const wrap = handle.middleware.wrapToolCall;
+    const sessionEnd = handle.middleware.onSessionEnd;
+    if (wrap === undefined || sessionEnd === undefined) throw new Error("hooks missing");
+    const next = mock(async () => makeResp());
+    // Burn the per-turn budget.
+    await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    // Session end resets it (defense-in-depth for cancelled mid-turn cases).
+    await sessionEnd(CTX.session);
+    const r = await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    expect(r.metadata?.policyDenied).toBe(true);
+  });
+
   test("dispose clears the per-turn block counter", async () => {
     const handle = mw({ perTurnBlockCap: 1 });
     handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
@@ -1358,6 +1392,94 @@ describe("createPolicyCacheMiddleware: per-turn block cap (anti-loop)", () => {
     // safe to call after the cap path was exercised.
     handle.dispose();
     expect(handle.size()).toBe(0);
+  });
+});
+
+describe("createPolicyCacheMiddleware: structured trace decisions", () => {
+  // Round 7 review: every block path must emit ctx.reportDecision with
+  // brickId/scope/source so trace spans carry the metadata operators
+  // need for incident response.
+  const ctxWithReport = (agentId: string, sink: Array<Record<string, unknown>>): TurnContext =>
+    ({
+      session: {
+        agentId,
+        sessionId: "s" as never,
+        runId: "r" as never,
+        metadata: {},
+      },
+      turnIndex: 0,
+      turnId: "t" as never,
+      messages: [],
+      metadata: {},
+      reportDecision: (d: Record<string, unknown>) => sink.push(d),
+    }) as unknown as TurnContext;
+
+  test("executor-deny path reports {middleware, action, toolId, brickId, scope, source: executor}", async () => {
+    const handle = mw();
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    const sink: Array<Record<string, unknown>> = [];
+    const ctx = ctxWithReport("agent-A", sink);
+    const next = mock(async () => makeResp());
+    await handle.middleware.wrapToolCall?.(ctx, makeReq("rm"), next as ToolHandler);
+    expect(sink).toHaveLength(1);
+    expect(sink[0]).toMatchObject({
+      middleware: "policy-cache",
+      action: "deny",
+      toolId: "rm",
+      brickId: "brick-1",
+      scope: "agent",
+      source: "executor",
+      capExceeded: false,
+    });
+  });
+
+  test("quarantine fast-path reports source: quarantine", async () => {
+    const handle = mw();
+    const throwing: PolicyEntry = {
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "rm",
+      brickId: "brick-1",
+      execute: () => {
+        throw new Error("boom");
+      },
+    };
+    handle.register(throwing);
+    const sink: Array<Record<string, unknown>> = [];
+    const ctx = ctxWithReport("agent-A", sink);
+    const next = mock(async () => makeResp());
+    // First call quarantines (executor-throw branch).
+    await handle.middleware.wrapToolCall?.(ctx, makeReq("rm"), next as ToolHandler);
+    // Second call hits the quarantine fast-path.
+    await handle.middleware.wrapToolCall?.(ctx, makeReq("rm"), next as ToolHandler);
+    expect(sink).toHaveLength(2);
+    expect(sink[0]?.source).toBe("quarantine");
+    expect(sink[1]?.source).toBe("quarantine");
+  });
+
+  test("cap-overflow path reports capExceeded: true (and the call throws)", async () => {
+    const handle = mw({ perTurnBlockCap: 1 });
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    const sink: Array<Record<string, unknown>> = [];
+    const ctx = ctxWithReport("agent-A", sink);
+    const next = mock(async () => makeResp());
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+    // 1st: normal block.
+    await wrap(ctx, makeReq("rm"), next as ToolHandler);
+    // 2nd: cap overflow → throws AND reports capExceeded:true.
+    await expect(wrap(ctx, makeReq("rm"), next as ToolHandler)).rejects.toThrow();
+    expect(sink).toHaveLength(2);
+    expect(sink[0]?.capExceeded).toBe(false);
+    expect(sink[1]?.capExceeded).toBe(true);
+  });
+
+  test("absent reportDecision is a silent no-op (no throw)", async () => {
+    const handle = mw();
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    const next = mock(async () => makeResp());
+    const r = await handle.middleware.wrapToolCall?.(CTX, makeReq("rm"), next as ToolHandler);
+    expect(r?.metadata?.policyDenied).toBe(true);
   });
 });
 
