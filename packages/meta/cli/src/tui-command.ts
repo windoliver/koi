@@ -1519,6 +1519,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 `koi tui: persisted engine state from a different engine — dropping (expected ${expected})\n`,
               );
             },
+            onCheckpointReadError: (err: import("@koi/core").KoiError): void => {
+              process.stderr.write(
+                `koi tui: cancel checkpoint store read failed (${err.message}) — resuming from transcript only\n`,
+              );
+            },
           }
         : undefined;
     const resumeResult = await resumeSessionFromJsonl(

@@ -134,43 +134,29 @@ export function wrapAdapterWithStatePersistence(
   // so any stale write checking it sees a mismatch and aborts.
   const gen: GenRef = { current: 0 };
 
-  // Lazily apply initialEngineState before the first stream. Failure does
-  // NOT discard the persisted row — see `loadFailedRef` below.
+  // Lazily apply initialEngineState before the first stream — failure is
+  // surfaced via `onPersistError` and the persisted checkpoint is
+  // immediately cleared so the next resume can NOT combine a stale
+  // checkpoint with a transcript that the failed-load run advanced past.
   const loadState = inner.loadState;
   let pendingInitial: EngineState | undefined =
     options.initialEngineState !== undefined && loadState !== undefined
       ? options.initialEngineState
       : undefined;
 
-  // Tracks whether the most recent loadState attempt failed. Set to true
-  // when `inner.loadState` throws; consumed by `wrapStreamForCancelPersist`
-  // to SKIP the next non-interrupted clear, so a transient decode/IO
-  // failure doesn't burn the only saved checkpoint. Reset to false on:
-  //   - a successful loadState
-  //   - any interrupted terminal (the new checkpoint supersedes the old)
-  //   - a single skipped clear (one-shot protection, not permanent)
-  // The host observes `onPersistError` and decides whether to retry
-  // resume, surface UX, or externally clear the row.
-  const loadFailedRef: { failed: boolean } = { failed: false };
-
   return {
     ...inner,
     stream: (input: EngineInput): AsyncIterable<EngineEvent> => {
       const initialToApply = pendingInitial;
-      // Only consume `pendingInitial` after a SUCCESSFUL load. On failure,
-      // keep it pending so a retry stream can try again before the host
-      // decides what to do — but `loadFailedRef` still suppresses clear.
-      const innerStream = streamWithLazyLoad(
-        inner,
-        input,
-        initialToApply,
-        loadState,
+      pendingInitial = undefined;
+      const innerStream = streamWithLazyLoad(inner, input, initialToApply, loadState, gen, {
+        saveState,
+        persistence,
+        recordTemplate,
+        now,
         onPersistError,
-        loadFailedRef,
-        () => {
-          pendingInitial = undefined;
-        },
-      );
+        persistTimeoutMs,
+      });
       return wrapStreamForCancelPersist(innerStream, gen, {
         saveState,
         persistence,
@@ -178,7 +164,6 @@ export function wrapAdapterWithStatePersistence(
         now,
         onPersistError,
         persistTimeoutMs,
-        loadFailedRef,
       });
     },
   };
@@ -189,22 +174,25 @@ async function* streamWithLazyLoad(
   input: EngineInput,
   initial: EngineState | undefined,
   loadState: ((s: EngineState) => Promise<void>) | undefined,
-  onPersistError: (e: KoiError | Error) => void,
-  loadFailedRef: { failed: boolean },
-  onLoadSuccess: () => void,
+  gen: GenRef,
+  deps: WrapStreamDeps,
 ): AsyncIterable<EngineEvent> {
   if (initial !== undefined && loadState !== undefined) {
     try {
       await loadState(initial);
-      loadFailedRef.failed = false;
-      onLoadSuccess();
     } catch (e: unknown) {
-      // loadState failure: surface signal, mark "load suspect" so the
-      // next non-interrupted clear is skipped (preserves the checkpoint
-      // for a possible retry). DO NOT consume `pendingInitial` — the
-      // next stream call will try again.
-      loadFailedRef.failed = true;
-      onPersistError(e instanceof Error ? e : new Error(extractMessage(e)));
+      // loadState failure: surface signal AND immediately clear the
+      // persisted checkpoint. Once we fall through to running the turn
+      // transcript-only, the saved EngineState is no longer coherent with
+      // the transcript the run will produce — preserving it would arm a
+      // future resume with a stale snapshot bound to a newer transcript.
+      // We accept the rare cost of dropping a checkpoint that *might*
+      // have decoded on a retry; the host has the `onPersistError`
+      // signal and can decide to surface UX, snapshot the row externally
+      // before allowing the turn to advance, or kill the session.
+      deps.onPersistError(e instanceof Error ? e : new Error(extractMessage(e)));
+      gen.current += 1;
+      await clearStaleCheckpoint(deps, gen, gen.current);
     }
   }
   for await (const ev of inner.stream(input)) yield ev;
@@ -217,14 +205,6 @@ interface WrapStreamDeps {
   readonly now: () => number;
   readonly onPersistError: (error: KoiError | Error) => void;
   readonly persistTimeoutMs: number;
-  /**
-   * Set when the wrapper attempted `inner.loadState(initialEngineState)`
-   * and it threw. Mutates the wrapper's shared ref so the next
-   * non-interrupted clear is suppressed and reset, preserving the
-   * persisted checkpoint across one transient load failure. See
-   * `wrapAdapterWithStatePersistence` for the full lifecycle.
-   */
-  readonly loadFailedRef: { failed: boolean };
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -275,19 +255,7 @@ async function* wrapStreamForCancelPersist(
       gen.current += 1;
       const myGen = gen.current;
       if (event.output.stopReason === "interrupted") {
-        // A new interrupted terminal mints a fresh checkpoint that
-        // supersedes whatever was on disk — the load-failed shield is no
-        // longer needed and would only suppress a future legitimate clear.
-        deps.loadFailedRef.failed = false;
         await persistOnInterrupted(deps, gen, myGen);
-      } else if (deps.loadFailedRef.failed) {
-        // Last `loadState` attempt failed → preserve the persisted
-        // checkpoint exactly once so the host can retry resume with the
-        // same state. Reset the shield: a second non-interrupted terminal
-        // (without an intervening successful load) WILL clear, because
-        // by then the transcript has clearly advanced and the host has
-        // had a chance to react to the `onPersistError` signal.
-        deps.loadFailedRef.failed = false;
       } else {
         // Any non-interrupted terminal (`completed`, `error`, `max_turns`)
         // advances the transcript past the cancel checkpoint, so the saved

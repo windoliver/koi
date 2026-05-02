@@ -678,6 +678,16 @@ export interface ResumeStateOptions {
   readonly expectedEngineId: string;
   /** Fired when persisted state is dropped due to engineId mismatch. */
   readonly onEngineMismatch?: (stored: EngineState, expected: string) => void;
+  /**
+   * Fired when reading the checkpoint row itself fails (store outage,
+   * SQLite lock, corruption). The resume call falls back to
+   * transcript-only and yields a normal `ResumedSession` with no
+   * `lastEngineState`. The host should surface UX so the operator knows
+   * the cancel cursor isn't being applied this run, but resume MUST NOT
+   * fail outright on a checkpoint-store error — the JSONL transcript
+   * remains the authoritative recovery surface.
+   */
+  readonly onCheckpointReadError?: (error: import("@koi/core").KoiError) => void;
 }
 
 /**
@@ -765,20 +775,29 @@ export async function resumeSessionFromJsonl(
         ? { onEngineMismatch: stateOpts.onEngineMismatch }
         : {}),
     });
-    if (!stateResult.ok) {
-      return { ok: false, error: stateResult.error.message };
+    if (stateResult.ok) {
+      return {
+        ok: true,
+        value: {
+          sid,
+          messages: stateResult.value.messages,
+          issueCount: stateResult.value.issues.length,
+          ...(stateResult.value.lastEngineState !== undefined
+            ? { lastEngineState: stateResult.value.lastEngineState }
+            : {}),
+        },
+      };
     }
-    return {
-      ok: true,
-      value: {
-        sid,
-        messages: stateResult.value.messages,
-        issueCount: stateResult.value.issues.length,
-        ...(stateResult.value.lastEngineState !== undefined
-          ? { lastEngineState: stateResult.value.lastEngineState }
-          : {}),
-      },
-    };
+    // Degrade to transcript-only resume on checkpoint-store error: the
+    // JSONL transcript is the authoritative recovery surface, so a
+    // SQLite outage / lock / corruption on the OPT-IN cancel checkpoint
+    // store must not prevent resume entirely. Surface the error through
+    // the host-supplied callback so the operator knows the cancel
+    // cursor isn't being applied this run.
+    if (stateOpts.onCheckpointReadError !== undefined) {
+      stateOpts.onCheckpointReadError(stateResult.error);
+    }
+    // fall through to transcript-only path below
   }
 
   const result = await resumeForSession(sid, jsonlTranscript);
