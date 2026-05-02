@@ -112,11 +112,11 @@ export function createDaytonaAdapter(
           cleanupNote = `sdk.close() also failed: ${closeOutcome.e instanceof Error ? closeOutcome.e.message : String(closeOutcome.e)}`;
         }
         throw new Error(
-          "sandbox-daytona: createSandbox returned a handle without a callable " +
-            "delete() method despite client.supportsWorkspaceDelete=true. The just-" +
-            `provisioned workspace MAY have leaked (${cleanupNote}). Verify the ` +
-            "workspace state out-of-band and fix the wrapper to honour its " +
-            "delete-capability declaration.",
+          `sandbox-daytona: createSandbox(label=${label}) returned a handle without ` +
+            "a callable delete() method despite client.supportsWorkspaceDelete=true. " +
+            `The just-provisioned workspace MAY have leaked (${cleanupNote}). Search ` +
+            `for label "${label}" out-of-band to revoke the orphan, and fix the ` +
+            "wrapper to honour its delete-capability declaration.",
         );
       }
       // Postflight: exec() requires `commands.supportsMaxOutputBytes=true`.

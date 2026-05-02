@@ -159,7 +159,13 @@ describe("createE2bAdapter", () => {
     });
     const result = createE2bAdapter({ apiKey: "k", client });
     if (!result.ok) throw new Error("validate failed");
-    await expect(result.value.create(openProfile)).rejects.toThrow(/kill\(\)/);
+    const err = await result.value.create(openProfile).catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/kill\(\)/);
+    // The per-attempt label MUST appear so operators can locate the
+    // orphan via the same recovery workflow used for ambiguous create
+    // failures. Without it, the leak is anonymous.
+    expect((err as Error).message).toMatch(/koi-[0-9a-f-]{36}/);
   });
 
   test("create() postflights supportsMaxOutputBytes and tears down unusable handles", async () => {

@@ -80,12 +80,15 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
       // effort kill here so we either have a working teardown path or a
       // surfaced leak — never a deferred-leak surprise.
       if (typeof sdk.kill !== "function") {
-        // We have nothing else to call; the gap IS the leak.
+        // We have nothing else to call; the gap IS the leak. Surface
+        // the per-attempt label so operators can locate the orphan via
+        // the same recovery workflow used for ambiguous create failures.
         throw new Error(
-          "sandbox-e2b: createSandbox returned a handle without a callable kill() method. " +
-            "destroy() has no programmatic teardown path, so the just-provisioned remote " +
-            "sandbox MAY have leaked. Verify the sandbox state out-of-band and inject a " +
-            "kill-capable SDK wrapper before retrying.",
+          `sandbox-e2b: createSandbox(label=${label}) returned a handle without a ` +
+            "callable kill() method. destroy() has no programmatic teardown path, so " +
+            `the just-provisioned remote sandbox MAY have leaked. Search for label ` +
+            `"${label}" out-of-band to revoke the orphan, and inject a kill-capable ` +
+            "SDK wrapper before retrying.",
         );
       }
       // Postflight: the instance contract makes `commands.supportsMaxOutputBytes=true`

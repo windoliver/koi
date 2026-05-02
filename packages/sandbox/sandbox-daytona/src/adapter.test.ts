@@ -151,7 +151,12 @@ describe("createDaytonaAdapter", () => {
     });
     const result = createDaytonaAdapter({ apiKey: "k", client });
     if (!result.ok) throw new Error("validate failed");
-    await expect(result.value.create(openProfile)).rejects.toThrow(/MAY have leaked/);
+    const err = await result.value.create(openProfile).catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/MAY have leaked/);
+    // The per-attempt label MUST appear so operators can locate the
+    // orphan workspace deterministically.
+    expect((err as Error).message).toMatch(/koi-[0-9a-f-]{36}/);
     // Best-effort cleanup was attempted.
     expect(original.closed()).toBe(true);
   });
