@@ -604,7 +604,7 @@ describe("wrapAdapterWithStatePersistence", () => {
     expect(after.value.lastPersistedAt).toBe(5_000);
   });
 
-  test("transient loadState failure preserves the persisted checkpoint (one-shot clear shield)", async () => {
+  test("loadState failure clears the unloadable checkpoint atomically (cross-process convergence)", async () => {
     // Seed a persisted checkpoint as if a prior cancel had written it.
     await store.saveSession({
       ...template(),
@@ -612,14 +612,13 @@ describe("wrapAdapterWithStatePersistence", () => {
       lastPersistedAt: 1,
     });
 
-    // loadState throws — host gets onPersistError signal but the
-    // persisted row is preserved so the host can retry resume against
-    // the same checkpoint. One-shot: the NEXT non-interrupted terminal
-    // (without an intervening successful load) DOES clear.
+    // loadState throws — host gets onPersistError signal AND the
+    // unloadable checkpoint is cleared via atomic CAS so a deterministically-
+    // broken cursor can't poison resume forever across process restarts.
     const inner: EngineAdapter = {
       ...makeAdapter([completedDone], captured),
       loadState: async () => {
-        throw new Error("transient decode failure");
+        throw new Error("decode failure");
       },
     };
     const errors: Array<KoiError | Error> = [];
@@ -628,32 +627,29 @@ describe("wrapAdapterWithStatePersistence", () => {
       recordTemplate: template,
       onPersistError: (e) => errors.push(e),
       initialEngineState: captured,
+      initialEngineStateVersion: 1,
     });
     for await (const _ of wrapped.stream({ kind: "text", text: "hi" }));
 
     expect(errors).toHaveLength(1);
     const after = await store.loadSession(SID);
     if (!after.ok) throw new Error("expected ok");
-    // Checkpoint preserved — host can retry against the same row.
-    expect(after.value.lastEngineState).toEqual(captured);
-    // Durable poison marker written so a SECOND attempt converges by
-    // clearing the checkpoint instead of preserving forever.
-    expect(typeof after.value.metadata.__koi_loadFailedAt).toBe("number");
+    expect(after.value.lastEngineState).toBeUndefined();
   });
 
-  test("second consecutive loadState failure clears the poisoned checkpoint (cross-process convergence)", async () => {
-    // Pre-existing row carries the marker from a prior process's failure.
+  test("loadState failure with concurrent newer write backs off without clobbering (CONFLICT)", async () => {
+    // Resume snapshot taken at version=1, but another process wrote
+    // version=99 in between (newer, presumably loadable state).
     await store.saveSession({
       ...template(),
-      lastEngineState: captured,
-      lastPersistedAt: 1,
-      metadata: { ...template().metadata, __koi_loadFailedAt: 1 },
+      lastEngineState: { engineId: "other", data: { newer: true } },
+      lastPersistedAt: 99,
     });
 
     const inner: EngineAdapter = {
       ...makeAdapter([completedDone], captured),
       loadState: async () => {
-        throw new Error("still broken in this fresh process");
+        throw new Error("decode failure");
       },
     };
     const errors: Array<KoiError | Error> = [];
@@ -662,16 +658,22 @@ describe("wrapAdapterWithStatePersistence", () => {
       recordTemplate: template,
       onPersistError: (e) => errors.push(e),
       initialEngineState: captured,
+      // Stale version snapshot from the moment of resume.
+      initialEngineStateVersion: 1,
     });
     for await (const _ of wrapped.stream({ kind: "text", text: "hi" }));
 
+    // loadState failure is reported AND the subsequent non-interrupted
+    // terminal's clear hits CONFLICT (which the cancel-clear path
+    // surfaces as a host signal); both back off without clobbering.
+    expect(errors.length).toBeGreaterThanOrEqual(1);
     const after = await store.loadSession(SID);
     if (!after.ok) throw new Error("expected ok");
-    // Checkpoint cleared so the next resume falls back to transcript-only
-    // instead of preserving a broken cursor forever across restarts.
-    expect(after.value.lastEngineState).toBeUndefined();
-    // Marker dropped along with the cleared checkpoint — a future fresh
-    // checkpoint that fails to load starts the cycle from scratch.
-    expect("__koi_loadFailedAt" in after.value.metadata).toBe(false);
+    // The other runtime's checkpoint survives — we did NOT clobber it.
+    expect(after.value.lastEngineState).toEqual({
+      engineId: "other",
+      data: { newer: true },
+    });
+    expect(after.value.lastPersistedAt).toBe(99);
   });
 });

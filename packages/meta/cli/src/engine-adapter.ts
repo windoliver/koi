@@ -74,6 +74,15 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
   const { engineId, modelAdapter, transcript, maxTranscriptMessages, maxTurns, budgetConfig } =
     config;
 
+  // Adapter-instance state for cancel-resume (issue #1683): the in-flight
+  // user message of the currently-streaming turn. Committed to transcript
+  // on successful turn_end/done; cleared when the stream completes. If a
+  // cancel terminal fires while this is set, saveState captures it so the
+  // resume can re-inject the canceled prompt instead of silently dropping
+  // it. let: justified — assigned per stream call and read by saveState
+  // from outside the generator function.
+  let inFlightUserRef: InboundMessage | undefined;
+
   return {
     engineId,
     capabilities: { text: true, images: false, files: false, audio: false },
@@ -106,6 +115,10 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
         // catches replace-in-place mutations that preserve length.
         lastMessageTimestamp:
           transcript.length > 0 ? (transcript[transcript.length - 1]?.timestamp ?? 0) : 0,
+        // In-flight user message of the canceled turn, when one was
+        // staged but not yet committed. Reinjected on resume so the
+        // canceled prompt isn't silently dropped.
+        ...(inFlightUserRef !== undefined ? { stagedUser: inFlightUserRef } : {}),
       },
     }),
     loadState: async (state) => {
@@ -114,6 +127,7 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
             readonly kind?: string;
             readonly transcriptLen?: number;
             readonly lastMessageTimestamp?: number;
+            readonly stagedUser?: InboundMessage;
           }
         | undefined;
       if (data?.kind !== "transcript-cursor") {
@@ -135,9 +149,14 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
           `[${engineId}] transcript fingerprint mismatch — last message timestamp ${liveTs} ≠ checkpoint ${expectedTs}`,
         );
       }
-      // Cursor matches: nothing to apply (the transcript IS our state).
-      // The wrapper's engineId compatibility check already filtered out
-      // foreign adapter state; reaching here means the resume is sound.
+      // Cursor validated. If the canceled turn had a staged user prompt,
+      // commit it now so the next stream's context window includes it
+      // (the model sees the canceled request as part of conversation
+      // history). Without this, the canceled prompt is silently dropped
+      // and the user's next message arrives with no preceding context.
+      if (data.stagedUser !== undefined) {
+        transcript.push(data.stagedUser);
+      }
     },
     stream(input: EngineInput): AsyncIterable<EngineEvent> {
       const handlers = input.callHandlers;
@@ -156,6 +175,10 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
         timestamp: Date.now(),
         content: [{ kind: "text", text }],
       };
+      // Expose to saveState (cancel-resume): if the wrapper observes an
+      // interrupted terminal before this turn commits, it captures this
+      // pointer so the canceled prompt is reinjected on resume.
+      inFlightUserRef = stagedUserMsg;
 
       return (async function* (): AsyncIterable<EngineEvent> {
         // Build context window: token-aware compaction when budgetConfig is set,
@@ -245,6 +268,9 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
             if (!userMessageCommitted) {
               transcript.push(stagedUserMsg);
               userMessageCommitted = true;
+              // Cancel-resume: prompt is now in transcript, so saveState
+              // no longer needs to capture it as the in-flight staged user.
+              inFlightUserRef = undefined;
             }
 
             // Flush assistant message with tool_call metadata (if any).
@@ -295,6 +321,7 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
               // Fallback: turn_end never fired — commit from done event.
               transcript.push(stagedUserMsg);
               userMessageCommitted = true;
+              inFlightUserRef = undefined;
               const fallbackText = pendingTurnText.join("");
               if (fallbackText.length > 0) {
                 transcript.push({

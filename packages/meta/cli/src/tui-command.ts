@@ -1564,6 +1564,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     if (resumedEngineState !== undefined) {
       process.stderr.write("koi tui: resuming from cancel checkpoint\n");
     }
+    // Flip the resumed session's row back to "running" so a SIGKILL/OOM
+    // during this resumed run is visible to recovery scans (which key off
+    // status === "running"). The prior process exited cleanly and set
+    // "done"; without this flip, a crash here would silently slip past
+    // the recovery contract.
+    if (stateSessionPersistence !== undefined) {
+      const statusResult = await stateSessionPersistence.setSessionStatus(tuiSessionId, "running");
+      if (!statusResult.ok && statusResult.error.code !== "NOT_FOUND") {
+        process.stderr.write(
+          `koi tui: failed to mark resumed session as running (${statusResult.error.message}) — crash recovery may miss this run\n`,
+        );
+      }
+    }
   }
 
   // Issue #1683: seed an authoritative SessionRecord on fresh sessions so

@@ -162,22 +162,19 @@ export function wrapAdapterWithStatePersistence(
   const gen: GenRef = { current: 0 };
 
   // Lazily apply initialEngineState before the first stream. On failure,
-  // PRESERVE the persisted checkpoint and SUPPRESS the next non-
-  // interrupted clear — the host's `onPersistError` handler decides
-  // whether to retry, surface UX, or wipe the row externally. This is
-  // the round-2/round-4/round-9 reviewer preference (4 of 7 review
-  // rounds favored preservation): a transient decode/IO failure should
-  // not auto-destroy the only durable cancel cursor. Trade-off: if the
-  // host ignores the signal and the run produces new transcript entries,
-  // the next resume could combine an old engine cursor with newer
-  // transcript — that is the host's responsibility to prevent via the
-  // signal handler.
+  // CLEAR the unloadable checkpoint atomically (CAS via
+  // `updateLastEngineState`) and signal the host via `onPersistError`. The
+  // host can decide whether to retry resume from a different source. We
+  // do NOT preserve the broken checkpoint: cross-process processes share
+  // no in-memory state, so preserving forever lets a deterministically-
+  // unloadable cursor poison resume across every restart. Atomic CAS
+  // ensures we never clobber a newer checkpoint written by a concurrent
+  // runtime in between (CONFLICT → back off, the newer state wins).
   const loadState = inner.loadState;
   let pendingInitial: EngineState | undefined =
     options.initialEngineState !== undefined && loadState !== undefined
       ? options.initialEngineState
       : undefined;
-  const loadFailedRef: { failed: boolean } = { failed: false };
   // Last `lastPersistedAt` value the wrapper observed in the store —
   // either seeded from `initialEngineStateVersion` at resume time, or
   // updated after every successful own write. Passed as
@@ -200,7 +197,6 @@ export function wrapAdapterWithStatePersistence(
         now,
         onPersistError,
         persistTimeoutMs,
-        loadFailedRef,
         lastWrittenAtRef,
       });
       return wrapStreamForCancelPersist(innerStream, gen, {
@@ -210,28 +206,11 @@ export function wrapAdapterWithStatePersistence(
         now,
         onPersistError,
         persistTimeoutMs,
-        loadFailedRef,
         lastWrittenAtRef,
       });
     },
   };
 }
-
-/**
- * Metadata key written to the session row after a `loadState` failure so
- * the NEXT load attempt — same process or another — knows the checkpoint
- * has already been tried and failed once. Without it, the in-memory
- * `loadFailedRef` shield is recreated on every process start, and a
- * deterministically-broken checkpoint can poison resume forever as each
- * fresh process preserves it again.
- *
- * Convergence: 1st failure → marker written, checkpoint preserved (host's
- * `onPersistError` handler may retry/wipe externally). 2nd failure (any
- * process) → marker observed, checkpoint cleared atomically, marker
- * dropped. Successful load → marker dropped (a future failure on a NEW
- * checkpoint starts the cycle fresh).
- */
-const POISON_MARKER_KEY = "__koi_loadFailedAt" as const;
 
 async function* streamWithLazyLoad(
   inner: EngineAdapter,
@@ -243,85 +222,35 @@ async function* streamWithLazyLoad(
   if (initial !== undefined && loadState !== undefined) {
     try {
       await loadState(initial);
-      deps.loadFailedRef.failed = false;
-      // Drop any prior poison marker so a future failure on a NEW
-      // checkpoint starts a fresh one-shot preservation window.
-      await dropPoisonMarker(deps);
     } catch (e: unknown) {
       deps.onPersistError(e instanceof Error ? e : new Error(extractMessage(e)));
-      deps.loadFailedRef.failed = true;
-      // Durable convergence: write a poison marker on first failure;
-      // CLEAR the checkpoint on second failure (marker already present).
-      await convergePoisonedCheckpoint(deps);
+      // Durable cross-process convergence: clear the unloadable checkpoint
+      // immediately via atomic CAS so a deterministically-broken cursor
+      // can't poison resume forever (in-memory shield resets on every
+      // process start; without this, each fresh process would preserve
+      // the same broken row again). Uses the resume-time
+      // `initialEngineStateVersion` as expectedVersion so a concurrent
+      // process that wrote a NEWER (presumably loadable) state in between
+      // is detected as CONFLICT and we back off without overwriting it.
+      // The host still gets the onPersistError signal so it can decide UX.
+      await clearUnloadableCheckpoint(deps);
     }
   }
   for await (const ev of inner.stream(input)) yield ev;
 }
 
-async function convergePoisonedCheckpoint(deps: WrapStreamDeps): Promise<void> {
+async function clearUnloadableCheckpoint(deps: WrapStreamDeps): Promise<void> {
+  const update = deps.persistence.updateLastEngineState;
+  if (update === undefined) return; // wrapper rejects such stores at construction
   const sid = deps.recordTemplate().sessionId;
-  const loaded = await deps.persistence.loadSession(sid);
-  if (!loaded.ok) {
-    // NOT_FOUND or read error — no row to mark/clear.
-    if (loaded.error.code !== "NOT_FOUND") deps.onPersistError(loaded.error);
+  const nowVal = deps.now();
+  const r = await update(sid, () => undefined, nowVal, deps.lastWrittenAtRef.value);
+  if (r.ok) {
+    deps.lastWrittenAtRef.value = nowVal;
     return;
   }
-  const meta = loaded.value.metadata;
-  if (typeof meta[POISON_MARKER_KEY] === "number") {
-    // Second consecutive failure on this checkpoint — clear it AND drop
-    // the marker. Use updateLastEngineState's CAS to avoid clobbering a
-    // concurrent successful write; a separate saveSession is needed to
-    // reset metadata, but the state clear is the load-bearing convergence.
-    const nowVal = deps.now();
-    const r = await deps.persistence.updateLastEngineState?.(
-      sid,
-      () => undefined,
-      nowVal,
-      loaded.value.lastPersistedAt,
-    );
-    if (r?.ok) {
-      deps.lastWrittenAtRef.value = nowVal;
-      const stripped: SessionRecord = {
-        ...loaded.value,
-        lastEngineState: undefined,
-        lastPersistedAt: nowVal,
-        metadata: stripPoisonMarker(meta),
-      };
-      const m = await deps.persistence.saveSession(stripped);
-      if (!m.ok && m.error.code !== "NOT_FOUND") deps.onPersistError(m.error);
-    } else if (r && !r.ok && r.error.code !== "NOT_FOUND" && r.error.code !== "CONFLICT") {
-      deps.onPersistError(r.error);
-    }
-    return;
-  }
-  // First failure — best-effort marker write so the next attempt converges.
-  // No CAS available for whole-row writes; concurrent successful writes
-  // could clobber the marker, but that case implies the checkpoint is now
-  // newer (and presumably loadable), so losing the marker is benign.
-  const marked: SessionRecord = {
-    ...loaded.value,
-    metadata: { ...meta, [POISON_MARKER_KEY]: deps.now() },
-  };
-  const w = await deps.persistence.saveSession(marked);
-  if (!w.ok && w.error.code !== "NOT_FOUND") deps.onPersistError(w.error);
-}
-
-async function dropPoisonMarker(deps: WrapStreamDeps): Promise<void> {
-  const sid = deps.recordTemplate().sessionId;
-  const loaded = await deps.persistence.loadSession(sid);
-  if (!loaded.ok) return;
-  const meta = loaded.value.metadata;
-  if (!(POISON_MARKER_KEY in meta)) return;
-  const cleaned: SessionRecord = { ...loaded.value, metadata: stripPoisonMarker(meta) };
-  const r = await deps.persistence.saveSession(cleaned);
-  if (!r.ok && r.error.code !== "NOT_FOUND") deps.onPersistError(r.error);
-}
-
-function stripPoisonMarker(
-  meta: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> {
-  const { [POISON_MARKER_KEY]: _omit, ...rest } = meta;
-  return rest;
+  if (r.error.code === "NOT_FOUND" || r.error.code === "CONFLICT") return;
+  deps.onPersistError(r.error);
 }
 
 interface WrapStreamDeps {
@@ -331,14 +260,6 @@ interface WrapStreamDeps {
   readonly now: () => number;
   readonly onPersistError: (error: KoiError | Error) => void;
   readonly persistTimeoutMs: number;
-  /**
-   * Wrapper-shared flag set when `loadState` threw. Suppresses the next
-   * non-interrupted clear so a transient load failure can't auto-burn
-   * the persisted checkpoint. Reset by: a successful loadState, an
-   * interrupted terminal (new checkpoint supersedes), or one skipped
-   * clear (one-shot shield).
-   */
-  readonly loadFailedRef: { failed: boolean };
   /**
    * Wrapper-shared CAS token: the `lastPersistedAt` value this wrapper
    * last successfully wrote (or seeded at resume from
@@ -398,20 +319,7 @@ async function* wrapStreamForCancelPersist(
       gen.current += 1;
       const myGen = gen.current;
       if (event.output.stopReason === "interrupted") {
-        // A new interrupted terminal mints a fresh checkpoint that
-        // supersedes whatever was on disk — drop the load-failed shield
-        // so it doesn't suppress a future legitimate clear.
-        deps.loadFailedRef.failed = false;
         await persistOnInterrupted(deps, gen, myGen);
-      } else if (deps.loadFailedRef.failed) {
-        // Last `loadState` attempt failed → preserve the persisted
-        // checkpoint exactly once so the host can retry resume against
-        // the same row. One-shot shield: a SECOND non-interrupted
-        // terminal (without an intervening successful load) WILL clear,
-        // because by then the host has had a chance to react to the
-        // `onPersistError` signal and the transcript has demonstrably
-        // advanced.
-        deps.loadFailedRef.failed = false;
       } else {
         // Any non-interrupted terminal (`completed`, `error`, `max_turns`)
         // advances the transcript past the cancel checkpoint, so the saved
