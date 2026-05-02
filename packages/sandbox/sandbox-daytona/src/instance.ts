@@ -321,12 +321,37 @@ export function createDaytonaInstance(
             "workspace running and billable.",
         );
       }
+      const TEARDOWN_TIMEOUT_MS = 10_000;
       destroyPending = (async () => {
         try {
           // Call as a method so real SDK implementations that depend on `this`
           // get the correct receiver; copying into a local would lose it.
-          await sdk.delete();
-          destroyed = true;
+          const outcome = await Promise.race([
+            sdk.delete().then(
+              () => ({ kind: "ok" as const }),
+              (e: unknown) => ({ kind: "err" as const, e }),
+            ),
+            new Promise<{ kind: "timeout" }>((resolve) =>
+              setTimeout(() => resolve({ kind: "timeout" }), TEARDOWN_TIMEOUT_MS),
+            ),
+          ]);
+          if (outcome.kind === "ok") {
+            destroyed = true;
+            return;
+          }
+          if (outcome.kind === "timeout") {
+            // Quarantine — workspace MAY still be running. Don't mark
+            // destroyed; another retry might succeed once provider recovers.
+            quarantined = true;
+            throw new Error(
+              `sandbox-daytona: destroy() timed out after ${TEARDOWN_TIMEOUT_MS}ms — ` +
+                "sdk.delete() did not settle. The remote workspace MAY still be running " +
+                "and billable; verify out-of-band. Instance is quarantined; destroy() " +
+                "may be retried.",
+            );
+          }
+          const e = outcome.e;
+          throw e instanceof Error ? e : new Error(String(e));
         } finally {
           destroyPending = undefined;
         }

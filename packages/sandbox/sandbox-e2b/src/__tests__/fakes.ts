@@ -98,6 +98,7 @@ export function createFakeClient(sandboxOpts: FakeSandboxOptions = {}): FakeClie
   return {
     calls,
     sandbox,
+    supportsTeardown: true,
     createSandbox: async (opts: E2bCreateOpts): Promise<E2bSdkSandbox> => {
       calls.push({ opts });
       return sandbox;

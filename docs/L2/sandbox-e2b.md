@@ -10,7 +10,7 @@ A `SandboxAdapter` whose `create(profile)` returns a `SandboxInstance` running o
 
 - `exec(command, args, options)` — run a command. `AbortSignal` is forwarded into the SDK and also raced locally so callers always see prompt cancellation (`exitCode = 130`).
 - `readFile(path)` / `writeFile(path, content)` — sandbox file I/O. The adapter prefers binary-safe `readBytes` / `writeBytes` when the injected SDK exposes them; otherwise falls back to text mode and **rejects** non-UTF-8 writes (fail-closed) rather than silently corrupting bytes.
-- `destroy()` — kill the remote sandbox. Idempotent on success, retryable on transient SDK failure, and concurrent calls coalesce.
+- `destroy()` — kill the remote sandbox. The SDK call is bounded at 10 s; on timeout the instance transitions to a quarantined state, surfaces a clear leak warning, and `destroy()` remains retryable so callers don't get wedged behind an unbounded teardown. Idempotent on success; concurrent calls coalesce. The injected `E2bClient` must declare `supportsTeardown: true` (preflight, before any provisioning).
 
 The adapter accepts a pluggable `client` for unit tests (no real network) and falls back to `E2B_API_KEY` from the environment when `apiKey` is omitted.
 

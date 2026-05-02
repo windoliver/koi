@@ -120,6 +120,7 @@ describe("createE2bAdapter", () => {
     // out-of-band before retrying.
     const labels: string[] = [];
     const client = {
+      supportsTeardown: true,
       createSandbox: async (opts: { label: string }) => {
         labels.push(opts.label);
         throw new Error("transient transport error");
@@ -132,6 +133,18 @@ describe("createE2bAdapter", () => {
     );
     expect(labels).toHaveLength(1);
     expect(labels[0]).toMatch(/^koi-/);
+  });
+
+  test("createE2bAdapter rejects clients that don't declare supportsTeardown", () => {
+    const fake = createFakeClient();
+    const { supportsTeardown: _drop, ...client } = fake;
+    // @ts-expect-error -- intentionally violating the contract to exercise the runtime guard
+    const result = createE2bAdapter({ apiKey: "k", client });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toMatch(/supportsTeardown/);
+    }
   });
 
   test("create() rejects when SDK handle has no callable kill() (no deferred-leak surprise)", async () => {

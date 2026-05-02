@@ -90,6 +90,13 @@ export interface E2bCreateOpts {
 /** Injectable client. Production wraps `@e2b/sdk`; tests use a fake. */
 export interface E2bClient {
   readonly createSandbox: (opts: E2bCreateOpts) => Promise<E2bSdkSandbox>;
+  /**
+   * Affirmative declaration that `createSandbox` returns handles whose
+   * `kill()` performs a true sandbox teardown. The adapter validates this
+   * **before** ever calling `createSandbox` so a kill-less wrapper cannot
+   * provision a single billable microVM under SDK skew. Must be `true`.
+   */
+  readonly supportsTeardown: true;
 }
 
 /** Public adapter configuration. */

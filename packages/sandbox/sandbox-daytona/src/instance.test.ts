@@ -174,6 +174,24 @@ describe("createDaytonaInstance", () => {
     expect(sdk.closed()).toBe(false);
   });
 
+  test("destroy() bounded — never hangs forever on stalled sdk.delete()", async () => {
+    let deleteAttempts = 0;
+    const sdk = createFakeSandbox({
+      deleteImpl: async () => {
+        deleteAttempts++;
+        if (deleteAttempts === 1) return new Promise<void>(() => {});
+      },
+    });
+    const instance = createDaytonaInstance(sdk);
+    const start = performance.now();
+    await expect(instance.destroy()).rejects.toThrow(/timed out.*quarantined/i);
+    const elapsed = performance.now() - start;
+    expect(elapsed).toBeLessThan(15_000);
+    await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
+    await instance.destroy();
+    expect(deleteAttempts).toBe(2);
+  }, 20_000);
+
   test("destroy runtime-guards against JS callers that pass an SDK without delete()", async () => {
     // The DaytonaSdkSandbox type now requires delete(), so well-typed code
     // cannot reach this branch. The runtime guard remains as defence in

@@ -21,6 +21,25 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
   if (!validated.ok) return validated;
   const resolved = validated.value;
 
+  // Preflight: refuse before provisioning if the client cannot guarantee
+  // kill-capable handles. The TS contract requires `supportsTeardown: true`;
+  // this runtime check is the defence-in-depth backstop for JS callers.
+  if (resolved.client.supportsTeardown !== true) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message:
+          "sandbox-e2b: E2bClient must declare supportsTeardown=true. Without an " +
+          "up-front capability handshake the adapter would have to provision a " +
+          "microVM before discovering it cannot be torn down, leaking a billable " +
+          "sandbox per failed create. Inject a wrapper that asserts kill-capable " +
+          "handles.",
+        retryable: false,
+      },
+    };
+  }
+
   const adapter: SandboxAdapter = {
     name: "e2b",
     create: async (profile: SandboxProfile) => {

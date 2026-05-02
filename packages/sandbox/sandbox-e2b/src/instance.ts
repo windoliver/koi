@@ -363,20 +363,46 @@ export function createE2bInstance(
     },
 
     /**
-     * Tear down the remote sandbox.
-     *
-     * Once `destroy()` is invoked, all subsequent `exec`/`readFile`/`writeFile`
-     * calls reject — the lifecycle race is closed before the SDK confirms
-     * teardown. Idempotent on success; on transient SDK failure, `destroyed`
-     * stays `false` so callers can retry. Concurrent calls coalesce.
+     * Tear down the remote sandbox with a bounded SDK call. A stalled
+     * `sdk.kill()` would otherwise wedge `destroyPending` forever, leaving
+     * every subsequent op rejecting with "being destroyed" and no retry
+     * path. On timeout we transition to the `quarantined` state, surface
+     * a clear leak warning, and clear `destroyPending` so callers can
+     * retry. Idempotent on success; concurrent calls coalesce.
      */
     destroy: async (): Promise<void> => {
       if (destroyed) return;
       if (destroyPending !== undefined) return destroyPending;
+      const TEARDOWN_TIMEOUT_MS = 10_000;
       destroyPending = (async () => {
         try {
-          await sdk.kill();
-          destroyed = true;
+          const outcome = await Promise.race([
+            sdk.kill().then(
+              () => ({ kind: "ok" as const }),
+              (e: unknown) => ({ kind: "err" as const, e }),
+            ),
+            new Promise<{ kind: "timeout" }>((resolve) =>
+              setTimeout(() => resolve({ kind: "timeout" }), TEARDOWN_TIMEOUT_MS),
+            ),
+          ]);
+          if (outcome.kind === "ok") {
+            destroyed = true;
+            return;
+          }
+          if (outcome.kind === "timeout") {
+            // Quarantine and surface a leak warning. We do NOT mark
+            // destroyed: the remote sandbox state is unknown and another
+            // retry might succeed once the provider recovers.
+            quarantined = true;
+            throw new Error(
+              `sandbox-e2b: destroy() timed out after ${TEARDOWN_TIMEOUT_MS}ms — ` +
+                "sdk.kill() did not settle. The remote sandbox MAY still be running; " +
+                "verify out-of-band. Instance is quarantined; destroy() may be retried.",
+            );
+          }
+          // outcome.kind === "err"
+          const e = outcome.e;
+          throw e instanceof Error ? e : new Error(String(e));
         } finally {
           destroyPending = undefined;
         }
