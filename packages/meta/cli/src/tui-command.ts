@@ -114,7 +114,11 @@ import { loadPolicyFile } from "./policy-file.js";
 import { resolveManifestPath } from "./resolve-manifest-path.js";
 import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
-import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js";
+import {
+  computeDefaultEngineId,
+  createKoiRuntime,
+  TUI_APPROVAL_TIMEOUT_MS,
+} from "./runtime-factory.js";
 import { createSecurityBridge, type SecurityBridge } from "./security-bridge.js";
 import {
   buildScopedCredentials,
@@ -1500,9 +1504,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       stateSessionPersistence !== undefined
         ? {
             persistence: stateSessionPersistence,
-            // Engine ID stamped by the runtime adapter — see runtime-factory.ts
-            // model adapter wrapping. Mismatches drop foreign state safely.
-            expectedEngineId: "koi-tui",
+            // Compatibility token — must MATCH the engineId the runtime
+            // adapter stamps via `computeDefaultEngineId`. Bakes in model
+            // identity + state schema version, so resuming under a
+            // different model or after a schema bump drops the stale
+            // checkpoint instead of feeding incompatible state into
+            // `loadState`. See runtime-factory.ts:computeDefaultEngineId.
+            expectedEngineId: computeDefaultEngineId(modelName),
             onEngineMismatch: (
               _stored: import("@koi/core").EngineState,
               expected: string,

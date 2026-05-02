@@ -211,6 +211,26 @@ const MAX_TRANSCRIPT_MESSAGES = 100;
 export const TUI_APPROVAL_TIMEOUT_MS: number = 60 * 60 * 1_000; // 3_600_000
 
 /**
+ * Schema version for cancel-resume `EngineState`. Bump when the opaque
+ * `data` shape that the engine adapter writes through `saveState` /
+ * `loadState` changes in a way that older snapshots cannot be applied to
+ * the new code path. Old checkpoints with a non-matching engineId are
+ * dropped at resume (see `resumeWithEngineState`).
+ */
+const ENGINE_STATE_SCHEMA_VERSION = "v1" as const;
+
+/**
+ * Compute the default engineId stamped on the runtime adapter. Bakes in
+ * model identity + the state schema version so any model swap or schema
+ * bump invalidates stale cancel checkpoints automatically. Hosts (e.g.
+ * the TUI) must compute the SAME id to use as `expectedEngineId` when
+ * resuming, so this helper is the single source of truth.
+ */
+export function computeDefaultEngineId(modelName: string): string {
+  return `koi-tui:${ENGINE_STATE_SCHEMA_VERSION}:${modelName}`;
+}
+
+/**
  * Static TUI allow rules — tools that are auto-allowed without user approval.
  *
  * Excludes `fs_read` (needs dynamic `cwd`-scoped context) — those are appended
@@ -2235,8 +2255,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // sensor. Without this thread, a caller setting `--max-turns 50` could
   // still be cut off at 25 by the adapter before either other path fires.
   const transcript: InboundMessage[] = [];
+  // Engine ID is the cancel-checkpoint compatibility token: it must change
+  // whenever the persisted EngineState shape becomes incompatible. Bake
+  // the model identity AND a schema-version constant into the default so
+  // that a model swap or a state-format bump invalidates stale checkpoints
+  // automatically. Hosts that override `config.engineId` are responsible
+  // for their own granularity.
+  const defaultEngineId = computeDefaultEngineId(modelName);
   const rawEngineAdapter = createTranscriptAdapter({
-    engineId: config.engineId ?? "koi-tui",
+    engineId: config.engineId ?? defaultEngineId,
     modelAdapter,
     transcript,
     maxTranscriptMessages: MAX_TRANSCRIPT_MESSAGES,

@@ -559,4 +559,37 @@ describe("wrapAdapterWithStatePersistence", () => {
     expect(errors).toHaveLength(1);
     expect(events.at(-1)?.kind).toBe("done");
   });
+
+  test("transient loadState failure preserves the persisted checkpoint (does NOT auto-clear)", async () => {
+    // Seed a persisted checkpoint as if a prior cancel had written it.
+    await store.saveSession({
+      ...template(),
+      lastEngineState: captured,
+      lastPersistedAt: 1,
+    });
+
+    // Adapter whose loadState throws on first call (simulates a one-off
+    // decode bug / transient dep failure). The non-interrupted terminal
+    // that follows MUST NOT erase the persisted row.
+    const inner: EngineAdapter = {
+      ...makeAdapter([completedDone], captured),
+      loadState: async () => {
+        throw new Error("transient decode failure");
+      },
+    };
+    const errors: Array<KoiError | Error> = [];
+    const wrapped = wrapAdapterWithStatePersistence(inner, {
+      persistence: store,
+      recordTemplate: template,
+      onPersistError: (e) => errors.push(e),
+      initialEngineState: captured,
+    });
+    for await (const _ of wrapped.stream({ kind: "text", text: "hi" }));
+
+    expect(errors).toHaveLength(1);
+    const after = await store.loadSession(SID);
+    if (!after.ok) throw new Error("expected ok");
+    // Checkpoint preserved — host can retry resume against the same row.
+    expect(after.value.lastEngineState).toEqual(captured);
+  });
 });
