@@ -327,25 +327,22 @@ describe("createE2bAdapter", () => {
     expect(killCalls).toBe(1);
   });
 
-  test("create() postflights files.writeBytes and tears down handles without binary write", async () => {
+  test("create() ALLOWS handles without files.writeBytes (text fallback handles UTF-8)", async () => {
+    // writeFile() in instance.ts has a UTF-8 text-mode fallback that
+    // uses sdk.files.write when writeBytes is missing. Gating on
+    // writeBytes at create-time would reject text-only SDK wrappers
+    // that the contract explicitly supports — a compatibility
+    // regression rather than fail-closed isolation.
     const client = createFakeClient();
     const original = client.sandbox;
-    let killCalls = 0;
     const { writeBytes: _omitWrite, ...filesNoWriteBytes } = original.files;
-    const handle = {
-      ...original,
-      files: filesNoWriteBytes,
-      kill: async (): Promise<void> => {
-        killCalls++;
-      },
-    };
-    Object.defineProperty(client, "createSandbox", {
-      value: async () => handle,
-    });
+    const handle = { ...original, files: filesNoWriteBytes };
+    Object.defineProperty(client, "createSandbox", { value: async () => handle });
     const result = createE2bAdapter({ apiKey: "k", client });
     if (!result.ok) throw new Error("validate failed");
-    await expect(result.value.create(openProfile)).rejects.toThrow(/files\.writeBytes/);
-    expect(killCalls).toBe(1);
+    const instance = await result.value.create(openProfile);
+    // Text payload succeeds via the fallback path.
+    await instance.writeFile("/x", new TextEncoder().encode("hello"));
   });
 
   test("create() postflights supportsMaxOutputBytes and tears down unusable handles", async () => {

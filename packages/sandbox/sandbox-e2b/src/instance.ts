@@ -148,10 +148,12 @@ export function createE2bInstance(
       // rejection so the quarantine path always runs. A bare call().then()
       // would let a sync-throwing SDK wrapper escape this helper entirely
       // and leave the instance "live" with INDETERMINATE remote state.
-      Promise.try(call).then(
-        (v): Outcome => ({ kind: "ok", v }),
-        (e: unknown): Outcome => ({ kind: "err", e }),
-      ),
+      Promise.resolve()
+        .then(call)
+        .then(
+          (v): Outcome => ({ kind: "ok", v }),
+          (e: unknown): Outcome => ({ kind: "err", e }),
+        ),
       new Promise<Outcome>((resolve) =>
         setTimeout(() => resolve({ kind: "timeout" }), FILE_IO_TIMEOUT_MS),
       ),
@@ -296,11 +298,18 @@ export function createE2bInstance(
               sig.addEventListener("abort", () => resolve({ kind: "abort" }), { once: true });
               if (sig.aborted) resolve({ kind: "abort" });
             });
-      // Promise.try so a synchronous throw from a wrapper still flows
-      // through the quarantine path below — without it, a sync throw
-      // would escape exec() before quarantine could engage and the
-      // remote command may already have been dispatched.
-      const sdkPromise = Promise.try(() => sdk.commands.run(cmd, sdkOpts));
+      // try/catch so a synchronous throw from a wrapper still flows
+      // through the quarantine path below. We deliberately invoke
+      // sdk.commands.run SYNCHRONOUSLY (not via Promise.resolve().then)
+      // because some SDKs register the abort-signal listener inside the
+      // call and would miss an abort that fires during a deferred
+      // microtask — abort signals do not replay.
+      let sdkPromise: ReturnType<typeof sdk.commands.run>;
+      try {
+        sdkPromise = sdk.commands.run(cmd, sdkOpts);
+      } catch (e: unknown) {
+        sdkPromise = Promise.reject(e);
+      }
       const sdkSettled: Promise<SdkOutcome> = sdkPromise.then(
         (r): SdkOutcome => ({ kind: "result", r }),
         (e: unknown): SdkOutcome => ({ kind: "error", e }),
@@ -496,7 +505,7 @@ export function createE2bInstance(
           // Promise.try so a synchronous throw from sdk.kill() flows
           // through the quarantine + retry path rather than escaping
           // destroyPending half-set.
-          const teardown = Promise.try(() => sdk.kill());
+          const teardown = Promise.resolve().then(() => sdk.kill());
           const promise: Promise<KillOutcome> = teardown.then(
             (): KillOutcome => ({ kind: "ok" }),
             (e: unknown): KillOutcome => ({ kind: "err", e }),

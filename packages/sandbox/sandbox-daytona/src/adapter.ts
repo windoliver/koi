@@ -78,7 +78,7 @@ export function createDaytonaAdapter(
       // Promise.try so a synchronous throw from a wrapper flows through
       // the timeout race + late-cleanup reconciler rather than escaping
       // create() with no idempotency-label breadcrumb.
-      const createPromise = Promise.try(() => resolved.client.createSandbox(opts));
+      const createPromise = Promise.resolve().then(() => resolved.client.createSandbox(opts));
       const createOutcome = await Promise.race<CreateOutcome>([
         createPromise.then(
           (s): CreateOutcome => ({ kind: "ok", sdk: s }),
@@ -111,7 +111,7 @@ export function createDaytonaAdapter(
               // Promise.try so a synchronous throw from delete() flows
               // through the bounded timeout / failure paths instead of
               // becoming an unhandled rejection.
-              const deleteCall = Promise.try(() => lateSdk.delete());
+              const deleteCall = Promise.resolve().then(() => lateSdk.delete());
               Promise.race<
                 | { readonly kind: "ok" }
                 | { readonly kind: "timeout" }
@@ -249,12 +249,14 @@ export function createDaytonaAdapter(
             `Refusing to return an unusable handle — ${cleanupNote}. Inject a cap-capable SDK wrapper.`,
         );
       }
-      // Postflight: the SandboxInstance contract advertises byte-oriented
-      // readFile/writeFile. A handle without `files.readBytes` would
-      // hard-fail every readFile() after we already started billing for
-      // the workspace; a handle without `files.writeBytes` would silently
-      // corrupt non-UTF-8 payloads on writeFile(). Tear down here so the
-      // capability gap surfaces before the caller pays.
+      // Postflight: SandboxInstance.readFile is byte-oriented with no
+      // viable fallback (a text-only re-encode would corrupt non-UTF-8
+      // payloads), so a handle without `files.readBytes` would hard-fail
+      // every readFile() after the workspace is already billed. Tear
+      // down here so the gap surfaces before the caller pays.
+      // (writeFile() has a UTF-8 text fallback in instance.ts, so a
+      // missing writeBytes is acceptable for text-only workloads — we
+      // do not gate on it at create-time.)
       if (typeof sdk.files?.readBytes !== "function") {
         const cleanupNote = await deleteAndDescribe();
         throw new Error(
@@ -262,16 +264,6 @@ export function createDaytonaAdapter(
             "SandboxInstance.readFile is byte-oriented and the text-only fallback " +
             "would corrupt non-UTF-8 payloads on re-encode. Refusing to return an " +
             `unusable handle — ${cleanupNote}. Inject an SDK wrapper that exposes readBytes.`,
-        );
-      }
-      if (typeof sdk.files?.writeBytes !== "function") {
-        const cleanupNote = await deleteAndDescribe();
-        throw new Error(
-          "sandbox-daytona: createSandbox returned a handle without files.writeBytes. " +
-            "SandboxInstance.writeFile must accept arbitrary bytes; a text-only fallback " +
-            "would reject non-UTF-8 input only after the caller already paid for the " +
-            `workspace. Refusing to return an unusable handle — ${cleanupNote}. Inject an ` +
-            "SDK wrapper that exposes writeBytes.",
         );
       }
       return createDaytonaInstance(sdk, extractProfileDefaults(profile));
