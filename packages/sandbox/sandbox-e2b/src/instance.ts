@@ -225,25 +225,32 @@ export function createE2bInstance(
       // abort that fires AFTER the SDK already resolved cannot win the
       // race (settled-first promises beat pending ones in microtask FIFO),
       // so a finished command is never misreported as cancelled.
-      const sdkPromise = sdk.commands.run(cmd, sdkOpts);
       const sig = options?.signal;
       type SdkOutcome =
         | {
             readonly kind: "result";
-            readonly r: typeof sdkPromise extends Promise<infer R> ? R : never;
+            readonly r: Awaited<ReturnType<typeof sdk.commands.run>>;
           }
         | { readonly kind: "error"; readonly e: unknown };
       type Settled = SdkOutcome | { readonly kind: "abort" };
-      const sdkSettled: Promise<SdkOutcome> = sdkPromise.then(
-        (r): SdkOutcome => ({ kind: "result", r }),
-        (e: unknown): SdkOutcome => ({ kind: "error", e }),
-      );
+      // Build the abort observer BEFORE dispatching the SDK so any abort
+      // that fires between the pre-aborted check and the listener attach
+      // is not silently lost. addEventListener does not replay past
+      // events, so we also re-check `sig.aborted` synchronously after
+      // attach: if the signal flipped during the microtask gap, resolve
+      // immediately rather than waiting for an event that will never fire.
       const abortObserved: Promise<Settled> =
         sig === undefined
           ? new Promise<Settled>(() => {}) // never settles when no signal
           : new Promise<Settled>((resolve) => {
               sig.addEventListener("abort", () => resolve({ kind: "abort" }), { once: true });
+              if (sig.aborted) resolve({ kind: "abort" });
             });
+      const sdkPromise = sdk.commands.run(cmd, sdkOpts);
+      const sdkSettled: Promise<SdkOutcome> = sdkPromise.then(
+        (r): SdkOutcome => ({ kind: "result", r }),
+        (e: unknown): SdkOutcome => ({ kind: "error", e }),
+      );
 
       const winner: Settled = await Promise.race<Settled>([sdkSettled, abortObserved]);
 
@@ -424,9 +431,25 @@ export function createE2bInstance(
       if (destroyPending !== undefined) return destroyPending;
       const TEARDOWN_TIMEOUT_MS = 10_000;
       destroyPending = (async () => {
+        const teardown = sdk.kill();
+        // Late-success convergence: if the SDK eventually settles after
+        // our local timeout fires, flip state so subsequent destroy()
+        // calls are a no-op. Without this, a merely-slow provider would
+        // leave the instance permanently quarantined even though the
+        // remote sandbox was actually killed.
+        teardown.then(
+          () => {
+            destroyed = true;
+            quarantined = false;
+          },
+          () => {
+            // Failure was (or will be) surfaced through this destroyPending
+            // rejection or the next retry; nothing to do here.
+          },
+        );
         try {
           const outcome = await Promise.race([
-            sdk.kill().then(
+            teardown.then(
               () => ({ kind: "ok" as const }),
               (e: unknown) => ({ kind: "err" as const, e }),
             ),

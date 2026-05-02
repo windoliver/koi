@@ -225,6 +225,56 @@ describe("createDaytonaInstance", () => {
     expect(observed).toBe("daytona-handle");
   });
 
+  test("exec catches abort that fires between pre-check and listener attach", async () => {
+    // Race window regression: the signal could become aborted between
+    // the pre-check and addEventListener. addEventListener does not
+    // replay past abort events, so without a synchronous post-attach
+    // `aborted` re-check the signal would be silently lost.
+    const base = createFakeSandbox();
+    const ac = new AbortController();
+    const sdk = {
+      ...base,
+      commands: {
+        ...base.commands,
+        supportsAbort: true,
+        run: (
+          _cmd: string,
+          _opts?: import("./types.js").DaytonaRunOpts,
+        ): Promise<import("./types.js").DaytonaRunResult> => {
+          ac.abort();
+          return Promise.resolve({ exitCode: 0, stdout: "ignored-cancel", stderr: "" });
+        },
+      },
+    };
+    const instance = createDaytonaInstance(sdk);
+    const result = await instance.exec("ls", [], { signal: ac.signal });
+    expect(result.exitCode).toBe(0);
+  });
+
+  test("destroy converges to destroyed when SDK succeeds after local timeout", async () => {
+    // Slow-provider regression: a teardown that lands at 11s still
+    // succeeded — the remote workspace is gone. The first destroy()
+    // surfaces the timeout error; the late SDK success flips state so
+    // a second destroy() is a no-op (no double delete, no leak alarm).
+    const base = createFakeSandbox();
+    let deleteCalls = 0;
+    const sdk = {
+      ...base,
+      delete: () => {
+        deleteCalls++;
+        return new Promise<void>((resolve) => setTimeout(resolve, 11_000));
+      },
+    };
+    const instance = createDaytonaInstance(sdk);
+    const first = instance.destroy().catch((e: unknown) => e as Error);
+    await new Promise((r) => setTimeout(r, 11_500));
+    const firstError = await first;
+    expect(firstError).toBeInstanceOf(Error);
+    expect((firstError as Error).message).toMatch(/timed out/i);
+    await instance.destroy();
+    expect(deleteCalls).toBe(1);
+  }, 20_000);
+
   test("exec propagates SDK success (not 130) when abort wins race but command actually completed", async () => {
     // Race-window regression: caller aborts at the very moment the remote
     // command finishes successfully. The signal beats the SDK resolution

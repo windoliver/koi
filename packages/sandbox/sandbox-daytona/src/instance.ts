@@ -174,22 +174,27 @@ export function createDaytonaInstance(
       // Authoritative cancellation detection via Promise.race: SDK
       // resolution and abort observation compete at the same level so the
       // winner unambiguously identifies which event happened first.
-      const sdkPromise = sdk.commands.run(cmd, sdkOpts);
       const sig = options?.signal;
       type SdkOutcome =
-        | { readonly kind: "result"; readonly r: Awaited<typeof sdkPromise> }
+        | { readonly kind: "result"; readonly r: Awaited<ReturnType<typeof sdk.commands.run>> }
         | { readonly kind: "error"; readonly e: unknown };
       type Settled = SdkOutcome | { readonly kind: "abort" };
-      const sdkSettled: Promise<SdkOutcome> = sdkPromise.then(
-        (r): SdkOutcome => ({ kind: "result", r }),
-        (e: unknown): SdkOutcome => ({ kind: "error", e }),
-      );
+      // Build the abort observer BEFORE dispatching the SDK so any abort
+      // that fires between the pre-aborted check and listener attach is
+      // not silently lost. addEventListener does not replay past events,
+      // so we also re-check `sig.aborted` synchronously after attach.
       const abortObserved: Promise<Settled> =
         sig === undefined
           ? new Promise<Settled>(() => {})
           : new Promise<Settled>((resolve) => {
               sig.addEventListener("abort", () => resolve({ kind: "abort" }), { once: true });
+              if (sig.aborted) resolve({ kind: "abort" });
             });
+      const sdkPromise = sdk.commands.run(cmd, sdkOpts);
+      const sdkSettled: Promise<SdkOutcome> = sdkPromise.then(
+        (r): SdkOutcome => ({ kind: "result", r }),
+        (e: unknown): SdkOutcome => ({ kind: "error", e }),
+      );
 
       const winner: Settled = await Promise.race<Settled>([sdkSettled, abortObserved]);
 
@@ -379,11 +384,26 @@ export function createDaytonaInstance(
       }
       const TEARDOWN_TIMEOUT_MS = 10_000;
       destroyPending = (async () => {
+        // Call as a method so real SDK implementations that depend on `this`
+        // get the correct receiver; copying into a local would lose it.
+        const teardown = sdk.delete();
+        // Late-success convergence: if the SDK eventually settles after
+        // our local timeout fires, flip state so subsequent destroy()
+        // calls are a no-op. Without this, a merely-slow provider would
+        // leave the instance permanently quarantined even though the
+        // remote workspace was actually deleted.
+        teardown.then(
+          () => {
+            destroyed = true;
+            quarantined = false;
+          },
+          () => {
+            // Failure surfaced through this destroyPending rejection.
+          },
+        );
         try {
-          // Call as a method so real SDK implementations that depend on `this`
-          // get the correct receiver; copying into a local would lose it.
           const outcome = await Promise.race([
-            sdk.delete().then(
+            teardown.then(
               () => ({ kind: "ok" as const }),
               (e: unknown) => ({ kind: "err" as const, e }),
             ),

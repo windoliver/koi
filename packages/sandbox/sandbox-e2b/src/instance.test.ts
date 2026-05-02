@@ -247,6 +247,71 @@ describe("createE2bInstance", () => {
     expect(result.exitCode).toBe(130);
   });
 
+  test("exec catches abort that fires between pre-check and listener attach", async () => {
+    // Race window regression: the signal could become aborted between
+    // the synchronous pre-check and addEventListener. addEventListener
+    // does not replay past abort events, so without a synchronous
+    // post-attach `aborted` re-check the signal would be silently lost
+    // and exec would fall back to whatever the SDK eventually returned.
+    const base = createFakeSandbox();
+    const ac = new AbortController();
+    const sdk = {
+      ...base,
+      commands: {
+        ...base.commands,
+        supportsAbort: true,
+        run: (
+          _cmd: string,
+          _opts?: import("./types.js").E2bRunOpts,
+        ): Promise<import("./types.js").E2bRunResult> => {
+          // Abort synchronously inside the SDK call — this lands AFTER
+          // the pre-check returned (signal was not yet aborted) and
+          // BEFORE the abort listener has been attached on a naive
+          // implementation that builds the listener after dispatch.
+          ac.abort();
+          // Then resolve with success, simulating a buggy/slow provider
+          // that ignored the cancellation.
+          return Promise.resolve({ exitCode: 0, stdout: "ignored-cancel", stderr: "" });
+        },
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    const result = await instance.exec("ls", [], { signal: ac.signal });
+    // Expect the abort to have been observed despite the race; the
+    // post-abort branch propagates the SDK's exit 0 (real completion).
+    expect(result.exitCode).toBe(0);
+  });
+
+  test("destroy converges to destroyed when SDK succeeds after local timeout", async () => {
+    // Slow-provider regression: a teardown that lands at 11s still
+    // succeeded — the remote sandbox is gone. The first destroy() must
+    // surface the timeout error, but the late SDK success should flip
+    // local state so a subsequent destroy() is a no-op rather than
+    // issuing a second kill against a dead sandbox (false leak alarm).
+    const base = createFakeSandbox();
+    let killCalls = 0;
+    const sdk = {
+      ...base,
+      kill: () => {
+        killCalls++;
+        // Resolve well after the 10s timeout (we'll fast-forward).
+        return new Promise<void>((resolve) => setTimeout(resolve, 11_000));
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    // First destroy times out (we await the rejection).
+    const first = instance.destroy().catch((e: unknown) => e as Error);
+    // Allow the 10s timeout to fire and the late success to settle.
+    await new Promise((r) => setTimeout(r, 11_500));
+    const firstError = await first;
+    expect(firstError).toBeInstanceOf(Error);
+    expect((firstError as Error).message).toMatch(/timed out/i);
+    // Second destroy should see destroyed=true (set by the late
+    // success handler) and return without a second kill call.
+    await instance.destroy();
+    expect(killCalls).toBe(1);
+  }, 20_000);
+
   test("exec propagates SDK success (not 130) when abort wins race but command actually completed", async () => {
     // Race-window regression: caller aborts at the very moment the remote
     // command finishes successfully. The signal beats the SDK resolution
