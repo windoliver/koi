@@ -598,6 +598,50 @@ describe("createDistiller", () => {
     expect(r.ok).toBe(true);
   });
 
+  test("rejects single-use call with a numeric resource ID under an identifier-shaped key", async () => {
+    const trace: DistillationTrace = {
+      traceId: "t-numid",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "delete_account", argsJson: '{"accountId":123456789}' }],
+        },
+      ],
+    };
+    const noParam = okLLM({
+      ...VALID_DRAFT,
+      toolSequence: ["delete_account"],
+      parameters: [],
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: noParam }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
+  });
+
+  test("requires distinct parameters for two independently varying nested leaves", async () => {
+    const trace: DistillationTrace = {
+      traceId: "t-multi-leaf",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "copy", argsJson: '{"copy":{"src":"/in/a","dst":"/out/x"}}' }],
+        },
+        {
+          role: "assistant",
+          toolCalls: [{ name: "copy", argsJson: '{"copy":{"src":"/in/b","dst":"/out/y"}}' }],
+        },
+      ],
+    };
+    const oneParam = okLLM({
+      ...VALID_DRAFT,
+      toolSequence: ["copy", "copy"],
+      parameters: [{ name: "src", description: "source", required: true }],
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: oneParam }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
+  });
+
   test("rejects single-use destructive call with target buried inside an array of objects", async () => {
     const trace: DistillationTrace = {
       traceId: "t-deep",

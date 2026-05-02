@@ -190,30 +190,76 @@ interface VariableArg {
   readonly key: string;
 }
 
-// Recursively flatten an arg object into dotted-path leaves so a nested
-// `{target:{path:"/a"}}` is tracked as `target.path` and survives the
-// variability check the same way a top-level `path` would.
-function flattenArgKeys(prefix: string, v: unknown, out: Map<string, string>): void {
-  if (v === null || typeof v !== "object" || Array.isArray(v)) {
-    out.set(prefix, JSON.stringify(v));
-    return;
-  }
-  for (const [k, vv] of Object.entries(v as Record<string, unknown>)) {
+// Flatten an arg object's nested objects to dotted-path leaves. Arrays and
+// primitives are treated as terminal leaves at their parent path so the
+// variability key set stays bounded by the schema, not by the array length.
+function flattenObjectLeaves(
+  prefix: string,
+  v: Record<string, unknown>,
+  out: Map<string, unknown>,
+): void {
+  for (const [k, vv] of Object.entries(v)) {
     const next = prefix === "" ? k : `${prefix}.${k}`;
-    flattenArgKeys(next, vv, out);
+    if (vv !== null && typeof vv === "object" && !Array.isArray(vv)) {
+      flattenObjectLeaves(next, vv as Record<string, unknown>, out);
+    } else {
+      out.set(next, vv);
+    }
   }
 }
 
-// Walk a value and report whether any descendant string leaf looks like a
-// resource literal (path, ID, URL, …). Used for the "single-use destructive
-// target" guard so a literal smuggled inside an array or nested object still
-// forces parameter coverage.
-function containsResourceLiteral(v: unknown): boolean {
-  if (typeof v === "string") return looksLikeResourceLiteral(v);
-  if (v === null || typeof v !== "object") return false;
-  if (Array.isArray(v)) return v.some(containsResourceLiteral);
-  for (const vv of Object.values(v as Record<string, unknown>)) {
-    if (containsResourceLiteral(vv)) return true;
+// Key tokens that indicate the leaf value is an identifier even when the
+// value itself is just a number (account_id: 12345 etc.). Numeric IDs
+// otherwise look like normal scalars and would skip the literal heuristic.
+const ID_KEY_TOKENS = new Set([
+  "id",
+  "uuid",
+  "guid",
+  "uid",
+  "tenant",
+  "account",
+  "user",
+  "customer",
+  "org",
+  "organization",
+  "project",
+  "workspace",
+  "session",
+  "key",
+  "token",
+  "secret",
+  "arn",
+  "ref",
+]);
+
+function isIdentifierKey(key: string): boolean {
+  for (const token of tokenizeIdentifier(key)) {
+    if (ID_KEY_TOKENS.has(token)) return true;
+  }
+  return false;
+}
+
+// True if `value` paired with `key` looks like a resource selector: any
+// string leaf that matches the resource-shape heuristic, OR a non-trivial
+// numeric/string leaf under an identifier-shaped key (so numeric tenant /
+// account IDs cannot bypass parameterization).
+function leafLooksLikeResource(key: string, value: unknown): boolean {
+  if (typeof value === "string") return looksLikeResourceLiteral(value);
+  if (typeof value === "number" && Number.isFinite(value) && isIdentifierKey(key)) {
+    return Math.abs(value) >= 1000;
+  }
+  return false;
+}
+
+// Walk a value and report whether any descendant leaf looks like a resource
+// selector under any path. Used for the "single-use destructive target"
+// guard so a literal smuggled inside an array or nested object still forces
+// parameter coverage on the outer arg key.
+function containsResourceLiteral(key: string, v: unknown): boolean {
+  if (v === null || typeof v !== "object") return leafLooksLikeResource(key, v);
+  if (Array.isArray(v)) return v.some((item) => containsResourceLiteral(key, item));
+  for (const [k, vv] of Object.entries(v as Record<string, unknown>)) {
+    if (containsResourceLiteral(k, vv)) return true;
   }
   return false;
 }
@@ -241,11 +287,10 @@ function collectVariableArgKeys(
     bag.add(value);
     seen.set(composite, bag);
   };
-  // Flag a top-level arg key (or `<root>`) whose value tree contains any
-  // resource literal at any depth. Recurses arrays/objects so a target
-  // smuggled inside `{targets:[{path:"/a"}]}` still forces parameter coverage.
-  const noteResource = (composite: string, rawValue: unknown): void => {
-    if (containsResourceLiteral(rawValue)) {
+  // Flag an arg leaf path (e.g. `delete::path` or `delete::copy.src`) whose
+  // value tree contains any resource literal at any depth.
+  const noteResource = (composite: string, leafKey: string, rawValue: unknown): void => {
+    if (containsResourceLiteral(leafKey, rawValue)) {
       resourceKeys.add(composite);
     }
   };
@@ -270,22 +315,28 @@ function collectVariableArgKeys(
         recordValue(`${call.name}::<unparsable>`, call.argsJson);
         continue;
       }
-      // Variability tracking uses TOP-LEVEL keys only (or `<root>` for arrays
-      // and primitives). Resource-literal detection scans the whole value
-      // tree but reports back against the same top-level key, so a buried
-      // resource selector forces coverage on the outer arg name without
-      // exploding the variable-arg list with synthetic dotted paths.
-      if (Array.isArray(parsed)) {
+      // Object args: flatten through nested objects to leaf paths
+      // (`copy.src`, `copy.dst`) so independently varying selectors are each
+      // tracked separately. Arrays stop at the parent key — array indices
+      // would otherwise explode the variable-arg list with synthetic
+      // `arr.0`/`arr.1` keys that no sensible parameter name covers; the
+      // resource scan still recurses into array contents for the leak guard.
+      // Top-level arrays and primitives use the synthetic `<root>` key.
+      if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object") {
         recordValue(`${call.name}::<root>`, JSON.stringify(parsed));
-        noteResource(`${call.name}::<root>`, parsed);
-      } else if (parsed !== null && typeof parsed === "object") {
-        for (const [k, vv] of Object.entries(parsed as Record<string, unknown>)) {
-          recordValue(`${call.name}::${k}`, JSON.stringify(vv));
-          noteResource(`${call.name}::${k}`, vv);
-        }
+        noteResource(`${call.name}::<root>`, "<root>", parsed);
       } else {
-        recordValue(`${call.name}::<root>`, JSON.stringify(parsed));
-        noteResource(`${call.name}::<root>`, parsed);
+        const flat = new Map<string, unknown>();
+        flattenObjectLeaves("", parsed as Record<string, unknown>, flat);
+        for (const [path, leafValue] of flat) {
+          recordValue(`${call.name}::${path}`, JSON.stringify(leafValue));
+          // Use the LAST segment of the dotted path as the key for the
+          // resource heuristic — that's the immediate field name (e.g.
+          // `src` in `copy.src`), which is what carries the semantic hint.
+          const lastDot = path.lastIndexOf(".");
+          const leafName = lastDot >= 0 ? path.slice(lastDot + 1) : path;
+          noteResource(`${call.name}::${path}`, leafName, leafValue);
+        }
       }
     }
   }
