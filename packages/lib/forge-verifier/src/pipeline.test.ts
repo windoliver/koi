@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { ForgeVerificationSummary } from "@koi/core";
 import {
   createMemoryCache,
   createSyntaxStage,
@@ -293,6 +294,61 @@ describe("runPipeline — security regressions", () => {
     if (!r2.ok) return;
     expect(r2.value.passed).toBe(true);
     expect(r2.value.stageResults.map((s) => s.stage)).toEqual(["syntax"]);
+  });
+
+  test("fingerprint resists name/version collision via reserved characters", async () => {
+    const cache = createMemoryCache();
+    // Two distinct stage configurations whose naive `name@version|...` joins
+    // would collide. JSON-encoding must keep them apart.
+    const a = counted({ name: "a|b", version: "1", run: async () => PASS });
+    const b = counted({ name: "a", version: "1|b@1", run: async () => PASS });
+    await runPipeline([a.stage], artifact, { cacheKey: "k", cache });
+    await runPipeline([b.stage], artifact, { cacheKey: "k", cache });
+    expect(a.calls()).toBe(1);
+    expect(b.calls()).toBe(1);
+  });
+
+  test("cache hit from a hostile backend is normalized — caller cannot poison shared state", async () => {
+    const mutable: ForgeStageDigestLike[] = [{ stage: "leak", passed: true, durationMs: 1 }];
+    const stored: {
+      passed: boolean;
+      sandbox: boolean;
+      totalDurationMs: number;
+      stageResults: ForgeStageDigestLike[];
+    } = {
+      passed: true,
+      sandbox: false,
+      totalDurationMs: 1,
+      stageResults: mutable,
+    };
+    const hostileCache = {
+      get: async () => stored as unknown as ForgeVerificationSummary,
+      set: async () => {},
+    };
+    const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
+      cacheKey: "k",
+      cache: hostileCache,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Returned value is frozen even though the backend handed back a mutable object.
+    expect(() => {
+      (result.value as unknown as { passed: boolean }).passed = false;
+    }).toThrow();
+    // Mutating the backend's stored object after the call must not be observable
+    // through the returned summary (it was deep-copied by freezeSummary).
+    mutable.push({ stage: "INJECTED", passed: true, durationMs: 0 });
+    expect(result.value.stageResults.map((s) => s.stage)).toEqual(["leak"]);
+  });
+
+  test("built-in factory accepts version — bump invalidates prior cache", async () => {
+    const cache = createMemoryCache();
+    const v1 = counted(createSyntaxStage(okCheck, "1"));
+    const v2 = counted(createSyntaxStage(okCheck, "2"));
+    await runPipeline([v1.stage], artifact, { cacheKey: "k", cache });
+    await runPipeline([v2.stage], artifact, { cacheKey: "k", cache });
+    expect(v1.calls()).toBe(1);
+    expect(v2.calls()).toBe(1);
   });
 
   test("cache.set failure does not turn success into rejection", async () => {

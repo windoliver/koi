@@ -25,8 +25,26 @@ function stageError(code: KoiErrorCode, stage: string, message: string, cause?: 
  * it — otherwise version skew lets a prior pass result mask a now-failing
  * verification.
  */
+/**
+ * Deep-freeze a summary so neither callers nor any cache backend can hand
+ * back mutable state. Applied to fresh results before returning AND to every
+ * cache hit before it's trusted, so the immutability guarantee holds
+ * regardless of the cache implementation.
+ */
+function freezeSummary(summary: ForgeVerificationSummary): ForgeVerificationSummary {
+  return Object.freeze({
+    passed: summary.passed,
+    sandbox: summary.sandbox,
+    totalDurationMs: summary.totalDurationMs,
+    stageResults: Object.freeze(summary.stageResults.map((d) => Object.freeze({ ...d }))),
+  });
+}
+
 function fingerprintStages<I>(stages: readonly VerifierStage<I>[]): string {
-  return stages.map((s) => `${s.name}@${s.version ?? "0"}`).join("|");
+  // JSON-encode so reserved characters in `name` or `version` cannot collide.
+  // E.g. a version of `"|x@2"` would alias a different pipeline under naive
+  // `${name}@${version}` joins.
+  return JSON.stringify(stages.map((s) => [s.name, s.version ?? "0"]));
 }
 
 function composeCacheKey<I>(userKey: string, stages: readonly VerifierStage<I>[]): string {
@@ -84,7 +102,11 @@ export async function runPipeline<I>(
   if (composedKey !== undefined && cache !== undefined) {
     const hit = await cache.get(composedKey);
     if (hit !== undefined) {
-      return { ok: true, value: hit };
+      // Normalize through freezeSummary so any cache backend (not just the
+      // in-memory one) is held to the same immutability contract — a remote
+      // cache can otherwise return a mutable object that later callers
+      // poison for everyone.
+      return { ok: true, value: freezeSummary(hit) };
     }
   }
 
@@ -131,14 +153,14 @@ export async function runPipeline<I>(
     }
   }
 
-  // Freeze the summary and its digests before either returning or caching.
-  // A caller that mutates the returned object cannot then poison the cache,
-  // and a stage cannot reach back through the digest array to rewrite it.
-  const summary: ForgeVerificationSummary = Object.freeze({
+  // Freeze before either returning or caching so a caller-mutated summary
+  // cannot poison the cache and a stage cannot rewrite the trail through a
+  // retained reference.
+  const summary = freezeSummary({
     passed: true,
     sandbox,
     totalDurationMs,
-    stageResults: Object.freeze(digests.map((d) => Object.freeze({ ...d }))),
+    stageResults: digests,
   });
 
   if (composedKey !== undefined && cache !== undefined) {
