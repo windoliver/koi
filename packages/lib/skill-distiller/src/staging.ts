@@ -83,6 +83,10 @@ export function createStagingQueue(config: StagingQueueConfig = {}): StagingQueu
       const current = entries.get(id);
       if (current === undefined) return undefined;
       if (current.status === "pending") return undefined;
+      // Enforce the id === record.draftHash invariant: a replacement record
+      // whose hash differs would be indexed under the wrong key and silently
+      // approve/reject a different draft.
+      if (nextRecord !== undefined && nextRecord.draftHash !== id) return undefined;
       const updated: StagingEntry = {
         id: current.id,
         record: nextRecord ?? current.record,

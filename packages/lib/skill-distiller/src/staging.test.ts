@@ -111,7 +111,7 @@ describe("createStagingQueue", () => {
     expect(q.requeue("h1")).toBeUndefined();
   });
 
-  test("requeue can replace the stored record with newer trace evidence", () => {
+  test("requeue can replace the stored record with newer trace evidence (same draftHash)", () => {
     const q = createStagingQueue();
     q.stage(rec("h1"));
     q.reject("h1");
@@ -121,5 +121,15 @@ describe("createStagingQueue", () => {
       source: { ...newer.source, traceId: "t-fresh" },
     });
     expect(replaced?.record.source.traceId).toBe("t-fresh");
+  });
+
+  test("requeue rejects a replacement whose draftHash mismatches the id (preserves invariant)", () => {
+    const q = createStagingQueue();
+    q.stage(rec("h1"));
+    q.reject("h1");
+    const wrongHash = { ...rec("h1"), draftHash: "h2-different" };
+    expect(q.requeue("h1", wrongHash)).toBeUndefined();
+    // entry remains rejected (unchanged)
+    expect(q.get("h1")?.status).toBe("rejected");
   });
 });

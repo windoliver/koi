@@ -40,6 +40,69 @@ function flattenToolCalls(trace: DistillationTrace): readonly string[] {
   return calls;
 }
 
+const LITERAL_MIN_LENGTH = 6;
+const LEAK_PROBE_FIELDS_DOC = "description / expectedInputs";
+
+// A trace literal is a string value inside a tool call's argsJson that looks
+// like a resource identifier (path, ID, URL, scoped key) — long enough and
+// shaped enough that it almost certainly should be parameterized instead of
+// burned into a reusable skill description.
+function looksLikeResourceLiteral(s: string): boolean {
+  if (s.length < LITERAL_MIN_LENGTH) return false;
+  if (/^[\s.,!?]+$/.test(s)) return false;
+  if (/[/.:_-]/.test(s)) return true;
+  if (/^[A-Za-z0-9]{8,}$/.test(s)) return true;
+  return false;
+}
+
+function collectTraceLiterals(trace: DistillationTrace): readonly string[] {
+  const literals = new Set<string>();
+  const visit = (v: unknown): void => {
+    if (typeof v === "string") {
+      if (looksLikeResourceLiteral(v)) literals.add(v);
+      return;
+    }
+    if (Array.isArray(v)) {
+      for (const x of v) visit(x);
+      return;
+    }
+    if (v !== null && typeof v === "object") {
+      for (const x of Object.values(v as Record<string, unknown>)) visit(x);
+    }
+  };
+  for (const turn of trace.turns) {
+    if (turn.toolCalls === undefined) continue;
+    for (const call of turn.toolCalls) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(call.argsJson);
+      } catch {
+        continue; // malformed args contribute no parseable literals
+      }
+      visit(parsed);
+    }
+  }
+  return [...literals];
+}
+
+// Catch the obvious "burned-in target" failure mode: the LLM took a tenant
+// path / file path / ID that appeared in a tool call and pasted it verbatim
+// into description or expectedInputs. The draft should have abstracted it via
+// a parameter. We only probe the contract surfaces (description and
+// expectedInputs) — triggers and expectedOutputs may legitimately mention
+// example targets in user-facing prose.
+function findLeakedLiteral(draft: SkillDraft, trace: DistillationTrace): string | undefined {
+  const literals = collectTraceLiterals(trace);
+  if (literals.length === 0) return undefined;
+  const probes: readonly string[] = [draft.description, ...draft.expectedInputs];
+  for (const literal of literals) {
+    for (const field of probes) {
+      if (field.includes(literal)) return literal;
+    }
+  }
+  return undefined;
+}
+
 function ungroundedError(reason: string, errorKind: string): KoiError {
   return {
     code: "VALIDATION",
@@ -81,6 +144,17 @@ function groundDraftInTrace(
       error: ungroundedError(
         `toolSequence ${JSON.stringify(draft.toolSequence)} is not an ordered subsequence of the trace's tool calls ${JSON.stringify(observed)}`,
         "DRAFT_TOOL_NOT_GROUNDED",
+      ),
+    };
+  }
+  const leaked = findLeakedLiteral(draft, trace);
+  if (leaked !== undefined) {
+    const sample = leaked.length > 60 ? `${leaked.slice(0, 60)}…` : leaked;
+    return {
+      ok: false,
+      error: ungroundedError(
+        `${LEAK_PROBE_FIELDS_DOC} contains the trace-specific literal "${sample}" — abstract it through a parameter instead of burning it in`,
+        "DRAFT_LITERAL_LEAKED",
       ),
     };
   }

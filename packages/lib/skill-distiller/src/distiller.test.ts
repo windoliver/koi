@@ -136,6 +136,75 @@ describe("createDistiller", () => {
     expect(r.ok).toBe(true);
   });
 
+  test("rejects draft that burns a trace-specific path into description", async () => {
+    const traceWithPath: DistillationTrace = {
+      traceId: "t-leak",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "read_file", argsJson: '{"path":"/etc/secret-tenant-data.yaml"}' }],
+        },
+        {
+          role: "assistant",
+          toolCalls: [{ name: "write_file", argsJson: '{"path":"/tmp/out"}' }],
+        },
+      ],
+    };
+    const burned = okLLM({
+      ...VALID_DRAFT,
+      description: "Read /etc/secret-tenant-data.yaml and write the formatted result.",
+    });
+    const d = createDistiller({ llm: burned });
+    const r = await d.distill(traceWithPath);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_LITERAL_LEAKED");
+  });
+
+  test("rejects draft that burns a trace literal into expectedInputs", async () => {
+    const trace: DistillationTrace = {
+      traceId: "t-leak",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "read_file", argsJson: '{"id":"acct-77c19ab3"}' }],
+        },
+        {
+          role: "assistant",
+          toolCalls: [{ name: "write_file", argsJson: "{}" }],
+        },
+      ],
+    };
+    const burned = okLLM({ ...VALID_DRAFT, expectedInputs: ["account acct-77c19ab3"] });
+    const d = createDistiller({ llm: burned });
+    const r = await d.distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_LITERAL_LEAKED");
+  });
+
+  test("accepts draft that abstracts trace literals through parameters", async () => {
+    const trace: DistillationTrace = {
+      traceId: "t-clean",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "read_file", argsJson: '{"path":"/etc/example.yaml"}' }],
+        },
+        {
+          role: "assistant",
+          toolCalls: [{ name: "write_file", argsJson: '{"path":"/tmp/out"}' }],
+        },
+      ],
+    };
+    // Description references the parameter, not the literal path.
+    const generic = okLLM({
+      ...VALID_DRAFT,
+      description: "Read the input file at {path} and write the formatted result.",
+    });
+    const d = createDistiller({ llm: generic });
+    const r = await d.distill(trace);
+    expect(r.ok).toBe(true);
+  });
+
   test("rejects draft with empty toolSequence", async () => {
     const d = createDistiller({ llm: okLLM({ ...VALID_DRAFT, toolSequence: [] }) });
     const r = await d.distill(TRACE);

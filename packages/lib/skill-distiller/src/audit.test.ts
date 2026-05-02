@@ -40,4 +40,21 @@ describe("createAuditLog", () => {
     log.clear();
     expect(log.list()).toEqual([]);
   });
+
+  test("recorded entries are deep-frozen — caller cannot mutate provenance retroactively", () => {
+    const log = createAuditLog();
+    const entry = rec("a");
+    log.record(entry);
+    // Direct caller-held reference must not be writable after recording.
+    expect(() => {
+      (entry as { draftHash: string }).draftHash = "tampered";
+    }).toThrow();
+    // Same for nested objects (source, draft).
+    expect(() => {
+      (entry.source as { traceId: string }).traceId = "tampered";
+    }).toThrow();
+    // List returns frozen entries too.
+    const listed = log.list()[0];
+    expect(listed && Object.isFrozen(listed)).toBe(true);
+  });
 });
