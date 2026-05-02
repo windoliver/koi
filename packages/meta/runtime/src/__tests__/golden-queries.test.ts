@@ -2947,3 +2947,121 @@ describe("Golden: @koi/sandbox-ssh", () => {
     expect(supports?.has("network")).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/handoff (#1371)
+// ---------------------------------------------------------------------------
+
+import {
+  createAcceptTool,
+  createHandoffMiddleware,
+  createInMemoryHandoffStore,
+  createPrepareTool,
+  generateHandoffSummary,
+} from "@koi/handoff";
+
+describe("Golden: @koi/handoff", () => {
+  test("end-to-end pipeline: prepare → middleware injects → accept", async () => {
+    const store = createInMemoryHandoffStore();
+    const sender = agentId("agent-a");
+    const receiver = agentId("agent-b");
+
+    // Sender packages a handoff
+    const prepare = createPrepareTool({ store, agentId: sender });
+    const prepared = (await prepare.execute({
+      to: receiver,
+      completed: "phase 1 done",
+      next: "do phase 2",
+      results: { score: 42 },
+      warnings: ["careful with X"],
+    })) as { handoffId: string; status: string };
+    expect(prepared.status).toBe("pending");
+
+    // Receiver's middleware injects context on first model call
+    const middleware = createHandoffMiddleware({ store, agentId: receiver });
+    const seen: { messageCount: number }[] = [];
+    if (middleware.wrapModelCall === undefined) throw new Error("wrapModelCall missing");
+    const fakeCtx = { metadata: {} } as unknown as Parameters<
+      NonNullable<typeof middleware.wrapModelCall>
+    >[0];
+    await middleware.wrapModelCall(fakeCtx, { messages: [] }, async (req) => {
+      seen.push({ messageCount: req.messages.length });
+      return { content: "ok", model: "test" };
+    });
+    expect(seen[0]?.messageCount).toBe(1); // summary prepended
+
+    // Receiver accepts and unpacks the envelope
+    const accept = createAcceptTool({ store, agentId: receiver });
+    const accepted = (await accept.execute({ handoff_id: prepared.handoffId })) as {
+      from: string;
+      results: Record<string, unknown>;
+      warnings: readonly string[];
+    };
+    expect(accepted.from).toBe(sender);
+    expect(accepted.results).toEqual({ score: 42 });
+    expect(accepted.warnings).toContain("careful with X");
+  });
+
+  test("generateHandoffSummary produces a structured prompt with id reference", () => {
+    const out = generateHandoffSummary({
+      id: "hoff-test" as never,
+      from: agentId("a"),
+      to: agentId("b"),
+      status: "pending",
+      createdAt: 0,
+      phase: { completed: "did x", next: "do y" },
+      context: {
+        results: {},
+        artifacts: [{ id: "f1", kind: "file", uri: "file:///out.json" }],
+        decisions: [],
+        warnings: [],
+      },
+      metadata: {},
+    });
+    expect(out).toContain("Handoff Context");
+    expect(out).toContain("did x");
+    expect(out).toContain("do y");
+    expect(out).toContain("hoff-test");
+    expect(out).toContain("1 artifact");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/task-spawn (#1371)
+// ---------------------------------------------------------------------------
+
+import { createMapAgentResolver, createTaskTool, type TaskableAgent } from "@koi/task-spawn";
+
+describe("Golden: @koi/task-spawn", () => {
+  const dummyAgent: TaskableAgent = {
+    name: "researcher",
+    description: "Research subagent",
+    manifest: { name: "researcher", version: "1.0.0", model: { name: "m" } },
+  };
+
+  test("spawn path returns extracted output and forwards manifest + description", async () => {
+    const seen: { description: string; agentName: string }[] = [];
+    const tool = await createTaskTool({
+      agents: new Map([["researcher", dummyAgent]]),
+      defaultAgent: "researcher",
+      spawn: async (req) => {
+        seen.push({ description: req.description, agentName: req.agentName });
+        return { ok: true, output: "research result" };
+      },
+    });
+    const out = (await tool.execute({ description: "summarize the moon landing" })) as string;
+    expect(out).toBe("research result");
+    expect(seen[0]?.description).toBe("summarize the moon landing");
+    expect(seen[0]?.agentName).toBe("researcher");
+  });
+
+  test("descriptor enumerates available agent_type from resolver list()", () => {
+    const resolver = createMapAgentResolver(new Map([["researcher", dummyAgent]]));
+    const list = resolver.list();
+    expect(Array.isArray(list)).toBe(true);
+    if (Array.isArray(list)) {
+      expect(list[0]?.key).toBe("researcher");
+      expect(list[0]?.description).toBe("Research subagent");
+    }
+  });
+});
