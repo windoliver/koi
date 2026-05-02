@@ -22,6 +22,8 @@ export type {
 } from "./enforce-budget.js";
 export { budgetConfigFromResolved, enforceBudget } from "./enforce-budget.js";
 export { findOptimalSplit } from "./find-split.js";
+export type { ContextEngineSwapNotice } from "./format-swap-notice.js";
+export { formatContextEngineSwapNotice } from "./format-swap-notice.js";
 export { microcompact } from "./micro-compact.js";
 export { wrapWithOverflowRecovery } from "./overflow-recovery.js";
 export type { AssistantToolPair } from "./pair-boundaries.js";

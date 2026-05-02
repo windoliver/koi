@@ -724,8 +724,24 @@ describe("Golden: @koi/audit-sink-ndjson", () => {
 // Golden: @koi/context-manager (#1623)
 // ---------------------------------------------------------------------------
 
-import { budgetConfigFromResolved, enforceBudget, resolveConfig } from "@koi/context-manager";
-import type { InboundMessage, ModelRequest, ModelResponse } from "@koi/core";
+import {
+  budgetConfigFromResolved,
+  createContextEngine,
+  createPassthroughContextEngine,
+  DEFAULT_CONTEXT_ENGINE_IDENTITY,
+  enforceBudget,
+  PASSTHROUGH_CONTEXT_ENGINE_IDENTITY,
+  resolveConfig,
+} from "@koi/context-manager";
+import type {
+  ContextEngine,
+  InboundMessage,
+  ModelRequest,
+  ModelResponse,
+  TurnContext,
+} from "@koi/core";
+import { CONTEXT_ENGINE } from "@koi/core";
+import { createContextEngineProvider, createContextEngineSwapController } from "@koi/engine";
 
 describe("Golden: @koi/context-manager", () => {
   function makeMsg(senderId: "user" | "assistant", text: string): InboundMessage {
@@ -772,6 +788,107 @@ describe("Golden: @koi/context-manager", () => {
     expect(cfg.contextWindowSize).toBe(1_000_000);
     expect(cfg.softTriggerFraction).toBeDefined();
     expect(cfg.hardTriggerFraction).toBeDefined();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Pluggable context-engine slot (#1767) — standalone golden queries
+  // ---------------------------------------------------------------------------
+
+  test("default ContextEngine prepares messages and reports occupancy via slot", async () => {
+    const engine = createContextEngine({ contextWindowSize: 4000, softTriggerFraction: 0.5 });
+    expect(engine.identity).toEqual(DEFAULT_CONTEXT_ENGINE_IDENTITY);
+
+    const ctx = { metadata: {} } as unknown as TurnContext;
+    const msgs: InboundMessage[] = [
+      makeMsg("user", `Q: ${block}`),
+      makeMsg("assistant", `A: ${block}`),
+      makeMsg("user", `Q2: ${block}`),
+      makeMsg("assistant", `A2: ${block}`),
+    ];
+
+    const out = await engine.prepare(ctx, msgs);
+    expect(Array.isArray(out)).toBe(true);
+    expect(out.length).toBeGreaterThan(0);
+
+    const occ = await engine.describeOccupancy?.();
+    expect(occ).toBeDefined();
+    expect(occ?.maxTokens).toBe(4000);
+    expect(occ?.pressure).toBeGreaterThanOrEqual(0);
+    expect(occ?.pressure).toBeLessThanOrEqual(1);
+
+    // Provider maps the engine onto the CONTEXT_ENGINE singleton slot.
+    const provider = createContextEngineProvider(engine);
+    const components = await provider.attach({ pid: { id: "x" } } as never);
+    const map = "components" in components ? components.components : components;
+    expect(map.get(CONTEXT_ENGINE as string)).toBe(engine);
+  });
+
+  test("passthrough ContextEngine returns input verbatim with zero pressure", async () => {
+    const engine = createPassthroughContextEngine();
+    expect(engine.identity).toEqual(PASSTHROUGH_CONTEXT_ENGINE_IDENTITY);
+
+    const ctx = { metadata: {} } as unknown as TurnContext;
+    const msgs: InboundMessage[] = [
+      makeMsg("user", `Q: ${block}`),
+      makeMsg("assistant", `A: ${block}`),
+      makeMsg("user", `Q2: ${block}`),
+      makeMsg("assistant", `A2: ${block}`),
+    ];
+
+    const out = await engine.prepare(ctx, msgs);
+    expect(out).toEqual(msgs);
+
+    const occ = await engine.describeOccupancy?.();
+    expect(occ?.pressure).toBe(0);
+    expect(occ?.estimatedTokens).toBe(0);
+    expect(occ?.maxTokens).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  test("swap controller swaps default → passthrough, then rolls back at boundary", () => {
+    const def = createContextEngine();
+    const pass = createPassthroughContextEngine();
+    const ctrl = createContextEngineSwapController(def);
+
+    expect(ctrl.current().identity.name).toBe("@koi/context-manager");
+
+    const swap1 = ctrl.swap(pass, {
+      turnId: "run-1:t3" as Parameters<typeof ctrl.swap>[1]["turnId"],
+      reason: "operator forced full-context for debugging",
+    });
+    expect(swap1?.kind).toBe("context-engine-swap");
+    expect(swap1?.from.name).toBe("@koi/context-manager");
+    expect(swap1?.to.name).toBe("@koi/context-manager/passthrough");
+    expect(ctrl.current()).toBe(pass);
+
+    // Same-identity swap is a noop (idempotent boundary).
+    const noop = ctrl.swap(pass, {
+      turnId: "run-1:t4" as Parameters<typeof ctrl.swap>[1]["turnId"],
+      reason: "redundant",
+    });
+    expect(noop).toBeUndefined();
+
+    // Rollback at next reset boundary (#1939 semantics) restores prior engine.
+    const rb = ctrl.rollback({
+      turnId: "run-1:t5" as Parameters<typeof ctrl.swap>[1]["turnId"],
+      reason: "regression detected by evaluator",
+    });
+    expect(rb?.from.name).toBe("@koi/context-manager/passthrough");
+    expect(rb?.to.name).toBe("@koi/context-manager");
+    expect(ctrl.current()).toBe(def);
+
+    // History is append-only and ordered.
+    const h = ctrl.history();
+    expect(h).toHaveLength(2);
+    expect(h[0]?.to.name).toBe("@koi/context-manager/passthrough");
+    expect(h[1]?.to.name).toBe("@koi/context-manager");
+  });
+
+  // Silence unused-binding warning when ContextEngine type is only referenced
+  // for documentation purposes within this golden block.
+  test("ContextEngine type is structurally satisfied by both bundled engines", () => {
+    const a: ContextEngine = createContextEngine();
+    const b: ContextEngine = createPassthroughContextEngine();
+    expect(a.identity.name).not.toBe(b.identity.name);
   });
 });
 
