@@ -257,13 +257,17 @@ export function createDaytonaInstance(
             };
           }
           // Some other rejection arrived in the post-abort window. We
-          // cannot prove the command was killed cleanly, so propagate
-          // the failure rather than synthesising a clean cancel.
+          // cannot prove the command was killed cleanly OR that it
+          // never ran — remote state is INDETERMINATE. Quarantine so
+          // callers cannot auto-retry side-effecting commands.
+          quarantined = true;
           const message = e instanceof Error ? e.message : String(e);
           return {
             exitCode: 1,
             stdout: "",
-            stderr: message,
+            stderr:
+              "sandbox-daytona: SDK rejected after abort with non-AbortError; remote " +
+              `command state is INDETERMINATE — instance quarantined: ${message}`,
             durationMs,
             timedOut: false,
             oomKilled: false,
@@ -299,6 +303,11 @@ export function createDaytonaInstance(
       }
 
       if (winner.kind === "error") {
+        // SDK rejected without a confirmed abort. Remote command state
+        // is INDETERMINATE — quarantine so callers cannot dispatch new
+        // commands or auto-retry side-effecting ones against an unknown
+        // workspace state. destroy() remains callable for cleanup.
+        quarantined = true;
         const durationMs = performance.now() - start;
         const e = winner.e;
         const message = e instanceof Error ? e.message : String(e);
@@ -306,7 +315,9 @@ export function createDaytonaInstance(
         return {
           exitCode: 1,
           stdout: "",
-          stderr: message,
+          stderr:
+            "sandbox-daytona: SDK rejected; remote command state is INDETERMINATE — " +
+            `instance quarantined (call destroy() to attempt cleanup): ${message}`,
           durationMs,
           timedOut,
           oomKilled: false,
@@ -450,6 +461,10 @@ export function createDaytonaInstance(
                 "issue a fresh remote delete against a recovering provider.",
             );
           }
+          // outcome.kind === "err". Teardown rejected — workspace
+          // state is unknown. Quarantine so further exec/file ops
+          // reject; destroy() remains retryable for recovery.
+          quarantined = true;
           const e = outcome.e;
           throw e instanceof Error ? e : new Error(String(e));
         } finally {

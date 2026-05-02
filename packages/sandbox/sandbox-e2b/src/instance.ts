@@ -312,13 +312,18 @@ export function createE2bInstance(
             };
           }
           // Some other rejection arrived in the post-abort window. We
-          // cannot prove the command was killed cleanly, so return the
-          // failure verbatim rather than synthesising a clean cancel.
+          // cannot prove the command was killed cleanly OR that it
+          // never ran — the remote state is INDETERMINATE. Quarantine
+          // so the caller is forced to teardown/recreate before reusing
+          // this handle and side-effecting commands cannot auto-retry.
+          quarantined = true;
           const message = e instanceof Error ? e.message : String(e);
           return {
             exitCode: 1,
             stdout: "",
-            stderr: message,
+            stderr:
+              "sandbox-e2b: SDK rejected after abort with non-AbortError; remote " +
+              `command state is INDETERMINATE — instance quarantined: ${message}`,
             durationMs,
             timedOut: false,
             oomKilled: false,
@@ -354,6 +359,13 @@ export function createE2bInstance(
       }
 
       if (winner.kind === "error") {
+        // SDK rejected without a confirmed abort. The remote command may
+        // have started, may still be running, or may never have left
+        // the wrapper — we cannot tell. Quarantine so callers cannot
+        // dispatch new commands (or auto-retry a side-effecting one)
+        // against a sandbox in INDETERMINATE state. destroy() remains
+        // callable so operators can attempt cleanup.
+        quarantined = true;
         const durationMs = performance.now() - start;
         const e = winner.e;
         const message = e instanceof Error ? e.message : String(e);
@@ -361,7 +373,9 @@ export function createE2bInstance(
         return {
           exitCode: 1,
           stdout: "",
-          stderr: message,
+          stderr:
+            "sandbox-e2b: SDK rejected; remote command state is INDETERMINATE — " +
+            `instance quarantined (call destroy() to attempt cleanup): ${message}`,
           durationMs,
           timedOut,
           oomKilled: false,
@@ -496,7 +510,11 @@ export function createE2bInstance(
                 "against a recovering provider.",
             );
           }
-          // outcome.kind === "err"
+          // outcome.kind === "err". Teardown rejected — remote sandbox
+          // state is unknown; cannot prove it was destroyed. Quarantine
+          // so further exec/readFile/writeFile reject; destroy() remains
+          // retryable for recovery.
+          quarantined = true;
           const e = outcome.e;
           throw e instanceof Error ? e : new Error(String(e));
         } finally {

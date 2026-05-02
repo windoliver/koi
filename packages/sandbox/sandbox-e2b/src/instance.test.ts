@@ -192,6 +192,41 @@ describe("createE2bInstance", () => {
     expect(killAttempts).toBe(2);
   }, 25_000);
 
+  test("exec quarantines instance on SDK rejection (indeterminate remote state)", async () => {
+    // Retry-safety regression: a transport flap or provider-side error
+    // after dispatch leaves the remote command's state UNKNOWN. Mapping
+    // that to a normal exit-1 result without quarantining would let
+    // higher layers retry a side-effecting command while the original
+    // may still be running.
+    const sdk = createFakeSandbox({ runError: new Error("transport flap") });
+    const instance = createE2bInstance(sdk);
+    const result = await instance.exec("ls", []);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toMatch(/INDETERMINATE/);
+    // Subsequent ops are blocked — the caller must teardown/recreate
+    // before continuing.
+    await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
+    await expect(instance.readFile("/x")).rejects.toThrow(/quarantined/);
+  });
+
+  test("destroy quarantines on fast SDK rejection (not just on local timeout)", async () => {
+    // Rollback-safety regression: a network error or provider 5xx that
+    // rejects sdk.kill() quickly does NOT prove the workspace was
+    // actually destroyed. Without quarantining, the caller could
+    // continue exec/file ops against a sandbox in unknown state.
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      kill: async (): Promise<void> => {
+        throw new Error("provider 503");
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    await expect(instance.destroy()).rejects.toThrow(/provider 503/);
+    // Workspace state unknown — exec/file ops must be blocked.
+    await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
+  });
+
   test("destroy() retry coalesces: concurrent calls do not issue overlapping kills", async () => {
     // Single-flight + retry semantics: concurrent destroy() callers
     // must coalesce onto one in-flight kill (no overlapping remote
