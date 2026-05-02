@@ -136,12 +136,14 @@ export function createRegistryCache(options: RegistryCacheOptions = {}): Registr
 }
 
 function isCacheFile(value: unknown): value is CacheFile {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    "searches" in value &&
-    "servers" in value &&
-    typeof (value as { searches: unknown }).searches === "object" &&
-    typeof (value as { servers: unknown }).servers === "object"
-  );
+  if (value === null || typeof value !== "object") return false;
+  if (!("searches" in value) || !("servers" in value)) return false;
+  const searches = (value as { searches: unknown }).searches;
+  const servers = (value as { servers: unknown }).servers;
+  // typeof null === "object" — explicitly reject. An on-disk
+  // `{ searches: null, servers: null }` previously passed validation
+  // and then crashed later reads with a TypeError on indexing.
+  if (searches === null || typeof searches !== "object" || Array.isArray(searches)) return false;
+  if (servers === null || typeof servers !== "object" || Array.isArray(servers)) return false;
+  return true;
 }

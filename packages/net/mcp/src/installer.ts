@@ -134,15 +134,64 @@ function validateRemoteUrl(raw: string): { ok: true } | { ok: false; error: stri
   } catch {
     return { ok: false, error: "URL is not parseable" };
   }
-  if (parsed.protocol === "https:") return { ok: true };
-  if (parsed.protocol === "http:") {
-    const host = parsed.hostname.toLowerCase();
-    if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]") {
-      return { ok: true };
-    }
-    return { ok: false, error: "plaintext http:// is only allowed for loopback hosts" };
+  const host = parsed.hostname.toLowerCase();
+  const isLoopback =
+    host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+  // Loopback is allowed under either http: or https: for local-dev
+  // workflows — it never crosses the trust boundary the SSRF check is
+  // protecting.
+  if (isLoopback) {
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") return { ok: true };
+    return { ok: false, error: `unsupported URL scheme "${parsed.protocol}"` };
   }
-  return { ok: false, error: `unsupported URL scheme "${parsed.protocol}" (expected https:)` };
+  if (parsed.protocol !== "https:") {
+    return { ok: false, error: `unsupported URL scheme "${parsed.protocol}" (expected https:)` };
+  }
+  // HTTPS but non-loopback. Refuse private / link-local / multicast /
+  // reserved IPs by default — registry metadata is being treated as
+  // authority to make outbound connections, and a hostile entry should
+  // not be able to drive the CLI into the operator's internal network.
+  // Hostnames are not resolved here (DNS lookups happen during connect)
+  // so we only block IP-literal targets; an attacker who controls
+  // public DNS to point at RFC1918 still gets through, but that is a
+  // significantly higher bar and out of scope for one-click install.
+  if (isPrivateOrReservedIp(host)) {
+    return {
+      ok: false,
+      error: `host ${host} is in a private/reserved range; refuse to install non-public remote`,
+    };
+  }
+  return { ok: true };
+}
+
+function isPrivateOrReservedIp(host: string): boolean {
+  // IPv4 dotted-quad detection.
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (v4 !== null) {
+    const o = v4.slice(1, 5).map((s) => Number.parseInt(s, 10));
+    if (o.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return false;
+    const a = o[0] ?? 0;
+    const b = o[1] ?? 0;
+    if (a === 10) return true; // 10.0.0.0/8
+    if (a === 127) return true; // loopback (also caught above)
+    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+    if (a === 192 && b === 168) return true; // 192.168.0.0/16
+    if (a === 169 && b === 254) return true; // link-local 169.254.0.0/16
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64.0.0/10
+    if (a === 0) return true; // 0.0.0.0/8
+    if (a >= 224) return true; // multicast + reserved
+    return false;
+  }
+  // IPv6 — match common private/reserved prefixes. URLs wrap v6 in
+  // brackets which URL.hostname strips; we accept either form.
+  const stripped = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  const lower = stripped.toLowerCase();
+  if (lower === "::1" || lower === "::") return true;
+  if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // unique-local
+  if (lower.startsWith("fe80:") || lower.startsWith("fe8") || lower.startsWith("fe9")) return true;
+  if (lower.startsWith("fea") || lower.startsWith("feb")) return true; // link-local fe80::/10
+  if (lower.startsWith("ff")) return true; // multicast
+  return false;
 }
 
 interface RegistryHeader {
@@ -389,17 +438,20 @@ export async function installMcpServer(
     overwrite: options.overwrite ?? false,
   });
   if (!added.ok) {
-    // CONFLICT means another install of the same name already wrote
-    // the entry. Two installs of the same HTTP server can race here;
-    // both complete OAuth during verify, one wins the config write,
-    // and the loser would otherwise wipe the winner's shared OAuth
-    // state. Skip credential cleanup on CONFLICT specifically — the
-    // existing entry's credentials are now in active use. For other
-    // failure codes (write errors, validation), the entry never
-    // landed and any tokens we persisted during verify are orphaned,
-    // so cleanup is the right call.
+    // CONFLICT requires care. If the existing entry targets the SAME
+    // URL/transport as ours, this is the concurrent-install race —
+    // the winner owns the now-shared OAuth state and we must NOT
+    // clean up. If the existing entry is a different target with the
+    // same name (version skew, different transport), then any tokens
+    // we persisted during verify belong to OUR target, not the
+    // winner's, and orphan-cleanup is the right call.
     if (added.error.code === "CONFLICT") {
-      return { ok: false, error: added.error };
+      const sameTarget = await existingEntryMatchesTarget(
+        options.configPath,
+        options.server.name,
+        entry,
+      );
+      if (sameTarget) return { ok: false, error: added.error };
     }
     return await abortWithCredentialCleanup(
       options.server.name,
@@ -474,6 +526,35 @@ function resolveForVerify(
       maxReconnectAttempts: DEFAULT_MAX_RECONNECT_ATTEMPTS,
     },
   };
+}
+
+async function existingEntryMatchesTarget(
+  configPath: string,
+  name: string,
+  target: ExternalServerConfig,
+): Promise<boolean> {
+  // Best-effort raw read. On any error (file gone, malformed, race
+  // with another writer) we conservatively return `false` so the
+  // caller treats the conflict as a different-target situation and
+  // runs cleanup — leaking creds is worse than wiping our own.
+  try {
+    const text = await Bun.file(configPath).text();
+    const parsed: unknown = JSON.parse(text);
+    if (parsed === null || typeof parsed !== "object") return false;
+    const servers = (parsed as { mcpServers?: unknown }).mcpServers;
+    if (servers === null || typeof servers !== "object") return false;
+    const existing = (servers as Record<string, unknown>)[name];
+    if (existing === null || typeof existing !== "object") return false;
+    const e = existing as { type?: unknown; url?: unknown; command?: unknown };
+    if (target.type === "http" || target.type === "sse") {
+      const eType = (e.type as string | undefined) ?? "http";
+      return eType === target.type && e.url === target.url;
+    }
+    // stdio
+    return e.command === target.command;
+  } catch {
+    return false;
+  }
 }
 
 /**
