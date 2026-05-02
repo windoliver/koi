@@ -149,6 +149,56 @@ describe("pickPackageForInstall", () => {
     expect(result.error.message).toContain("X-Token");
   });
 
+  test("rejects non-string registry args (would corrupt mcp.json)", () => {
+    const result = pickPackageForInstall({
+      ...baseServer,
+      packages: [
+        {
+          registryType: "npm",
+          identifier: "@example/mal",
+          version: "1.0.0",
+          packageArguments: [{ type: "positional", value: 12345 } as unknown],
+        },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toContain("non-string");
+  });
+
+  test("rejects non-string env values", () => {
+    const result = pickPackageForInstall({
+      ...baseServer,
+      packages: [
+        {
+          registryType: "npm",
+          identifier: "@example/mal",
+          version: "1.0.0",
+          environmentVariables: [{ name: "KEY", isRequired: true, default: { obj: 1 } } as unknown],
+        },
+      ],
+    });
+    // Required env with non-string default still gets surfaced as "required"
+    // because asStringField returns undefined → looks unresolved.
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects non-string header values", () => {
+    const result = pickPackageForInstall({
+      ...baseServer,
+      remotes: [
+        {
+          url: "https://x",
+          transport: { type: "http" },
+          headers: [{ name: "X-Bad", isRequired: true, value: 42 } as unknown],
+        },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.message).toContain("X-Bad");
+  });
+
   test("preserves concrete header defaults on http remote", () => {
     const result = pickPackageForInstall({
       ...baseServer,
@@ -239,6 +289,33 @@ describe("installMcpServer", () => {
       expect(result.error.message).toContain("verify failed");
       expect(result.error.message).toContain("Rollback also failed");
       expect(result.error.context).toMatchObject({ cleanupRequired: true });
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("clearStoredCredentials runs on rollback when verify fails", async () => {
+    const { path, cleanup } = tmpFile();
+    let cleared = "";
+    try {
+      const result = await installMcpServer({
+        server: {
+          ...baseServer,
+          packages: [{ registryType: "npm", identifier: "@example/mcp", version: "1.0.0" }],
+        },
+        configPath: path,
+        deps: {
+          verifyConnection: async () => ({
+            ok: false,
+            error: { code: "AUTH_REQUIRED", message: "401", retryable: false },
+          }),
+          clearStoredCredentials: async (name: string): Promise<void> => {
+            cleared = name;
+          },
+        },
+      });
+      expect(result.ok).toBe(false);
+      expect(cleared).toBe("io.example/foo");
     } finally {
       cleanup();
     }

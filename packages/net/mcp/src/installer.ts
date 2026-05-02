@@ -100,10 +100,20 @@ export function pickPackageForInstall(
 }
 
 interface RegistryHeader {
-  readonly name?: string;
-  readonly value?: string;
-  readonly default?: string;
-  readonly isRequired?: boolean;
+  readonly name?: unknown;
+  readonly value?: unknown;
+  readonly default?: unknown;
+  readonly isRequired?: unknown;
+}
+
+/**
+ * Coerce a registry-supplied field to a string only when it actually is one.
+ * Anything else (numbers, objects, nulls) returns undefined so we never
+ * persist non-string args/env/headers into `.mcp.json` — the file's own
+ * Zod schema would reject the whole config on the next load.
+ */
+function asStringField(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }
 
 function remoteHeaders(
@@ -113,22 +123,34 @@ function remoteHeaders(
   const records = headers.filter((h): h is RegistryHeader => h !== null && typeof h === "object");
   const out: Record<string, string> = {};
   for (const h of records) {
-    const concrete = h.value ?? h.default;
+    const name = asStringField(h.name);
+    const concrete = asStringField(h.value) ?? asStringField(h.default);
     if (concrete === undefined) {
       if (h.isRequired === true) {
         return {
           ok: false,
           error: {
             code: "VALIDATION",
-            message: `Registry remote requires header${h.name !== undefined ? ` "${h.name}"` : ""} but no value/default provided. Add it manually.`,
+            message: `Registry remote requires header${name !== undefined ? ` "${name}"` : ""} but no string value/default provided. Add it manually.`,
             retryable: false,
-            context: { headerName: h.name },
+            context: { headerName: name },
           },
         };
       }
       continue;
     }
-    if (h.name !== undefined) out[h.name] = concrete;
+    if (name === undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: `Registry remote header has a non-string name field; refusing to install.`,
+          retryable: false,
+          context: { received: typeof h.name },
+        },
+      };
+    }
+    out[name] = concrete;
   }
   return { ok: true, value: Object.keys(out).length > 0 ? out : undefined };
 }
@@ -191,11 +213,11 @@ function makeStdio(
 }
 
 interface RegistryArgRecord {
-  readonly type?: string;
-  readonly value?: string;
-  readonly default?: string;
-  readonly name?: string;
-  readonly isRequired?: boolean;
+  readonly type?: unknown;
+  readonly value?: unknown;
+  readonly default?: unknown;
+  readonly name?: unknown;
+  readonly isRequired?: unknown;
 }
 
 function asArgRecords(args: readonly unknown[] | undefined): readonly RegistryArgRecord[] {
@@ -208,9 +230,14 @@ function checkArgsResolvable(
   field: string,
 ): string | undefined {
   for (const a of asArgRecords(args)) {
-    const concrete = a.value ?? a.default;
+    const concrete = asStringField(a.value) ?? asStringField(a.default);
+    const name = asStringField(a.name);
     if (concrete === undefined && a.isRequired === true) {
-      return `${field} entry${a.name !== undefined ? ` "${a.name}"` : ""} requires a value`;
+      return `${field} entry${name !== undefined ? ` "${name}"` : ""} requires a string value`;
+    }
+    // Reject obviously malformed records (non-string `value` when present).
+    if (a.value !== undefined && typeof a.value !== "string") {
+      return `${field}${name !== undefined ? ` "${name}"` : ""} has a non-string value field`;
     }
   }
   return undefined;
@@ -219,10 +246,12 @@ function checkArgsResolvable(
 function collectArgValues(args: readonly unknown[] | undefined): readonly string[] {
   const out: string[] = [];
   for (const a of asArgRecords(args)) {
-    const concrete = a.value ?? a.default;
+    const concrete = asStringField(a.value) ?? asStringField(a.default);
     if (concrete === undefined) continue;
-    if (a.type === "named" && a.name !== undefined) {
-      out.push(a.name, concrete);
+    const type = asStringField(a.type);
+    const name = asStringField(a.name);
+    if (type === "named" && name !== undefined) {
+      out.push(name, concrete);
     } else {
       out.push(concrete);
     }
@@ -231,10 +260,10 @@ function collectArgValues(args: readonly unknown[] | undefined): readonly string
 }
 
 interface RegistryEnvVar {
-  readonly name?: string;
-  readonly default?: string;
-  readonly value?: string;
-  readonly isRequired?: boolean;
+  readonly name?: unknown;
+  readonly default?: unknown;
+  readonly value?: unknown;
+  readonly isRequired?: unknown;
 }
 
 function asEnvRecords(vars: readonly unknown[] | undefined): readonly RegistryEnvVar[] {
@@ -245,13 +274,11 @@ function asEnvRecords(vars: readonly unknown[] | undefined): readonly RegistryEn
 function collectRequiredEnvNames(vars: readonly unknown[] | undefined): readonly string[] {
   const out: string[] = [];
   for (const v of asEnvRecords(vars)) {
-    if (
-      v.isRequired === true &&
-      v.value === undefined &&
-      v.default === undefined &&
-      v.name !== undefined
-    ) {
-      out.push(v.name);
+    const name = asStringField(v.name);
+    const hasConcrete =
+      asStringField(v.value) !== undefined || asStringField(v.default) !== undefined;
+    if (v.isRequired === true && !hasConcrete && name !== undefined) {
+      out.push(name);
     }
   }
   return out;
@@ -262,9 +289,10 @@ function collectEnvDefaults(
 ): Readonly<Record<string, string>> | undefined {
   const out: Record<string, string> = {};
   for (const v of asEnvRecords(vars)) {
-    const concrete = v.value ?? v.default;
-    if (concrete !== undefined && v.name !== undefined) {
-      out[v.name] = concrete;
+    const concrete = asStringField(v.value) ?? asStringField(v.default);
+    const name = asStringField(v.name);
+    if (concrete !== undefined && name !== undefined) {
+      out[name] = concrete;
     }
   }
   return Object.keys(out).length > 0 ? out : undefined;
@@ -293,15 +321,25 @@ export async function installMcpServer(
 
   const resolved = resolveForVerify(options.server.name, entry);
   if (!resolved.ok) {
-    return await failWithRollback(options.configPath, options.server.name, resolved.error);
+    return await failWithRollback(
+      options.configPath,
+      options.server.name,
+      resolved.error,
+      options.deps?.clearStoredCredentials,
+    );
   }
 
   const verified = await verify(resolved.value);
   if (!verified.ok) {
-    return await failWithRollback(options.configPath, options.server.name, {
-      ...verified.error,
-      message: `Install verification failed for "${options.server.name}": ${verified.error.message}`,
-    });
+    return await failWithRollback(
+      options.configPath,
+      options.server.name,
+      {
+        ...verified.error,
+        message: `Install verification failed for "${options.server.name}": ${verified.error.message}`,
+      },
+      options.deps?.clearStoredCredentials,
+    );
   }
 
   return { ok: true, value: { entry } };
@@ -356,6 +394,7 @@ async function failWithRollback(
   configPath: string,
   name: string,
   primaryError: KoiError,
+  clearCredentials?: (name: string) => Promise<void>,
 ): Promise<Result<never, KoiError>> {
   let rollbackResult: Result<void, KoiError>;
   try {
@@ -371,6 +410,18 @@ async function failWithRollback(
         context: { configPath, name },
       },
     };
+  }
+  // Best-effort credential wipe — runs whether the config rollback
+  // succeeded or not. Verification may have completed an OAuth flow that
+  // persisted tokens (and possibly a DCR client) before failing on
+  // listTools; without this, we'd leave live credentials behind for a
+  // server that no longer has a config entry.
+  if (clearCredentials !== undefined) {
+    try {
+      await clearCredentials(name);
+    } catch {
+      /* swallow — credential cleanup is best-effort */
+    }
   }
   if (rollbackResult.ok) {
     return { ok: false, error: primaryError };

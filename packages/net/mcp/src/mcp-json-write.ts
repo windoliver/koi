@@ -188,18 +188,23 @@ function basenameOf(p: string): string {
 /**
  * Cross-process advisory lock around mutations to a single `.mcp.json` file.
  *
- * Uses an `O_EXCL` lockfile sibling (`<file>.lock`). Concurrent
- * `koi mcp install`/`uninstall` invocations against the same repo coordinate
- * via this lock so the read-modify-rename cycle is serialized — without it,
- * two writers can race and silently lose entries.
+ * Uses an `O_EXCL` lockfile sibling (`<file>.lock`) holding the owner's PID.
+ * A held lock is reclaimed only when its owner PID is no longer alive —
+ * never on age, since a legitimate install can sit in OAuth/browser flow
+ * for longer than any reasonable timeout. Liveness is checked via
+ * `process.kill(pid, 0)` (POSIX: ESRCH iff the process is gone).
  *
- * The lock is best-effort: a stale lock older than `STALE_LOCK_MS` (held by a
- * crashed process) is forcibly reclaimed. The lock file holds the owner's PID
- * for diagnostics.
+ * Acquisition retries for up to ~5min total to cover slow OAuth flows;
+ * concurrent callers will queue rather than race the file.
  */
-const LOCK_RETRY_DELAY_MS = 50;
-const LOCK_MAX_RETRIES = 200; // ~10s total wait
-const STALE_LOCK_MS = 30_000;
+const LOCK_RETRY_DELAY_MS = 100;
+const LOCK_MAX_RETRIES = 3000; // ~5 min total
+
+// In-process serialization queue keyed by lock path. Same-process callers
+// chain on a promise so only one is racing for the file lock at a time —
+// otherwise the file lock's own-PID detection cannot distinguish "we already
+// hold it" (legitimate work in progress) from "we crashed and left it".
+const inProcQueues = new Map<string, Promise<unknown>>();
 
 async function withFileLock<T>(
   filePath: string,
@@ -208,6 +213,28 @@ async function withFileLock<T>(
   const lockPath = `${filePath}.lock`;
   await mkdir(dirname(filePath), { recursive: true }).catch(() => {});
 
+  // Chain on the in-process queue. Failures of the predecessor do not block
+  // us — we always continue with our own attempt at the file lock.
+  const prev = inProcQueues.get(lockPath) ?? Promise.resolve();
+  const ours = prev.then(
+    () => acquireFileLock(lockPath, filePath, fn),
+    () => acquireFileLock(lockPath, filePath, fn),
+  );
+  inProcQueues.set(lockPath, ours);
+  try {
+    return (await ours) as Result<T, KoiError>;
+  } finally {
+    // Drop the queue entry once we're the trailing promise — keeps the map
+    // bounded under steady-state concurrent use.
+    if (inProcQueues.get(lockPath) === ours) inProcQueues.delete(lockPath);
+  }
+}
+
+async function acquireFileLock<T>(
+  lockPath: string,
+  filePath: string,
+  fn: () => Promise<Result<T, KoiError>>,
+): Promise<Result<T, KoiError>> {
   for (let attempt = 0; attempt < LOCK_MAX_RETRIES; attempt++) {
     try {
       const handle = await open(lockPath, "wx");
@@ -238,8 +265,8 @@ async function withFileLock<T>(
           },
         };
       }
-      // Lock held — check for staleness, then back off.
-      if (await reapStaleLock(lockPath)) continue;
+      // Lock held — reap only if owner PID is dead, else back off.
+      if (await reapDeadLock(lockPath)) continue;
       await sleep(LOCK_RETRY_DELAY_MS);
     }
   }
@@ -255,16 +282,42 @@ async function withFileLock<T>(
   };
 }
 
-async function reapStaleLock(lockPath: string): Promise<boolean> {
+async function reapDeadLock(lockPath: string): Promise<boolean> {
+  let raw: string;
   try {
-    const stat = await Bun.file(lockPath).stat();
-    if (Date.now() - stat.mtimeMs > STALE_LOCK_MS) {
+    raw = await Bun.file(lockPath).text();
+  } catch {
+    // Lock file vanished between EEXIST and read — caller should retry.
+    return true;
+  }
+  const pid = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(pid) || pid <= 0) {
+    // Malformed lock file — treat as dead.
+    await unlink(lockPath).catch(() => {});
+    return true;
+  }
+  if (pid === process.pid) {
+    // We're the owner — should never EEXIST against ourselves, but if a stale
+    // entry from a crashed prior process inside this PID's namespace exists,
+    // reap it.
+    await unlink(lockPath).catch(() => {});
+    return true;
+  }
+  try {
+    process.kill(pid, 0);
+    // Owner alive — wait.
+    return false;
+  } catch (error: unknown) {
+    const code =
+      error !== null && typeof error === "object" && "code" in error
+        ? String((error as { code: unknown }).code)
+        : "";
+    if (code === "ESRCH") {
       await unlink(lockPath).catch(() => {});
       return true;
     }
-  } catch {
-    // Lock file vanished between EEXIST and stat — caller should retry.
-    return true;
+    // EPERM means the process exists but is owned by another user —
+    // alive enough; back off rather than reaping someone else's lock.
+    return false;
   }
-  return false;
 }

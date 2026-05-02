@@ -6,7 +6,14 @@
  */
 
 import { resolve } from "node:path";
-import type { KoiError, Result } from "@koi/core";
+import type {
+  AuthCompleteNotification,
+  AuthFailureNotification,
+  AuthRequiredNotification,
+  KoiError,
+  OAuthChannel,
+  Result,
+} from "@koi/core";
 import type {
   ExternalServerConfig,
   McpToolInfo,
@@ -19,7 +26,6 @@ import {
   createRegistryCache,
   createRegistryClient,
   installMcpServer,
-  loadMcpJsonFile,
   pickPackageForInstall,
   uninstallMcpServer,
 } from "@koi/mcp";
@@ -123,11 +129,22 @@ export async function runInstall(flags: McpFlags): Promise<ExitCode> {
   }
 
   const configPath = resolve(process.cwd(), ".mcp.json");
+  // For HTTP installs the verify path may complete an OAuth flow that
+  // persists tokens before listTools fails; if that happens we want
+  // rollback to wipe the stored credentials too. The installer calls
+  // clearStoredCredentials only on the failure paths.
+  const oauthKey =
+    picked.value.type === "http" && picked.value.url !== undefined
+      ? computeServerKey(server.name, picked.value.url)
+      : undefined;
   const result = await installMcpServer({
     server,
     configPath,
     skipVerify: flags.skipVerify,
-    deps: { verifyConnection: defaultVerifyConnection },
+    deps: {
+      verifyConnection: defaultVerifyConnection,
+      ...(oauthKey !== undefined ? { clearStoredCredentials: clearOAuthTokensFor(oauthKey) } : {}),
+    },
   });
   if (!result.ok) return failFlags(flags, result.error.message);
 
@@ -148,15 +165,13 @@ export async function runUninstall(flags: McpFlags): Promise<ExitCode> {
   const name = flags.server ?? "";
   const configPath = resolve(process.cwd(), ".mcp.json");
 
-  // Look up the server URL before removal so we can clear stored OAuth tokens.
-  let oauthKey: string | undefined;
-  const loaded = await loadMcpJsonFile(configPath);
-  if (loaded.ok) {
-    const entry = loaded.value.servers.find((s) => s.name === name);
-    if (entry !== undefined && entry.kind === "http") {
-      oauthKey = computeServerKey(name, entry.url);
-    }
-  }
+  // Read the URL straight from the raw .mcp.json so we can clear OAuth
+  // tokens even when the file is malformed or contains entries the
+  // normalizer would reject. Without this, an entry that fails
+  // normalization (e.g. unsupported transport, missing env var) would
+  // still be removed by `removeServerFromMcpJson`, but stored OAuth
+  // tokens would remain — config gone, credentials retained.
+  const oauthKey = await readOAuthKeyFromRawConfig(configPath, name);
 
   const result = await uninstallMcpServer({
     name,
@@ -244,16 +259,69 @@ function hasOAuthRequirement(server: RegistryServer): boolean {
 async function defaultVerifyConnection(
   config: ResolvedMcpServerConfig,
 ): Promise<Result<readonly McpToolInfo[], KoiError>> {
-  // Use the OAuth-aware connection factory so HTTP servers with an `oauth`
-  // block (which `pickPackageForInstall` always emits for http remotes)
-  // perform Dynamic Client Registration + interactive flow against the
-  // CLI runtime instead of failing the dry-run with a 401.
-  const conn = createOAuthAwareMcpConnection(config.server);
+  // Pass a stdout-backed OAuthChannel so the connection's mid-session 401
+  // handler can launch the interactive flow if the server actually
+  // challenges. We deliberately do NOT proactively call triggerAuth here:
+  // every HTTP entry gets an `oauth: {}` block by default (so post-install
+  // `koi mcp auth` works), and forcing auth would open a browser for public
+  // servers that don't need it. The 401-triggered path runs only when the
+  // server actually rejects the unauthenticated listTools call.
+  const conn = createOAuthAwareMcpConnection(config.server, undefined, stdoutOAuthChannel());
   try {
     return await conn.listTools();
   } finally {
     await conn.close();
   }
+}
+
+function stdoutOAuthChannel(): OAuthChannel {
+  // All OAuth status is emitted on stderr so `koi mcp install --json` keeps
+  // stdout strictly machine-readable. The user still sees the
+  // authorization URL when running interactively (terminals show stderr by
+  // default); scripts piping stdout to a parser are unaffected.
+  return {
+    onAuthRequired(n: AuthRequiredNotification): void {
+      process.stderr.write(`\n[oauth] ${n.message}\n`);
+      if (n.authUrl !== undefined) {
+        process.stderr.write(`[oauth] Open this URL to authorize ${n.provider}:\n  ${n.authUrl}\n`);
+      }
+    },
+    onAuthComplete(n: AuthCompleteNotification): void {
+      process.stderr.write(`[oauth] ${n.provider} authorization complete.\n`);
+    },
+    onAuthFailure(n: AuthFailureNotification): void {
+      process.stderr.write(`[oauth] ${n.provider} authorization failed: ${n.reason}\n`);
+    },
+    submitAuthCode(): void {
+      // Local-mode flow only — the loopback callback delivers the code
+      // directly. Remote-mode submission is not supported from CLI install.
+    },
+  };
+}
+
+async function readOAuthKeyFromRawConfig(
+  configPath: string,
+  name: string,
+): Promise<string | undefined> {
+  // Best-effort, defensive raw read. Cannot rely on `loadMcpJsonFile` because
+  // it normalizes/filters entries. We just need {url} for the http entry
+  // matching `name` so we can compute its OAuth storage key.
+  try {
+    const text = await Bun.file(configPath).text();
+    const parsed: unknown = JSON.parse(text);
+    if (parsed === null || typeof parsed !== "object") return undefined;
+    const servers = (parsed as { mcpServers?: unknown }).mcpServers;
+    if (servers === null || typeof servers !== "object") return undefined;
+    const entry = (servers as Record<string, unknown>)[name];
+    if (entry === null || typeof entry !== "object") return undefined;
+    const e = entry as { type?: unknown; url?: unknown };
+    if ((e.type === undefined || e.type === "http") && typeof e.url === "string") {
+      return computeServerKey(name, e.url);
+    }
+  } catch {
+    /* malformed file or absent — leave key undefined */
+  }
+  return undefined;
 }
 
 function clearOAuthTokensFor(key: string): (name: string) => Promise<void> {
