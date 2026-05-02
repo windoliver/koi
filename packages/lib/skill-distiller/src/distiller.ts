@@ -31,14 +31,42 @@ function llmExternalError(cause: KoiError): KoiError {
   };
 }
 
-// Normalize a thrown LLM-client exception (timeout, abort, transport) into a
-// retryable EXTERNAL KoiError so distill() always honors its Result contract.
+// Patterns that indicate a thrown LLM-client exception is transient and worth
+// retrying. Anything else (auth, invalid request, schema, config, bad model)
+// is treated as terminal so callers don't waste budget on permanent failures.
+const TRANSIENT_THROWN_PATTERNS = [
+  /timeout/i,
+  /timed?[- ]out/i,
+  /abort/i,
+  /econn(?:reset|refused|aborted)/i,
+  /etimedout/i,
+  /socket hang up/i,
+  /network/i,
+  /rate.?limit/i,
+  /too many requests/i,
+  /\b429\b/,
+  /\b503\b/,
+  /\b504\b/,
+  /service unavailable/i,
+  /temporar(?:y|ily) unavailable/i,
+];
+
+function isTransientThrownMessage(message: string): boolean {
+  return TRANSIENT_THROWN_PATTERNS.some((p) => p.test(message));
+}
+
+// Normalize a thrown LLM-client exception into an EXTERNAL KoiError so
+// distill() always honors its Result contract. Default to non-retryable —
+// only known-transient signatures (timeout, abort, transport reset, 429/5xx)
+// are marked retryable, so permanent faults like auth or bad-request are not
+// silently looped over.
 function llmThrownError(thrown: unknown): KoiError {
   const message = thrown instanceof Error ? thrown.message : String(thrown);
+  const retryable = isTransientThrownMessage(message);
   return {
     code: "EXTERNAL",
     message: `distiller LLM call threw: ${message}`,
-    retryable: true,
+    retryable,
     context: { errorKind: "LLM_THREW" },
   };
 }
@@ -54,7 +82,7 @@ function flattenToolCalls(trace: DistillationTrace): readonly string[] {
 
 const LITERAL_MIN_LENGTH = 6;
 const LEAK_PROBE_FIELDS_DOC =
-  "description / triggers / expectedInputs / expectedOutputs / parameter fields";
+  "name / description / triggers / expectedInputs / expectedOutputs / parameter fields";
 
 // A trace literal is a string value inside a tool call's argsJson that looks
 // like a resource identifier (path, ID, URL, scoped key) — long enough and
@@ -112,7 +140,7 @@ function collectTraceLiterals(trace: DistillationTrace): readonly string[] {
 // triggers, expectedInputs, expectedOutputs, every parameter name + description)
 // because each is stored on the DistillationRecord and surfaced downstream.
 function collectDraftProbes(draft: SkillDraft): readonly string[] {
-  const probes: string[] = [draft.description, ...draft.triggers];
+  const probes: string[] = [draft.name, draft.description, ...draft.triggers];
   probes.push(...draft.expectedInputs);
   probes.push(...draft.expectedOutputs);
   for (const p of draft.parameters) {
@@ -142,21 +170,29 @@ function ungroundedError(reason: string, errorKind: string): KoiError {
   };
 }
 
-// Two-pointer subsequence test: every element of `needle` must appear in
-// `haystack` in the same relative order (gaps allowed, repeats consumed).
-function isOrderedSubsequence(needle: readonly string[], haystack: readonly string[]): boolean {
-  let i = 0;
-  for (const item of haystack) {
-    if (i < needle.length && needle[i] === item) i += 1;
+// Contiguous-window match: `needle` must appear as a contiguous run inside
+// `haystack`. Gaps are NOT allowed — dropping prerequisite tools (auth checks,
+// validations, setup steps) from the middle of a procedure would otherwise
+// produce a replayable but behaviorally incomplete skill. Sub-procedures are
+// still expressible by emitting a contiguous prefix/suffix window of the
+// observed sequence.
+function isContiguousSubsequence(needle: readonly string[], haystack: readonly string[]): boolean {
+  if (needle.length === 0) return true;
+  if (needle.length > haystack.length) return false;
+  outer: for (let i = 0; i + needle.length <= haystack.length; i += 1) {
+    for (let j = 0; j < needle.length; j += 1) {
+      if (haystack[i + j] !== needle[j]) continue outer;
+    }
+    return true;
   }
-  return i === needle.length;
+  return false;
 }
 
-// Reject hallucinated drafts: the emitted toolSequence must be an ordered
-// subsequence of the trace's actual tool-call stream (the prompt declares
-// toolSequence as the *ordered* procedure, so a reordered draft is wrong even
-// if every name appears somewhere). Triggers and a non-empty toolSequence are
-// required so the skill remains discoverable and replayable.
+// Reject hallucinated drafts: the emitted toolSequence must be a contiguous
+// run of the trace's actual tool-call stream (the prompt declares toolSequence
+// as the *ordered* procedure; allowing gaps would let an LLM omit prerequisite
+// guard/validation steps and still pass grounding). Triggers and a non-empty
+// toolSequence are required so the skill remains discoverable and replayable.
 function groundDraftInTrace(
   draft: SkillDraft,
   trace: DistillationTrace,
@@ -168,11 +204,11 @@ function groundDraftInTrace(
     return { ok: false, error: ungroundedError("triggers is empty", "DRAFT_TRIGGERS_EMPTY") };
   }
   const observed = flattenToolCalls(trace);
-  if (!isOrderedSubsequence(draft.toolSequence, observed)) {
+  if (!isContiguousSubsequence(draft.toolSequence, observed)) {
     return {
       ok: false,
       error: ungroundedError(
-        `toolSequence ${JSON.stringify(draft.toolSequence)} is not an ordered subsequence of the trace's tool calls ${JSON.stringify(observed)}`,
+        `toolSequence ${JSON.stringify(draft.toolSequence)} is not a contiguous run of the trace's tool calls ${JSON.stringify(observed)} — distilled skills may not omit intermediate prerequisite steps`,
         "DRAFT_TOOL_NOT_GROUNDED",
       ),
     };

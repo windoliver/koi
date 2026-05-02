@@ -385,4 +385,60 @@ describe("createDistiller", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_LITERAL_LEAKED");
   });
+
+  test("rejects toolSequence that drops intermediate prerequisite steps", async () => {
+    // Trace: authorize -> validate -> delete. A draft of [authorize, delete]
+    // skips the validation step — this would silently approve unsafe replays.
+    const trace: DistillationTrace = {
+      traceId: "t-skip",
+      turns: [
+        { role: "assistant", toolCalls: [{ name: "authorize", argsJson: "{}" }] },
+        { role: "assistant", toolCalls: [{ name: "validate", argsJson: "{}" }] },
+        { role: "assistant", toolCalls: [{ name: "delete", argsJson: "{}" }] },
+      ],
+    };
+    const dropped = okLLM({ ...VALID_DRAFT, toolSequence: ["authorize", "delete"] });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: dropped }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_TOOL_NOT_GROUNDED");
+  });
+
+  test("rejects draft.name that burns in a trace-specific identifier", async () => {
+    const trace: DistillationTrace = {
+      traceId: "t-name-leak",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "read_file", argsJson: '{"id":"acct-77c19ab3"}' }],
+        },
+        { role: "assistant", toolCalls: [{ name: "write_file", argsJson: "{}" }] },
+      ],
+    };
+    const burned = okLLM({ ...VALID_DRAFT, name: "acct-77c19ab3-cleanup" });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: burned }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_LITERAL_LEAKED");
+  });
+
+  test("marks permanent thrown LLM exceptions (auth, bad request) as non-retryable", async () => {
+    const llm: DistillerLLM = async () => {
+      throw new Error("401 Unauthorized: invalid api key");
+    };
+    const r = await createDistiller({ allowUnredactedTrace: true, llm }).distill(TRACE);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe("EXTERNAL");
+      expect(r.error.context?.errorKind).toBe("LLM_THREW");
+      expect(r.error.retryable).toBe(false);
+    }
+  });
+
+  test("still marks transient thrown LLM exceptions (timeout, 429) as retryable", async () => {
+    const llm: DistillerLLM = async () => {
+      throw new Error("429 Too Many Requests");
+    };
+    const r = await createDistiller({ allowUnredactedTrace: true, llm }).distill(TRACE);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.retryable).toBe(true);
+  });
 });
