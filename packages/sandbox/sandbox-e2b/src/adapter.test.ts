@@ -262,6 +262,48 @@ describe("createE2bAdapter", () => {
     expect(killCalls).toBe(1);
   }, 40_000);
 
+  test("create() bounds late-cleanup kill so a hung kill() cannot silently leak", async () => {
+    // Late-cleanup timeout regression: a degraded provider that missed
+    // the create deadline is the same one most likely to stall the
+    // compensating kill(). Without bounding the late cleanup, the
+    // reconciler would never emit any signal and the orphan microVM
+    // would stay billable. Adapter must race late kill() against an
+    // internal timeout and emit LATE_CLEANUP_TIMEOUT.
+    const client = createFakeClient();
+    const handle = client.sandbox;
+    let resolveCreate!: (sdk: typeof handle) => void;
+    const lateHandle = {
+      ...handle,
+      // kill() returns a promise that never settles — exactly the case
+      // a bounded reconciler must surface.
+      kill: (): Promise<void> => new Promise<void>(() => {}),
+    };
+    Object.defineProperty(client, "createSandbox", {
+      value: () =>
+        new Promise<typeof handle>((r) => {
+          resolveCreate = r;
+        }),
+    });
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (msg: string) => {
+      warnings.push(msg);
+    };
+    try {
+      const result = createE2bAdapter({ apiKey: "k", client });
+      if (!result.ok) throw new Error("validate failed");
+      const createPromise = result.value.create(openProfile);
+      const err = await createPromise.catch((e: unknown) => e as Error);
+      expect((err as Error).message).toMatch(/INDETERMINATE/);
+      resolveCreate(lateHandle);
+      // Wait past the 10s late-cleanup timeout for the warn to fire.
+      await new Promise((r) => setTimeout(r, 10_500));
+      expect(warnings.some((w) => w.includes("LATE_CLEANUP_TIMEOUT"))).toBe(true);
+    } finally {
+      console.warn = origWarn;
+    }
+  }, 50_000);
+
   test("create() postflights files.readBytes and tears down handles without binary read", async () => {
     // Without readBytes, every readFile() would hard-fail after the
     // microVM is already billed. Postflight catches this at create.

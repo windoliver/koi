@@ -281,6 +281,43 @@ describe("createDaytonaAdapter", () => {
     expect(deleteCalls).toBe(1);
   }, 40_000);
 
+  test("create() bounds late-cleanup delete so a hung delete() cannot silently leak", async () => {
+    // Late-cleanup timeout regression: a degraded control plane that
+    // missed the create deadline is the same one most likely to stall
+    // delete(). Without bounding, the reconciler would never emit a
+    // signal and the orphan workspace would stay billable.
+    const client = createFakeClient();
+    const handle = client.sandbox;
+    let resolveCreate!: (sdk: typeof handle) => void;
+    const lateHandle = {
+      ...handle,
+      delete: (): Promise<void> => new Promise<void>(() => {}),
+    };
+    Object.defineProperty(client, "createSandbox", {
+      value: () =>
+        new Promise<typeof handle>((r) => {
+          resolveCreate = r;
+        }),
+    });
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (msg: string) => {
+      warnings.push(msg);
+    };
+    try {
+      const result = createDaytonaAdapter({ apiKey: "k", client });
+      if (!result.ok) throw new Error("validate failed");
+      const createPromise = result.value.create(openProfile);
+      const err = await createPromise.catch((e: unknown) => e as Error);
+      expect((err as Error).message).toMatch(/INDETERMINATE/);
+      resolveCreate(lateHandle);
+      await new Promise((r) => setTimeout(r, 10_500));
+      expect(warnings.some((w) => w.includes("LATE_CLEANUP_TIMEOUT"))).toBe(true);
+    } finally {
+      console.warn = origWarn;
+    }
+  }, 50_000);
+
   test("create() postflights files.readBytes and tears down handles without binary read", async () => {
     const client = createFakeClient();
     const original = client.sandbox;

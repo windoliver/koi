@@ -97,14 +97,39 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
         // create. If the provider eventually returns a handle (after we
         // already surfaced the timeout to the caller), best-effort kill
         // the orphan microVM.
+        // Bound the late cleanup so a hung kill() cannot silently leak.
+        // A degraded provider that missed the create deadline is exactly
+        // the case where the compensating teardown is most likely to
+        // stall too; without a timeout race the reconciler would never
+        // emit any signal and the orphan would stay billable forever.
+        const LATE_CLEANUP_TIMEOUT_MS = 10_000;
         createPromise.then(
           (lateSdk) => {
             if (typeof lateSdk?.kill === "function") {
-              lateSdk.kill().catch((killErr: unknown) => {
-                // Late cleanup failed — surface so operators can detect
-                // the orphan via logs/metrics. Empty .catch would hide
-                // exactly the failure mode this code is trying to handle.
-                const cause = killErr instanceof Error ? killErr.message : String(killErr);
+              const killCall = lateSdk.kill();
+              Promise.race<
+                | { readonly kind: "ok" }
+                | { readonly kind: "timeout" }
+                | { readonly kind: "err"; readonly e: unknown }
+              >([
+                killCall.then(
+                  () => ({ kind: "ok" }) as const,
+                  (e: unknown) => ({ kind: "err", e }) as const,
+                ),
+                new Promise((resolve) =>
+                  setTimeout(() => resolve({ kind: "timeout" } as const), LATE_CLEANUP_TIMEOUT_MS),
+                ),
+              ]).then((res) => {
+                if (res.kind === "ok") return;
+                if (res.kind === "timeout") {
+                  console.warn(
+                    `[sandbox-e2b] LATE_CLEANUP_TIMEOUT label=${label} — late kill() did not settle ` +
+                      `within ${LATE_CLEANUP_TIMEOUT_MS}ms; orphan microVM may still be running and ` +
+                      `billable. Revoke out-of-band.`,
+                  );
+                  return;
+                }
+                const cause = res.e instanceof Error ? res.e.message : String(res.e);
                 console.warn(
                   `[sandbox-e2b] LATE_CLEANUP_FAILED label=${label} cause="${cause}" — ` +
                     `orphan microVM may still be running and billable. Revoke out-of-band.`,

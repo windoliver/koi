@@ -96,14 +96,39 @@ export function createDaytonaAdapter(
         // be a client-side detach that leaves the workspace running and
         // billable; pretending otherwise would hide a leak behind a
         // false-positive cleanup signal.
+        // Bound the late cleanup so a hung delete() cannot silently leak.
+        // A degraded control plane that missed the create deadline is
+        // exactly the case where the compensating teardown is most likely
+        // to stall too; without a timeout race the reconciler would never
+        // emit any signal and the orphan workspace would stay billable.
+        const LATE_CLEANUP_TIMEOUT_MS = 10_000;
         createPromise.then(
           (lateSdk) => {
             if (typeof lateSdk?.delete === "function") {
-              lateSdk.delete().catch((deleteErr: unknown) => {
-                // Late cleanup failed — surface so operators can detect
-                // the orphan via logs/metrics. Empty .catch would hide
-                // exactly the failure mode this code is trying to handle.
-                const cause = deleteErr instanceof Error ? deleteErr.message : String(deleteErr);
+              const deleteCall = lateSdk.delete();
+              Promise.race<
+                | { readonly kind: "ok" }
+                | { readonly kind: "timeout" }
+                | { readonly kind: "err"; readonly e: unknown }
+              >([
+                deleteCall.then(
+                  () => ({ kind: "ok" }) as const,
+                  (e: unknown) => ({ kind: "err", e }) as const,
+                ),
+                new Promise((resolve) =>
+                  setTimeout(() => resolve({ kind: "timeout" } as const), LATE_CLEANUP_TIMEOUT_MS),
+                ),
+              ]).then((res) => {
+                if (res.kind === "ok") return;
+                if (res.kind === "timeout") {
+                  console.warn(
+                    `[sandbox-daytona] LATE_CLEANUP_TIMEOUT label=${label} — late delete() did not ` +
+                      `settle within ${LATE_CLEANUP_TIMEOUT_MS}ms; orphan workspace may still be ` +
+                      `running and billable. Revoke out-of-band.`,
+                  );
+                  return;
+                }
+                const cause = res.e instanceof Error ? res.e.message : String(res.e);
                 console.warn(
                   `[sandbox-daytona] LATE_CLEANUP_FAILED label=${label} cause="${cause}" — ` +
                     `orphan workspace may still be running and billable. Revoke out-of-band.`,
