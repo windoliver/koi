@@ -53,9 +53,20 @@ export interface DistillerLLMRequest {
 
 export type DistillerLLM = (req: DistillerLLMRequest) => Promise<Result<string, KoiError>>;
 
+/**
+ * Sanitize a trace before it is rendered into the LLM prompt. The default is
+ * the identity function — callers MUST supply a real redactor when traces may
+ * carry secrets, tenant IDs, customer paths, or any data that should not
+ * leave the local trust boundary. Redaction runs on a deep copy so the
+ * original trace is never mutated.
+ */
+export type TraceRedactor = (trace: DistillationTrace) => DistillationTrace;
+
 export interface DistillerConfig {
   readonly llm: DistillerLLM;
   readonly now?: () => number;
+  /** Sanitize the trace before prompt rendering. Default: identity (no redaction). */
+  readonly redactor?: TraceRedactor;
 }
 
 export interface Distiller {

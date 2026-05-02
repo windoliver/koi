@@ -31,6 +31,18 @@ function llmExternalError(cause: KoiError): KoiError {
   };
 }
 
+// Normalize a thrown LLM-client exception (timeout, abort, transport) into a
+// retryable EXTERNAL KoiError so distill() always honors its Result contract.
+function llmThrownError(thrown: unknown): KoiError {
+  const message = thrown instanceof Error ? thrown.message : String(thrown);
+  return {
+    code: "EXTERNAL",
+    message: `distiller LLM call threw: ${message}`,
+    retryable: true,
+    context: { errorKind: "LLM_THREW" },
+  };
+}
+
 function flattenToolCalls(trace: DistillationTrace): readonly string[] {
   const calls: string[] = [];
   for (const turn of trace.turns) {
@@ -41,7 +53,8 @@ function flattenToolCalls(trace: DistillationTrace): readonly string[] {
 }
 
 const LITERAL_MIN_LENGTH = 6;
-const LEAK_PROBE_FIELDS_DOC = "description / expectedInputs";
+const LEAK_PROBE_FIELDS_DOC =
+  "description / triggers / expectedInputs / expectedOutputs / parameter fields";
 
 // A trace literal is a string value inside a tool call's argsJson that looks
 // like a resource identifier (path, ID, URL, scoped key) — long enough and
@@ -85,16 +98,25 @@ function collectTraceLiterals(trace: DistillationTrace): readonly string[] {
   return [...literals];
 }
 
-// Catch the obvious "burned-in target" failure mode: the LLM took a tenant
-// path / file path / ID that appeared in a tool call and pasted it verbatim
-// into description or expectedInputs. The draft should have abstracted it via
-// a parameter. We only probe the contract surfaces (description and
-// expectedInputs) — triggers and expectedOutputs may legitimately mention
-// example targets in user-facing prose.
+// Catch the "burned-in target" failure mode: the LLM took a tenant path / file
+// path / ID that appeared in a tool call and pasted it verbatim into ANY
+// persisted field of the draft. We probe every user-visible string (description,
+// triggers, expectedInputs, expectedOutputs, every parameter name + description)
+// because each is stored on the DistillationRecord and surfaced downstream.
+function collectDraftProbes(draft: SkillDraft): readonly string[] {
+  const probes: string[] = [draft.description, ...draft.triggers];
+  probes.push(...draft.expectedInputs);
+  probes.push(...draft.expectedOutputs);
+  for (const p of draft.parameters) {
+    probes.push(p.name, p.description);
+  }
+  return probes;
+}
+
 function findLeakedLiteral(draft: SkillDraft, trace: DistillationTrace): string | undefined {
   const literals = collectTraceLiterals(trace);
   if (literals.length === 0) return undefined;
-  const probes: readonly string[] = [draft.description, ...draft.expectedInputs];
+  const probes = collectDraftProbes(draft);
   for (const literal of literals) {
     for (const field of probes) {
       if (field.includes(literal)) return literal;
@@ -163,19 +185,29 @@ function groundDraftInTrace(
 
 export function createDistiller(config: DistillerConfig): Distiller {
   const now = config.now ?? Date.now;
+  const redact = config.redactor ?? ((t) => t);
   return {
     distill: async (trace: DistillationTrace): Promise<Result<DistillationRecord, KoiError>> => {
       if (trace.turns.length === 0) {
         return { ok: false, error: emptyTraceError() };
       }
-      const prompt = renderDistillationPrompt(trace);
-      const llmResult = await config.llm({ prompt, modelHint: "cheap" });
+      // Redaction runs BEFORE prompt rendering so secrets never reach the LLM.
+      // Grounding still uses the redacted trace so the literal-leak check
+      // operates on the same tokens the model actually saw.
+      const redacted = redact(trace);
+      const prompt = renderDistillationPrompt(redacted);
+      let llmResult: Result<string, KoiError>;
+      try {
+        llmResult = await config.llm({ prompt, modelHint: "cheap" });
+      } catch (e: unknown) {
+        return { ok: false, error: llmThrownError(e) };
+      }
       if (!llmResult.ok) {
         return { ok: false, error: llmExternalError(llmResult.error) };
       }
       const draftResult = parseSkillDraft(llmResult.value);
       if (!draftResult.ok) return draftResult;
-      const grounded = groundDraftInTrace(draftResult.value, trace);
+      const grounded = groundDraftInTrace(draftResult.value, redacted);
       if (!grounded.ok) return grounded;
       const draft = grounded.value;
       const record: DistillationRecord = {

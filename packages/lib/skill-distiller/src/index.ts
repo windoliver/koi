@@ -47,6 +47,7 @@ export type {
   DistillerLLMRequest,
   SkillDraft,
   SkillDraftParameter,
+  TraceRedactor,
   TraceTurn,
   TraceTurnToolCall,
 } from "./types.js";

@@ -181,6 +181,101 @@ describe("createDistiller", () => {
     if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_LITERAL_LEAKED");
   });
 
+  test("rejects draft with trace literal leaked into a trigger phrase", async () => {
+    const trace: DistillationTrace = {
+      traceId: "t",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "read_file", argsJson: '{"path":"acct-77c19ab3"}' }],
+        },
+        {
+          role: "assistant",
+          toolCalls: [{ name: "write_file", argsJson: "{}" }],
+        },
+      ],
+    };
+    const burned = okLLM({ ...VALID_DRAFT, triggers: ["format pr for acct-77c19ab3"] });
+    const r = await createDistiller({ llm: burned }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_LITERAL_LEAKED");
+  });
+
+  test("rejects draft with trace literal leaked into a parameter description", async () => {
+    const trace: DistillationTrace = {
+      traceId: "t",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "read_file", argsJson: '{"path":"/srv/tenant-9/data"}' }],
+        },
+        {
+          role: "assistant",
+          toolCalls: [{ name: "write_file", argsJson: "{}" }],
+        },
+      ],
+    };
+    const burned = okLLM({
+      ...VALID_DRAFT,
+      parameters: [{ name: "title", description: "the path /srv/tenant-9/data", required: true }],
+    });
+    const r = await createDistiller({ llm: burned }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_LITERAL_LEAKED");
+  });
+
+  test("redactor runs before LLM call — secrets in tool args never reach the prompt", async () => {
+    const trace: DistillationTrace = {
+      traceId: "t-secret",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "read_file", argsJson: '{"token":"sk-secret-XYZ"}' }],
+        },
+        {
+          role: "assistant",
+          toolCalls: [{ name: "write_file", argsJson: "{}" }],
+        },
+      ],
+    };
+    let promptSeen = "";
+    const llm: DistillerLLM = async ({ prompt }) => {
+      promptSeen = prompt;
+      return { ok: true, value: JSON.stringify({ ...VALID_DRAFT, toolSequence: ["read_file"] }) };
+    };
+    const redactor = (t: DistillationTrace): DistillationTrace => ({
+      ...t,
+      turns: t.turns.map((turn) =>
+        turn.toolCalls === undefined
+          ? turn
+          : {
+              ...turn,
+              toolCalls: turn.toolCalls.map((c) => ({
+                name: c.name,
+                argsJson: c.argsJson.replace(/sk-[A-Za-z0-9-]+/g, "<redacted>"),
+              })),
+            },
+      ),
+    });
+    const r = await createDistiller({ llm, redactor }).distill(trace);
+    expect(r.ok).toBe(true);
+    expect(promptSeen).not.toContain("sk-secret-XYZ");
+    expect(promptSeen).toContain("<redacted>");
+  });
+
+  test("normalizes thrown LLM exceptions into EXTERNAL Result error (not a rejection)", async () => {
+    const llm: DistillerLLM = async () => {
+      throw new Error("ECONNRESET");
+    };
+    const r = await createDistiller({ llm }).distill(TRACE);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe("EXTERNAL");
+      expect(r.error.context?.errorKind).toBe("LLM_THREW");
+      expect(r.error.retryable).toBe(true);
+    }
+  });
+
   test("accepts draft that abstracts trace literals through parameters", async () => {
     const trace: DistillationTrace = {
       traceId: "t-clean",
