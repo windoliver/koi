@@ -18,10 +18,14 @@ import type { EngineEvent, InboundMessage, ModelAdapter } from "@koi/core";
 
 // runTurnState is a plain object so the closure inside mock.module can
 // reference it at call time (not at factory creation time), avoiding TDZ.
-const runTurnState: { events: readonly EngineEvent[] } = { events: [] };
+const runTurnState: { events: readonly EngineEvent[]; calls: unknown[] } = {
+  events: [],
+  calls: [],
+};
 
 mock.module("@koi/query-engine", () => ({
-  runTurn: mock(async function* (_opts: unknown) {
+  runTurn: mock(async function* (opts: unknown) {
+    runTurnState.calls.push(opts);
     for (const e of runTurnState.events) {
       yield e as EngineEvent;
     }
@@ -135,6 +139,7 @@ describe("createTranscriptAdapter — transcript commit semantics", () => {
 
   beforeEach(() => {
     transcript = [];
+    runTurnState.calls = [];
   });
 
   test("commits user + assistant messages on stopReason completed", async () => {
@@ -186,6 +191,88 @@ describe("createTranscriptAdapter — transcript commit semantics", () => {
     // The adapter should slice to last 10 + staged user = 11 in context
     // We verify this indirectly — the call should not throw
     await expect(collectEvents(transcript, [], "completed", "reply")).resolves.toBeDefined();
+  });
+
+  test("messages input is passed to the turn runner", async () => {
+    const adapter = createTranscriptAdapter({
+      engineId: "test-messages",
+      modelAdapter: makeModelAdapter(),
+      transcript,
+      maxTranscriptMessages: 10,
+      maxTurns: 5,
+    });
+    runTurnState.events = [makeDoneEvent("completed", "reply")];
+
+    for await (const _event of adapter.stream({
+      kind: "messages",
+      messages: [
+        {
+          senderId: "gateway",
+          threadId: "sess-a",
+          timestamp: 1,
+          content: [{ kind: "text", text: "gateway prompt" }],
+        },
+      ],
+      callHandlers: fakeHandlers,
+    })) {
+      // drain
+    }
+
+    const call = runTurnState.calls.at(-1) as { readonly messages: readonly InboundMessage[] };
+    expect(call.messages.at(-1)?.content).toEqual([{ kind: "text", text: "gateway prompt" }]);
+  });
+
+  test("messages input keeps transcript context isolated by threadId", async () => {
+    const adapter = createTranscriptAdapter({
+      engineId: "test-threaded-messages",
+      modelAdapter: makeModelAdapter(),
+      transcript,
+      maxTranscriptMessages: 10,
+      maxTurns: 5,
+    });
+
+    runTurnState.events = [makeDoneEvent("completed", "reply-a")];
+    for await (const _event of adapter.stream({
+      kind: "messages",
+      messages: [
+        {
+          senderId: "gateway",
+          threadId: "sess-a",
+          timestamp: 1,
+          content: [{ kind: "text", text: "prompt-a" }],
+        },
+      ],
+      callHandlers: fakeHandlers,
+    })) {
+      // drain
+    }
+
+    runTurnState.events = [makeDoneEvent("completed", "reply-b")];
+    for await (const _event of adapter.stream({
+      kind: "messages",
+      messages: [
+        {
+          senderId: "gateway",
+          threadId: "sess-b",
+          timestamp: 2,
+          content: [{ kind: "text", text: "prompt-b" }],
+        },
+      ],
+      callHandlers: fakeHandlers,
+    })) {
+      // drain
+    }
+
+    const secondCall = runTurnState.calls.at(-1) as {
+      readonly messages: readonly InboundMessage[];
+    };
+    const rendered = secondCall.messages
+      .flatMap((message) => message.content)
+      .map((block) => (block.kind === "text" ? block.text : ""))
+      .join("\n");
+    expect(rendered).toContain("prompt-b");
+    expect(rendered).not.toContain("prompt-a");
+    expect(rendered).not.toContain("reply-a");
   });
 });
 

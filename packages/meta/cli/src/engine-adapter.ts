@@ -26,6 +26,7 @@ import type {
   ModelAdapter,
 } from "@koi/core";
 import { runTurn } from "@koi/query-engine";
+import { explainNonCompletedStop } from "./engine-stop-explanation.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -73,6 +74,22 @@ export interface TranscriptAdapterConfig {
 export function createTranscriptAdapter(config: TranscriptAdapterConfig): EngineAdapter {
   const { engineId, modelAdapter, transcript, maxTranscriptMessages, maxTurns, budgetConfig } =
     config;
+  const threadedTranscripts = new Map<string, InboundMessage[]>();
+
+  function resolveTranscript(input: EngineInput): {
+    readonly transcript: InboundMessage[];
+    readonly threadId: string | undefined;
+  } {
+    if (input.kind !== "messages") return { transcript, threadId: undefined };
+    const threadId = input.messages.find((msg) => msg.threadId !== undefined)?.threadId;
+    if (threadId === undefined || threadId.length === 0) return { transcript, threadId: undefined };
+    let scoped = threadedTranscripts.get(threadId);
+    if (scoped === undefined) {
+      scoped = [];
+      threadedTranscripts.set(threadId, scoped);
+    }
+    return { transcript: scoped, threadId };
+  }
 
   // Adapter-instance state for cancel-resume (issue #1683): the in-flight
   // user message of the currently-streaming turn. Committed to transcript
@@ -174,19 +191,31 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
         );
       }
 
-      const text = input.kind === "text" ? input.text : "";
-      // Stage user message — only committed to transcript after a completed turn.
+      const active = resolveTranscript(input);
+      const activeTranscript = active.transcript;
+      const activeThreadId = active.threadId;
+      // Stage user message(s) — only committed to transcript after a completed turn.
       // Committing early would leave orphaned user prompts on failure, breaking
       // retry semantics on the next submit.
-      const stagedUserMsg: InboundMessage = {
-        senderId: "user",
-        timestamp: Date.now(),
-        content: [{ kind: "text", text }],
-      };
-      // Expose to saveState (cancel-resume): if the wrapper observes an
-      // interrupted terminal before this turn commits, it captures this
-      // pointer so the canceled prompt is reinjected on resume.
-      inFlightUserRef = stagedUserMsg;
+      const stagedMessages: readonly InboundMessage[] =
+        input.kind === "messages"
+          ? input.messages
+          : [
+              {
+                senderId: "user",
+                timestamp: Date.now(),
+                content: [{ kind: "text", text: input.kind === "text" ? input.text : "" }],
+              },
+            ];
+      // Cancel-resume (#1683): expose the in-flight user prompt to
+      // saveState for the text-input path (TUI). If the wrapper observes
+      // an interrupted terminal before this turn commits, it captures
+      // this pointer so the canceled prompt is reinjected on resume.
+      // Multi-message inputs (gateway flows) own their own message
+      // lifecycle externally and don't participate in this hook.
+      if (input.kind === "text" && stagedMessages[0] !== undefined) {
+        inFlightUserRef = stagedMessages[0];
+      }
 
       return (async function* (): AsyncIterable<EngineEvent> {
         // Build context window: token-aware compaction when budgetConfig is set,
@@ -197,16 +226,20 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
           // model's context window immediately on the next turn, without
           // requiring the adapter to be rebuilt.
           const resolvedBudget = typeof budgetConfig === "function" ? budgetConfig() : budgetConfig;
-          const budgetResult = await enforceBudget([...transcript], undefined, resolvedBudget);
+          const budgetResult = await enforceBudget(
+            [...activeTranscript],
+            undefined,
+            resolvedBudget,
+          );
           if (budgetResult.compaction !== "noop") {
             // Splice transcript in-place so future turns see the compacted history.
-            transcript.splice(0, transcript.length, ...budgetResult.messages);
+            activeTranscript.splice(0, activeTranscript.length, ...budgetResult.messages);
           }
           contextMessages = budgetResult.messages;
         } else {
-          contextMessages = transcript.slice(-maxTranscriptMessages);
+          contextMessages = activeTranscript.slice(-maxTranscriptMessages);
         }
-        const contextWindow = [...contextMessages, stagedUserMsg];
+        const contextWindow = [...contextMessages, ...stagedMessages];
 
         // Accumulate tool history so follow-up turns see the full context
         // (assistant tool_call intents + tool results), not just final text.
@@ -258,6 +291,7 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
           if (event.kind === "tool_result") {
             pendingToolResults.push({
               senderId: "tool",
+              ...(activeThreadId !== undefined ? { threadId: activeThreadId } : {}),
               timestamp: Date.now(),
               content: [
                 {
@@ -274,7 +308,7 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
           if (event.kind === "turn_end") {
             // Commit user message once (first turn_end in this stream call).
             if (!userMessageCommitted) {
-              transcript.push(stagedUserMsg);
+              activeTranscript.push(...stagedMessages);
               userMessageCommitted = true;
               // Cancel-resume: prompt is now in transcript, so saveState
               // no longer needs to capture it as the in-flight staged user.
@@ -291,8 +325,9 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
             );
             const pairedCalls = pendingToolCalls.filter((tc) => pairedCallIds.has(tc.id));
             if (pairedCalls.length > 0) {
-              transcript.push({
+              activeTranscript.push({
                 senderId: "assistant",
+                ...(activeThreadId !== undefined ? { threadId: activeThreadId } : {}),
                 timestamp: Date.now(),
                 content: turnText.length > 0 ? [{ kind: "text", text: turnText }] : [],
                 metadata: {
@@ -304,11 +339,12 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
                 },
               });
               for (const msg of pendingToolResults) {
-                transcript.push(msg);
+                activeTranscript.push(msg);
               }
             } else if (turnText.length > 0) {
-              transcript.push({
+              activeTranscript.push({
                 senderId: "assistant",
+                ...(activeThreadId !== undefined ? { threadId: activeThreadId } : {}),
                 timestamp: Date.now(),
                 content: [{ kind: "text", text: turnText }],
               });
@@ -327,27 +363,30 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
             const stopReason = event.output.stopReason;
             if (stopReason === "completed" && !userMessageCommitted) {
               // Fallback: turn_end never fired — commit from done event.
-              transcript.push(stagedUserMsg);
+              activeTranscript.push(...stagedMessages);
               userMessageCommitted = true;
               inFlightUserRef = undefined;
               const fallbackText = pendingTurnText.join("");
               if (fallbackText.length > 0) {
-                transcript.push({
+                activeTranscript.push({
                   senderId: "assistant",
+                  ...(activeThreadId !== undefined ? { threadId: activeThreadId } : {}),
                   timestamp: Date.now(),
                   content: [{ kind: "text", text: fallbackText }],
                 });
               } else {
                 const fullContent = event.output.content;
                 if (fullContent.length > 0) {
-                  transcript.push({
+                  activeTranscript.push({
                     senderId: "assistant",
+                    ...(activeThreadId !== undefined ? { threadId: activeThreadId } : {}),
                     timestamp: Date.now(),
                     content: fullContent,
                   });
                 } else if (deltaText.length > 0) {
-                  transcript.push({
+                  activeTranscript.push({
                     senderId: "assistant",
+                    ...(activeThreadId !== undefined ? { threadId: activeThreadId } : {}),
                     timestamp: Date.now(),
                     content: [{ kind: "text", text: deltaText }],
                   });
@@ -364,72 +403,6 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
       })();
     },
   };
-}
-
-// ---------------------------------------------------------------------------
-// Synthetic text for silent-termination cases (#1742)
-// ---------------------------------------------------------------------------
-
-/**
- * Build a user-visible one-liner for a non-"completed" terminal stop reason.
- *
- * When the agent loop terminates without emitting assistant text — e.g. a tool
- * threw in middleware, max_turns was reached before the model produced a final
- * summary, or an exfiltration/security gate blocked the response — the TUI
- * previously saw a `done` event with no preceding `text_delta` and rendered
- * an empty bubble. Users on the Phase 2 bug bash experienced this as "no
- * reply on the second turn".
- *
- * The message prefers `metadata.source` / `metadata.message` set by the
- * turn-runner when available so users see *why* the turn died, not just a
- * generic "turn failed" string.
- */
-function explainNonCompletedStop(stopReason: string, metadata: unknown): string {
-  const meta =
-    (metadata as
-      | {
-          readonly source?: string;
-          readonly message?: string;
-          readonly providerDetail?: { readonly error?: { readonly message?: string } | string };
-          readonly terminatedBy?: string;
-          readonly terminationReason?: string;
-          readonly elapsedMs?: number;
-        }
-      | undefined) ?? undefined;
-  // Prefer explicit message, fall back to provider error message so users
-  // see the upstream 400 (e.g. "tool_use without tool_result") instead of
-  // a generic "Turn failed".
-  const providerMsg = (() => {
-    const pd = meta?.providerDetail?.error;
-    if (typeof pd === "string") return pd;
-    return pd?.message;
-  })();
-  const effectiveMsg = meta?.message ?? providerMsg;
-  const detail = effectiveMsg !== undefined ? ` — ${effectiveMsg}` : "";
-  const source = meta?.source !== undefined ? ` (${meta.source})` : "";
-  // #1638: distinguish activity-timeout interrupts from user cancels so
-  // operators can diagnose silent-failure sessions. Reason is
-  // "idle" | "wall_clock"; elapsedMs is authoritative.
-  if (meta?.terminatedBy === "activity-timeout") {
-    const reason = meta.terminationReason ?? "unknown";
-    const elapsed = typeof meta.elapsedMs === "number" ? meta.elapsedMs : 0;
-    const seconds = Math.round(elapsed / 1000);
-    const label =
-      reason === "idle" ? "inactivity" : reason === "wall_clock" ? "wall-clock" : reason;
-    return `\n[Turn interrupted by activity timeout (${label}) after ${seconds}s.]\n`;
-  }
-  switch (stopReason) {
-    case "max_turns":
-      return `\n[Turn ended: model reached the per-turn tool-call budget without producing a final reply${detail}. Try a more specific prompt, or split the work across multiple turns.]\n`;
-    case "interrupted":
-      return "\n[Turn interrupted before the model produced a reply.]\n";
-    case "hook_blocked":
-      return `\n[Turn blocked by a security gate${detail}.]\n`;
-    case "error":
-      return `\n[Turn failed${source}${detail}.]\n`;
-    default:
-      return `\n[Turn ended without a reply: ${stopReason}${detail}.]\n`;
-  }
 }
 
 // ---------------------------------------------------------------------------

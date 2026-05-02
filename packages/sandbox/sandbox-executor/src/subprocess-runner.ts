@@ -5,35 +5,59 @@
  *   process.argv[2] — absolute path to the code file (.ts or .js)
  *   process.argv[3] — JSON-encoded input value (or "null")
  *
- * Output (stderr, after framing marker):
+ * Output: the framed result is written to **fd=3** (a dedicated pipe the
+ * parent allocates via `stdio: ["ignore", "pipe", "pipe", "pipe"]`). User
+ * code is free to write to stdout/stderr without colliding with the
+ * protocol — this avoids the race where a tight `process.stderr.write`
+ * burst leaves libuv-queued bytes that overrun a stderr-side marker on
+ * slow CI runners. fd=3 is touched only by `writeSync` from this runner.
+ *
  *   __KOI_RESULT__\n<json>\n
  *   where json is { ok: true, output: unknown } | { ok: false, error: string }
  *
- * stdout is left free for user code (console.log, etc.).
- *
  * Exit codes:
- *   0 — result written to stderr (ok or error framed)
+ *   0 — result written to fd=3 (ok or error framed)
  *   1 — unrecoverable startup error (bad argv, parse failure)
+ *
+ * Backward compatibility: if fd=3 is not available (e.g. older parent or
+ * stand-alone invocation), the runner falls back to writing the marker on
+ * stderr so existing tests/tools that exec the runner directly still work.
  */
 
 import { writeSync } from "node:fs";
 
 export {};
 
-/** Framing marker separating protocol output from any other stderr content. */
+/** Framing marker separating protocol output from any other content. */
 const RESULT_MARKER = "__KOI_RESULT__\n";
+
+/**
+ * Result fd: parent allocates fd=3 as a dedicated protocol pipe so user
+ * code on stdout/stderr cannot interleave with or race the marker.
+ * Falls back to fd=2 (stderr) when fd=3 is unavailable — the parent's
+ * `readBoundedText` over stderr still scans the tail buffer for the
+ * marker so direct-exec callers (older parent, manual debug runs) keep
+ * working.
+ */
+function resolveResultFd(): number {
+  try {
+    // writeSync with an empty payload probes the fd without committing data.
+    writeSync(3, "");
+    return 3;
+  } catch (_: unknown) {
+    return 2;
+  }
+}
+
+const RESULT_FD = resolveResultFd();
 
 type RunnerResult =
   | { readonly ok: true; readonly output: unknown }
   | { readonly ok: false; readonly error: string };
 
 function writeResult(data: RunnerResult): void {
-  // Use writeSync(fd=2) — a synchronous, unbuffered system call that returns
-  // only after the bytes are accepted by the kernel. process.stderr.write does
-  // NOT guarantee flush before process.exit(); under heavy stderr backpressure
-  // (large prior writes filling the pipe), the framing marker can be lost,
-  // causing the parent to mis-classify a successful child as CRASH or TIMEOUT.
-  writeSync(2, `${RESULT_MARKER}${JSON.stringify(data)}\n`);
+  // Synchronous syscall — bytes are accepted by the kernel before return.
+  writeSync(RESULT_FD, `${RESULT_MARKER}${JSON.stringify(data)}\n`);
 }
 
 /**

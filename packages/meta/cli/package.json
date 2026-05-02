@@ -139,6 +139,10 @@
     "re2-wasm": "1.0.2",
     "solid-js": "1.9.11"
   },
+  "optionalDependencies": {
+    "ssh2": "1.16.0",
+    "cpu-features": "0.0.10"
+  },
   "devDependencies": {
     "@koi/channel-cli": "workspace:*",
     "@koi/config": "workspace:*",

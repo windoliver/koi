@@ -19,7 +19,8 @@ list latency stay bounded by one agent's own synthesis count.
 
 ## Surface
 
-- `createInMemoryForgeStore(): ForgeStore` — concrete `Map`-backed impl.
+- `createInMemoryForgeStore(): ForgeStore` — concrete `Map`-backed impl. `saved`/`updated`/`removed` notifier events carry `generation = storeVersion` (#2106) so consumers like `@koi/middleware-policy-cache` can refuse stale events and prevent rollback-style authorization downgrades.
+- `computeIdentityBrickId(inputs): BrickId` — re-exported (#2106) so cross-package callers can mint valid content-addressed brick ids without copying the hash logic.
 - `createForgeToolTool({ store }): Tool` — synthesize `ToolArtifact`.
 - `createForgeMiddlewareTool({ store }): Tool` — synthesize `ImplementationArtifact` with `kind: "middleware"`.
 - `createForgeListTool({ store }): Tool` — bounded list via `createdBy` query.

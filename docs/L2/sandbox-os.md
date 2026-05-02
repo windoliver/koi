@@ -28,6 +28,25 @@ L2  @koi/sandbox-os
 
 ---
 
+## Capabilities (issue #1641)
+
+`createOsAdapter()` and `createOsAdapterForTest()` declare:
+
+```ts
+capabilities: {
+  supports: new Set<AdapterCapability>(["exec", "network", "filesystem-rw"]),
+  priority: 0,
+}
+```
+
+`spawn` and `copy-files` are intentionally NOT declared: `instance.spawn` is
+unimplemented and `readFile`/`writeFile` throw. The `@koi/sandbox-router`
+honors this declaration when matching profiles with `required` capabilities,
+so a profile asking for `copy-files` correctly falls through to a backend
+that does support it (e.g., `@koi/sandbox-docker`).
+
+---
+
 ## Architecture
 
 ### Internal module map

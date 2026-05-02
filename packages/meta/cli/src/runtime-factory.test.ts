@@ -12,12 +12,17 @@
  * and verify assembly structure, not behavior.
  */
 
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ApprovalHandler, KoiMiddleware, ModelAdapter } from "@koi/core";
 import { toolToken } from "@koi/core";
 import { MiddlewareRegistry, UnknownManifestMiddlewareError } from "./middleware-registry.js";
 import { RequiredMiddlewareError } from "./required-middleware.js";
+import type { KoiRuntimeConfig } from "./runtime-factory.js";
 import { createKoiRuntime, MAX_TRAJECTORY_STEPS, resolveMaxDurationMs } from "./runtime-factory.js";
+import { __setUserMcpHomeDirForTests } from "./shared-wiring.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -46,13 +51,25 @@ const stubApprovalHandler: ApprovalHandler = mock(async (_request) => ({
   kind: "allow" as const,
 }));
 
+const runtimeTestDirs: string[] = [];
+let fakeMcpHome: string | undefined;
+
+function makeTestCwd(): string {
+  const cwd = mkdtempSync(join(tmpdir(), "koi-runtime-factory-"));
+  writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: {} }), "utf8");
+  runtimeTestDirs.push(cwd);
+  return cwd;
+}
+
 /** Default config for tests. */
-function makeConfig() {
+function makeConfig(overrides: Partial<KoiRuntimeConfig> = {}): KoiRuntimeConfig {
   return {
     modelAdapter: makeModelAdapter(),
     modelName: "stub-model",
     approvalHandler: stubApprovalHandler,
-    cwd: process.cwd(),
+    cwd: makeTestCwd(),
+    plugins: [],
+    ...overrides,
   };
 }
 
@@ -62,10 +79,23 @@ function makeConfig() {
 
 let runtimeHandle: Awaited<ReturnType<typeof createKoiRuntime>> | null = null;
 
+beforeEach(() => {
+  fakeMcpHome = mkdtempSync(join(tmpdir(), "koi-runtime-mcp-home-"));
+  __setUserMcpHomeDirForTests(fakeMcpHome);
+});
+
 afterEach(async () => {
   if (runtimeHandle !== null) {
     await runtimeHandle.runtime.dispose();
     runtimeHandle = null;
+  }
+  __setUserMcpHomeDirForTests(undefined);
+  if (fakeMcpHome !== undefined) {
+    rmSync(fakeMcpHome, { recursive: true, force: true });
+    fakeMcpHome = undefined;
+  }
+  for (const dir of runtimeTestDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -236,6 +266,7 @@ describe("createKoiRuntime — cwd defaults", () => {
       modelAdapter: makeModelAdapter(),
       modelName: "stub",
       approvalHandler: stubApprovalHandler,
+      plugins: [],
       // No cwd provided — should use process.cwd()
     });
     expect(runtimeHandle.runtime).toBeDefined();
@@ -251,10 +282,9 @@ describe("createKoiRuntime — governance wiring (gov-10)", () => {
   test("--max-spend surfaces as cost_usd limit on the shared controller", async () => {
     const { GOVERNANCE } = await import("@koi/core");
     runtimeHandle = await createKoiRuntime({
+      ...makeConfig(),
       modelAdapter: makeModelAdapter(),
       modelName: "claude-sonnet-4-6",
-      approvalHandler: stubApprovalHandler,
-      cwd: process.cwd(),
       maxSpendUsd: 2.5,
     });
     const controller = runtimeHandle.runtime.agent.component(GOVERNANCE);
@@ -267,10 +297,8 @@ describe("createKoiRuntime — governance wiring (gov-10)", () => {
   test("--max-turns surfaces as turn_count limit", async () => {
     const { GOVERNANCE } = await import("@koi/core");
     runtimeHandle = await createKoiRuntime({
-      modelAdapter: makeModelAdapter(),
+      ...makeConfig(),
       modelName: "stub",
-      approvalHandler: stubApprovalHandler,
-      cwd: process.cwd(),
       maxTurns: 7,
     });
     const controller = runtimeHandle.runtime.agent.component(GOVERNANCE);
@@ -282,10 +310,8 @@ describe("createKoiRuntime — governance wiring (gov-10)", () => {
   test("--max-spawn-depth surfaces as spawn_depth limit", async () => {
     const { GOVERNANCE } = await import("@koi/core");
     runtimeHandle = await createKoiRuntime({
-      modelAdapter: makeModelAdapter(),
+      ...makeConfig(),
       modelName: "stub",
-      approvalHandler: stubApprovalHandler,
-      cwd: process.cwd(),
       maxSpawnDepth: 2,
     });
     const controller = runtimeHandle.runtime.agent.component(GOVERNANCE);
@@ -296,10 +322,8 @@ describe("createKoiRuntime — governance wiring (gov-10)", () => {
 
   test("--policy-file rules flow into governanceRules descriptor list", async () => {
     runtimeHandle = await createKoiRuntime({
-      modelAdapter: makeModelAdapter(),
+      ...makeConfig(),
       modelName: "stub",
-      approvalHandler: stubApprovalHandler,
-      cwd: process.cwd(),
       governanceRules: [{ match: { toolId: "web_fetch" }, decision: "deny", rule: "no-web-fetch" }],
     });
     const descriptors = runtimeHandle.governanceRules;
@@ -311,10 +335,8 @@ describe("createKoiRuntime — governance wiring (gov-10)", () => {
   test("--no-governance omits the shared GOVERNANCE component override", async () => {
     const { GOVERNANCE } = await import("@koi/core");
     runtimeHandle = await createKoiRuntime({
-      modelAdapter: makeModelAdapter(),
+      ...makeConfig(),
       modelName: "stub",
-      approvalHandler: stubApprovalHandler,
-      cwd: process.cwd(),
       governanceDisabled: true,
     });
     // createKoi still installs the bundled governance provider (engine-
@@ -336,10 +358,8 @@ describe("createKoiRuntime — governance wiring (gov-10)", () => {
   test("handle.governanceEnabled mirrors governanceDisabled (fail-closed host-gate surface)", async () => {
     // Default (governance on) → handle.governanceEnabled === true
     runtimeHandle = await createKoiRuntime({
-      modelAdapter: makeModelAdapter(),
+      ...makeConfig(),
       modelName: "stub",
-      approvalHandler: stubApprovalHandler,
-      cwd: process.cwd(),
     });
     expect(runtimeHandle.governanceEnabled).toBe(true);
     await runtimeHandle.runtime.dispose();
@@ -350,10 +370,8 @@ describe("createKoiRuntime — governance wiring (gov-10)", () => {
     // `--no-governance` would fail open on the host-level alerting path
     // because the engine's bundled GOVERNANCE component is still present.
     runtimeHandle = await createKoiRuntime({
-      modelAdapter: makeModelAdapter(),
+      ...makeConfig(),
       modelName: "stub",
-      approvalHandler: stubApprovalHandler,
-      cwd: process.cwd(),
       governanceDisabled: true,
     });
     expect(runtimeHandle.governanceEnabled).toBe(false);
@@ -362,10 +380,8 @@ describe("createKoiRuntime — governance wiring (gov-10)", () => {
   test("handle.governanceAlertThresholds reflects config for host-bridge plumbing", async () => {
     // Unset thresholds → undefined on handle, host falls back to default.
     runtimeHandle = await createKoiRuntime({
-      modelAdapter: makeModelAdapter(),
+      ...makeConfig(),
       modelName: "stub",
-      approvalHandler: stubApprovalHandler,
-      cwd: process.cwd(),
     });
     expect(runtimeHandle.governanceAlertThresholds).toBeUndefined();
     await runtimeHandle.runtime.dispose();
@@ -375,10 +391,8 @@ describe("createKoiRuntime — governance wiring (gov-10)", () => {
     // handle field is the transport that makes that precedence authoritative
     // in the TUI toast/alert path.
     runtimeHandle = await createKoiRuntime({
-      modelAdapter: makeModelAdapter(),
+      ...makeConfig(),
       modelName: "stub",
-      approvalHandler: stubApprovalHandler,
-      cwd: process.cwd(),
       governanceAlertThresholds: [0.6, 0.85],
     });
     expect(runtimeHandle.governanceAlertThresholds).toEqual([0.6, 0.85]);

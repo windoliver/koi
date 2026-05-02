@@ -167,6 +167,7 @@ function grepOutput(raw: unknown): GrepOutput {
 
 describe("createGrepTool", () => {
   const tool = createGrepTool({ cwd: TMP });
+  const toolWithoutRg = createGrepTool({ cwd: TMP, rgCommand: ["__koi_rg_missing__"] });
 
   test("descriptor has correct shape", () => {
     expect(tool.descriptor.name).toBe("Grep");
@@ -341,7 +342,7 @@ describe("createGrepTool", () => {
   });
 
   test("fails closed for complex regex patterns when rg unavailable", async () => {
-    const result = (await tool.execute({
+    const result = (await toolWithoutRg.execute({
       pattern: "(a+)+$",
       output_mode: "files_with_matches",
       glob: "*.ts",

@@ -2650,3 +2650,300 @@ describe("Golden: @koi/governance-scope", () => {
     expect(innerCalled).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-policy-cache (2 queries)
+// ---------------------------------------------------------------------------
+
+import { createPolicyCacheMiddleware } from "@koi/middleware-policy-cache";
+
+describe("Golden: @koi/middleware-policy-cache", () => {
+  test("verified-only gate: cache without configured verifier rejects every register()", () => {
+    const handle = createPolicyCacheMiddleware();
+    const reject = handle.register({
+      toolId: "search",
+      brickId: "brick-unverified",
+      scope: "agent",
+      agentId: "agent-A",
+      execute: () => ({ action: "allow" }),
+    });
+    expect(reject.ok).toBe(false);
+    if (!reject.ok) {
+      expect(reject.error.code).toBe("VALIDATION");
+    }
+    expect(handle.size()).toBe(0);
+
+    const trusted = createPolicyCacheMiddleware({
+      verifier: (e) => e.brickId === "brick-verified",
+    });
+    const accept = trusted.register({
+      toolId: "search",
+      brickId: "brick-verified",
+      scope: "agent",
+      agentId: "agent-A",
+      execute: () => ({ action: "allow" }),
+    });
+    expect(accept.ok).toBe(true);
+    expect(trusted.size()).toBe(1);
+  });
+
+  test("cache-hit short-circuits before model: block decision skips next handler", async () => {
+    const handle = createPolicyCacheMiddleware({ verifier: () => true });
+    handle.register({
+      toolId: "search",
+      brickId: "brick-1",
+      scope: "agent",
+      agentId: "a",
+      execute: (input) => {
+        const q = (input as { readonly q?: unknown }).q;
+        return typeof q === "string" && q.length > 0
+          ? { action: "allow" }
+          : { action: "block", reason: "empty q" };
+      },
+    });
+
+    const ctx = {
+      session: { sessionId: "policy-cache-golden", agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core/middleware").TurnContext;
+
+    let executions = 0;
+    const handler: import("@koi/core/middleware").ToolHandler = async () => {
+      executions++;
+      return { output: "tool ran" };
+    };
+
+    // empty q → blocked, next never called
+    const blocked = await handle.middleware.wrapToolCall?.(
+      ctx,
+      { toolId: "search", input: { q: "" } },
+      handler,
+    );
+    expect(executions).toBe(0);
+    // Canonical block metadata — peers (event-trace, semantic-retry) must
+    // recognize this as a non-execution.
+    expect(blocked?.metadata?.isError).toBe(true);
+    expect(blocked?.metadata?.blockedByHook).toBe(true);
+    expect(blocked?.metadata?.policyDenied).toBe(true);
+    expect(blocked?.metadata?.hookName).toBe("policy-cache");
+
+    // non-empty q → allowed, next runs exactly once (cache hit does not change observable result)
+    const allowed = await handle.middleware.wrapToolCall?.(
+      ctx,
+      { toolId: "search", input: { q: "hi" } },
+      handler,
+    );
+    expect(executions).toBe(1);
+    expect(allowed?.output).toBe("tool ran");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/sandbox-router — multi-backend executor (issue #1641)
+// ---------------------------------------------------------------------------
+
+import type {
+  AdapterCapabilities,
+  AdapterCapability,
+  SandboxAdapter,
+  SandboxInstance,
+} from "@koi/core";
+import { createSandboxRouter } from "@koi/sandbox-router";
+
+function makeStubAdapter(opts: {
+  readonly name: string;
+  readonly priority: number;
+  readonly supports: readonly AdapterCapability[];
+  readonly failCreate?: boolean;
+}): SandboxAdapter {
+  const capabilities: AdapterCapabilities = {
+    supports: new Set(opts.supports),
+    priority: opts.priority,
+  };
+  const instance: SandboxInstance = {
+    exec: async () => ({
+      exitCode: 0,
+      stdout: opts.name,
+      stderr: "",
+      durationMs: 0,
+      timedOut: false,
+      oomKilled: false,
+      truncated: false,
+    }),
+    readFile: async () => new Uint8Array(),
+    writeFile: async () => {},
+    destroy: async () => {},
+  };
+  return {
+    name: opts.name,
+    version: "0.0.0",
+    capabilities,
+    create: async () => {
+      if (opts.failCreate === true) throw new Error(`${opts.name}: create failed`);
+      return instance;
+    },
+  };
+}
+
+describe("Golden: @koi/sandbox-router", () => {
+  test("priority-ordered selection picks lowest-priority adapter on a no-required-caps profile", async () => {
+    const a = makeStubAdapter({ name: "low-pri", priority: 0, supports: ["exec", "network"] });
+    const b = makeStubAdapter({ name: "high-pri", priority: 10, supports: ["exec", "network"] });
+    const router = createSandboxRouter({ adapters: [b, a] });
+    const r = await router.create({
+      filesystem: { defaultReadAccess: "open" },
+      network: { allow: true },
+      resources: {},
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("expected ok");
+    expect(r.value.decision.selected.name).toBe("low-pri");
+    await r.value.instance.destroy();
+    await router.shutdown();
+  });
+
+  test("required-capability filtering rejects adapters that don't satisfy and falls through", async () => {
+    const execOnly = makeStubAdapter({ name: "exec-only", priority: 0, supports: ["exec"] });
+    const router = createSandboxRouter({ adapters: [execOnly] });
+    const r = await router.create({
+      filesystem: { defaultReadAccess: "open" },
+      network: { allow: true },
+      resources: {},
+      required: { required: new Set<AdapterCapability>(["gpu"]) },
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("expected error");
+    expect(r.error.code).toBe("VALIDATION");
+    expect(r.error.context?.reason).toBe("no-adapter-matches");
+    await router.shutdown();
+  });
+
+  test("fallback chain: failing primary advances to backup adapter", async () => {
+    const fail = makeStubAdapter({
+      name: "fail",
+      priority: 0,
+      supports: ["exec"],
+      failCreate: true,
+    });
+    const ok = makeStubAdapter({ name: "ok", priority: 10, supports: ["exec"] });
+    const router = createSandboxRouter({ adapters: [fail, ok] });
+    const r = await router.create({
+      filesystem: { defaultReadAccess: "open" },
+      network: { allow: true },
+      resources: {},
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("expected ok");
+    expect(r.value.decision.selected.name).toBe("ok");
+    expect(r.value.decision.attempts).toHaveLength(2);
+    expect(r.value.decision.attempts[0]?.ok).toBe(false);
+    await r.value.instance.destroy();
+    await router.shutdown();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/sandbox-conformance — reusable conformance test groups
+// ---------------------------------------------------------------------------
+
+import {
+  describeCapabilityHonestyConformance,
+  describeCreateDestroyConformance,
+  describeLifecycleConformance,
+} from "@koi/sandbox-conformance";
+
+describe("Golden: @koi/sandbox-conformance", () => {
+  // The conformance package exports describe-style helpers callers wire up
+  // for their own adapters. Smoke check: the umbrella exports exist and are
+  // callable. Per-adapter conformance suites live in sandbox-os, sandbox-docker,
+  // sandbox-ssh tests.
+  test("umbrella conformance helpers are exported", () => {
+    expect(typeof describeLifecycleConformance).toBe("function");
+    expect(typeof describeCreateDestroyConformance).toBe("function");
+    expect(typeof describeCapabilityHonestyConformance).toBe("function");
+  });
+
+  // Real conformance run against a minimal honest fake — proves the
+  // describeLifecycleConformance helper accepts and executes valid adapters
+  // end-to-end without throwing. Per-adapter conformance lives in the
+  // sandbox-os/sandbox-docker/sandbox-ssh packages' own __tests__.
+  describeLifecycleConformance(() => ({
+    name: "smoke-fake",
+    version: "0.0.0",
+    capabilities: { supports: new Set(["exec"]), priority: 0 },
+    create: async () => ({
+      exec: async () => ({
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        durationMs: 0,
+        timedOut: false,
+        oomKilled: false,
+      }),
+      readFile: async () => new Uint8Array(),
+      writeFile: async () => {},
+      destroy: async () => {},
+    }),
+  }));
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/sandbox-ssh — remote-host SandboxAdapter
+// ---------------------------------------------------------------------------
+
+import type { SshClient, SshClientFactory } from "@koi/sandbox-ssh";
+import { createSshAdapter } from "@koi/sandbox-ssh";
+
+const stubSshFactory: SshClientFactory = {
+  connect: async () => {
+    const client: SshClient = {
+      exec: async (line: string) => ({
+        exitCode: 0,
+        stdout: line,
+        stderr: "",
+      }),
+      readFile: async () => new Uint8Array([1, 2, 3]),
+      writeFile: async () => {},
+      end: async () => {},
+    };
+    return client;
+  },
+};
+
+describe("Golden: @koi/sandbox-ssh", () => {
+  test("create() requires profile.ssh; rejects without it", async () => {
+    const adapter = createSshAdapter({ clientFactory: stubSshFactory });
+    await expect(
+      adapter.create({
+        filesystem: { defaultReadAccess: "open" },
+        network: { allow: true },
+        resources: {},
+      }),
+    ).rejects.toThrow(/profile\.ssh is required/);
+  });
+
+  test("instance.exec applies POSIX shell quoting and forwards to the client", async () => {
+    const adapter = createSshAdapter({ clientFactory: stubSshFactory });
+    const instance = await adapter.create({
+      filesystem: { defaultReadAccess: "open" },
+      network: { allow: true },
+      resources: {},
+      ssh: { host: "stub.example", user: "u", keyPath: "/dev/null" },
+    });
+    const r = await instance.exec("echo", ["hello world"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("'echo' 'hello world'");
+    await instance.destroy();
+  });
+
+  test("declares persistence + exec + copy-files + network at priority 20", () => {
+    const adapter = createSshAdapter({ clientFactory: stubSshFactory });
+    expect(adapter.capabilities?.priority).toBe(20);
+    const supports = adapter.capabilities?.supports;
+    expect(supports?.has("exec")).toBe(true);
+    expect(supports?.has("copy-files")).toBe(true);
+    expect(supports?.has("persistence")).toBe(true);
+    expect(supports?.has("network")).toBe(true);
+  });
+});
