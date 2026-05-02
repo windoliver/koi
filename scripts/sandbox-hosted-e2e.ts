@@ -232,25 +232,43 @@ const scenarios: readonly Scenario[] = [
 
 const faultScenarios: readonly Scenario[] = [
   {
-    name: "create() hangs → INDETERMINATE within ~30s + late-cleanup observable",
+    name: "create() hangs → INDETERMINATE within ~30s",
     tag: "create-timeout",
+    requiresProvider: false,
+    run: async () => {
+      const start = Date.now();
+      const adapter = makeFaultE2bAdapter({ createDelayMs: 60_000 });
+      const err = await adapter.create(openProfile).catch((e) => e as Error);
+      const elapsed = Date.now() - start;
+      assert(err instanceof Error && /INDETERMINATE/.test(err.message), `got ${err}`);
+      assert(elapsed >= 28_000 && elapsed < 35_000, `create timeout took ${elapsed}ms`);
+    },
+  },
+  {
+    name: "create() timeout + late kill hangs → LATE_CLEANUP_TIMEOUT warning",
+    tag: "create-leak",
     requiresProvider: false,
     run: async () => {
       const warns: string[] = [];
       const origWarn = console.warn;
       console.warn = (m: string) => warns.push(String(m));
       try {
-        const start = Date.now();
-        const adapter = makeFaultE2bAdapter({ createDelayMs: 60_000 });
+        // Create stalls past local timeout; the eventually-returned handle
+        // has a kill() that never settles → reconciler must emit
+        // LATE_CLEANUP_TIMEOUT within its 10s bound.
+        const adapter = makeFaultE2bAdapter({
+          createDelayMs: 31_000,
+          killHangs: true,
+          ignoreCreateAbort: true,
+        });
         const err = await adapter.create(openProfile).catch((e) => e as Error);
-        const elapsed = Date.now() - start;
         assert(err instanceof Error && /INDETERMINATE/.test(err.message), `got ${err}`);
-        assert(elapsed >= 28_000 && elapsed < 35_000, `create timeout took ${elapsed}ms`);
-        // Late-cleanup runs after handle finally arrives → 60s wall total.
-        await new Promise((r) => setTimeout(r, 32_000));
+        // Wait past 31s create + 10s late-kill bound = ~12s remaining
+        // after the create error surfaces (we already burned ~30s).
+        await new Promise((r) => setTimeout(r, 12_000));
         assert(
-          warns.some((w) => /LATE_CLEANUP_/.test(w)),
-          `expected LATE_CLEANUP_ warning`,
+          warns.some((w) => /LATE_CLEANUP_TIMEOUT/.test(w)),
+          `expected LATE_CLEANUP_TIMEOUT, got: ${warns.join(" | ")}`,
         );
       } finally {
         console.warn = origWarn;
@@ -278,6 +296,10 @@ const faultScenarios: readonly Scenario[] = [
 interface FaultOpts {
   readonly createDelayMs?: number;
   readonly killHangs?: boolean;
+  /** When true, the fake ignores the cancellation signal — simulating a
+   *  degraded provider that doesn't honour AbortSignal. Use to exercise
+   *  the late-cleanup reconciler path. */
+  readonly ignoreCreateAbort?: boolean;
 }
 
 function makeFakeE2bSandbox(): E2bSdkSandbox {
@@ -306,10 +328,12 @@ function makeFaultE2bAdapter(faults: FaultOpts): SandboxAdapter {
       if (faults.createDelayMs !== undefined) {
         await new Promise<void>((resolve, reject) => {
           const t = setTimeout(resolve, faults.createDelayMs);
-          opts.signal?.addEventListener("abort", () => {
-            clearTimeout(t);
-            reject(new Error("aborted"));
-          });
+          if (faults.ignoreCreateAbort !== true) {
+            opts.signal?.addEventListener("abort", () => {
+              clearTimeout(t);
+              reject(new Error("aborted"));
+            });
+          }
         });
       }
       const base = makeFakeE2bSandbox();
