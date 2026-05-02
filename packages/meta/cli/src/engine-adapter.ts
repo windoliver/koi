@@ -26,6 +26,7 @@ import type {
   ModelAdapter,
 } from "@koi/core";
 import { runTurn } from "@koi/query-engine";
+import { explainNonCompletedStop } from "./engine-stop-explanation.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -304,72 +305,6 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
       })();
     },
   };
-}
-
-// ---------------------------------------------------------------------------
-// Synthetic text for silent-termination cases (#1742)
-// ---------------------------------------------------------------------------
-
-/**
- * Build a user-visible one-liner for a non-"completed" terminal stop reason.
- *
- * When the agent loop terminates without emitting assistant text — e.g. a tool
- * threw in middleware, max_turns was reached before the model produced a final
- * summary, or an exfiltration/security gate blocked the response — the TUI
- * previously saw a `done` event with no preceding `text_delta` and rendered
- * an empty bubble. Users on the Phase 2 bug bash experienced this as "no
- * reply on the second turn".
- *
- * The message prefers `metadata.source` / `metadata.message` set by the
- * turn-runner when available so users see *why* the turn died, not just a
- * generic "turn failed" string.
- */
-function explainNonCompletedStop(stopReason: string, metadata: unknown): string {
-  const meta =
-    (metadata as
-      | {
-          readonly source?: string;
-          readonly message?: string;
-          readonly providerDetail?: { readonly error?: { readonly message?: string } | string };
-          readonly terminatedBy?: string;
-          readonly terminationReason?: string;
-          readonly elapsedMs?: number;
-        }
-      | undefined) ?? undefined;
-  // Prefer explicit message, fall back to provider error message so users
-  // see the upstream 400 (e.g. "tool_use without tool_result") instead of
-  // a generic "Turn failed".
-  const providerMsg = (() => {
-    const pd = meta?.providerDetail?.error;
-    if (typeof pd === "string") return pd;
-    return pd?.message;
-  })();
-  const effectiveMsg = meta?.message ?? providerMsg;
-  const detail = effectiveMsg !== undefined ? ` — ${effectiveMsg}` : "";
-  const source = meta?.source !== undefined ? ` (${meta.source})` : "";
-  // #1638: distinguish activity-timeout interrupts from user cancels so
-  // operators can diagnose silent-failure sessions. Reason is
-  // "idle" | "wall_clock"; elapsedMs is authoritative.
-  if (meta?.terminatedBy === "activity-timeout") {
-    const reason = meta.terminationReason ?? "unknown";
-    const elapsed = typeof meta.elapsedMs === "number" ? meta.elapsedMs : 0;
-    const seconds = Math.round(elapsed / 1000);
-    const label =
-      reason === "idle" ? "inactivity" : reason === "wall_clock" ? "wall-clock" : reason;
-    return `\n[Turn interrupted by activity timeout (${label}) after ${seconds}s.]\n`;
-  }
-  switch (stopReason) {
-    case "max_turns":
-      return `\n[Turn ended: model reached the per-turn tool-call budget without producing a final reply${detail}. Try a more specific prompt, or split the work across multiple turns.]\n`;
-    case "interrupted":
-      return "\n[Turn interrupted before the model produced a reply.]\n";
-    case "hook_blocked":
-      return `\n[Turn blocked by a security gate${detail}.]\n`;
-    case "error":
-      return `\n[Turn failed${source}${detail}.]\n`;
-    default:
-      return `\n[Turn ended without a reply: ${stopReason}${detail}.]\n`;
-  }
 }
 
 // ---------------------------------------------------------------------------

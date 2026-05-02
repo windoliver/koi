@@ -8,10 +8,6 @@ import { describe, expect, test } from "bun:test";
 import { ParseError } from "./shared.js";
 import { parseStartFlags } from "./start.js";
 
-function parseStartFlagsText(args: readonly string[]) {
-  return parseStartFlags([...args, "--log-format", "text"]);
-}
-
 describe("parseStartFlags — --until-pass / --max-iter (#1624)", () => {
   test("no flag → untilPass is empty, maxIter defaults to 10", () => {
     const flags = parseStartFlags(["--prompt", "hi"]);
@@ -20,7 +16,7 @@ describe("parseStartFlags — --until-pass / --max-iter (#1624)", () => {
   });
 
   test("single --until-pass token is collected as 1-element argv", () => {
-    const flags = parseStartFlagsText([
+    const flags = parseStartFlags([
       "--prompt",
       "fix it",
       "--until-pass",
@@ -31,7 +27,7 @@ describe("parseStartFlags — --until-pass / --max-iter (#1624)", () => {
   });
 
   test("repeated --until-pass collects all tokens in order", () => {
-    const flags = parseStartFlagsText([
+    const flags = parseStartFlags([
       "--prompt",
       "fix the test",
       "--until-pass",
@@ -46,7 +42,7 @@ describe("parseStartFlags — --until-pass / --max-iter (#1624)", () => {
   });
 
   test("--max-iter parses to integer", () => {
-    const flags = parseStartFlagsText([
+    const flags = parseStartFlags([
       "--prompt",
       "hi",
       "--until-pass",
@@ -111,7 +107,7 @@ describe("parseStartFlags — --until-pass / --max-iter (#1624)", () => {
   });
 
   test("--verifier-timeout parses to milliseconds with default 120_000", () => {
-    const defaults = parseStartFlagsText([
+    const defaults = parseStartFlags([
       "--prompt",
       "hi",
       "--until-pass",
@@ -120,7 +116,7 @@ describe("parseStartFlags — --until-pass / --max-iter (#1624)", () => {
     ]);
     expect(defaults.verifierTimeoutMs).toBe(120_000);
 
-    const custom = parseStartFlagsText([
+    const custom = parseStartFlags([
       "--prompt",
       "hi",
       "--until-pass",
@@ -167,7 +163,7 @@ describe("parseStartFlags — --until-pass / --max-iter (#1624)", () => {
     // Users who need a different verifier root must cd before running
     // koi; the previous split-brain "flag-with-only-cwd-allowed"
     // workaround was removed because it was misleading documentation.
-    const flags = parseStartFlagsText([
+    const flags = parseStartFlags([
       "--prompt",
       "hi",
       "--until-pass",
@@ -233,7 +229,7 @@ describe("parseStartFlags — --until-pass / --max-iter (#1624)", () => {
   });
 
   test("--verifier-inherit-env defaults to false (secure-by-default)", () => {
-    const flags = parseStartFlagsText([
+    const flags = parseStartFlags([
       "--prompt",
       "hi",
       "--until-pass",
@@ -244,7 +240,7 @@ describe("parseStartFlags — --until-pass / --max-iter (#1624)", () => {
   });
 
   test("--verifier-inherit-env: true is captured when explicitly passed", () => {
-    const flags = parseStartFlagsText([
+    const flags = parseStartFlags([
       "--prompt",
       "fix it",
       "--until-pass",
@@ -261,7 +257,7 @@ describe("parseStartFlags — --until-pass / --max-iter (#1624)", () => {
     const without = parseStartFlags(["--prompt", "hi"]);
     expect(without.allowSideEffects).toBe(false);
 
-    const withFlag = parseStartFlagsText([
+    const withFlag = parseStartFlags([
       "--prompt",
       "hi",
       "--until-pass",
@@ -333,7 +329,7 @@ describe("parseStartFlags — headless mode", () => {
 
   test("--headless + --until-pass rejected", () => {
     expect(() =>
-      parseStartFlagsText([
+      parseStartFlags([
         "--headless",
         "--prompt",
         "x",
