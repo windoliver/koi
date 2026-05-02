@@ -15484,7 +15484,7 @@ describe("Golden: @koi/middleware-policy-cache", () => {
 
     // Verifier wired by host (forge in production) is the only authority.
     const trusted = createPolicyCacheMiddleware({
-      verifier: (brickId) => brickId === "b-verified",
+      verifier: (e) => e.brickId === "b-verified",
     });
     const accept = trusted.register({
       toolId: "search",

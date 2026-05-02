@@ -89,7 +89,7 @@ describe("createPolicyCacheMiddleware: shape", () => {
 describe("createPolicyCacheMiddleware: verified-only promotion gate", () => {
   test("register rejects entries the verifier rejects (returns false)", () => {
     const handle = createPolicyCacheMiddleware({
-      verifier: (brickId) => brickId === "brick-VERIFIED",
+      verifier: (entry) => entry.brickId === "brick-VERIFIED",
     });
     const result = handle.register(makeAgentPolicy("agent-A", "search", "brick-1"));
     expect(result.ok).toBe(false);
@@ -102,7 +102,7 @@ describe("createPolicyCacheMiddleware: verified-only promotion gate", () => {
 
   test("register accepts entries the verifier accepts", () => {
     const handle = createPolicyCacheMiddleware({
-      verifier: (brickId) => brickId === "brick-VERIFIED",
+      verifier: (entry) => entry.brickId === "brick-VERIFIED",
     });
     const result = handle.register(makeAgentPolicy("agent-A", "search", "brick-VERIFIED", "allow"));
     expect(result.ok).toBe(true);
@@ -123,29 +123,78 @@ describe("createPolicyCacheMiddleware: verified-only promotion gate", () => {
     expect(handle.size()).toBe(0);
   });
 
-  test("verifier sees the brickId from the entry (not caller-controlled)", () => {
-    const seen: string[] = [];
+  test("verifier receives the FULL entry (brickId, toolId, scope, agentId, execute)", () => {
+    const seen: PolicyEntry[] = [];
     const handle = createPolicyCacheMiddleware({
-      verifier: (brickId) => {
-        seen.push(brickId);
+      verifier: (e) => {
+        seen.push(e);
         return false;
       },
     });
     handle.register(makeAgentPolicy("agent-A", "search", "brick-X"));
     handle.register(makeAgentPolicy("agent-B", "other", "brick-Y"));
-    expect(seen).toEqual(["brick-X", "brick-Y"]);
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toMatchObject({
+      brickId: "brick-X",
+      toolId: "search",
+      scope: "agent",
+      agentId: "agent-A",
+    });
+    expect(typeof seen[0]?.execute).toBe("function");
   });
 
   test("verifier closure is captured at construction; callers cannot influence its decision", () => {
-    // Even if a caller hands a fully-formed PolicyEntry, the cache routes
-    // the brickId through the verifier closure that was captured at
-    // factory time. The verifier is the only authority.
     const verifiedSet = new Set<string>(["brick-OK"]);
     const handle = createPolicyCacheMiddleware({
-      verifier: (brickId) => verifiedSet.has(brickId),
+      verifier: (e) => verifiedSet.has(e.brickId),
     });
     expect(handle.register(makeAgentPolicy("a", "t", "brick-OK")).ok).toBe(true);
     expect(handle.register(makeAgentPolicy("a", "u", "brick-FAKE")).ok).toBe(false);
+  });
+
+  test("brickId-only forge state CANNOT be replayed for a different tool/scope/agent (round-5 regression)", () => {
+    // Round 5 review: a verifier that only checks brickId is replay-able.
+    // This regression test pins the contract: the verifier sees the full
+    // tuple (brickId, toolId, scope, agentId), so a forge that pins the
+    // promotion to its tool+scope+agent can reject replays.
+    const FORGE_STATE = new Map<
+      string,
+      { toolId: string; scope: "agent" | "global"; agentId?: string }
+    >([["brick-VERIFIED", { toolId: "search", scope: "agent", agentId: "agent-OK" }]]);
+    const handle = createPolicyCacheMiddleware({
+      verifier: (e) => {
+        const promoted = FORGE_STATE.get(e.brickId);
+        if (promoted === undefined) return false;
+        if (promoted.toolId !== e.toolId) return false;
+        if (promoted.scope !== e.scope) return false;
+        if (e.scope === "agent" && promoted.agentId !== e.agentId) return false;
+        return true;
+      },
+    });
+
+    // Genuine promotion succeeds.
+    expect(
+      handle.register(makeAgentPolicy("agent-OK", "search", "brick-VERIFIED", "block")).ok,
+    ).toBe(true);
+
+    // Replay attack 1: same brickId, different toolId.
+    expect(
+      handle.register(makeAgentPolicy("agent-OK", "fs.delete", "brick-VERIFIED", "block")).ok,
+    ).toBe(false);
+
+    // Replay attack 2: same brickId, different agent.
+    expect(
+      handle.register(makeAgentPolicy("agent-EVIL", "search", "brick-VERIFIED", "block")).ok,
+    ).toBe(false);
+
+    // Replay attack 3: same brickId, escalated to global scope.
+    const globalReplay: PolicyEntry = {
+      scope: "global",
+      toolId: "search",
+      brickId: "brick-VERIFIED",
+      execute: () => ({ action: "block", reason: "x" }),
+    };
+    expect(handle.register(globalReplay).ok).toBe(false);
   });
 });
 

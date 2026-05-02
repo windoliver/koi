@@ -14,6 +14,8 @@ This package is the v2 restoration of the v1 `middleware-policy-cache`. It is th
 
 **Why a callback, not a flag/token.** Any caller-supplied artifact (`verified: boolean`, an attestation token, a signature object) can be self-minted by code that has import access to the package's helpers. Moving the trust check to a closure injected at construction time makes the trust boundary the host's wiring code, not the API surface — exactly where it belongs.
 
+**The verifier sees the FULL entry, not just `brickId`.** A brickId-only verifier is replay-able: a caller observing any verified brickId could register a forged policy under that ID with a different tool, scope, agent, or executor. Forge's verified-set is keyed on the full promotion tuple, so the verifier MUST inspect every field that contributes to enforcement (`brickId`, `toolId`, `scope`, `agentId`, executor identity) before returning `true`. The signature is `(entry: PolicyEntry) => boolean`.
+
 **Fail-closed default.** If `verifier` is omitted, every `register()` call is refused. The cache exists *because* forge has verified the brick, so a host that wires the cache without wiring a verifier has misused the API.
 
 **Sync only.** The verifier is sync to keep `register()` synchronous. Hosts that need to consult an async backend should resolve their state outside and pass a sync lookup over an in-memory verified-set (forge maintains exactly such a set).

@@ -78,13 +78,22 @@ export type SupportedScope = PolicyEntry["scope"];
 
 export interface PolicyCacheConfig {
   /**
-   * Trust boundary. Called inside `register()` for every entry; the cache
-   * accepts an entry only when this returns `true`. Hosts wire forge into
-   * this callback at construction time — the cache never trusts a flag or
-   * token supplied by `register()`'s caller. Untrusted runtime code with
-   * import access to `register()` cannot mint its own verification because
-   * the verifier closure is captured at factory construction by code that
-   * already has access to forge's verified-set.
+   * Trust boundary. Called inside `register()` with the FULL entry; the
+   * cache accepts the registration only when this returns `true`. Hosts
+   * wire forge into this callback at construction time — the cache never
+   * trusts any field supplied by `register()`'s caller. Untrusted runtime
+   * code with import access to `register()` cannot mint its own
+   * verification because the verifier closure is captured at factory
+   * construction by code that already has access to forge's verified-set.
+   *
+   * Why the full entry, not just `brickId`. A brickId-only verifier is
+   * vulnerable to replay: a caller that observes any verified brickId
+   * could register a forged policy under that ID with a different tool,
+   * scope, agent, or executor and have it short-circuit before
+   * permissions. Forge's verified-set is keyed on the full promotion
+   * tuple (brickId, toolId, scope, agent, executor identity, generation),
+   * so the verifier MUST inspect every field that contributes to
+   * enforcement before returning `true`.
    *
    * If omitted, every registration is rejected (fail-closed). This is
    * intentional: the cache exists *because* forge has verified the brick,
@@ -96,7 +105,7 @@ export interface PolicyCacheConfig {
    * lookup over an in-memory verified-set (forge maintains exactly such a
    * set).
    */
-  readonly verifier?: (brickId: string) => boolean;
+  readonly verifier?: (entry: PolicyEntry) => boolean;
   /** Maximum cached policies per bucket (per-agent and global). Default: 100. */
   readonly maxEntries?: number | undefined;
   /**
@@ -226,7 +235,7 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
     // a verifier configured, fail closed: refuse every registration. The
     // cache exists *because* forge has verified the brick, so a host that
     // wires the cache without wiring a verifier has misused the API.
-    if (config.verifier === undefined || config.verifier(entry.brickId) !== true) {
+    if (config.verifier === undefined || config.verifier(entry) !== true) {
       const error: KoiError = {
         code: "VALIDATION",
         message: `policy-cache: refusing unverified brick ${entry.brickId} for tool ${entry.toolId}`,

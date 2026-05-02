@@ -2674,7 +2674,7 @@ describe("Golden: @koi/middleware-policy-cache", () => {
     expect(handle.size()).toBe(0);
 
     const trusted = createPolicyCacheMiddleware({
-      verifier: (brickId) => brickId === "brick-verified",
+      verifier: (e) => e.brickId === "brick-verified",
     });
     const accept = trusted.register({
       toolId: "search",
