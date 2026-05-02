@@ -36,8 +36,36 @@ const MAX_TOOL_ARGS_BYTES = 400;
 const MAX_PROMPT_BYTES = 32 * 1024;
 const TRUNCATION_NOTICE = "\n  …[trace truncated to fit prompt budget]";
 
+// Encode/decode for byte-accurate measurements — `String.length` counts
+// UTF-16 code units, which understates bytes for CJK/emoji and lets oversized
+// traces slip past `MAX_PROMPT_BYTES`. We use the platform's TextEncoder /
+// TextDecoder so caps are interpreted in the same units provider request
+// budgets are.
+const ENCODER = new TextEncoder();
+const DECODER = new TextDecoder("utf-8");
+
+function byteLength(value: string): number {
+  return ENCODER.encode(value).length;
+}
+
+// Clip a string to at most `maxBytes` UTF-8 bytes, preserving valid codepoint
+// boundaries. Appends the same "…" marker as the previous code-unit-based
+// implementation so existing tests for ellipsis presence still hold.
 function clip(value: string, maxBytes: number): string {
-  return value.length > maxBytes ? `${value.slice(0, maxBytes)}…` : value;
+  const encoded = ENCODER.encode(value);
+  if (encoded.length <= maxBytes) return value;
+  // `fatal: false` would discard partial codepoints silently; we use
+  // `stream:false` and let the decoder snap to a clean boundary by trying
+  // shorter slices until the round-trip survives.
+  let end = maxBytes;
+  while (end > 0) {
+    const candidate = DECODER.decode(encoded.subarray(0, end));
+    // If the decode produced a replacement char at the tail, the slice cut
+    // mid-codepoint — back off one byte and retry.
+    if (!candidate.endsWith("�")) return `${candidate}…`;
+    end -= 1;
+  }
+  return "…";
 }
 
 function summarizeTurn(turn: DistillationTrace["turns"][number], index: number): string {
@@ -61,15 +89,13 @@ function summarizeTurn(turn: DistillationTrace["turns"][number], index: number):
 // dropped with an explicit truncation notice so the LLM knows the trace was
 // elided rather than ended.
 function joinTurnsWithinBudget(summaries: readonly string[], budget: number): string {
-  // Reserve room for the truncation notice up front so the cap is honored
-  // even when we're forced to elide the tail.
-  const reserve = TRUNCATION_NOTICE.length + 1; // +1 for the "\n" separator
+  const reserve = byteLength(TRUNCATION_NOTICE) + 1; // +1 for the "\n" separator
   const safeBudget = Math.max(0, budget - reserve);
   let used = 0;
   const kept: string[] = [];
   let truncated = false;
   for (const s of summaries) {
-    const cost = (kept.length === 0 ? 0 : 1) + s.length;
+    const cost = (kept.length === 0 ? 0 : 1) + byteLength(s);
     if (used + cost > safeBudget) {
       truncated = true;
       break;
@@ -95,7 +121,7 @@ export function renderDistillationPromptDetailed(trace: DistillationTrace): Rend
   const summaries = trace.turns.map(summarizeTurn);
   const header = `${SYSTEM_INSTRUCTIONS}\n\nTRACE id=${trace.traceId} turns=${trace.turns.length}\n`;
   const footer = "\n\nReturn the JSON now.";
-  const turnsBudget = MAX_PROMPT_BYTES - header.length - footer.length;
+  const turnsBudget = MAX_PROMPT_BYTES - byteLength(header) - byteLength(footer);
   const turns = joinTurnsWithinBudget(summaries, Math.max(0, turnsBudget));
   const truncated = turns.includes(TRUNCATION_NOTICE);
   return { prompt: `${header}${turns}${footer}`, truncated };

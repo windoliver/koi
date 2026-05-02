@@ -204,23 +204,18 @@ function flattenArgKeys(prefix: string, v: unknown, out: Map<string, string>): v
   }
 }
 
-// Variant that also reports the raw leaf value (not just its JSON form) so
-// the caller can run shape-based checks like resource-literal detection.
-function flattenArgKeysWithLeaves(
-  prefix: string,
-  v: unknown,
-  out: Map<string, string>,
-  raw: Map<string, unknown>,
-): void {
-  if (v === null || typeof v !== "object" || Array.isArray(v)) {
-    out.set(prefix, JSON.stringify(v));
-    raw.set(prefix, v);
-    return;
+// Walk a value and report whether any descendant string leaf looks like a
+// resource literal (path, ID, URL, …). Used for the "single-use destructive
+// target" guard so a literal smuggled inside an array or nested object still
+// forces parameter coverage.
+function containsResourceLiteral(v: unknown): boolean {
+  if (typeof v === "string") return looksLikeResourceLiteral(v);
+  if (v === null || typeof v !== "object") return false;
+  if (Array.isArray(v)) return v.some(containsResourceLiteral);
+  for (const vv of Object.values(v as Record<string, unknown>)) {
+    if (containsResourceLiteral(vv)) return true;
   }
-  for (const [k, vv] of Object.entries(v as Record<string, unknown>)) {
-    const next = prefix === "" ? k : `${prefix}.${k}`;
-    flattenArgKeysWithLeaves(next, vv, out, raw);
-  }
+  return false;
 }
 
 // Walk every tool call's argsJson and collect the set of values seen for each
@@ -246,8 +241,11 @@ function collectVariableArgKeys(
     bag.add(value);
     seen.set(composite, bag);
   };
+  // Flag a top-level arg key (or `<root>`) whose value tree contains any
+  // resource literal at any depth. Recurses arrays/objects so a target
+  // smuggled inside `{targets:[{path:"/a"}]}` still forces parameter coverage.
   const noteResource = (composite: string, rawValue: unknown): void => {
-    if (typeof rawValue === "string" && looksLikeResourceLiteral(rawValue)) {
+    if (containsResourceLiteral(rawValue)) {
       resourceKeys.add(composite);
     }
   };
@@ -272,20 +270,22 @@ function collectVariableArgKeys(
         recordValue(`${call.name}::<unparsable>`, call.argsJson);
         continue;
       }
-      const flat = new Map<string, string>();
-      const rawLeaves = new Map<string, unknown>();
+      // Variability tracking uses TOP-LEVEL keys only (or `<root>` for arrays
+      // and primitives). Resource-literal detection scans the whole value
+      // tree but reports back against the same top-level key, so a buried
+      // resource selector forces coverage on the outer arg name without
+      // exploding the variable-arg list with synthetic dotted paths.
       if (Array.isArray(parsed)) {
-        flat.set("<root>", JSON.stringify(parsed));
-        for (const item of parsed) noteResource(`${call.name}::<root>`, item);
-      } else if (parsed !== null && typeof parsed === "object") {
-        flattenArgKeysWithLeaves("", parsed, flat, rawLeaves);
-        for (const [k, raw] of rawLeaves) noteResource(`${call.name}::${k}`, raw);
-      } else {
-        flat.set("<root>", JSON.stringify(parsed));
+        recordValue(`${call.name}::<root>`, JSON.stringify(parsed));
         noteResource(`${call.name}::<root>`, parsed);
-      }
-      for (const [k, v] of flat) {
-        recordValue(`${call.name}::${k}`, v);
+      } else if (parsed !== null && typeof parsed === "object") {
+        for (const [k, vv] of Object.entries(parsed as Record<string, unknown>)) {
+          recordValue(`${call.name}::${k}`, JSON.stringify(vv));
+          noteResource(`${call.name}::${k}`, vv);
+        }
+      } else {
+        recordValue(`${call.name}::<root>`, JSON.stringify(parsed));
+        noteResource(`${call.name}::<root>`, parsed);
       }
     }
   }

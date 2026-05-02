@@ -60,6 +60,20 @@ describe("renderDistillationPrompt", () => {
     expect(PROMPT_VERSION).toBe("1");
   });
 
+  test("byte-budget honors multibyte UTF-8 (CJK/emoji) content, not UTF-16 code units", () => {
+    // Build a trace where each turn's text is dominated by multibyte chars.
+    // 3000 chars of "犬" (3 bytes each in UTF-8) = ~9000 bytes per turn.
+    const cjk = "犬".repeat(3000);
+    const turns = Array.from({ length: 200 }, () => ({
+      role: "assistant" as const,
+      text: cjk,
+    }));
+    const out = renderDistillationPrompt({ traceId: "cjk", turns });
+    // Encoded byte length must respect MAX_PROMPT_BYTES even though String
+    // .length would be far smaller than the byte count.
+    expect(new TextEncoder().encode(out).length).toBeLessThanOrEqual(32 * 1024);
+  });
+
   test("caps total prompt size for long valid traces (multi-turn growth)", () => {
     // 1000 turns each with ~150 bytes of valid (well within per-turn limit)
     // text. Without a global cap this would balloon past the provider window.

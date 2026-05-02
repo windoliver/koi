@@ -598,6 +598,51 @@ describe("createDistiller", () => {
     expect(r.ok).toBe(true);
   });
 
+  test("rejects single-use destructive call with target buried inside an array of objects", async () => {
+    const trace: DistillationTrace = {
+      traceId: "t-deep",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [
+            {
+              name: "delete",
+              argsJson: '{"targets":[{"path":"/tenant-a/report.csv"}]}',
+            },
+          ],
+        },
+      ],
+    };
+    const noParam = okLLM({
+      ...VALID_DRAFT,
+      toolSequence: ["delete"],
+      parameters: [],
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: noParam }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
+  });
+
+  test("rejects single-use destructive call with target buried inside a top-level array", async () => {
+    const trace: DistillationTrace = {
+      traceId: "t-rootarr",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "delete", argsJson: '[{"path":"/tenant-a/report.csv"}]' }],
+        },
+      ],
+    };
+    const noParam = okLLM({
+      ...VALID_DRAFT,
+      toolSequence: ["delete"],
+      parameters: [],
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: noParam }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
+  });
+
   test("rejects single-use destructive call whose target literal is not parameterized", async () => {
     // Single delete with a concrete tenant target. Even though the tool is
     // only called once, the resource selector must be a parameter — the
