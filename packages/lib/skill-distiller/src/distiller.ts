@@ -31,13 +31,13 @@ function llmExternalError(cause: KoiError): KoiError {
   };
 }
 
-function collectToolNames(trace: DistillationTrace): ReadonlySet<string> {
-  const names = new Set<string>();
+function flattenToolCalls(trace: DistillationTrace): readonly string[] {
+  const calls: string[] = [];
   for (const turn of trace.turns) {
     if (turn.toolCalls === undefined) continue;
-    for (const call of turn.toolCalls) names.add(call.name);
+    for (const call of turn.toolCalls) calls.push(call.name);
   }
-  return names;
+  return calls;
 }
 
 function ungroundedError(reason: string, errorKind: string): KoiError {
@@ -49,9 +49,21 @@ function ungroundedError(reason: string, errorKind: string): KoiError {
   };
 }
 
-// Reject hallucinated drafts: every emitted tool must appear in the trace, and
-// the draft must carry the discovery surfaces (triggers, toolSequence) needed
-// to ever be retrieved or replayed.
+// Two-pointer subsequence test: every element of `needle` must appear in
+// `haystack` in the same relative order (gaps allowed, repeats consumed).
+function isOrderedSubsequence(needle: readonly string[], haystack: readonly string[]): boolean {
+  let i = 0;
+  for (const item of haystack) {
+    if (i < needle.length && needle[i] === item) i += 1;
+  }
+  return i === needle.length;
+}
+
+// Reject hallucinated drafts: the emitted toolSequence must be an ordered
+// subsequence of the trace's actual tool-call stream (the prompt declares
+// toolSequence as the *ordered* procedure, so a reordered draft is wrong even
+// if every name appears somewhere). Triggers and a non-empty toolSequence are
+// required so the skill remains discoverable and replayable.
 function groundDraftInTrace(
   draft: SkillDraft,
   trace: DistillationTrace,
@@ -62,17 +74,15 @@ function groundDraftInTrace(
   if (draft.triggers.length === 0) {
     return { ok: false, error: ungroundedError("triggers is empty", "DRAFT_TRIGGERS_EMPTY") };
   }
-  const observed = collectToolNames(trace);
-  for (const tool of draft.toolSequence) {
-    if (!observed.has(tool)) {
-      return {
-        ok: false,
-        error: ungroundedError(
-          `toolSequence contains "${tool}" which never appears in the trace`,
-          "DRAFT_TOOL_NOT_GROUNDED",
-        ),
-      };
-    }
+  const observed = flattenToolCalls(trace);
+  if (!isOrderedSubsequence(draft.toolSequence, observed)) {
+    return {
+      ok: false,
+      error: ungroundedError(
+        `toolSequence ${JSON.stringify(draft.toolSequence)} is not an ordered subsequence of the trace's tool calls ${JSON.stringify(observed)}`,
+        "DRAFT_TOOL_NOT_GROUNDED",
+      ),
+    };
   }
   return { ok: true, value: draft };
 }

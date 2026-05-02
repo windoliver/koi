@@ -19,11 +19,11 @@ describe("computeDraftHash — stability (description is wording, not behavior)"
     expect(a).toBe(b);
   });
 
-  test("ignores parameter description and required flag (only name participates)", () => {
+  test("ignores parameter description prose (description is not contract)", () => {
     const a = computeDraftHash(baseDraft);
     const b = computeDraftHash({
       ...baseDraft,
-      parameters: [{ name: "title", description: "different prose", required: false }],
+      parameters: [{ name: "title", description: "wholly different prose", required: true }],
     });
     expect(a).toBe(b);
   });
@@ -68,6 +68,15 @@ describe("computeDraftHash — sensitivity (behavior changes must change identit
     const b = computeDraftHash({
       ...baseDraft,
       parameters: [{ name: "renamed", description: "PR title", required: true }],
+    });
+    expect(a).not.toBe(b);
+  });
+
+  test("differs when parameter required flag flips (contract change)", () => {
+    const a = computeDraftHash(baseDraft);
+    const b = computeDraftHash({
+      ...baseDraft,
+      parameters: [{ name: "title", description: "PR title", required: false }],
     });
     expect(a).not.toBe(b);
   });

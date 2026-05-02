@@ -118,6 +118,24 @@ describe("createDistiller", () => {
     }
   });
 
+  test("rejects draft whose toolSequence is in the wrong order", async () => {
+    // TRACE invokes read_file then write_file. Reverse order is rejected.
+    const reordered = okLLM({ ...VALID_DRAFT, toolSequence: ["write_file", "read_file"] });
+    const d = createDistiller({ llm: reordered });
+    const r = await d.distill(TRACE);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_TOOL_NOT_GROUNDED");
+  });
+
+  test("accepts draft that is an ordered subset (gaps allowed)", async () => {
+    // TRACE invokes read_file then write_file. Sub-procedure of just write_file
+    // is a valid ordered subsequence (skipping read_file is OK).
+    const subset = okLLM({ ...VALID_DRAFT, toolSequence: ["write_file"] });
+    const d = createDistiller({ llm: subset });
+    const r = await d.distill(TRACE);
+    expect(r.ok).toBe(true);
+  });
+
   test("rejects draft with empty toolSequence", async () => {
     const d = createDistiller({ llm: okLLM({ ...VALID_DRAFT, toolSequence: [] }) });
     const r = await d.distill(TRACE);

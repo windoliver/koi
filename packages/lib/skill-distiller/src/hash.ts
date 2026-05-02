@@ -15,17 +15,19 @@ function joinSorted(values: readonly string[]): string {
  * different drafts never collide:
  *   - name
  *   - ordered toolSequence (procedure order matters)
- *   - sorted parameter names (order doesn't, presence does)
+ *   - sorted parameter contracts (`name|required` per parameter — toggling
+ *     `required` changes the invocation contract and must not collapse)
  *   - sorted triggers (entry phrases — discovery surface)
  *   - sorted expectedInputs / expectedOutputs (contract surface)
  *
- * Description is intentionally excluded: prose wording is not behavior.
+ * Parameter description is excluded (prose, not contract). Top-level
+ * description is excluded for the same reason.
  */
 export function computeDraftHash(draft: SkillDraft): string {
   const parts: readonly string[] = [
     draft.name,
     draft.toolSequence.join(LIST_SEP),
-    joinSorted(draft.parameters.map((p) => p.name)),
+    joinSorted(draft.parameters.map((p) => `${p.name}|${p.required ? "1" : "0"}`)),
     joinSorted(draft.triggers),
     joinSorted(draft.expectedInputs),
     joinSorted(draft.expectedOutputs),

@@ -25,9 +25,17 @@ describe("createSkillStore — basic semantics", () => {
     expect(s.size()).toBe(1);
   });
 
-  test("add returns 'replaced' when same name has different hash, fires onReplaced with prev+next", () => {
+  test("default conflict policy is 'reject': same-name + different-hash returns 'conflict' and preserves the existing record", () => {
+    const s = createSkillStore();
+    s.add(rec("a", "h1"));
+    expect(s.add(rec("a", "h2"))).toBe("conflict");
+    expect(s.size()).toBe(1);
+    expect(s.get("a")?.draftHash).toBe("h1");
+  });
+
+  test("'replace' policy returns 'replaced' and fires onReplaced with prev+next", () => {
     const events: SkillStoreReplacement[] = [];
-    const s = createSkillStore({ onReplaced: (r) => events.push(r) });
+    const s = createSkillStore({ onConflict: "replace", onReplaced: (r) => events.push(r) });
     s.add(rec("a", "h1"));
     expect(s.add(rec("a", "h2"))).toBe("replaced");
     expect(s.size()).toBe(1);
@@ -37,9 +45,20 @@ describe("createSkillStore — basic semantics", () => {
     expect(events[0]?.next.draftHash).toBe("h2");
   });
 
-  test("replacement does not trigger LRU eviction (entry count unchanged)", () => {
+  test("'keep' policy returns 'duplicate' and preserves the existing record", () => {
+    const s = createSkillStore({ onConflict: "keep" });
+    s.add(rec("a", "h1"));
+    expect(s.add(rec("a", "h2"))).toBe("duplicate");
+    expect(s.get("a")?.draftHash).toBe("h1");
+  });
+
+  test("replacement under 'replace' policy does not trigger LRU eviction", () => {
     const evicted: string[] = [];
-    const s = createSkillStore({ maxSize: 2, onEvicted: (r) => evicted.push(r.draft.name) });
+    const s = createSkillStore({
+      maxSize: 2,
+      onConflict: "replace",
+      onEvicted: (r) => evicted.push(r.draft.name),
+    });
     s.add(rec("a", "h1"));
     s.add(rec("b", "hb"));
     expect(s.add(rec("a", "h2"))).toBe("replaced");
@@ -47,10 +66,12 @@ describe("createSkillStore — basic semantics", () => {
     expect(s.size()).toBe(2);
   });
 
-  test("onReplaced is silent when not provided (backward compatible)", () => {
+  test("delete() removes an entry; subsequent same-name insert is 'added' not 'conflict'", () => {
     const s = createSkillStore();
     s.add(rec("a", "h1"));
-    expect(() => s.add(rec("a", "h2"))).not.toThrow();
+    expect(s.delete("a")).toBe(true);
+    expect(s.delete("a")).toBe(false);
+    expect(s.add(rec("a", "h2"))).toBe("added");
   });
 
   test("has and hasHash reflect contents", () => {

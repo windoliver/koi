@@ -28,6 +28,7 @@ export type {
   SkillStore,
   SkillStoreAddStatus,
   SkillStoreConfig,
+  SkillStoreConflictPolicy,
   SkillStoreEvictReason,
   SkillStoreReplacement,
 } from "./store.js";
