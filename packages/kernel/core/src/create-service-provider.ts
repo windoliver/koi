@@ -162,6 +162,7 @@ export function createServiceProvider<TBackend, TOperation extends string>(
     ...(detach !== undefined && backend !== undefined
       ? {
           detach: async (_agent: Agent): Promise<void> => {
+            cached = undefined;
             await detach(backend);
           },
         }
