@@ -70,4 +70,30 @@ describe("parseSkillDraft", () => {
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.parameters).toEqual([]);
   });
+
+  test("rejects oversized JSON payload before any further parsing", () => {
+    const huge = JSON.stringify({ ...JSON.parse(VALID), description: "x".repeat(17 * 1024) });
+    const r = parseSkillDraft(huge);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_TOO_LARGE");
+  });
+
+  test("rejects description that exceeds the per-field cap", () => {
+    const r = parseSkillDraft(
+      JSON.stringify({ ...JSON.parse(VALID), description: "x".repeat(500) }),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_DESCRIPTION_TOO_LONG");
+  });
+
+  test("rejects too many parameters", () => {
+    const params = Array.from({ length: 50 }, (_, i) => ({
+      name: `p${i}`,
+      description: "x",
+      required: false,
+    }));
+    const r = parseSkillDraft(JSON.stringify({ ...JSON.parse(VALID), parameters: params }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_PARAMETERS_TOO_MANY");
+  });
 });

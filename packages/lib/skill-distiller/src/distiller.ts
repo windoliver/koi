@@ -204,6 +204,25 @@ function flattenArgKeys(prefix: string, v: unknown, out: Map<string, string>): v
   }
 }
 
+// Variant that also reports the raw leaf value (not just its JSON form) so
+// the caller can run shape-based checks like resource-literal detection.
+function flattenArgKeysWithLeaves(
+  prefix: string,
+  v: unknown,
+  out: Map<string, string>,
+  raw: Map<string, unknown>,
+): void {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) {
+    out.set(prefix, JSON.stringify(v));
+    raw.set(prefix, v);
+    return;
+  }
+  for (const [k, vv] of Object.entries(v as Record<string, unknown>)) {
+    const next = prefix === "" ? k : `${prefix}.${k}`;
+    flattenArgKeysWithLeaves(next, vv, out, raw);
+  }
+}
+
 // Walk every tool call's argsJson and collect the set of values seen for each
 // (toolName, argKey) pair, including nested keys via dotted paths. A key whose
 // value differs across invocations is a "variable" arg — exactly the kind of
@@ -216,10 +235,21 @@ function collectVariableArgKeys(
   prefixLength: number,
 ): readonly VariableArg[] {
   const seen = new Map<string, Set<string>>();
+  // Track keys whose ANY observed value looks like a resource literal (path,
+  // ID, URL, email, …). A single destructive call against `/tenant-a/x` is
+  // still a resource selector that the next caller must supply, even if the
+  // tool was only invoked once and the value never "varied". Forcing
+  // parameter coverage for these keys closes the single-use leak path.
+  const resourceKeys = new Set<string>();
   const recordValue = (composite: string, value: string): void => {
     const bag = seen.get(composite) ?? new Set<string>();
     bag.add(value);
     seen.set(composite, bag);
+  };
+  const noteResource = (composite: string, rawValue: unknown): void => {
+    if (typeof rawValue === "string" && looksLikeResourceLiteral(rawValue)) {
+      resourceKeys.add(composite);
+    }
   };
   // Only inspect the first `prefixLength` tool calls — the same window
   // grounding accepted as the distilled procedure. Variable args in tail
@@ -243,16 +273,16 @@ function collectVariableArgKeys(
         continue;
       }
       const flat = new Map<string, string>();
+      const rawLeaves = new Map<string, unknown>();
       if (Array.isArray(parsed)) {
-        // Top-level array args (e.g. delete(["/a"])) get a synthetic root key
-        // so list-shaped destructive inputs are still tracked for variability.
         flat.set("<root>", JSON.stringify(parsed));
+        for (const item of parsed) noteResource(`${call.name}::<root>`, item);
       } else if (parsed !== null && typeof parsed === "object") {
-        flattenArgKeys("", parsed, flat);
+        flattenArgKeysWithLeaves("", parsed, flat, rawLeaves);
+        for (const [k, raw] of rawLeaves) noteResource(`${call.name}::${k}`, raw);
       } else {
-        // Non-object/non-array root (string, number, bool, null) — record as
-        // a single synthetic root value so primitives are tracked too.
         flat.set("<root>", JSON.stringify(parsed));
+        noteResource(`${call.name}::<root>`, parsed);
       }
       for (const [k, v] of flat) {
         recordValue(`${call.name}::${k}`, v);
@@ -260,11 +290,14 @@ function collectVariableArgKeys(
     }
   }
   const variable: VariableArg[] = [];
-  for (const [composite, values] of seen) {
-    if (values.size > 1) {
-      const sep = composite.indexOf("::");
-      if (sep > 0) variable.push({ tool: composite.slice(0, sep), key: composite.slice(sep + 2) });
-    }
+  // Union: keys that varied across calls + keys that ever held a resource
+  // literal (even once). Both classes need a draft parameter to cover them.
+  const composites = new Set<string>();
+  for (const [composite, values] of seen) if (values.size > 1) composites.add(composite);
+  for (const composite of resourceKeys) composites.add(composite);
+  for (const composite of composites) {
+    const sep = composite.indexOf("::");
+    if (sep > 0) variable.push({ tool: composite.slice(0, sep), key: composite.slice(sep + 2) });
   }
   return variable;
 }
@@ -373,17 +406,10 @@ function groundDraftInTrace(
       ),
     };
   }
-  const variable = collectVariableArgKeys(trace, draft.toolSequence.length);
-  const uncovered = findUncoveredVariableArg(draft.parameters, variable);
-  if (uncovered !== undefined) {
-    return {
-      ok: false,
-      error: ungroundedError(
-        `tool argument ${uncovered.tool}.${uncovered.key} varies across invocations but no distinct draft parameter covers it — the skill would replay with a stale value baked in (or share a single parameter across independent inputs). Add a parameter for "${uncovered.key}".`,
-        "DRAFT_VARIABLE_ARG_UNPARAMETERIZED",
-      ),
-    };
-  }
+  // Leak check first: if the LLM copied a trace literal verbatim into prose,
+  // that's the most explicit failure mode and the most actionable error for
+  // the caller. Variable-arg coverage runs after so its message only fires
+  // for drafts that didn't already trip the literal gate.
   const leaked = findLeakedLiteral(draft, trace);
   if (leaked !== undefined) {
     const sample = leaked.length > 60 ? `${leaked.slice(0, 60)}…` : leaked;
@@ -392,6 +418,17 @@ function groundDraftInTrace(
       error: ungroundedError(
         `${LEAK_PROBE_FIELDS_DOC} contains the trace-specific literal "${sample}" — abstract it through a parameter instead of burning it in`,
         "DRAFT_LITERAL_LEAKED",
+      ),
+    };
+  }
+  const variable = collectVariableArgKeys(trace, draft.toolSequence.length);
+  const uncovered = findUncoveredVariableArg(draft.parameters, variable);
+  if (uncovered !== undefined) {
+    return {
+      ok: false,
+      error: ungroundedError(
+        `tool argument ${uncovered.tool}.${uncovered.key} is a variable or resource-shaped input but no distinct draft parameter covers it — the skill would replay with a stale value baked in. Add a parameter for "${uncovered.key}".`,
+        "DRAFT_VARIABLE_ARG_UNPARAMETERIZED",
       ),
     };
   }

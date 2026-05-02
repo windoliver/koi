@@ -255,7 +255,14 @@ describe("createDistiller", () => {
     let promptSeen = "";
     const llm: DistillerLLM = async ({ prompt }) => {
       promptSeen = prompt;
-      return { ok: true, value: JSON.stringify({ ...VALID_DRAFT, toolSequence: ["read_file"] }) };
+      return {
+        ok: true,
+        value: JSON.stringify({
+          ...VALID_DRAFT,
+          toolSequence: ["read_file"],
+          parameters: [{ name: "token", description: "auth token", required: true }],
+        }),
+      };
     };
     const redactor = (t: DistillationTrace): DistillationTrace => ({
       ...t,
@@ -304,10 +311,16 @@ describe("createDistiller", () => {
         },
       ],
     };
-    // Description references the parameter, not the literal path.
+    // Description references the parameter, not the literal path. Two
+    // distinct path inputs (read source + write destination) require two
+    // distinct draft parameters.
     const generic = okLLM({
       ...VALID_DRAFT,
-      description: "Read the input file at {path} and write the formatted result.",
+      description: "Read the input file at {input_path} and write to {output_path}.",
+      parameters: [
+        { name: "input_path", description: "file to read", required: true },
+        { name: "output_path", description: "file to write", required: true },
+      ],
     });
     const d = createDistiller({ allowUnredactedTrace: true, llm: generic });
     const r = await d.distill(trace);
@@ -585,6 +598,30 @@ describe("createDistiller", () => {
     expect(r.ok).toBe(true);
   });
 
+  test("rejects single-use destructive call whose target literal is not parameterized", async () => {
+    // Single delete with a concrete tenant target. Even though the tool is
+    // only called once, the resource selector must be a parameter — the
+    // alternative is a stored skill that replays against /tenant-a forever.
+    const trace: DistillationTrace = {
+      traceId: "t-once",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "delete", argsJson: '{"path":"/tenant-a/report.csv"}' }],
+        },
+      ],
+    };
+    const noParam = okLLM({
+      ...VALID_DRAFT,
+      toolSequence: ["delete"],
+      parameters: [], // missing path
+      description: "Delete the report file.",
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: noParam }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
+  });
+
   test("rejects distillation when trace exceeds the prompt budget (would persist a partial procedure)", async () => {
     // 1000 turns each ~150 bytes — well past the 32 KiB prompt budget. The
     // distiller must NOT happily produce a prefix-skill from a truncated
@@ -760,7 +797,13 @@ describe("createDistiller", () => {
         { role: "assistant", toolCalls: [{ name: "write_file", argsJson: "{}" }] },
       ],
     };
-    const llm: DistillerLLM = async () => ({ ok: true, value: JSON.stringify(VALID_DRAFT) });
+    const llm: DistillerLLM = async () => ({
+      ok: true,
+      value: JSON.stringify({
+        ...VALID_DRAFT,
+        parameters: [{ name: "token", description: "auth token", required: true }],
+      }),
+    });
     const identity = (t: DistillationTrace): DistillationTrace => t;
     const masking = (t: DistillationTrace): DistillationTrace => ({
       ...t,
