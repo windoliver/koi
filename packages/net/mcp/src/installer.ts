@@ -18,7 +18,7 @@ import {
 } from "./config.js";
 import type { McpToolInfo } from "./connection.js";
 import { addServerToMcpJson, removeServerFromMcpJson } from "./mcp-json-write.js";
-import type { RegistryPackage, RegistryServer } from "./registry/schema.js";
+import type { RegistryPackage, RegistryRemote, RegistryServer } from "./registry/schema.js";
 
 export interface InstallerDeps {
   readonly verifyConnection?: (
@@ -54,43 +54,9 @@ export function pickPackageForInstall(
   const rejects: string[] = [];
 
   for (const remote of server.remotes ?? []) {
-    const transport = remote.transport?.type ?? "http";
-    if (transport !== "http" && transport !== "sse") continue;
-    // Refuse plaintext / non-HTTPS remote URLs from the registry. Loopback
-    // (127.0.0.1, ::1, localhost) is allowed for local-dev workflows since
-    // it never crosses the trust boundary the HTTPS rule is protecting.
-    // Anything else — http://, ws://, file://, malformed — is rejected
-    // before it can be persisted into .mcp.json.
-    const urlCheck = validateRemoteUrl(remote.url);
-    if (!urlCheck.ok) {
-      rejects.push(`${transport} remote ${remote.url}: ${urlCheck.error}`);
-      continue;
-    }
-    const headersResult = remoteHeaders(remote.headers);
-    if (!headersResult.ok) {
-      rejects.push(`${transport} remote ${remote.url}: ${headersResult.error.message}`);
-      continue;
-    }
-    const headers = headersResult.value;
-    if (transport === "http") {
-      // Always include an empty `oauth` block so `koi mcp auth <name>`
-      // can run Dynamic Client Registration if the server requires auth.
-      // The OAuth provider is only consulted on a 401, so this is inert
-      // for servers that don't require authentication.
-      const cfg: ExternalServerConfig = {
-        type: "http",
-        url: remote.url,
-        oauth: {},
-        ...(headers !== undefined ? { headers } : {}),
-      };
-      return { ok: true, value: cfg };
-    }
-    const cfg: ExternalServerConfig = {
-      type: "sse",
-      url: remote.url,
-      ...(headers !== undefined ? { headers } : {}),
-    };
-    return { ok: true, value: cfg };
+    const candidate = tryRemoteCandidate(remote);
+    if (candidate.kind === "ok") return { ok: true, value: candidate.value };
+    if (candidate.kind === "reject") rejects.push(candidate.reason);
   }
 
   for (const pkg of server.packages ?? []) {
@@ -124,6 +90,47 @@ export function pickPackageForInstall(
       retryable: false,
       context: { name: server.name, version: server.version },
     },
+  };
+}
+
+type RemoteCandidate =
+  | { readonly kind: "ok"; readonly value: ExternalServerConfig }
+  | { readonly kind: "skip" }
+  | { readonly kind: "reject"; readonly reason: string };
+
+function tryRemoteCandidate(remote: RegistryRemote): RemoteCandidate {
+  const transport = remote.transport?.type ?? "http";
+  if (transport !== "http" && transport !== "sse") return { kind: "skip" };
+  const urlCheck = validateRemoteUrl(remote.url);
+  if (!urlCheck.ok) {
+    return { kind: "reject", reason: `${transport} remote ${remote.url}: ${urlCheck.error}` };
+  }
+  const headersResult = remoteHeaders(remote.headers);
+  if (!headersResult.ok) {
+    return {
+      kind: "reject",
+      reason: `${transport} remote ${remote.url}: ${headersResult.error.message}`,
+    };
+  }
+  const headers = headersResult.value;
+  if (transport === "http") {
+    // Always include an empty `oauth` block so `koi mcp auth <name>` can
+    // run Dynamic Client Registration if the server requires auth. The
+    // OAuth provider is only consulted on a 401, so this is inert for
+    // servers that don't require authentication.
+    return {
+      kind: "ok",
+      value: {
+        type: "http",
+        url: remote.url,
+        oauth: {},
+        ...(headers !== undefined ? { headers } : {}),
+      },
+    };
+  }
+  return {
+    kind: "ok",
+    value: { type: "sse", url: remote.url, ...(headers !== undefined ? { headers } : {}) },
   };
 }
 

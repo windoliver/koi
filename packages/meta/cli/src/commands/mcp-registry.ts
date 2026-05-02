@@ -116,40 +116,12 @@ export async function runInstall(flags: McpFlags): Promise<ExitCode> {
 
   const picked = pickPackageForInstall(server);
   if (!picked.ok) return failFlags(flags, picked.error.message);
+  if (!flags.json) printPermissionWarning(server, picked.value);
 
-  if (!flags.json) {
-    printPermissionWarning(server, picked.value);
-  }
+  const proceed = await confirmInstall(flags);
+  if (proceed !== "ok") return proceed;
 
-  if (!flags.yes) {
-    // Fail closed in non-interactive contexts: stdin without a TTY (CI,
-    // pipes, automation) can wedge `for await` on stdin until EOF, which
-    // looks like a hang. Require an explicit --yes/--json instead.
-    if (process.stdin.isTTY !== true) {
-      return failFlags(
-        flags,
-        "Refusing to prompt for confirmation: stdin is not a TTY. Re-run with --yes (or --json, which implies --yes).",
-      );
-    }
-    const confirmed = await promptYesNo("Continue?");
-    if (!confirmed) {
-      console.log("Aborted.");
-      return ExitCode.FAILURE;
-    }
-  }
-
-  // Mirror loadConfigs resolution: prefer project ./.mcp.json when it
-  // exists, then ~/.koi/.mcp.json, else create the project file. This
-  // keeps install/uninstall in sync with list/auth/debug/logout — a
-  // user whose active MCP setup lives in the home config no longer
-  // ends up with split state where install creates a project-local
-  // file the rest of the CLI never reads.
   const configPath = resolveActiveMcpJsonPath();
-  // For HTTP installs the verify path may complete an OAuth flow that
-  // persists both tokens AND a DCR client record; if verify fails we
-  // want both wiped. We pass the server URL (not just a derived key)
-  // so cleanup can walk the per-server index and delete every owned
-  // record, not just the canonical token blob.
   const oauthTarget =
     picked.value.type === "http" && picked.value.url !== undefined
       ? { name: server.name, url: picked.value.url }
@@ -166,18 +138,43 @@ export async function runInstall(flags: McpFlags): Promise<ExitCode> {
     },
   });
   if (!result.ok) return failFlags(flags, result.error.message);
-
-  if (flags.json) {
-    console.log(
-      JSON.stringify({ success: true, name: server.name, entry: result.value.entry }, null, 2),
-    );
-  } else {
-    console.log(`Installed "${server.name}" into ${configPath}.`);
-    if (picked.value.type === "http" && hasOAuthRequirement(server)) {
-      console.log(`Run \`koi mcp auth ${server.name}\` to complete OAuth.`);
-    }
-  }
+  reportInstallSuccess(flags, server, picked.value, result.value.entry, configPath);
   return ExitCode.OK;
+}
+
+async function confirmInstall(flags: McpFlags): Promise<"ok" | ExitCode> {
+  if (flags.yes) return "ok";
+  // Fail closed in non-interactive contexts: stdin without a TTY (CI,
+  // pipes, automation) can wedge `for await` on stdin until EOF.
+  if (process.stdin.isTTY !== true) {
+    return failFlags(
+      flags,
+      "Refusing to prompt for confirmation: stdin is not a TTY. Re-run with --yes (or --json, which implies --yes).",
+    );
+  }
+  const confirmed = await promptYesNo("Continue?");
+  if (!confirmed) {
+    console.log("Aborted.");
+    return ExitCode.FAILURE;
+  }
+  return "ok";
+}
+
+function reportInstallSuccess(
+  flags: McpFlags,
+  server: RegistryServer,
+  entry: ExternalServerConfig,
+  written: ExternalServerConfig,
+  configPath: string,
+): void {
+  if (flags.json) {
+    console.log(JSON.stringify({ success: true, name: server.name, entry: written }, null, 2));
+    return;
+  }
+  console.log(`Installed "${server.name}" into ${configPath}.`);
+  if (entry.type === "http" && hasOAuthRequirement(server)) {
+    console.log(`Run \`koi mcp auth ${server.name}\` to complete OAuth.`);
+  }
 }
 
 export async function runUninstall(flags: McpFlags): Promise<ExitCode> {
