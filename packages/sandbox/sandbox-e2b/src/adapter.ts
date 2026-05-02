@@ -88,6 +88,26 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
             "kill-capable SDK wrapper before retrying.",
         );
       }
+      // Postflight: the instance contract makes `commands.supportsMaxOutputBytes=true`
+      // mandatory at exec() time. If we let a handle through without it,
+      // every subsequent exec() would hard-fail and the caller would be
+      // billed for an unusable sandbox. Tear down here instead so the
+      // capability gap surfaces before any caller can dispatch a command.
+      if (sdk.commands?.supportsMaxOutputBytes !== true) {
+        let cleanupNote = "tearing down the just-provisioned sandbox";
+        try {
+          await sdk.kill();
+          cleanupNote = "best-effort kill() succeeded";
+        } catch (killErr) {
+          cleanupNote = `kill() also failed: ${killErr instanceof Error ? killErr.message : String(killErr)} — verify the sandbox state out-of-band (label="${label}")`;
+        }
+        throw new Error(
+          "sandbox-e2b: createSandbox returned a handle without commands.supportsMaxOutputBytes=true. " +
+            "exec() requires server-side cap enforcement; without it, the SandboxExecOptions " +
+            "1 MB default could not be honoured before unbounded output reached the host. " +
+            `Refusing to return an unusable handle — ${cleanupNote}. Inject a cap-capable SDK wrapper.`,
+        );
+      }
       return createE2bInstance(sdk, extractProfileDefaults(profile));
     },
   };

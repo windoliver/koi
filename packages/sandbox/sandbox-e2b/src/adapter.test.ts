@@ -162,6 +162,32 @@ describe("createE2bAdapter", () => {
     await expect(result.value.create(openProfile)).rejects.toThrow(/kill\(\)/);
   });
 
+  test("create() postflights supportsMaxOutputBytes and tears down unusable handles", async () => {
+    // Skew regression: an SDK whose handle lacks supportsMaxOutputBytes=true
+    // would let create() return a billable sandbox where every exec()
+    // hard-fails. Postflight catches this and tears down the just-
+    // provisioned remote resource before any caller can use it.
+    const client = createFakeClient();
+    const original = client.sandbox;
+    let killCalls = 0;
+    const handle = {
+      ...original,
+      commands: { ...original.commands, supportsMaxOutputBytes: false },
+      kill: async (): Promise<void> => {
+        killCalls++;
+      },
+    };
+    Object.defineProperty(client, "createSandbox", {
+      value: async () => handle,
+    });
+    const result = createE2bAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    await expect(result.value.create(openProfile)).rejects.toThrow(/supportsMaxOutputBytes/);
+    // The just-provisioned sandbox must be best-effort killed so the
+    // capability gap doesn't leak a billable resource.
+    expect(killCalls).toBe(1);
+  });
+
   test("per-call exec options override profile defaults", async () => {
     const client = createFakeClient();
     const result = createE2bAdapter({ apiKey: "k", client });

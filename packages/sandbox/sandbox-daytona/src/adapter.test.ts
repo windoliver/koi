@@ -171,6 +171,30 @@ describe("createDaytonaAdapter", () => {
     }
   });
 
+  test("create() postflights supportsMaxOutputBytes and tears down unusable handles", async () => {
+    // Skew regression: an SDK whose handle lacks supportsMaxOutputBytes=true
+    // would let create() return a billable workspace where every exec()
+    // hard-fails. Postflight catches this and tears down the just-
+    // provisioned remote resource before any caller can use it.
+    const client = createFakeClient();
+    const original = client.sandbox;
+    let deleteCalls = 0;
+    const handle = {
+      ...original,
+      commands: { ...original.commands, supportsMaxOutputBytes: false },
+      delete: async (): Promise<void> => {
+        deleteCalls++;
+      },
+    };
+    Object.defineProperty(client, "createSandbox", {
+      value: async () => handle,
+    });
+    const result = createDaytonaAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    await expect(result.value.create(openProfile)).rejects.toThrow(/supportsMaxOutputBytes/);
+    expect(deleteCalls).toBe(1);
+  });
+
   test("per-call exec options override profile defaults", async () => {
     const client = createFakeClient();
     const result = createDaytonaAdapter({ apiKey: "k", client });

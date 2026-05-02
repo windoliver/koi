@@ -76,6 +76,11 @@ export function createDaytonaInstance(
   // to attempt the authoritative SDK delete. The abort-timeout path uses
   // this so the only programmatic teardown path remains available.
   let quarantined = false;
+  // Single-flight teardown: the actual sdk.delete() promise survives the
+  // local TEARDOWN_TIMEOUT_MS so retries attach to the in-flight call
+  // rather than issuing a second remote delete against the same workspace.
+  type DeleteOutcome = { readonly kind: "ok" } | { readonly kind: "err"; readonly e: unknown };
+  let deleteInFlight: Promise<DeleteOutcome> | undefined;
 
   function ensureLive(op: string): void {
     if (destroyed) throw new Error(`sandbox-daytona: instance already destroyed (${op})`);
@@ -384,29 +389,36 @@ export function createDaytonaInstance(
       }
       const TEARDOWN_TIMEOUT_MS = 10_000;
       destroyPending = (async () => {
-        // Call as a method so real SDK implementations that depend on `this`
-        // get the correct receiver; copying into a local would lose it.
-        const teardown = sdk.delete();
-        // Late-success convergence: if the SDK eventually settles after
-        // our local timeout fires, flip state so subsequent destroy()
-        // calls are a no-op. Without this, a merely-slow provider would
-        // leave the instance permanently quarantined even though the
-        // remote workspace was actually deleted.
-        teardown.then(
-          () => {
-            destroyed = true;
-            quarantined = false;
-          },
-          () => {
-            // Failure surfaced through this destroyPending rejection.
-          },
-        );
+        // Single-flight: reuse an existing in-flight delete from a prior
+        // timed-out attempt. Issuing a second remote delete while the
+        // first is still pending breaks coalescing — duplicate provider
+        // mutations against a billable workspace, racy partial-failure
+        // paths, idempotency-skew bugs.
+        if (deleteInFlight === undefined) {
+          // Call as a method so real SDK implementations that depend on
+          // `this` get the correct receiver; copying into a local would
+          // lose it.
+          const teardown = sdk.delete();
+          deleteInFlight = teardown.then(
+            (): DeleteOutcome => ({ kind: "ok" }),
+            (e: unknown): DeleteOutcome => ({ kind: "err", e }),
+          );
+          // Late convergence + cleanup. Runs regardless of whether the
+          // current destroy() call has already returned.
+          deleteInFlight.then((r) => {
+            if (r.kind === "ok") {
+              destroyed = true;
+              quarantined = false;
+            }
+            // Clear the marker so a future destroy() can issue a fresh
+            // delete if the previous one rejected.
+            deleteInFlight = undefined;
+          });
+        }
+        const inFlight = deleteInFlight;
         try {
           const outcome = await Promise.race([
-            teardown.then(
-              () => ({ kind: "ok" as const }),
-              (e: unknown) => ({ kind: "err" as const, e }),
-            ),
+            inFlight,
             new Promise<{ kind: "timeout" }>((resolve) =>
               setTimeout(() => resolve({ kind: "timeout" }), TEARDOWN_TIMEOUT_MS),
             ),
@@ -417,13 +429,17 @@ export function createDaytonaInstance(
           }
           if (outcome.kind === "timeout") {
             // Quarantine — workspace MAY still be running. Don't mark
-            // destroyed; another retry might succeed once provider recovers.
+            // destroyed; the original sdk.delete() stays in flight via
+            // deleteInFlight, so late success will still flip destroyed
+            // and a retry attaches to it instead of issuing a second
+            // overlapping delete against a billable resource.
             quarantined = true;
             throw new Error(
               `sandbox-daytona: destroy() timed out after ${TEARDOWN_TIMEOUT_MS}ms — ` +
-                "sdk.delete() did not settle. The remote workspace MAY still be running " +
-                "and billable; verify out-of-band. Instance is quarantined; destroy() " +
-                "may be retried.",
+                "sdk.delete() did not settle within the local bound. The remote " +
+                "workspace MAY still be running and billable; verify out-of-band. " +
+                "Instance is quarantined. Retries will attach to the still-pending " +
+                "teardown rather than issue a second remote delete.",
             );
           }
           const e = outcome.e;

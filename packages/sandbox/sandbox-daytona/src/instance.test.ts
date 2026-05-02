@@ -179,7 +179,7 @@ describe("createDaytonaInstance", () => {
     const sdk = createFakeSandbox({
       deleteImpl: async () => {
         deleteAttempts++;
-        if (deleteAttempts === 1) return new Promise<void>(() => {});
+        return new Promise<void>(() => {}); // hangs forever
       },
     });
     const instance = createDaytonaInstance(sdk);
@@ -188,9 +188,12 @@ describe("createDaytonaInstance", () => {
     const elapsed = performance.now() - start;
     expect(elapsed).toBeLessThan(15_000);
     await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
-    await instance.destroy();
-    expect(deleteAttempts).toBe(2);
-  }, 20_000);
+    // Single-flight: a retry attaches to the still-in-flight delete
+    // rather than issuing a second remote delete against a billable
+    // workspace.
+    await expect(instance.destroy()).rejects.toThrow(/timed out/);
+    expect(deleteAttempts).toBe(1);
+  }, 25_000);
 
   test("destroy runtime-guards against JS callers that pass an SDK without delete()", async () => {
     // The DaytonaSdkSandbox type now requires delete(), so well-typed code

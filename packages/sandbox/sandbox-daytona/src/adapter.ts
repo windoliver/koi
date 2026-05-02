@@ -98,6 +98,26 @@ export function createDaytonaAdapter(
             "delete-capability declaration.",
         );
       }
+      // Postflight: exec() requires `commands.supportsMaxOutputBytes=true`.
+      // If we let a handle through without it, every subsequent exec()
+      // would hard-fail and the caller would be billed for an unusable
+      // workspace. Tear down here so the capability gap surfaces before
+      // any command can be dispatched.
+      if (sdk.commands?.supportsMaxOutputBytes !== true) {
+        let cleanupNote = "tearing down the just-provisioned workspace";
+        try {
+          await sdk.delete();
+          cleanupNote = "best-effort delete() succeeded";
+        } catch (deleteErr) {
+          cleanupNote = `delete() also failed: ${deleteErr instanceof Error ? deleteErr.message : String(deleteErr)} — verify the workspace state out-of-band (label="${label}")`;
+        }
+        throw new Error(
+          "sandbox-daytona: createSandbox returned a handle without commands.supportsMaxOutputBytes=true. " +
+            "exec() requires server-side cap enforcement; without it, the SandboxExecOptions " +
+            "1 MB default could not be honoured before unbounded output reached the host. " +
+            `Refusing to return an unusable handle — ${cleanupNote}. Inject a cap-capable SDK wrapper.`,
+        );
+      }
       return createDaytonaInstance(sdk, extractProfileDefaults(profile));
     },
   };

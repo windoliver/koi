@@ -112,6 +112,13 @@ export function createE2bInstance(
   // path would be wrong — it removes the only programmatic way to kill a
   // possibly-still-running remote sandbox.
   let quarantined = false;
+  // Single-flight teardown: the actual sdk.kill() promise survives the
+  // local TEARDOWN_TIMEOUT_MS so retries attach to the in-flight call
+  // instead of issuing a second remote kill against the same sandbox.
+  // Cleared on settlement (success → destroyed; rejection → caller may
+  // retry with a fresh kill).
+  type KillOutcome = { readonly kind: "ok" } | { readonly kind: "err"; readonly e: unknown };
+  let killInFlight: Promise<KillOutcome> | undefined;
 
   function ensureLive(op: string): void {
     if (destroyed) throw new Error(`sandbox-e2b: instance already destroyed (${op})`);
@@ -431,28 +438,33 @@ export function createE2bInstance(
       if (destroyPending !== undefined) return destroyPending;
       const TEARDOWN_TIMEOUT_MS = 10_000;
       destroyPending = (async () => {
-        const teardown = sdk.kill();
-        // Late-success convergence: if the SDK eventually settles after
-        // our local timeout fires, flip state so subsequent destroy()
-        // calls are a no-op. Without this, a merely-slow provider would
-        // leave the instance permanently quarantined even though the
-        // remote sandbox was actually killed.
-        teardown.then(
-          () => {
-            destroyed = true;
-            quarantined = false;
-          },
-          () => {
-            // Failure was (or will be) surfaced through this destroyPending
-            // rejection or the next retry; nothing to do here.
-          },
-        );
+        // Single-flight: reuse an existing in-flight kill from a prior
+        // timed-out attempt. Issuing a second remote kill while the first
+        // is still pending breaks coalescing — duplicate provider
+        // mutations, racy partial-failure paths, idempotency-skew bugs.
+        if (killInFlight === undefined) {
+          const teardown = sdk.kill();
+          killInFlight = teardown.then(
+            (): KillOutcome => ({ kind: "ok" }),
+            (e: unknown): KillOutcome => ({ kind: "err", e }),
+          );
+          // Late convergence + cleanup. Runs regardless of whether the
+          // current destroy() call has already returned.
+          killInFlight.then((r) => {
+            if (r.kind === "ok") {
+              destroyed = true;
+              quarantined = false;
+            }
+            // Clear the marker so a future destroy() can issue a fresh
+            // kill if the previous one rejected (and operators want to
+            // retry against a recovering provider).
+            killInFlight = undefined;
+          });
+        }
+        const inFlight = killInFlight;
         try {
           const outcome = await Promise.race([
-            teardown.then(
-              () => ({ kind: "ok" as const }),
-              (e: unknown) => ({ kind: "err" as const, e }),
-            ),
+            inFlight,
             new Promise<{ kind: "timeout" }>((resolve) =>
               setTimeout(() => resolve({ kind: "timeout" }), TEARDOWN_TIMEOUT_MS),
             ),
@@ -463,13 +475,20 @@ export function createE2bInstance(
           }
           if (outcome.kind === "timeout") {
             // Quarantine and surface a leak warning. We do NOT mark
-            // destroyed: the remote sandbox state is unknown and another
-            // retry might succeed once the provider recovers.
+            // destroyed: the remote sandbox state is unknown. The
+            // original sdk.kill() stays in flight (tracked via
+            // killInFlight) — late success will still flip destroyed,
+            // and a retry will attach to it instead of issuing a second
+            // overlapping kill. If the original eventually rejects,
+            // killInFlight clears and a future retry can issue a fresh
+            // kill against a recovering provider.
             quarantined = true;
             throw new Error(
               `sandbox-e2b: destroy() timed out after ${TEARDOWN_TIMEOUT_MS}ms — ` +
-                "sdk.kill() did not settle. The remote sandbox MAY still be running; " +
-                "verify out-of-band. Instance is quarantined; destroy() may be retried.",
+                "sdk.kill() did not settle within the local bound. The remote sandbox " +
+                "MAY still be running; verify out-of-band. Instance is quarantined. " +
+                "Retries will attach to the still-pending teardown rather than issue " +
+                "a second remote kill.",
             );
           }
           // outcome.kind === "err"

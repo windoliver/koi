@@ -163,18 +163,14 @@ describe("createE2bInstance", () => {
   test("destroy() bounded — never hangs forever on stalled sdk.kill()", async () => {
     // Regression: an unbounded destroyPending wedges every subsequent op
     // and gives callers no retry path. The adapter must time out and
-    // transition to quarantine, then allow a retry.
+    // transition to quarantine.
     const base = createFakeSandbox();
     let killAttempts = 0;
     const sdk = {
       ...base,
       kill: async (): Promise<void> => {
         killAttempts++;
-        if (killAttempts === 1) {
-          // First call hangs forever.
-          return new Promise<void>(() => {});
-        }
-        // Second call succeeds (provider recovered).
+        return new Promise<void>(() => {}); // hangs forever
       },
     };
     const instance = createE2bInstance(sdk);
@@ -184,10 +180,11 @@ describe("createE2bInstance", () => {
     expect(elapsed).toBeLessThan(15_000);
     // Quarantined: ops reject.
     await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
-    // But destroy() can be retried — and this time the SDK responds.
-    await instance.destroy();
-    expect(killAttempts).toBe(2);
-  }, 20_000);
+    // Single-flight: a retry attaches to the still-in-flight kill rather
+    // than issuing a second overlapping remote kill.
+    await expect(instance.destroy()).rejects.toThrow(/timed out/);
+    expect(killAttempts).toBe(1);
+  }, 25_000);
 
   test("quarantined instance still allows destroy() to attempt teardown", async () => {
     // Regression: quarantine must not foreclose the only programmatic
