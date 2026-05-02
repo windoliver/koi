@@ -227,16 +227,16 @@ export function createE2bInstance(
       // so a finished command is never misreported as cancelled.
       const sdkPromise = sdk.commands.run(cmd, sdkOpts);
       const sig = options?.signal;
-      type Settled =
+      type SdkOutcome =
         | {
             readonly kind: "result";
             readonly r: typeof sdkPromise extends Promise<infer R> ? R : never;
           }
-        | { readonly kind: "error"; readonly e: unknown }
-        | { readonly kind: "abort" };
-      const sdkSettled: Promise<Settled> = sdkPromise.then(
-        (r): Settled => ({ kind: "result", r }),
-        (e: unknown): Settled => ({ kind: "error", e }),
+        | { readonly kind: "error"; readonly e: unknown };
+      type Settled = SdkOutcome | { readonly kind: "abort" };
+      const sdkSettled: Promise<SdkOutcome> = sdkPromise.then(
+        (r): SdkOutcome => ({ kind: "result", r }),
+        (e: unknown): SdkOutcome => ({ kind: "error", e }),
       );
       const abortObserved: Promise<Settled> =
         sig === undefined
@@ -245,31 +245,29 @@ export function createE2bInstance(
               sig.addEventListener("abort", () => resolve({ kind: "abort" }), { once: true });
             });
 
-      const winner: Settled = await Promise.race([sdkSettled, abortObserved]);
+      const winner: Settled = await Promise.race<Settled>([sdkSettled, abortObserved]);
 
       if (winner.kind === "abort") {
         // Per supportsAbort=true the SDK should settle once the remote
         // process is dead — but we cannot wait forever on a degraded
-        // provider, or a hung transport would turn cancellation into a
-        // permanent hang. Cap the kill-confirmation wait; on timeout
-        // surface the cancel and quarantine the instance so callers do
-        // not retry against a workspace whose lifecycle state is unknown.
+        // provider. Cap the kill-confirmation wait, then INSPECT the
+        // settled outcome: only a true cancellation signal (AbortError /
+        // standard kill exit codes) maps to 130. A successful completion
+        // that landed just after the abort signal must be propagated as
+        // success — replaying it would duplicate side effects.
         const POST_ABORT_KILL_CONFIRM_MS = 5_000;
-        const confirmed = await Promise.race([
-          sdkSettled.then(() => "settled" as const),
-          new Promise<"timeout">((resolve) =>
-            setTimeout(() => resolve("timeout"), POST_ABORT_KILL_CONFIRM_MS),
+        type Confirmed =
+          | { readonly kind: "settled"; readonly s: SdkOutcome }
+          | { readonly kind: "timeout" };
+        const confirmed: Confirmed = await Promise.race<Confirmed>([
+          sdkSettled.then((s): Confirmed => ({ kind: "settled", s })),
+          new Promise<Confirmed>((resolve) =>
+            setTimeout(() => resolve({ kind: "timeout" }), POST_ABORT_KILL_CONFIRM_MS),
           ),
         ]);
         const durationMs = performance.now() - start;
-        if (confirmed === "timeout") {
-          // SDK never confirmed termination. We deliberately do NOT return
-          // exitCode 130: that signals a safe cancellation and most
-          // higher-layer retry logic treats it as replay-safe. The remote
-          // command may still be running, so a retry would duplicate side
-          // effects. Return exit 1 (indeterminate failure) plus a clear
-          // stderr message, and quarantine the instance so destroy()
-          // remains the only available recovery path.
+        if (confirmed.kind === "timeout") {
+          // Indeterminate — the remote command may still be running.
           quarantined = true;
           return {
             exitCode: 1,
@@ -285,13 +283,59 @@ export function createE2bInstance(
             oomKilled: false,
           };
         }
+        const settled = confirmed.s;
+        // SDK rejected with AbortError → provider-confirmed cancellation.
+        if (settled.kind === "error") {
+          const e = settled.e;
+          if (e instanceof Error && e.name === "AbortError") {
+            return {
+              exitCode: 130,
+              stdout: "",
+              stderr: "",
+              durationMs,
+              timedOut: false,
+              oomKilled: false,
+            };
+          }
+          // Some other rejection arrived in the post-abort window. We
+          // cannot prove the command was killed cleanly, so return the
+          // failure verbatim rather than synthesising a clean cancel.
+          const message = e instanceof Error ? e.message : String(e);
+          return {
+            exitCode: 1,
+            stdout: "",
+            stderr: message,
+            durationMs,
+            timedOut: false,
+            oomKilled: false,
+          };
+        }
+        // SDK resolved with a result. The conventional kill exit codes
+        // (130 SIGINT, 137 SIGKILL, 143 SIGTERM) confirm cancellation.
+        // Anything else — including exit 0 — means the command actually
+        // completed; propagate it so callers see the real outcome and
+        // don't replay finished side effects.
+        const r = settled.r;
+        const isKillExit = r.exitCode === 130 || r.exitCode === 137 || r.exitCode === 143;
+        if (isKillExit) {
+          return {
+            exitCode: 130,
+            stdout: "",
+            stderr: "",
+            durationMs,
+            timedOut: false,
+            oomKilled: false,
+          };
+        }
+        const cappedAbort = applyCombinedBudget(r.stdout, r.stderr, cap, r.truncated);
         return {
-          exitCode: 130,
-          stdout: "",
-          stderr: "",
+          exitCode: r.exitCode,
+          stdout: cappedAbort.stdout,
+          stderr: cappedAbort.stderr,
           durationMs,
-          timedOut: false,
-          oomKilled: false,
+          timedOut: r.exitCode === 124,
+          oomKilled: r.exitCode === 137,
+          ...(cappedAbort.truncated ? { truncated: true as const } : {}),
         };
       }
 

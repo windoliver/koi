@@ -247,6 +247,40 @@ describe("createE2bInstance", () => {
     expect(result.exitCode).toBe(130);
   });
 
+  test("exec propagates SDK success (not 130) when abort wins race but command actually completed", async () => {
+    // Race-window regression: caller aborts at the very moment the remote
+    // command finishes successfully. The signal beats the SDK resolution
+    // into the Promise.race, but the SDK then settles with exit 0 — proof
+    // the command actually ran to completion. Mapping that to 130 would
+    // tell higher layers the work was cancelled, when in reality the side
+    // effects already happened. Replays would duplicate them.
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      commands: {
+        ...base.commands,
+        supportsAbort: true,
+        run: async (
+          _cmd: string,
+          opts?: import("./types.js").E2bRunOpts,
+        ): Promise<import("./types.js").E2bRunResult> => {
+          // Wait for the abort signal, then resolve with success — the
+          // SDK had already finished by the time it noticed the abort.
+          await new Promise<void>((resolve) => {
+            opts?.signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          return { exitCode: 0, stdout: "ok", stderr: "" };
+        },
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    const ac = new AbortController();
+    queueMicrotask(() => ac.abort());
+    const result = await instance.exec("ls", [], { signal: ac.signal });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("ok");
+  });
+
   test("exec returns failure (not 130) when SDK rejects with AbortError but caller never aborted", async () => {
     // Server-side eviction / transport-layer aborts can surface as
     // AbortError-shaped rejections. Mapping those to exit 130 without a

@@ -176,13 +176,13 @@ export function createDaytonaInstance(
       // winner unambiguously identifies which event happened first.
       const sdkPromise = sdk.commands.run(cmd, sdkOpts);
       const sig = options?.signal;
-      type Settled =
+      type SdkOutcome =
         | { readonly kind: "result"; readonly r: Awaited<typeof sdkPromise> }
-        | { readonly kind: "error"; readonly e: unknown }
-        | { readonly kind: "abort" };
-      const sdkSettled: Promise<Settled> = sdkPromise.then(
-        (r): Settled => ({ kind: "result", r }),
-        (e: unknown): Settled => ({ kind: "error", e }),
+        | { readonly kind: "error"; readonly e: unknown };
+      type Settled = SdkOutcome | { readonly kind: "abort" };
+      const sdkSettled: Promise<SdkOutcome> = sdkPromise.then(
+        (r): SdkOutcome => ({ kind: "result", r }),
+        (e: unknown): SdkOutcome => ({ kind: "error", e }),
       );
       const abortObserved: Promise<Settled> =
         sig === undefined
@@ -191,21 +191,28 @@ export function createDaytonaInstance(
               sig.addEventListener("abort", () => resolve({ kind: "abort" }), { once: true });
             });
 
-      const winner: Settled = await Promise.race([sdkSettled, abortObserved]);
+      const winner: Settled = await Promise.race<Settled>([sdkSettled, abortObserved]);
 
       if (winner.kind === "abort") {
         // Bounded kill-confirmation wait — never hang forever on a
         // degraded provider. On timeout, quarantine the instance so
         // subsequent ops reject and operators can revoke out-of-band.
+        // Inspect the settled SDK outcome: only a true cancellation
+        // (AbortError or kill-style exit codes) maps to 130. A successful
+        // completion landing just after the abort signal must be
+        // propagated as success — replaying it would duplicate side effects.
         const POST_ABORT_KILL_CONFIRM_MS = 5_000;
-        const confirmed = await Promise.race([
-          sdkSettled.then(() => "settled" as const),
-          new Promise<"timeout">((resolve) =>
-            setTimeout(() => resolve("timeout"), POST_ABORT_KILL_CONFIRM_MS),
+        type Confirmed =
+          | { readonly kind: "settled"; readonly s: SdkOutcome }
+          | { readonly kind: "timeout" };
+        const confirmed: Confirmed = await Promise.race<Confirmed>([
+          sdkSettled.then((s): Confirmed => ({ kind: "settled", s })),
+          new Promise<Confirmed>((resolve) =>
+            setTimeout(() => resolve({ kind: "timeout" }), POST_ABORT_KILL_CONFIRM_MS),
           ),
         ]);
         const durationMs = performance.now() - start;
-        if (confirmed === "timeout") {
+        if (confirmed.kind === "timeout") {
           // Indeterminate remote state — must NOT report exit 130 (safe
           // cancel) because the original command may still be running and
           // a retry would duplicate side effects. Use exit 1 so higher-
@@ -226,13 +233,58 @@ export function createDaytonaInstance(
             oomKilled: false,
           };
         }
+        const settled = confirmed.s;
+        if (settled.kind === "error") {
+          const e = settled.e;
+          if (e instanceof Error && e.name === "AbortError") {
+            return {
+              exitCode: 130,
+              stdout: "",
+              stderr: "",
+              durationMs,
+              timedOut: false,
+              oomKilled: false,
+            };
+          }
+          // Some other rejection arrived in the post-abort window. We
+          // cannot prove the command was killed cleanly, so propagate
+          // the failure rather than synthesising a clean cancel.
+          const message = e instanceof Error ? e.message : String(e);
+          return {
+            exitCode: 1,
+            stdout: "",
+            stderr: message,
+            durationMs,
+            timedOut: false,
+            oomKilled: false,
+          };
+        }
+        // SDK resolved with a result. Conventional kill exit codes
+        // (130 SIGINT, 137 SIGKILL, 143 SIGTERM) confirm cancellation.
+        // Anything else — including exit 0 — means the command actually
+        // completed; propagate it so callers don't replay finished side
+        // effects.
+        const r = settled.r;
+        const isKillExit = r.exitCode === 130 || r.exitCode === 137 || r.exitCode === 143;
+        if (isKillExit) {
+          return {
+            exitCode: 130,
+            stdout: "",
+            stderr: "",
+            durationMs,
+            timedOut: false,
+            oomKilled: false,
+          };
+        }
+        const cappedAbort = applyCombinedBudget(r.stdout, r.stderr, cap, r.truncated);
         return {
-          exitCode: 130,
-          stdout: "",
-          stderr: "",
+          exitCode: r.exitCode,
+          stdout: cappedAbort.stdout,
+          stderr: cappedAbort.stderr,
           durationMs,
-          timedOut: false,
-          oomKilled: false,
+          timedOut: r.exitCode === 124,
+          oomKilled: r.exitCode === 137,
+          ...(cappedAbort.truncated ? { truncated: true as const } : {}),
         };
       }
 
