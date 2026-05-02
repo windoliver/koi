@@ -7,7 +7,7 @@ stderr-framed protocol. OS-level isolation (seatbelt/bwrap) is delegated to
 
 ## Recent updates
 
-- **Stderr drain before result marker (#2106)**: `subprocess-runner.ts` now awaits a zero-length `process.stderr.write` callback before emitting the framing marker via `writeSync(2, ...)`. On Linux CI runners under heavy `process.stderr.write` bursts, the runner's `process.exit(0)` would drop libuv-queued user writes and leave the kernel pipe ordered such that the parent's `parseFramedResult` (`lastIndexOf(RESULT_MARKER)`) could not locate the marker — surfacing as `CRASH: Sandbox exited without result marker` for legitimately successful executions. Awaiting the FIFO drain callback guarantees prior user writes flush before the marker, so it lands last on the parent's stream regardless of CI/runner timing.
+- **Result protocol moved to fd=3 (#2106)**: the framing marker + JSON payload now flow over a dedicated pipe (`stdio: ["ignore", "pipe", "pipe", "pipe"]`) that the runner writes via `writeSync(3, ...)` and the parent reads via `Bun.file(fd).stream()`. Previously the marker shared stderr with arbitrary user-code output; on Linux CI runners under heavy `process.stderr.write` bursts the marker could be overrun by libuv-queued user writes, surfacing as `CRASH: Sandbox exited without result marker` for legitimately successful executions. fd=3 is touched only by the runner so user code on stdout/stderr can no longer race the protocol. Stderr-side scanning is preserved as a backward-compat fallback for direct-exec/legacy parents.
 
 ## Why it exists
 
