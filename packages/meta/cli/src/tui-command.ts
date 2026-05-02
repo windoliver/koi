@@ -1495,8 +1495,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const stateDbPath = process.env.KOI_SESSION_STATE_DB;
   let stateSessionPersistence: import("@koi/core").SessionPersistence | undefined;
   if (stateDbPath !== undefined && stateDbPath !== "") {
-    const { createSqliteSessionPersistence } = await import("@koi/session");
-    stateSessionPersistence = createSqliteSessionPersistence({ dbPath: stateDbPath });
+    try {
+      const { createSqliteSessionPersistence } = await import("@koi/session");
+      stateSessionPersistence = createSqliteSessionPersistence({ dbPath: stateDbPath });
+    } catch (err: unknown) {
+      // Bad path / permissions failure / corrupt DB — `new Database(...)`
+      // and the PRAGMA bootstrap can throw synchronously. Cancel-resume
+      // is opt-in; an unhealthy checkpoint store must never abort the
+      // TUI. Surface a stderr signal and continue with transcript-only.
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `koi tui: cancel checkpoint store unavailable at ${stateDbPath} (${msg}) — cancel-resume disabled for this run\n`,
+      );
+    }
   }
   let resumedEngineState: import("@koi/core").EngineState | undefined;
   if (flags.resume !== undefined) {
@@ -1579,7 +1590,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       remoteSeq: 0,
       connectedAt: Date.now(),
       lastPersistedAt: Date.now(),
-      status: "idle",
+      // The TUI process IS the running session — recovery tooling treats
+      // status="running" rows as crash candidates after restart, which is
+      // exactly what we want for a TUI that may be SIGKILL'd. A clean
+      // shutdown transitions to "done" via setSessionStatus below; OOM /
+      // SIGKILL leaves it "running" for the next operator inspection.
+      status: "running",
       metadata: {
         ...(resolvedManifestPath !== undefined ? { manifestPath: resolvedManifestPath } : {}),
       },
@@ -2391,6 +2407,37 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Cleanly close the SQLite store on process exit so WAL files flush.
   if (aceCloseHook !== undefined) {
     process.on("exit", aceCloseHook);
+  }
+  // Issue #1683: flip cancel-checkpoint session row to "done" on clean
+  // exit so recovery tooling distinguishes a normal close (status=done)
+  // from a SIGKILL/OOM crash candidate (status=running). Best-effort —
+  // exit handlers must be sync, and we already opened the same store
+  // earlier in this process; both setSessionStatus and close are sync
+  // for the bundled SQLite store. Errors are swallowed because exit
+  // handlers cannot meaningfully recover or surface UX.
+  if (stateSessionPersistence !== undefined) {
+    const persistOnExit = stateSessionPersistence;
+    process.on("exit", () => {
+      try {
+        const r = persistOnExit.setSessionStatus(tuiSessionId, "done");
+        // SQLite path is sync; in-memory and remote stores return Promises
+        // we cannot await in an exit handler. Either way, write is
+        // best-effort: a missed flip just leaves the row as a crash
+        // candidate, which is the safe failure mode.
+        if (r instanceof Promise) {
+          // Intentionally no await — exit handlers are synchronous.
+          r.catch(() => {});
+        }
+      } catch {
+        // Swallow — see above.
+      }
+      try {
+        const c = persistOnExit.close();
+        if (c instanceof Promise) c.catch(() => {});
+      } catch {
+        // Swallow — store may already be closed (multiple exit paths).
+      }
+    });
   }
 
   // Persist session provenance (deferred from earlier so storeId is known).

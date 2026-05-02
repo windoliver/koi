@@ -2357,6 +2357,24 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   const sessionPersistenceCfg = config.sessionPersistence;
   const stateSessionId = config.session?.sessionId;
   const { wrapAdapterWithStatePersistence } = await import("@koi/session");
+  // Issue #1683 round 6 finding: the wrapper is a no-op when the inner
+  // adapter doesn't expose `saveState`/`loadState`. Today's
+  // `createTranscriptAdapter` doesn't yet, so wiring the wrapper through
+  // the TUI is decorative until concrete adapters add the hooks. Surface
+  // an explicit warning instead of silently degrading, so operators don't
+  // believe cancel-resume is active when it isn't.
+  if (
+    sessionPersistenceCfg !== undefined &&
+    stateSessionId !== undefined &&
+    timeoutInjectedAdapter.saveState === undefined
+  ) {
+    process.stderr.write(
+      "koi: sessionPersistence configured but the engine adapter does not " +
+        "implement saveState/loadState — cancel-resume is INERT for this run. " +
+        "Provide an adapter with EngineAdapter.saveState to enable durable " +
+        "cancel checkpoints.\n",
+    );
+  }
   const engineAdapter: EngineAdapter =
     sessionPersistenceCfg !== undefined && stateSessionId !== undefined
       ? wrapAdapterWithStatePersistence(timeoutInjectedAdapter, {
