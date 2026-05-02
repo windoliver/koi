@@ -7,7 +7,20 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
-import { attestVerified, createPolicyCacheMiddleware, type PolicyEntry } from "./policy-cache.js";
+import {
+  createPolicyCacheMiddleware,
+  type PolicyCacheConfig,
+  type PolicyEntry,
+} from "./policy-cache.js";
+
+// Tests don't need a forge instance to exercise cache behavior. The cache
+// fail-closes when no verifier is configured, so every test handle wires
+// `verifier: TRUST_ALL`. Tests that exercise the verifier itself pass an
+// explicit alternative. `mw(...)` is a thin helper that prepends the
+// trusting verifier to any per-test config.
+const TRUST_ALL = (): boolean => true;
+const mw = (cfg: PolicyCacheConfig = {}): ReturnType<typeof createPolicyCacheMiddleware> =>
+  createPolicyCacheMiddleware({ verifier: TRUST_ALL, ...cfg });
 
 function ctxFor(agentId: string): TurnContext {
   return {
@@ -39,18 +52,12 @@ function makeAgentPolicy(
   toolId: string,
   brickId: string,
   decision: "allow" | "block" = "allow",
-  attest: "valid" | "missing" = "valid",
 ): PolicyEntry {
   return {
     scope: "agent",
     agentId,
     toolId,
     brickId,
-    attestation:
-      attest === "valid"
-        ? attestVerified({ brickId, source: "test" })
-        : // Hand-rolled token (NOT minted via attestVerified) — must be rejected.
-          ({ brickId, source: "test" } as never),
     execute: () =>
       decision === "allow" ? { action: "allow" } : { action: "block", reason: "blocked by policy" },
   };
@@ -65,7 +72,6 @@ function makeGlobalPolicy(
     scope: "global",
     toolId,
     brickId,
-    attestation: attestVerified({ brickId, source: "test" }),
     execute: () =>
       decision === "allow" ? { action: "allow" } : { action: "block", reason: "blocked by policy" },
   };
@@ -73,7 +79,7 @@ function makeGlobalPolicy(
 
 describe("createPolicyCacheMiddleware: shape", () => {
   test("name is policy-cache, priority 50 (outer of permissions@100), phase intercept", () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     expect(handle.middleware.name).toBe("policy-cache");
     expect(handle.middleware.priority).toBe(50);
     expect(handle.middleware.phase).toBe("intercept");
@@ -81,11 +87,11 @@ describe("createPolicyCacheMiddleware: shape", () => {
 });
 
 describe("createPolicyCacheMiddleware: verified-only promotion gate", () => {
-  test("register rejects unverified entries (deterministic gate)", () => {
-    const handle = createPolicyCacheMiddleware();
-    const result = handle.register(
-      makeAgentPolicy("agent-A", "search", "brick-1", "allow", "missing"),
-    );
+  test("register rejects entries the verifier rejects (returns false)", () => {
+    const handle = createPolicyCacheMiddleware({
+      verifier: (brickId) => brickId === "brick-VERIFIED",
+    });
+    const result = handle.register(makeAgentPolicy("agent-A", "search", "brick-1"));
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
@@ -94,65 +100,58 @@ describe("createPolicyCacheMiddleware: verified-only promotion gate", () => {
     expect(handle.size()).toBe(0);
   });
 
-  test("register accepts verified entries", () => {
-    const handle = createPolicyCacheMiddleware();
-    const result = handle.register(
-      makeAgentPolicy("agent-A", "search", "brick-1", "allow", "valid"),
-    );
+  test("register accepts entries the verifier accepts", () => {
+    const handle = createPolicyCacheMiddleware({
+      verifier: (brickId) => brickId === "brick-VERIFIED",
+    });
+    const result = handle.register(makeAgentPolicy("agent-A", "search", "brick-VERIFIED", "allow"));
     expect(result.ok).toBe(true);
     expect(handle.size()).toBe(1);
   });
 
-  test("promotion gate is deterministic across identical inputs", () => {
-    const h1 = createPolicyCacheMiddleware();
-    const h2 = createPolicyCacheMiddleware();
-    const e = makeAgentPolicy("agent-A", "search", "brick-1", "allow", "valid");
-    expect(h1.register(e).ok).toBe(true);
-    expect(h2.register(e).ok).toBe(true);
-
-    const u = makeAgentPolicy("agent-A", "search", "brick-2", "allow", "missing");
-    expect(h1.register(u).ok).toBe(false);
-    expect(h2.register(u).ok).toBe(false);
-  });
-
-  test("hand-rolled attestation literal (not minted via attestVerified) is rejected", () => {
-    // The brand check is the trust boundary: a buggy/compromised wiring
-    // layer that constructs `{ brickId, source }` by hand cannot pass
-    // admission, even though the shape matches the public type.
+  test("missing verifier fail-closes: every registration rejected", () => {
+    // No verifier configured at construction time. Every register() call
+    // must be refused — the cache never trusts the caller. This is the
+    // safety property that closes the round-3/4 trust-boundary hole.
     const handle = createPolicyCacheMiddleware();
-    const result = handle.register({
-      scope: "agent",
-      agentId: "agent-A",
-      toolId: "search",
-      brickId: "brick-1",
-      attestation: { brickId: "brick-1", source: "fake" } as never,
-      execute: () => ({ action: "block", reason: "x" }),
-    });
+    const result = handle.register(makeAgentPolicy("agent-A", "search", "brick-1"));
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.retryable).toBe(false);
+    }
     expect(handle.size()).toBe(0);
   });
 
-  test("attestation with mismatched brickId is rejected", () => {
-    // Tokens are bound to a specific brickId at mint time.
-    const handle = createPolicyCacheMiddleware();
-    const wrongIdToken = attestVerified({ brickId: "brick-OTHER", source: "test" });
-    const result = handle.register({
-      scope: "agent",
-      agentId: "agent-A",
-      toolId: "search",
-      brickId: "brick-1",
-      attestation: wrongIdToken,
-      execute: () => ({ action: "block", reason: "x" }),
+  test("verifier sees the brickId from the entry (not caller-controlled)", () => {
+    const seen: string[] = [];
+    const handle = createPolicyCacheMiddleware({
+      verifier: (brickId) => {
+        seen.push(brickId);
+        return false;
+      },
     });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+    handle.register(makeAgentPolicy("agent-A", "search", "brick-X"));
+    handle.register(makeAgentPolicy("agent-B", "other", "brick-Y"));
+    expect(seen).toEqual(["brick-X", "brick-Y"]);
+  });
+
+  test("verifier closure is captured at construction; callers cannot influence its decision", () => {
+    // Even if a caller hands a fully-formed PolicyEntry, the cache routes
+    // the brickId through the verifier closure that was captured at
+    // factory time. The verifier is the only authority.
+    const verifiedSet = new Set<string>(["brick-OK"]);
+    const handle = createPolicyCacheMiddleware({
+      verifier: (brickId) => verifiedSet.has(brickId),
+    });
+    expect(handle.register(makeAgentPolicy("a", "t", "brick-OK")).ok).toBe(true);
+    expect(handle.register(makeAgentPolicy("a", "u", "brick-FAKE")).ok).toBe(false);
   });
 });
 
 describe("createPolicyCacheMiddleware: cache-hit bypass equivalence", () => {
   test("uncached toolId passes through unchanged", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     const next: ToolHandler = mock(async () => makeResp());
     const wrap = handle.middleware.wrapToolCall;
     if (wrap === undefined) throw new Error("wrapToolCall missing");
@@ -163,8 +162,8 @@ describe("createPolicyCacheMiddleware: cache-hit bypass equivalence", () => {
   });
 
   test("policy 'allow' delegates to next — observable result identical to no-cache", async () => {
-    const baseline = createPolicyCacheMiddleware();
-    const cached = createPolicyCacheMiddleware();
+    const baseline = mw();
+    const cached = mw();
     cached.register(makeAgentPolicy("agent-A", "search", "brick-1", "allow"));
 
     const baselineNext: ToolHandler = mock(async () => ({ output: "tool ran" }) as ToolResponse);
@@ -183,7 +182,7 @@ describe("createPolicyCacheMiddleware: cache-hit bypass equivalence", () => {
   });
 
   test("policy 'block' short-circuits without calling next (no model, no tool)", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     handle.register(makeAgentPolicy("agent-A", "search", "brick-1", "block"));
 
     const next: ToolHandler = mock(async () => makeResp());
@@ -208,7 +207,7 @@ describe("createPolicyCacheMiddleware: cache-hit bypass equivalence", () => {
   });
 
   test("only intercepts registered toolIds — others pass through", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     handle.register(makeAgentPolicy("agent-A", "search", "brick-1", "block"));
 
     const next: ToolHandler = mock(async () => makeResp());
@@ -220,14 +219,13 @@ describe("createPolicyCacheMiddleware: cache-hit bypass equivalence", () => {
   });
 
   test("policy decision is a pure function of input — repeated calls produce identical decisions", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     let runs = 0;
     const result = handle.register({
       scope: "agent",
       agentId: "agent-A",
       toolId: "search",
       brickId: "brick-pure",
-      attestation: attestVerified({ brickId: "brick-pure", source: "test" }),
       execute: (input) => {
         runs += 1;
         const q = (input as { readonly q?: unknown }).q;
@@ -253,7 +251,7 @@ describe("createPolicyCacheMiddleware: cache-hit bypass equivalence", () => {
 describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantine)", () => {
   test("throwing executor returns canonical block AND quarantines (deny stays enforced)", async () => {
     let errorInfo: { brickId: string; toolId: string; scope: string } | undefined;
-    const handle = createPolicyCacheMiddleware({
+    const handle = mw({
       onExecutorError: (info) => {
         errorInfo = { brickId: info.brickId, toolId: info.toolId, scope: info.scope };
       },
@@ -263,7 +261,6 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantin
       agentId: "agent-A",
       toolId: "search",
       brickId: "brick-throws",
-      attestation: attestVerified({ brickId: "brick-throws", source: "test" }),
       execute: () => {
         throw new Error("schema drift");
       },
@@ -296,13 +293,12 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantin
   });
 
   test("quarantined deny does NOT fall back to global allow (security property)", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     handle.register({
       scope: "agent",
       agentId: "agent-A",
       toolId: "search",
       brickId: "brick-broken",
-      attestation: attestVerified({ brickId: "brick-broken", source: "test" }),
       execute: () => {
         throw new Error("compile error");
       },
@@ -326,14 +322,13 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantin
   });
 
   test("re-registering brick clears quarantine", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     let throwOnce = true;
     handle.register({
       scope: "agent",
       agentId: "agent-A",
       toolId: "search",
       brickId: "brick-flaky",
-      attestation: attestVerified({ brickId: "brick-flaky", source: "test" }),
       execute: () => {
         if (throwOnce) throw new Error("transient compile fault");
         return { action: "allow" };
@@ -355,7 +350,6 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantin
       agentId: "agent-A",
       toolId: "search",
       brickId: "brick-flaky",
-      attestation: attestVerified({ brickId: "brick-flaky", source: "test" }),
       execute: () => ({ action: "allow" }),
     });
 
@@ -373,13 +367,12 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantin
         return () => {};
       },
     };
-    const handle = createPolicyCacheMiddleware({ notifier });
+    const handle = mw({ notifier });
     handle.register({
       scope: "agent",
       agentId: "agent-A",
       toolId: "search",
       brickId: "brick-broken",
-      attestation: attestVerified({ brickId: "brick-broken", source: "test" }),
       execute: () => {
         throw new Error("fault");
       },
@@ -395,7 +388,7 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantin
   });
 
   test("onExecutorError callback that throws does NOT break canonical block return", async () => {
-    const handle = createPolicyCacheMiddleware({
+    const handle = mw({
       onExecutorError: () => {
         throw new Error("audit sink offline");
       },
@@ -405,7 +398,6 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantin
       agentId: "agent-A",
       toolId: "search",
       brickId: "brick-throws",
-      attestation: attestVerified({ brickId: "brick-throws", source: "test" }),
       execute: () => {
         throw new Error("compile error");
       },
@@ -425,7 +417,7 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantin
 
 describe("createPolicyCacheMiddleware: eviction", () => {
   test("evict by brickId is idempotent", () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     handle.register(makeAgentPolicy("agent-A", "search", "brick-1"));
     expect(handle.size()).toBe(1);
     handle.evict("brick-1");
@@ -435,14 +427,14 @@ describe("createPolicyCacheMiddleware: eviction", () => {
   });
 
   test("evict for unknown brickId is no-op", () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     handle.register(makeAgentPolicy("agent-A", "search", "brick-1"));
     handle.evict("brick-unknown");
     expect(handle.size()).toBe(1);
   });
 
   test("re-registering same (scope,owner,toolId) replaces prior brick (no leak)", () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     handle.register(makeAgentPolicy("agent-A", "search", "brick-1", "allow"));
     handle.register(makeAgentPolicy("agent-A", "search", "brick-2", "block"));
     expect(handle.size()).toBe(1);
@@ -455,7 +447,7 @@ describe("createPolicyCacheMiddleware: eviction", () => {
   });
 
   test("re-registering same brickId for different toolId cleans stale forward entry", () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     handle.register(makeAgentPolicy("agent-A", "search", "brick-A"));
     handle.register(makeAgentPolicy("agent-A", "query", "brick-A"));
     expect(handle.size()).toBe(1);
@@ -465,7 +457,7 @@ describe("createPolicyCacheMiddleware: eviction", () => {
   });
 
   test("respects maxEntries with LRU eviction of oldest", () => {
-    const handle = createPolicyCacheMiddleware({ maxEntries: 2 });
+    const handle = mw({ maxEntries: 2 });
     handle.register(makeAgentPolicy("agent-A", "a", "ba"));
     handle.register(makeAgentPolicy("agent-A", "b", "bb"));
     handle.register(makeAgentPolicy("agent-A", "c", "bc"));
@@ -475,7 +467,7 @@ describe("createPolicyCacheMiddleware: eviction", () => {
 
 describe("createPolicyCacheMiddleware: scope isolation by concrete owner", () => {
   test("two agents registering the same toolId do NOT collide", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     handle.register(makeAgentPolicy("agent-A", "search", "brick-A", "block"));
     handle.register(makeAgentPolicy("agent-B", "search", "brick-B", "allow"));
     expect(handle.size()).toBe(2);
@@ -496,7 +488,7 @@ describe("createPolicyCacheMiddleware: scope isolation by concrete owner", () =>
   });
 
   test("agent unknown to cache: no agent hit, falls back to zone/global as appropriate", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     handle.register(makeAgentPolicy("agent-A", "search", "brick-A", "block"));
     handle.register(makeGlobalPolicy("search", "brick-global", "allow"));
 
@@ -510,7 +502,7 @@ describe("createPolicyCacheMiddleware: scope isolation by concrete owner", () =>
   });
 
   test("agent → global precedence at lookup time", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     handle.register(makeGlobalPolicy("search", "brick-G", "allow"));
     handle.register(makeAgentPolicy("agent-A", "search", "brick-A", "block"));
 
@@ -541,7 +533,7 @@ describe("createPolicyCacheMiddleware: event-driven invalidation", () => {
         return () => {};
       },
     };
-    const handle = createPolicyCacheMiddleware({ notifier });
+    const handle = mw({ notifier });
     handle.register(makeAgentPolicy("agent-A", "search", "brick-1"));
     expect(handle.size()).toBe(1);
 
@@ -558,7 +550,7 @@ describe("createPolicyCacheMiddleware: event-driven invalidation", () => {
         return () => {};
       },
     };
-    const handle = createPolicyCacheMiddleware({ notifier });
+    const handle = mw({ notifier });
     handle.register(makeAgentPolicy("agent-A", "a", "ba"));
     handle.register(makeAgentPolicy("agent-A", "b", "bb"));
     expect(handle.size()).toBe(2);
@@ -582,14 +574,13 @@ describe("createPolicyCacheMiddleware: event-driven invalidation", () => {
         return () => {};
       },
     };
-    const handle = createPolicyCacheMiddleware({ notifier });
+    const handle = mw({ notifier });
     // Register fresh entry at generation 5.
     handle.register({
       scope: "agent",
       agentId: "agent-A",
       toolId: "rm",
       brickId: "brick-1",
-      attestation: attestVerified({ brickId: "brick-1", source: "test" }),
       generation: 5,
       execute: () => ({ action: "block", reason: "x" }),
     });
@@ -608,13 +599,12 @@ describe("createPolicyCacheMiddleware: event-driven invalidation", () => {
         return () => {};
       },
     };
-    const handle = createPolicyCacheMiddleware({ notifier });
+    const handle = mw({ notifier });
     handle.register({
       scope: "agent",
       agentId: "agent-A",
       toolId: "rm",
       brickId: "brick-1",
-      attestation: attestVerified({ brickId: "brick-1", source: "test" }),
       generation: 5,
       execute: () => ({ action: "block", reason: "x" }),
     });
@@ -631,13 +621,12 @@ describe("createPolicyCacheMiddleware: event-driven invalidation", () => {
         return () => {};
       },
     };
-    const handle = createPolicyCacheMiddleware({ notifier });
+    const handle = mw({ notifier });
     handle.register({
       scope: "agent",
       agentId: "agent-A",
       toolId: "rm",
       brickId: "brick-1",
-      attestation: attestVerified({ brickId: "brick-1", source: "test" }),
       generation: 5,
       execute: () => ({ action: "allow" }),
     });
@@ -655,7 +644,7 @@ describe("createPolicyCacheMiddleware: event-driven invalidation", () => {
         return () => {};
       },
     };
-    const handle = createPolicyCacheMiddleware({ notifier });
+    const handle = mw({ notifier });
     handle.register(makeAgentPolicy("agent-A", "a", "ba"));
 
     listener?.({ kind: "saved", brickId: "ba" as never });
@@ -666,12 +655,12 @@ describe("createPolicyCacheMiddleware: event-driven invalidation", () => {
 
 describe("createPolicyCacheMiddleware: capability fragment", () => {
   test("undefined when empty (no model context cost)", () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     expect(handle.middleware.describeCapabilities(CTX)).toBeUndefined();
   });
 
   test("summarizes count when populated", () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     handle.register(makeAgentPolicy("agent-A", "search", "brick-1"));
     const frag = handle.middleware.describeCapabilities(CTX);
     expect(frag).not.toBeUndefined();
@@ -681,7 +670,7 @@ describe("createPolicyCacheMiddleware: capability fragment", () => {
   });
 
   test("pluralizes correctly", () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     handle.register(makeAgentPolicy("agent-A", "a", "ba"));
     handle.register(makeAgentPolicy("agent-A", "b", "bb"));
     const frag = handle.middleware.describeCapabilities(CTX);
@@ -689,7 +678,7 @@ describe("createPolicyCacheMiddleware: capability fragment", () => {
   });
 
   test("does NOT leak other agents' policy counts to the current turn", () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     // Agent A has 1 policy.
     handle.register(makeAgentPolicy("agent-A", "search", "brick-A"));
     // Agent B has 5 policies — must not show up in agent A's prompt.
@@ -712,7 +701,7 @@ describe("createPolicyCacheMiddleware: capability fragment", () => {
 
 describe("createPolicyCacheMiddleware: LRU eviction (recency-aware, per-owner)", () => {
   test("hot policy survives capacity pressure — lookup bumps recency", async () => {
-    const handle = createPolicyCacheMiddleware({ maxEntries: 2 });
+    const handle = mw({ maxEntries: 2 });
     handle.register(makeAgentPolicy("agent-A", "hot", "brick-hot", "block"));
     handle.register(makeAgentPolicy("agent-A", "cold", "brick-cold", "allow"));
 
@@ -739,7 +728,7 @@ describe("createPolicyCacheMiddleware: LRU eviction (recency-aware, per-owner)",
 
   test("noisy agent CANNOT evict another agent's deny via capacity pressure", async () => {
     // Per-owner partition: maxEntries=2 PER agent, not 2 globally.
-    const handle = createPolicyCacheMiddleware({ maxEntries: 2 });
+    const handle = mw({ maxEntries: 2 });
     handle.register(makeAgentPolicy("agent-victim", "secret", "brick-secret", "block"));
 
     // Noisy agent registers 5 policies (3 over its own quota of 2).
@@ -758,7 +747,7 @@ describe("createPolicyCacheMiddleware: LRU eviction (recency-aware, per-owner)",
   });
 
   test("global cache is its own bucket — agent overflow does not evict global denies", async () => {
-    const handle = createPolicyCacheMiddleware({ maxEntries: 2 });
+    const handle = mw({ maxEntries: 2 });
     handle.register(makeGlobalPolicy("danger", "brick-global", "block"));
 
     // Agent fills its quota.
@@ -791,7 +780,7 @@ describe("createPolicyCacheMiddleware: dispose() lifecycle", () => {
       },
     };
 
-    const handle = createPolicyCacheMiddleware({ notifier });
+    const handle = mw({ notifier });
     handle.register(makeAgentPolicy("agent-A", "search", "brick-1"));
     expect(handle.size()).toBe(1);
 
@@ -806,7 +795,7 @@ describe("createPolicyCacheMiddleware: dispose() lifecycle", () => {
       notify: () => {},
       subscribe: () => () => {},
     };
-    const handle = createPolicyCacheMiddleware({ notifier });
+    const handle = mw({ notifier });
     handle.register(makeAgentPolicy("agent-A", "search", "brick-1"));
     handle.dispose();
     handle.dispose(); // must not throw
@@ -829,7 +818,7 @@ describe("createPolicyCacheMiddleware: dispose() lifecycle", () => {
 
     // Create + dispose 10 instances — should never exceed 1 active subscription.
     for (let i = 0; i < 10; i++) {
-      const h = createPolicyCacheMiddleware({ notifier });
+      const h = mw({ notifier });
       h.dispose();
     }
     expect(activeCount).toBe(0);
@@ -863,7 +852,7 @@ function ctxWithDispatch(
 
 describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", () => {
   test("block by executor decision dispatches synthetic deny to observers", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
     const sink: Array<{ query: unknown; decision: unknown }> = [];
     const ctx = ctxWithDispatch("agent-A", sink);
@@ -879,7 +868,7 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
       principal: JSON.stringify(["agent-A", "__anonymous__", "s"]),
       action: "invoke",
       resource: "rm",
-      context: { source: "policy-cache", brickId: "brick-1", scope: "agent" },
+      context: { _policyCache: { brickId: "brick-1", scope: "agent" } },
     });
     expect(sink[0]?.decision).toMatchObject({ effect: "deny", disposition: "hard" });
     // Trust boundary: dispatched reason is the fixed redacted string, NEVER
@@ -889,14 +878,50 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
     expect((sink[0]?.decision as { reason: string }).reason).toBe("policy-cache: tool denied");
   });
 
+  test("synthetic deny context mirrors permissions queryForTool metadata-merge", async () => {
+    // queryForTool merges session metadata under `_session`, turn metadata
+    // flattened, and request metadata under `_request`. The synthetic deny
+    // path MUST produce the same shape so observers correlating context
+    // see one canonical context across both paths.
+    const handle = mw();
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    const sink: Array<{ query: unknown; decision: unknown }> = [];
+    const ctx: TurnContext = {
+      session: {
+        agentId: "agent-A",
+        sessionId: "s" as never,
+        runId: "r" as never,
+        metadata: { tenantId: "t1" },
+      },
+      turnIndex: 0,
+      turnId: "t" as never,
+      messages: [],
+      metadata: { turnTag: "tt1" },
+      dispatchPermissionDecision: (q: unknown, d: unknown) => sink.push({ query: q, decision: d }),
+    } as unknown as TurnContext;
+    const reqWithMeta: ToolRequest = {
+      toolId: "rm",
+      input: {},
+      metadata: { reqTag: "rr1" },
+    };
+    const next = mock(async () => makeResp());
+    await handle.middleware.wrapToolCall?.(ctx, reqWithMeta, next as ToolHandler);
+    const queryCtx = (sink[0]?.query as { context?: Record<string, unknown> }).context;
+    expect(queryCtx).toMatchObject({
+      _session: { tenantId: "t1" },
+      turnTag: "tt1",
+      _request: { reqTag: "rr1" },
+      _policyCache: { brickId: "brick-1", scope: "agent" },
+    });
+  });
+
   test("synthetic deny reason is redacted even when executor returns sensitive text", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     const leaky: PolicyEntry = {
       scope: "agent",
       agentId: "agent-A",
       toolId: "rm",
       brickId: "brick-1",
-      attestation: attestVerified({ brickId: "brick-1", source: "test" }),
       execute: () => ({
         action: "block",
         reason: "internal-rule-id-42 fired on path=/secret/credentials.json",
@@ -914,7 +939,7 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
   });
 
   test("async observer rejection is contained (no unhandled rejection)", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
     const ctx: TurnContext = {
       session: { agentId: "agent-A", sessionId: "s" as never, runId: "r" as never, metadata: {} },
@@ -943,13 +968,12 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
   });
 
   test("quarantined entry still dispatches synthetic deny", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     const throwing: PolicyEntry = {
       scope: "agent",
       agentId: "agent-A",
       toolId: "rm",
       brickId: "brick-1",
-      attestation: attestVerified({ brickId: "brick-1", source: "test" }),
       execute: () => {
         throw new Error("boom");
       },
@@ -969,7 +993,7 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
   });
 
   test("principal includes session.userId when present (matches permissions identity)", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
     const sink: Array<{ query: unknown; decision: unknown }> = [];
     const ctx = ctxWithDispatch("agent-A", sink, "user-42");
@@ -981,7 +1005,7 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
   });
 
   test("absent dispatchPermissionDecision is a silent no-op (no throw)", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
     const next = mock(async () => makeResp());
     const resp = await handle.middleware.wrapToolCall?.(CTX, makeReq("rm"), next as ToolHandler);
@@ -989,7 +1013,7 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
   });
 
   test("throwing dispatch callback does NOT change enforcement", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
     const ctx: TurnContext = {
       session: { agentId: "agent-A", sessionId: "s" as never, runId: "r" as never, metadata: {} },
@@ -1010,7 +1034,7 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
 
 describe("createPolicyCacheMiddleware: process-wide agent-bucket cap", () => {
   test("rejects new-agent registration when maxAgentBuckets is reached (fail-closed)", () => {
-    const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 3 });
+    const handle = mw({ maxAgentBuckets: 3 });
     expect(handle.register(makeAgentPolicy("agent-1", "t", "b1")).ok).toBe(true);
     expect(handle.register(makeAgentPolicy("agent-2", "t", "b2")).ok).toBe(true);
     expect(handle.register(makeAgentPolicy("agent-3", "t", "b3")).ok).toBe(true);
@@ -1031,7 +1055,7 @@ describe("createPolicyCacheMiddleware: process-wide agent-bucket cap", () => {
     // Auth-downgrade regression: round 9 review caught that LRU eviction of
     // entire agent buckets converted other agents' verified denies into
     // cache misses (and thus fall-throughs to the unwrapped tool path).
-    const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 2 });
+    const handle = mw({ maxAgentBuckets: 2 });
     expect(handle.register(makeAgentPolicy("victim", "fs.delete", "b-victim", "block")).ok).toBe(
       true,
     );
@@ -1051,7 +1075,7 @@ describe("createPolicyCacheMiddleware: process-wide agent-bucket cap", () => {
   });
 
   test("re-using an existing agent bucket succeeds even at bucket cap", () => {
-    const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 2 });
+    const handle = mw({ maxAgentBuckets: 2 });
     handle.register(makeAgentPolicy("a1", "t1", "b1"));
     handle.register(makeAgentPolicy("a2", "t1", "b2"));
     // Adding more entries to an existing bucket is fine — the cap is on
@@ -1061,7 +1085,7 @@ describe("createPolicyCacheMiddleware: process-wide agent-bucket cap", () => {
   });
 
   test("explicit evict frees a bucket slot so new registrations succeed", () => {
-    const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 2 });
+    const handle = mw({ maxAgentBuckets: 2 });
     handle.register(makeAgentPolicy("a1", "t", "b1"));
     handle.register(makeAgentPolicy("a2", "t", "b2"));
     expect(handle.register(makeAgentPolicy("a3", "t", "b3")).ok).toBe(false);
@@ -1070,7 +1094,7 @@ describe("createPolicyCacheMiddleware: process-wide agent-bucket cap", () => {
   });
 
   test("global registrations are not constrained by agent-bucket cap", () => {
-    const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 0 });
+    const handle = mw({ maxAgentBuckets: 0 });
     // 0 agent buckets allowed → agent registration fails…
     expect(handle.register(makeAgentPolicy("a1", "t", "b1")).ok).toBe(false);
     // …but global is its own bucket and continues to work.
@@ -1084,7 +1108,7 @@ describe("createPolicyCacheMiddleware: process-wide agent-bucket cap", () => {
     // it couldn't allocate the destination — leaving the original entry
     // gone and the new one un-installed: an authorization downgrade for
     // any deny policy.
-    const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 2 });
+    const handle = mw({ maxAgentBuckets: 2 });
     // a1 has TWO live entries (a deny we care about, plus a sibling).
     expect(handle.register(makeAgentPolicy("a1", "danger", "brick-deny", "block")).ok).toBe(true);
     expect(handle.register(makeAgentPolicy("a1", "other", "brick-sibling")).ok).toBe(true);
@@ -1114,7 +1138,7 @@ describe("createPolicyCacheMiddleware: process-wide agent-bucket cap", () => {
     // a cross-agent owner change at the cap returned VALIDATION even
     // though the move would immediately free a slot. Result for deny
     // policies: the new agent fell back to the unwrapped tool path.
-    const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 2 });
+    const handle = mw({ maxAgentBuckets: 2 });
     expect(handle.register(makeAgentPolicy("a1", "t", "brick-roving", "block")).ok).toBe(true);
     expect(handle.register(makeAgentPolicy("a2", "t", "b2")).ok).toBe(true);
     // Cap is full. A fresh new-agent registration must still fail.
@@ -1130,7 +1154,7 @@ describe("createPolicyCacheMiddleware: process-wide agent-bucket cap", () => {
     // Round 10 review caught that moving the same brickId to a new agent
     // bucket left the prior agent's bucket empty-but-present, eventually
     // exhausting `maxAgentBuckets` even though only one live policy existed.
-    const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 5 });
+    const handle = mw({ maxAgentBuckets: 5 });
     // Re-home one brick across 100 distinct agents — only the latest
     // agent's bucket should remain.
     for (let i = 0; i < 100; i++) {
@@ -1146,13 +1170,12 @@ describe("createPolicyCacheMiddleware: process-wide agent-bucket cap", () => {
 
 describe("createPolicyCacheMiddleware: input-mutation defense", () => {
   test("malicious executor cannot mutate request.input the real tool sees", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     const malicious: PolicyEntry = {
       scope: "agent",
       agentId: "agent-A",
       toolId: "fs.write",
       brickId: "brick-1",
-      attestation: attestVerified({ brickId: "brick-1", source: "test" }),
       execute: (input) => {
         // Attempt to rewrite the path the real tool will receive.
         (input as Record<string, unknown>).path = "/etc/passwd";
@@ -1171,13 +1194,12 @@ describe("createPolicyCacheMiddleware: input-mutation defense", () => {
   });
 
   test("nested-field mutation by executor is also isolated", async () => {
-    const handle = createPolicyCacheMiddleware();
+    const handle = mw();
     const malicious: PolicyEntry = {
       scope: "agent",
       agentId: "agent-A",
       toolId: "fs.write",
       brickId: "brick-1",
-      attestation: attestVerified({ brickId: "brick-1", source: "test" }),
       execute: (input) => {
         const opts = (input as Record<string, unknown>).options as Record<string, unknown>;
         opts.mode = 0o777;

@@ -45,18 +45,6 @@ export type PolicyDecision =
 interface PolicyEntryBase {
   readonly toolId: string;
   readonly brickId: string;
-  /**
-   * Non-forgeable verification token. Obtained by calling
-   * `attestVerified({brickId, source})` AFTER the wiring layer has
-   * confirmed forge has independently certified this brick. Replaces the
-   * previous `verified: boolean` field — a boolean is caller-controlled
-   * and cannot prevent a buggy or compromised wiring layer from silently
-   * marking arbitrary executors as authoritative. The token is bound to
-   * the same `brickId` as the entry; `register()` rejects entries whose
-   * attestation has the wrong brickId or wasn't produced by
-   * `attestVerified()`.
-   */
-  readonly attestation: VerifiedAttestation;
   /** Pure function of input → decision. Must not depend on external state. */
   readonly execute: (input: JsonObject) => PolicyDecision;
   /**
@@ -69,55 +57,6 @@ interface PolicyEntryBase {
    * falls back to best-effort eviction with no stale-event protection.
    */
   readonly generation?: number;
-}
-
-/**
- * Non-forgeable proof that a brick has been verified by forge. Construct
- * via `attestVerified()` — direct object literals do not satisfy the
- * runtime brand check inside `register()`, so a buggy or compromised
- * wiring layer cannot self-assert verification by hand-rolling
- * `{ brickId, source }` objects.
- */
-export interface VerifiedAttestation {
-  readonly brickId: string;
-  readonly source: string;
-}
-
-// Module-private brand store. WeakSet membership is the runtime proof;
-// since the brand is held in module scope, callers cannot obtain it
-// without going through `attestVerified()`.
-const VERIFIED_BRAND = new WeakSet<VerifiedAttestation>();
-
-/**
- * Mint a verification token AFTER the wiring layer has confirmed forge has
- * independently certified the brick. The token is bound to `brickId` and is
- * checked at `register()` against the entry's brickId. This is the only
- * supported way to install a policy in the cache.
- *
- * Hosts wire this immediately after observing a `StoreChangeEvent` of kind
- * `"promoted"` whose forge metadata indicates verification:
- *
- * ```ts
- * notifier.subscribe((e) => {
- *   if (e.kind === "promoted" && e.policyChange?.to === "verified") {
- *     handle.register({
- *       ...,
- *       attestation: attestVerified({ brickId: e.brickId, source: "forge" }),
- *     });
- *   }
- * });
- * ```
- */
-export function attestVerified(args: {
-  readonly brickId: string;
-  readonly source: string;
-}): VerifiedAttestation {
-  const token: VerifiedAttestation = Object.freeze({
-    brickId: args.brickId,
-    source: args.source,
-  });
-  VERIFIED_BRAND.add(token);
-  return token;
 }
 
 /**
@@ -138,6 +77,26 @@ export type PolicyEntry =
 export type SupportedScope = PolicyEntry["scope"];
 
 export interface PolicyCacheConfig {
+  /**
+   * Trust boundary. Called inside `register()` for every entry; the cache
+   * accepts an entry only when this returns `true`. Hosts wire forge into
+   * this callback at construction time — the cache never trusts a flag or
+   * token supplied by `register()`'s caller. Untrusted runtime code with
+   * import access to `register()` cannot mint its own verification because
+   * the verifier closure is captured at factory construction by code that
+   * already has access to forge's verified-set.
+   *
+   * If omitted, every registration is rejected (fail-closed). This is
+   * intentional: the cache exists *because* forge has verified the brick,
+   * so a host that wires the cache without wiring a verifier has misused
+   * the API.
+   *
+   * Sync only — keeps `register()` synchronous. Hosts that need to consult
+   * an async backend should resolve their state outside and pass a sync
+   * lookup over an in-memory verified-set (forge maintains exactly such a
+   * set).
+   */
+  readonly verifier?: (brickId: string) => boolean;
   /** Maximum cached policies per bucket (per-agent and global). Default: 100. */
   readonly maxEntries?: number | undefined;
   /**
@@ -260,18 +219,14 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
   };
 
   const register = (entry: PolicyEntry): Result<void> => {
-    // Non-forgeable attestation check. The attestation MUST have been
-    // minted by `attestVerified()` (membership in module-private
-    // VERIFIED_BRAND) AND its brickId MUST match the entry's brickId.
-    // A hand-rolled `{ brickId, source }` literal — even with the right
-    // shape — is rejected: it isn't in the brand set. This closes the
-    // boolean-spoofing window where a buggy or compromised wiring layer
-    // could install arbitrary executors by setting `verified: true`.
-    if (
-      entry.attestation === undefined ||
-      !VERIFIED_BRAND.has(entry.attestation) ||
-      entry.attestation.brickId !== entry.brickId
-    ) {
+    // Trust boundary. The verifier closure is captured at factory
+    // construction time by code that already has access to forge's
+    // verified-set. `register()`'s caller cannot influence what the
+    // verifier returns — there is no flag or token they can pass. Without
+    // a verifier configured, fail closed: refuse every registration. The
+    // cache exists *because* forge has verified the brick, so a host that
+    // wires the cache without wiring a verifier has misused the API.
+    if (config.verifier === undefined || config.verifier(entry.brickId) !== true) {
       const error: KoiError = {
         code: "VALIDATION",
         message: `policy-cache: refusing unverified brick ${entry.brickId} for tool ${entry.toolId}`,
@@ -481,25 +436,43 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
   // middleware-permissions denials. Fire-and-forget — the host injects this
   // callback only when an observer is wired, and a throwing observer must
   // not change enforcement behavior.
-  const dispatchSyntheticDeny = (ctx: TurnContext, entry: PolicyEntry, toolId: string): void => {
+  const dispatchSyntheticDeny = (
+    ctx: TurnContext,
+    entry: PolicyEntry,
+    request: ToolRequest,
+  ): void => {
     const dispatch = ctx.dispatchPermissionDecision;
     if (dispatch === undefined) return;
     try {
-      // Identity MUST match middleware-permissions exactly so observers
-      // (audit, monitor) see one canonical permission identity per logical
-      // tool call, rather than splitting policy-cache denies into a separate
-      // namespace. Mirrors `buildPrincipal(agentId, userId, sessionId)` and
-      // `queryForTool` from @koi/middleware-permissions: the values are
+      // Identity AND context MUST match middleware-permissions' queryForTool
+      // exactly so observers (audit, monitor) see one canonical permission
+      // identity AND one canonical context per logical tool call. Mirrors
+      // `buildPrincipal(agentId, userId, sessionId)` plus the merged
+      // session/turn/request metadata that queryForTool builds. Values are
       // duplicated here (not imported) because L2 packages cannot import
       // from peer L2 packages.
       const userId = ctx.session.userId ?? "__anonymous__";
       const sessionId = ctx.session.sessionId as unknown as string;
       const principal = JSON.stringify([ctx.session.agentId, userId, sessionId]);
-      const ctxField: JsonObject = {
-        source: NAME,
-        brickId: entry.brickId,
-        scope: entry.scope,
+
+      // Replicate queryForTool's metadata-merge contract: session metadata
+      // under `_session`, turn metadata flattened, request metadata under
+      // `_request`. This keeps blocked-path observability byte-identical to
+      // the normal permissions deny path.
+      const sessionMeta = ctx.session.metadata;
+      const turnMeta = ctx.metadata;
+      const reqMeta = request.metadata;
+      const hasSessionMeta = sessionMeta !== undefined && Object.keys(sessionMeta).length > 0;
+      const hasTurnMeta = turnMeta !== undefined && Object.keys(turnMeta).length > 0;
+      const hasReqMeta = reqMeta !== undefined && Object.keys(reqMeta).length > 0;
+      const merged: JsonObject = {
+        ...(hasSessionMeta ? { _session: sessionMeta } : {}),
+        ...(hasTurnMeta ? turnMeta : {}),
+        ...(hasReqMeta ? { _request: reqMeta } : {}),
+        // Policy-cache provenance always present so observers can route on it.
+        _policyCache: { brickId: entry.brickId, scope: entry.scope },
       };
+      const ctxField: JsonObject = merged;
       // Reason is the fixed `SYNTHETIC_DENY_REASON` constant — NEVER the
       // executor-supplied reason. The deny path through `event-trace` and
       // friends persists `reason` to long-lived trajectory storage; sending
@@ -509,7 +482,7 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
         {
           principal,
           action: "invoke",
-          resource: toolId,
+          resource: request.toolId,
           context: ctxField,
         },
         { effect: "deny", reason: SYNTHETIC_DENY_REASON, disposition: "hard" },
@@ -560,7 +533,7 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       // even after their executor faults. Cleared by re-register or
       // external eviction (StoreChangeNotifier `removed` / `quarantined`).
       if (quarantined.has(entry.brickId)) {
-        dispatchSyntheticDeny(ctx, entry, request.toolId);
+        dispatchSyntheticDeny(ctx, entry, request);
         return blockResponse(request.toolId);
       }
 
@@ -571,7 +544,7 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
         const decision = entry.execute(cloneInput(request.input));
         if (decision.action === "allow") return next(request);
         // `decision.reason` is intentionally NOT forwarded — see SYNTHETIC_DENY_REASON.
-        dispatchSyntheticDeny(ctx, entry, request.toolId);
+        dispatchSyntheticDeny(ctx, entry, request);
         return blockResponse(request.toolId);
       } catch (cause) {
         quarantined.add(entry.brickId);
@@ -585,7 +558,7 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
         } catch {
           // Swallow callback failures; observability cannot break enforcement.
         }
-        dispatchSyntheticDeny(ctx, entry, request.toolId);
+        dispatchSyntheticDeny(ctx, entry, request);
         return blockResponse(request.toolId);
       }
     },

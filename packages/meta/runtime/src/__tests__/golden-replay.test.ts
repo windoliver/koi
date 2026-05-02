@@ -15463,19 +15463,16 @@ describe("Golden: @koi/middleware-policy-cache", () => {
     expect(typeof handle.middleware.describeCapabilities).toBe("function");
   });
 
-  test("verified-only gate: register without minted attestation rejects with VALIDATION; attested entries accepted", async () => {
-    const { attestVerified, createPolicyCacheMiddleware } = await import(
-      "@koi/middleware-policy-cache"
-    );
-    const handle = createPolicyCacheMiddleware();
+  test("verified-only gate: missing verifier fail-closes; configured verifier admits accepted brickIds", async () => {
+    const { createPolicyCacheMiddleware } = await import("@koi/middleware-policy-cache");
 
-    const reject = handle.register({
+    // No verifier configured → every register() fails closed.
+    const noVerifier = createPolicyCacheMiddleware();
+    const reject = noVerifier.register({
       toolId: "search",
       brickId: "b-unverified",
       scope: "agent",
       agentId: "agent-A",
-      // Hand-rolled token — must be rejected by the brand check.
-      attestation: { brickId: "b-unverified", source: "fake" } as never,
       execute: () => ({ action: "allow" }),
     });
     expect(reject.ok).toBe(false);
@@ -15483,18 +15480,21 @@ describe("Golden: @koi/middleware-policy-cache", () => {
       expect(reject.error.code).toBe("VALIDATION");
       expect(reject.error.retryable).toBe(false);
     }
-    expect(handle.size()).toBe(0);
+    expect(noVerifier.size()).toBe(0);
 
-    const accept = handle.register({
+    // Verifier wired by host (forge in production) is the only authority.
+    const trusted = createPolicyCacheMiddleware({
+      verifier: (brickId) => brickId === "b-verified",
+    });
+    const accept = trusted.register({
       toolId: "search",
       brickId: "b-verified",
       scope: "agent",
       agentId: "agent-A",
-      attestation: attestVerified({ brickId: "b-verified", source: "test" }),
       execute: () => ({ action: "allow" }),
     });
     expect(accept.ok).toBe(true);
-    expect(handle.size()).toBe(1);
+    expect(trusted.size()).toBe(1);
   });
 
   // Composition: policy-cache MUST wrap permissions so a cached `block`
@@ -15505,18 +15505,15 @@ describe("Golden: @koi/middleware-policy-cache", () => {
   // "permissions-shaped" inner middleware proves the cached block never
   // reaches the inner layer.
   test("policy-cache wraps permissions: cached block prevents inner approval call", async () => {
-    const { attestVerified, createPolicyCacheMiddleware } = await import(
-      "@koi/middleware-policy-cache"
-    );
+    const { createPolicyCacheMiddleware } = await import("@koi/middleware-policy-cache");
     const { createPermissionsMiddleware } = await import("@koi/middleware-permissions");
 
-    const policy = createPolicyCacheMiddleware();
+    const policy = createPolicyCacheMiddleware({ verifier: () => true });
     policy.register({
       toolId: "danger",
       brickId: "b-danger",
       scope: "agent",
       agentId: "a",
-      attestation: attestVerified({ brickId: "b-danger", source: "test" }),
       execute: () => ({ action: "block", reason: "policy says no" }),
     });
 
