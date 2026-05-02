@@ -2,8 +2,8 @@ import type { SandboxAdapterResult, SandboxExecOptions, SandboxInstance } from "
 import type { ProfileDefaults } from "./profile.js";
 import type { DaytonaRunOpts, DaytonaSdkSandbox } from "./types.js";
 
-// No implicit default output cap — see sandbox-e2b for rationale. Memory
-// bounding only works when the SDK enforces the cap server-side.
+/** Default cap mirrors `SandboxExecOptions.maxOutputBytes`; honoured server-side. */
+const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 
 function quoteArg(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
@@ -94,10 +94,16 @@ export function createDaytonaInstance(
             "does not advertise commands.supportsStdin=true.",
         );
       }
-      if (options?.maxOutputBytes !== undefined && sdk.commands.supportsMaxOutputBytes !== true) {
+      // Output cap is mandatory: the SandboxExecOptions contract guarantees
+      // a 1 MB default on stdout+stderr, and a hosted backend must honour it
+      // before buffering. Without server-side enforcement an unbounded
+      // payload could already be in memory by the time any cap applied.
+      if (sdk.commands.supportsMaxOutputBytes !== true) {
         throw new Error(
-          "sandbox-daytona: SandboxExecOptions.maxOutputBytes was provided but the injected SDK " +
-            "does not advertise commands.supportsMaxOutputBytes=true.",
+          "sandbox-daytona: exec() requires commands.supportsMaxOutputBytes=true on " +
+            "the injected SDK. The SandboxExecOptions contract guarantees a default " +
+            "1 MB cap on stdout+stderr; without server-side enforcement the adapter " +
+            "would buffer unbounded output before any cap could apply.",
         );
       }
       if (options?.signal !== undefined && sdk.commands.supportsAbort !== true) {
@@ -128,12 +134,9 @@ export function createDaytonaInstance(
           ? { ...(defaults.env ?? {}), ...(options?.env ?? {}) }
           : undefined;
       const mergedTimeout = options?.timeoutMs ?? defaults.timeoutMs;
-      // `cap` is only meaningful when the SDK enforces it server-side; the
-      // capability gate above pairs every caller-supplied cap with SDK support.
-      const cap =
-        options?.maxOutputBytes !== undefined && sdk.commands.supportsMaxOutputBytes === true
-          ? options.maxOutputBytes
-          : undefined;
+      // Capability gate above guarantees server-side enforcement; the
+      // contract default applies when the caller omits maxOutputBytes.
+      const cap = options?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
 
       const sdkOpts: DaytonaRunOpts = {
         ...(options?.cwd !== undefined ? { cwd: options.cwd } : {}),
@@ -143,23 +146,15 @@ export function createDaytonaInstance(
         ...(options?.onStderr !== undefined ? { onStderr: options.onStderr } : {}),
         ...(options?.signal !== undefined ? { signal: options.signal } : {}),
         ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
-        ...(cap !== undefined ? { maxOutputBytes: cap } : {}),
+        maxOutputBytes: cap,
       };
 
       try {
         const result = await sdk.commands.run(cmd, sdkOpts);
         const durationMs = performance.now() - start;
 
-        // Only slice when the SDK enforced the cap server-side; otherwise a
-        // post-hoc trim would be cosmetic, not memory-bounding.
-        const capped =
-          cap !== undefined
-            ? applyCombinedBudget(result.stdout, result.stderr, cap, result.truncated)
-            : {
-                stdout: result.stdout,
-                stderr: result.stderr,
-                truncated: result.truncated === true,
-              };
+        // Defensive re-trim against the SDK-enforced cap.
+        const capped = applyCombinedBudget(result.stdout, result.stderr, cap, result.truncated);
         const stdout = capped.stdout;
         const stderr = capped.stderr;
         const truncated = capped.truncated;

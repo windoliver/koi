@@ -40,6 +40,10 @@ export function createFakeSandbox(opts: FakeSandboxOptions = {}): FakeSandbox {
     closed: () => closed,
     deleted: () => deleted,
     commands: {
+      // Mirror the production-required capability so tests don't trip the
+      // fail-closed branch unintentionally; tests that assert the gate
+      // strip this flag explicitly.
+      supportsMaxOutputBytes: true,
       run: async (cmd: string, runOpts?: DaytonaRunOpts): Promise<DaytonaRunResult> => {
         runCalls.push({ cmd, opts: runOpts });
         if (opts.runImpl !== undefined) return opts.runImpl(cmd, runOpts);

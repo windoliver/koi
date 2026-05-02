@@ -79,7 +79,7 @@ The hosted backend has no provider-side hook for filesystem allow/deny lists, ne
 
 `SandboxExecOptions.stdin`, `maxOutputBytes`, and `signal` each gate on a matching SDK capability flag (`commands.supportsStdin` / `supportsMaxOutputBytes` / `supportsAbort`). Without the flag, callers that supply the corresponding field see a fail-closed error.
 
-There is **no implicit default output cap**. The adapter only enforces a cap when both (a) the caller passes `maxOutputBytes` AND (b) the injected SDK advertises `commands.supportsMaxOutputBytes=true`; otherwise it would be claiming a memory bound it cannot deliver post-buffer. When both hold, the cap is forwarded server-side and applied as a **single byte budget across stdout + stderr** with byte-accurate UTF-8 truncation; `truncated=true` is set when any byte is dropped.
+The adapter honours the `SandboxExecOptions.maxOutputBytes` contract: the caller's cap (or the 1 MB default when omitted) is forwarded server-side. The adapter **fails closed** if the SDK does not advertise `commands.supportsMaxOutputBytes=true` — without server-side enforcement an unbounded payload could already be in memory before any cap could apply. The cap is a **single byte budget across stdout + stderr**, applied with byte-accurate UTF-8 truncation; `truncated=true` is set on drop.
 
 `readFile` requires `sdk.files.readBytes` for binary-safe reads. `writeFile` rejects non-UTF-8 bytes when the SDK is text-only.
 

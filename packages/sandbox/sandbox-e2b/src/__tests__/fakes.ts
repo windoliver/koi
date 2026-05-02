@@ -36,6 +36,11 @@ export function createFakeSandbox(opts: FakeSandboxOptions = {}): FakeSandbox {
     runCalls,
     killed: () => killed,
     commands: {
+      // Production hosted backends MUST advertise this so the adapter can
+      // enforce the documented 1 MB output cap server-side; the default
+      // fake mirrors that contract so test SDKs don't accidentally exercise
+      // the fail-closed branch.
+      supportsMaxOutputBytes: true,
       run: async (cmd: string, runOpts?: E2bRunOpts): Promise<E2bRunResult> => {
         runCalls.push({ cmd, opts: runOpts });
         if (opts.runImpl !== undefined) return opts.runImpl(cmd, runOpts);

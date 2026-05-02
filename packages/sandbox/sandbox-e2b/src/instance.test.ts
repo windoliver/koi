@@ -309,23 +309,22 @@ describe("createE2bInstance", () => {
     expect(base.runCalls[0]?.opts?.stdin).toBe("payload");
   });
 
-  test("exec rejects maxOutputBytes when SDK does not advertise support", async () => {
-    const sdk = createFakeSandbox();
+  test("exec rejects fail-closed when SDK does not advertise supportsMaxOutputBytes", async () => {
+    // The SandboxExecOptions contract guarantees a 1 MB default cap on
+    // stdout+stderr. Without server-side enforcement the adapter would have
+    // already buffered unbounded output by the time any cap could apply,
+    // so it refuses to dispatch.
+    const base = createFakeSandbox();
+    const sdk = { ...base, commands: { ...base.commands, supportsMaxOutputBytes: false } };
     const instance = createE2bInstance(sdk);
-    await expect(instance.exec("ls", [], { maxOutputBytes: 1024 })).rejects.toThrow(
-      /supportsMaxOutputBytes/,
-    );
+    await expect(instance.exec("ls", [])).rejects.toThrow(/supportsMaxOutputBytes/);
   });
 
-  test("exec does not forward a synthetic default cap when caller did not ask", async () => {
-    // Memory bounding only works when the SDK enforces it server-side. We
-    // refuse to claim a guarantee we cannot keep, so absent an explicit
-    // `maxOutputBytes` from the caller, no cap is forwarded.
-    const base = createFakeSandbox();
-    const sdk = { ...base, commands: { ...base.commands, supportsMaxOutputBytes: true } };
+  test("exec forwards the contract default 1 MB cap when caller omits maxOutputBytes", async () => {
+    const sdk = createFakeSandbox();
     const instance = createE2bInstance(sdk);
     await instance.exec("ls", []);
-    expect(base.runCalls[0]?.opts?.maxOutputBytes).toBeUndefined();
+    expect(sdk.runCalls[0]?.opts?.maxOutputBytes).toBe(1_000_000);
   });
 
   test("exec enforces a combined byte budget across stdout and stderr", async () => {
@@ -380,11 +379,9 @@ describe("createE2bInstance", () => {
     }
   });
 
-  test("exec passes oversized SDK output through verbatim when no cap is requested", async () => {
-    // Without an explicit `maxOutputBytes` from the caller AND server-side
-    // enforcement, the adapter must not pretend to bound output. The SDK's
-    // result is returned as-is so callers see exactly what came back over
-    // the wire — no synthetic truncation that could mask oversized payloads.
+  test("exec defensively re-trims oversized SDK output to the contract default cap", async () => {
+    // Even with server-side enforcement, the adapter re-applies the cap as
+    // a defensive measure in case the SDK's enforcement is approximate.
     const big = "a".repeat(1_500_000);
     const base = createFakeSandbox();
     const sdk = {
@@ -400,8 +397,8 @@ describe("createE2bInstance", () => {
     };
     const instance = createE2bInstance(sdk);
     const result = await instance.exec("ls", []);
-    expect(result.stdout.length).toBe(1_500_000);
-    expect(result.truncated).toBeUndefined();
+    expect(result.stdout.length).toBe(1_000_000);
+    expect(result.truncated).toBe(true);
   });
 
   test("exec surfaces SDK truncated flag when present", async () => {

@@ -2,13 +2,16 @@ import type { SandboxAdapterResult, SandboxExecOptions, SandboxInstance } from "
 import type { ProfileDefaults } from "./profile.js";
 import type { E2bRunOpts, E2bSdkSandbox } from "./types.js";
 
-// No implicit default output cap. A cap that is only applied AFTER the SDK
-// has buffered the full payload would not actually bound memory or
-// bandwidth — it would just hide oversized output in the result. Memory-
-// bounding only works when the SDK enforces it server-side, so the cap is
-// honoured strictly: pass `maxOutputBytes` AND inject an SDK wrapper that
-// advertises `commands.supportsMaxOutputBytes=true`. Otherwise no cap is
-// claimed and callers get whatever the SDK returned.
+/**
+ * Default cap mirrors the core `SandboxExecOptions.maxOutputBytes` contract
+ * (1 MB). The adapter only honours it server-side: if the injected SDK does
+ * not advertise `commands.supportsMaxOutputBytes=true`, exec() refuses to
+ * proceed rather than buffering unbounded output. A post-hoc trim of an
+ * already-materialised payload would not actually bound memory or
+ * bandwidth, so we fail closed and force callers to supply a cap-capable
+ * wrapper.
+ */
+const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 
 function quoteArg(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
@@ -126,10 +129,18 @@ export function createE2bInstance(
             "does not advertise commands.supportsStdin=true. Use a stdin-capable wrapper.",
         );
       }
-      if (options?.maxOutputBytes !== undefined && sdk.commands.supportsMaxOutputBytes !== true) {
+      // Output cap is mandatory: SandboxExecOptions documents a 1 MB default,
+      // and a hosted backend must honour it before buffering. Without
+      // server-side support, an explicit cap or the implicit default could
+      // not be enforced, so refuse rather than expose the host process to
+      // unbounded remote output.
+      if (sdk.commands.supportsMaxOutputBytes !== true) {
         throw new Error(
-          "sandbox-e2b: SandboxExecOptions.maxOutputBytes was provided but the injected SDK " +
-            "does not advertise commands.supportsMaxOutputBytes=true.",
+          "sandbox-e2b: exec() requires commands.supportsMaxOutputBytes=true on the " +
+            "injected SDK. The SandboxExecOptions contract guarantees a default 1 MB " +
+            "cap on stdout+stderr; without server-side enforcement the adapter would " +
+            "buffer unbounded output before any cap could apply. Inject a cap-capable " +
+            "SDK wrapper.",
         );
       }
       if (options?.signal !== undefined && sdk.commands.supportsAbort !== true) {
@@ -164,13 +175,10 @@ export function createE2bInstance(
           ? { ...(defaults.env ?? {}), ...(options?.env ?? {}) }
           : undefined;
       const mergedTimeout = options?.timeoutMs ?? defaults.timeoutMs;
-      // `cap` is only meaningful when the SDK enforces it server-side. The
-      // pre-flight capability gate above (`supportsMaxOutputBytes`) guarantees
-      // a caller-supplied `maxOutputBytes` always pairs with SDK support.
-      const cap =
-        options?.maxOutputBytes !== undefined && sdk.commands.supportsMaxOutputBytes === true
-          ? options.maxOutputBytes
-          : undefined;
+      // The capability gate above guarantees `supportsMaxOutputBytes=true`,
+      // so the cap is always forwarded — the contract default applies when
+      // the caller omitted `maxOutputBytes`.
+      const cap = options?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
 
       const sdkOpts: E2bRunOpts = {
         ...(options?.cwd !== undefined ? { cwd: options.cwd } : {}),
@@ -182,7 +190,7 @@ export function createE2bInstance(
         ...(options?.onStderr !== undefined ? { onStderr: options.onStderr } : {}),
         ...(options?.signal !== undefined ? { signal: options.signal } : {}),
         ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
-        ...(cap !== undefined ? { maxOutputBytes: cap } : {}),
+        maxOutputBytes: cap,
       };
 
       try {
@@ -198,14 +206,9 @@ export function createE2bInstance(
         // claiming a guarantee we cannot keep. When `cap` is undefined the
         // SDK's result is passed through verbatim, and the caller sees
         // whatever the SDK returned.
-        const capped =
-          cap !== undefined
-            ? applyCombinedBudget(result.stdout, result.stderr, cap, result.truncated)
-            : {
-                stdout: result.stdout,
-                stderr: result.stderr,
-                truncated: result.truncated === true,
-              };
+        // The SDK enforces the cap server-side; this is a defensive
+        // re-trim for SDKs whose server-side enforcement is approximate.
+        const capped = applyCombinedBudget(result.stdout, result.stderr, cap, result.truncated);
         const stdout = capped.stdout;
         const stderr = capped.stderr;
         const truncated = capped.truncated;
