@@ -592,6 +592,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
     },
     "packages/lib/middleware-prompt-cache": {

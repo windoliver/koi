@@ -7,6 +7,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
+import { KoiRuntimeError } from "@koi/errors";
 import {
   createPolicyCacheMiddleware,
   type PolicyCacheConfig,
@@ -1324,6 +1325,35 @@ describe("createPolicyCacheMiddleware: per-turn block cap (anti-loop)", () => {
     expect(r.metadata?.policyDenied).toBe(true);
   });
 
+  test("cap-overflow throws structured KoiRuntimeError(PERMISSION), not a plain Error", async () => {
+    // Round 8 review: a plain Error normalizes to EXTERNAL downstream,
+    // misclassifying the runaway-loop hard-stop as an unexpected tool
+    // failure instead of an authorization failure. Mirrors the
+    // soft→hard conversion path in @koi/middleware-permissions.
+    const handle = mw({ perTurnBlockCap: 1 });
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+    const next = mock(async () => makeResp());
+    await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    let captured: unknown;
+    try {
+      await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    } catch (e) {
+      captured = e;
+    }
+    expect(captured).toBeInstanceOf(KoiRuntimeError);
+    if (captured instanceof KoiRuntimeError) {
+      expect(captured.code).toBe("PERMISSION");
+      expect(captured.retryable).toBe(false);
+      expect(captured.context).toMatchObject({
+        toolId: "rm",
+        brickId: "brick-1",
+        scope: "agent",
+      });
+    }
+  });
+
   test("cap also applies to quarantined-fast-path blocks", async () => {
     const handle = mw({ perTurnBlockCap: 1 });
     const throwing: PolicyEntry = {
@@ -1472,6 +1502,54 @@ describe("createPolicyCacheMiddleware: structured trace decisions", () => {
     expect(sink).toHaveLength(2);
     expect(sink[0]?.capExceeded).toBe(false);
     expect(sink[1]?.capExceeded).toBe(true);
+  });
+
+  test("synthetic deny uses host-supplied resolveResource for resource and path enrichment", async () => {
+    // Round 8 review: bash/fs.* denials must report the effective target
+    // (e.g. "bash:rm /etc/passwd") in the synthetic deny query, not the
+    // bare toolId. The resolveResource hook lets the host wire the same
+    // resolver permissions middleware uses.
+    const handle = createPolicyCacheMiddleware({
+      verifier: () => true,
+      resolveResource: (req) => {
+        if (req.toolId === "bash") {
+          const cmd = (req.input as { cmd?: string }).cmd;
+          return cmd ? { resource: `bash:${cmd}` } : undefined;
+        }
+        if (req.toolId === "fs.read") {
+          const path = (req.input as { path?: string }).path;
+          return path ? { resource: `fs.read:${path}`, path } : undefined;
+        }
+        return undefined;
+      },
+    });
+    handle.register(makeAgentPolicy("agent-A", "bash", "brick-bash", "block"));
+    handle.register(makeAgentPolicy("agent-A", "fs.read", "brick-fs", "block"));
+    const sink: Array<Record<string, unknown>> = [];
+    const ctx = {
+      session: { agentId: "agent-A", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+      turnIndex: 0,
+      turnId: "t" as never,
+      messages: [],
+      metadata: {},
+      dispatchPermissionDecision: (q: unknown, d: unknown) => sink.push({ query: q, decision: d }),
+    } as unknown as TurnContext;
+    const next = mock(async () => makeResp());
+    await handle.middleware.wrapToolCall?.(
+      ctx,
+      { toolId: "bash", input: { cmd: "rm /etc/passwd" } },
+      next as ToolHandler,
+    );
+    await handle.middleware.wrapToolCall?.(
+      ctx,
+      { toolId: "fs.read", input: { path: "/etc/shadow" } },
+      next as ToolHandler,
+    );
+    const q1 = sink[0]?.query as { resource: string; context: Record<string, unknown> };
+    expect(q1.resource).toBe("bash:rm /etc/passwd");
+    const q2 = sink[1]?.query as { resource: string; context: Record<string, unknown> };
+    expect(q2.resource).toBe("fs.read:/etc/shadow");
+    expect(q2.context.path).toBe("/etc/shadow");
   });
 
   test("absent reportDecision is a silent no-op (no throw)", async () => {

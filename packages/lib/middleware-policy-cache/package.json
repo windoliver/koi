@@ -20,6 +20,7 @@
     "optional": true
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*"
   }
 }

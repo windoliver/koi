@@ -33,6 +33,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
+import { KoiRuntimeError } from "@koi/errors";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -116,6 +117,24 @@ export interface PolicyCacheConfig {
    * with no process-wide cap. Default: 1000.
    */
   readonly maxAgentBuckets?: number | undefined;
+  /**
+   * Optional resource enricher. middleware-permissions enriches resources
+   * for tools whose effective resource depends on input — e.g. `bash:rm
+   * /etc/passwd` instead of the bare `bash` toolId, or a fully resolved
+   * absolute path for `fs.*` tools. The synthetic deny dispatched on
+   * cache-hit blocks SHOULD use the same enriched resource so observers
+   * (audit, monitor) aggregate denials under the same identity as the
+   * normal permissions path. When omitted, the bare `request.toolId` is
+   * used (backward-compatible default). When provided, the returned
+   * `resource` is used in the deny query and the optional `path` is
+   * merged into the query context (matching queryForTool's `path` field).
+   *
+   * Hosts SHOULD pass the same resolver they pass to
+   * `@koi/middleware-permissions` to keep the two paths byte-identical.
+   */
+  readonly resolveResource?: (
+    request: ToolRequest,
+  ) => { readonly resource: string; readonly path?: string } | undefined;
   /**
    * Maximum number of synthetic block responses returned per turn for the
    * SAME (toolId, brickId) before the call hard-stops. Mirrors the
@@ -527,10 +546,20 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       const hasSessionMeta = sessionMeta !== undefined && Object.keys(sessionMeta).length > 0;
       const hasTurnMeta = turnMeta !== undefined && Object.keys(turnMeta).length > 0;
       const hasReqMeta = reqMeta !== undefined && Object.keys(reqMeta).length > 0;
+      // Resource enrichment: bash/fs.*/etc. denials carry their effective
+      // target so observers can aggregate by command/path rather than by
+      // bare toolId. When the host wires `resolveResource` (typically the
+      // same resolver permissions middleware uses), the deny query reports
+      // the enriched resource AND merges `path` into context — matching
+      // queryForTool's contract.
+      const resolved = config.resolveResource?.(request);
+      const enrichedResource = resolved?.resource ?? request.toolId;
+      const resolvedPath = resolved?.path;
       const merged: JsonObject = {
         ...(hasSessionMeta ? { _session: sessionMeta } : {}),
         ...(hasTurnMeta ? turnMeta : {}),
         ...(hasReqMeta ? { _request: reqMeta } : {}),
+        ...(resolvedPath !== undefined ? { path: resolvedPath } : {}),
         // Policy-cache provenance always present so observers can route on it.
         _policyCache: { brickId: entry.brickId, scope: entry.scope },
       };
@@ -544,7 +573,7 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
         {
           principal,
           action: "invoke",
-          resource: request.toolId,
+          resource: enrichedResource,
           context: ctxField,
         },
         { effect: "deny", reason: SYNTHETIC_DENY_REASON, disposition: "hard" },
@@ -637,9 +666,25 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
         perTurnBlocks.set(blockKey, count);
         if (count > perTurnBlockCap) {
           reportDecision(ctx, entry, request, source, true);
-          throw new Error(
-            `policy-cache: per-turn block cap ${String(perTurnBlockCap)} exceeded for tool "${request.toolId}" (brick ${entry.brickId}); aborting runaway loop`,
-          );
+          // Also dispatch a final synthetic deny so observers see the
+          // terminal block, then throw a structured PERMISSION error.
+          // Plain Error would normalize to EXTERNAL downstream, which
+          // misclassifies the runaway-loop hard-stop as an unexpected
+          // tool failure instead of an authorization failure. Mirrors
+          // @koi/middleware-permissions' soft→hard conversion path.
+          dispatchSyntheticDeny(ctx, entry, request);
+          throw new KoiRuntimeError({
+            code: "PERMISSION",
+            message: `policy-cache: per-turn block cap ${String(perTurnBlockCap)} exceeded for tool "${request.toolId}" (brick ${entry.brickId}); aborting runaway loop`,
+            retryable: false,
+            context: {
+              brickId: entry.brickId,
+              toolId: request.toolId,
+              scope: entry.scope,
+              perTurnBlockCap,
+              source,
+            },
+          });
         }
       };
 

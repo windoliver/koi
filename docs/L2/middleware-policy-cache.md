@@ -122,7 +122,22 @@ Hosts that omit `generation` get the legacy best-effort behavior (every event ev
 
 ### Per-turn block cap (anti-loop)
 
-A model that loops on the same cached deny would otherwise keep getting cheap synthetic responses indefinitely, burning tokens and turn budget. The middleware tracks a per-`(turnId, toolId, brickId)` block counter; on the `(perTurnBlockCap + 1)`-th hit the synthetic block is replaced by a thrown error so the engine loop terminates. Default cap is 5. Mirrors the soft-deny budgeting in `@koi/middleware-permissions`.
+A model that loops on the same cached deny would otherwise keep getting cheap synthetic responses indefinitely, burning tokens and turn budget. The middleware tracks a per-`(sessionId, turnId, toolId, brickId)` block counter; on the `(perTurnBlockCap + 1)`-th hit the synthetic block is replaced by a `KoiRuntimeError({code: "PERMISSION", retryable: false})` so the engine loop terminates *and* downstream classifies the failure as an authorization failure (not a generic `EXTERNAL` error). Default cap is 5. Mirrors the soft→hard conversion path in `@koi/middleware-permissions`.
+
+Counters are reaped via the `onAfterTurn` hook (per-turn cleanup) and the `onSessionEnd` hook (defense-in-depth for cancelled mid-turn sessions), so blocked traffic cannot accumulate for the lifetime of the process.
+
+### Resource enrichment for synthetic deny dispatch
+
+Tools whose effective resource depends on input (e.g. `bash` → `bash:rm /etc/passwd`, `fs.read` → `fs.read:/etc/shadow`) MUST report the enriched resource in audit/monitor streams so denials aggregate under the same identity as the normal permissions path. Hosts wire the same resolver they pass to `@koi/middleware-permissions`:
+
+```ts
+createPolicyCacheMiddleware({
+  verifier: (e) => forge.isVerified(e),
+  resolveResource: (req) => permissionsResolver(req),
+});
+```
+
+When omitted, the bare `request.toolId` is used (backward-compatible). When provided, the returned `resource` is used in the deny query and the optional `path` is merged into the query context (matching `queryForTool`'s `path` field).
 
 The notifier subscription is registered eagerly during factory construction. The unsubscribe function is held in closure so disposal is implicit when the handle is dropped. Notifier callbacks are sync — events of kind `saved` and `promoted` are ignored (saving doesn't invalidate; promotion is what the wiring layer registers in response to).
 
