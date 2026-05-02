@@ -354,8 +354,28 @@ export async function uninstallMcpServer(
   if (clear !== undefined) {
     try {
       await clear(options.name);
-    } catch {
-      // Best-effort credential cleanup. The mcp.json removal already succeeded.
+    } catch (cause: unknown) {
+      // Config removal succeeded but credential cleanup failed — the
+      // server is gone from .mcp.json but live OAuth material may still
+      // exist on disk/keychain. Surface the partial-success state so
+      // operators can complete cleanup manually.
+      return {
+        ok: false,
+        error: {
+          code: "EXTERNAL",
+          message:
+            `Removed "${options.name}" from ${options.configPath} but credential cleanup ` +
+            `failed: ${cause instanceof Error ? cause.message : String(cause)}. ` +
+            `Stored OAuth material may persist; clear it manually.`,
+          retryable: false,
+          cause: cause instanceof Error ? cause : undefined,
+          context: {
+            name: options.name,
+            configPath: options.configPath,
+            credentialCleanupFailed: true,
+          },
+        },
+      };
     }
   }
   return { ok: true, value: undefined };
@@ -411,34 +431,60 @@ async function failWithRollback(
       },
     };
   }
-  // Best-effort credential wipe — runs whether the config rollback
-  // succeeded or not. Verification may have completed an OAuth flow that
-  // persisted tokens (and possibly a DCR client) before failing on
-  // listTools; without this, we'd leave live credentials behind for a
-  // server that no longer has a config entry.
+  // Credential wipe — runs whether the config rollback succeeded or not.
+  // Verification may have completed an OAuth flow that persisted tokens
+  // (and possibly a DCR client) before failing on listTools; without
+  // this, we'd leave live credentials behind for a server that no longer
+  // has a config entry. If cleanup itself throws, surface it: silent
+  // failure here means a "cleanly rolled-back" install can still leave
+  // an authorized server.
+  let credentialError: string | undefined;
   if (clearCredentials !== undefined) {
     try {
       await clearCredentials(name);
-    } catch {
-      /* swallow — credential cleanup is best-effort */
+    } catch (cause: unknown) {
+      credentialError = cause instanceof Error ? cause.message : String(cause);
     }
   }
   if (rollbackResult.ok) {
-    return { ok: false, error: primaryError };
+    if (credentialError === undefined) {
+      return { ok: false, error: primaryError };
+    }
+    return {
+      ok: false,
+      error: {
+        ...primaryError,
+        message:
+          `${primaryError.message}. Config rolled back, but credential cleanup ` +
+          `failed (${credentialError}); stored OAuth material may persist.`,
+        context: {
+          ...(primaryError.context ?? {}),
+          credentialCleanupFailed: true,
+          credentialError,
+        },
+      },
+    };
   }
   // Rollback failed: surface that the partial install is still on disk so
   // the user can fix it manually instead of silently leaving a broken entry.
+  const credentialNote =
+    credentialError !== undefined
+      ? ` Credential cleanup also failed (${credentialError}); stored OAuth material may persist.`
+      : "";
   return {
     ok: false,
     error: {
       ...primaryError,
       message:
         `${primaryError.message}. Rollback also failed (${rollbackResult.error.message}); ` +
-        `manual cleanup of "${name}" from ${configPath} is required.`,
+        `manual cleanup of "${name}" from ${configPath} is required.${credentialNote}`,
       context: {
         ...(primaryError.context ?? {}),
         rollbackError: rollbackResult.error.message,
         cleanupRequired: true,
+        ...(credentialError !== undefined
+          ? { credentialCleanupFailed: true, credentialError }
+          : {}),
       },
     },
   };

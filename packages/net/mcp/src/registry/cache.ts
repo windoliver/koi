@@ -10,8 +10,9 @@
  * never throws on a bad cache.
  */
 
+import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { RegistryServer } from "./schema.js";
 
 export const DEFAULT_REGISTRY_CACHE_TTL_MS: number = 60 * 60 * 1000; // 1 hour
@@ -72,11 +73,19 @@ export function createRegistryCache(options: RegistryCacheOptions = {}): Registr
   }
 
   async function write(file: CacheFile): Promise<void> {
-    // Best effort. Cache write failures must not break the CLI.
+    // Best effort: cache write failures must not break the CLI, but they
+    // *are* observable — silently failing every write makes the offline
+    // path appear functional when it is not. Surface a one-line warning
+    // to stderr (suppressible via KOI_CACHE_QUIET=1) so operators can
+    // diagnose a broken cache directory.
     try {
+      await mkdir(dirname(path), { recursive: true });
       await Bun.write(path, JSON.stringify(file));
-    } catch {
-      /* swallow */
+    } catch (error: unknown) {
+      if (process.env.KOI_CACHE_QUIET !== "1") {
+        const detail = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`[koi] warning: registry cache write failed (${detail})\n`);
+      }
     }
   }
 

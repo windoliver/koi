@@ -121,6 +121,15 @@ export async function runInstall(flags: McpFlags): Promise<ExitCode> {
   }
 
   if (!flags.yes) {
+    // Fail closed in non-interactive contexts: stdin without a TTY (CI,
+    // pipes, automation) can wedge `for await` on stdin until EOF, which
+    // looks like a hang. Require an explicit --yes/--json instead.
+    if (process.stdin.isTTY !== true) {
+      return failFlags(
+        flags,
+        "Refusing to prompt for confirmation: stdin is not a TTY. Re-run with --yes (or --json, which implies --yes).",
+      );
+    }
     const confirmed = await promptYesNo("Continue?");
     if (!confirmed) {
       console.log("Aborted.");
