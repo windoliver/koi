@@ -116,6 +116,16 @@ export interface PolicyCacheConfig {
    * with no process-wide cap. Default: 1000.
    */
   readonly maxAgentBuckets?: number | undefined;
+  /**
+   * Maximum number of synthetic block responses returned per turn for the
+   * SAME (toolId, brickId) before the call hard-stops. Mirrors the
+   * soft-deny retry cap in `@koi/middleware-permissions`: a model that
+   * loops on the same cached deny would otherwise keep getting cheap
+   * synthetic responses indefinitely, burning tokens and turn budget. On
+   * the (cap+1)-th hit the middleware throws a hard error so the engine
+   * loop terminates. Default: 5.
+   */
+  readonly perTurnBlockCap?: number | undefined;
   /** Optional notifier for event-driven invalidation. */
   readonly notifier?: StoreChangeNotifier | undefined;
   /**
@@ -156,6 +166,7 @@ export interface PolicyCacheHandle {
 
 const DEFAULT_MAX_ENTRIES = 100;
 const DEFAULT_MAX_AGENT_BUCKETS = 1000;
+const DEFAULT_PER_TURN_BLOCK_CAP = 5;
 const NAME = "policy-cache";
 // Fixed deny reason used for both the synthetic permission decision and any
 // caller that needs to format an audit string. Executor-supplied `reason`
@@ -174,6 +185,14 @@ const PHASE = "intercept" as const;
 export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): PolicyCacheHandle {
   const maxEntries = config.maxEntries ?? DEFAULT_MAX_ENTRIES;
   const maxAgentBuckets = config.maxAgentBuckets ?? DEFAULT_MAX_AGENT_BUCKETS;
+  const perTurnBlockCap = config.perTurnBlockCap ?? DEFAULT_PER_TURN_BLOCK_CAP;
+  // Per-turn block counter, keyed by `${turnId}\0${toolId}\0${brickId}`.
+  // Mirrors middleware-permissions' soft-deny budgeting: a model that loops
+  // on the same cached deny would otherwise burn tokens and turn budget on
+  // unbounded synthetic responses. On the (cap+1)-th hit the middleware
+  // throws so the engine loop terminates. Map insertion order is unrelated
+  // to recency here — entries naturally fall out as turn IDs change.
+  const perTurnBlocks = new Map<string, number>();
   // Per-owner partitioned caches. Each agent gets its OWN map with its OWN
   // maxEntries quota; global gets its own. This is what gives the cache
   // tenant-safe capacity behavior: a noisy agent registering many policies
@@ -243,6 +262,40 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
         context: { brickId: entry.brickId, toolId: entry.toolId },
       };
       return { ok: false, error };
+    }
+
+    // Generation-gated registration. When both the incoming and the
+    // currently cached entry carry a `generation`, refuse a strictly older
+    // generation — an event-driven promoter delivering a stale registration
+    // out of order would otherwise silently roll authorization state
+    // backward. Hosts that omit `generation` opt out of this protection.
+    if (entry.generation !== undefined) {
+      const existingRef = brickIndex.get(entry.brickId);
+      if (existingRef !== undefined) {
+        const existingMap =
+          existingRef.bucket === "global"
+            ? globalCache
+            : agentCaches.get(existingRef.bucket.slice("agent:".length));
+        const existing = existingMap?.get(existingRef.toolId);
+        if (
+          existing !== undefined &&
+          existing.generation !== undefined &&
+          entry.generation < existing.generation
+        ) {
+          const error: KoiError = {
+            code: "VALIDATION",
+            message: `policy-cache: refusing stale generation ${String(entry.generation)} for brick ${entry.brickId} (current ${String(existing.generation)})`,
+            retryable: false,
+            context: {
+              brickId: entry.brickId,
+              toolId: entry.toolId,
+              incomingGeneration: entry.generation,
+              currentGeneration: existing.generation,
+            },
+          };
+          return { ok: false, error };
+        }
+      }
     }
 
     // Transactional admission. Decide the outcome BEFORE mutating any
@@ -538,23 +591,40 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       const entry = findEntry(ctx, request.toolId);
       if (entry === undefined) return next(request);
 
+      // Per-turn block budget. Mirrors @koi/middleware-permissions'
+      // soft-deny cap. Without this, a model looping on the same cached
+      // deny would receive unbounded synthetic responses, burning tokens
+      // and turn budget. Hits are counted BEFORE returning a synthetic
+      // block; on overflow we throw so the engine loop terminates rather
+      // than staying soft forever. The counter is keyed per-turn so
+      // legitimate retries across separate turns are not penalized.
+      const turnId = ctx.turnId as unknown as string;
+      const blockKey = `${turnId}\0${request.toolId}\0${entry.brickId}`;
+      const enforcePerTurnCap = (): void => {
+        const count = (perTurnBlocks.get(blockKey) ?? 0) + 1;
+        perTurnBlocks.set(blockKey, count);
+        if (count > perTurnBlockCap) {
+          throw new Error(
+            `policy-cache: per-turn block cap ${String(perTurnBlockCap)} exceeded for tool "${request.toolId}" (brick ${entry.brickId}); aborting runaway loop`,
+          );
+        }
+      };
+
       // Quarantined entries always block — keeps deny policies enforcing
       // even after their executor faults. Cleared by re-register or
       // external eviction (StoreChangeNotifier `removed` / `quarantined`).
       if (quarantined.has(entry.brickId)) {
+        enforcePerTurnCap();
         dispatchSyntheticDeny(ctx, entry, request);
         return blockResponse(request.toolId);
       }
 
+      // Clone before handing input to the executor so a buggy or
+      // compromised executor cannot mutate live request fields that the
+      // real tool will see when we forward via `next(request)`.
+      let decision: PolicyDecision;
       try {
-        // Clone before handing input to the executor so a buggy or
-        // compromised executor cannot mutate live request fields that the
-        // real tool will see when we forward via `next(request)`.
-        const decision = entry.execute(cloneInput(request.input));
-        if (decision.action === "allow") return next(request);
-        // `decision.reason` is intentionally NOT forwarded — see SYNTHETIC_DENY_REASON.
-        dispatchSyntheticDeny(ctx, entry, request);
-        return blockResponse(request.toolId);
+        decision = entry.execute(cloneInput(request.input));
       } catch (cause) {
         quarantined.add(entry.brickId);
         try {
@@ -567,9 +637,17 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
         } catch {
           // Swallow callback failures; observability cannot break enforcement.
         }
+        // Cap and dispatch happen OUTSIDE the executor try/catch so a cap
+        // overflow throws cleanly to the engine loop (not re-caught here).
+        enforcePerTurnCap();
         dispatchSyntheticDeny(ctx, entry, request);
         return blockResponse(request.toolId);
       }
+      if (decision.action === "allow") return next(request);
+      enforcePerTurnCap();
+      // `decision.reason` is intentionally NOT forwarded — see SYNTHETIC_DENY_REASON.
+      dispatchSyntheticDeny(ctx, entry, request);
+      return blockResponse(request.toolId);
     },
 
     describeCapabilities(ctx: TurnContext): CapabilityFragment | undefined {
@@ -595,6 +673,7 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
     globalCache.clear();
     brickIndex.clear();
     quarantined.clear();
+    perTurnBlocks.clear();
   };
 
   return {

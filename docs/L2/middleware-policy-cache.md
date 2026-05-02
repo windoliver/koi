@@ -111,9 +111,18 @@ Three paths invalidate cached entries:
 | Store change event | Optional `StoreChangeNotifier` subscription evicts on `updated`, `removed`, `quarantined` |
 | Handle teardown | `handle.dispose()` — see "Lifecycle: dispose()" |
 
-### Generation-aware invalidation
+### Generation-aware invalidation AND registration
 
-Notifier eviction is generation-aware. `StoreChangeEvent.generation` and `PolicyEntry.generation` (both optional) carry a monotonically increasing token per brick. When both sides supply a generation, the cache ignores any event whose generation is strictly older than the entry it currently holds — protects a freshly re-promoted deny from being evicted by a delayed event for a prior generation. Hosts that omit `generation` get the legacy best-effort behavior (every event evicts), which keeps backward compatibility with stores that don't track versions.
+Notifier eviction AND `register()` are both generation-aware. `StoreChangeEvent.generation` and `PolicyEntry.generation` (both optional) carry a monotonically increasing token per brick.
+
+- **Eviction:** when both sides supply a generation, the cache ignores any event whose generation is strictly older than the entry it currently holds — protects a freshly re-promoted deny from being evicted by a delayed event for a prior generation.
+- **Registration:** `register()` refuses an entry whose generation is strictly older than the one already cached for that brick. An event-driven promoter delivering a stale promotion out of order otherwise rolls authorization state backward silently. Generations are only compared when both incoming and existing entries carry one.
+
+Hosts that omit `generation` get the legacy best-effort behavior (every event evicts; every register replaces) — backward compatibility with stores that don't track versions.
+
+### Per-turn block cap (anti-loop)
+
+A model that loops on the same cached deny would otherwise keep getting cheap synthetic responses indefinitely, burning tokens and turn budget. The middleware tracks a per-`(turnId, toolId, brickId)` block counter; on the `(perTurnBlockCap + 1)`-th hit the synthetic block is replaced by a thrown error so the engine loop terminates. Default cap is 5. Mirrors the soft-deny budgeting in `@koi/middleware-permissions`.
 
 The notifier subscription is registered eagerly during factory construction. The unsubscribe function is held in closure so disposal is implicit when the handle is dropped. Notifier callbacks are sync — events of kind `saved` and `promoted` are ignored (saving doesn't invalidate; promotion is what the wiring layer registers in response to).
 

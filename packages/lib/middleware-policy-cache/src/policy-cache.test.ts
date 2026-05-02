@@ -152,6 +152,74 @@ describe("createPolicyCacheMiddleware: verified-only promotion gate", () => {
     expect(handle.register(makeAgentPolicy("a", "u", "brick-FAKE")).ok).toBe(false);
   });
 
+  test("register refuses a strictly older generation (out-of-order promotion)", () => {
+    // Round 6 review: an event-driven promoter delivering a stale
+    // promotion out of order must not silently roll authorization state
+    // backward. When both incoming and existing entries carry a
+    // generation, register() compares them and refuses staler ones.
+    const handle = mw();
+    expect(
+      handle.register({
+        scope: "agent",
+        agentId: "a",
+        toolId: "t",
+        brickId: "b",
+        generation: 5,
+        execute: () => ({ action: "block", reason: "x" }),
+      }).ok,
+    ).toBe(true);
+    const stale = handle.register({
+      scope: "agent",
+      agentId: "a",
+      toolId: "t",
+      brickId: "b",
+      generation: 3,
+      execute: () => ({ action: "allow" }),
+    });
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) {
+      expect(stale.error.code).toBe("VALIDATION");
+      expect(stale.error.context).toMatchObject({
+        incomingGeneration: 3,
+        currentGeneration: 5,
+      });
+    }
+  });
+
+  test("register accepts equal-or-newer generation", () => {
+    const handle = mw();
+    handle.register({
+      scope: "agent",
+      agentId: "a",
+      toolId: "t",
+      brickId: "b",
+      generation: 5,
+      execute: () => ({ action: "block", reason: "x" }),
+    });
+    // Equal generation accepted (idempotent re-register).
+    expect(
+      handle.register({
+        scope: "agent",
+        agentId: "a",
+        toolId: "t",
+        brickId: "b",
+        generation: 5,
+        execute: () => ({ action: "block", reason: "x" }),
+      }).ok,
+    ).toBe(true);
+    // Newer generation accepted.
+    expect(
+      handle.register({
+        scope: "agent",
+        agentId: "a",
+        toolId: "t",
+        brickId: "b",
+        generation: 7,
+        execute: () => ({ action: "allow" }),
+      }).ok,
+    ).toBe(true);
+  });
+
   test("brickId-only forge state CANNOT be replayed for a different tool/scope/agent (round-5 regression)", () => {
     // Round 5 review: a verifier that only checks brickId is replay-able.
     // This regression test pins the contract: the verifier sees the full
@@ -1214,6 +1282,82 @@ describe("createPolicyCacheMiddleware: process-wide agent-bucket cap", () => {
     // A fresh new-agent registration must still succeed: prior buckets
     // were GC'd, so the cap was not silently exhausted.
     expect(handle.register(makeAgentPolicy("agent-fresh", "u", "brick-fresh")).ok).toBe(true);
+  });
+});
+
+describe("createPolicyCacheMiddleware: per-turn block cap (anti-loop)", () => {
+  test("repeated cached deny in the same turn hard-stops once the cap is exceeded", async () => {
+    // Round 6 review: a model looping on a cached deny would otherwise
+    // keep getting cheap synthetic responses indefinitely. Mirrors the
+    // soft-deny cap in @koi/middleware-permissions: after `perTurnBlockCap`
+    // hits, the (cap+1)-th call throws so the engine loop terminates.
+    const handle = mw({ perTurnBlockCap: 2 });
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    const next = mock(async () => makeResp());
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+    // First 2 hits return synthetic block.
+    const r1 = await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    const r2 = await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    expect(r1.metadata?.policyDenied).toBe(true);
+    expect(r2.metadata?.policyDenied).toBe(true);
+    // 3rd hit hard-stops.
+    await expect(wrap(CTX, makeReq("rm"), next as ToolHandler)).rejects.toThrow(/cap.*exceeded/);
+  });
+
+  test("cap is per-(turn, brickId, toolId): different turns share no budget", async () => {
+    const handle = mw({ perTurnBlockCap: 1 });
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    const next = mock(async () => makeResp());
+    const ctxTurn1 = ctxFor("agent-A");
+    const ctxTurn2 = {
+      ...ctxFor("agent-A"),
+      turnId: "t2" as never,
+    } as unknown as TurnContext;
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+    // Turn 1: 1 hit OK, 2nd throws.
+    await wrap(ctxTurn1, makeReq("rm"), next as ToolHandler);
+    await expect(wrap(ctxTurn1, makeReq("rm"), next as ToolHandler)).rejects.toThrow();
+    // Turn 2: fresh budget — 1 hit OK.
+    const r = await wrap(ctxTurn2, makeReq("rm"), next as ToolHandler);
+    expect(r.metadata?.policyDenied).toBe(true);
+  });
+
+  test("cap also applies to quarantined-fast-path blocks", async () => {
+    const handle = mw({ perTurnBlockCap: 1 });
+    const throwing: PolicyEntry = {
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "rm",
+      brickId: "brick-1",
+      execute: () => {
+        throw new Error("boom");
+      },
+    };
+    handle.register(throwing);
+    const next = mock(async () => makeResp());
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+    // First call quarantines + counts.
+    await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    // Second call hits the quarantine fast-path AND tips over the cap.
+    await expect(wrap(CTX, makeReq("rm"), next as ToolHandler)).rejects.toThrow();
+  });
+
+  test("dispose clears the per-turn block counter", async () => {
+    const handle = mw({ perTurnBlockCap: 1 });
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    const next = mock(async () => makeResp());
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+    await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    // We don't observe the counter directly; dispose() must clear it as
+    // part of releasing all state. After dispose(), there's nothing left
+    // to enforce against (cache is empty), so we just assert dispose is
+    // safe to call after the cap path was exercised.
+    handle.dispose();
+    expect(handle.size()).toBe(0);
   });
 });
 
