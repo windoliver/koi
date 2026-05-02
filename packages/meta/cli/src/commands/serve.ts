@@ -1,14 +1,13 @@
 import type { ApprovalHandler, EngineEvent, InboundMessage, JsonObject } from "@koi/core";
+import { createPatternPermissionBackend } from "@koi/middleware-permissions";
+import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type {
   ChannelRegistration,
   Gateway,
   GatewayFrame,
   GatewayServer,
   Session,
-} from "@koi/gateway-http";
-import { createGatewayServer } from "@koi/gateway-http";
-import { createPatternPermissionBackend } from "@koi/middleware-permissions";
-import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
+} from "@koi/runtime";
 import type { ServeFlags } from "../args/serve.js";
 import { resolveApiConfig } from "../env.js";
 import type { ManifestConfig } from "../manifest.js";
@@ -127,6 +126,7 @@ async function startServeGateway(
   flags: ServeFlags,
 ): Promise<ServeResult<{ readonly server: GatewayServer; readonly channel: string }>> {
   const gateway = createRuntimeGateway(runtime, flags.verbose);
+  const { createGatewayServer } = await import("@koi/runtime");
   const server = createGatewayServer(
     { bind: `127.0.0.1:${service.port}`, lockFilePath: service.lockFilePath },
     { gateway },
