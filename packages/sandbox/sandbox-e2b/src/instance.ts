@@ -2,8 +2,13 @@ import type { SandboxAdapterResult, SandboxExecOptions, SandboxInstance } from "
 import type { ProfileDefaults } from "./profile.js";
 import type { E2bRunOpts, E2bSdkSandbox } from "./types.js";
 
-/** Mirrors the default capture cap documented in `SandboxExecOptions.maxOutputBytes`. */
-const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
+// No implicit default output cap. A cap that is only applied AFTER the SDK
+// has buffered the full payload would not actually bound memory or
+// bandwidth — it would just hide oversized output in the result. Memory-
+// bounding only works when the SDK enforces it server-side, so the cap is
+// honoured strictly: pass `maxOutputBytes` AND inject an SDK wrapper that
+// advertises `commands.supportsMaxOutputBytes=true`. Otherwise no cap is
+// claimed and callers get whatever the SDK returned.
 
 function quoteArg(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
@@ -159,7 +164,13 @@ export function createE2bInstance(
           ? { ...(defaults.env ?? {}), ...(options?.env ?? {}) }
           : undefined;
       const mergedTimeout = options?.timeoutMs ?? defaults.timeoutMs;
-      const cap = options?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+      // `cap` is only meaningful when the SDK enforces it server-side. The
+      // pre-flight capability gate above (`supportsMaxOutputBytes`) guarantees
+      // a caller-supplied `maxOutputBytes` always pairs with SDK support.
+      const cap =
+        options?.maxOutputBytes !== undefined && sdk.commands.supportsMaxOutputBytes === true
+          ? options.maxOutputBytes
+          : undefined;
 
       const sdkOpts: E2bRunOpts = {
         ...(options?.cwd !== undefined ? { cwd: options.cwd } : {}),
@@ -171,7 +182,7 @@ export function createE2bInstance(
         ...(options?.onStderr !== undefined ? { onStderr: options.onStderr } : {}),
         ...(options?.signal !== undefined ? { signal: options.signal } : {}),
         ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
-        ...(sdk.commands.supportsMaxOutputBytes === true ? { maxOutputBytes: cap } : {}),
+        ...(cap !== undefined ? { maxOutputBytes: cap } : {}),
       };
 
       try {
@@ -181,10 +192,20 @@ export function createE2bInstance(
         const result = await sdk.commands.run(cmd, sdkOpts);
         const durationMs = performance.now() - start;
 
-        // Apply the combined-byte budget to the SDK's authoritative result.
-        // Memory bounding for non-truncating SDKs requires server-side cap
-        // (commands.supportsMaxOutputBytes); for those we forwarded the cap.
-        const capped = applyCombinedBudget(result.stdout, result.stderr, cap, result.truncated);
+        // Apply the combined-byte budget only when the SDK enforced it
+        // server-side. Without enforcement the payload was already buffered,
+        // so a post-hoc slice would not actually bound memory — we'd be
+        // claiming a guarantee we cannot keep. When `cap` is undefined the
+        // SDK's result is passed through verbatim, and the caller sees
+        // whatever the SDK returned.
+        const capped =
+          cap !== undefined
+            ? applyCombinedBudget(result.stdout, result.stderr, cap, result.truncated)
+            : {
+                stdout: result.stdout,
+                stderr: result.stderr,
+                truncated: result.truncated === true,
+              };
         const stdout = capped.stdout;
         const stderr = capped.stderr;
         const truncated = capped.truncated;
@@ -210,17 +231,15 @@ export function createE2bInstance(
       } catch (e: unknown) {
         const durationMs = performance.now() - start;
         const message = e instanceof Error ? e.message : String(e);
-        // Only classify as caller cancellation when the caller actually
-        // aborted the supplied signal. Mapping bare AbortError/transport
-        // aborts/server-evictions to exit 130 without that proof would
-        // misreport backend failures as clean user cancels and break
-        // retry-safety: higher layers would believe the run was
-        // intentionally cancelled while the remote command may have
-        // failed mid-side-effect for unrelated reasons.
-        // Re-read through a local — TS narrows `aborted` to false|undefined
-        // after the pre-dispatch guard, but the signal can fire mid-flight.
+        // Map to exit 130 only when BOTH the caller actually aborted AND the
+        // SDK explicitly acknowledges cancellation (AbortError name). Anything
+        // else — transport failures, provider eviction, kill-confirmation
+        // failures that happen after abort() — must surface as a real error so
+        // higher layers do not mistake them for a clean user cancel and
+        // skip cleanup/retry of partially-applied side effects.
         const sig: AbortSignal | undefined = options?.signal;
-        if (sig?.aborted) {
+        const sdkConfirmedAbort = e instanceof Error && e.name === "AbortError";
+        if (sig?.aborted && sdkConfirmedAbort) {
           return {
             exitCode: 130,
             stdout: "",

@@ -2,7 +2,8 @@ import type { SandboxAdapterResult, SandboxExecOptions, SandboxInstance } from "
 import type { ProfileDefaults } from "./profile.js";
 import type { DaytonaRunOpts, DaytonaSdkSandbox } from "./types.js";
 
-const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
+// No implicit default output cap — see sandbox-e2b for rationale. Memory
+// bounding only works when the SDK enforces the cap server-side.
 
 function quoteArg(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
@@ -127,7 +128,12 @@ export function createDaytonaInstance(
           ? { ...(defaults.env ?? {}), ...(options?.env ?? {}) }
           : undefined;
       const mergedTimeout = options?.timeoutMs ?? defaults.timeoutMs;
-      const cap = options?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+      // `cap` is only meaningful when the SDK enforces it server-side; the
+      // capability gate above pairs every caller-supplied cap with SDK support.
+      const cap =
+        options?.maxOutputBytes !== undefined && sdk.commands.supportsMaxOutputBytes === true
+          ? options.maxOutputBytes
+          : undefined;
 
       const sdkOpts: DaytonaRunOpts = {
         ...(options?.cwd !== undefined ? { cwd: options.cwd } : {}),
@@ -137,14 +143,23 @@ export function createDaytonaInstance(
         ...(options?.onStderr !== undefined ? { onStderr: options.onStderr } : {}),
         ...(options?.signal !== undefined ? { signal: options.signal } : {}),
         ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
-        ...(sdk.commands.supportsMaxOutputBytes === true ? { maxOutputBytes: cap } : {}),
+        ...(cap !== undefined ? { maxOutputBytes: cap } : {}),
       };
 
       try {
         const result = await sdk.commands.run(cmd, sdkOpts);
         const durationMs = performance.now() - start;
 
-        const capped = applyCombinedBudget(result.stdout, result.stderr, cap, result.truncated);
+        // Only slice when the SDK enforced the cap server-side; otherwise a
+        // post-hoc trim would be cosmetic, not memory-bounding.
+        const capped =
+          cap !== undefined
+            ? applyCombinedBudget(result.stdout, result.stderr, cap, result.truncated)
+            : {
+                stdout: result.stdout,
+                stderr: result.stderr,
+                truncated: result.truncated === true,
+              };
         const stdout = capped.stdout;
         const stderr = capped.stderr;
         const truncated = capped.truncated;
@@ -167,12 +182,14 @@ export function createDaytonaInstance(
       } catch (e: unknown) {
         const durationMs = performance.now() - start;
         const message = e instanceof Error ? e.message : String(e);
-        // Only treat as caller cancellation when the caller actually aborted
-        // the supplied signal. AbortError-shaped rejections from server-side
-        // eviction or transport failures must surface as failures, otherwise
-        // higher layers will retry-or-skip work that may have partially run.
+        // Map to exit 130 only when BOTH the caller actually aborted AND the
+        // SDK explicitly acknowledges cancellation (AbortError name). Other
+        // post-abort rejections (transport, eviction, kill-confirmation
+        // failures) must surface as errors so higher layers handle cleanup
+        // and retry safely instead of treating them as clean user cancels.
         const sig: AbortSignal | undefined = options?.signal;
-        if (sig?.aborted) {
+        const sdkConfirmedAbort = e instanceof Error && e.name === "AbortError";
+        if (sig?.aborted && sdkConfirmedAbort) {
           return {
             exitCode: 130,
             stdout: "",

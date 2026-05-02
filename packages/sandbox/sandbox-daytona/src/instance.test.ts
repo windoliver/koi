@@ -295,12 +295,14 @@ describe("createDaytonaInstance", () => {
     );
   });
 
-  test("exec applies the contract default 1MB cap when SDK supports maxOutputBytes", async () => {
+  test("exec does not forward a synthetic default cap when caller did not ask", async () => {
+    // Without an explicit caller cap, the adapter does not claim a memory
+    // bound it cannot enforce — no implicit default is forwarded.
     const base = createFakeSandbox();
     const sdk = { ...base, commands: { ...base.commands, supportsMaxOutputBytes: true } };
     const instance = createDaytonaInstance(sdk);
     await instance.exec("ls", []);
-    expect(base.runCalls[0]?.opts?.maxOutputBytes).toBe(1_000_000);
+    expect(base.runCalls[0]?.opts?.maxOutputBytes).toBeUndefined();
   });
 
   test("exec enforces a combined byte budget across stdout and stderr", async () => {
@@ -324,7 +326,9 @@ describe("createDaytonaInstance", () => {
     expect(result.truncated).toBe(true);
   });
 
-  test("exec truncates oversized SDK output locally and reports truncated=true", async () => {
+  test("exec passes oversized SDK output through verbatim when no cap is requested", async () => {
+    // No implicit memory bound. The SDK's payload is returned as-is so the
+    // adapter does not claim a guarantee it cannot enforce post-buffer.
     const big = "a".repeat(1_500_000);
     const base = createFakeSandbox();
     const sdk = {
@@ -340,8 +344,8 @@ describe("createDaytonaInstance", () => {
     };
     const instance = createDaytonaInstance(sdk);
     const result = await instance.exec("ls", []);
-    expect(result.truncated).toBe(true);
-    expect(result.stdout.length).toBe(1_000_000);
+    expect(result.stdout.length).toBe(1_500_000);
+    expect(result.truncated).toBeUndefined();
   });
 
   test("exec surfaces SDK truncated flag when present", async () => {

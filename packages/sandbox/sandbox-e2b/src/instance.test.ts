@@ -128,6 +128,38 @@ describe("createE2bInstance", () => {
     expect(result.timedOut).toBe(false);
   });
 
+  test("exec surfaces failure (not 130) when caller aborts but SDK rejects with non-AbortError", async () => {
+    // After the caller aborts, a transport error / provider eviction / kill-
+    // confirmation failure can surface as a non-AbortError rejection. That
+    // means the SDK did NOT confirm clean cancellation, so the remote command
+    // may still be running or have partially applied. Reporting exit 130
+    // here would tell higher layers it was safely cancelled — instead we
+    // surface the failure so cleanup/retry is handled correctly.
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      commands: {
+        ...base.commands,
+        supportsAbort: true,
+        run: async (
+          _cmd: string,
+          opts?: import("./types.js").E2bRunOpts,
+        ): Promise<import("./types.js").E2bRunResult> => {
+          await new Promise<void>((resolve) => {
+            opts?.signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          throw new Error("transport reset"); // not AbortError
+        },
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    const ac = new AbortController();
+    queueMicrotask(() => ac.abort());
+    const result = await instance.exec("ls", [], { signal: ac.signal });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("transport reset");
+  });
+
   test("exec returns failure (not 130) when SDK rejects with AbortError but caller never aborted", async () => {
     // Server-side eviction / transport-layer aborts can surface as
     // AbortError-shaped rejections. Mapping those to exit 130 without a
@@ -285,13 +317,15 @@ describe("createE2bInstance", () => {
     );
   });
 
-  test("exec applies the contract default 1MB cap when SDK supports maxOutputBytes", async () => {
+  test("exec does not forward a synthetic default cap when caller did not ask", async () => {
+    // Memory bounding only works when the SDK enforces it server-side. We
+    // refuse to claim a guarantee we cannot keep, so absent an explicit
+    // `maxOutputBytes` from the caller, no cap is forwarded.
     const base = createFakeSandbox();
     const sdk = { ...base, commands: { ...base.commands, supportsMaxOutputBytes: true } };
     const instance = createE2bInstance(sdk);
     await instance.exec("ls", []);
-    // Caller didn't ask — we still forward 1MB so noisy commands don't blow up bandwidth.
-    expect(base.runCalls[0]?.opts?.maxOutputBytes).toBe(1_000_000);
+    expect(base.runCalls[0]?.opts?.maxOutputBytes).toBeUndefined();
   });
 
   test("exec enforces a combined byte budget across stdout and stderr", async () => {
@@ -346,8 +380,12 @@ describe("createE2bInstance", () => {
     }
   });
 
-  test("exec truncates oversized SDK output locally and reports truncated=true", async () => {
-    const big = "a".repeat(1_500_000); // 1.5 MB > 1 MB default cap
+  test("exec passes oversized SDK output through verbatim when no cap is requested", async () => {
+    // Without an explicit `maxOutputBytes` from the caller AND server-side
+    // enforcement, the adapter must not pretend to bound output. The SDK's
+    // result is returned as-is so callers see exactly what came back over
+    // the wire — no synthetic truncation that could mask oversized payloads.
+    const big = "a".repeat(1_500_000);
     const base = createFakeSandbox();
     const sdk = {
       ...base,
@@ -362,8 +400,8 @@ describe("createE2bInstance", () => {
     };
     const instance = createE2bInstance(sdk);
     const result = await instance.exec("ls", []);
-    expect(result.truncated).toBe(true);
-    expect(result.stdout.length).toBe(1_000_000);
+    expect(result.stdout.length).toBe(1_500_000);
+    expect(result.truncated).toBeUndefined();
   });
 
   test("exec surfaces SDK truncated flag when present", async () => {
