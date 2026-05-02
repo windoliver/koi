@@ -129,10 +129,11 @@ describe("createE2bInstance", () => {
   });
 
   test("exec quarantines instance when SDK never confirms post-abort termination", async () => {
-    // Hung provider regression: if the SDK promise never settles after
-    // abort, exec must not wait forever. The adapter caps the kill-
-    // confirmation wait, returns a clear cancellation error, and forces
-    // the instance into a destroyed state so subsequent ops reject.
+    // Hung provider regression: when the SDK never settles after abort
+    // the adapter must NOT report exit 130 — that signals a clean cancel
+    // and would invite higher-layer retry logic to replay a command that
+    // may still be running remotely. Surface exit 1 (indeterminate) plus
+    // a clear stderr warning, and quarantine the instance.
     const base = createFakeSandbox();
     const sdk = {
       ...base,
@@ -140,7 +141,6 @@ describe("createE2bInstance", () => {
         ...base.commands,
         supportsAbort: true,
         run: async (): Promise<import("./types.js").E2bRunResult> => {
-          // Never settles.
           return new Promise<import("./types.js").E2bRunResult>(() => {});
         },
       },
@@ -151,14 +151,12 @@ describe("createE2bInstance", () => {
     const start = performance.now();
     const result = await instance.exec("sleep", ["999"], { signal: ac.signal });
     const elapsed = performance.now() - start;
-    expect(result.exitCode).toBe(130);
+    // Indeterminate failure — NOT 130, so callers don't replay.
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toMatch(/INDETERMINATE/);
     expect(result.stderr).toMatch(/abort timeout/i);
-    // The abort-confirmation wait is bounded; we should see ~5s, not infinite.
-    // (Use a generous upper bound for CI variance.)
     expect(elapsed).toBeLessThan(10_000);
-    // Subsequent ops must reject — the instance is quarantined.
     await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
-    // But destroy() must still be callable so callers have a teardown path.
     await instance.destroy();
   }, 15_000);
 

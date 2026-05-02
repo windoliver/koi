@@ -263,18 +263,23 @@ export function createE2bInstance(
         ]);
         const durationMs = performance.now() - start;
         if (confirmed === "timeout") {
-          // SDK never confirmed termination. The instance may still be
-          // running remote side effects. Quarantine it (block new ops)
-          // but leave destroy() callable so operators have a programmatic
-          // teardown path — the only one we have for the remote VM.
+          // SDK never confirmed termination. We deliberately do NOT return
+          // exitCode 130: that signals a safe cancellation and most
+          // higher-layer retry logic treats it as replay-safe. The remote
+          // command may still be running, so a retry would duplicate side
+          // effects. Return exit 1 (indeterminate failure) plus a clear
+          // stderr message, and quarantine the instance so destroy()
+          // remains the only available recovery path.
           quarantined = true;
           return {
-            exitCode: 130,
+            exitCode: 1,
             stdout: "",
             stderr:
               "sandbox-e2b: abort timeout — SDK did not confirm remote " +
-              `termination within ${POST_ABORT_KILL_CONFIRM_MS}ms. Instance has ` +
-              "been quarantined; verify the workspace state out-of-band.",
+              `termination within ${POST_ABORT_KILL_CONFIRM_MS}ms. Remote command ` +
+              "state is INDETERMINATE; the original may still be running. Do NOT " +
+              "treat this as a clean cancellation — verify out-of-band before " +
+              "retrying the command. Instance has been quarantined.",
             durationMs,
             timedOut: false,
             oomKilled: false,

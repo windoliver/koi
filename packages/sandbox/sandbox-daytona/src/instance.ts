@@ -206,17 +206,21 @@ export function createDaytonaInstance(
         ]);
         const durationMs = performance.now() - start;
         if (confirmed === "timeout") {
-          // Quarantine — leave destroy() callable so sdk.delete() can still
-          // attempt the authoritative workspace deletion. Setting destroyed
-          // would make destroy() a no-op and strand the billable workspace.
+          // Indeterminate remote state — must NOT report exit 130 (safe
+          // cancel) because the original command may still be running and
+          // a retry would duplicate side effects. Use exit 1 so higher-
+          // layer retry logic treats this as a hard failure that requires
+          // out-of-band verification. Quarantine leaves destroy() callable.
           quarantined = true;
           return {
-            exitCode: 130,
+            exitCode: 1,
             stdout: "",
             stderr:
               "sandbox-daytona: abort timeout — SDK did not confirm remote " +
-              `termination within ${POST_ABORT_KILL_CONFIRM_MS}ms. Instance has ` +
-              "been quarantined; verify the workspace state out-of-band.",
+              `termination within ${POST_ABORT_KILL_CONFIRM_MS}ms. Remote command ` +
+              "state is INDETERMINATE; the original may still be running. Do NOT " +
+              "treat this as a clean cancellation — verify the workspace state " +
+              "out-of-band before retrying. Instance has been quarantined.",
             durationMs,
             timedOut: false,
             oomKilled: false,
