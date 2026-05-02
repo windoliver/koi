@@ -435,6 +435,91 @@ declare function reconnectExhaustedError(serverName: string, attempts: number): 
 declare function sessionExpiredError(serverName: string): KoiError;
 
 /**
+ * Zod schemas for the official MCP registry HTTP API
+ * (registry.modelcontextprotocol.io v0.1, Nov 2025 spec).
+ *
+ * Only the subset of fields actually rendered or consumed by the
+ * installer is parsed strictly. Unknown fields are stripped (Zod
+ * default), keeping us forward-compatible with future schema versions.
+ */
+
+declare const registryServerSchema: z.ZodType<RegistryServer>;
+declare const registryServerResponseSchema: z.ZodType<RegistryServer>;
+declare const registrySearchResponseSchema: z.ZodType<RegistrySearchResponse>;
+interface RegistryTransportRef {
+    readonly type: string;
+}
+interface RegistryPackage {
+    readonly registryType: string;
+    readonly identifier: string;
+    readonly version?: string | undefined;
+    readonly transport?: RegistryTransportRef | undefined;
+    readonly runtimeArguments?: readonly unknown[] | undefined;
+    readonly packageArguments?: readonly unknown[] | undefined;
+    readonly environmentVariables?: readonly unknown[] | undefined;
+}
+interface RegistryRemote {
+    readonly url: string;
+    readonly transport?: RegistryTransportRef | undefined;
+    readonly headers?: readonly unknown[] | undefined;
+}
+interface RegistryRepository {
+    readonly url?: string | undefined;
+    readonly source?: string | undefined;
+}
+interface RegistryServer {
+    readonly name: string;
+    readonly description: string;
+    readonly version: string;
+    readonly title?: string | undefined;
+    readonly websiteUrl?: string | undefined;
+    readonly repository?: RegistryRepository | undefined;
+    readonly packages?: readonly RegistryPackage[] | undefined;
+    readonly remotes?: readonly RegistryRemote[] | undefined;
+    readonly status?: string | undefined;
+    readonly _meta?: Readonly<Record<string, unknown>> | undefined;
+}
+interface RegistrySearchResponse {
+    readonly servers: readonly RegistryServer[];
+    readonly metadata?: {
+        readonly count?: number | undefined;
+        readonly nextCursor?: string | undefined;
+    } | undefined;
+}
+
+/**
+ * MCP server installer — translates a registry \`RegistryServer\` into a Koi
+ * \`.mcp.json\` entry, optionally verifies the install with a real connection,
+ * and supports a clean uninstall.
+ *
+ * The connection-verify step is dependency-injected so the CLI layer (which
+ * owns the OAuth runtime + secure-storage wiring) controls what "verify"
+ * actually means.
+ */
+
+interface InstallerDeps {
+    readonly verifyConnection?: (config: ResolvedMcpServerConfig) => Promise<Result<readonly McpToolInfo[], KoiError>>;
+    readonly clearStoredCredentials?: (name: string) => Promise<void>;
+}
+interface InstallOptions {
+    readonly server: RegistryServer;
+    readonly configPath: string;
+    readonly overwrite?: boolean;
+    readonly skipVerify?: boolean;
+    readonly deps?: InstallerDeps;
+}
+interface UninstallOptions {
+    readonly name: string;
+    readonly configPath: string;
+    readonly deps?: Pick<InstallerDeps, "clearStoredCredentials">;
+}
+declare function pickPackageForInstall(server: RegistryServer): Result<ExternalServerConfig, KoiError>;
+declare function installMcpServer(options: InstallOptions): Promise<Result<{
+    readonly entry: ExternalServerConfig;
+}, KoiError>>;
+declare function uninstallMcpServer(options: UninstallOptions): Promise<Result<void, KoiError>>;
+
+/**
  * .mcp.json file loader — reads CC-compatible MCP server configuration.
  *
  * Pipeline: file read → JSON parse → external schema validation →
@@ -457,6 +542,21 @@ declare function loadMcpJsonFile(filePath: string): Promise<Result<{
  * Useful for manifest embedding or testing.
  */
 declare function loadMcpJsonString(json: string): Result<NormalizeResult, KoiError>;
+
+/**
+ * Write helpers for \`.mcp.json\`.
+ *
+ * Atomic write (\`tmp + rename\`). Preserves unknown top-level fields so that
+ * tools cooperating with Koi (custom settings, $schema annotations) survive
+ * round-trips through \`koi mcp install/uninstall\`.
+ */
+
+interface AddServerOptions {
+    readonly overwrite?: boolean;
+}
+declare function saveMcpJsonFile(filePath: string, config: McpJsonConfig): Promise<Result<void, KoiError>>;
+declare function addServerToMcpJson(filePath: string, name: string, entry: ExternalServerConfig, options?: AddServerOptions): Promise<Result<void, KoiError>>;
+declare function removeServerFromMcpJson(filePath: string, name: string): Promise<Result<void, KoiError>>;
 
 /**
  * OAuth types for MCP authentication.
@@ -765,6 +865,75 @@ declare function createTokenManager(options: TokenManagerOptions): TokenManager;
  * Format: \`mcp-oauth|{name}|{sha256(url)[:16]}\`
  */
 declare function computeServerKey(serverName: string, serverUrl: string): string;
+/**
+ * Remove ALL persisted OAuth state for a (server, url) pair: token
+ * blob, every DCR client record we registered, and the index itself.
+ * Throws on the first underlying storage error — callers must surface
+ * partial-cleanup failures rather than silently leaving credentials
+ * behind.
+ */
+declare function clearAllOAuthState(storage: SecureStorage, serverName: string, serverUrl: string): Promise<void>;
+
+/**
+ * Local TTL cache for MCP registry queries.
+ *
+ * Stored as a single JSON file (default: \`~/.koi/cache/mcp-registry.json\`,
+ * override via \`KOI_CACHE_DIR\`). Aligns with the official registry's
+ * aggregator guidance: poll on a regular but infrequent basis and persist
+ * locally.
+ *
+ * Corrupt cache files are silently dropped — opportunistic by design,
+ * never throws on a bad cache.
+ */
+
+declare const DEFAULT_REGISTRY_CACHE_TTL_MS: number;
+interface CachedSearchResult {
+    readonly servers: readonly RegistryServer[];
+    readonly nextCursor: string | undefined;
+}
+interface RegistryCache {
+    readonly getSearch: (query: string) => Promise<CachedSearchResult | undefined>;
+    readonly putSearch: (query: string, value: CachedSearchResult) => Promise<void>;
+    readonly getServer: (name: string, version?: string) => Promise<RegistryServer | undefined>;
+    readonly putServer: (name: string, detail: RegistryServer, version?: string) => Promise<void>;
+    readonly clear: () => Promise<void>;
+}
+interface RegistryCacheOptions {
+    readonly dir?: string;
+    readonly ttlMs?: number;
+    readonly now?: () => number;
+}
+declare function defaultRegistryCacheDir(): string;
+declare function createRegistryCache(options?: RegistryCacheOptions): RegistryCache;
+
+/**
+ * Thin async client over the official MCP registry HTTP API
+ * (registry.modelcontextprotocol.io v0.1).
+ *
+ * The public read API is unauthenticated. The client surfaces 429 as a
+ * retryable RATE_LIMIT error — backoff is the caller's responsibility
+ * (the registry does not document rate-limit headers as of 2025-12).
+ */
+
+declare const DEFAULT_REGISTRY_BASE_URL = "https://registry.modelcontextprotocol.io";
+interface SearchOptions {
+    readonly query?: string;
+    readonly limit?: number;
+    readonly cursor?: string;
+}
+interface SearchResult {
+    readonly servers: readonly RegistryServer[];
+    readonly nextCursor: string | undefined;
+}
+interface RegistryClient {
+    readonly searchServers: (opts: SearchOptions) => Promise<Result<SearchResult, KoiError>>;
+    readonly getServer: (name: string, version?: string) => Promise<Result<RegistryServer, KoiError>>;
+}
+interface RegistryClientOptions {
+    readonly baseUrl?: string;
+    readonly fetch?: typeof fetch;
+}
+declare function createRegistryClient(options?: RegistryClientOptions): RegistryClient;
 
 /**
  * Schema normalization — ensures MCP tool schemas are valid JSON Schema.
@@ -832,6 +1001,6 @@ declare function mapMcpToolInfoToDescriptor(toolInfo: McpToolInfo, serverName: s
  */
 declare function mapMcpToolToKoi(toolInfo: McpToolInfo, connection: McpConnection, serverName: string): Tool;
 
-export { type AuthChallenge, type AuthServerMetadata, type AuthToolFactory, type ConnectionDeps, type CreateTransportFn, type CreateTransportOptions, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_MAX_RECONNECT_ATTEMPTS, DEFAULT_TIMEOUT_MS, type ExternalServerConfig, type HttpServerConfig, type KoiMcpTransport, type McpAuthProvider, type McpComponentProviderOptions, type McpConnection, type McpErrorContext, type McpJsonConfig, type McpOAuthConfig, type McpOAuthExternalConfig, type McpResolver, type McpResolverOptions, type McpServerConfig, type McpServerFailure, type McpToolInfo, type McpTransportKind, type NormalizeResult, type OAuthAuthProvider, type OAuthProviderOptions, type OAuthRuntime, type OAuthTokens, type PkceChallenge, type ResolveOptions, type ResolvedMcpServerConfig, type SseServerConfig, type StdioServerConfig, type TokenManager, type TokenManagerOptions, type TransportEvent, type TransportEventListener, type TransportState, type TransportStateListener, type TransportStateMachine, type UnauthorizedOutcome, computeServerKey, connectionTimeoutError, createBearerAuthProvider, createMcpComponentProvider, createMcpConnection, createMcpResolver, createOAuthAuthProvider, createPkceChallenge, createTokenManager, createTransport, createTransportStateMachine, discoverAuthServer, expandEnvVars, expandEnvVarsInRecord, externalServerConfigSchema, loadMcpJsonFile, loadMcpJsonString, mapMcpError, mapMcpToolInfoToDescriptor, mapMcpToolToKoi, mcpJsonSchema, namespacedToolName, normalizeMcpServers, normalizeToolSchema, notConnectedError, parseNamespacedToolName, reconnectExhaustedError, resolveServerConfig, sessionExpiredError, validateMcpJson, validateServerName };
+export { type AddServerOptions, type AuthChallenge, type AuthServerMetadata, type AuthToolFactory, type CachedSearchResult, type ConnectionDeps, type CreateTransportFn, type CreateTransportOptions, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_MAX_RECONNECT_ATTEMPTS, DEFAULT_REGISTRY_BASE_URL, DEFAULT_REGISTRY_CACHE_TTL_MS, DEFAULT_TIMEOUT_MS, type ExternalServerConfig, type HttpServerConfig, type InstallOptions, type InstallerDeps, type KoiMcpTransport, type McpAuthProvider, type McpComponentProviderOptions, type McpConnection, type McpErrorContext, type McpJsonConfig, type McpOAuthConfig, type McpOAuthExternalConfig, type McpResolver, type McpResolverOptions, type McpServerConfig, type McpServerFailure, type McpToolInfo, type McpTransportKind, type NormalizeResult, type OAuthAuthProvider, type OAuthProviderOptions, type OAuthRuntime, type OAuthTokens, type PkceChallenge, type RegistryCache, type RegistryCacheOptions, type RegistryClient, type RegistryClientOptions, type RegistryPackage, type RegistryRemote, type RegistryRepository, type RegistryServer, type RegistryTransportRef, type ResolveOptions, type ResolvedMcpServerConfig, type SearchOptions, type SearchResult, type SseServerConfig, type StdioServerConfig, type TokenManager, type TokenManagerOptions, type TransportEvent, type TransportEventListener, type TransportState, type TransportStateListener, type TransportStateMachine, type UnauthorizedOutcome, type UninstallOptions, addServerToMcpJson, clearAllOAuthState, computeServerKey, connectionTimeoutError, createBearerAuthProvider, createMcpComponentProvider, createMcpConnection, createMcpResolver, createOAuthAuthProvider, createPkceChallenge, createRegistryCache, createRegistryClient, createTokenManager, createTransport, createTransportStateMachine, defaultRegistryCacheDir, discoverAuthServer, expandEnvVars, expandEnvVarsInRecord, externalServerConfigSchema, installMcpServer, loadMcpJsonFile, loadMcpJsonString, mapMcpError, mapMcpToolInfoToDescriptor, mapMcpToolToKoi, mcpJsonSchema, namespacedToolName, normalizeMcpServers, normalizeToolSchema, notConnectedError, parseNamespacedToolName, pickPackageForInstall, reconnectExhaustedError, registrySearchResponseSchema, registryServerResponseSchema, registryServerSchema, removeServerFromMcpJson, resolveServerConfig, saveMcpJsonFile, sessionExpiredError, uninstallMcpServer, validateMcpJson, validateServerName };
 "
 `;

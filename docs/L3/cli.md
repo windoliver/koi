@@ -7,6 +7,22 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 ## Recent updates
 
 - **`@koi/forge-tools` now emits `generation` on store change events (#2106, refs #1207)**: The in-memory forge store annotates `saved`/`updated`/`removed` notifier events with `generation = storeVersion` so downstream consumers (notably `@koi/middleware-policy-cache`) can refuse stale events that would otherwise silently downgrade authorization. `computeIdentityBrickId` is now exported from the package's public API for callers that need to mint content-addressed brick ids without re-implementing the hash. CLI behavior unchanged — pure additive contract on the existing notifier surface.
+- **`koi mcp` registry-discovery subcommands (#1646)**: new
+  `koi mcp search/info/install/uninstall` flow backed by the official MCP
+  registry at `registry.modelcontextprotocol.io/v0.1`. Install picks the
+  preferred package (HTTP remote → SSE remote → first usable stdio package),
+  verifies the connection (live `listTools` against a real OAuth flow when
+  needed) BEFORE any `.mcp.json` mutation, and persists the entry only on
+  success. Registry remotes are SSRF-checked (HTTPS-only outside loopback;
+  RFC1918/link-local/CGNAT/multicast IP literals refused). Install/uninstall
+  resolve the active config path with the same priority as
+  `list/auth/debug/logout` (project `./.mcp.json` → `~/.koi/.mcp.json` → legacy
+  `~/.claude/.mcp.json`); a malformed higher-priority candidate aborts rather
+  than falling through. `--yes` (or `--json`, which implies it) is required in
+  non-TTY contexts so install cannot wedge waiting on stdin. OAuth cleanup
+  uses a per-server index with `withTrackedWrite` so concurrent
+  install/auth/uninstall serialize against `clearAllOAuthState` and credentials
+  are never silently orphaned.
 - **Review fix sync**: `scripts/check-cli-wiring.ts` now records explicit
   exemptions for runtime packages that are intentionally not default TUI imports:
   external-agent discovery/monitor/procfs sidecars, HTTP gateway ingress,
