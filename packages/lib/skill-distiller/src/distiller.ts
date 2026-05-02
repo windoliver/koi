@@ -103,7 +103,17 @@ function looksLikeResourceLiteral(s: string): boolean {
   if (IPV4_RE.test(s)) return true;
   if (JWT_RE.test(s)) return true;
   if (/[/.:_-]/.test(s)) return true;
-  if (/^[A-Za-z0-9]{8,}$/.test(s)) return true;
+  // Bare alphanumeric tokens count as identifiers ONLY if they show entropy
+  // beyond a normal English word: letters AND digits mixed (acct77c19ab3,
+  // user42abc), or all-uppercase hex-ish (DEADBEEF). Lowercase letter-only
+  // tokens like "kubernetes", "formatting", "operations" are common nouns
+  // and must not poison the leak set.
+  if (/^[A-Za-z0-9]{8,}$/.test(s)) {
+    const hasDigit = /\d/.test(s);
+    const hasLetter = /[A-Za-z]/.test(s);
+    if (hasDigit && hasLetter) return true;
+    if (/^[A-Z0-9]{8,}$/.test(s) && hasDigit) return true;
+  }
   return false;
 }
 
@@ -201,16 +211,26 @@ function flattenArgKeys(prefix: string, v: unknown, out: Map<string, string>): v
 // supply it. Malformed args are conservatively treated as variable for that
 // tool (we cannot prove they're constant), which forces the draft to expose a
 // parameter rather than silently passing.
-function collectVariableArgKeys(trace: DistillationTrace): readonly VariableArg[] {
+function collectVariableArgKeys(
+  trace: DistillationTrace,
+  prefixLength: number,
+): readonly VariableArg[] {
   const seen = new Map<string, Set<string>>();
   const recordValue = (composite: string, value: string): void => {
     const bag = seen.get(composite) ?? new Set<string>();
     bag.add(value);
     seen.set(composite, bag);
   };
-  for (const turn of trace.turns) {
+  // Only inspect the first `prefixLength` tool calls — the same window
+  // grounding accepted as the distilled procedure. Variable args in tail
+  // calls outside the prefix are someone else's skill and must not force
+  // extra parameters into this one.
+  let consumed = 0;
+  outer: for (const turn of trace.turns) {
     if (turn.toolCalls === undefined) continue;
     for (const call of turn.toolCalls) {
+      if (consumed >= prefixLength) break outer;
+      consumed += 1;
       let parsed: unknown;
       try {
         parsed = JSON.parse(call.argsJson);
@@ -348,7 +368,7 @@ function groundDraftInTrace(
       ),
     };
   }
-  const variable = collectVariableArgKeys(trace);
+  const variable = collectVariableArgKeys(trace, draft.toolSequence.length);
   const uncovered = findUncoveredVariableArg(draft.parameters, variable);
   if (uncovered !== undefined) {
     return {

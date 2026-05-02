@@ -544,6 +544,47 @@ describe("createDistiller", () => {
     if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
   });
 
+  test("does NOT treat ordinary long English words in turn.text as trace literals", async () => {
+    // "kubernetes", "formatting", and "operations" are common nouns, not
+    // identifiers — a generic draft mentioning them must not be flagged.
+    const trace: DistillationTrace = {
+      traceId: "t-words",
+      turns: [
+        { role: "user", text: "kubernetes formatting operations workflow please" },
+        { role: "assistant", toolCalls: [{ name: "read_file", argsJson: "{}" }] },
+        { role: "assistant", toolCalls: [{ name: "write_file", argsJson: "{}" }] },
+      ],
+    };
+    const generic = okLLM({
+      ...VALID_DRAFT,
+      description: "Format kubernetes operations output for the user.",
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: generic }).distill(trace);
+    expect(r.ok).toBe(true);
+  });
+
+  test("variable-arg check is scoped to the grounded prefix, not tail calls outside it", async () => {
+    // Prefix [read_file, read_file] uses identical paths (constant). A
+    // later tail call (write_file) varies its path — but that's outside the
+    // distilled prefix and must not invalidate the leading sub-procedure.
+    const trace: DistillationTrace = {
+      traceId: "t-tail",
+      turns: [
+        { role: "assistant", toolCalls: [{ name: "read_file", argsJson: '{"path":"/in"}' }] },
+        { role: "assistant", toolCalls: [{ name: "read_file", argsJson: '{"path":"/in"}' }] },
+        { role: "assistant", toolCalls: [{ name: "write_file", argsJson: '{"path":"/o1"}' }] },
+        { role: "assistant", toolCalls: [{ name: "write_file", argsJson: '{"path":"/o2"}' }] },
+      ],
+    };
+    const prefixOnly = okLLM({
+      ...VALID_DRAFT,
+      toolSequence: ["read_file", "read_file"],
+      parameters: [], // no params needed: prefix args are constant
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: prefixOnly }).distill(trace);
+    expect(r.ok).toBe(true);
+  });
+
   test("rejects distillation when trace exceeds the prompt budget (would persist a partial procedure)", async () => {
     // 1000 turns each ~150 bytes — well past the 32 KiB prompt budget. The
     // distiller must NOT happily produce a prefix-skill from a truncated
