@@ -175,12 +175,17 @@ function findLeakedLiteral(draft: SkillDraft, trace: DistillationTrace): string 
   return undefined;
 }
 
+interface VariableArg {
+  readonly tool: string;
+  readonly key: string;
+}
+
 // Walk every tool call's argsJson and collect the set of values seen for each
 // (toolName, argKey) pair. A key whose value differs across invocations is a
 // "variable" arg — exactly the kind of input that must be exposed as a skill
 // parameter so the next caller can supply it. Keys that were always identical
 // are constants of the procedure and don't need parameterization.
-function collectVariableArgKeys(trace: DistillationTrace): readonly string[] {
+function collectVariableArgKeys(trace: DistillationTrace): readonly VariableArg[] {
   const seen = new Map<string, Set<string>>();
   for (const turn of trace.turns) {
     if (turn.toolCalls === undefined) continue;
@@ -200,29 +205,52 @@ function collectVariableArgKeys(trace: DistillationTrace): readonly string[] {
       }
     }
   }
-  const variable: string[] = [];
+  const variable: VariableArg[] = [];
   for (const [composite, values] of seen) {
     if (values.size > 1) {
-      const key = composite.split("::")[1];
-      if (key !== undefined) variable.push(key);
+      const [tool, key] = composite.split("::");
+      if (tool !== undefined && key !== undefined) variable.push({ tool, key });
     }
   }
   return variable;
 }
 
-// True if any draft parameter plausibly captures `argKey`. We accept exact
+// True if a draft parameter plausibly captures `argKey`. We accept exact
 // match, case-insensitive substring (e.g. "tenantId" satisfies a "tenant"
 // parameter), or the inverse so single-word parameter names cover compound
-// keys. This is a best-effort name match — the goal is to catch the obvious
+// keys. Best-effort name match — the goal is to catch the obvious
 // "model returned zero parameters for a procedure with variable args" miss,
 // not to police the LLM's naming choices.
-function paramCoversArgKey(parameters: SkillDraft["parameters"], argKey: string): boolean {
+function paramNameMatches(paramName: string, argKey: string): boolean {
+  const n = paramName.toLowerCase();
   const k = argKey.toLowerCase();
-  for (const p of parameters) {
-    const n = p.name.toLowerCase();
-    if (n === k || n.includes(k) || k.includes(n)) return true;
+  return n === k || n.includes(k) || k.includes(n);
+}
+
+// Bipartite cover: each distinct (tool, key) variable arg must be claimable
+// by some draft parameter, and a single parameter cannot be reused to cover
+// two different variable args. This prevents one generic `path` parameter
+// from silently satisfying both `read_file.path` and `write_file.path`,
+// which would let a skill replay against the wrong resource. Returns the
+// first variable arg that cannot be assigned, or undefined on success.
+function findUncoveredVariableArg(
+  parameters: SkillDraft["parameters"],
+  variable: readonly VariableArg[],
+): VariableArg | undefined {
+  const claimed = new Set<string>();
+  for (const v of variable) {
+    let assigned = false;
+    for (const p of parameters) {
+      if (claimed.has(p.name)) continue;
+      if (paramNameMatches(p.name, v.key)) {
+        claimed.add(p.name);
+        assigned = true;
+        break;
+      }
+    }
+    if (!assigned) return v;
   }
-  return false;
+  return undefined;
 }
 
 function ungroundedError(reason: string, errorKind: string): KoiError {
@@ -275,17 +303,16 @@ function groundDraftInTrace(
       ),
     };
   }
-  const variableKeys = collectVariableArgKeys(trace);
-  for (const key of variableKeys) {
-    if (!paramCoversArgKey(draft.parameters, key)) {
-      return {
-        ok: false,
-        error: ungroundedError(
-          `tool argument "${key}" varies across invocations in the trace but no draft parameter covers it — the skill would replay with a stale value baked in. Add a parameter for "${key}".`,
-          "DRAFT_VARIABLE_ARG_UNPARAMETERIZED",
-        ),
-      };
-    }
+  const variable = collectVariableArgKeys(trace);
+  const uncovered = findUncoveredVariableArg(draft.parameters, variable);
+  if (uncovered !== undefined) {
+    return {
+      ok: false,
+      error: ungroundedError(
+        `tool argument ${uncovered.tool}.${uncovered.key} varies across invocations but no distinct draft parameter covers it — the skill would replay with a stale value baked in (or share a single parameter across independent inputs). Add a parameter for "${uncovered.key}".`,
+        "DRAFT_VARIABLE_ARG_UNPARAMETERIZED",
+      ),
+    };
   }
   const leaked = findLeakedLiteral(draft, trace);
   if (leaked !== undefined) {
@@ -344,7 +371,11 @@ export function createDistiller(config: DistillerConfig): Distiller {
           traceId: trace.traceId,
           ...(trace.sessionId === undefined ? {} : { sessionId: trace.sessionId }),
           timestamp: now(),
-          sourceHash: computeSourceHash(trace),
+          // Hash the redacted trace — that's what actually fed the LLM and
+          // what grounding/leak detection ran against. Hashing the raw trace
+          // would let two materially different prompt inputs share the same
+          // provenance whenever redaction rules changed.
+          sourceHash: computeSourceHash(redacted),
         },
         draftHash: computeDraftHash(draft),
       };

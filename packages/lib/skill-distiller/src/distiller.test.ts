@@ -510,6 +510,76 @@ describe("createDistiller", () => {
     if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
   });
 
+  test("rejects draft that reuses one parameter to cover two distinct (tool,key) variable args", async () => {
+    // read_file.path varies AND write_file.path varies — independent inputs.
+    // A single "path" parameter cannot legitimately satisfy both.
+    const trace: DistillationTrace = {
+      traceId: "t-shared",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "read_file", argsJson: '{"path":"/in/a"}' }],
+        },
+        {
+          role: "assistant",
+          toolCalls: [{ name: "write_file", argsJson: '{"path":"/out/x"}' }],
+        },
+        {
+          role: "assistant",
+          toolCalls: [{ name: "read_file", argsJson: '{"path":"/in/b"}' }],
+        },
+        {
+          role: "assistant",
+          toolCalls: [{ name: "write_file", argsJson: '{"path":"/out/y"}' }],
+        },
+      ],
+    };
+    const oneParam = okLLM({
+      ...VALID_DRAFT,
+      toolSequence: ["read_file", "write_file", "read_file", "write_file"],
+      parameters: [{ name: "path", description: "shared", required: true }],
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: oneParam }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
+  });
+
+  test("sourceHash reflects the redacted trace, not the raw input", async () => {
+    const trace: DistillationTrace = {
+      traceId: "t-prov",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "read_file", argsJson: '{"token":"sk-secret-XYZ"}' }],
+        },
+        { role: "assistant", toolCalls: [{ name: "write_file", argsJson: "{}" }] },
+      ],
+    };
+    const llm: DistillerLLM = async () => ({ ok: true, value: JSON.stringify(VALID_DRAFT) });
+    const identity = (t: DistillationTrace): DistillationTrace => t;
+    const masking = (t: DistillationTrace): DistillationTrace => ({
+      ...t,
+      turns: t.turns.map((turn) =>
+        turn.toolCalls === undefined
+          ? turn
+          : {
+              ...turn,
+              toolCalls: turn.toolCalls.map((c) => ({
+                name: c.name,
+                argsJson: c.argsJson.replace(/sk-[A-Za-z0-9-]+/g, "<redacted>"),
+              })),
+            },
+      ),
+    });
+    const a = await createDistiller({ llm, redactor: identity }).distill(trace);
+    const b = await createDistiller({ llm, redactor: masking }).distill(trace);
+    expect(a.ok && b.ok).toBe(true);
+    if (a.ok && b.ok) {
+      // Different redacted bytes feed the LLM ⇒ different provenance hash.
+      expect(a.value.source.sourceHash).not.toBe(b.value.source.sourceHash);
+    }
+  });
+
   test("accepts draft whose parameter name covers a variable tool arg", async () => {
     const trace: DistillationTrace = {
       traceId: "t-var-ok",
