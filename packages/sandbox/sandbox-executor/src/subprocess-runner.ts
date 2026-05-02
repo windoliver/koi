@@ -37,6 +37,27 @@ function writeResult(data: RunnerResult): void {
 }
 
 /**
+ * Drain any user-side writes still queued on process.stderr's Writable buffer
+ * before the marker is written. On Linux CI runners under Bun, large
+ * `process.stderr.write` bursts can leave bytes in libuv's queue when the
+ * user fn returns; `process.exit(0)` then drops the unflushed tail AND the
+ * marker can land mid-stream rather than at EOF, leaving the parent's
+ * `parseFramedResult` (`lastIndexOf(RESULT_MARKER)`) unable to find it when
+ * the pipe abruptly closes.
+ *
+ * Trick: write a zero-length buffer with a completion callback. The Writable
+ * `write(chunk, cb)` contract fires `cb` only after the chunk (and every
+ * write queued before it) has been flushed to the underlying resource. Since
+ * writes are FIFO, awaiting this callback guarantees all prior user writes
+ * are in the kernel pipe before we synchronously emit the marker.
+ */
+function drainStderr(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    process.stderr.write("", () => resolve());
+  });
+}
+
+/**
  * Fix 3: type-predicate to check that an unknown import result has a `default`
  * field. Avoids `as` casts when narrowing the dynamic import result.
  */
@@ -99,6 +120,7 @@ async function main(): Promise<void> {
     // ensures this is safe at runtime.
     const fn = mod.default as (input: unknown) => unknown | Promise<unknown>;
     const output: unknown = await fn(input);
+    await drainStderr();
     writeResult({ ok: true, output });
     // Fix 2: exit 0 after writing success result so any event-loop anchors in
     // user code (setInterval, open handles, dangling promises) do not keep
@@ -106,6 +128,7 @@ async function main(): Promise<void> {
     process.exit(0);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
+    await drainStderr();
     writeResult({ ok: false, error: msg });
     process.exit(0);
   }
