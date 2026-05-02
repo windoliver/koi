@@ -45,16 +45,18 @@ describe("createAuditLog", () => {
     const log = createAuditLog();
     const entry = rec("a");
     log.record(entry);
-    // Direct caller-held reference must not be writable after recording.
-    expect(() => {
-      (entry as { draftHash: string }).draftHash = "tampered";
-    }).toThrow();
-    // Same for nested objects (source, draft).
-    expect(() => {
-      (entry.source as { traceId: string }).traceId = "tampered";
-    }).toThrow();
-    // List returns frozen entries too.
+    // Caller mutates their own reference AFTER recording — audit copy must
+    // not change, since it was cloned at record time.
+    (entry as { draftHash: string }).draftHash = "tampered";
+    (entry.source as { traceId: string }).traceId = "tampered";
     const listed = log.list()[0];
+    expect(listed?.draftHash).toBe("a");
+    expect(listed?.source.traceId).toBe("a");
+    // The stored copy itself is frozen — direct mutation through the listed
+    // reference must throw.
+    expect(() => {
+      if (listed !== undefined) (listed as { draftHash: string }).draftHash = "tampered";
+    }).toThrow();
     expect(listed && Object.isFrozen(listed)).toBe(true);
   });
 });

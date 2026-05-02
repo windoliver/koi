@@ -649,6 +649,25 @@ describe("createDistiller", () => {
     if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
   });
 
+  test("accepts a draft that exposes a sensible parameter for root-array tool args", async () => {
+    // Tool API takes a top-level array. A param named "paths" is a sensible
+    // cover and must satisfy the synthetic <root> key.
+    const trace: DistillationTrace = {
+      traceId: "t-array-ok",
+      turns: [
+        { role: "assistant", toolCalls: [{ name: "delete", argsJson: '["/a"]' }] },
+        { role: "assistant", toolCalls: [{ name: "delete", argsJson: '["/b"]' }] },
+      ],
+    };
+    const withParam = okLLM({
+      ...VALID_DRAFT,
+      toolSequence: ["delete", "delete"],
+      parameters: [{ name: "paths", description: "files to remove", required: true }],
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: withParam }).distill(trace);
+    expect(r.ok).toBe(true);
+  });
+
   test("variable-arg check tracks tools whose JSON args are top-level arrays", async () => {
     const trace: DistillationTrace = {
       traceId: "t-array",

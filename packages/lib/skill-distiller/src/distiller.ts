@@ -304,10 +304,15 @@ function findUncoveredVariableArg(
 ): VariableArg | undefined {
   const claimed = new Set<string>();
   for (const v of variable) {
+    // Synthetic keys (`<root>`, `<unparsable>`) come from non-object tool args
+    // for which we cannot infer a meaningful key name. Token matching against
+    // a literal "root"/"unparsable" would block sensible parameter names like
+    // `paths` or `targets`, so any UNCLAIMED parameter is an acceptable cover.
+    const synthetic = v.key.startsWith("<") && v.key.endsWith(">");
     let assigned = false;
     for (const p of parameters) {
       if (claimed.has(p.name)) continue;
-      if (paramNameMatches(p.name, v.key)) {
+      if (synthetic || paramNameMatches(p.name, v.key)) {
         claimed.add(p.name);
         assigned = true;
         break;

@@ -171,4 +171,20 @@ describe("createSkillStore — LRU eviction", () => {
     expect(s.add(rec("beta", "shared-hash"))).toBe("added");
     expect(s.size()).toBe(1);
   });
+
+  test("post-insert mutation through caller's reference cannot corrupt stored state", () => {
+    const s = createSkillStore();
+    const r = rec("alpha", "h1");
+    s.add(r);
+    // Caller mutates their reference. Store must be unaffected.
+    (r as { draftHash: string }).draftHash = "h-tampered";
+    (r.draft as { name: string }).name = "renamed";
+    const stored = s.get("alpha");
+    expect(stored?.draftHash).toBe("h1");
+    expect(stored?.draft.name).toBe("alpha");
+    // Stored entry itself is frozen — direct mutation throws.
+    expect(() => {
+      if (stored !== undefined) (stored as { draftHash: string }).draftHash = "x";
+    }).toThrow();
+  });
 });

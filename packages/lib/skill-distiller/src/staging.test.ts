@@ -132,4 +132,22 @@ describe("createStagingQueue", () => {
     // entry remains rejected (unchanged)
     expect(q.get("h1")?.status).toBe("rejected");
   });
+
+  test("post-stage mutation through caller's reference cannot bypass the state machine", () => {
+    const q = createStagingQueue();
+    const r = rec("h1");
+    const entry = q.stage(r);
+    // Caller mutates their original record — queue must be unaffected.
+    (r as { draftHash: string }).draftHash = "tampered";
+    // Returned entry is frozen — direct mutation throws.
+    expect(() => {
+      (entry as { status: "approved" }).status = "approved";
+    }).toThrow();
+    expect(() => {
+      (entry.record as { draftHash: string }).draftHash = "tampered";
+    }).toThrow();
+    const live = q.get("h1");
+    expect(live?.status).toBe("pending");
+    expect(live?.record.draftHash).toBe("h1");
+  });
 });

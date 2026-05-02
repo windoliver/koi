@@ -1,3 +1,4 @@
+import { deepFreeze } from "./freeze.js";
 import type { DistillationRecord } from "./types.js";
 
 export type SkillStoreAddStatus = "added" | "duplicate" | "replaced" | "conflict";
@@ -96,7 +97,11 @@ export function createSkillStore(config: SkillStoreConfig = {}): SkillStore {
   const policy: SkillStoreConflictPolicy = config.onConflict ?? "reject";
 
   return {
-    add: (record: DistillationRecord): SkillStoreAddStatus => {
+    add: (rawRecord: DistillationRecord): SkillStoreAddStatus => {
+      // Defensively clone+freeze so callers cannot mutate stored fields after
+      // insertion (which would silently break the dedupe/LRU invariants and
+      // staleify the byHash secondary index).
+      const record = deepFreeze(structuredClone(rawRecord));
       // Hash-first dedupe: if any existing entry has the same draftHash under
       // a DIFFERENT name, treat the new insert as a duplicate of that entry
       // rather than admitting two LRU slots for content-equivalent skills.

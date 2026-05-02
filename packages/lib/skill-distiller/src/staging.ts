@@ -1,3 +1,4 @@
+import { deepFreeze } from "./freeze.js";
 import type { DistillationRecord } from "./types.js";
 
 export type StagingStatus = "pending" | "approved" | "rejected";
@@ -52,48 +53,53 @@ export function createStagingQueue(config: StagingQueueConfig = {}): StagingQueu
     const current = entries.get(id);
     if (current === undefined) return undefined;
     if (current.status !== "pending") return undefined;
-    const updated: StagingEntry = {
+    const updated: StagingEntry = deepFreeze({
       id: current.id,
       record: current.record,
       status: nextStatus,
       stagedAt: current.stagedAt,
       resolvedAt: now(),
       ...(note === undefined ? {} : { note }),
-    };
+    });
     entries.set(id, updated);
     return updated;
   };
 
   return {
-    stage: (record: DistillationRecord): StagingEntry => {
-      const existing = entries.get(record.draftHash);
+    stage: (rawRecord: DistillationRecord): StagingEntry => {
+      const existing = entries.get(rawRecord.draftHash);
       if (existing !== undefined) return existing;
-      const entry: StagingEntry = {
+      // Defensively clone+freeze so the queue's state machine cannot be
+      // bypassed by post-insert mutation through the caller's reference.
+      const record = deepFreeze(structuredClone(rawRecord));
+      const entry: StagingEntry = deepFreeze({
         id: record.draftHash,
         record,
         status: "pending",
         stagedAt: now(),
-      };
+      });
       entries.set(entry.id, entry);
       return entry;
     },
     approve: (id, note) => resolve(id, "approved", note),
     reject: (id, note) => resolve(id, "rejected", note),
-    requeue: (id, nextRecord): StagingEntry | undefined => {
+    requeue: (id, rawNextRecord): StagingEntry | undefined => {
       const current = entries.get(id);
       if (current === undefined) return undefined;
       if (current.status === "pending") return undefined;
       // Enforce the id === record.draftHash invariant: a replacement record
       // whose hash differs would be indexed under the wrong key and silently
       // approve/reject a different draft.
-      if (nextRecord !== undefined && nextRecord.draftHash !== id) return undefined;
-      const updated: StagingEntry = {
+      if (rawNextRecord !== undefined && rawNextRecord.draftHash !== id) return undefined;
+      const nextRecord =
+        rawNextRecord === undefined ? current.record : deepFreeze(structuredClone(rawNextRecord));
+      const updated: StagingEntry = deepFreeze({
         id: current.id,
-        record: nextRecord ?? current.record,
+        record: nextRecord,
         status: "pending",
         stagedAt: current.stagedAt,
         // resolvedAt and note intentionally dropped — entry is pending again.
-      };
+      });
       entries.set(id, updated);
       return updated;
     },
