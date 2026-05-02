@@ -33,6 +33,8 @@
     { "path": "packages/mm/session-repair" },
     { "path": "packages/mm/token-estimator" },
     { "path": "packages/net/mcp" },
+    { "path": "packages/sandbox/sandbox-daytona" },
+    { "path": "packages/sandbox/sandbox-e2b" },
     { "path": "packages/sandbox/sandbox-os" },
     { "path": "packages/security/permissions" },
     { "path": "packages/meta/runtime" }
