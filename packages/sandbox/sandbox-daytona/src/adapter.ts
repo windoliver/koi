@@ -80,15 +80,36 @@ export function createDaytonaAdapter(
       // delete, in others it's a detach that leaks. Surfacing the gap
       // loudly is more useful than a silent leak; the error explicitly
       // tells operators to verify the workspace state out-of-band.
+      // Bounded cleanup: a stalled provider call must not wedge create()
+      // forever. After 10 s, surface indeterminate teardown so operators
+      // know to verify the workspace out-of-band.
+      const CLEANUP_TIMEOUT_MS = 10_000;
+      type CleanupOutcome =
+        | { readonly kind: "ok" }
+        | { readonly kind: "err"; readonly e: unknown }
+        | { readonly kind: "timeout" };
+      async function boundedCleanup(call: () => Promise<void>): Promise<CleanupOutcome> {
+        return Promise.race<CleanupOutcome>([
+          call().then(
+            () => ({ kind: "ok" }) as const,
+            (e: unknown) => ({ kind: "err", e }) as const,
+          ),
+          new Promise((resolve) =>
+            setTimeout(() => resolve({ kind: "timeout" } as const), CLEANUP_TIMEOUT_MS),
+          ),
+        ]);
+      }
       if (typeof sdk.delete !== "function") {
-        let cleanupNote = "no cleanup attempted";
-        try {
-          await sdk.close();
+        const closeOutcome = await boundedCleanup(() => sdk.close());
+        let cleanupNote: string;
+        if (closeOutcome.kind === "ok") {
           cleanupNote =
             "sdk.close() was invoked best-effort but may be a client-side " +
             "detach that leaves the workspace running";
-        } catch (closeErr) {
-          cleanupNote = `sdk.close() also failed: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`;
+        } else if (closeOutcome.kind === "timeout") {
+          cleanupNote = `sdk.close() did not settle within ${CLEANUP_TIMEOUT_MS}ms — workspace state INDETERMINATE`;
+        } else {
+          cleanupNote = `sdk.close() also failed: ${closeOutcome.e instanceof Error ? closeOutcome.e.message : String(closeOutcome.e)}`;
         }
         throw new Error(
           "sandbox-daytona: createSandbox returned a handle without a callable " +
@@ -104,12 +125,14 @@ export function createDaytonaAdapter(
       // workspace. Tear down here so the capability gap surfaces before
       // any command can be dispatched.
       if (sdk.commands?.supportsMaxOutputBytes !== true) {
-        let cleanupNote = "tearing down the just-provisioned workspace";
-        try {
-          await sdk.delete();
+        const deleteOutcome = await boundedCleanup(() => sdk.delete());
+        let cleanupNote: string;
+        if (deleteOutcome.kind === "ok") {
           cleanupNote = "best-effort delete() succeeded";
-        } catch (deleteErr) {
-          cleanupNote = `delete() also failed: ${deleteErr instanceof Error ? deleteErr.message : String(deleteErr)} — verify the workspace state out-of-band (label="${label}")`;
+        } else if (deleteOutcome.kind === "timeout") {
+          cleanupNote = `delete() did not settle within ${CLEANUP_TIMEOUT_MS}ms — workspace state INDETERMINATE; verify out-of-band (label="${label}")`;
+        } else {
+          cleanupNote = `delete() also failed: ${deleteOutcome.e instanceof Error ? deleteOutcome.e.message : String(deleteOutcome.e)} — verify the workspace state out-of-band (label="${label}")`;
         }
         throw new Error(
           "sandbox-daytona: createSandbox returned a handle without commands.supportsMaxOutputBytes=true. " +

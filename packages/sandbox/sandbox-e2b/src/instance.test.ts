@@ -163,28 +163,62 @@ describe("createE2bInstance", () => {
   test("destroy() bounded — never hangs forever on stalled sdk.kill()", async () => {
     // Regression: an unbounded destroyPending wedges every subsequent op
     // and gives callers no retry path. The adapter must time out and
-    // transition to quarantine.
+    // transition to quarantine, then allow a retry to issue a fresh
+    // remote kill against a recovering provider.
     const base = createFakeSandbox();
     let killAttempts = 0;
     const sdk = {
       ...base,
       kill: async (): Promise<void> => {
         killAttempts++;
-        return new Promise<void>(() => {}); // hangs forever
+        if (killAttempts === 1) {
+          // First call hangs forever — provider lost the request.
+          return new Promise<void>(() => {});
+        }
+        // Second call succeeds — provider recovered.
       },
     };
     const instance = createE2bInstance(sdk);
     const start = performance.now();
-    await expect(instance.destroy()).rejects.toThrow(/timed out.*quarantined/i);
+    await expect(instance.destroy()).rejects.toThrow(/timed out.*retried/i);
     const elapsed = performance.now() - start;
     expect(elapsed).toBeLessThan(15_000);
     // Quarantined: ops reject.
     await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
-    // Single-flight: a retry attaches to the still-in-flight kill rather
-    // than issuing a second overlapping remote kill.
-    await expect(instance.destroy()).rejects.toThrow(/timed out/);
-    expect(killAttempts).toBe(1);
+    // Serial retry: the abandoned in-flight kill is replaced by a fresh
+    // sdk.kill() call. Without this, a permanently hung first kill
+    // would strand the sandbox forever.
+    await instance.destroy();
+    expect(killAttempts).toBe(2);
   }, 25_000);
+
+  test("destroy() retry coalesces: concurrent calls do not issue overlapping kills", async () => {
+    // Single-flight + retry semantics: concurrent destroy() callers
+    // must coalesce onto one in-flight kill (no overlapping remote
+    // mutations); only a SERIAL retry after the first one settled
+    // issues a new sdk.kill(). This test pins both halves at once.
+    let killAttempts = 0;
+    let resolveKill!: () => void;
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      kill: async (): Promise<void> => {
+        killAttempts++;
+        return new Promise<void>((r) => {
+          resolveKill = r;
+        });
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    // Two concurrent calls: only one sdk.kill() should be issued.
+    const a = instance.destroy();
+    const b = instance.destroy();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(killAttempts).toBe(1);
+    resolveKill();
+    await Promise.all([a, b]);
+    expect(killAttempts).toBe(1);
+  });
 
   test("quarantined instance still allows destroy() to attempt teardown", async () => {
     // Regression: quarantine must not foreclose the only programmatic

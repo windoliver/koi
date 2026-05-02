@@ -444,21 +444,21 @@ export function createE2bInstance(
         // mutations, racy partial-failure paths, idempotency-skew bugs.
         if (killInFlight === undefined) {
           const teardown = sdk.kill();
-          killInFlight = teardown.then(
+          const promise: Promise<KillOutcome> = teardown.then(
             (): KillOutcome => ({ kind: "ok" }),
             (e: unknown): KillOutcome => ({ kind: "err", e }),
           );
+          killInFlight = promise;
           // Late convergence + cleanup. Runs regardless of whether the
-          // current destroy() call has already returned.
-          killInFlight.then((r) => {
+          // current destroy() call has already returned. Guarded so a
+          // late-arriving abandoned kill does not clobber a successor
+          // kill that a retry has since started.
+          promise.then((r) => {
             if (r.kind === "ok") {
               destroyed = true;
               quarantined = false;
             }
-            // Clear the marker so a future destroy() can issue a fresh
-            // kill if the previous one rejected (and operators want to
-            // retry against a recovering provider).
-            killInFlight = undefined;
+            if (killInFlight === promise) killInFlight = undefined;
           });
         }
         const inFlight = killInFlight;
@@ -474,21 +474,26 @@ export function createE2bInstance(
             return;
           }
           if (outcome.kind === "timeout") {
-            // Quarantine and surface a leak warning. We do NOT mark
-            // destroyed: the remote sandbox state is unknown. The
-            // original sdk.kill() stays in flight (tracked via
-            // killInFlight) — late success will still flip destroyed,
-            // and a retry will attach to it instead of issuing a second
-            // overlapping kill. If the original eventually rejects,
-            // killInFlight clears and a future retry can issue a fresh
-            // kill against a recovering provider.
+            // Abandon the stuck in-flight kill. Concurrent callers
+            // already coalesced through destroyPending — they are
+            // awaiting THIS call's settlement, not racing the SDK
+            // promise directly. After we throw, destroyPending clears
+            // in the finally{} block; a serial retry then sees
+            // killInFlight === undefined and issues a fresh sdk.kill()
+            // against a possibly-recovering provider. The abandoned
+            // promise's late-success handler stays attached, so if the
+            // original kill eventually resolves it still flips
+            // destroyed=true and clears quarantine. Without this, a
+            // permanently hung provider would strand the sandbox until
+            // process restart.
+            if (killInFlight === inFlight) killInFlight = undefined;
             quarantined = true;
             throw new Error(
               `sandbox-e2b: destroy() timed out after ${TEARDOWN_TIMEOUT_MS}ms — ` +
                 "sdk.kill() did not settle within the local bound. The remote sandbox " +
                 "MAY still be running; verify out-of-band. Instance is quarantined. " +
-                "Retries will attach to the still-pending teardown rather than issue " +
-                "a second remote kill.",
+                "destroy() may be retried — a retry will issue a fresh remote kill " +
+                "against a recovering provider.",
             );
           }
           // outcome.kind === "err"

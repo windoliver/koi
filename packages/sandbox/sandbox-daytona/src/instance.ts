@@ -399,20 +399,21 @@ export function createDaytonaInstance(
           // `this` get the correct receiver; copying into a local would
           // lose it.
           const teardown = sdk.delete();
-          deleteInFlight = teardown.then(
+          const promise: Promise<DeleteOutcome> = teardown.then(
             (): DeleteOutcome => ({ kind: "ok" }),
             (e: unknown): DeleteOutcome => ({ kind: "err", e }),
           );
+          deleteInFlight = promise;
           // Late convergence + cleanup. Runs regardless of whether the
-          // current destroy() call has already returned.
-          deleteInFlight.then((r) => {
+          // current destroy() call has already returned. Guarded so a
+          // late-arriving abandoned delete does not clobber a successor
+          // delete that a retry has since started.
+          promise.then((r) => {
             if (r.kind === "ok") {
               destroyed = true;
               quarantined = false;
             }
-            // Clear the marker so a future destroy() can issue a fresh
-            // delete if the previous one rejected.
-            deleteInFlight = undefined;
+            if (deleteInFlight === promise) deleteInFlight = undefined;
           });
         }
         const inFlight = deleteInFlight;
@@ -428,18 +429,25 @@ export function createDaytonaInstance(
             return;
           }
           if (outcome.kind === "timeout") {
-            // Quarantine — workspace MAY still be running. Don't mark
-            // destroyed; the original sdk.delete() stays in flight via
-            // deleteInFlight, so late success will still flip destroyed
-            // and a retry attaches to it instead of issuing a second
-            // overlapping delete against a billable resource.
+            // Abandon the stuck in-flight delete. Concurrent callers
+            // already coalesced through destroyPending — they are
+            // awaiting THIS call's settlement, not racing the SDK
+            // promise directly. After we throw, destroyPending clears
+            // in finally{}; a serial retry sees deleteInFlight ===
+            // undefined and issues a fresh sdk.delete() against a
+            // possibly-recovering provider. The abandoned promise's
+            // late-success handler stays attached, so if it eventually
+            // resolves it still flips destroyed=true and clears
+            // quarantine. Without this, a permanently hung provider
+            // would strand the billable workspace until process restart.
+            if (deleteInFlight === inFlight) deleteInFlight = undefined;
             quarantined = true;
             throw new Error(
               `sandbox-daytona: destroy() timed out after ${TEARDOWN_TIMEOUT_MS}ms — ` +
                 "sdk.delete() did not settle within the local bound. The remote " +
                 "workspace MAY still be running and billable; verify out-of-band. " +
-                "Instance is quarantined. Retries will attach to the still-pending " +
-                "teardown rather than issue a second remote delete.",
+                "Instance is quarantined. destroy() may be retried — a retry will " +
+                "issue a fresh remote delete against a recovering provider.",
             );
           }
           const e = outcome.e;

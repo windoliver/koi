@@ -179,21 +179,46 @@ describe("createDaytonaInstance", () => {
     const sdk = createFakeSandbox({
       deleteImpl: async () => {
         deleteAttempts++;
-        return new Promise<void>(() => {}); // hangs forever
+        if (deleteAttempts === 1) return new Promise<void>(() => {});
+        // Second call succeeds — provider recovered.
       },
     });
     const instance = createDaytonaInstance(sdk);
     const start = performance.now();
-    await expect(instance.destroy()).rejects.toThrow(/timed out.*quarantined/i);
+    await expect(instance.destroy()).rejects.toThrow(/timed out.*retried/i);
     const elapsed = performance.now() - start;
     expect(elapsed).toBeLessThan(15_000);
     await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
-    // Single-flight: a retry attaches to the still-in-flight delete
-    // rather than issuing a second remote delete against a billable
-    // workspace.
-    await expect(instance.destroy()).rejects.toThrow(/timed out/);
-    expect(deleteAttempts).toBe(1);
+    // Serial retry: the abandoned in-flight delete is replaced by a
+    // fresh sdk.delete(). Without this, a permanently hung first
+    // delete would strand the billable workspace forever.
+    await instance.destroy();
+    expect(deleteAttempts).toBe(2);
   }, 25_000);
+
+  test("destroy() retry coalesces: concurrent calls do not issue overlapping deletes", async () => {
+    // Concurrent destroy() callers must coalesce onto one in-flight
+    // delete (no overlapping remote mutations); only a SERIAL retry
+    // after the first one settled issues a new sdk.delete().
+    let deleteAttempts = 0;
+    let resolveDelete!: () => void;
+    const sdk = createFakeSandbox({
+      deleteImpl: async () => {
+        deleteAttempts++;
+        return new Promise<void>((r) => {
+          resolveDelete = r;
+        });
+      },
+    });
+    const instance = createDaytonaInstance(sdk);
+    const a = instance.destroy();
+    const b = instance.destroy();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(deleteAttempts).toBe(1);
+    resolveDelete();
+    await Promise.all([a, b]);
+    expect(deleteAttempts).toBe(1);
+  });
 
   test("destroy runtime-guards against JS callers that pass an SDK without delete()", async () => {
     // The DaytonaSdkSandbox type now requires delete(), so well-typed code

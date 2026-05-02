@@ -94,12 +94,31 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
       // billed for an unusable sandbox. Tear down here instead so the
       // capability gap surfaces before any caller can dispatch a command.
       if (sdk.commands?.supportsMaxOutputBytes !== true) {
-        let cleanupNote = "tearing down the just-provisioned sandbox";
-        try {
-          await sdk.kill();
+        // Bounded cleanup: a stalled sdk.kill() must not wedge create()
+        // forever. After 10 s, surface the indeterminate teardown so
+        // operators know to verify the sandbox out-of-band.
+        const CLEANUP_TIMEOUT_MS = 10_000;
+        const cleanupOutcome = await Promise.race<
+          | { readonly kind: "ok" }
+          | { readonly kind: "err"; readonly e: unknown }
+          | { readonly kind: "timeout" }
+        >([
+          sdk.kill().then(
+            () => ({ kind: "ok" }) as const,
+            (e: unknown) => ({ kind: "err", e }) as const,
+          ),
+          new Promise((resolve) =>
+            setTimeout(() => resolve({ kind: "timeout" } as const), CLEANUP_TIMEOUT_MS),
+          ),
+        ]);
+        let cleanupNote: string;
+        if (cleanupOutcome.kind === "ok") {
           cleanupNote = "best-effort kill() succeeded";
-        } catch (killErr) {
-          cleanupNote = `kill() also failed: ${killErr instanceof Error ? killErr.message : String(killErr)} — verify the sandbox state out-of-band (label="${label}")`;
+        } else if (cleanupOutcome.kind === "timeout") {
+          cleanupNote = `kill() did not settle within ${CLEANUP_TIMEOUT_MS}ms — remote sandbox state INDETERMINATE; verify out-of-band (label="${label}")`;
+        } else {
+          const e = cleanupOutcome.e;
+          cleanupNote = `kill() also failed: ${e instanceof Error ? e.message : String(e)} — verify the sandbox state out-of-band (label="${label}")`;
         }
         throw new Error(
           "sandbox-e2b: createSandbox returned a handle without commands.supportsMaxOutputBytes=true. " +
