@@ -220,14 +220,16 @@ export const TUI_APPROVAL_TIMEOUT_MS: number = 60 * 60 * 1_000; // 3_600_000
 const ENGINE_STATE_SCHEMA_VERSION = "v1" as const;
 
 /**
- * Compute the default engineId stamped on the runtime adapter. Bakes in
- * model identity + the state schema version so any model swap or schema
- * bump invalidates stale cancel checkpoints automatically. Hosts (e.g.
- * the TUI) must compute the SAME id to use as `expectedEngineId` when
- * resuming, so this helper is the single source of truth.
+ * Compute the default engineId stamped on the runtime adapter. Encodes
+ * adapter identity + state schema version ONLY — deliberately NOT model
+ * name. The opaque `EngineState.data` shape is adapter-defined; switching
+ * model within the same adapter (mid-session model swap, fallback chain)
+ * does not change the state layout, so a model-keyed token would falsely
+ * invalidate valid checkpoints. If a future change makes state shape
+ * depend on the model, bump the schema version constant instead.
  */
-export function computeDefaultEngineId(modelName: string): string {
-  return `koi-tui:${ENGINE_STATE_SCHEMA_VERSION}:${modelName}`;
+export function computeDefaultEngineId(_modelName?: string): string {
+  return `koi-tui:${ENGINE_STATE_SCHEMA_VERSION}`;
 }
 
 /**
