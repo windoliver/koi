@@ -464,21 +464,14 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       return { ok: false, error };
     }
 
-    // Slot-replacement gating against generation mismatch.
-    //
-    // Round 10 v2 wanted "fail closed when either side lacks
-    // generation"; round 4 v3 pushed back that a blanket fail-closed
-    // strands legacy hosts. Compromise: refuse only the asymmetric
-    // case where a versioned entry would be displaced by an
-    // unversioned one (the strict downgrade attack the original guard
-    // was added for). The other three corners are allowed:
-    //
-    //   existing.gen | incoming.gen | action
-    //   -------------|--------------|----------------------------------
-    //   undefined    | undefined    | allow (legacy mode, both sides)
-    //   undefined    | defined      | allow (upgrade to versioned)
-    //   defined      | undefined    | REFUSE (downgrade attack)
-    //   defined      | defined      | falls through to ordering check
+    // Slot-replacement gating against versioned-by-unversioned downgrade.
+    // Refuse the strict downgrade (versioned cached entry replaced by
+    // unversioned incoming) — a legacy unversioned event MUST NOT
+    // displace a versioned authorization decision. The other corners
+    // (both unversioned, or unversioned-by-versioned) are allowed:
+    // legacy hosts that haven't propagated `generation` end-to-end
+    // still need to install fresh denies. Hosts that want strict
+    // refuse-on-either-unversioned should propagate `generation`.
     const destMapForCheck = entry.scope === "global" ? globalCache : agentCaches.get(entry.agentId);
     const destOccupantForCheck = destMapForCheck?.get(entry.toolId);
     if (
@@ -489,7 +482,7 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
     ) {
       const error: KoiError = {
         code: "VALIDATION",
-        message: `policy-cache: refusing unversioned replacement of versioned entry for tool ${entry.toolId} (incoming brick ${entry.brickId})`,
+        message: `policy-cache: refusing unversioned slot replacement for tool ${entry.toolId} (incoming brick ${entry.brickId}) — versioned cached entry cannot be displaced by an unversioned registration`,
         retryable: false,
         context: {
           brickId: entry.brickId,
