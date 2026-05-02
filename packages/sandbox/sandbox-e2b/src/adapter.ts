@@ -59,20 +59,48 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
         label,
         ...(resolved.template !== undefined ? { template: resolved.template } : {}),
       };
-      let sdk: Awaited<ReturnType<typeof resolved.client.createSandbox>>;
-      try {
-        sdk = await resolved.client.createSandbox(opts);
-      } catch (e: unknown) {
-        const cause = e instanceof Error ? e.message : String(e);
+      // Bounded provisioning: a stalled control plane must not wedge
+      // create() forever. The provider may have allocated the microVM
+      // before the SDK call lost the response, so surface the label
+      // even on timeout so operators have a recovery breadcrumb.
+      const CREATE_TIMEOUT_MS = 30_000;
+      type CreateOutcome =
+        | {
+            readonly kind: "ok";
+            readonly sdk: Awaited<ReturnType<typeof resolved.client.createSandbox>>;
+          }
+        | { readonly kind: "err"; readonly e: unknown }
+        | { readonly kind: "timeout" };
+      const outcome = await Promise.race<CreateOutcome>([
+        resolved.client.createSandbox(opts).then(
+          (s): CreateOutcome => ({ kind: "ok", sdk: s }),
+          (e: unknown): CreateOutcome => ({ kind: "err", e }),
+        ),
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ kind: "timeout" } as const), CREATE_TIMEOUT_MS),
+        ),
+      ]);
+      if (outcome.kind === "timeout") {
+        throw new Error(
+          `sandbox-e2b: createSandbox(label=${label}) did not settle within ` +
+            `${CREATE_TIMEOUT_MS}ms — provisioning state INDETERMINATE. The provider ` +
+            `MAY have allocated a microVM that was never returned to the adapter; ` +
+            `search for label "${label}" out-of-band to revoke any orphan before ` +
+            `retrying, otherwise the leak compounds with each retry.`,
+        );
+      }
+      if (outcome.kind === "err") {
+        const cause = outcome.e instanceof Error ? outcome.e.message : String(outcome.e);
         throw new Error(
           `sandbox-e2b: createSandbox(label=${label}) failed: ${cause}. The provider ` +
             `MAY have provisioned a microVM before the call rejected; if a sandbox ` +
             `with label "${label}" exists, revoke it out-of-band to avoid a billable ` +
             `leak. Retry only after confirming the cleanup, otherwise the orphan ` +
             `will remain alongside any newly created sandbox.`,
-          { cause: e },
+          { cause: outcome.e },
         );
       }
+      const sdk = outcome.sdk;
       // Runtime teardown-capability check. The TS contract already requires
       // sdk.kill (E2bSdkSandbox), but a JS caller / version-skewed wrapper
       // could provision a real microVM and only surface the gap at destroy()

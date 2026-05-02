@@ -58,19 +58,47 @@ export function createDaytonaAdapter(
         label,
         ...(resolved.apiUrl !== undefined ? { apiUrl: resolved.apiUrl } : {}),
       };
-      let sdk: Awaited<ReturnType<typeof resolved.client.createSandbox>>;
-      try {
-        sdk = await resolved.client.createSandbox(opts);
-      } catch (e: unknown) {
-        const cause = e instanceof Error ? e.message : String(e);
+      // Bounded provisioning: a stalled control plane must not wedge
+      // create() forever. Surface the label even on timeout so
+      // operators have a recovery breadcrumb for any orphan.
+      const CREATE_TIMEOUT_MS = 30_000;
+      type CreateOutcome =
+        | {
+            readonly kind: "ok";
+            readonly sdk: Awaited<ReturnType<typeof resolved.client.createSandbox>>;
+          }
+        | { readonly kind: "err"; readonly e: unknown }
+        | { readonly kind: "timeout" };
+      const createOutcome = await Promise.race<CreateOutcome>([
+        resolved.client.createSandbox(opts).then(
+          (s): CreateOutcome => ({ kind: "ok", sdk: s }),
+          (e: unknown): CreateOutcome => ({ kind: "err", e }),
+        ),
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ kind: "timeout" } as const), CREATE_TIMEOUT_MS),
+        ),
+      ]);
+      if (createOutcome.kind === "timeout") {
+        throw new Error(
+          `sandbox-daytona: createSandbox(label=${label}) did not settle within ` +
+            `${CREATE_TIMEOUT_MS}ms — provisioning state INDETERMINATE. The provider ` +
+            `MAY have allocated a workspace that was never returned to the adapter; ` +
+            `search for label "${label}" out-of-band to revoke any orphan before ` +
+            `retrying, otherwise the leak compounds with each retry.`,
+        );
+      }
+      if (createOutcome.kind === "err") {
+        const cause =
+          createOutcome.e instanceof Error ? createOutcome.e.message : String(createOutcome.e);
         throw new Error(
           `sandbox-daytona: createSandbox(label=${label}) failed: ${cause}. The ` +
             `provider MAY have provisioned a workspace before the call rejected; if ` +
             `a workspace with label "${label}" exists, revoke it out-of-band to ` +
             `avoid a billable leak. Retry only after confirming cleanup.`,
-          { cause: e },
+          { cause: createOutcome.e },
         );
       }
+      const sdk = createOutcome.sdk;
       // Runtime check for JS callers (TS types already require delete()).
       // The supportsWorkspaceDelete preflight already rejects most skew,
       // but a buggy/lying wrapper can still pass the flag check and return

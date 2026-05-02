@@ -168,6 +168,26 @@ describe("createE2bAdapter", () => {
     expect((err as Error).message).toMatch(/koi-[0-9a-f-]{36}/);
   });
 
+  test("create() bounds provisioning and surfaces label on stalled createSandbox", async () => {
+    // Degraded-provider regression: control plane never responds. A
+    // create() that hangs forever blocks callers and hides the label
+    // operators need to find any orphan microVM. The adapter must time
+    // out, surface the label, and tell operators how to recover.
+    const client = createFakeClient();
+    Object.defineProperty(client, "createSandbox", {
+      value: () => new Promise(() => {}), // hangs forever
+    });
+    const result = createE2bAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    const start = performance.now();
+    const err = await result.value.create(openProfile).catch((e: unknown) => e as Error);
+    const elapsed = performance.now() - start;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/INDETERMINATE/);
+    expect((err as Error).message).toMatch(/koi-[0-9a-f-]{36}/);
+    expect(elapsed).toBeLessThan(35_000);
+  }, 40_000);
+
   test("create() postflights supportsMaxOutputBytes and tears down unusable handles", async () => {
     // Skew regression: an SDK whose handle lacks supportsMaxOutputBytes=true
     // would let create() return a billable sandbox where every exec()
