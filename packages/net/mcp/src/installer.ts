@@ -56,6 +56,16 @@ export function pickPackageForInstall(
   for (const remote of server.remotes ?? []) {
     const transport = remote.transport?.type ?? "http";
     if (transport !== "http" && transport !== "sse") continue;
+    // Refuse plaintext / non-HTTPS remote URLs from the registry. Loopback
+    // (127.0.0.1, ::1, localhost) is allowed for local-dev workflows since
+    // it never crosses the trust boundary the HTTPS rule is protecting.
+    // Anything else — http://, ws://, file://, malformed — is rejected
+    // before it can be persisted into .mcp.json.
+    const urlCheck = validateRemoteUrl(remote.url);
+    if (!urlCheck.ok) {
+      rejects.push(`${transport} remote ${remote.url}: ${urlCheck.error}`);
+      continue;
+    }
     const headersResult = remoteHeaders(remote.headers);
     if (!headersResult.ok) {
       rejects.push(`${transport} remote ${remote.url}: ${headersResult.error.message}`);
@@ -115,6 +125,24 @@ export function pickPackageForInstall(
       context: { name: server.name, version: server.version },
     },
   };
+}
+
+function validateRemoteUrl(raw: string): { ok: true } | { ok: false; error: string } {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return { ok: false, error: "URL is not parseable" };
+  }
+  if (parsed.protocol === "https:") return { ok: true };
+  if (parsed.protocol === "http:") {
+    const host = parsed.hostname.toLowerCase();
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]") {
+      return { ok: true };
+    }
+    return { ok: false, error: "plaintext http:// is only allowed for loopback hosts" };
+  }
+  return { ok: false, error: `unsupported URL scheme "${parsed.protocol}" (expected https:)` };
 }
 
 interface RegistryHeader {

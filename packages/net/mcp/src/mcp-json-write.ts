@@ -103,7 +103,7 @@ async function readMcpJsonRaw(
     const text = await Bun.file(filePath).text();
     try {
       const parsed = JSON.parse(text) as unknown;
-      if (parsed === null || typeof parsed !== "object") {
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
         return {
           ok: false,
           error: {
@@ -114,7 +114,41 @@ async function readMcpJsonRaw(
           },
         };
       }
-      return { ok: true, value: parsed as Record<string, unknown> };
+      // Validate mcpServers shape if present. Anything other than a plain
+      // object of object-valued entries is rejected — without this guard,
+      // addServerToMcpJson/removeServerFromMcpJson would spread a hostile
+      // shape (array, string, primitive entries) and rewrite the file
+      // into a more corrupted state. Fail closed and leave the file
+      // untouched so the user can repair it.
+      const root = parsed as Record<string, unknown>;
+      const mcpServers = root["mcpServers"];
+      if (mcpServers !== undefined) {
+        if (mcpServers === null || typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
+          return {
+            ok: false,
+            error: {
+              code: "VALIDATION",
+              message: `${filePath} mcpServers is not a plain object`,
+              retryable: false,
+              context: { filePath },
+            },
+          };
+        }
+        for (const [k, v] of Object.entries(mcpServers as Record<string, unknown>)) {
+          if (v === null || typeof v !== "object" || Array.isArray(v)) {
+            return {
+              ok: false,
+              error: {
+                code: "VALIDATION",
+                message: `${filePath} mcpServers["${k}"] is not an object`,
+                retryable: false,
+                context: { filePath, entry: k },
+              },
+            };
+          }
+        }
+      }
+      return { ok: true, value: root };
     } catch (parseError: unknown) {
       const detail = parseError instanceof Error ? parseError.message : String(parseError);
       return {
