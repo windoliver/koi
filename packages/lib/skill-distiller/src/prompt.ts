@@ -16,22 +16,35 @@ parameterized skill. The output MUST be valid JSON with exactly these fields:
     "expectedOutputs": string[]      // what the user receives at the end
   }
 
+Generalization rules:
+- Tool ARGUMENTS that change per invocation (paths, IDs, tenants, scopes,
+  destructive targets) MUST be declared as a "parameters" entry, not burned
+  into the description or expectedInputs as a literal value.
+- toolSequence is the ORDERED procedure. Match the order in the trace.
+- If a tool was called against a specific resource (file path, tenant id,
+  database name), abstract it through a parameter — never assume the new
+  caller wants the same target.
+
 Do not include any prose outside the JSON object. Do not wrap in markdown.`;
 
 const MAX_TURN_TEXT_BYTES = 1200;
+const MAX_TOOL_ARGS_BYTES = 400;
+
+function clip(value: string, maxBytes: number): string {
+  return value.length > maxBytes ? `${value.slice(0, maxBytes)}…` : value;
+}
 
 function summarizeTurn(turn: DistillationTrace["turns"][number], index: number): string {
   const role = turn.role.toUpperCase();
-  const text =
-    turn.text === undefined
-      ? ""
-      : turn.text.length > MAX_TURN_TEXT_BYTES
-        ? `${turn.text.slice(0, MAX_TURN_TEXT_BYTES)}…`
-        : turn.text;
+  const text = turn.text === undefined ? "" : clip(turn.text, MAX_TURN_TEXT_BYTES);
+  // Surface tool call arguments — without them the model cannot tell whether a
+  // call should be parameterized or treated as a constant.
   const tools =
     turn.toolCalls === undefined || turn.toolCalls.length === 0
       ? ""
-      : `\n  tools: ${turn.toolCalls.map((c) => c.name).join(", ")}`;
+      : `\n  tools:\n${turn.toolCalls
+          .map((c) => `    - ${c.name}(${clip(c.argsJson, MAX_TOOL_ARGS_BYTES)})`)
+          .join("\n")}`;
   const body = text === "" ? "(no text)" : text;
   return `[${index}] ${role}: ${body}${tools}`;
 }

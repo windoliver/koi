@@ -92,6 +92,18 @@ describe("computeDraftHash — sensitivity (behavior changes must change identit
     const b = computeDraftHash({ ...baseDraft, expectedOutputs: ["different contract"] });
     expect(a).not.toBe(b);
   });
+
+  test("control characters in string fields cannot cause separator collisions", () => {
+    // Two distinct drafts that, under naive concatenation with control-char
+    // separators, would produce identical hash inputs. Canonical JSON encoding
+    // escapes the characters and keeps them distinct.
+    const a = computeDraftHash({ ...baseDraft, triggers: ["onetwo"] });
+    const b = computeDraftHash({ ...baseDraft, triggers: ["one", "two"] });
+    expect(a).not.toBe(b);
+    const c = computeDraftHash({ ...baseDraft, triggers: ["ab"] });
+    const d = computeDraftHash({ ...baseDraft, triggers: ["a", "b"] });
+    expect(c).not.toBe(d);
+  });
 });
 
 describe("computeSourceHash — content provenance", () => {

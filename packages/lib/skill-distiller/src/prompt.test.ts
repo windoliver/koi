@@ -16,20 +16,33 @@ describe("renderDistillationPrompt", () => {
     expect(out).toContain("turns=2");
   });
 
-  test("renders tool calls by name", () => {
+  test("renders tool calls with names AND arguments (so LLM can parameterize)", () => {
     const trace: DistillationTrace = {
       traceId: "t",
       turns: [
         {
           role: "assistant",
           toolCalls: [
-            { name: "read_file", argsJson: "{}" },
-            { name: "write_file", argsJson: "{}" },
+            { name: "read_file", argsJson: '{"path":"/etc/foo"}' },
+            { name: "write_file", argsJson: '{"path":"/tmp/bar"}' },
           ],
         },
       ],
     };
-    expect(renderDistillationPrompt(trace)).toContain("read_file, write_file");
+    const out = renderDistillationPrompt(trace);
+    expect(out).toContain('read_file({"path":"/etc/foo"})');
+    expect(out).toContain('write_file({"path":"/tmp/bar"})');
+  });
+
+  test("clips very long tool args to keep prompt size bounded", () => {
+    const longArgs = `{"path":"${"x".repeat(2000)}"}`;
+    const trace: DistillationTrace = {
+      traceId: "t",
+      turns: [{ role: "assistant", toolCalls: [{ name: "read_file", argsJson: longArgs }] }],
+    };
+    const out = renderDistillationPrompt(trace);
+    expect(out).toContain("…");
+    expect(out.length).toBeLessThan(longArgs.length + 1000);
   });
 
   test("truncates very long turn text", () => {

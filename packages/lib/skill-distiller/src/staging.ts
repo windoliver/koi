@@ -19,13 +19,21 @@ export interface StagingQueueConfig {
 export interface StagingQueue {
   /**
    * Stage a new record. If an entry with the same draftHash already exists,
-   * its current state is returned untouched (idempotent).
+   * its current state is returned untouched (idempotent). To re-review a
+   * resolved entry, call `requeue(id)` first.
    */
   readonly stage: (record: DistillationRecord) => StagingEntry;
   /** Approve a pending entry. Returns updated entry, or undefined if not pending / not found. */
   readonly approve: (id: string, note?: string) => StagingEntry | undefined;
   /** Reject a pending entry. Returns updated entry, or undefined if not pending / not found. */
   readonly reject: (id: string, note?: string) => StagingEntry | undefined;
+  /**
+   * Reset a resolved (approved/rejected) entry back to "pending" so it can be
+   * re-reviewed. Returns the updated entry, or undefined if the entry is not
+   * found or is already pending. The original `stagedAt` is preserved; pass
+   * `nextRecord` to refresh the stored record with newer trace evidence.
+   */
+  readonly requeue: (id: string, nextRecord?: DistillationRecord) => StagingEntry | undefined;
   readonly get: (id: string) => StagingEntry | undefined;
   readonly listPending: () => readonly StagingEntry[];
   readonly listAll: () => readonly StagingEntry[];
@@ -71,6 +79,20 @@ export function createStagingQueue(config: StagingQueueConfig = {}): StagingQueu
     },
     approve: (id, note) => resolve(id, "approved", note),
     reject: (id, note) => resolve(id, "rejected", note),
+    requeue: (id, nextRecord): StagingEntry | undefined => {
+      const current = entries.get(id);
+      if (current === undefined) return undefined;
+      if (current.status === "pending") return undefined;
+      const updated: StagingEntry = {
+        id: current.id,
+        record: nextRecord ?? current.record,
+        status: "pending",
+        stagedAt: current.stagedAt,
+        // resolvedAt and note intentionally dropped — entry is pending again.
+      };
+      entries.set(id, updated);
+      return updated;
+    },
     get: (id) => entries.get(id),
     listPending: (): readonly StagingEntry[] =>
       Array.from(entries.values()).filter((e) => e.status === "pending"),

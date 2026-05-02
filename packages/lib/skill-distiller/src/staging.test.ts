@@ -85,4 +85,41 @@ describe("createStagingQueue", () => {
     expect(q.get("h1")).toBeUndefined();
     expect(q.listAll()).toEqual([]);
   });
+
+  test("requeue resets a rejected entry to pending and clears resolution metadata", () => {
+    const q = createStagingQueue();
+    q.stage(rec("h1"));
+    q.reject("h1", "false positive");
+    const e = q.requeue("h1");
+    expect(e?.status).toBe("pending");
+    expect(e?.resolvedAt).toBeUndefined();
+    expect(e?.note).toBeUndefined();
+    expect(q.approve("h1")?.status).toBe("approved");
+  });
+
+  test("requeue reopens an approved entry too", () => {
+    const q = createStagingQueue();
+    q.stage(rec("h1"));
+    q.approve("h1");
+    expect(q.requeue("h1")?.status).toBe("pending");
+  });
+
+  test("requeue returns undefined for unknown id and for already-pending entries", () => {
+    const q = createStagingQueue();
+    expect(q.requeue("nope")).toBeUndefined();
+    q.stage(rec("h1"));
+    expect(q.requeue("h1")).toBeUndefined();
+  });
+
+  test("requeue can replace the stored record with newer trace evidence", () => {
+    const q = createStagingQueue();
+    q.stage(rec("h1"));
+    q.reject("h1");
+    const newer = rec("h1");
+    const replaced = q.requeue("h1", {
+      ...newer,
+      source: { ...newer.source, traceId: "t-fresh" },
+    });
+    expect(replaced?.record.source.traceId).toBe("t-fresh");
+  });
 });

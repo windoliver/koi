@@ -1,11 +1,23 @@
 import { computeStringHash } from "@koi/hash";
 import type { DistillationTrace, SkillDraft } from "./types.js";
 
-const FIELD_SEP = ""; // unit separator — unlikely to collide with field content
-const LIST_SEP = ""; // record separator
+// Use canonical JSON instead of ad-hoc separator joining so user-controlled
+// strings cannot collide by embedding the separator byte. Object keys are
+// sorted recursively for stable serialization regardless of input ordering.
 
-function joinSorted(values: readonly string[]): string {
-  return [...values].sort().join(LIST_SEP);
+function canonicalize(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(canonicalize);
+  const obj = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(obj).sort()) {
+    out[key] = canonicalize(obj[key]);
+  }
+  return out;
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(canonicalize(value));
 }
 
 /**
@@ -15,24 +27,32 @@ function joinSorted(values: readonly string[]): string {
  * different drafts never collide:
  *   - name
  *   - ordered toolSequence (procedure order matters)
- *   - sorted parameter contracts (`name|required` per parameter — toggling
- *     `required` changes the invocation contract and must not collapse)
+ *   - sorted parameter contracts (name + required) — toggling `required`
+ *     changes the invocation contract and must move the hash
  *   - sorted triggers (entry phrases — discovery surface)
  *   - sorted expectedInputs / expectedOutputs (contract surface)
  *
- * Parameter description is excluded (prose, not contract). Top-level
- * description is excluded for the same reason.
+ * Parameter description and top-level description are excluded (prose, not
+ * contract). The hash input is canonical JSON, so embedded separator/control
+ * characters in any string field cannot cause collisions.
  */
 export function computeDraftHash(draft: SkillDraft): string {
-  const parts: readonly string[] = [
-    draft.name,
-    draft.toolSequence.join(LIST_SEP),
-    joinSorted(draft.parameters.map((p) => `${p.name}|${p.required ? "1" : "0"}`)),
-    joinSorted(draft.triggers),
-    joinSorted(draft.expectedInputs),
-    joinSorted(draft.expectedOutputs),
-  ];
-  return computeStringHash(parts.join(FIELD_SEP));
+  const sortedTriggers = [...draft.triggers].sort();
+  const sortedInputs = [...draft.expectedInputs].sort();
+  const sortedOutputs = [...draft.expectedOutputs].sort();
+  const sortedParameters = [...draft.parameters]
+    .map((p) => ({ name: p.name, required: p.required }))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return computeStringHash(
+    canonicalJson({
+      name: draft.name,
+      toolSequence: draft.toolSequence,
+      parameters: sortedParameters,
+      triggers: sortedTriggers,
+      expectedInputs: sortedInputs,
+      expectedOutputs: sortedOutputs,
+    }),
+  );
 }
 
 /**
@@ -44,15 +64,15 @@ export function computeDraftHash(draft: SkillDraft): string {
  * is auditable rather than silently aliased onto the original.
  */
 export function computeSourceHash(trace: DistillationTrace): string {
-  const session = trace.sessionId ?? "";
-  const turns = trace.turns
-    .map((t) => {
-      const text = t.text ?? "";
-      const tools = (t.toolCalls ?? [])
-        .map((c) => `${c.name}${LIST_SEP}${c.argsJson}`)
-        .join(LIST_SEP);
-      return `${t.role}${FIELD_SEP}${text}${FIELD_SEP}${tools}`;
-    })
-    .join("\n");
-  return computeStringHash(`${trace.traceId}\n${session}\n${turns}`);
+  return computeStringHash(
+    canonicalJson({
+      traceId: trace.traceId,
+      sessionId: trace.sessionId ?? "",
+      turns: trace.turns.map((t) => ({
+        role: t.role,
+        text: t.text ?? "",
+        toolCalls: (t.toolCalls ?? []).map((c) => ({ name: c.name, argsJson: c.argsJson })),
+      })),
+    }),
+  );
 }
