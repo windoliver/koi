@@ -822,6 +822,184 @@ describe("Golden: @koi/middleware-tool-error-formatter", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-fs-rollback
+// Standalone tests (no LLM) + cassette-replay smoke test.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-fs-rollback", () => {
+  test("createFsRollbackMiddleware exposes the expected middleware identity", async () => {
+    const { createFsRollbackMiddleware } = await import("@koi/middleware-fs-rollback");
+    const handle = createFsRollbackMiddleware({ cwd: "/tmp" });
+    expect(handle.middleware.name).toBe("fs-rollback");
+    expect(handle.middleware.priority).toBe(180);
+    expect(typeof handle.middleware.wrapToolCall).toBe("function");
+  });
+
+  test("snapshot decision: non-protected tools passthrough; protected tools snapshot the target path", async () => {
+    const { createFsRollbackMiddleware } = await import("@koi/middleware-fs-rollback");
+    const reads: string[] = [];
+    const writes: string[] = [];
+    const unlinks: string[] = [];
+    const files = new Map<string, Uint8Array>([
+      ["/tmp/golden-fsrb/file.txt", new TextEncoder().encode("PRE")],
+    ]);
+    const stub = { mtimeMs: 1, size: 1, ino: 1, kind: "file" as const };
+    const handle = createFsRollbackMiddleware({
+      cwd: "/tmp/golden-fsrb",
+      fs: {
+        async read(p) {
+          reads.push(p);
+          const b = files.get(p);
+          return b === undefined ? { existed: false } : { existed: true, bytes: b, stat: stub };
+        },
+        async stat(p) {
+          return files.has(p) ? stub : undefined;
+        },
+        async write(p, b) {
+          writes.push(p);
+          files.set(p, b);
+        },
+        async atomicWrite(p, b) {
+          files.set(p, b);
+        },
+        async unlink(p) {
+          unlinks.push(p);
+          files.delete(p);
+        },
+      },
+    });
+    const wrap = handle.middleware.wrapToolCall;
+    if (!wrap) throw new Error("wrapToolCall missing");
+
+    const sessCtx = {
+      session: {
+        agentId: "fsrb-golden",
+        sessionId: sessionId("fsrb-golden"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      },
+      turnIndex: 0,
+      turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    } satisfies TurnContext;
+
+    await wrap(
+      sessCtx,
+      { toolId: "echo", input: { text: "hi" } as JsonObject } satisfies ToolRequest,
+      async () => ({ output: "ok" }) satisfies ToolResponse,
+    );
+    expect(reads.length).toBe(0);
+
+    await wrap(
+      sessCtx,
+      {
+        toolId: "fs_write",
+        input: { path: "file.txt", content: "x" } as JsonObject,
+      } satisfies ToolRequest,
+      async () => ({ output: "ok" }) satisfies ToolResponse,
+    );
+    expect(reads).toContain("/tmp/golden-fsrb/file.txt");
+    // Success path must NOT touch the target file beyond the read.
+    expect(writes.length).toBe(0);
+    expect(unlinks.length).toBe(0);
+  });
+
+  test("rollback path: tool throws → snapshot bytes are restored, original error rethrows", async () => {
+    const { createFsRollbackMiddleware } = await import("@koi/middleware-fs-rollback");
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
+    const files = new Map<string, Uint8Array>([
+      ["/tmp/golden-fsrb-fail/file.txt", enc.encode("PRE")],
+    ]);
+    const stub = { mtimeMs: 1, size: 1, ino: 1, kind: "file" as const };
+    const handle = createFsRollbackMiddleware({
+      cwd: "/tmp/golden-fsrb-fail",
+      fs: {
+        async read(p) {
+          const b = files.get(p);
+          return b === undefined ? { existed: false } : { existed: true, bytes: b, stat: stub };
+        },
+        async stat(p) {
+          return files.has(p) ? stub : undefined;
+        },
+        async write(p, b) {
+          files.set(p, b);
+        },
+        async atomicWrite(p, b) {
+          files.set(p, b);
+        },
+        async unlink(p) {
+          files.delete(p);
+        },
+      },
+    });
+    const wrap = handle.middleware.wrapToolCall;
+    if (!wrap) throw new Error();
+    const sessCtx = {
+      session: {
+        agentId: "fsrb-fail",
+        sessionId: sessionId("fsrb-fail"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      },
+      turnIndex: 0,
+      turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    } satisfies TurnContext;
+    const original = new Error("tool blew up");
+    await expect(
+      wrap(
+        sessCtx,
+        { toolId: "fs_write", input: { path: "file.txt" } as JsonObject } satisfies ToolRequest,
+        async () => {
+          files.set("/tmp/golden-fsrb-fail/file.txt", enc.encode("CORRUPT"));
+          throw original;
+        },
+      ),
+    ).rejects.toBe(original);
+    expect(dec.decode(files.get("/tmp/golden-fsrb-fail/file.txt"))).toBe("PRE");
+  });
+
+  test("trajectory fixture (cassette replay) records fs-rollback middleware spans plus a failing protected tool step", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/fs-rollback.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly outcome?: string;
+        readonly extra?: Record<string, unknown>;
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("fs-rollback");
+
+    // The fs-rollback middleware must show up as a span around the protected
+    // tool call. Without the span the trajectory cannot prove the middleware
+    // wrapped the call at all.
+    const fsrbSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "fs-rollback",
+    );
+    expect(fsrbSpans.length).toBeGreaterThanOrEqual(1);
+
+    // The protected tool throws after writing — the trajectory must contain
+    // a failure tool step for fs_write_then_fail. That's what triggers the
+    // restore-on-failure branch the middleware exists to exercise.
+    const toolFailures = doc.steps.filter(
+      (s) =>
+        s.source === "tool" &&
+        s.outcome === "failure" &&
+        Array.isArray(s.tool_calls) &&
+        s.tool_calls.some((tc) => tc.function_name === "fs_write_then_fail"),
+    );
+    expect(toolFailures.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/middleware-tool-disclosure
 // Standalone tests + trajectory fixture assertions.
 // ---------------------------------------------------------------------------
