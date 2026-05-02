@@ -33,8 +33,11 @@ const DEFAULT_SEARCH_LIMIT = 20;
 export async function runSearch(flags: McpFlags): Promise<ExitCode> {
   const query = flags.server ?? "";
   const limit = flags.limit ?? DEFAULT_SEARCH_LIMIT;
+  // Cache key includes limit so two searches with different limits don't
+  // alias to the same cached result (caller may want a wider/narrower set).
+  const cacheKey = `${query}|${limit}`;
   const cache = flags.noCache ? undefined : createRegistryCache();
-  const cached = await cache?.getSearch(query);
+  const cached = await cache?.getSearch(cacheKey);
 
   let result: {
     readonly servers: readonly RegistryServer[];
@@ -47,7 +50,7 @@ export async function runSearch(flags: McpFlags): Promise<ExitCode> {
     const fetched = await client.searchServers({ query, limit });
     if (!fetched.ok) return failFlags(flags, fetched.error.message);
     result = fetched.value;
-    await cache?.putSearch(query, result);
+    await cache?.putSearch(cacheKey, result);
   }
 
   if (flags.json) {
