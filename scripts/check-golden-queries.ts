@@ -28,6 +28,7 @@ const GOLDEN_QUERY_EXEMPT: ReadonlySet<string> = new Set([
   "@koi/gateway-webhook", // HTTP ingress server — sits outside the agent loop, no tool/middleware surface
   "@koi/gateway-http", // HTTP/WS ingress server — sits outside the agent loop, no tool/middleware surface
   "@koi/gateway-nexus", // HA SessionStore backend — sits outside the agent loop, no tool/middleware surface
+  "@koi/dashboard-client", // Read-only HTTP/WS SDK consumed by dashboards — sits outside the agent loop, no tool/middleware surface
 ]);
 
 /** Files that count as golden query test files. */

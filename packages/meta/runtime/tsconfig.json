@@ -24,6 +24,8 @@
     { "path": "../../kernel/engine-compose" },
     { "path": "../../lib/channel-cli" },
     { "path": "../../lib/context-manager" },
+    { "path": "../../lib/dashboard-client" },
+    { "path": "../../lib/dashboard-types" },
     { "path": "../../lib/fs-local" },
     { "path": "../../lib/fs-nexus" },
     { "path": "../../lib/nexus-client" },
