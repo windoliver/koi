@@ -1123,6 +1123,10 @@
         "@koi/tools-web": "workspace:*",
         "@koi/tui": "workspace:*",
       },
+      "optionalDependencies": {
+        "cpu-features": "0.0.10",
+        "ssh2": "1.16.0",
+      },
     },
     "packages/meta/runtime": {
       "name": "@koi/runtime",
