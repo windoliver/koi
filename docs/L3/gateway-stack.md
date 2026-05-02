@@ -47,29 +47,44 @@ After splitting the gateway into focused packages (#718), consumers who want the
 
 ```typescript
 import { createGatewayStack } from "@koi/gateway-stack";
+import { createHttpTransport } from "@koi/nexus-client";
 
 const stack = createGatewayStack(
   {
     gateway: { maxConnections: 5_000 },
-    canvas: { port: 8081 },    // omit to disable canvas
-    webhook: { port: 8082 },   // omit to disable webhook
-    nexus: {                    // omit for in-memory (single instance)
-      nexusUrl: "http://nexus:2026",
-      apiKey: "my-key",
-    },
+    canvas: { port: 8081 },                // omit to disable canvas
+    webhook: { port: 8082, pathPrefix: "/webhook" }, // omit to disable webhook
+    nexus: { instanceId: "gateway-1" },    // omit for in-memory (single instance)
   },
-  { transport, auth, canvasAuth, webhookAuth },
+  {
+    transport,
+    auth,
+    canvasAuth,
+    webhookDispatcher,
+    nexusTransport: createHttpTransport({ url: "http://nexus:3100" }),
+  },
 );
 
 await stack.start(8080);
 
+// Aggregated health
+const h = await stack.health();   // { status, gateway, nexus, components }
+
 // Access subsystems directly
-stack.gateway.onFrame((session, frame) => { /* ... */ });
+stack.gateway.onFrame("my-agent", (session, frame) => { /* ... */ });
 stack.canvas?.store.get("my-surface");
-stack.webhook?.port();
 
 await stack.stop();
 ```
+
+### Health endpoint
+
+`stack.healthHandler(req)` returns a `Response` you can wire into any HTTP route. The handler reports:
+
+- `status: "ok" | "degraded"` — `degraded` if Nexus is configured and currently in degraded mode
+- `gateway.activeConnections` — live transport-attached sessions
+- `nexus.mode` — `"healthy" | "degraded" | undefined` (omitted when Nexus is not configured)
+- `components` — per-subsystem (`gateway`, `canvas`, `webhook`, `nexus`) start state
 
 ---
 
@@ -78,5 +93,6 @@ await stack.stop();
 | Type | Purpose |
 |------|---------|
 | `GatewayStackConfig` | Combined config: gateway + optional canvas + webhook + nexus |
-| `GatewayStackDeps` | Core gateway deps + optional canvas/webhook authenticators |
-| `GatewayStack` | Return type — gateway + canvas + webhook + start/stop |
+| `GatewayStackDeps` | Core gateway deps + optional canvas auth + webhook dispatcher + nexus transport |
+| `GatewayStack` | Return type — gateway + canvas + webhook + nexus handle + start/stop + health |
+| `GatewayStackHealth` | Aggregated health: status, gateway, nexus, per-component |

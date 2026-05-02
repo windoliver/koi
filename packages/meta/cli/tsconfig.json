@@ -45,6 +45,8 @@
     { "path": "../../security/permissions-nexus" },
     { "path": "../../security/nexus-delegation" },
     { "path": "../../lib/nexus-client" },
+    { "path": "../../net/gateway" },
+    { "path": "../../net/gateway-stack" },
     { "path": "../../security/violation-store-sqlite" },
     { "path": "../../sched/scheduler" },
     { "path": "../../sched/scheduler-provider" },

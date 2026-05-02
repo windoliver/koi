@@ -159,6 +159,24 @@ describe("parseArgs", () => {
     test("parses --verbose", () => {
       expect(asFlags(isServeFlags, ["serve", "--verbose"]).verbose).toBe(true);
     });
+
+    test("parses --nexus-url + --nexus-api-key", () => {
+      const flags = asFlags(isServeFlags, [
+        "serve",
+        "--nexus-url",
+        "http://nexus:3100",
+        "--nexus-api-key",
+        "sk-test",
+      ]);
+      expect(flags.nexusUrl).toBe("http://nexus:3100");
+      expect(flags.nexusApiKey).toBe("sk-test");
+    });
+
+    test("nexus flags default to undefined", () => {
+      const flags = asFlags(isServeFlags, ["serve"]);
+      expect(flags.nexusUrl).toBeUndefined();
+      expect(flags.nexusApiKey).toBeUndefined();
+    });
   });
 
   describe("tui", () => {

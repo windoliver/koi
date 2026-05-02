@@ -1,0 +1,28 @@
+{
+  "name": "@koi/gateway-stack",
+  "description": "L3 gateway stack: wires gateway + canvas + webhook + optional Nexus HA into one lifecycle plus health endpoint",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/gateway": "workspace:*",
+    "@koi/gateway-canvas": "workspace:*",
+    "@koi/gateway-nexus": "workspace:*",
+    "@koi/gateway-types": "workspace:*",
+    "@koi/gateway-webhook": "workspace:*",
+    "@koi/nexus-client": "workspace:*"
+  }
+}

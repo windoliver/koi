@@ -87,6 +87,8 @@
     "@koi/middleware-otel": "workspace:*",
     "@koi/bash-ast": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
+    "@koi/gateway": "workspace:*",
+    "@koi/gateway-stack": "workspace:*",
     "@koi/nexus-client": "workspace:*",
     "@koi/nexus-delegation": "workspace:*",
     "@koi/permissions-nexus": "workspace:*",

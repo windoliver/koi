@@ -62,23 +62,11 @@ export interface RoutingConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Session
+// Session — re-export of the L0u canonical type so existing consumers of
+// `@koi/gateway` keep working without an import path change.
 // ---------------------------------------------------------------------------
 
-export interface Session {
-  readonly id: string;
-  readonly agentId: string;
-  readonly connectedAt: number;
-  readonly lastHeartbeat: number;
-  readonly seq: number;
-  readonly remoteSeq: number;
-  readonly metadata: Readonly<Record<string, unknown>>;
-  readonly routing?: RoutingContext | undefined;
-  /** Ms-since-epoch when the session was last disconnected. Set by the gateway on
-   *  disconnect and cleared on reconnect. Persisted so TTL eviction survives process
-   *  restarts — the reconnect path rejects sessions whose disconnectedAt is past TTL. */
-  readonly disconnectedAt?: number | undefined;
-}
+export type { Session } from "@koi/gateway-types";
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -146,6 +134,10 @@ export interface GatewayConfig {
   /** How long (ms) to retain disconnected sessions before evicting from the store.
    *  0 or undefined = retain until destroySession() or stop(). */
   readonly disconnectedSessionTtlMs?: number | undefined;
+  /** When true, stop() does NOT delete owned sessions from the store. Use when
+   *  the store is shared/persistent (e.g. Nexus-backed) and sessions must survive
+   *  a SIGTERM/restart so peers can reconnect. Default: false. */
+  readonly preserveSessionsOnStop?: boolean | undefined;
   // routing?: RoutingConfig — deferred: per-route handler isolation belongs to
   // the node registry layer, not the transport gateway. See intentional omissions.
 }
