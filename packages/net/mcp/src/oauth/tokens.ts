@@ -155,13 +155,14 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
   };
 
   const storeTokens = async (tokens: OAuthTokens): Promise<void> => {
-    // Index-first ordering: a token blob written without an index entry
-    // is invisible to clearAllOAuthState() and would survive uninstall.
-    // Tracking errors propagate so the caller learns the persist failed
-    // rather than seeing a phantom-success that leaves orphaned state.
-    await trackOAuthKey(storage, serverName, serverUrl, storageKey);
-    await storage.withLock(storageKey, async () => {
-      await storage.set(storageKey, JSON.stringify(tokens));
+    // Atomic track-then-set: holding the index lock across BOTH the
+    // index update and the token write closes the race where a
+    // concurrent clearAllOAuthState would delete the to-be-written
+    // token between track and set.
+    await withTrackedWrite(storage, serverName, serverUrl, storageKey, async () => {
+      await storage.withLock(storageKey, async () => {
+        await storage.set(storageKey, JSON.stringify(tokens));
+      });
     });
   };
 
@@ -323,29 +324,35 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
       current.accessToken === usedAccessToken &&
       current.refreshToken === usedRefreshToken;
 
-    return storage.withLock(storageKey, async () => {
-      const current = await getTokens();
+    // Wrap the CAS in withTrackedWrite so a successful refresh re-asserts
+    // the index entry and serializes against concurrent cleanup. Lock
+    // order matches storeTokens (idx → storageKey) to keep deadlock-
+    // freedom across all writers.
+    return withTrackedWrite(storage, serverName, serverUrl, storageKey, async () => {
+      return storage.withLock(storageKey, async () => {
+        const current = await getTokens();
 
-      if (!refreshResult.ok) {
-        if (refreshResult.terminal && isSameSnapshot(current)) {
-          // Only clear if no one else has refreshed since we started.
-          await storage.delete(storageKey);
+        if (!refreshResult.ok) {
+          if (refreshResult.terminal && isSameSnapshot(current)) {
+            // Only clear if no one else has refreshed since we started.
+            await storage.delete(storageKey);
+          }
+          // If another process already refreshed, return their access token.
+          if (current !== undefined && !isExpired(current)) {
+            return current.accessToken;
+          }
+          return undefined;
         }
-        // If another process already refreshed, return their access token.
-        if (current !== undefined && !isExpired(current)) {
+
+        // Another process may have already written a newer token set.
+        if (current !== undefined && !isSameSnapshot(current) && !isExpired(current)) {
           return current.accessToken;
         }
-        return undefined;
-      }
 
-      // Another process may have already written a newer token set.
-      if (current !== undefined && !isSameSnapshot(current) && !isExpired(current)) {
-        return current.accessToken;
-      }
-
-      // Write our refreshed tokens.
-      await storage.set(storageKey, JSON.stringify(refreshResult.tokens));
-      return refreshResult.tokens.accessToken;
+        // Write our refreshed tokens.
+        await storage.set(storageKey, JSON.stringify(refreshResult.tokens));
+        return refreshResult.tokens.accessToken;
+      });
     });
   };
 
@@ -403,6 +410,11 @@ export function computeOAuthIndexKey(serverName: string, serverUrl: string): str
  * Failures here are non-fatal for the caller — but they do mean a
  * future cleanup will leak that record. The caller should log if
  * tracking fails so leaks are at least observable.
+ *
+ * Prefer `withTrackedWrite` over a bare `trackOAuthKey + write` pair:
+ * the bare pair leaves a window where cleanup can run between the
+ * index update and the underlying record write, causing the freshly
+ * written record to outlive cleanup.
  */
 export async function trackOAuthKey(
   storage: SecureStorage,
@@ -412,57 +424,92 @@ export async function trackOAuthKey(
 ): Promise<void> {
   const idx = computeOAuthIndexKey(serverName, serverUrl);
   await storage.withLock(idx, async () => {
-    const raw = await storage.get(idx);
-    let keys: readonly string[] = [];
-    if (raw !== undefined) {
-      try {
-        const parsed: unknown = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          keys = parsed.filter((k): k is string => typeof k === "string");
-        }
-      } catch {
-        // Corrupt index — replace it.
-      }
-    }
-    if (!keys.includes(ownedKey)) {
-      const next = [...keys, ownedKey];
-      await storage.set(idx, JSON.stringify(next));
-    }
+    await appendOwnedKeyLocked(storage, idx, ownedKey);
   });
 }
 
-/**
- * Remove a single key from the cleanup index. Used to roll back a
- * tracking entry when persisting the underlying record fails after
- * the index update succeeded.
- */
-export async function untrackOAuthKey(
+async function appendOwnedKeyLocked(
   storage: SecureStorage,
-  serverName: string,
-  serverUrl: string,
+  idx: string,
   ownedKey: string,
 ): Promise<void> {
-  const idx = computeOAuthIndexKey(serverName, serverUrl);
-  await storage.withLock(idx, async () => {
-    const raw = await storage.get(idx);
-    if (raw === undefined) return;
-    let keys: readonly string[] = [];
+  const raw = await storage.get(idx);
+  let keys: readonly string[] = [];
+  if (raw !== undefined) {
     try {
       const parsed: unknown = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         keys = parsed.filter((k): k is string => typeof k === "string");
       }
     } catch {
-      return;
+      // Corrupt index — replace it.
     }
-    const next = keys.filter((k) => k !== ownedKey);
-    if (next.length === keys.length) return;
-    if (next.length === 0) {
-      await storage.delete(idx);
-    } else {
-      await storage.set(idx, JSON.stringify(next));
+  }
+  if (!keys.includes(ownedKey)) {
+    const next = [...keys, ownedKey];
+    await storage.set(idx, JSON.stringify(next));
+  }
+}
+
+/**
+ * Atomic "track + write" for an OAuth record. Holds the per-server
+ * index lock across BOTH the index update and the underlying record
+ * write, so a concurrent `clearAllOAuthState` cannot interleave and
+ * orphan the freshly-written record. This is the primitive that
+ * closes the cleanup-vs-writer race the older trackOAuthKey + set
+ * pair left open.
+ *
+ * Throws on any underlying storage failure. The caller is expected
+ * to surface the failure rather than persist a half-written record.
+ */
+export async function withTrackedWrite<T>(
+  storage: SecureStorage,
+  serverName: string,
+  serverUrl: string,
+  ownedKey: string,
+  doWrite: () => Promise<T>,
+): Promise<T> {
+  const idx = computeOAuthIndexKey(serverName, serverUrl);
+  return storage.withLock(idx, async () => {
+    await appendOwnedKeyLocked(storage, idx, ownedKey);
+    try {
+      return await doWrite();
+    } catch (cause: unknown) {
+      // Roll back the index entry so a permanently-failed write does
+      // not leave a phantom key behind. We're still under the index
+      // lock so this cannot race with another writer or cleanup.
+      await removeOwnedKeyLocked(storage, idx, ownedKey).catch(() => {
+        // Untrack failed too — leave the phantom; delete-of-nonexistent
+        // on cleanup is a no-op. Prefer surfacing the write error.
+      });
+      throw cause;
     }
   });
+}
+
+async function removeOwnedKeyLocked(
+  storage: SecureStorage,
+  idx: string,
+  ownedKey: string,
+): Promise<void> {
+  const raw = await storage.get(idx);
+  if (raw === undefined) return;
+  let keys: readonly string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      keys = parsed.filter((k): k is string => typeof k === "string");
+    }
+  } catch {
+    return;
+  }
+  const next = keys.filter((k) => k !== ownedKey);
+  if (next.length === keys.length) return;
+  if (next.length === 0) {
+    await storage.delete(idx);
+  } else {
+    await storage.set(idx, JSON.stringify(next));
+  }
 }
 
 /**
@@ -478,30 +525,34 @@ export async function clearAllOAuthState(
   serverUrl: string,
 ): Promise<void> {
   const idx = computeOAuthIndexKey(serverName, serverUrl);
-  // Read index first (no lock needed for read-then-delete; if a
-  // concurrent writer adds a key after our read, that record will be
-  // orphaned, but cleanup is operator-driven and rare enough that the
-  // race is acceptable vs. holding a lock across many deletes).
-  let trackedKeys: readonly string[] = [];
-  const raw = await storage.get(idx);
-  if (raw !== undefined) {
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        trackedKeys = parsed.filter((k): k is string => typeof k === "string");
+  // Hold the index lock across the entire sweep. Combined with
+  // `withTrackedWrite` on the writer side, this guarantees cleanup
+  // and concurrent track+write cannot interleave: a writer either
+  // gets the lock first (its record is in the index when we read,
+  // and gets deleted) or waits for cleanup to finish (and then
+  // writes a fresh record after all stale state is gone).
+  await storage.withLock(idx, async () => {
+    let trackedKeys: readonly string[] = [];
+    const raw = await storage.get(idx);
+    if (raw !== undefined) {
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          trackedKeys = parsed.filter((k): k is string => typeof k === "string");
+        }
+      } catch {
+        // Corrupt index — fall through to canonical-key delete below.
       }
-    } catch {
-      // Corrupt index — fall through to canonical-key delete below.
     }
-  }
-  // Always delete the canonical token key, even if the index is
-  // missing or corrupt: tokens persisted before the index existed
-  // would otherwise leak.
-  await storage.delete(computeServerKey(serverName, serverUrl));
-  for (const key of trackedKeys) {
-    await storage.delete(key);
-  }
-  await storage.delete(idx);
+    // Always delete the canonical token key, even if the index is
+    // missing or corrupt: tokens persisted before the index existed
+    // would otherwise leak.
+    await storage.delete(computeServerKey(serverName, serverUrl));
+    for (const key of trackedKeys) {
+      await storage.delete(key);
+    }
+    await storage.delete(idx);
+  });
 }
 
 export function computeClientKey(
@@ -580,26 +631,19 @@ export async function writeClientInfo(
   authority: string = "",
 ): Promise<void> {
   const key = computeClientKey(serverName, serverUrl, redirectUri, authority);
-  // Index-first ordering: the client record is computed from a
+  // Atomic track-then-write: the client record is computed from a
   // port-bound redirectUri, so cleanup cannot reconstruct the key
-  // without this index. If tracking fails, abort before persisting the
-  // record — orphaned client material would otherwise survive uninstall
-  // forever.
-  await trackOAuthKey(storage, serverName, serverUrl, key);
-  try {
+  // without the index. Holding the index lock across both the index
+  // update and the record set serializes against concurrent
+  // clearAllOAuthState — a writer either gets the index lock first
+  // (its record is in the index when cleanup later reads, and is
+  // deleted), or waits for cleanup to finish (and writes a fresh
+  // record after stale state is gone).
+  await withTrackedWrite(storage, serverName, serverUrl, key, async () => {
     await storage.withLock(key, async () => {
       await storage.set(key, JSON.stringify(info));
     });
-  } catch (cause: unknown) {
-    // Roll the index entry back so a permanently-failed write doesn't
-    // leave a phantom key the next cleanup tries to delete.
-    await untrackOAuthKey(storage, serverName, serverUrl, key).catch(() => {
-      // Untrack failed too — the index now has a phantom entry, but
-      // delete-of-nonexistent on cleanup is a no-op. Prefer surfacing
-      // the original write error.
-    });
-    throw cause;
-  }
+  });
 }
 
 function isExpired(tokens: OAuthTokens): boolean {
