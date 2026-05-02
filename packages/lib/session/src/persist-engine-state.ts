@@ -16,22 +16,22 @@
  *   Pass-through — the wrapper records nothing and the caller falls back to
  *   transcript-only resume via `resumeForSession`.
  *
- * Concurrency assumption (single-writer-per-session):
- *   The merge / clear paths are read-modify-write against the full session
- *   row. `SessionPersistence.saveSession` is currently a full upsert with no
- *   CAS / version field, so concurrent writers to the same `sessionId` can
- *   clobber each other. This wrapper assumes the standard Koi invariant:
- *   one runtime owns a session at a time.
+ * Concurrency:
+ *   When the store implements the optional `updateLastEngineState`, the
+ *   wrapper uses it for both the cancel write and the success-side clear.
+ *   That call performs read-modify-write inside a single transaction (or
+ *   the JS event-loop critical section, for the in-memory store), so a
+ *   timed-out write CANNOT commit on top of a newer terminal — the store
+ *   itself enforces atomicity.
  *
- *   Even under that assumption, there is a residual race: between the
- *   moment `saveSession` is dispatched and the moment the underlying store
- *   commits, a timed-out write CAN still land after the wrapper has yielded
- *   the terminal `done` event. The wrapper drops the common case via a
- *   wrapper-scoped generation token checked at every `await` boundary
- *   BEFORE issuing `saveSession`, but cannot atomically reject a dispatched
- *   write at the storage layer. Closing that final window requires
- *   extending `SessionPersistence.saveSession` with CAS / versioned updates
- *   — tracked as a follow-up that gates true multi-writer correctness.
+ *   When `updateLastEngineState` is absent, the wrapper falls back to
+ *   `loadSession` + `saveSession` and uses a wrapper-scoped generation
+ *   token to drop most stale writes. That fallback inherits a residual
+ *   dispatch-vs-commit race window (a write whose `saveSession` itself
+ *   stalls past the timeout can still land after a newer terminal). The
+ *   bundled in-memory and SQLite stores both implement the atomic update,
+ *   so the residual race only matters for custom `SessionPersistence`
+ *   implementations.
  */
 
 import type {
@@ -261,6 +261,18 @@ async function clearStaleCheckpointInner(
   myGen: number,
 ): Promise<void> {
   const sid = deps.recordTemplate().sessionId;
+  const update = deps.persistence.updateLastEngineState;
+
+  if (update !== undefined) {
+    // Atomic clear: returns NOT_FOUND when the row never existed (nothing to
+    // do) and otherwise sets `lastEngineState` to undefined inside the
+    // store's critical section.
+    const r = await update(sid, () => undefined, deps.now());
+    if (!r.ok && r.error.code !== "NOT_FOUND") deps.onPersistError(r.error);
+    return;
+  }
+
+  // Non-CAS fallback (subject to the documented dispatch-vs-commit race).
   const loaded = await deps.persistence.loadSession(sid);
   if (gen.current !== myGen) return;
   if (!loaded.ok) {
@@ -278,14 +290,18 @@ async function clearStaleCheckpointInner(
 }
 
 /**
- * Merge `state` into the existing session row, falling back to the
- * caller-supplied template only when no row exists. This avoids clobbering
- * `seq`, `remoteSeq`, `metadata`, and `status` — fields the caller's
- * template may not have refreshed since the last successful turn — while
- * still allowing the very first cancel of a new session to create the row.
+ * Persist `state` into the session row.
  *
- * Re-checks the generation token AFTER `loadSession` returns so a late
- * timed-out write cannot commit on top of a newer terminal's state.
+ * Prefers the store's atomic `updateLastEngineState` (one transaction, no
+ * race window). Falls back to load-merge-save when the store doesn't
+ * implement the optional method — that fallback path inherits the
+ * dispatch-vs-commit race documented in the module header.
+ *
+ * For a brand-new session (NOT_FOUND), the wrapper still has to create the
+ * row via `saveSession(template)` because the atomic update intentionally
+ * does not auto-create. The very-first-cancel race window for a session
+ * that has never been written is acceptable in practice (no prior
+ * checkpoint exists to clobber).
  */
 async function mergeAndSave(
   deps: WrapStreamDeps,
@@ -293,6 +309,20 @@ async function mergeAndSave(
   gen: GenRef,
   myGen: number,
 ): Promise<void> {
+  const sid = deps.recordTemplate().sessionId;
+  const update = deps.persistence.updateLastEngineState;
+
+  if (update !== undefined) {
+    const r = await update(sid, () => state, deps.now());
+    if (r.ok) return;
+    if (r.error.code !== "NOT_FOUND") {
+      deps.onPersistError(r.error);
+      return;
+    }
+    // Fall through to create the row from template.
+  }
+
+  // First-write path or non-CAS fallback: read-modify-write.
   const template = deps.recordTemplate();
   const loaded = await deps.persistence.loadSession(template.sessionId);
   if (gen.current !== myGen) return;
@@ -308,15 +338,4 @@ async function mergeAndSave(
   }
   const result = await deps.persistence.saveSession(merged);
   if (!result.ok) deps.onPersistError(result.error);
-  // Note: post-write race with a slow saveSession is intentionally NOT
-  // compensated. A "compensate by clearing if gen advanced" approach was
-  // tried and rejected — it can clobber a newer interrupted checkpoint that
-  // legitimately won the race. Without CAS / versioned updates in
-  // `SessionPersistence.saveSession`, the wrapper has no way to distinguish
-  // "I'm a late stale writer" from "I'm the legitimate latest writer that
-  // happened to commit after another terminal advanced gen." The pre-write
-  // generation check drops the common case (timeout fires before saveSession
-  // is even issued); the residual window between `await saveSession()`
-  // dispatch and the underlying store commit remains. See module docstring
-  // for the storage CAS follow-up.
 }

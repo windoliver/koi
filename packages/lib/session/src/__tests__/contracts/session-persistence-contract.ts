@@ -179,6 +179,60 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
         expect(result.value.lastEngineState).toBeUndefined();
       }
     });
+
+    test("updateLastEngineState atomically sets lastEngineState", async () => {
+      const store = createStore();
+      if (store.updateLastEngineState === undefined) return;
+      await store.saveSession(makeSession({ sessionId: sessionId("s-cas"), lastPersistedAt: 1 }));
+      const next: EngineState = { engineId: "e", data: { step: 99 } };
+      const r = await store.updateLastEngineState("s-cas", () => next, 5_000);
+      expect(r.ok).toBe(true);
+      const loaded = await store.loadSession("s-cas");
+      if (!loaded.ok) throw new Error();
+      expect(loaded.value.lastEngineState).toEqual(next);
+      expect(loaded.value.lastPersistedAt).toBe(5_000);
+    });
+
+    test("updateLastEngineState clears the field when apply returns undefined", async () => {
+      const store = createStore();
+      if (store.updateLastEngineState === undefined) return;
+      const seed: EngineState = { engineId: "e", data: 1 };
+      await store.saveSession(
+        makeSession({ sessionId: sessionId("s-clr"), lastEngineState: seed }),
+      );
+      const r = await store.updateLastEngineState("s-clr", () => undefined, 7_000);
+      expect(r.ok).toBe(true);
+      const loaded = await store.loadSession("s-clr");
+      if (!loaded.ok) throw new Error();
+      expect(loaded.value.lastEngineState).toBeUndefined();
+    });
+
+    test("updateLastEngineState returns NOT_FOUND when row missing", async () => {
+      const store = createStore();
+      if (store.updateLastEngineState === undefined) return;
+      const r = await store.updateLastEngineState("missing", () => undefined, 1);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("NOT_FOUND");
+    });
+
+    test("updateLastEngineState passes the prior state to apply", async () => {
+      const store = createStore();
+      if (store.updateLastEngineState === undefined) return;
+      const seed: EngineState = { engineId: "e", data: { n: 1 } };
+      await store.saveSession(
+        makeSession({ sessionId: sessionId("s-prev"), lastEngineState: seed }),
+      );
+      let observed: EngineState | undefined;
+      await store.updateLastEngineState(
+        "s-prev",
+        (prev) => {
+          observed = prev;
+          return prev;
+        },
+        1,
+      );
+      expect(observed).toEqual(seed);
+    });
   });
 
   // -----------------------------------------------------------------------

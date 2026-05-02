@@ -199,6 +199,37 @@ export interface SessionPersistence {
     frameId: string,
   ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
 
+  // -- Engine state (atomic update) ---------------------------------------
+
+  /**
+   * Atomically update `lastEngineState` on an existing session row.
+   *
+   * The store guarantees the read-modify-write sequence runs as one
+   * critical section: `apply` sees the latest persisted state, and the
+   * resulting value is committed without any other writer interleaving on
+   * the same row. This is the only safe primitive for cancel-resume
+   * checkpointing under any topology where two writes to the same session
+   * can race (timed-out late writes, concurrent terminals, multi-host
+   * failover) — `saveSession` is a full upsert with no CAS.
+   *
+   * Optional method: implementations may omit it; callers must check for
+   * presence and fall back to load-merge-save (with all the race caveats
+   * that implies) when absent.
+   *
+   * `apply` runs synchronously inside the store's critical section — it
+   * MUST be pure and fast. Use it to compute the new `EngineState` from
+   * the prior one, returning `undefined` to clear the field.
+   *
+   * Returns NOT_FOUND when the session row doesn't exist (the contract
+   * intentionally does not auto-create — callers must `saveSession` first
+   * for the very first cancel of a fresh session).
+   */
+  readonly updateLastEngineState?: (
+    sessionId: string,
+    apply: (prev: EngineState | undefined) => EngineState | undefined,
+    nowMs: number,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+
   // -- Session status ------------------------------------------------------
 
   /**

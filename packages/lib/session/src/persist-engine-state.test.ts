@@ -380,6 +380,37 @@ describe("wrapAdapterWithStatePersistence", () => {
     expect(finalRow.ok).toBe(false); // no late write resurrected the checkpoint
   });
 
+  test("uses updateLastEngineState when available (atomic CAS path)", async () => {
+    // Pre-create the row so the atomic update has a target.
+    await store.saveSession({ ...template(), lastPersistedAt: 1 });
+    const calls: Array<EngineState | undefined> = [];
+    const trackingStore: SessionPersistence = {
+      ...store,
+      updateLastEngineState: async (sid, apply, nowMs) => {
+        const r = await store.updateLastEngineState?.(
+          sid,
+          (prev) => {
+            const next = apply(prev);
+            calls.push(next);
+            return next;
+          },
+          nowMs,
+        );
+        return r ?? { ok: true, value: undefined };
+      },
+    };
+    const wrapped = wrapAdapterWithStatePersistence(makeAdapter([interruptedDone], captured), {
+      persistence: trackingStore,
+      recordTemplate: template,
+    });
+    for await (const _ of wrapped.stream({ kind: "text", text: "hi" }));
+
+    expect(calls).toEqual([captured]);
+    const loaded = await store.loadSession(SID);
+    if (!loaded.ok) throw new Error("expected ok");
+    expect(loaded.value.lastEngineState).toEqual(captured);
+  });
+
   test("late timed-out persist from prior stream() call does NOT clobber a later stream's state", async () => {
     // Production sessions reuse one wrapper across many stream() invocations.
     // A slow saveState from stream-1 must not race past stream-2's clear.
