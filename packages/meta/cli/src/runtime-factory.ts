@@ -2365,6 +2365,27 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // and does not alter the event order otherwise.
   const sessionPersistenceCfg = config.sessionPersistence;
   const stateSessionId = config.session?.sessionId;
+  // Hoisted forward-reference to the runtime so checkpoint persistence
+  // follows live session id rotation (cycleSession/rebindSessionId).
+  // Without this the `recordTemplate` below would close over the
+  // construction-time sessionId; a picker resume that switches the live
+  // session would then keep writing/clearing the WRONG row, overwriting
+  // the original session's checkpoint while the newly-selected session
+  // gets no durable state. Same pattern used at line ~2845 for
+  // compliance/audit middleware (round 9 finding).
+  // let: assigned after createKoi returns, dereferenced lazily via the
+  // closure below.
+  let runtimeForCheckpointSessionId: import("@koi/engine").KoiRuntime | undefined;
+  const { sessionId: brandSessionId } = await import("@koi/core");
+  const liveCheckpointSessionId = (): import("@koi/core").SessionId => {
+    const live = runtimeForCheckpointSessionId?.sessionId;
+    if (live !== undefined) return brandSessionId(live);
+    if (stateSessionId !== undefined) return stateSessionId;
+    throw new Error(
+      "[koi/runtime-factory] no live session id available for cancel-checkpoint write — " +
+        "runtime not yet constructed and no startup session id supplied",
+    );
+  };
   const { wrapAdapterWithStatePersistence } = await import("@koi/session");
   // Issue #1683 round 8 finding: fail closed when `sessionPersistence` is
   // supplied but the inner adapter cannot honor it. Silently no-oping
@@ -2389,7 +2410,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       ? wrapAdapterWithStatePersistence(timeoutInjectedAdapter, {
           persistence: sessionPersistenceCfg.persistence,
           recordTemplate: () => ({
-            sessionId: stateSessionId,
+            sessionId: liveCheckpointSessionId(),
             agentId: sessionPersistenceCfg.agentId,
             manifestSnapshot: sessionPersistenceCfg.manifestSnapshot,
             seq: 0,
@@ -4207,6 +4228,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // (only from a later `cycleSession()`), so this assignment
     // happens before any rotation can fire.
     runtimeForRotation = runtime;
+    runtimeForCheckpointSessionId = runtime;
     // Publish the live host pid.id to the gov-12 scope resolver. The
     // resolver rewrites only when `request.agentId === livePidId`, so
     // sub-agents (which carry their own pid) keep their unstable UUID
