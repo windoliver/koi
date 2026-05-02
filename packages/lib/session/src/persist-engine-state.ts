@@ -123,6 +123,24 @@ export function wrapAdapterWithStatePersistence(
     return inner;
   }
 
+  // Round 9: refuse stores without atomic CAS. The load-merge-save
+  // fallback inherits a documented dispatch-vs-commit race window where
+  // a timed-out interrupted persist can commit on top of a newer
+  // terminal — exactly the corruption durable cancel-resume must
+  // prevent. The bundled in-memory and SQLite stores both implement
+  // `updateLastEngineState`; custom remote stores must do the same
+  // (with their own version/CAS check inside the transaction body, per
+  // the L0 contract docs in `@koi/core/session.ts`).
+  if (persistence.updateLastEngineState === undefined) {
+    throw new Error(
+      "[@koi/session:persist-engine-state] SessionPersistence implementation does not " +
+        "implement updateLastEngineState — refusing to wrap. Atomic CAS is required for " +
+        "durable cancel-resume; the non-CAS fallback can resurrect stale checkpoints. " +
+        "Use createInMemorySessionPersistence / createSqliteSessionPersistence (both " +
+        "implement it) or extend your custom store with the optional method.",
+    );
+  }
+
   const persistTimeoutMs = options.persistTimeoutMs ?? DEFAULT_PERSIST_TIMEOUT_MS;
 
   // The generation counter MUST be wrapper-scoped, not stream-scoped. A
