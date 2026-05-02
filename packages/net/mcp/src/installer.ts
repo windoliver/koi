@@ -389,9 +389,18 @@ export async function installMcpServer(
     overwrite: options.overwrite ?? false,
   });
   if (!added.ok) {
-    // Conflict (or write failure) after a successful verify can leave
-    // OAuth tokens persisted in the keychain even though no .mcp.json
-    // entry exists. Clean those up so we don't leak credentials.
+    // CONFLICT means another install of the same name already wrote
+    // the entry. Two installs of the same HTTP server can race here;
+    // both complete OAuth during verify, one wins the config write,
+    // and the loser would otherwise wipe the winner's shared OAuth
+    // state. Skip credential cleanup on CONFLICT specifically — the
+    // existing entry's credentials are now in active use. For other
+    // failure codes (write errors, validation), the entry never
+    // landed and any tokens we persisted during verify are orphaned,
+    // so cleanup is the right call.
+    if (added.error.code === "CONFLICT") {
+      return { ok: false, error: added.error };
+    }
     return await abortWithCredentialCleanup(
       options.server.name,
       added.error,
