@@ -233,6 +233,10 @@ Set `oauth.includeResourceParameter: false` for legacy authorization servers tha
 | `koi mcp auth <server>` | Run OAuth flow (opens browser) |
 | `koi mcp logout <server>` | Clear stored tokens |
 | `koi mcp debug <server>` | Connection diagnostic |
+| `koi mcp search <query>` | Search the official MCP registry |
+| `koi mcp info <name>` | Show full metadata for a registry server |
+| `koi mcp install <name>` | Add server to mcp.json + verify connection (OAuth if needed) |
+| `koi mcp uninstall <name>` | Remove server from mcp.json + clear stored credentials |
 
 All support `--json` for machine-readable output.
 
@@ -248,6 +252,75 @@ When `listTools()` or `callTool()` receives a 401/403, the connection attempts a
 
 - `reconnect()` — force a transport rebuild without terminating the connection; transitions through `reconnecting` state so the token manager is re-consulted; used after a token refresh to pick up fresh credentials even when currently `connected`
 - `triggerAuth?()` — user-initiated auth entry point that shares the same singleflight as automatic 401-recovery; at most one browser window opens per server at a time; skips the silent-refresh attempt and goes directly to interactive OAuth
+
+## Registry Discovery (issue #1646)
+
+One-click discovery and install for MCP servers via the official registry introduced in the November 2025 spec update.
+
+### Registry Client
+
+`createRegistryClient({ baseUrl?, fetch? })` — thin async client over the public, unauthenticated REST API.
+
+| Method | Endpoint | Returns |
+|--------|----------|---------|
+| `searchServers({ query?, limit?, cursor? })` | `GET /v0.1/servers` | `Result<{ servers, nextCursor }, KoiError>` |
+| `getServer(name, version?)` | `GET /v0.1/servers/{name}/versions/{version\|latest}` | `Result<ServerDetail, KoiError>` |
+
+- Default `baseUrl`: `https://registry.modelcontextprotocol.io`.
+- `name` and `version` are URL-encoded (reverse-DNS names contain `/`).
+- Read endpoints are unauthenticated. The client surfaces `429` as a retryable `KoiError` — backoff is the caller's responsibility.
+- Schema validated with Zod against the subset of fields we render.
+
+### Local Cache
+
+`createRegistryCache({ dir?, ttlMs? })` — JSON cache at `~/.koi/cache/mcp-registry.json` (override via `KOI_CACHE_DIR`).
+
+- TTL default: 1 hour. Aligned with the registry's published guidance for aggregators ("regular but infrequent" polling).
+- Stores last-search results keyed by query string and last `ServerDetail` keyed by `name@version`.
+- Used by `search` (offline fallback) and `info` (skips a network round trip when fresh).
+- `--no-cache` flag on each subcommand bypasses both read and write.
+
+### Install Flow
+
+`installMcpServer({ name, version?, configPath, runtime?, oauthRuntime? })`:
+
+1. **Fetch** server detail (cache or network).
+2. **Pick a package**:
+   - Prefer `remotes[]` HTTP entries → produces an `http` transport config.
+   - Else first `packages[]` entry whose `registryType` is `npm` (uses `npx`) or `oci` (Docker) → produces a `stdio` transport config with command + args + env.
+   - If none usable → return `Result.error{ code: "INSTALL_NO_PACKAGE" }`.
+3. **Write** config via `addServerToMcpJson(configPath, name, McpServerConfig)`. Atomic write (`tmp + rename`). Preserves unknown top-level fields in `mcp.json`.
+4. **OAuth** (only when remote declares an auth requirement and `oauthRuntime` is provided): run `createOAuthAuthProvider().startAuthFlow()` before verification.
+5. **Verify** with a single `createMcpConnection(config).listTools()` call. On failure, the install is rolled back via `removeServerFromMcpJson` and the error is returned.
+
+`uninstallMcpServer({ name, configPath })`: `removeServerFromMcpJson` → best-effort `secure-storage` token wipe → `Result<void, KoiError>`.
+
+### Permission UI Before Install
+
+The MCP registry schema **does not declare permissions or scopes** as first-class fields. Discovery surfaces the install-time risk surface honestly rather than inventing one:
+
+- **stdio packages** print a red banner: `Will execute on your machine: <command> <args>`. Stdio servers run arbitrary code with the user's privileges and **must** be installed with informed consent.
+- **http remotes** print the URL and any `oauth` requirement: `Will connect to <url>` and, if applicable, `Requires OAuth authorization (browser)`.
+- Registry-injected `_meta` fields (e.g., subregistry-supplied scan results, declared scopes) are passed through and rendered when present.
+
+`koi mcp install <name>` prompts `Continue? [y/N]` by default. `--yes` skips the prompt for non-interactive use; `--json` emits structured output and is incompatible with `--yes` interactivity (it implies `--yes`).
+
+### Uncertainty Surfacing
+
+Per the public registry docs (preview, no breaking-change guarantee for v0.1, no documented rate limits), the client is defensive:
+- 429 → typed retryable error; the CLI advises the user to retry later (no automatic retry storm).
+- Unknown server schema fields → ignored (forward-compatible Zod parsing).
+- Cache is opportunistic — a corrupt cache file is dropped and rewritten, never thrown.
+
+### Module Additions
+
+| Module | Purpose |
+|--------|---------|
+| `registry/client.ts` | `createRegistryClient` — search + getServer |
+| `registry/schema.ts` | Zod schemas for the subset of `ServerDetail` we use |
+| `registry/cache.ts` | TTL'd JSON cache |
+| `mcp-json-write.ts` | `addServerToMcpJson`, `removeServerFromMcpJson`, atomic `saveMcpJsonFile` |
+| `installer.ts` | `installMcpServer`, `uninstallMcpServer`, `pickPackageForInstall` |
 
 ## Tool Origin
 

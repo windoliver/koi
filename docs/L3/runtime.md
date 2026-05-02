@@ -4,6 +4,8 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 ## Recent updates
 
+`@koi/mcp` registry-discovery surface (#1646): added `RegistryClient`, `RegistryCache`, `installMcpServer`, `uninstallMcpServer`, `pickPackageForInstall`, and `clearAllOAuthState` to the public API to support the new `koi mcp search/info/install/uninstall` CLI subcommands. Behavioral changes inside the existing surface: install verification runs verify-before-commit (no `.mcp.json` mutation until verify succeeds); OAuth tracking uses a per-server cleanup index with `withTrackedWrite` so cleanup and concurrent token/DCR-client writes serialize on the index lock (closes a credential-orphan race that could leave live OAuth material behind after uninstall/rollback); registry remote URLs are SSRF-checked (HTTPS-only outside loopback, RFC1918/link-local/CGNAT/multicast IP literals refused); `.mcp.json` reads reject malformed `mcpServers` shapes before any mutation. No new cassette/trajectory — registry discovery is plain HTTP without LLM tools — but the @koi/mcp lifecycle middleware that already participates in golden replays is unaffected.
+
 Review fix sync: `@koi/middleware-intent-capsule` remains an optional runtime
 dependency, but now has standalone golden coverage in `golden-replay.test.ts`.
 The assertion exercises the public middleware contract without an LLM cassette:
