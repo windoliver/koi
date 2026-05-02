@@ -11,7 +11,7 @@ runs:
     # dedicated PR that also refreshes bench/startup-baseline.json.
     - uses: oven-sh/setup-bun@v2
       with:
-        bun-version: 1.3.9
+        bun-version: 1.3.10
 
     - name: Cache Bun dependencies
       uses: actions/cache@v4
