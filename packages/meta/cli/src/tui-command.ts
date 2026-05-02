@@ -1564,19 +1564,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     if (resumedEngineState !== undefined) {
       process.stderr.write("koi tui: resuming from cancel checkpoint\n");
     }
-    // Flip the resumed session's row back to "running" so a SIGKILL/OOM
-    // during this resumed run is visible to recovery scans (which key off
-    // status === "running"). The prior process exited cleanly and set
-    // "done"; without this flip, a crash here would silently slip past
-    // the recovery contract.
-    if (stateSessionPersistence !== undefined) {
-      const statusResult = await stateSessionPersistence.setSessionStatus(tuiSessionId, "running");
-      if (!statusResult.ok && statusResult.error.code !== "NOT_FOUND") {
-        process.stderr.write(
-          `koi tui: failed to mark resumed session as running (${statusResult.error.message}) — crash recovery may miss this run\n`,
-        );
-      }
-    }
+    // The running-status flip is intentionally deferred until AFTER all
+    // resume-time validation gates (sidecar, manifest provenance, audit
+    // intent, ACE config) have passed — see the "ResumedSession running
+    // flip" block below. Flipping here would falsely mark a session as
+    // running on a process.exit(1) failure path that hasn't yet
+    // installed the exit handler, leaving the row in a bogus state for
+    // recovery scans (round 8 finding).
   }
 
   // Issue #1683: seed an authoritative SessionRecord on fresh sessions so
@@ -1805,6 +1799,23 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     sessionName: "",
     sessionId: tuiSessionId,
   });
+
+  // ResumedSession running flip — deferred from the resume block above
+  // so the row only transitions back to "running" once all validation
+  // gates (sidecar, manifest provenance, audit intent, ACE config) have
+  // passed. A process.exit(1) on any of those gates leaves the row at
+  // its prior "done" state, so recovery tooling (which keys off
+  // status === "running") doesn't misclassify a rejected resume as a
+  // crashed live session. SIGKILL/OOM after this point legitimately
+  // leaves "running" for next-startup recovery scans.
+  if (flags.resume !== undefined && stateSessionPersistence !== undefined) {
+    const statusResult = await stateSessionPersistence.setSessionStatus(tuiSessionId, "running");
+    if (!statusResult.ok && statusResult.error.code !== "NOT_FOUND") {
+      process.stderr.write(
+        `koi tui: failed to mark resumed session as running (${statusResult.error.message}) — crash recovery may miss this run\n`,
+      );
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // 3. Assemble runtime (A1-A: delegate to createKoiRuntime)
@@ -5916,11 +5927,42 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             }
           }
 
+          // Picker resume: the runtime is NOT rebuilt mid-session, so
+          // a cancel checkpoint stored under `selectedId` cannot be
+          // applied via `inner.loadState` here — the live adapter
+          // belongs to the original session. Pass stateOpts anyway so
+          // the load happens, and surface a stderr warning if a
+          // cancel checkpoint exists for the picked session telling
+          // the operator to restart with `koi tui --resume <id>` to
+          // honor the cursor. Round 8 finding: silently degrading
+          // picker resume to transcript-only loses the interrupted
+          // prompt cursor that the cancel-checkpoint feature was
+          // supposed to preserve.
+          const pickerStateOpts =
+            stateSessionPersistence !== undefined
+              ? {
+                  persistence: stateSessionPersistence,
+                  expectedEngineId: computeDefaultEngineId(),
+                  onEngineMismatch: (
+                    _stored: import("@koi/core").EngineState,
+                    _expected: string,
+                  ): void => {},
+                  onCheckpointReadError: (_err: import("@koi/core").KoiError): void => {},
+                }
+              : undefined;
           const resumeResult = await resumeSessionFromJsonl(
             selectedId,
             jsonlTranscript,
             SESSIONS_DIR,
+            pickerStateOpts,
           );
+          if (resumeResult.ok && resumeResult.value.lastEngineState !== undefined) {
+            process.stderr.write(
+              `koi tui: picker resume of session "${selectedId}" found a cancel checkpoint, ` +
+                "but mid-session picker resume cannot apply it (runtime is not rebuilt). " +
+                `Restart with \`koi tui --resume ${selectedId}\` to honor the cursor.\n`,
+            );
+          }
           if (!resumeResult.ok) {
             // Stale completions stay quiet — the newer click is
             // already in flight and will surface its own error.
