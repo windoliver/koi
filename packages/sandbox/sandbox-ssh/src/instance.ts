@@ -15,64 +15,60 @@ const DEFAULT_MAX_OUTPUT_BYTES = 1_048_576; // 1 MB — matches sandbox-os defau
  * become rejected promises (the underlying ssh2 connection refuses ops once
  * `end()` has been called).
  */
+async function execOverClient(
+  client: SshClient,
+  command: string,
+  args: readonly string[],
+  opts: SandboxExecOptions | undefined,
+): Promise<SandboxAdapterResult> {
+  const start = Date.now();
+  const line = composeCommandLine(command, args);
+  const result = await client.exec(line, {
+    ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+    ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
+    ...(opts?.onStdout !== undefined ? { onStdout: opts.onStdout } : {}),
+    ...(opts?.onStderr !== undefined ? { onStderr: opts.onStderr } : {}),
+  });
+  const max = opts?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+  const stdout = truncate(result.stdout, max);
+  const stderr = truncate(result.stderr, max);
+  const truncated = stdout.length < result.stdout.length || stderr.length < result.stderr.length;
+  return {
+    exitCode: result.exitCode,
+    stdout,
+    stderr,
+    durationMs: Date.now() - start,
+    timedOut: result.timedOut ?? false,
+    oomKilled: false,
+    truncated,
+  };
+}
+
 export function createSshInstance(client: SshClient): SandboxInstance {
   let destroyed = false;
+  const guard = (): void => {
+    if (destroyed) throw new Error("sandbox-ssh: instance has been destroyed");
+  };
 
   return {
-    async exec(
-      command: string,
-      args: readonly string[],
-      opts?: SandboxExecOptions,
-    ): Promise<SandboxAdapterResult> {
-      if (destroyed) {
-        throw new Error("sandbox-ssh: instance has been destroyed");
-      }
-      const start = Date.now();
-      const line = composeCommandLine(command, args);
-      // Forward the full SandboxExecOptions surface (timeout, signal, streaming
-      // callbacks) into the SshClient so remote commands honour the L0
-      // contract — without this, a hung remote command outlives both the
-      // foreground timeout and shutdown abort.
-      const result = await client.exec(line, {
-        ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
-        ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
-        ...(opts?.onStdout !== undefined ? { onStdout: opts.onStdout } : {}),
-        ...(opts?.onStderr !== undefined ? { onStderr: opts.onStderr } : {}),
-      });
-      const max = opts?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-      const stdout = truncate(result.stdout, max);
-      const stderr = truncate(result.stderr, max);
-      const truncated =
-        stdout.length < result.stdout.length || stderr.length < result.stderr.length;
-      return {
-        exitCode: result.exitCode,
-        stdout,
-        stderr,
-        durationMs: Date.now() - start,
-        timedOut: result.timedOut ?? false,
-        oomKilled: false,
-        truncated,
-      };
+    async exec(command, args, opts) {
+      guard();
+      return execOverClient(client, command, args, opts);
     },
-    async readFile(path: string): Promise<Uint8Array> {
-      if (destroyed) throw new Error("sandbox-ssh: instance has been destroyed");
+    async readFile(path) {
+      guard();
       return client.readFile(path);
     },
-    async writeFile(path: string, data: Uint8Array): Promise<void> {
-      if (destroyed) throw new Error("sandbox-ssh: instance has been destroyed");
+    async writeFile(path, data) {
+      guard();
       return client.writeFile(path, data);
     },
-    async destroy(): Promise<void> {
+    async destroy() {
       if (destroyed) return;
       destroyed = true;
       await client.end();
     },
-    async detach(): Promise<void> {
-      // SSH "detach" semantics: stop using this wrapper without closing the
-      // underlying client. The pool entry that owns the client (if any)
-      // continues to hold it; a future findOrCreate(scope, ...) will return
-      // a fresh wrapper around the same connection. From this instance's
-      // POV, detach == destroy-without-end: refuse further ops.
+    async detach() {
       if (destroyed) return;
       destroyed = true;
     },

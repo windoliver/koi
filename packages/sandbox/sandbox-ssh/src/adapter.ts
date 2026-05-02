@@ -63,55 +63,59 @@ function wrapPooled(
   };
 }
 
+async function connectFromProfile(
+  config: SshAdapterConfig,
+  profile: SandboxProfile,
+): Promise<Result<SshClient, KoiError>> {
+  const target = profile.ssh;
+  if (target === undefined) {
+    const error: KoiError = {
+      code: "VALIDATION",
+      message: "sandbox-ssh: profile.ssh is required",
+      retryable: false,
+    };
+    return { ok: false, error };
+  }
+  try {
+    const client = await config.clientFactory.connect(target);
+    return { ok: true, value: client };
+  } catch (err) {
+    return {
+      ok: false,
+      error: {
+        code: "EXTERNAL",
+        message: `sandbox-ssh: failed to connect to ${target.user}@${target.host}`,
+        retryable: false,
+        cause: err,
+      },
+    };
+  }
+}
+
+async function connectOrThrow(
+  config: SshAdapterConfig,
+  profile: SandboxProfile,
+): Promise<SshClient> {
+  const r = await connectFromProfile(config, profile);
+  if (!r.ok) throw new Error(r.error.message, { cause: r.error });
+  return r.value;
+}
+
 export function createSshAdapter(config: SshAdapterConfig): SandboxAdapter {
   const pool: Map<string, SshClient> = new Map();
-
-  async function connectFromProfile(profile: SandboxProfile): Promise<Result<SshClient, KoiError>> {
-    const target = profile.ssh;
-    if (target === undefined) {
-      const error: KoiError = {
-        code: "VALIDATION",
-        message: "sandbox-ssh: profile.ssh is required",
-        retryable: false,
-      };
-      return { ok: false, error };
-    }
-    try {
-      const client = await config.clientFactory.connect(target);
-      return { ok: true, value: client };
-    } catch (err) {
-      return {
-        ok: false,
-        error: {
-          code: "EXTERNAL",
-          message: `sandbox-ssh: failed to connect to ${target.user}@${target.host}`,
-          retryable: false,
-          cause: err,
-        },
-      };
-    }
-  }
-
   return {
     name: "@koi/sandbox-ssh",
     version: "0.1.0",
     capabilities: SANDBOX_SSH_CAPABILITIES,
-    async create(profile: SandboxProfile): Promise<SandboxInstance> {
-      const r = await connectFromProfile(profile);
-      if (!r.ok) {
-        throw new Error(r.error.message, { cause: r.error });
-      }
-      return createSshInstance(r.value);
+    async create(profile) {
+      return createSshInstance(await connectOrThrow(config, profile));
     },
-    async findOrCreate(scope: string, profile: SandboxProfile): Promise<SandboxInstance> {
+    async findOrCreate(scope, profile) {
       const existing = pool.get(scope);
       if (existing !== undefined) return wrapPooled(existing, scope, pool);
-      const r = await connectFromProfile(profile);
-      if (!r.ok) {
-        throw new Error(r.error.message, { cause: r.error });
-      }
-      pool.set(scope, r.value);
-      return wrapPooled(r.value, scope, pool);
+      const client = await connectOrThrow(config, profile);
+      pool.set(scope, client);
+      return wrapPooled(client, scope, pool);
     },
   };
 }

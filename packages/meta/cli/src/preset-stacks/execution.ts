@@ -297,40 +297,41 @@ export const executionStack: PresetStack = {
     const osSandboxActive = routerResult.ok
       ? routerResult.value.describe().some((b) => b.name === "@koi/sandbox-os")
       : false;
-    const sandboxAdapter = routerResult.ok
-      ? createRouterAdapterShim({
-          router: routerResult.value,
-          // Bash tool only invokes instance.exec — never readFile/writeFile/
-          // spawn — so advertise only `exec`. This prevents the shim from
-          // lying about capabilities a low-priority backend (e.g., sandbox-os
-          // for copy-files) cannot uphold.
-          capabilitiesOverride: { supports: new Set(["exec"]), priority: 0 },
-          onDecision: (decision) => {
-            // Surface the routing decision to the audit/debug channel via
-            // stderr so TUI users can see fallback when it happens. This
-            // is a one-line digest; full decision lives on the
-            // SelectionDecision object for richer consumers.
-            const failed = decision.attempts.filter((a) => !a.ok).map((a) => a.adapter);
-            if (failed.length > 0) {
-              process.stderr.write(
-                `[sandbox-router] selected=${decision.selected.name} after ${failed.length} fallback(s) from [${failed.join(",")}]\n`,
-              );
-            }
-          },
-        })
-      : undefined;
-    const sandboxProfile = routerResult.ok
-      ? mergeProfile(restrictiveProfile(), {
-          network: { allow: true },
-          filesystem: {
-            allowWrite: [
-              ctx.cwd, // workspace root
-              "/tmp", // POSIX temp
-              "/var/folders", // macOS user cache (Bun install, compiler cache)
-            ],
-          },
-        })
-      : undefined;
+    // Only wire sandboxAdapter when sandbox-os is in the chain. The CLI's
+    // bash sandbox is meant to be lightweight (process-level via sandbox-exec
+    // / bwrap); Docker container creation per bash call is too heavy for the
+    // default path AND fails in CI hosts where the docker daemon probes ok
+    // but cannot create containers. Keeping the gate at osSandboxActive
+    // preserves pre-router behavior for hosts without bwrap/sandbox-exec
+    // (bash falls back to non-sandboxed exec, same as before #1641).
+    const sandboxAdapter =
+      osSandboxActive && routerResult.ok
+        ? createRouterAdapterShim({
+            router: routerResult.value,
+            capabilitiesOverride: { supports: new Set(["exec"]), priority: 0 },
+            onDecision: (decision) => {
+              const failed = decision.attempts.filter((a) => !a.ok).map((a) => a.adapter);
+              if (failed.length > 0) {
+                process.stderr.write(
+                  `[sandbox-router] selected=${decision.selected.name} after ${failed.length} fallback(s) from [${failed.join(",")}]\n`,
+                );
+              }
+            },
+          })
+        : undefined;
+    const sandboxProfile =
+      osSandboxActive && routerResult.ok
+        ? mergeProfile(restrictiveProfile(), {
+            network: { allow: true },
+            filesystem: {
+              allowWrite: [
+                ctx.cwd, // workspace root
+                "/tmp", // POSIX temp
+                "/var/folders", // macOS user cache (Bun install, compiler cache)
+              ],
+            },
+          })
+        : undefined;
 
     // --- Bash AST-walker elicit fallback → caller's approval handler ---
     const bashElicit = async (params: {
