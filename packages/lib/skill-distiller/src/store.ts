@@ -69,10 +69,15 @@ export function createSkillStore(config: SkillStoreConfig = {}): SkillStore {
   }
   // Map preserves insertion order; we treat MRU = last-inserted.
   const entries = new Map<string, DistillationRecord>();
+  // Secondary index: draftHash → name. Lets add() reject content-equivalent
+  // drafts being smuggled in under a different name (which would otherwise
+  // double-occupy LRU slots and evict unrelated skills).
+  const byHash = new Map<string, string>();
 
   const touch = (name: string, record: DistillationRecord): void => {
     entries.delete(name);
     entries.set(name, record);
+    byHash.set(record.draftHash, name);
   };
 
   const evictIfFull = (): void => {
@@ -81,7 +86,10 @@ export function createSkillStore(config: SkillStoreConfig = {}): SkillStore {
       if (oldestKey === undefined) return;
       const oldest = entries.get(oldestKey);
       entries.delete(oldestKey);
-      if (oldest !== undefined) config.onEvicted?.(oldest, "lru");
+      if (oldest !== undefined) {
+        if (byHash.get(oldest.draftHash) === oldestKey) byHash.delete(oldest.draftHash);
+        config.onEvicted?.(oldest, "lru");
+      }
     }
   };
 
@@ -89,6 +97,17 @@ export function createSkillStore(config: SkillStoreConfig = {}): SkillStore {
 
   return {
     add: (record: DistillationRecord): SkillStoreAddStatus => {
+      // Hash-first dedupe: if any existing entry has the same draftHash under
+      // a DIFFERENT name, treat the new insert as a duplicate of that entry
+      // rather than admitting two LRU slots for content-equivalent skills.
+      const sameHashName = byHash.get(record.draftHash);
+      if (sameHashName !== undefined && sameHashName !== record.draft.name) {
+        const existingByHash = entries.get(sameHashName);
+        if (existingByHash !== undefined) {
+          touch(sameHashName, existingByHash);
+          return "duplicate";
+        }
+      }
       const existing = entries.get(record.draft.name);
       if (existing !== undefined) {
         if (existing.draftHash === record.draftHash) {
@@ -105,6 +124,9 @@ export function createSkillStore(config: SkillStoreConfig = {}): SkillStore {
         }
         // policy === "replace"
         config.onReplaced?.({ previous: existing, next: record });
+        if (byHash.get(existing.draftHash) === record.draft.name) {
+          byHash.delete(existing.draftHash);
+        }
         touch(record.draft.name, record);
         // No LRU eviction needed — same-name replacement preserves entry count.
         return "replaced";
@@ -126,11 +148,18 @@ export function createSkillStore(config: SkillStoreConfig = {}): SkillStore {
       touch(name, record);
       return record;
     },
-    delete: (name: string): boolean => entries.delete(name),
+    delete: (name: string): boolean => {
+      const existing = entries.get(name);
+      if (existing === undefined) return false;
+      entries.delete(name);
+      if (byHash.get(existing.draftHash) === name) byHash.delete(existing.draftHash);
+      return true;
+    },
     list: (): readonly DistillationRecord[] => Array.from(entries.values()).reverse(),
     size: (): number => entries.size,
     clear: (): void => {
       entries.clear();
+      byHash.clear();
     },
   };
 }

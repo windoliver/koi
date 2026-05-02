@@ -180,13 +180,34 @@ interface VariableArg {
   readonly key: string;
 }
 
+// Recursively flatten an arg object into dotted-path leaves so a nested
+// `{target:{path:"/a"}}` is tracked as `target.path` and survives the
+// variability check the same way a top-level `path` would.
+function flattenArgKeys(prefix: string, v: unknown, out: Map<string, string>): void {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) {
+    out.set(prefix, JSON.stringify(v));
+    return;
+  }
+  for (const [k, vv] of Object.entries(v as Record<string, unknown>)) {
+    const next = prefix === "" ? k : `${prefix}.${k}`;
+    flattenArgKeys(next, vv, out);
+  }
+}
+
 // Walk every tool call's argsJson and collect the set of values seen for each
-// (toolName, argKey) pair. A key whose value differs across invocations is a
-// "variable" arg — exactly the kind of input that must be exposed as a skill
-// parameter so the next caller can supply it. Keys that were always identical
-// are constants of the procedure and don't need parameterization.
+// (toolName, argKey) pair, including nested keys via dotted paths. A key whose
+// value differs across invocations is a "variable" arg — exactly the kind of
+// input that must be exposed as a skill parameter so the next caller can
+// supply it. Malformed args are conservatively treated as variable for that
+// tool (we cannot prove they're constant), which forces the draft to expose a
+// parameter rather than silently passing.
 function collectVariableArgKeys(trace: DistillationTrace): readonly VariableArg[] {
   const seen = new Map<string, Set<string>>();
+  const recordValue = (composite: string, value: string): void => {
+    const bag = seen.get(composite) ?? new Set<string>();
+    bag.add(value);
+    seen.set(composite, bag);
+  };
   for (const turn of trace.turns) {
     if (turn.toolCalls === undefined) continue;
     for (const call of turn.toolCalls) {
@@ -194,37 +215,53 @@ function collectVariableArgKeys(trace: DistillationTrace): readonly VariableArg[
       try {
         parsed = JSON.parse(call.argsJson);
       } catch {
+        // Fail-closed: an unparsable arg cannot be proved constant. Mark a
+        // synthetic key so the draft must expose at least one parameter for
+        // this tool's inputs, and use the raw arg string as the value to
+        // ensure two different malformed arg strings count as variable.
+        recordValue(`${call.name}::<unparsable>`, call.argsJson);
         continue;
       }
-      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) continue;
-      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-        const composite = `${call.name}::${k}`;
-        const bag = seen.get(composite) ?? new Set<string>();
-        bag.add(JSON.stringify(v));
-        seen.set(composite, bag);
+      const flat = new Map<string, string>();
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        flattenArgKeys("", parsed, flat);
+      }
+      for (const [k, v] of flat) {
+        recordValue(`${call.name}::${k}`, v);
       }
     }
   }
   const variable: VariableArg[] = [];
   for (const [composite, values] of seen) {
     if (values.size > 1) {
-      const [tool, key] = composite.split("::");
-      if (tool !== undefined && key !== undefined) variable.push({ tool, key });
+      const sep = composite.indexOf("::");
+      if (sep > 0) variable.push({ tool: composite.slice(0, sep), key: composite.slice(sep + 2) });
     }
   }
   return variable;
 }
 
-// True if a draft parameter plausibly captures `argKey`. We accept exact
-// match, case-insensitive substring (e.g. "tenantId" satisfies a "tenant"
-// parameter), or the inverse so single-word parameter names cover compound
-// keys. Best-effort name match — the goal is to catch the obvious
-// "model returned zero parameters for a procedure with variable args" miss,
-// not to police the LLM's naming choices.
+// Tokenize an identifier into normalized lowercase tokens by splitting on
+// non-alphanumerics AND camelCase boundaries. "tenantId" → ["tenant","id"];
+// "input_path" → ["input","path"]; "target.path" → ["target","path"].
+function tokenizeIdentifier(name: string): readonly string[] {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 0);
+}
+
+// True if `paramName` shares any whole token with `argKey`. Whole-token match
+// rejects spurious substring hits like `grid` claiming to satisfy `id` or
+// `pathology` claiming to satisfy `path`, while still accepting genuine
+// compound names like `input_path` for `path` or `tenantId` for `tenant`.
 function paramNameMatches(paramName: string, argKey: string): boolean {
-  const n = paramName.toLowerCase();
-  const k = argKey.toLowerCase();
-  return n === k || n.includes(k) || k.includes(n);
+  const pTokens = new Set(tokenizeIdentifier(paramName));
+  for (const t of tokenizeIdentifier(argKey)) {
+    if (pTokens.has(t)) return true;
+  }
+  return false;
 }
 
 // Bipartite cover: each distinct (tool, key) variable arg must be claimable

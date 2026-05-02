@@ -544,6 +544,69 @@ describe("createDistiller", () => {
     if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
   });
 
+  test("variable-arg check recurses into nested tool argument structures", async () => {
+    // Nested target.path varies — must require a parameter for it.
+    const trace: DistillationTrace = {
+      traceId: "t-nested",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "delete", argsJson: '{"target":{"path":"/a"}}' }],
+        },
+        {
+          role: "assistant",
+          toolCalls: [{ name: "delete", argsJson: '{"target":{"path":"/b"}}' }],
+        },
+      ],
+    };
+    const noParam = okLLM({
+      ...VALID_DRAFT,
+      toolSequence: ["delete", "delete"],
+      parameters: [],
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: noParam }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
+  });
+
+  test("variable-arg check fails closed when a tool's args are malformed across calls", async () => {
+    // Two different malformed strings — we cannot prove they're constant, so
+    // the draft must expose a parameter for that tool's inputs.
+    const trace: DistillationTrace = {
+      traceId: "t-bad-vary",
+      turns: [
+        { role: "assistant", toolCalls: [{ name: "delete", argsJson: "{ broken-1" }] },
+        { role: "assistant", toolCalls: [{ name: "delete", argsJson: "{ broken-2" }] },
+      ],
+    };
+    const noParam = okLLM({
+      ...VALID_DRAFT,
+      toolSequence: ["delete", "delete"],
+      parameters: [],
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: noParam }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
+  });
+
+  test("parameter coverage rejects spurious substring matches (grid does not satisfy id)", async () => {
+    const trace: DistillationTrace = {
+      traceId: "t-tok",
+      turns: [
+        { role: "assistant", toolCalls: [{ name: "fetch", argsJson: '{"id":"a1"}' }] },
+        { role: "assistant", toolCalls: [{ name: "fetch", argsJson: '{"id":"a2"}' }] },
+      ],
+    };
+    const wrong = okLLM({
+      ...VALID_DRAFT,
+      toolSequence: ["fetch", "fetch"],
+      parameters: [{ name: "grid", description: "unrelated", required: true }],
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: wrong }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
+  });
+
   test("sourceHash reflects the redacted trace, not the raw input", async () => {
     const trace: DistillationTrace = {
       traceId: "t-prov",

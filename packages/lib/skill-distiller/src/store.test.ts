@@ -152,4 +152,23 @@ describe("createSkillStore — LRU eviction", () => {
     expect(s.size()).toBe(100);
     expect(evicted).toEqual([]);
   });
+
+  test("dedupes by draftHash even when admitted under a different name", () => {
+    const s = createSkillStore();
+    expect(s.add(rec("alpha", "shared-hash"))).toBe("added");
+    // Same content (same draftHash), different name — must NOT consume a
+    // second LRU slot.
+    expect(s.add(rec("beta", "shared-hash"))).toBe("duplicate");
+    expect(s.size()).toBe(1);
+    expect(s.has("alpha")).toBe(true);
+    expect(s.has("beta")).toBe(false);
+  });
+
+  test("hash dedupe survives delete (slot freed for genuine new content)", () => {
+    const s = createSkillStore();
+    s.add(rec("alpha", "shared-hash"));
+    expect(s.delete("alpha")).toBe(true);
+    expect(s.add(rec("beta", "shared-hash"))).toBe("added");
+    expect(s.size()).toBe(1);
+  });
 });
