@@ -615,10 +615,19 @@ describe("wrapAdapterWithStatePersistence", () => {
     // loadState throws — host gets onPersistError signal AND the
     // unloadable checkpoint is cleared via atomic CAS so a deterministically-
     // broken cursor can't poison resume forever across process restarts.
+    // Fail-closed: the wrapper does NOT call inner.stream after a
+    // loadState exception; it yields a synthetic error terminal so the
+    // host can rebuild a fresh adapter for transcript-only retry instead
+    // of leaking partially-applied state into a live run.
+    let innerStreamCalled = false;
     const inner: EngineAdapter = {
       ...makeAdapter([completedDone], captured),
       loadState: async () => {
         throw new Error("decode failure");
+      },
+      stream: (): AsyncIterable<EngineEvent> => {
+        innerStreamCalled = true;
+        return (async function* () {})();
       },
     };
     const errors: Array<KoiError | Error> = [];
@@ -629,7 +638,15 @@ describe("wrapAdapterWithStatePersistence", () => {
       initialEngineState: captured,
       initialEngineStateVersion: 1,
     });
-    for await (const _ of wrapped.stream({ kind: "text", text: "hi" }));
+    const events: EngineEvent[] = [];
+    for await (const ev of wrapped.stream({ kind: "text", text: "hi" })) events.push(ev);
+
+    expect(innerStreamCalled).toBe(false);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.kind).toBe("done");
+    if (events[0]?.kind === "done") {
+      expect(events[0].output.stopReason).toBe("error");
+    }
 
     expect(errors).toHaveLength(1);
     const after = await store.loadSession(SID);

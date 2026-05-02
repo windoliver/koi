@@ -224,6 +224,16 @@ async function* streamWithLazyLoad(
       await loadState(initial);
     } catch (e: unknown) {
       deps.onPersistError(e instanceof Error ? e : new Error(extractMessage(e)));
+      // Fail-closed: do NOT continue calling `inner.stream` after a
+      // loadState exception. A richer adapter may have partially mutated
+      // its in-memory cursor before throwing; running the next turn
+      // against a half-restored instance risks duplicated prompts, wrong
+      // replay position, or tool re-execution from an invalid cursor.
+      // Yield a synthetic error terminal so the engine's normal failure
+      // path runs and the host can rebuild a fresh adapter instance for
+      // a transcript-only retry. We still clear the unloadable checkpoint
+      // first so a deterministically-broken cursor doesn't poison resume
+      // forever (in-memory shield resets every process start).
       // Durable cross-process convergence: clear the unloadable checkpoint
       // immediately via atomic CAS so a deterministically-broken cursor
       // can't poison resume forever (in-memory shield resets on every
@@ -234,6 +244,19 @@ async function* streamWithLazyLoad(
       // is detected as CONFLICT and we back off without overwriting it.
       // The host still gets the onPersistError signal so it can decide UX.
       await clearUnloadableCheckpoint(deps);
+      yield {
+        kind: "done",
+        output: {
+          content: [],
+          stopReason: "error",
+          metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+          metadata: {
+            source: "persist-engine-state:loadState",
+            message: e instanceof Error ? e.message : extractMessage(e),
+          },
+        },
+      };
+      return;
     }
   }
   for await (const ev of inner.stream(input)) yield ev;
