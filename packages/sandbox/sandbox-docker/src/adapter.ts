@@ -1,10 +1,32 @@
-import type { KoiError, Result, SandboxAdapter, SandboxProfile } from "@koi/core";
+import type {
+  AdapterCapabilities,
+  AdapterCapability,
+  KoiError,
+  Result,
+  SandboxAdapter,
+  SandboxProfile,
+} from "@koi/core";
 import { createDefaultDockerClient } from "./default-client.js";
 import { detectDocker } from "./detect.js";
 import { createDockerInstance } from "./instance.js";
 import { mapProfileToDockerOpts } from "./profile-to-opts.js";
 import type { DockerAdapterConfig } from "./types.js";
 import { validateDockerConfig } from "./validate.js";
+
+// Honest declaration: sandbox-docker instance has no spawn (use exec()),
+// adapter has no findOrCreate (no persistence). Profile-controlled network
+// and filesystem-rw are supported.
+const SANDBOX_DOCKER_SUPPORTED: ReadonlySet<AdapterCapability> = new Set<AdapterCapability>([
+  "exec",
+  "copy-files",
+  "network",
+  "filesystem-rw",
+]);
+
+const SANDBOX_DOCKER_CAPABILITIES: AdapterCapabilities = {
+  supports: SANDBOX_DOCKER_SUPPORTED,
+  priority: 10,
+};
 
 /**
  * Create a Docker sandbox adapter.
@@ -63,6 +85,8 @@ function buildAdapter(
     ok: true,
     value: {
       name: "docker",
+      version: "0.1.0",
+      capabilities: SANDBOX_DOCKER_CAPABILITIES,
       create: async (profile: SandboxProfile) => {
         const mapping = mapProfileToDockerOpts(profile, image);
         if (!mapping.ok) {

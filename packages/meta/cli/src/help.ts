@@ -198,9 +198,19 @@ Subcommands:
   auth <server>          Authenticate against a server
   logout <server>        Remove stored credentials for a server
   debug <server>         Print debug info for a server
+  search <query>         Search the official MCP registry
+  info <name>            Show full metadata for a registry server
+  install <name>         Add server to .mcp.json + verify connection
+  uninstall <name>       Remove server from .mcp.json + clear credentials
 
 Options:
-      --json             Emit JSON instead of text
+      --json             Emit JSON instead of text (implies --yes for install)
+      --limit <n>        Max search results (default 20)
+      --registry-version <v>
+                         Specific registry version for info/install (default "latest")
+      --no-cache         Bypass local registry cache for search/info
+  -y, --yes              Skip the install confirmation prompt
+      --skip-verify      Skip the dry-run connection check on install
   -h, --help             Show this help
 `;
 

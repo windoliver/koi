@@ -1,4 +1,6 @@
 import type {
+  AdapterCapabilities,
+  AdapterCapability,
   KoiError,
   Result,
   SandboxAdapter,
@@ -24,6 +26,20 @@ import { buildSeatbeltPrefix, generateSeatbeltProfile } from "./platform/seatbel
 import { validateProfile } from "./validate.js";
 
 const DEFAULT_MAX_OUTPUT_BYTES = 1_048_576; // 1 MB — matches @koi/middleware-sandbox default
+
+// Honest declaration: sandbox-os instance.spawn is NOT implemented; readFile/writeFile
+// throw "not implemented — use @koi/nexus-fuse-mount for virtual FS". Only `exec`,
+// `network`, and `filesystem-rw` (host FS access permitted by profile) are real.
+const SANDBOX_OS_SUPPORTED: ReadonlySet<AdapterCapability> = new Set<AdapterCapability>([
+  "exec",
+  "network",
+  "filesystem-rw",
+]);
+
+const SANDBOX_OS_CAPABILITIES: AdapterCapabilities = {
+  supports: SANDBOX_OS_SUPPORTED,
+  priority: 0,
+};
 
 // Module-level cache — systemd-run --user requires an active D-Bus user session.
 // Bun.which() only checks PATH; this probe verifies the user session is reachable.
@@ -380,6 +396,8 @@ export function createOsAdapterForTest(opts: {
 }): SandboxOsAdapter {
   return {
     name: "@koi/sandbox-os",
+    version: "0.1.0",
+    capabilities: SANDBOX_OS_CAPABILITIES,
     platform: {
       platform: opts.platform,
       available: opts.available,

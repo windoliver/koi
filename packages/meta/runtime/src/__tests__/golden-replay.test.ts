@@ -31,6 +31,7 @@ import type {
   EngineEvent,
   EngineInput,
   InboundMessage,
+  IntentCapsule,
   JsonObject,
   KoiMiddleware,
   ModelChunk,
@@ -818,6 +819,184 @@ describe("Golden: @koi/middleware-tool-error-formatter", () => {
 
     const agentSteps = doc.steps.filter((s) => s.source === "agent");
     expect(agentSteps.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-fs-rollback
+// Standalone tests (no LLM) + cassette-replay smoke test.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-fs-rollback", () => {
+  test("createFsRollbackMiddleware exposes the expected middleware identity", async () => {
+    const { createFsRollbackMiddleware } = await import("@koi/middleware-fs-rollback");
+    const handle = createFsRollbackMiddleware({ cwd: "/tmp" });
+    expect(handle.middleware.name).toBe("fs-rollback");
+    expect(handle.middleware.priority).toBe(180);
+    expect(typeof handle.middleware.wrapToolCall).toBe("function");
+  });
+
+  test("snapshot decision: non-protected tools passthrough; protected tools snapshot the target path", async () => {
+    const { createFsRollbackMiddleware } = await import("@koi/middleware-fs-rollback");
+    const reads: string[] = [];
+    const writes: string[] = [];
+    const unlinks: string[] = [];
+    const files = new Map<string, Uint8Array>([
+      ["/tmp/golden-fsrb/file.txt", new TextEncoder().encode("PRE")],
+    ]);
+    const stub = { mtimeMs: 1, size: 1, ino: 1, kind: "file" as const };
+    const handle = createFsRollbackMiddleware({
+      cwd: "/tmp/golden-fsrb",
+      fs: {
+        async read(p) {
+          reads.push(p);
+          const b = files.get(p);
+          return b === undefined ? { existed: false } : { existed: true, bytes: b, stat: stub };
+        },
+        async stat(p) {
+          return files.has(p) ? stub : undefined;
+        },
+        async write(p, b) {
+          writes.push(p);
+          files.set(p, b);
+        },
+        async atomicWrite(p, b) {
+          files.set(p, b);
+        },
+        async unlink(p) {
+          unlinks.push(p);
+          files.delete(p);
+        },
+      },
+    });
+    const wrap = handle.middleware.wrapToolCall;
+    if (!wrap) throw new Error("wrapToolCall missing");
+
+    const sessCtx = {
+      session: {
+        agentId: "fsrb-golden",
+        sessionId: sessionId("fsrb-golden"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      },
+      turnIndex: 0,
+      turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    } satisfies TurnContext;
+
+    await wrap(
+      sessCtx,
+      { toolId: "echo", input: { text: "hi" } as JsonObject } satisfies ToolRequest,
+      async () => ({ output: "ok" }) satisfies ToolResponse,
+    );
+    expect(reads.length).toBe(0);
+
+    await wrap(
+      sessCtx,
+      {
+        toolId: "fs_write",
+        input: { path: "file.txt", content: "x" } as JsonObject,
+      } satisfies ToolRequest,
+      async () => ({ output: "ok" }) satisfies ToolResponse,
+    );
+    expect(reads).toContain("/tmp/golden-fsrb/file.txt");
+    // Success path must NOT touch the target file beyond the read.
+    expect(writes.length).toBe(0);
+    expect(unlinks.length).toBe(0);
+  });
+
+  test("rollback path: tool throws → snapshot bytes are restored, original error rethrows", async () => {
+    const { createFsRollbackMiddleware } = await import("@koi/middleware-fs-rollback");
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
+    const files = new Map<string, Uint8Array>([
+      ["/tmp/golden-fsrb-fail/file.txt", enc.encode("PRE")],
+    ]);
+    const stub = { mtimeMs: 1, size: 1, ino: 1, kind: "file" as const };
+    const handle = createFsRollbackMiddleware({
+      cwd: "/tmp/golden-fsrb-fail",
+      fs: {
+        async read(p) {
+          const b = files.get(p);
+          return b === undefined ? { existed: false } : { existed: true, bytes: b, stat: stub };
+        },
+        async stat(p) {
+          return files.has(p) ? stub : undefined;
+        },
+        async write(p, b) {
+          files.set(p, b);
+        },
+        async atomicWrite(p, b) {
+          files.set(p, b);
+        },
+        async unlink(p) {
+          files.delete(p);
+        },
+      },
+    });
+    const wrap = handle.middleware.wrapToolCall;
+    if (!wrap) throw new Error();
+    const sessCtx = {
+      session: {
+        agentId: "fsrb-fail",
+        sessionId: sessionId("fsrb-fail"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      },
+      turnIndex: 0,
+      turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    } satisfies TurnContext;
+    const original = new Error("tool blew up");
+    await expect(
+      wrap(
+        sessCtx,
+        { toolId: "fs_write", input: { path: "file.txt" } as JsonObject } satisfies ToolRequest,
+        async () => {
+          files.set("/tmp/golden-fsrb-fail/file.txt", enc.encode("CORRUPT"));
+          throw original;
+        },
+      ),
+    ).rejects.toBe(original);
+    expect(dec.decode(files.get("/tmp/golden-fsrb-fail/file.txt"))).toBe("PRE");
+  });
+
+  test("trajectory fixture (cassette replay) records fs-rollback middleware spans plus a failing protected tool step", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/fs-rollback.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly outcome?: string;
+        readonly extra?: Record<string, unknown>;
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("fs-rollback");
+
+    // The fs-rollback middleware must show up as a span around the protected
+    // tool call. Without the span the trajectory cannot prove the middleware
+    // wrapped the call at all.
+    const fsrbSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "fs-rollback",
+    );
+    expect(fsrbSpans.length).toBeGreaterThanOrEqual(1);
+
+    // The protected tool throws after writing — the trajectory must contain
+    // a failure tool step for fs_write_then_fail. That's what triggers the
+    // restore-on-failure branch the middleware exists to exercise.
+    const toolFailures = doc.steps.filter(
+      (s) =>
+        s.source === "tool" &&
+        s.outcome === "failure" &&
+        Array.isArray(s.tool_calls) &&
+        s.tool_calls.some((tc) => tc.function_name === "fs_write_then_fail"),
+    );
+    expect(toolFailures.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -15445,6 +15624,125 @@ describe("Golden: @koi/middleware-call-dedup", () => {
   });
 });
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-policy-cache (2 standalone queries, no LLM)
+//
+// Validates the verified-only promotion gate and that cache hits short-circuit
+// before reaching the next handler. Full short-circuit semantics are covered
+// by the package's own tests.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-policy-cache", () => {
+  test("middleware shape: policy-cache@intercept/50 with wrapToolCall and describeCapabilities", async () => {
+    const { createPolicyCacheMiddleware } = await import("@koi/middleware-policy-cache");
+    const handle = createPolicyCacheMiddleware({ maxEntries: 8 });
+    expect(handle.middleware.name).toBe("policy-cache");
+    expect(handle.middleware.priority).toBe(50);
+    expect(handle.middleware.phase).toBe("intercept");
+    expect(typeof handle.middleware.wrapToolCall).toBe("function");
+    expect(typeof handle.middleware.describeCapabilities).toBe("function");
+  });
+
+  test("verified-only gate: missing verifier fail-closes; configured verifier admits accepted brickIds", async () => {
+    const { createPolicyCacheMiddleware } = await import("@koi/middleware-policy-cache");
+
+    // No verifier configured → every register() fails closed.
+    const noVerifier = createPolicyCacheMiddleware();
+    const reject = noVerifier.register({
+      toolId: "search",
+      brickId: "b-unverified",
+      scope: "agent",
+      agentId: "agent-A",
+      execute: () => ({ action: "allow" }),
+    });
+    expect(reject.ok).toBe(false);
+    if (!reject.ok) {
+      expect(reject.error.code).toBe("VALIDATION");
+      expect(reject.error.retryable).toBe(false);
+    }
+    expect(noVerifier.size()).toBe(0);
+
+    // Verifier wired by host (forge in production) is the only authority.
+    const trusted = createPolicyCacheMiddleware({
+      verifier: (e) => e.brickId === "b-verified",
+    });
+    const accept = trusted.register({
+      toolId: "search",
+      brickId: "b-verified",
+      scope: "agent",
+      agentId: "agent-A",
+      execute: () => ({ action: "allow" }),
+    });
+    expect(accept.ok).toBe(true);
+    expect(trusted.size()).toBe(1);
+  });
+
+  // Composition: policy-cache MUST wrap permissions so a cached `block`
+  // short-circuits before any approval prompt or backend call fires.
+  // Both are intercept-phase. Engine sort order: lower priority = outer onion
+  // = runs first. Asserting policy-cache.priority < permissions.priority
+  // proves the engine will compose them in the safe order; a stub
+  // "permissions-shaped" inner middleware proves the cached block never
+  // reaches the inner layer.
+  test("policy-cache wraps permissions: cached block prevents inner approval call", async () => {
+    const { createPolicyCacheMiddleware } = await import("@koi/middleware-policy-cache");
+    const { createPermissionsMiddleware } = await import("@koi/middleware-permissions");
+
+    const policy = createPolicyCacheMiddleware({ verifier: () => true });
+    policy.register({
+      toolId: "danger",
+      brickId: "b-danger",
+      scope: "agent",
+      agentId: "a",
+      execute: () => ({ action: "block", reason: "policy says no" }),
+    });
+
+    // Real permissions middleware produced by its public factory — proves
+    // we observed the priority of the actual artifact, not a hand-typed
+    // number. Backend is deliberately a no-op deny so any reach-through
+    // would surface as a permission denial in the response (different
+    // shape from policy-cache's denial), making the test tight.
+    const permissions = createPermissionsMiddleware({
+      backend: { check: () => ({ effect: "allow" }) },
+    });
+
+    expect((policy.middleware.priority ?? 500) < (permissions.priority ?? 500)).toBe(true);
+
+    const ctx = {
+      session: { sessionId: "policy-cache-vs-permissions", agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core/middleware").TurnContext;
+
+    let permissionsCalls = 0;
+    let executions = 0;
+    const baseHandler: import("@koi/core/middleware").ToolHandler = async () => {
+      executions++;
+      return { output: "ran" };
+    };
+
+    // Onion compose: policy(permissions(base)). If policy short-circuits,
+    // permissions.wrapToolCall is never invoked.
+    const composed: import("@koi/core/middleware").ToolHandler = async (req) => {
+      const inner: import("@koi/core/middleware").ToolHandler = async (innerReq) => {
+        permissionsCalls++;
+        const r = await permissions.wrapToolCall?.(ctx, innerReq, baseHandler);
+        if (r === undefined) throw new Error("permissions returned undefined");
+        return r;
+      };
+      const r = await policy.middleware.wrapToolCall?.(ctx, req, inner);
+      if (r === undefined) throw new Error("policy-cache returned undefined");
+      return r;
+    };
+
+    const result = await composed({ toolId: "danger", input: {} });
+    expect(permissionsCalls).toBe(0);
+    expect(executions).toBe(0);
+    expect(result.metadata?.policyDenied).toBe(true);
+    expect(result.metadata?.blockedByHook).toBe(true);
+    expect(result.metadata?.hookName).toBe("policy-cache");
+  });
+});
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/middleware-reflex (3 standalone queries, no LLM)
 // ---------------------------------------------------------------------------
 
@@ -15765,9 +16063,10 @@ describe("Golden: @koi/sandbox-executor", () => {
   test("timeout returns SandboxError TIMEOUT", async () => {
     const { createSubprocessExecutor } = await import("@koi/sandbox-executor");
 
-    // externalIsolation: true bypasses the default-deny guard (no context needed here,
-    // but guard only triggers when context is provided — no context → no guard trigger)
-    const exec = createSubprocessExecutor({ externalIsolation: true });
+    // This golden covers timeout classification, not process-group isolation.
+    // The executor package has dedicated PGI tests; opt out here so macOS
+    // environments without setsid still reach the timeout path.
+    const exec = createSubprocessExecutor({ requireProcessGroupIsolation: false });
     const code = `export default async () => { while (true) { /* spin */ } };`;
     const r = await exec.execute(code, null, 250);
     expect(r.ok).toBe(false);
@@ -15941,6 +16240,88 @@ describe("Golden: @koi/agent-monitor", () => {
     }
     await new Promise((r) => setTimeout(r, 0));
     expect(signals.some((s) => s.kind === "tool_rate_exceeded")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-intent-capsule (standalone — no cassette)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-intent-capsule", () => {
+  test("session mandate is signed, verified, injected, and cleaned up", async () => {
+    const { createIntentCapsuleMiddleware } = await import("@koi/middleware-intent-capsule");
+    const seenCapsules: IntentCapsule[] = [];
+
+    const mw = createIntentCapsuleMiddleware({
+      systemPrompt: "Protect the user's stated objective.",
+      objectives: ["answer directly", "do not alter objectives"],
+      injectMandate: true,
+      verifier: {
+        verify(capsule, currentMandateHash) {
+          seenCapsules.push(capsule);
+          if (capsule.mandateHash !== currentMandateHash) {
+            return { ok: false, reason: "mandate_hash_mismatch" };
+          }
+          return { ok: true, capsule };
+        },
+      },
+    });
+
+    const session = {
+      agentId: "intent-golden-agent",
+      sessionId: sessionId("intent-golden-s1"),
+      runId: runId("intent-golden-r1"),
+      metadata: {} as JsonObject,
+    };
+    await mw.onSessionStart?.(session);
+
+    const ctx: TurnContext = {
+      session,
+      turnIndex: 0,
+      turnId: `${session.runId}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+    let captured: ModelRequest | undefined;
+    const response = await mw.wrapModelCall?.(
+      ctx,
+      {
+        messages: [
+          {
+            senderId: "user",
+            timestamp: 0,
+            content: [{ kind: "text", text: "status" }],
+          },
+        ],
+        model: "test-model",
+      },
+      async (req): Promise<ModelResponse> => {
+        captured = req;
+        return { content: "ok", model: "test-model" };
+      },
+    );
+
+    expect(response?.content).toBe("ok");
+    expect(seenCapsules.length).toBe(1);
+    expect(seenCapsules[0]?.agentId as string | undefined).toBe("intent-golden-agent");
+    expect(seenCapsules[0]?.sessionId).toBe(session.sessionId);
+    expect(seenCapsules[0]?.signature.length ?? 0).toBeGreaterThan(20);
+
+    const mandateBlock = captured?.messages[0]?.content[0];
+    if (mandateBlock?.kind !== "text") throw new Error("missing injected mandate");
+    expect(mandateBlock.text).toContain("[Signed Mandate");
+    expect(mandateBlock.text).toContain("Agent:     intent-golden-agent");
+    expect(mandateBlock.text).toContain(`Session:   ${session.sessionId as string}`);
+
+    await mw.onSessionEnd?.(session);
+    await expect(
+      mw.wrapModelCall?.(ctx, { messages: [], model: "test-model" }, async () => ({
+        content: "unreachable",
+        model: "test-model",
+      })),
+    ).rejects.toMatchObject({
+      context: expect.objectContaining({ detail: "capsule_not_found" }),
+    });
   });
 });
 

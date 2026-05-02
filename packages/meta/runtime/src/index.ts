@@ -18,6 +18,14 @@ export {
   SUPPORTED_EVENT_KINDS,
 } from "@koi/debug";
 export type {
+  ChannelRegistration,
+  Gateway,
+  GatewayFrame,
+  GatewayServer,
+  Session,
+} from "@koi/gateway-http";
+export { createGatewayServer } from "@koi/gateway-http";
+export type {
   IterationRecord as LoopIterationRecord,
   LoopEvent,
   LoopRuntime,
@@ -47,6 +55,25 @@ export {
   createReplayContext,
   loadCassette,
 } from "@koi/replay";
+// Sandbox router (multi-backend executor — issue #1641)
+export type {
+  BuildDecisionInput,
+  MatchRejection,
+  MatchResult,
+  RouterConfig,
+  SandboxRouter,
+  SelectionAttempt,
+  SelectionDecision,
+} from "@koi/sandbox-router";
+export { buildDecision, createSandboxRouter, matchAdapters } from "@koi/sandbox-router";
+export type {
+  SshAdapterConfig,
+  SshClient,
+  SshClientFactory,
+  SshExecResult,
+  SshTarget,
+} from "@koi/sandbox-ssh";
+export { createSshAdapter, defaultSshClientFactory } from "@koi/sandbox-ssh";
 // Activity-based stream timeouts (#1638)
 export type {
   ActivityTerminationReason,
@@ -96,6 +123,10 @@ export {
   resolveFileSystemAsync,
   validateFileSystemConfig,
 } from "./resolve-filesystem.js";
+export type { RouterAdapterShimOptions } from "./router-adapter-shim.js";
+export { createRouterAdapterShim } from "./router-adapter-shim.js";
+export type { CreateDefaultSandboxRouterOptions } from "./sandbox-router-default.js";
+export { createDefaultSandboxRouter } from "./sandbox-router-default.js";
 // Skills-MCP bridge
 export type {
   MapToolDescriptorsResult,

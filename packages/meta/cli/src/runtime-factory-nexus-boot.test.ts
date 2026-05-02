@@ -13,6 +13,9 @@
  */
 
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ApprovalHandler, KoiError, ModelAdapter, Result } from "@koi/core";
 import type {
   HealthCapableNexusTransport,
@@ -20,7 +23,7 @@ import type {
   NexusTransport,
   NexusTransportKind,
 } from "@koi/nexus-client";
-import { createKoiRuntime } from "./runtime-factory.js";
+import { createKoiRuntime, type KoiRuntimeConfig } from "./runtime-factory.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -45,17 +48,22 @@ function makeModelAdapter(): ModelAdapter {
 
 const stubApprovalHandler: ApprovalHandler = mock(async () => ({ kind: "allow" as const }));
 
-function baseConfig(): {
-  readonly modelAdapter: ModelAdapter;
-  readonly modelName: string;
-  readonly approvalHandler: ApprovalHandler;
-  readonly cwd: string;
-} {
+const runtimeTestDirs: string[] = [];
+
+function makeTestCwd(): string {
+  const cwd = mkdtempSync(join(tmpdir(), "koi-runtime-factory-nexus-"));
+  writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: {} }), "utf8");
+  runtimeTestDirs.push(cwd);
+  return cwd;
+}
+
+function baseConfig(): KoiRuntimeConfig {
   return {
     modelAdapter: makeModelAdapter(),
     modelName: "stub-model",
     approvalHandler: stubApprovalHandler,
-    cwd: process.cwd(),
+    cwd: makeTestCwd(),
+    plugins: [],
   };
 }
 
@@ -116,6 +124,9 @@ afterEach(async () => {
   if (handle !== null) {
     await handle.runtime.dispose();
     handle = null;
+  }
+  for (const dir of runtimeTestDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
