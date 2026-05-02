@@ -888,30 +888,35 @@ describe("createKoiRuntime — trustedHost enforcement", () => {
 // ---------------------------------------------------------------------------
 
 describe("createKoiRuntime — sessionPersistence wiring (#1683)", () => {
-  test("assembles when sessionPersistence is provided alongside session.sessionId", async () => {
+  test("fails closed when sessionPersistence is supplied but adapter has no saveState", async () => {
+    // Round 8: silent no-op was creating false confidence — the runtime
+    // now throws when it would wire an inert wrapper. The default
+    // createTranscriptAdapter has no saveState/loadState, so this is the
+    // expected behavior until a stateful adapter implementation lands.
     const { createInMemorySessionPersistence, createInMemoryTranscript } = await import(
       "@koi/session"
     );
     const { sessionId, agentId } = await import("@koi/core");
     const persistence = createInMemorySessionPersistence();
-    runtimeHandle = await createKoiRuntime({
-      ...makeConfig(),
-      session: {
-        sessionId: sessionId("rf-state-1"),
-        transcript: createInMemoryTranscript(),
-      },
-      sessionPersistence: {
-        persistence,
-        agentId: agentId("rf-state-agent"),
-        manifestSnapshot: {
-          name: "rf-state",
-          version: "0",
-          model: { name: "stub" },
+    await expect(
+      createKoiRuntime({
+        ...makeConfig(),
+        session: {
+          sessionId: sessionId("rf-state-1"),
+          transcript: createInMemoryTranscript(),
         },
-        onPersistError: () => {},
-      },
-    });
-    expect(runtimeHandle.runtime).toBeDefined();
+        sessionPersistence: {
+          persistence,
+          agentId: agentId("rf-state-agent"),
+          manifestSnapshot: {
+            name: "rf-state",
+            version: "0",
+            model: { name: "stub" },
+          },
+          onPersistError: () => {},
+        },
+      }),
+    ).rejects.toThrow(/EngineAdapter\.saveState/);
   });
 });
 

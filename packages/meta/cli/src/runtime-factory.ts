@@ -2357,22 +2357,22 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   const sessionPersistenceCfg = config.sessionPersistence;
   const stateSessionId = config.session?.sessionId;
   const { wrapAdapterWithStatePersistence } = await import("@koi/session");
-  // Issue #1683 round 6 finding: the wrapper is a no-op when the inner
-  // adapter doesn't expose `saveState`/`loadState`. Today's
-  // `createTranscriptAdapter` doesn't yet, so wiring the wrapper through
-  // the TUI is decorative until concrete adapters add the hooks. Surface
-  // an explicit warning instead of silently degrading, so operators don't
-  // believe cancel-resume is active when it isn't.
+  // Issue #1683 round 8 finding: fail closed when `sessionPersistence` is
+  // supplied but the inner adapter cannot honor it. Silently no-oping
+  // creates false confidence — the host believes cancel-resume is durable
+  // when no checkpoint is ever written. Hosts wanting transcript-only
+  // resume simply omit `sessionPersistence`.
   if (
     sessionPersistenceCfg !== undefined &&
     stateSessionId !== undefined &&
     timeoutInjectedAdapter.saveState === undefined
   ) {
-    process.stderr.write(
-      "koi: sessionPersistence configured but the engine adapter does not " +
-        "implement saveState/loadState — cancel-resume is INERT for this run. " +
-        "Provide an adapter with EngineAdapter.saveState to enable durable " +
-        "cancel checkpoints.\n",
+    throw new Error(
+      "[koi/runtime-factory] sessionPersistence configured but the engine " +
+        "adapter does not implement EngineAdapter.saveState. Cancel checkpoints " +
+        "would be silently dropped — refusing to wire the feature in a no-op " +
+        "configuration. Either omit sessionPersistence (transcript-only resume) " +
+        "or supply a stateful adapter implementation.",
     );
   }
   const engineAdapter: EngineAdapter =
