@@ -465,7 +465,13 @@ describe("createTranscriptAdapter — cancel-resume in-flight user capture", () 
     expect(block?.kind === "text" && block.text === "in-flight prompt").toBe(true);
   });
 
-  test("loadState reinjects the captured staged user into the transcript", async () => {
+  test("loadState does NOT push stagedUser into the transcript (host owns reinjection)", async () => {
+    // Round 5: pushing stagedUser inside loadState would diverge from the
+    // durable JSONL store and from the UI rehydrate stream, breaking
+    // repeated cancel-resume cycles and hiding context from the operator.
+    // Hosts that want canceled-prompt resubmission must extract it from
+    // engineState.data themselves and route through the same JSONL/UI
+    // path as a fresh prompt.
     const transcript: InboundMessage[] = [];
     const adapter = createTranscriptAdapter({
       engineId: "koi-tui",
@@ -488,8 +494,7 @@ describe("createTranscriptAdapter — cancel-resume in-flight user capture", () 
         stagedUser,
       },
     });
-    expect(transcript).toHaveLength(1);
-    expect(transcript[0]?.timestamp).toBe(12345);
+    expect(transcript).toHaveLength(0);
   });
 
   test("saveState after a completed turn does not carry a stale staged user", async () => {

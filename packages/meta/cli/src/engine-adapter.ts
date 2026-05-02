@@ -149,14 +149,22 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
           `[${engineId}] transcript fingerprint mismatch — last message timestamp ${liveTs} ≠ checkpoint ${expectedTs}`,
         );
       }
-      // Cursor validated. If the canceled turn had a staged user prompt,
-      // commit it now so the next stream's context window includes it
-      // (the model sees the canceled request as part of conversation
-      // history). Without this, the canceled prompt is silently dropped
-      // and the user's next message arrives with no preceding context.
-      if (data.stagedUser !== undefined) {
-        transcript.push(data.stagedUser);
-      }
+      // Cursor validated. We deliberately do NOT push `data.stagedUser`
+      // into the in-memory transcript here:
+      //   1. The JSONL store (the only durable resume source) was not
+      //      written when the cancel happened, so a push-here-only would
+      //      diverge from JSONL and break repeated cancel-resume cycles
+      //      (next saveState would record transcriptLen=committed+1 which
+      //      JSONL can never reproduce; loadState would then trip its own
+      //      length check and the wrapper would clear the checkpoint).
+      //   2. The UI store rehydrates from `resumeResult.value.messages`
+      //      independently of the adapter; pushing here would let the
+      //      model see a user message the operator can't see.
+      // Hosts that want canceled-prompt resubmission must extract
+      // `data.stagedUser` from the resumed engine state themselves and
+      // route it through the same path they use for new user prompts —
+      // appending to JSONL, dispatching UI rehydrate, and feeding the
+      // adapter — so all surfaces stay consistent.
     },
     stream(input: EngineInput): AsyncIterable<EngineEvent> {
       const handlers = input.callHandlers;
