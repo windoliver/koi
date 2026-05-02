@@ -271,6 +271,211 @@ describe("createPolicyCacheMiddleware: verified-only promotion gate", () => {
     }
   });
 
+  test("constructor refuses non-positive numeric caps (round-4 v2 regression)", () => {
+    // Round 4 (v2 loop) review: maxEntries=0 silently bypassed the per-bucket
+    // overflow check (eviction only fires when the bucket is non-empty), so
+    // a configured zero-cap kill switch was ineffective. Validate at
+    // construction so operators get a hard refusal instead of a silent
+    // quota violation.
+    expect(() => createPolicyCacheMiddleware({ verifier: TRUST_ALL, maxEntries: 0 })).toThrow(
+      /maxEntries.*positive/,
+    );
+    expect(() => createPolicyCacheMiddleware({ verifier: TRUST_ALL, maxEntries: -3 })).toThrow();
+    expect(() =>
+      createPolicyCacheMiddleware({ verifier: TRUST_ALL, dispatchTimeoutMs: -1 }),
+    ).toThrow(/dispatchTimeoutMs/);
+    // Round 5 (v2 loop): NaN/Infinity/negative perTurnBlockCap silently
+    // disables the anti-loop guard (`count > NaN` is always false), so
+    // construction must reject these values.
+    expect(() =>
+      createPolicyCacheMiddleware({ verifier: TRUST_ALL, perTurnBlockCap: Number.NaN }),
+    ).toThrow(/perTurnBlockCap/);
+    expect(() =>
+      createPolicyCacheMiddleware({
+        verifier: TRUST_ALL,
+        perTurnBlockCap: Number.POSITIVE_INFINITY,
+      }),
+    ).toThrow(/perTurnBlockCap/);
+    expect(() => createPolicyCacheMiddleware({ verifier: TRUST_ALL, perTurnBlockCap: -1 })).toThrow(
+      /perTurnBlockCap/,
+    );
+    // 0 stays valid (means "any block trips the cap on first hit").
+    expect(() =>
+      createPolicyCacheMiddleware({ verifier: TRUST_ALL, perTurnBlockCap: 0 }),
+    ).not.toThrow();
+    // dispatchTimeoutMs=0 is explicitly the fire-and-forget mode, allowed.
+    expect(() =>
+      createPolicyCacheMiddleware({ verifier: TRUST_ALL, dispatchTimeoutMs: 0 }),
+    ).not.toThrow();
+    // Round 6 (v2 loop): NaN maxAgentBuckets disables the per-tenant
+    // memory bound. Validate at construction.
+    expect(() =>
+      createPolicyCacheMiddleware({ verifier: TRUST_ALL, maxAgentBuckets: Number.NaN }),
+    ).toThrow(/maxAgentBuckets/);
+    expect(() => createPolicyCacheMiddleware({ verifier: TRUST_ALL, maxAgentBuckets: -1 })).toThrow(
+      /maxAgentBuckets/,
+    );
+  });
+
+  test("malformed entry.generation is refused (round-6 v2 regression)", () => {
+    // Round 6 (v2 loop) review: an unvalidated Infinity/NaN generation
+    // would pin a slot — every later finite generation compares older
+    // and is refused, and notifier events with finite generations get
+    // ignored. Reject malformed generations on registration.
+    const handle = mw();
+    for (const bad of [Number.POSITIVE_INFINITY, Number.NaN, -1, 1.5]) {
+      const r = handle.register({
+        scope: "agent",
+        agentId: "a",
+        toolId: "t",
+        brickId: "b",
+        generation: bad,
+        execute: () => ({ action: "block", reason: "x" }),
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("VALIDATION");
+    }
+  });
+
+  test("malformed event.generation against generation-aware cache: fail closed, do NOT evict (round-10 v2)", () => {
+    // Round 10 (v2 loop) review: best-effort ordering is too weak for
+    // an authorization cache. When the cached entry knows its
+    // generation but the event lacks/has malformed generation, suppress
+    // eviction — a delayed `removed`/`updated` from an unknown version
+    // could otherwise drop a freshly re-promoted deny. Hosts deliver
+    // events with valid generations to participate in invalidation.
+    let listener: ((e: { kind: string; brickId: string; generation?: number }) => void) | undefined;
+    const notifier = {
+      subscribe: (cb: (e: { kind: string; brickId: string; generation?: number }) => void) => {
+        listener = cb;
+        return () => {};
+      },
+    };
+    const handle = createPolicyCacheMiddleware({
+      verifier: TRUST_ALL,
+      notifier: notifier as never,
+    });
+    handle.register({
+      scope: "agent",
+      agentId: "a",
+      toolId: "t",
+      brickId: "b1",
+      generation: 5,
+      execute: () => ({ action: "block", reason: "x" }),
+    });
+    expect(handle.size()).toBe(1);
+    listener?.({ kind: "removed", brickId: "b1", generation: Number.NaN });
+    // Cached entry has generation:5; event has malformed generation →
+    // suppress eviction.
+    expect(handle.size()).toBe(1);
+    // A well-formed current-or-newer event still evicts.
+    listener?.({ kind: "removed", brickId: "b1", generation: 5 });
+    expect(handle.size()).toBe(0);
+  });
+
+  test("verifyOnHit re-verifies on every cache hit and falls through on revocation (round-8 v2)", async () => {
+    // Round 8 (v2 loop) review: shallow-freezing the entry doesn't
+    // protect against closure-state mutability. Hosts that need
+    // continuous trust binding can opt into `verifyOnHit`: every cache
+    // hit re-runs the verifier against the stored (frozen) entry, and
+    // a "no longer verified" verdict evicts the entry and falls through
+    // to the normal permissions path.
+    const verifiedSet = new Set<string>(["brick-1"]);
+    const handle = createPolicyCacheMiddleware({
+      verifier: (e) => verifiedSet.has(e.brickId),
+      verifyOnHit: true,
+    });
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    expect(handle.size()).toBe(1);
+    const next = mock(async () => makeResp());
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+    // First hit: still verified, deny enforced.
+    const r1 = await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    expect(r1.metadata?.policyDenied).toBe(true);
+    expect(next).not.toHaveBeenCalled();
+    // Host revokes the brick out-of-band.
+    verifiedSet.delete("brick-1");
+    // Next hit: re-verifier returns false → entry evicted and call
+    // falls through to the normal permissions path (next).
+    const r2 = await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    expect(r2.metadata?.policyDenied).toBeUndefined();
+    expect(next).toHaveBeenCalledTimes(1);
+    // Cache emptied — no stale state remains.
+    expect(handle.size()).toBe(0);
+  });
+
+  test("verifyOnHit treats a throwing verifier as no-longer-verified (fail closed → delegate)", async () => {
+    let mode: "ok" | "throw" = "ok";
+    const handle = createPolicyCacheMiddleware({
+      verifier: (e) => {
+        if (mode === "throw") throw new Error("verifier degraded");
+        return e.brickId === "brick-1";
+      },
+      verifyOnHit: true,
+    });
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    const next = mock(async () => makeResp());
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+    mode = "throw";
+    const r = await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    // Verifier threw → eviction + delegate.
+    expect(r.metadata?.policyDenied).toBeUndefined();
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  test("post-registration mutation of the entry does NOT change enforcement (round-7 v2)", async () => {
+    // Round 7 (v2 loop) review: TS `readonly` is compile-time only.
+    // If the cache stored the caller's PolicyEntry by reference, any code
+    // still holding it could swap `execute` after the verifier accepted
+    // the entry — turning a verified deny into an allow on the next
+    // call. The cache must snapshot/freeze on register so post-admission
+    // mutation cannot reach the enforcement path.
+    const original: PolicyEntry = {
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "rm",
+      brickId: "brick-1",
+      execute: () => ({ action: "block", reason: "deny" }),
+    };
+    const handle = mw();
+    expect(handle.register(original).ok).toBe(true);
+    // Attempt to mutate the original after admission. A plain assignment
+    // would throw in strict mode (frozen object), but the relevant
+    // invariant is that the CACHE's view is unaffected.
+    try {
+      (original as { execute: unknown }).execute = () => ({ action: "allow" });
+    } catch {
+      // Frozen — assignment throws. Fine; the invariant holds.
+    }
+    const next = mock(async () => makeResp());
+    const resp = await handle.middleware.wrapToolCall?.(CTX, makeReq("rm"), next as ToolHandler);
+    // Enforcement still blocks — original.execute mutation has no effect.
+    expect(resp?.metadata).toMatchObject({ policyDenied: true });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  test("verifier exception is converted to a refused Result (round-3 v2 regression)", () => {
+    // Round 3 (v2 loop) review: the verifier closure is mandatory and
+    // consults host-managed state (forge's verified-set). A transient
+    // bug or stale lookup must not propagate as an uncaught exception
+    // out of the promotion subscriber — fail closed with a clean
+    // VALIDATION refusal that preserves the cause for operators.
+    const handle = createPolicyCacheMiddleware({
+      verifier: () => {
+        throw new Error("verifier blew up");
+      },
+    });
+    const result = handle.register(makeAgentPolicy("a", "t", "b"));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("verifier threw");
+      expect(result.error.cause).toBeInstanceOf(Error);
+    }
+  });
+
   test("brickId-only forge state CANNOT be replayed for a different tool/scope/agent (round-5 regression)", () => {
     // Round 5 review: a verifier that only checks brickId is replay-able.
     // This regression test pins the contract: the verifier sees the full
@@ -602,9 +807,27 @@ describe("createPolicyCacheMiddleware: eviction", () => {
   });
 
   test("re-registering same (scope,owner,toolId) replaces prior brick (no leak)", () => {
+    // Round 10 (v2 loop): slot replacement (different brickId in same
+    // (scope, owner, toolId) slot) requires generation on both sides.
+    // First-time registration into an empty slot is still allowed
+    // without a generation.
     const handle = mw();
-    handle.register(makeAgentPolicy("agent-A", "search", "brick-1", "allow"));
-    handle.register(makeAgentPolicy("agent-A", "search", "brick-2", "block"));
+    handle.register({
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "search",
+      brickId: "brick-1",
+      generation: 1,
+      execute: () => ({ action: "allow" }),
+    });
+    handle.register({
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "search",
+      brickId: "brick-2",
+      generation: 2,
+      execute: () => ({ action: "block", reason: "x" }),
+    });
     expect(handle.size()).toBe(1);
 
     handle.evict("brick-1"); // stale
@@ -612,6 +835,17 @@ describe("createPolicyCacheMiddleware: eviction", () => {
 
     handle.evict("brick-2");
     expect(handle.size()).toBe(0);
+  });
+
+  test("slot replacement without generation on either side fails closed (round-10 v2)", () => {
+    const handle = mw();
+    expect(handle.register(makeAgentPolicy("agent-A", "search", "brick-1", "allow")).ok).toBe(true);
+    // Same slot, different brickId, no generation on incoming →
+    // refused. Best-effort ordering is too weak for an authz cache.
+    const r = handle.register(makeAgentPolicy("agent-A", "search", "brick-2", "block"));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("VALIDATION");
+    expect(handle.size()).toBe(1);
   });
 
   test("re-registering same brickId for different toolId cleans stale forward entry", () => {
@@ -780,7 +1014,13 @@ describe("createPolicyCacheMiddleware: event-driven invalidation", () => {
     expect(handle.size()).toBe(0);
   });
 
-  test("legacy events without generation evict (best-effort, backward compat)", () => {
+  test("ungenerated event against generation-aware cache: suppress eviction (round-10 v2)", () => {
+    // Round 10 (v2 loop): an unversioned `removed`/`updated` against a
+    // generation-aware cached entry is treated as untrusted and
+    // suppressed — a delayed event from an unknown version could
+    // otherwise drop a freshly re-promoted deny. Hosts must deliver
+    // versioned events to participate in invalidation when entries
+    // carry a generation.
     let listener: ((e: StoreChangeEvent) => void) | undefined;
     const notifier: StoreChangeNotifier = {
       notify: () => {},
@@ -798,7 +1038,24 @@ describe("createPolicyCacheMiddleware: event-driven invalidation", () => {
       generation: 5,
       execute: () => ({ action: "allow" }),
     });
-    // Event without generation falls back to evicting (legacy hosts).
+    listener?.({ kind: "removed", brickId: "brick-1" as never });
+    expect(handle.size()).toBe(1);
+  });
+
+  test("ungenerated event against ungenerated cache: still evicts (legacy compat)", () => {
+    // When the cached entry has no generation, there's nothing to
+    // compare against — fall back to best-effort eviction so legacy
+    // hosts that ignore generations still get invalidation.
+    let listener: ((e: StoreChangeEvent) => void) | undefined;
+    const notifier: StoreChangeNotifier = {
+      notify: () => {},
+      subscribe: (cb) => {
+        listener = cb;
+        return () => {};
+      },
+    };
+    const handle = mw({ notifier });
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "allow"));
     listener?.({ kind: "removed", brickId: "brick-1" as never });
     expect(handle.size()).toBe(0);
   });
@@ -1061,8 +1318,19 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
       principal: JSON.stringify(["agent-A", "__anonymous__", "s"]),
       action: "invoke",
       resource: "rm",
-      context: { _policyCache: { brickId: "brick-1", scope: "agent" } },
     });
+    // Round 7 (v2 loop): dispatched query MUST NOT carry `_policyCache`
+    // — that would split policy-cache denials from normal permissions
+    // denials in observers that key on the query body, breaking audit
+    // correlation. Provenance is delivered out-of-band via reportDecision.
+    expect((sink[0]?.query as { context?: Record<string, unknown> }).context).not.toHaveProperty(
+      "_policyCache",
+    );
+    // Round 9 (v2 loop): when there is no merged context to send,
+    // queryForTool omits `context` entirely. The synthetic deny mirrors
+    // that — no empty `{}` placeholder, which would split observers
+    // keying on the serialized query body.
+    expect((sink[0]?.query as { context?: unknown }).context).toBeUndefined();
     expect(sink[0]?.decision).toMatchObject({ effect: "deny", disposition: "hard" });
     // Trust boundary: dispatched reason is the fixed redacted string, NEVER
     // the executor's reason. event-trace persists permission-decision reasons
@@ -1104,8 +1372,9 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
       _session: { tenantId: "t1" },
       turnTag: "tt1",
       _request: { reqTag: "rr1" },
-      _policyCache: { brickId: "brick-1", scope: "agent" },
     });
+    // No policy-cache provenance in the dispatched query.
+    expect(queryCtx).not.toHaveProperty("_policyCache");
   });
 
   test("synthetic deny reason is redacted even when executor returns sensitive text", async () => {
@@ -1131,8 +1400,19 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
     expect(reason).toBe("policy-cache: tool denied");
   });
 
-  test("async observer rejection is contained (no unhandled rejection)", async () => {
-    const handle = mw();
+  test("audit-sink rejection: deny still returns canonical block, onDispatchError fires (round-4 v2)", async () => {
+    // Round 4 (v2 loop) review: enforcement of the deny MUST NOT depend on
+    // observer health. If `dispatchPermissionDecision` rejects (audit sink
+    // poisoned), the deny path MUST still return a permission-shaped
+    // denial — degraded audit cannot flip a deny into an EXTERNAL/infra
+    // failure or reach the underlying tool. The host learns about
+    // degraded audit via the optional `onDispatchError` callback.
+    const errors: Array<{ reason: string; toolId: string }> = [];
+    const handle = mw({
+      onDispatchError: (info) => {
+        errors.push({ reason: info.reason, toolId: info.toolId });
+      },
+    });
     handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
     const ctx: TurnContext = {
       session: { agentId: "agent-A", sessionId: "s" as never, runId: "r" as never, metadata: {} },
@@ -1140,7 +1420,6 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
       turnId: "t" as never,
       messages: [],
       metadata: {},
-      // Returns a rejecting promise — the middleware MUST swallow it.
       dispatchPermissionDecision: () => Promise.reject(new Error("async sink down")),
     } as unknown as TurnContext;
     const next = mock(async () => makeResp());
@@ -1151,13 +1430,75 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
     process.on("unhandledRejection", handler);
     try {
       const resp = await handle.middleware.wrapToolCall?.(ctx, makeReq("rm"), next as ToolHandler);
+      // Permission-shaped denial — never the underlying tool.
       expect(resp?.metadata).toMatchObject({ policyDenied: true });
-      // Yield a tick so any rejection has a chance to surface.
+      expect(next).not.toHaveBeenCalled();
+      // Default mode is fire-and-forget — yield a tick so the dispatch
+      // promise rejection has a chance to flow through .catch handler.
       await new Promise<void>((r) => setTimeout(r, 5));
+      // Operator-visible: the host's onDispatchError hook saw the failure.
+      expect(errors).toEqual([{ reason: "rejected", toolId: "rm" }]);
       expect(unhandled).toHaveLength(0);
     } finally {
       process.off("unhandledRejection", handler);
     }
+  });
+
+  test("sync dispatch throw: deny still returns canonical block, onDispatchError fires", async () => {
+    const errors: Array<{ reason: string }> = [];
+    const handle = mw({
+      onDispatchError: (info) => {
+        errors.push({ reason: info.reason });
+      },
+    });
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    const ctx: TurnContext = {
+      session: { agentId: "agent-A", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+      turnIndex: 0,
+      turnId: "t" as never,
+      messages: [],
+      metadata: {},
+      dispatchPermissionDecision: () => {
+        throw new Error("sync sink poison");
+      },
+    } as unknown as TurnContext;
+    const next = mock(async () => makeResp());
+    const resp = await handle.middleware.wrapToolCall?.(ctx, makeReq("rm"), next as ToolHandler);
+    expect(resp?.metadata).toMatchObject({ policyDenied: true });
+    expect(next).not.toHaveBeenCalled();
+    expect(errors).toEqual([{ reason: "threw" }]);
+  });
+
+  test("hung dispatch: deny does not stall, falls through after timeout", async () => {
+    // Round 4 (v2 loop): a never-resolving observer cannot stall denies.
+    // dispatchTimeoutMs bounds the await; on timeout the deny proceeds
+    // and the host's onDispatchError hook receives a `timeout` reason.
+    const errors: Array<{ reason: string }> = [];
+    const handle = mw({
+      dispatchTimeoutMs: 25,
+      onDispatchError: (info) => {
+        errors.push({ reason: info.reason });
+      },
+    });
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    const ctx: TurnContext = {
+      session: { agentId: "agent-A", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+      turnIndex: 0,
+      turnId: "t" as never,
+      messages: [],
+      metadata: {},
+      // Never resolves.
+      dispatchPermissionDecision: () => new Promise<void>(() => {}),
+    } as unknown as TurnContext;
+    const next = mock(async () => makeResp());
+    const start = Date.now();
+    const resp = await handle.middleware.wrapToolCall?.(ctx, makeReq("rm"), next as ToolHandler);
+    const elapsed = Date.now() - start;
+    expect(resp?.metadata).toMatchObject({ policyDenied: true });
+    expect(next).not.toHaveBeenCalled();
+    expect(errors).toEqual([{ reason: "timeout" }]);
+    // Bounded — should be roughly the configured timeout, not infinite.
+    expect(elapsed).toBeLessThan(500);
   });
 
   test("quarantined entry still dispatches synthetic deny", async () => {
@@ -1205,7 +1546,9 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
     expect(resp?.metadata).toMatchObject({ policyDenied: true });
   });
 
-  test("throwing dispatch callback does NOT change enforcement", async () => {
+  test("throwing dispatch callback does NOT change enforcement (next is never called)", async () => {
+    // Observer health does not change enforcement. The deny is returned
+    // as a canonical block, and the underlying tool is not reached.
     const handle = mw();
     handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
     const ctx: TurnContext = {
@@ -1220,8 +1563,8 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
     } as unknown as TurnContext;
     const next = mock(async () => makeResp());
     const resp = await handle.middleware.wrapToolCall?.(ctx, makeReq("rm"), next as ToolHandler);
-    expect(next).not.toHaveBeenCalled();
     expect(resp?.metadata).toMatchObject({ policyDenied: true });
+    expect(next).not.toHaveBeenCalled();
   });
 });
 
@@ -1381,7 +1724,29 @@ describe("createPolicyCacheMiddleware: per-turn block cap (anti-loop)", () => {
     await expect(wrap(CTX, makeReq("rm"), next as ToolHandler)).rejects.toThrow(/cap.*exceeded/);
   });
 
-  test("cap is per-(turn, brickId, toolId): different turns share no budget", async () => {
+  test("cap survives re-promotion under a new brickId for the same tool slot (round-2 v2 regression)", async () => {
+    // Round 2 (v2 loop) review: keying the cap by brickId let promotion
+    // churn reset the runaway-loop budget. A model could keep retrying
+    // the same denied tool while the policy layer churned brick ids and
+    // each replacement bought a fresh deny budget. Cap is now keyed by
+    // stable enforcement identity (session, turn, scope-owner, tool), so
+    // re-promotion under a new brickId does NOT reset the counter.
+    const handle = mw({ perTurnBlockCap: 2 });
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-old", "block"));
+    const next = mock(async () => makeResp());
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+    // Two hits under brick-old.
+    await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    // Re-promote the same tool slot under a NEW brickId.
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-new", "block"));
+    // The next hit (3rd in the same turn for the same tool) MUST trip
+    // the cap — the brickId churn must not buy a new budget.
+    await expect(wrap(CTX, makeReq("rm"), next as ToolHandler)).rejects.toThrow(/cap.*exceeded/);
+  });
+
+  test("cap is per-(turn, scope-owner, toolId): different turns share no budget", async () => {
     const handle = mw({ perTurnBlockCap: 1 });
     handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
     const next = mock(async () => makeResp());

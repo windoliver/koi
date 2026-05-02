@@ -107,6 +107,23 @@ export interface PolicyCacheConfig {
    * set).
    */
   readonly verifier?: (entry: PolicyEntry) => boolean;
+  /**
+   * Re-run the verifier on every cache hit before invoking the
+   * executor. Defaults to `false` (verify-once at registration) for
+   * the fast-path semantics this package is designed around.
+   *
+   * Set `true` when the host cannot guarantee that a verified executor
+   * is behaviorally stable for its lifetime — e.g. when the executor's
+   * captured state is observable-mutable and forge cannot prove
+   * content-immutability through brickId hashing alone. With this flag
+   * on, a mid-lifetime revocation (verifier flips to false because
+   * forge revoked the brick or the closure's identity changed) evicts
+   * the entry and falls through to the next middleware, restoring the
+   * normal permissions path. The cost is one verifier call per cache
+   * hit; hosts who need this should keep their verifier O(1) (in-memory
+   * hash-set lookup against forge's verified-set).
+   */
+  readonly verifyOnHit?: boolean | undefined;
   /** Maximum cached policies per bucket (per-agent and global). Default: 100. */
   readonly maxEntries?: number | undefined;
   /**
@@ -160,6 +177,30 @@ export interface PolicyCacheConfig {
     readonly scope: SupportedScope;
     readonly cause: unknown;
   }) => void;
+  /**
+   * Optional observer for permission-decision dispatch failures (sink
+   * down, slow, or throwing). The deny fast-path always returns a
+   * canonical block response — observer health does NOT change
+   * enforcement. This hook lets the host surface degraded-audit
+   * conditions (page oncall, increment a counter) without coupling tool
+   * availability to audit sink availability. Fire-and-forget — a
+   * throwing handler is contained.
+   */
+  readonly onDispatchError?: (info: {
+    readonly brickId: string;
+    readonly toolId: string;
+    readonly scope: SupportedScope;
+    readonly cause: unknown;
+    readonly reason: "threw" | "rejected" | "timeout";
+  }) => void;
+  /**
+   * Maximum milliseconds to await `dispatchPermissionDecision` before
+   * giving up and proceeding with the canonical deny. Bounds the deny
+   * fast-path against a slow or hanging audit sink. Default: 1000ms.
+   * Set to 0 to disable awaiting entirely (fire-and-forget — observers
+   * will receive the dispatch but the deny does not wait for them).
+   */
+  readonly dispatchTimeoutMs?: number | undefined;
 }
 
 export interface PolicyCacheHandle {
@@ -186,6 +227,22 @@ export interface PolicyCacheHandle {
 const DEFAULT_MAX_ENTRIES = 100;
 const DEFAULT_MAX_AGENT_BUCKETS = 1000;
 const DEFAULT_PER_TURN_BLOCK_CAP = 5;
+// Default 0 — fire-and-forget. Observer health stays OFF the deny hot
+// path. Hosts that want bounded await for durability can opt in by
+// setting `dispatchTimeoutMs` explicitly. Mirrors the practical
+// behavior of @koi/middleware-permissions, which also doesn't await
+// observer dispatch in the enforcement path.
+const DEFAULT_DISPATCH_TIMEOUT_MS = 0;
+
+// Distinguishes a dispatch-timeout from a real rejection so the
+// observer-error hook can classify them. Plain object (not Error
+// subclass) keeps the file class-free per project policy.
+const DISPATCH_TIMEOUT_SENTINEL = Object.freeze({
+  __policyCacheDispatchTimeout: true,
+} as const);
+type DispatchTimeoutSentinel = typeof DISPATCH_TIMEOUT_SENTINEL;
+const isDispatchTimeout = (v: unknown): v is DispatchTimeoutSentinel =>
+  typeof v === "object" && v !== null && "__policyCacheDispatchTimeout" in v;
 const NAME = "policy-cache";
 // Fixed deny reason used for both the synthetic permission decision and any
 // caller that needs to format an audit string. Executor-supplied `reason`
@@ -202,9 +259,55 @@ const PHASE = "intercept" as const;
 // ---------------------------------------------------------------------------
 
 export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): PolicyCacheHandle {
+  // Validate numeric caps at construction. A `maxEntries` of 0 (or
+  // negative) would silently bypass capacity bounds — the per-bucket
+  // overflow check evicts only when the bucket is non-empty, so a 0-cap
+  // configuration would still admit the first registration. Operators
+  // relying on capacity-zero as an incident-time kill switch need a
+  // hard refusal, not a silent quota violation.
+  if (
+    config.maxEntries !== undefined &&
+    (!Number.isInteger(config.maxEntries) || config.maxEntries < 1)
+  ) {
+    throw new Error(
+      `policy-cache: maxEntries must be a positive integer, got ${String(config.maxEntries)}`,
+    );
+  }
+  if (
+    config.maxAgentBuckets !== undefined &&
+    (!Number.isInteger(config.maxAgentBuckets) || config.maxAgentBuckets < 0)
+  ) {
+    // Without validation, NaN here makes `agentCaches.size >= maxAgentBuckets`
+    // always false and the per-tenant memory bound stops working — a real
+    // DoS risk under multi-tenant load.
+    throw new Error(
+      `policy-cache: maxAgentBuckets must be a non-negative integer, got ${String(config.maxAgentBuckets)}`,
+    );
+  }
+  if (
+    config.perTurnBlockCap !== undefined &&
+    (!Number.isInteger(config.perTurnBlockCap) || config.perTurnBlockCap < 0)
+  ) {
+    // NaN, Infinity, or negative values would silently disable the
+    // anti-loop guard (`count > NaN` is always false, etc.). Fail closed
+    // at construction so an LLM cannot loop on synthetic denies forever.
+    // 0 is allowed and means "any block trips the cap on first hit".
+    throw new Error(
+      `policy-cache: perTurnBlockCap must be a non-negative integer, got ${String(config.perTurnBlockCap)}`,
+    );
+  }
+  if (
+    config.dispatchTimeoutMs !== undefined &&
+    (!Number.isFinite(config.dispatchTimeoutMs) || config.dispatchTimeoutMs < 0)
+  ) {
+    throw new Error(
+      `policy-cache: dispatchTimeoutMs must be >= 0, got ${String(config.dispatchTimeoutMs)}`,
+    );
+  }
   const maxEntries = config.maxEntries ?? DEFAULT_MAX_ENTRIES;
   const maxAgentBuckets = config.maxAgentBuckets ?? DEFAULT_MAX_AGENT_BUCKETS;
   const perTurnBlockCap = config.perTurnBlockCap ?? DEFAULT_PER_TURN_BLOCK_CAP;
+  const dispatchTimeoutMs = config.dispatchTimeoutMs ?? DEFAULT_DISPATCH_TIMEOUT_MS;
   // Per-turn block counter, keyed by `${turnId}\0${toolId}\0${brickId}`.
   // Mirrors middleware-permissions' soft-deny budgeting: a model that loops
   // on the same cached deny would otherwise burn tokens and turn budget on
@@ -273,7 +376,34 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
     // a verifier configured, fail closed: refuse every registration. The
     // cache exists *because* forge has verified the brick, so a host that
     // wires the cache without wiring a verifier has misused the API.
-    if (config.verifier === undefined || config.verifier(entry) !== true) {
+    if (config.verifier === undefined) {
+      const error: KoiError = {
+        code: "VALIDATION",
+        message: `policy-cache: refusing unverified brick ${entry.brickId} for tool ${entry.toolId}`,
+        retryable: false,
+        context: { brickId: entry.brickId, toolId: entry.toolId },
+      };
+      return { ok: false, error };
+    }
+    // A throwing verifier is treated as a refusal, not a crash. The
+    // verifier consults host-managed state (forge's verified-set), and a
+    // transient bug or stale lookup must not propagate as an uncaught
+    // exception out of the promotion subscriber. Fail closed: the
+    // registration is refused and the cause is preserved for operators.
+    let verified: boolean;
+    try {
+      verified = config.verifier(entry) === true;
+    } catch (cause) {
+      const error: KoiError = {
+        code: "VALIDATION",
+        message: `policy-cache: verifier threw for brick ${entry.brickId}; failing closed`,
+        retryable: false,
+        cause,
+        context: { brickId: entry.brickId, toolId: entry.toolId },
+      };
+      return { ok: false, error };
+    }
+    if (!verified) {
       const error: KoiError = {
         code: "VALIDATION",
         message: `policy-cache: refusing unverified brick ${entry.brickId} for tool ${entry.toolId}`,
@@ -283,12 +413,58 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       return { ok: false, error };
     }
 
+    // Fail-closed against missing generations on slot replacement.
+    // Round 10 (v2 loop) review: best-effort ordering is too weak for
+    // an authorization cache. If the destination slot is already
+    // populated, both sides MUST carry a generation — otherwise an
+    // event-driven promoter or retrying caller could silently replace a
+    // newer cached deny with an older entry just because it arrived
+    // later. First-time registration into an empty slot is still
+    // allowed without a generation (no rollback risk; nothing to
+    // displace).
+    const destMapForCheck = entry.scope === "global" ? globalCache : agentCaches.get(entry.agentId);
+    const destOccupantForCheck = destMapForCheck?.get(entry.toolId);
+    if (destOccupantForCheck !== undefined && destOccupantForCheck.brickId !== entry.brickId) {
+      if (entry.generation === undefined || destOccupantForCheck.generation === undefined) {
+        const error: KoiError = {
+          code: "VALIDATION",
+          message: `policy-cache: refusing slot replacement without generation on both sides for tool ${entry.toolId} (incoming brick ${entry.brickId})`,
+          retryable: false,
+          context: {
+            brickId: entry.brickId,
+            toolId: entry.toolId,
+            incomingGeneration: entry.generation,
+            currentGeneration: destOccupantForCheck.generation,
+          },
+        };
+        return { ok: false, error };
+      }
+    }
+
     // Generation-gated registration. When both the incoming and the
     // currently cached entry carry a `generation`, refuse a strictly older
     // generation — an event-driven promoter delivering a stale registration
     // out of order would otherwise silently roll authorization state
-    // backward. Hosts that omit `generation` opt out of this protection.
+    // backward.
     if (entry.generation !== undefined) {
+      // Validate generation is a finite non-negative integer. An
+      // unchecked Infinity/NaN would pin this slot — every later
+      // legitimate generation would compare older and be refused, and
+      // notifier events with finite generations would be ignored. Treat
+      // a malformed generation as a hard refusal.
+      if (!Number.isInteger(entry.generation) || entry.generation < 0) {
+        const error: KoiError = {
+          code: "VALIDATION",
+          message: `policy-cache: generation must be a non-negative integer, got ${String(entry.generation)} for brick ${entry.brickId}`,
+          retryable: false,
+          context: {
+            brickId: entry.brickId,
+            toolId: entry.toolId,
+            generation: entry.generation,
+          },
+        };
+        return { ok: false, error };
+      }
       // Check (a) same-brickId replay AND (b) the destination
       // (bucket, toolId) slot. The slot check is required because
       // registration overwrites by (bucket, toolId), so an out-of-order
@@ -431,11 +607,20 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
     // cache miss — an authorization downgrade exactly on the
     // re-promotion / quarantine-recovery flows meant to restore broken
     // denies safely.
-    bucketMap.delete(entry.toolId);
-    bucketMap.set(entry.toolId, entry);
-    brickIndex.set(entry.brickId, { bucket, toolId: entry.toolId });
+    // Snapshot the caller-supplied entry into a frozen internal record.
+    // `readonly` is compile-time only, so without copying we'd retain a
+    // reference to the caller's mutable object — any code still holding
+    // it could swap out `execute`, flip the brickId, or rewrite metadata
+    // AFTER the verifier has accepted the entry, silently turning a
+    // verified deny into an allow on the next call. The shallow freeze
+    // doesn't (and can't) protect the closure body itself, but it does
+    // pin the policy-cache's view of the entry to what the verifier saw.
+    const stored: PolicyEntry = Object.freeze({ ...entry });
+    bucketMap.delete(stored.toolId);
+    bucketMap.set(stored.toolId, stored);
+    brickIndex.set(stored.brickId, { bucket, toolId: stored.toolId });
     // Re-registration clears any prior quarantine on this brickId.
-    quarantined.delete(entry.brickId);
+    quarantined.delete(stored.brickId);
     return { ok: true, value: undefined };
   };
 
@@ -477,12 +662,24 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
             ? globalCache
             : agentCaches.get(ref.bucket.slice("agent:".length));
         const current = map?.get(ref.toolId);
+        // Treat malformed event generations (NaN/Infinity/non-integer)
+        // as unusable — fall through to best-effort eviction rather than
+        // feeding garbage into the ordering check.
+        const eventGen = event.generation;
+        const eventGenValid = eventGen !== undefined && Number.isInteger(eventGen) && eventGen >= 0;
         if (
           current !== undefined &&
-          event.generation !== undefined &&
+          eventGenValid &&
           current.generation !== undefined &&
-          event.generation < current.generation
+          eventGen < current.generation
         ) {
+          return;
+        }
+        // Round 10 (v2 loop): if the cached entry knows its generation
+        // but the event lacks one, treat the event as untrusted and
+        // skip eviction. A delayed `removed`/`updated` from an unknown
+        // version could otherwise drop a freshly re-promoted deny.
+        if (current !== undefined && current.generation !== undefined && !eventGenValid) {
           return;
         }
       }
@@ -534,16 +731,26 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
 
   // Emit a synthetic permission-deny so observe-phase middleware (audit,
   // monitor) sees policy-cache denials with the same shape as
-  // middleware-permissions denials. Fire-and-forget — the host injects this
-  // callback only when an observer is wired, and a throwing observer must
-  // not change enforcement behavior.
-  const dispatchSyntheticDeny = (
+  // middleware-permissions denials.
+  //
+  // Durability vs. availability tradeoff. The synthetic-deny path bypasses
+  // inner observe-phase middleware, so the durability barrier those
+  // middleware normally provide must be re-established here — but
+  // enforcement of the deny MUST NOT depend on observer health. We bound
+  // the await with `dispatchTimeoutMs` and contain sync throws / async
+  // rejections so a slow or poisoned audit sink can never (a) hang the
+  // deny path, or (b) flip a permission-denied response into an
+  // EXTERNAL/infrastructure failure. The deny is always returned as a
+  // canonical block response by the caller; if the host needs to know
+  // dispatch failed, it wires `onDispatchError` (paging, metrics).
+  const dispatchSyntheticDeny = async (
     ctx: TurnContext,
     entry: PolicyEntry,
     request: ToolRequest,
-  ): void => {
+  ): Promise<void> => {
     const dispatch = ctx.dispatchPermissionDecision;
     if (dispatch === undefined) return;
+    let result: void | Promise<void>;
     try {
       // Identity AND context MUST match middleware-permissions' queryForTool
       // exactly so observers (audit, monitor) see one canonical permission
@@ -575,39 +782,88 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       const resolved = config.resolveResource?.(request);
       const enrichedResource = resolved?.resource ?? request.toolId;
       const resolvedPath = resolved?.path;
-      const merged: JsonObject = {
+      // Policy-cache provenance is intentionally NOT injected into the
+      // dispatched query — that would split policy-cache denials from
+      // normal permissions denials in any observer that keys on the
+      // query body, breaking audit correlation. Provenance is delivered
+      // out-of-band through `reportDecision` (brickId/scope/source/cap).
+      const ctxField: JsonObject = {
         ...(hasSessionMeta ? { _session: sessionMeta } : {}),
         ...(hasTurnMeta ? turnMeta : {}),
         ...(hasReqMeta ? { _request: reqMeta } : {}),
         ...(resolvedPath !== undefined ? { path: resolvedPath } : {}),
-        // Policy-cache provenance always present so observers can route on it.
-        _policyCache: { brickId: entry.brickId, scope: entry.scope },
       };
-      const ctxField: JsonObject = merged;
+      // Mirror queryForTool: when the merged context has no fields,
+      // omit `context` entirely from the PermissionQuery rather than
+      // sending an empty object. Observers keying on the serialized
+      // query body would otherwise split policy-cache denials into a
+      // separate bucket from normal permissions denials on the very
+      // common empty-metadata path.
+      const hasAnyContext = Object.keys(ctxField).length > 0;
       // Reason is the fixed `SYNTHETIC_DENY_REASON` constant — NEVER the
       // executor-supplied reason. The deny path through `event-trace` and
       // friends persists `reason` to long-lived trajectory storage; sending
       // raw executor text would defeat the same trust boundary the
       // canonical block response already enforces in `metadata`.
-      const result: void | Promise<void> = dispatch(
+      result = dispatch(
         {
           principal,
           action: "invoke",
           resource: enrichedResource,
-          context: ctxField,
+          ...(hasAnyContext ? { context: ctxField } : {}),
         },
         { effect: "deny", reason: SYNTHETIC_DENY_REASON, disposition: "hard" },
       );
-      // Async observers must also not destabilize enforcement. Wrap any
-      // returned promise so a rejection cannot escape as an unhandled
-      // rejection — mirrors the pattern in `middleware-permissions`.
-      if (result !== undefined) {
-        void Promise.resolve(result).catch(() => {
-          // Swallow async observer failures; observability cannot break enforcement.
-        });
-      }
+    } catch (cause) {
+      reportDispatchError(entry, request, cause, "threw");
+      return;
+    }
+    if (result === undefined) return;
+    if (dispatchTimeoutMs === 0) {
+      // Fire-and-forget mode: the deny does not wait for observers. We
+      // still attach a catch handler so an async rejection cannot
+      // surface as an unhandled rejection on the host process.
+      void Promise.resolve(result).catch((cause: unknown) => {
+        reportDispatchError(entry, request, cause, "rejected");
+      });
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        result,
+        new Promise<never>((_resolve, reject) => {
+          // Bounded await — a hung observer must not stall the deny path.
+          // We capture the handle so it can be cleared once the dispatch
+          // promise wins, otherwise every blocked call would queue a
+          // long-lived timer and burn wakeups under heavy denied traffic.
+          timer = setTimeout(() => reject(DISPATCH_TIMEOUT_SENTINEL), dispatchTimeoutMs);
+        }),
+      ]);
+    } catch (cause) {
+      const reason: "rejected" | "timeout" = isDispatchTimeout(cause) ? "timeout" : "rejected";
+      reportDispatchError(entry, request, cause, reason);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
+
+  const reportDispatchError = (
+    entry: PolicyEntry,
+    request: ToolRequest,
+    cause: unknown,
+    reason: "threw" | "rejected" | "timeout",
+  ): void => {
+    try {
+      config.onDispatchError?.({
+        brickId: entry.brickId,
+        toolId: request.toolId,
+        scope: entry.scope,
+        cause,
+        reason,
+      });
     } catch {
-      // Swallow sync dispatch failures; observability cannot break enforcement.
+      // Throwing handler must not change enforcement.
     }
   };
 
@@ -669,6 +925,27 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       const entry = findEntry(ctx, request.toolId);
       if (entry === undefined) return next(request);
 
+      // Optional re-verification on every hit. Defends against drift
+      // between the verifier's view at registration and now — a brick
+      // revoked since admission, or a closure whose external identity
+      // has changed in a way the host's verifier can detect. A throwing
+      // verifier is treated as "not verified" (fail closed: evict and
+      // delegate to the normal permissions path). When `verifyOnHit` is
+      // false (the default), the cached entry is trusted for its
+      // lifetime — the package's fast-path contract.
+      if (config.verifyOnHit === true && config.verifier !== undefined) {
+        let stillVerified: boolean;
+        try {
+          stillVerified = config.verifier(entry) === true;
+        } catch {
+          stillVerified = false;
+        }
+        if (!stillVerified) {
+          evict(entry.brickId);
+          return next(request);
+        }
+      }
+
       // Per-turn block budget. Mirrors @koi/middleware-permissions'
       // soft-deny cap. Without this, a model looping on the same cached
       // deny would receive unbounded synthetic responses, burning tokens
@@ -680,8 +957,17 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       // traffic cannot accumulate for the lifetime of the process.
       const turnId = ctx.turnId as unknown as string;
       const sessionId = ctx.session.sessionId as unknown as string;
-      const blockKey = `${sessionId}\0${turnId}\0${request.toolId}\0${entry.brickId}`;
-      const enforcePerTurnCap = (source: "executor" | "quarantine"): void => {
+      // Cap key is stable enforcement identity — NOT brickId. The same
+      // tool slot is allowed to be re-promoted under a new brickId
+      // (out-of-order retry, content-addressed redrive, generation
+      // bumps), and a model looping on a denied tool would otherwise get
+      // a fresh deny budget every time the brickId churns. Keying by
+      // `(session, turn, scope-owner, tool)` collapses re-promotions onto
+      // the same counter so the runaway-loop guard cannot be reset by
+      // promotion churn the cache itself supports.
+      const scopeOwner = entry.scope === "agent" ? `agent:${entry.agentId}` : "global";
+      const blockKey = `${sessionId}\0${turnId}\0${scopeOwner}\0${request.toolId}`;
+      const enforcePerTurnCap = async (source: "executor" | "quarantine"): Promise<void> => {
         const count = (perTurnBlocks.get(blockKey) ?? 0) + 1;
         perTurnBlocks.set(blockKey, count);
         if (count > perTurnBlockCap) {
@@ -692,7 +978,10 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
           // misclassifies the runaway-loop hard-stop as an unexpected
           // tool failure instead of an authorization failure. Mirrors
           // @koi/middleware-permissions' soft→hard conversion path.
-          dispatchSyntheticDeny(ctx, entry, request);
+          // dispatchSyntheticDeny no longer throws on observer errors —
+          // it routes failures to `onDispatchError` and returns. The
+          // PERMISSION throw below is the authoritative fail-closed signal.
+          await dispatchSyntheticDeny(ctx, entry, request);
           throw new KoiRuntimeError({
             code: "PERMISSION",
             message: `policy-cache: per-turn block cap ${String(perTurnBlockCap)} exceeded for tool "${request.toolId}" (brick ${entry.brickId}); aborting runaway loop`,
@@ -712,9 +1001,9 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       // even after their executor faults. Cleared by re-register or
       // external eviction (StoreChangeNotifier `removed` / `quarantined`).
       if (quarantined.has(entry.brickId)) {
-        enforcePerTurnCap("quarantine");
+        await enforcePerTurnCap("quarantine");
         reportDecision(ctx, entry, request, "quarantine", false);
-        dispatchSyntheticDeny(ctx, entry, request);
+        await dispatchSyntheticDeny(ctx, entry, request);
         return blockResponse(request.toolId);
       }
 
@@ -738,16 +1027,16 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
         }
         // Cap and dispatch happen OUTSIDE the executor try/catch so a cap
         // overflow throws cleanly to the engine loop (not re-caught here).
-        enforcePerTurnCap("quarantine");
+        await enforcePerTurnCap("quarantine");
         reportDecision(ctx, entry, request, "quarantine", false);
-        dispatchSyntheticDeny(ctx, entry, request);
+        await dispatchSyntheticDeny(ctx, entry, request);
         return blockResponse(request.toolId);
       }
       if (decision.action === "allow") return next(request);
-      enforcePerTurnCap("executor");
+      await enforcePerTurnCap("executor");
       reportDecision(ctx, entry, request, "executor", false);
       // `decision.reason` is intentionally NOT forwarded — see SYNTHETIC_DENY_REASON.
-      dispatchSyntheticDeny(ctx, entry, request);
+      await dispatchSyntheticDeny(ctx, entry, request);
       return blockResponse(request.toolId);
     },
 

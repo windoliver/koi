@@ -10,7 +10,7 @@ This package is the v2 restoration of the v1 `middleware-policy-cache`. It is th
 
 ## ⚠️ Verified-only: trust boundary is the construction-time `verifier` callback
 
-`register(entry)` accepts an entry **only when** `config.verifier(entry.brickId)` returns `true`. There is no flag or token that the caller of `register()` can pass to bypass this — the verifier closure is captured at factory construction time by code that already has access to forge's verified-set, so untrusted runtime code with import access to `register()` cannot influence the verifier's decision.
+`register(entry)` accepts an entry **only when** `config.verifier(entry)` returns `true` (the verifier receives the full `PolicyEntry`, not just the brickId). There is no flag or token that the caller of `register()` can pass to bypass this — the verifier closure is captured at factory construction time by code that already has access to forge's verified-set, so untrusted runtime code with import access to `register()` cannot influence the verifier's decision.
 
 **Why a callback, not a flag/token.** Any caller-supplied artifact (`verified: boolean`, an attestation token, a signature object) can be self-minted by code that has import access to the package's helpers. Moving the trust check to a closure injected at construction time makes the trust boundary the host's wiring code, not the API surface — exactly where it belongs.
 
@@ -228,18 +228,37 @@ The fragment exists so the model knows *that* a deterministic policy layer is ac
 ```typescript
 import { createPolicyCacheMiddleware } from "@koi/middleware-policy-cache";
 
+// Trust boundary. The verifier is the ONLY way the cache knows a brick
+// has been forge-verified — there is no `verified: true` flag a caller
+// can set. The verifier closure is captured at construction time and
+// receives the FULL PolicyEntry, so it MUST inspect (brickId, toolId,
+// scope, agentId, execute reference) against forge's verified-set, not
+// just brickId. Without a verifier configured, register() refuses every
+// entry (fail-closed).
+const verifiedSet = forge.getVerifiedSet(); // host-managed, e.g. Map<brickId, {toolId, scope, agentId, executeRef}>
+
 const handle = createPolicyCacheMiddleware({
+  verifier: (entry) => {
+    const v = verifiedSet.get(entry.brickId);
+    if (v === undefined) return false;
+    if (v.toolId !== entry.toolId) return false;
+    if (v.scope !== entry.scope) return false;
+    if (entry.scope === "agent" && v.agentId !== entry.agentId) return false;
+    if (v.executeRef !== entry.execute) return false;
+    return true;
+  },
   maxEntries: 100,                  // optional, default 100
   notifier: brickStoreNotifier,     // optional StoreChangeNotifier
 });
 
-// Wiring layer: register a verified, compiled, owner-keyed policy
+// Wiring layer: register a verified, compiled, owner-keyed policy.
+// Note there is NO `verified` field — the verifier is the trust boundary.
 const result = handle.register({
   scope: "agent",
   agentId: "agent-9f3a",       // required for agent scope
   toolId: "search",
   brickId: "brick-9f3a",
-  verified: true,
+  generation: 1,               // optional but recommended: monotonic version
   execute: (input) =>
     typeof input.query === "string" && input.query.length > 0
       ? { action: "allow" }
