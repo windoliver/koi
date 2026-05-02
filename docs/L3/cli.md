@@ -6,6 +6,23 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`@koi/playbook-store-sqlite` + ACE manifest activation wired (#2088)**: CLI
+  manifest gains an opt-in `ace:` block (`enabled`, `acknowledge_cross_session_state`,
+  `max_injected_tokens`, `min_score`, `lambda`, `playbook_path`). When `enabled: true`
+  in the TUI host, `tui-command.ts` constructs either an in-memory store or a
+  durable `@koi/playbook-store-sqlite` (manifest-relative path or `:memory:`),
+  threads it into `AceConfig`, and registers a `process.on("exit")` close hook so
+  WAL is checkpointed cleanly. Activation is gated: `koi start` rejects
+  `ace.enabled: true` (single-shot prompts have no session loop), the spawn preset
+  stack is mutually exclusive (`isSpawnStackActive` predicate refuses with exit
+  status 1), and resume paths verify the persisted `SessionAceProvenance` snapshot
+  (frozen at session creation in the v2 sidecar) against the live config — refusing
+  on durable→non-durable downgrade, store-identity mismatch (database file
+  replacement), or deleted-db. Bare `--resume` (no `--manifest`) inherits
+  `skipManifestDiscovery` so resumed sessions never auto-pick up cwd ACE state.
+  Path validation rejects absolute paths and `..` escape via symlink-aware
+  `realpathSync` containment.
+
 - **`@koi/governance-scope` wired (#1882 gov-15)**: CLI manifest gains `network:`
   and `credentials:` blocks. The TUI command translates these into compiled scope
   objects (`compileScopedFs`, `createScopedFetcher`, `createScopedCredentials`)
@@ -568,6 +585,7 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/context-manager` | L0u | Token-aware transcript compaction — `enforceBudget()` micro/full cascade, `resolveConfig()` + `budgetConfigFromResolved()` for per-model window from `@koi/model-registry`. Wired into `createTranscriptAdapter()` in `engine-adapter.ts`; both `koi start` and `koi tui` use it. `KOI_COMPACTION_WINDOW` env var overrides the window for testing (#1623) |
 | `@koi/audit-sink-sqlite` | L2 | WAL-mode SQLite audit sink — opt-in via `KOI_AUDIT_SQLITE` env var, parallel to NDJSON sink. Collision guard prevents dual-writer corruption (#1849) |
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
+| `@koi/middleware-tool-error-formatter` | L2 | Tool error formatter — always-on slot in `composeRuntimeMiddleware`. Catches tool throws via `wrapToolCall` (priority 170, resolve phase) and returns a formatted `ToolResponse` so the model can recover instead of the engine surfacing an opaque crash. Sits INSIDE permissions/exfiltration-guard so guardrail aborts still propagate as model-visible failures unless explicitly opted into `passthroughCodes`. (#2099) |
 | `@koi/middleware-ace` | L2 | Adaptive Continuous Enhancement — opt-in via `manifest.ace.enabled: true` + `acknowledge_cross_session_state: true` + operator env `KOI_ACE_ACKNOWLEDGE_CROSS_SESSION_STATE=true`. TUI-only (rejected by `koi start` and `koi tui --resume` with ACE-bound sessions). Incompatible with the `checkpoint` preset stack — `/rewind` cannot roll back learned playbooks. Provenance recorded in versioned `<sid>.koi-meta.json` sidecar; resume / picker honor immutable snapshot of `ace.enabled` + `audit` to fail closed against post-creation manifest edits. (#2088, follow-up #2087 for sqlite-backed playbook persistence) |
 | `@koi/middleware-event-rules` | L2 | Declarative YAML event→action rules (#1422). Manifest factory restricts host-loaded rulesets to `log` actions only (rejects `skip_tool`/`notify`/`emit`/`escalate`) so untrusted manifests cannot perform side effects; trusted programmatic wiring through `createEventRulesMiddleware()` retains the full action surface. Priority 50, intercept phase. See `docs/L2/middleware-event-rules.md` |
 | `@koi/middleware-extraction` | L2 | Post-turn learning extraction — intercepts spawn-family tool outputs, extracts reusable knowledge via regex + LLM, persists to file-backed memory backend. **Fix (#1964):** `heuristic`/`pattern` → `feedback`. **Fix (#1966):** `MemoryType` threaded via `MemoryStoreOptions.type`; JSON output filtered through allowlist; command-result envelopes skipped. |

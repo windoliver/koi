@@ -225,8 +225,9 @@ mock.module("../shared-wiring.js", () => ({
   mergeUserAndPluginHooks: mock((u: unknown[], _p: unknown[]) => u),
   resumeSessionFromJsonl: mockResumeSessionFromJsonl,
   writeSessionMeta: mock(async () => {}),
-  readSessionMeta: mock(async () => ({})),
-  readSessionMetaResult: mock(async () => ({ kind: "ok", manifestPath: "/tmp/koi.yaml" }) as const),
+  // Default mock returns ok+empty so resume tests don't trip the round-10
+  // absent-sidecar bail. Tests that need the absent path override locally.
+  readSessionMeta: mock(async () => ({ kind: "ok" as const, meta: {} })),
   buildCoreMiddleware: mock(() => ({
     permissions: {},
     hook: {},

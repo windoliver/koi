@@ -730,6 +730,178 @@ describe("Golden: @koi/middleware-task-anchor", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-tool-error-formatter
+// Standalone tests that exercise the exported middleware surface from
+// @koi/runtime's consumer boundary, plus a trajectory fixture assertion.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-tool-error-formatter", () => {
+  test("createToolErrorFormatterMiddleware returns a middleware with the expected name and priority", async () => {
+    const { createToolErrorFormatterMiddleware } = await import(
+      "@koi/middleware-tool-error-formatter"
+    );
+    const handle = createToolErrorFormatterMiddleware();
+    expect(handle.middleware.name).toBe("tool-error-formatter");
+    expect(handle.middleware.priority).toBe(170);
+    expect(typeof handle.middleware.wrapToolCall).toBe("function");
+  });
+
+  test("wrapToolCall converts a thrown tool error into a ToolResponse instead of propagating", async () => {
+    const { createToolErrorFormatterMiddleware } = await import(
+      "@koi/middleware-tool-error-formatter"
+    );
+    const handle = createToolErrorFormatterMiddleware();
+    const ctx = {
+      session: {
+        agentId: "tef-golden",
+        sessionId: sessionId("tef-golden"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      },
+      turnIndex: 0,
+      turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    } satisfies TurnContext;
+
+    const failingHandler = async (
+      _req: import("@koi/core").ToolRequest,
+    ): Promise<import("@koi/core").ToolResponse> => {
+      throw new Error("upstream timed out");
+    };
+
+    const response = await handle.middleware.wrapToolCall?.(
+      ctx,
+      {
+        toolId: "fragile_lookup",
+        input: { id: "abc-123" } as JsonObject,
+      } satisfies import("@koi/core").ToolRequest,
+      failingHandler,
+    );
+    expect(response).toBeDefined();
+    expect(typeof response?.output).toBe("string");
+    expect(String(response?.output)).toContain("upstream timed out");
+  });
+
+  test("trajectory fixture contains tool-error-formatter middleware spans and a tool step", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/tool-error-formatter.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly outcome?: string;
+        readonly extra?: Record<string, unknown>;
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("tool-error-formatter");
+
+    const tefSpans = doc.steps.filter(
+      (s) =>
+        s.extra?.type === "middleware_span" && s.extra?.middlewareName === "tool-error-formatter",
+    );
+    expect(tefSpans.length).toBeGreaterThanOrEqual(1);
+
+    // The trajectory must contain BOTH a tool step (model invoked the failing
+    // tool, formatter surfaced the throw as a result) AND a second agent step
+    // proving the formatted ToolResponse reached a follow-up model call —
+    // without that second model call the formatter is unobservable.
+    const toolSteps = doc.steps.filter(
+      (s) =>
+        s.source === "tool" &&
+        Array.isArray(s.tool_calls) &&
+        s.tool_calls.some((tc) => tc.function_name === "fragile_lookup"),
+    );
+    expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+    expect(agentSteps.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-tool-disclosure
+// Standalone tests + trajectory fixture assertions.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-tool-disclosure", () => {
+  test("createToolDisclosureBundle exposes middleware + companion tool provider", async () => {
+    const { createToolDisclosureBundle, PROMOTE_TOOL_NAME } = await import(
+      "@koi/middleware-tool-disclosure"
+    );
+    const bundle = createToolDisclosureBundle({ threshold: 2 });
+    expect(bundle.middleware.name).toBe("tool-disclosure");
+    expect(bundle.providers.length).toBe(1);
+    expect(PROMOTE_TOOL_NAME).toBe("promote_tools");
+  });
+
+  test("createPromoteToolDescriptor returns a descriptor with the expected shape", async () => {
+    const { createPromoteToolDescriptor, PROMOTE_TOOL_NAME } = await import(
+      "@koi/middleware-tool-disclosure"
+    );
+    const descriptor = createPromoteToolDescriptor();
+    expect(descriptor.name).toBe(PROMOTE_TOOL_NAME);
+    expect(typeof descriptor.description).toBe("string");
+    expect(descriptor.inputSchema).toBeDefined();
+    const schema = descriptor.inputSchema as {
+      properties?: { names?: { type?: string; items?: { type?: string } } };
+      required?: readonly string[];
+    };
+    expect(schema.properties?.names?.type).toBe("array");
+    expect(schema.required).toContain("names");
+  });
+
+  test("trajectory fixture proves promote_tools→add_numbers disclosure flow", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/tool-disclosure.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly message?: string;
+        readonly extra?: Record<string, unknown>;
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("tool-disclosure");
+
+    // Disclosure middleware spans fire on every model+tool call.
+    const tdSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "tool-disclosure",
+    );
+    expect(tdSpans.length).toBeGreaterThanOrEqual(2);
+
+    // promote_tools is intercepted by the middleware (it short-circuits at
+    // wrapToolCall and never reaches tool execution), so the call is observable
+    // as a middleware span whose message is `promote_tools(...)` — assert at
+    // least one such span exists.
+    const promoteSpans = tdSpans.filter(
+      (s) => typeof s.message === "string" && s.message.startsWith("promote_tools("),
+    );
+    expect(promoteSpans.length).toBeGreaterThanOrEqual(1);
+
+    // add_numbers must execute as an actual tool step after promotion: this
+    // proves the disclosure middleware promoted the summary descriptor to
+    // full schema and let the call through.
+    const addNumbersSteps = doc.steps.filter(
+      (s) =>
+        s.source === "tool" &&
+        Array.isArray(s.tool_calls) &&
+        s.tool_calls.some((tc) => tc.function_name === "add_numbers"),
+    );
+    expect(addNumbersSteps.length).toBeGreaterThanOrEqual(1);
+
+    // At least three model agent steps: initial (sees summary), post-promote
+    // (sees full schema, calls add_numbers), final (reports result).
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+    expect(agentSteps.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/middleware-planning (write_plan tool injection + MW span)
 // ---------------------------------------------------------------------------
 
@@ -13861,6 +14033,96 @@ describe("Golden: @koi/gateway-webhook", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Golden: @koi/gateway-canvas
+// Surface store + SSE manager — sit outside the agent loop (no cassette needed).
+// Tests validate the public API surface: in-memory store CRUD with ETag CAS,
+// and SSE fan-out with subscriber lifecycle. Neither interacts with the LLM.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/gateway-canvas", () => {
+  test("createInMemorySurfaceStore — CRUD + ETag CAS via expectedHash", async () => {
+    const { createInMemorySurfaceStore, surfaceEtag } = await import("@koi/gateway-canvas");
+    const store = createInMemorySurfaceStore();
+
+    const created = await store.create("dash-1", "<h1>v1</h1>", {
+      ownerId: "agent-1",
+      metadata: { author: "agent" },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const v1Token = surfaceEtag(created.value);
+    expect(created.value.ownerId).toBe("agent-1");
+    expect(created.value.metadata).toEqual({ author: "agent" });
+
+    // Same-tenant duplicate create → CONFLICT (tenant-scoped namespace)
+    const dup = await store.create("dash-1", "<h1>x</h1>", { ownerId: "agent-1" });
+    expect(dup.ok).toBe(false);
+    if (!dup.ok) expect(dup.error.code).toBe("CONFLICT");
+
+    // CAS update with matching token succeeds + new token differs
+    const updated = await store.update("dash-1", "<h1>v2</h1>", v1Token, "agent-1");
+    expect(updated.ok).toBe(true);
+    if (!updated.ok) return;
+    expect(surfaceEtag(updated.value)).not.toBe(v1Token);
+
+    // CAS update with stale token → CONFLICT (precondition failed)
+    const stale = await store.update("dash-1", "<h1>v3</h1>", v1Token, "agent-1");
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) expect(stale.error.code).toBe("CONFLICT");
+
+    // delete returns true once, false thereafter; subsequent get → NOT_FOUND
+    const del = await store.delete("dash-1", "agent-1");
+    expect(del).toEqual({ ok: true, value: true });
+    const missing = await store.get("dash-1", "agent-1");
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error.code).toBe("NOT_FOUND");
+  });
+
+  test("createCanvasSseManager — publish fans out, dead subscribers are reaped, close emits deleted", async () => {
+    const { createCanvasSseManager } = await import("@koi/gateway-canvas");
+    const sse = createCanvasSseManager({
+      maxSubscribersPerSurface: 8,
+      maxTotalSubscribers: 16,
+      keepAliveIntervalMs: 60_000,
+    });
+
+    try {
+      const decoder = new TextDecoder();
+      const live: string[] = [];
+      const liveResult = sse.subscribe("dash-1", (data) => {
+        live.push(decoder.decode(data));
+        return true;
+      });
+      expect(liveResult.ok).toBe(true);
+
+      // Dead subscriber (returns false) gets reaped on first publish
+      sse.subscribe("dash-1", () => false);
+      expect(sse.subscriberCount("dash-1")).toBe(2);
+
+      sse.publish("dash-1", { id: "1", event: "updated", data: '{"v":2}' });
+      expect(live).toHaveLength(1);
+      expect(live[0]).toBe('id: 1\nevent: updated\ndata: {"v":2}\n\n');
+      expect(sse.subscriberCount("dash-1")).toBe(1);
+
+      // Caller publishes the public deleted event first; close() is pure
+      // teardown (does NOT embed the registry key as the wire surfaceId).
+      sse.publish("dash-1", {
+        id: "2",
+        event: "deleted",
+        data: JSON.stringify({ surfaceId: "dash-1" }),
+      });
+      sse.close("dash-1");
+      expect(live).toHaveLength(2);
+      expect(live[1]).toContain("event: deleted");
+      expect(live[1]).toContain('"surfaceId":"dash-1"');
+      expect(sse.totalSubscribers()).toBe(0);
+    } finally {
+      sse.dispose();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/governance-delegation — capability-token primitives
 // ---------------------------------------------------------------------------
 
@@ -15855,6 +16117,118 @@ describe("Golden: @koi/middleware-ace", () => {
     const addCall = toolSteps[0]?.tool_calls?.[0];
     expect(addCall?.function_name).toBe("add_numbers");
     expect(toolSteps[0]?.outcome).toBe("success");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Golden: @koi/playbook-store-sqlite (no LLM, no cassette — pure store)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The persistent ACE backend has no model dependency. The promise of issue
+// #2087 is "playbooks survive process restart" — exercise it directly:
+// open store at temp path → save state → close → re-open same path → read
+// back identical state across all four substores.
+
+describe("Golden: @koi/playbook-store-sqlite", () => {
+  test("save → close → re-open → state intact", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join: joinPath } = await import("node:path");
+    const { createSqlitePlaybookStore } = await import("@koi/playbook-store-sqlite");
+
+    const tmp = mkdtempSync(joinPath(tmpdir(), "golden-playbook-"));
+    const dbPath = joinPath(tmp, "ace.sqlite");
+
+    try {
+      const writer = createSqlitePlaybookStore({ path: dbPath });
+      await writer.playbooks.save({
+        id: "pb-golden",
+        title: "always check existence",
+        strategy: "verify-then-edit",
+        tags: ["fs", "edit"],
+        confidence: 0.8,
+        source: "curated",
+        createdAt: 1,
+        updatedAt: 2,
+        sessionCount: 3,
+        version: 1,
+      });
+      await writer.structuredPlaybooks.save({
+        id: "spb-golden",
+        title: "v1",
+        sections: [
+          {
+            name: "Errors",
+            slug: "errors",
+            bullets: [
+              {
+                id: "b1",
+                content: "check exists",
+                helpful: 1,
+                harmful: 0,
+                createdAt: 0,
+                updatedAt: 0,
+              },
+            ],
+          },
+        ],
+        tags: [],
+        source: "curated",
+        createdAt: 1,
+        updatedAt: 2,
+        sessionCount: 1,
+        version: 1,
+      });
+      await writer.trajectories.append("sess-golden", [
+        {
+          turnIndex: 0,
+          timestamp: 100,
+          kind: "tool_call",
+          identifier: "edit",
+          outcome: "success",
+          durationMs: 7,
+        },
+      ]);
+      writer.close();
+
+      const reader = createSqlitePlaybookStore({ path: dbPath });
+      const pb = await reader.playbooks.get("pb-golden");
+      expect(pb?.title).toBe("always check existence");
+      expect(pb?.tags).toEqual(["fs", "edit"]);
+
+      const spb = await reader.structuredPlaybooks.get("spb-golden");
+      expect(spb?.version).toBe(1);
+
+      const lineage = await reader.structuredPlaybooks.getVersion("spb-golden", 1);
+      expect(lineage?.title).toBe("v1");
+
+      const traj = await reader.trajectories.getSession("sess-golden");
+      expect(traj.length).toBe(1);
+      expect(traj[0]?.identifier).toBe("edit");
+      reader.close();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects re-commit of same (id, version) with different content", async () => {
+    const { createSqlitePlaybookStore } = await import("@koi/playbook-store-sqlite");
+
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    const base = {
+      id: "spb-immut",
+      title: "v1",
+      sections: [],
+      tags: [],
+      source: "curated" as const,
+      createdAt: 0,
+      updatedAt: 0,
+      sessionCount: 1,
+      version: 1,
+    };
+    await store.structuredPlaybooks.save(base);
+    await expect(store.structuredPlaybooks.save({ ...base, title: "tampered" })).rejects.toThrow();
+    store.close();
   });
 });
 

@@ -753,170 +753,180 @@ export async function resumeSessionFromJsonl(
 // cwd-based re-discovery (which is ambiguous when launched from a different dir).
 // ---------------------------------------------------------------------------
 
+/**
+ * Bumped to 2 in the ACE-aware build (issue #2088 / round 6 review). v2
+ * sidecars always include an `ace` block (set to {enabled: false, ...}
+ * when the session ran without ACE) so a missing block on a v2 sidecar
+ * is treated as malformed, not as "no ACE recorded". v1 sidecars from
+ * older builds are honored as legacy and skip the ACE check entirely.
+ */
 const SESSION_META_VERSION = 2 as const;
 
 /**
- * Write session provenance metadata to a sidecar file alongside the JSONL
- * transcript. Creates the sessions directory if missing so the sidecar always
- * lands on disk — host-safety checks (audit, ACE) on resume rely on the
- * sidecar being present whenever a manifest governed the original session.
- * Errors are still swallowed to keep startup non-fatal in adversarial
- * filesystem conditions, but the common cold-start case now persists.
+ * Immutable ACE provenance snapshot persisted into the session sidecar at
+ * session creation. Resume must compare against THIS snapshot, not against
+ * a re-read of the manifest file (which the operator may have edited
+ * between session start and resume — see Codex round 4 finding).
  */
-/**
- * Snapshot of host-safety-relevant manifest fields, frozen at session
- * creation. Resume checks read this snapshot rather than re-parsing the
- * mutable file at `manifestPath` — an attacker (or accidental edit)
- * can flip `ace.enabled` or remove `audit` after the session was
- * created, but the snapshot preserves the original contract.
- *
- * Both booleans are required so `readSessionMetaResult` can detect
- * field-stripping tampering. A sidecar with `snapshot: {}` is treated
- * as corrupt rather than falling back to re-parsing the mutable
- * manifest.
- */
-export interface SessionProvenanceSnapshot {
-  readonly aceEnabled: boolean;
-  readonly auditDeclared: boolean;
+export interface SessionAceProvenance {
+  readonly enabled: boolean;
+  readonly playbookPath: string | undefined;
+  readonly maxInjectedTokens: number | undefined;
+  readonly minScore: number | undefined;
+  readonly lambda: number | undefined;
+  /**
+   * UUID of the SQLite store at session creation time. On resume, the
+   * store at the persisted path must report the same UUID — otherwise it
+   * was deleted, replaced, swapped, or auto-recreated and the resume must
+   * fail closed (round 7 finding). Undefined for sessions that ran with
+   * no SQLite store (in-memory or :memory:, both of which now refuse
+   * resume entirely — round 6).
+   */
+  readonly storeId?: string;
 }
 
+export interface SessionMeta {
+  /**
+   * Sidecar schema version. v1 = pre-ACE-aware build. v2+ = ace block
+   * always present (with enabled:false when session ran without ACE), so
+   * a v2 sidecar missing its ace block is malformed, not "no ACE state".
+   */
+  readonly version?: number;
+  readonly manifestPath?: string;
+  readonly ace?: SessionAceProvenance;
+}
+
+/**
+ * Write session provenance metadata to a sidecar file alongside the JSONL
+ * transcript. By default best-effort (sessions directory may not exist on
+ * the very first run). For ACE-enabled sessions (round 8 finding), pass
+ * `requireDurable: true` — a write failure throws so the caller can refuse
+ * to start an ACE session that lacks persisted provenance, instead of
+ * silently bypassing every resume guard later.
+ */
 export async function writeSessionMeta(
   sessionsDir: string,
   sid: string,
-  meta: {
-    /** Absolute path to the governing manifest, or `null` when the session was launched without one. */
-    readonly manifestPath: string | null;
-    readonly snapshot: SessionProvenanceSnapshot;
-  },
-): Promise<{ readonly ok: true } | { readonly ok: false; readonly error: string }> {
-  try {
-    const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
-    const { mkdir } = await import("node:fs/promises");
-    await mkdir(sessionsDir, { recursive: true });
-    await Bun.write(path, JSON.stringify({ version: SESSION_META_VERSION, ...meta }));
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
-/**
- * Read session provenance metadata. Distinguishes three outcomes:
- *   - `{ kind: "missing" }`     — sidecar absent (legacy session or never written)
- *   - `{ kind: "ok", manifestPath }` — sidecar present and parseable
- *   - `{ kind: "corrupt", error }` — sidecar present but unreadable/malformed
- *
- * Callers must fail closed on `corrupt` for manifest-governed resumes
- * (audit, ACE) so an attacker cannot bypass host-safety checks by
- * truncating or tampering with `<sid>.koi-meta.json`.
- */
-export type SessionMetaReadResult =
-  | { readonly kind: "missing" }
-  | {
-      /**
-       * Pre-snapshot sidecar (version 1) or no sidecar at all (v0). The
-       * caller falls back to the pre-PR behavior: if a manifest path
-       * is recorded, re-parse it for ACE/audit decisions; otherwise
-       * apply the pre-PR permissive default. This preserves resume
-       * compatibility for sessions created before the snapshot model.
-       */
-      readonly kind: "legacy";
-      readonly manifestPath: string | undefined;
-    }
-  | {
-      readonly kind: "ok";
-      readonly manifestPath: string | undefined;
-      readonly snapshot: SessionProvenanceSnapshot;
-    }
-  | { readonly kind: "corrupt"; readonly error: string };
-
-export async function readSessionMetaResult(
-  sessionsDir: string,
-  sid: string,
-): Promise<SessionMetaReadResult> {
+  meta: SessionMeta,
+  options?: { readonly requireDurable?: boolean },
+): Promise<void> {
   const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
-  const file = Bun.file(path);
-  if (!(await file.exists())) return { kind: "missing" };
+  // Ensure the sessions directory exists. The JSONL transcript store
+  // creates it lazily on first append, but writeSessionMeta runs earlier
+  // (right after session-id allocation) — without the mkdir, a fresh
+  // install with no ~/.koi/sessions yet would ENOENT, and ACE sessions
+  // (requireDurable:true) would refuse to start. Round 9 finding.
   try {
-    const raw = await file.text();
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed === null || typeof parsed !== "object") {
-      return { kind: "corrupt", error: "sidecar root is not a JSON object" };
-    }
-    const meta = parsed as Record<string, unknown>;
-    // Pre-snapshot sidecars (version 1, written by an earlier
-    // build) lack the snapshot field. Honor them as legacy: callers
-    // fall back to re-parsing the manifest path. Only sidecars
-    // tagged with the current version are required to carry the
-    // immutable snapshot.
-    const versionField = meta.version;
-    const isLegacy = versionField !== SESSION_META_VERSION;
-    if (isLegacy) {
-      let legacyPath: string | undefined;
-      if (meta.manifestPath === null) legacyPath = undefined;
-      else if (typeof meta.manifestPath === "string") legacyPath = meta.manifestPath;
-      else return { kind: "legacy", manifestPath: undefined };
-      return { kind: "legacy", manifestPath: legacyPath };
-    }
-    // manifestPath may be a string (manifest-governed session) or null
-    // (no-manifest session — explicitly recorded so resume can
-    // distinguish it from a missing/tampered sidecar). Anything else
-    // is corruption.
-    let manifestPathValue: string | undefined;
-    if (meta.manifestPath === null) {
-      manifestPathValue = undefined;
-    } else if (typeof meta.manifestPath === "string") {
-      manifestPathValue = meta.manifestPath;
-    } else {
-      return { kind: "corrupt", error: "manifestPath field is missing or invalid" };
-    }
-    // snapshot is required for sidecars written by this version. A
-    // sidecar without snapshot is either pre-snapshot legacy (rare —
-    // this version always writes one) or tampered. Either way the
-    // safe answer is to refuse the resume; legitimate operators can
-    // restart the session.
-    const snap = meta.snapshot;
-    if (snap === undefined || snap === null || typeof snap !== "object") {
-      return { kind: "corrupt", error: "snapshot field is missing or not an object" };
-    }
-    const snapObj = snap as Record<string, unknown>;
-    if (typeof snapObj.aceEnabled !== "boolean" || typeof snapObj.auditDeclared !== "boolean") {
-      return {
-        kind: "corrupt",
-        error: "snapshot is missing required aceEnabled/auditDeclared booleans",
-      };
-    }
-    const snapshot: SessionProvenanceSnapshot = {
-      aceEnabled: snapObj.aceEnabled,
-      auditDeclared: snapObj.auditDeclared,
-    };
-    return { kind: "ok", manifestPath: manifestPathValue, snapshot };
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(sessionsDir, { recursive: true });
+  } catch {
+    // mkdir failures fall through to the Bun.write attempt below; for
+    // requireDurable sessions, that write will surface the underlying
+    // error with a useful message.
+  }
+  // v2 invariant: ace block is ALWAYS present, set to enabled:false when
+  // the session ran without ACE. A v2 sidecar missing its ace block is
+  // malformed (truncated/corrupted), not "no ACE recorded" — round 6.
+  const aceBlock: SessionAceProvenance = meta.ace ?? {
+    enabled: false,
+    playbookPath: undefined,
+    maxInjectedTokens: undefined,
+    minScore: undefined,
+    lambda: undefined,
+  };
+  const payload = JSON.stringify({
+    version: SESSION_META_VERSION,
+    ...(meta.manifestPath !== undefined ? { manifestPath: meta.manifestPath } : {}),
+    ace: aceBlock,
+  });
+  try {
+    await Bun.write(path, payload);
   } catch (err) {
-    return { kind: "corrupt", error: err instanceof Error ? err.message : String(err) };
+    if (options?.requireDurable === true) {
+      throw new Error(
+        `writeSessionMeta: failed to persist session provenance at ${path} — ` +
+          "refusing to continue because resume safety depends on this sidecar. " +
+          `Underlying error: ${(err as Error).message}`,
+        { cause: err },
+      );
+    }
+    // Non-fatal: directory may not exist yet on the very first run, and
+    // non-ACE sessions don't depend on the sidecar for resume integrity.
   }
 }
 
 /**
- * Backwards-compatible wrapper. Collapses corrupt sidecars to `{}` for
- * callers that don't yet enforce fail-closed behavior. Prefer
- * `readSessionMetaResult` for new call sites.
+ * Result of reading the session provenance sidecar:
+ *  - { kind: "absent" }  → file doesn't exist (legacy session, never had one)
+ *  - { kind: "ok", meta }  → file parsed successfully
+ *  - { kind: "malformed", reason }  → file exists but couldn't be parsed
+ *
+ * Callers MUST distinguish absent from malformed for fail-closed semantics:
+ * a malformed sidecar on a session that may have had ACE provenance is an
+ * integrity failure, not silent "no provenance recorded". Round 5 finding.
+ */
+export type ReadSessionMetaResult =
+  | { readonly kind: "absent" }
+  | { readonly kind: "ok"; readonly meta: SessionMeta }
+  | { readonly kind: "malformed"; readonly reason: string };
+
+/**
+ * Read session provenance metadata. Distinguishes absent (no sidecar at all)
+ * from malformed (sidecar exists but unparseable) so callers can fail closed
+ * on the latter — see ReadSessionMetaResult.
  */
 export async function readSessionMeta(
   sessionsDir: string,
   sid: string,
-): Promise<{ readonly manifestPath?: string }> {
+): Promise<ReadSessionMetaResult> {
   const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
-  try {
-    const raw = await Bun.file(path).text();
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed !== null && typeof parsed === "object") {
-      const meta = parsed as Record<string, unknown>;
-      if (typeof meta.manifestPath === "string") return { manifestPath: meta.manifestPath };
-    }
-  } catch {
-    // ENOENT or malformed — treat as no provenance
+  const file = Bun.file(path);
+  if (!(await file.exists())) {
+    return { kind: "absent" };
   }
-  return {};
+  let raw: string;
+  try {
+    raw = await file.text();
+  } catch (err) {
+    return { kind: "malformed", reason: `unreadable: ${(err as Error).message}` };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return { kind: "malformed", reason: `invalid JSON: ${(err as Error).message}` };
+  }
+  if (parsed === null || typeof parsed !== "object") {
+    return { kind: "malformed", reason: "expected JSON object" };
+  }
+  const meta = parsed as Record<string, unknown>;
+  const version = typeof meta.version === "number" ? meta.version : undefined;
+  const out: { version?: number; manifestPath?: string; ace?: SessionAceProvenance } = {};
+  if (version !== undefined) out.version = version;
+  if (typeof meta.manifestPath === "string") out.manifestPath = meta.manifestPath;
+  const ace = meta.ace;
+  if (ace !== null && typeof ace === "object") {
+    const a = ace as Record<string, unknown>;
+    if (typeof a.enabled === "boolean") {
+      const storeId = typeof a.storeId === "string" ? a.storeId : undefined;
+      out.ace = {
+        enabled: a.enabled,
+        playbookPath: typeof a.playbookPath === "string" ? a.playbookPath : undefined,
+        maxInjectedTokens:
+          typeof a.maxInjectedTokens === "number" ? a.maxInjectedTokens : undefined,
+        minScore: typeof a.minScore === "number" ? a.minScore : undefined,
+        lambda: typeof a.lambda === "number" ? a.lambda : undefined,
+        ...(storeId !== undefined ? { storeId } : {}),
+      };
+    }
+  }
+  // v2 invariant: ace block must be present and parseable. A v2 sidecar
+  // without it is treated as malformed so the resume guard fails closed
+  // instead of silently skipping (round 6 finding).
+  if (out.version !== undefined && out.version >= 2 && out.ace === undefined) {
+    return { kind: "malformed", reason: "v2 sidecar missing ace provenance block" };
+  }
+  return { kind: "ok", meta: out };
 }
 
 // ---------------------------------------------------------------------------

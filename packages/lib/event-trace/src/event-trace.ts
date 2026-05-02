@@ -49,7 +49,18 @@ import type {
   RichTrajectoryStep,
   TrajectoryDocumentStore,
 } from "@koi/core/rich-trajectory";
+import { createRedactor } from "@koi/redaction";
 import { pickDefined, truncateContent } from "./utils.js";
+
+// Defense-in-depth: errors thrown by tools may carry secrets in their message
+// or cause chain (e.g. an HTTP client surfacing a token in the failed-request
+// URL). The formatter middleware sanitizes errors before they reach the model,
+// but event-trace's `captureError` runs in the observe phase — innermost in the
+// onion — so it sees the raw throw before any resolve-phase sanitizer runs.
+// Apply secret redaction here so the persisted ATIF trajectory and any audit
+// sink reading it cannot leak credentials. Fail-closed: redactor failures fall
+// back to "[REDACTION_FAILED]". Built once per module — patterns are stateless.
+const errorRedactor = createRedactor();
 
 // ---------------------------------------------------------------------------
 // Config
@@ -360,14 +371,16 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
   function captureError(error: unknown): RichContent {
     if (error instanceof Error) {
       return {
-        text: error.message,
+        text: errorRedactor.redactString(error.message).text,
         data: {
           errorType: error.constructor.name,
-          ...(error.cause !== undefined ? { cause: String(error.cause) } : {}),
+          ...(error.cause !== undefined
+            ? { cause: errorRedactor.redactString(String(error.cause)).text }
+            : {}),
         },
       };
     }
-    return { text: String(error) };
+    return { text: errorRedactor.redactString(String(error)).text };
   }
 
   /**

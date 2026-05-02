@@ -19,6 +19,7 @@ import { COMMAND_DEFINITIONS, createEventBatcher, createInitialState, createStor
 import {
   computeLiveMcpStatus,
   drainEngineStream,
+  isSpawnStackActive,
   renderTranscriptMarkdown,
   summarizeRunReport,
 } from "./tui-command.js";
@@ -857,5 +858,28 @@ describe("nav:mcp-auth outcome messages", () => {
     const message = `Authorization for "${serverName}" succeeded. Reload the session to connect.`;
     expect(message).toContain(serverName);
     expect(message).toContain("Reload the session");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isSpawnStackActive — ACE host-activation gate (issue #2088)
+// ---------------------------------------------------------------------------
+
+describe("isSpawnStackActive — ACE spawn-gate predicate", () => {
+  test("undefined stacks (default) means spawn is active — ACE refuses", () => {
+    // Default manifest with no `stacks:` block runs all stacks, including
+    // spawn. ACE must refuse to activate so spawned children cannot read the
+    // playbook store.
+    expect(isSpawnStackActive(undefined)).toBe(true);
+  });
+
+  test("explicit list including 'spawn' is active — ACE refuses", () => {
+    expect(isSpawnStackActive(["core", "spawn"])).toBe(true);
+    expect(isSpawnStackActive(["spawn"])).toBe(true);
+  });
+
+  test("explicit list excluding 'spawn' is inactive — ACE may activate", () => {
+    expect(isSpawnStackActive(["core"])).toBe(false);
+    expect(isSpawnStackActive([])).toBe(false);
   });
 });
