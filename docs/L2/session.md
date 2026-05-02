@@ -125,6 +125,45 @@ All ~12 SQLite queries are `db.prepare()`'d once at construction. Query plans ca
 ### Batch pending-frame query in `recover()`
 `recover()` loads all pending frames in one `SELECT * FROM pending_frames` query, then groups by `sessionId` in memory. Avoids N+1 pattern when recovering many sessions.
 
+## Cancel-Resume (issue #1683)
+
+When an engine adapter implements `saveState`/`loadState`, this package's
+`wrapAdapterWithStatePersistence` opts into durable cancel-resume:
+
+- **On cancel** (`done.stopReason === "interrupted"`): the wrapper calls
+  `inner.saveState()`, then writes the resulting `EngineState` to the
+  session row via `SessionPersistence.updateLastEngineState` with atomic
+  CAS (`expectedVersion`). The L0 contract gained an optional
+  `expectedVersion?: number` parameter on `updateLastEngineState`; both
+  bundled stores reject with `CONFLICT` when the row's `lastPersistedAt`
+  doesn't match. Stores without atomic CAS are refused at wrap time.
+- **On resume**: `resumeWithEngineState` returns
+  `{ messages, lastEngineState, lastPersistedAt }`. The host passes
+  `lastEngineState` as `initialEngineState` and `lastPersistedAt` as
+  `initialEngineStateVersion` to the wrapper so cross-process safety is
+  enforced from the moment of resume.
+- **On `loadState` failure**: the wrapper signals the host via
+  `onPersistError`, atomically clears the unloadable checkpoint via CAS
+  (CONFLICT → silent back-off so a newer concurrent write isn't
+  clobbered), and yields a synthetic `done(stopReason="error")` instead
+  of calling `inner.stream`. This is fail-closed: a richer adapter that
+  partially mutates its cursor before throwing cannot leak that state
+  into a live run; the host rebuilds a fresh adapter for transcript-only
+  retry.
+- **On non-interrupted terminal** (`completed`/`error`/`max_turns`):
+  the stale checkpoint is cleared via CAS so the next resume falls
+  back to transcript-only.
+
+Persistent invariants:
+- Cross-process / cross-runtime CAS via `expectedVersion` prevents two
+  TUIs sharing a database from clobbering each other's checkpoints.
+- A wrapper-scoped generation token plus a strict 5s persist deadline
+  drop stale interrupted writes that would otherwise race past a
+  subsequent terminal.
+- For schemes where no atomic CAS exists in the store, the wrapper
+  refuses construction rather than fall back to a load-merge-save path
+  that can resurrect stale checkpoints.
+
 ## Transcript Truncation for Checkpoint Rewind
 
 `SessionTranscript.truncate(sessionId, keepCount)` removes all entries beyond `keepCount` from the transcript log. This is used by the checkpoint rewind flow to roll back conversation state to a prior checkpoint: after a rewind, the transcript is truncated to the checkpoint boundary so that subsequent `load()` returns only the entries up to the rewound point. The operation is atomic (write-temp + rename) and serialized via the per-session queue, consistent with `compact()`.

@@ -91,12 +91,97 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
     return { transcript: scoped, threadId };
   }
 
+  // Adapter-instance state for cancel-resume (issue #1683): the in-flight
+  // user message of the currently-streaming turn. Committed to transcript
+  // on successful turn_end/done; cleared when the stream completes. If a
+  // cancel terminal fires while this is set, saveState captures it so the
+  // resume can re-inject the canceled prompt instead of silently dropping
+  // it. let: justified — assigned per stream call and read by saveState
+  // from outside the generator function.
+  let inFlightUserRef: InboundMessage | undefined;
+
   return {
     engineId,
     capabilities: { text: true, images: false, files: false, audio: false },
     terminals: {
       modelCall: modelAdapter.complete,
       modelStream: modelAdapter.stream,
+    },
+    // Cancel-resume hooks (issue #1683). The transcript-backed adapter has
+    // no partial-turn state to capture — interrupted turns are discarded
+    // entirely and the next stream starts from the committed transcript.
+    // The state we persist on cancel is therefore a "transcript cursor": a
+    // snapshot of the committed message count + a content fingerprint at
+    // cancel time. On resume, `loadState` validates that the live
+    // transcript array still matches that cursor; if it does, the cancel
+    // checkpoint is consistent with the JSONL replay and the wrapper's
+    // engineId-based compatibility gate has done its job. If the live
+    // transcript has diverged (e.g. external edit, partial JSONL load),
+    // loadState throws so the wrapper signals onPersistError and the host
+    // can fall back to transcript-only resume. This makes the
+    // sessionPersistence runtime option real (durable cancel-resume row
+    // is written) while honestly reflecting what state this adapter can
+    // recover. Adapters with richer state (partial-stream cursor,
+    // langgraph checkpointer) implement saveState/loadState differently.
+    saveState: async () => ({
+      engineId,
+      data: {
+        kind: "transcript-cursor",
+        transcriptLen: transcript.length,
+        // Last message's timestamp acts as a lightweight fingerprint —
+        // catches replace-in-place mutations that preserve length.
+        lastMessageTimestamp:
+          transcript.length > 0 ? (transcript[transcript.length - 1]?.timestamp ?? 0) : 0,
+        // In-flight user message of the canceled turn, when one was
+        // staged but not yet committed. Reinjected on resume so the
+        // canceled prompt isn't silently dropped.
+        ...(inFlightUserRef !== undefined ? { stagedUser: inFlightUserRef } : {}),
+      },
+    }),
+    loadState: async (state) => {
+      const data = state.data as
+        | {
+            readonly kind?: string;
+            readonly transcriptLen?: number;
+            readonly lastMessageTimestamp?: number;
+            readonly stagedUser?: InboundMessage;
+          }
+        | undefined;
+      if (data?.kind !== "transcript-cursor") {
+        throw new Error(
+          `[${engineId}] EngineState shape mismatch — expected kind="transcript-cursor"`,
+        );
+      }
+      const expectedLen = data.transcriptLen ?? -1;
+      if (transcript.length !== expectedLen) {
+        throw new Error(
+          `[${engineId}] transcript divergence — checkpoint snapshotted ${expectedLen} messages, live transcript has ${transcript.length}`,
+        );
+      }
+      const expectedTs = data.lastMessageTimestamp ?? 0;
+      const liveTs =
+        transcript.length > 0 ? (transcript[transcript.length - 1]?.timestamp ?? 0) : 0;
+      if (liveTs !== expectedTs) {
+        throw new Error(
+          `[${engineId}] transcript fingerprint mismatch — last message timestamp ${liveTs} ≠ checkpoint ${expectedTs}`,
+        );
+      }
+      // Cursor validated. We deliberately do NOT push `data.stagedUser`
+      // into the in-memory transcript here:
+      //   1. The JSONL store (the only durable resume source) was not
+      //      written when the cancel happened, so a push-here-only would
+      //      diverge from JSONL and break repeated cancel-resume cycles
+      //      (next saveState would record transcriptLen=committed+1 which
+      //      JSONL can never reproduce; loadState would then trip its own
+      //      length check and the wrapper would clear the checkpoint).
+      //   2. The UI store rehydrates from `resumeResult.value.messages`
+      //      independently of the adapter; pushing here would let the
+      //      model see a user message the operator can't see.
+      // Hosts that want canceled-prompt resubmission must extract
+      // `data.stagedUser` from the resumed engine state themselves and
+      // route it through the same path they use for new user prompts —
+      // appending to JSONL, dispatching UI rehydrate, and feeding the
+      // adapter — so all surfaces stay consistent.
     },
     stream(input: EngineInput): AsyncIterable<EngineEvent> {
       const handlers = input.callHandlers;
@@ -122,6 +207,15 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
                 content: [{ kind: "text", text: input.kind === "text" ? input.text : "" }],
               },
             ];
+      // Cancel-resume (#1683): expose the in-flight user prompt to
+      // saveState for the text-input path (TUI). If the wrapper observes
+      // an interrupted terminal before this turn commits, it captures
+      // this pointer so the canceled prompt is reinjected on resume.
+      // Multi-message inputs (gateway flows) own their own message
+      // lifecycle externally and don't participate in this hook.
+      if (input.kind === "text" && stagedMessages[0] !== undefined) {
+        inFlightUserRef = stagedMessages[0];
+      }
 
       return (async function* (): AsyncIterable<EngineEvent> {
         // Build context window: token-aware compaction when budgetConfig is set,
@@ -216,6 +310,9 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
             if (!userMessageCommitted) {
               activeTranscript.push(...stagedMessages);
               userMessageCommitted = true;
+              // Cancel-resume: prompt is now in transcript, so saveState
+              // no longer needs to capture it as the in-flight staged user.
+              inFlightUserRef = undefined;
             }
 
             // Flush assistant message with tool_call metadata (if any).
@@ -268,6 +365,7 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
               // Fallback: turn_end never fired — commit from done event.
               activeTranscript.push(...stagedMessages);
               userMessageCommitted = true;
+              inFlightUserRef = undefined;
               const fallbackText = pendingTurnText.join("");
               if (fallbackText.length > 0) {
                 activeTranscript.push({
