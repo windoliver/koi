@@ -2428,17 +2428,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     process.on("exit", aceCloseHook);
   }
   // Issue #1683: flip cancel-checkpoint session row to "done" on CLEAN
-  // exit only (code === 0) so recovery tooling can still distinguish a
-  // crash (SIGKILL/OOM/process.exit(non-zero)/unhandled error) from a
-  // normal close. The store is closed unconditionally so WAL files
-  // flush, but the status flip is gated on the exit code — non-zero
-  // exits legitimately leave "running" so the next-startup recovery
-  // scan picks them up as crash candidates. Best-effort — exit
-  // handlers are sync, errors are swallowed.
+  // exit only so recovery tooling can still distinguish a crash from a
+  // normal close. "Clean" here means:
+  //   - code 0: natural event-loop drain
+  //   - code 130: user-initiated /quit (TUI convention: 128+SIGINT=130)
+  // Any other code (1 = validation failure, 137 = SIGKILL, 139 = SIGSEGV,
+  // etc.) legitimately leaves the row at "running" so the next-startup
+  // recovery scan picks it up as a crash candidate. The store is closed
+  // unconditionally so WAL files flush regardless of exit reason.
+  // Best-effort — exit handlers are sync, errors are swallowed.
   if (stateSessionPersistence !== undefined) {
     const persistOnExit = stateSessionPersistence;
     process.on("exit", (code: number) => {
-      if (code === 0) {
+      if (code === 0 || code === 130) {
         try {
           const r = persistOnExit.setSessionStatus(tuiSessionId, "done");
           if (r instanceof Promise) r.catch(() => {});
