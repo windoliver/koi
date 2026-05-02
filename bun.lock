@@ -549,6 +549,16 @@
         "@koi/validation": "workspace:*",
       },
     },
+    "packages/lib/middleware-fs-rollback": {
+      "name": "@koi/middleware-fs-rollback",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test": "workspace:*",
+      },
+    },
     "packages/lib/middleware-otel": {
       "name": "@koi/middleware-otel",
       "version": "0.0.0",
@@ -581,6 +591,14 @@
     },
     "packages/lib/middleware-planning": {
       "name": "@koi/middleware-planning",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-policy-cache": {
+      "name": "@koi/middleware-policy-cache",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -819,6 +837,14 @@
       "name": "@koi/shutdown",
       "version": "0.0.0",
     },
+    "packages/lib/skill-distiller": {
+      "name": "@koi/skill-distiller",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+    },
     "packages/lib/skill-tool": {
       "name": "@koi/skill-tool",
       "version": "0.0.0",
@@ -1028,7 +1054,6 @@
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
         "@koi/gateway": "workspace:*",
-        "@koi/gateway-stack": "workspace:*",
         "@koi/governance-approval-tiers": "workspace:*",
         "@koi/governance-core": "workspace:*",
         "@koi/governance-defaults": "workspace:*",
@@ -1207,6 +1232,7 @@
         "@koi/middleware-exfiltration-guard": "workspace:*",
         "@koi/middleware-extraction": "workspace:*",
         "@koi/middleware-feedback-loop": "workspace:*",
+        "@koi/middleware-fs-rollback": "workspace:*",
         "@koi/middleware-intent-capsule": "workspace:*",
         "@koi/middleware-memory-recall": "workspace:*",
         "@koi/middleware-otel": "workspace:*",
@@ -1214,6 +1240,7 @@
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-plan-persist": "workspace:*",
         "@koi/middleware-planning": "workspace:*",
+        "@koi/middleware-policy-cache": "workspace:*",
         "@koi/middleware-prompt-cache": "workspace:*",
         "@koi/middleware-reflex": "workspace:*",
         "@koi/middleware-report": "workspace:*",
@@ -1249,6 +1276,7 @@
         "@koi/scratchpad-local": "workspace:*",
         "@koi/session": "workspace:*",
         "@koi/settings": "workspace:*",
+        "@koi/skill-distiller": "workspace:*",
         "@koi/skill-scanner": "workspace:*",
         "@koi/skill-tool": "workspace:*",
         "@koi/skills-runtime": "workspace:*",
@@ -1479,6 +1507,13 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/sandbox/sandbox-daytona": {
+      "name": "@koi/sandbox-daytona",
+      "version": "0.1.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/sandbox/sandbox-docker": {
       "name": "@koi/sandbox-docker",
       "version": "0.1.0",
@@ -1487,6 +1522,13 @@
       },
       "devDependencies": {
         "@koi/sandbox-conformance": "workspace:*",
+      },
+    },
+    "packages/sandbox/sandbox-e2b": {
+      "name": "@koi/sandbox-e2b",
+      "version": "0.1.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
     "packages/sandbox/sandbox-executor": {
@@ -2282,6 +2324,8 @@
 
     "@koi/middleware-feedback-loop": ["@koi/middleware-feedback-loop@workspace:packages/lib/middleware-feedback-loop"],
 
+    "@koi/middleware-fs-rollback": ["@koi/middleware-fs-rollback@workspace:packages/lib/middleware-fs-rollback"],
+
     "@koi/middleware-intent-capsule": ["@koi/middleware-intent-capsule@workspace:packages/security/middleware-intent-capsule"],
 
     "@koi/middleware-memory-recall": ["@koi/middleware-memory-recall@workspace:packages/mm/middleware-memory-recall"],
@@ -2295,6 +2339,8 @@
     "@koi/middleware-plan-persist": ["@koi/middleware-plan-persist@workspace:packages/lib/middleware-plan-persist"],
 
     "@koi/middleware-planning": ["@koi/middleware-planning@workspace:packages/lib/middleware-planning"],
+
+    "@koi/middleware-policy-cache": ["@koi/middleware-policy-cache@workspace:packages/lib/middleware-policy-cache"],
 
     "@koi/middleware-prompt-cache": ["@koi/middleware-prompt-cache@workspace:packages/lib/middleware-prompt-cache"],
 
@@ -2358,7 +2404,11 @@
 
     "@koi/sandbox-conformance": ["@koi/sandbox-conformance@workspace:packages/sandbox/sandbox-conformance"],
 
+    "@koi/sandbox-daytona": ["@koi/sandbox-daytona@workspace:packages/sandbox/sandbox-daytona"],
+
     "@koi/sandbox-docker": ["@koi/sandbox-docker@workspace:packages/sandbox/sandbox-docker"],
+
+    "@koi/sandbox-e2b": ["@koi/sandbox-e2b@workspace:packages/sandbox/sandbox-e2b"],
 
     "@koi/sandbox-executor": ["@koi/sandbox-executor@workspace:packages/sandbox/sandbox-executor"],
 
@@ -2383,6 +2433,8 @@
     "@koi/settings": ["@koi/settings@workspace:packages/lib/settings"],
 
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/lib/shutdown"],
+
+    "@koi/skill-distiller": ["@koi/skill-distiller@workspace:packages/lib/skill-distiller"],
 
     "@koi/skill-scanner": ["@koi/skill-scanner@workspace:packages/security/skill-scanner"],
 

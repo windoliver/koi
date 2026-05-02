@@ -6,6 +6,70 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **TUI cancel-resume integration (#2105, issue #1683)**: opt-in via
+  `KOI_SESSION_STATE_DB` env var pointing at a writable SQLite path.
+  When set, the TUI opens a `createSqliteSessionPersistence` store,
+  wires `wrapAdapterWithStatePersistence` around the transcript adapter
+  (refused at construction if the store doesn't implement atomic CAS
+  via `updateLastEngineState`), seeds an authoritative `SessionRecord`
+  on fresh sessions (`status="running"`, manifestPath in metadata), and
+  on `--resume <sid>` calls `resumeWithEngineState` with
+  `expectedEngineId=computeDefaultEngineId()` (`koi-tui:v1` schema-only
+  token, no model). The resumed session row's status flip back to
+  `"running"` is deferred until AFTER all validation gates (sidecar,
+  manifest provenance, audit intent, ACE config) pass — so a
+  `process.exit(1)` on a rejected resume leaves the row at its prior
+  "done" rather than falsely marking it "running" for recovery scans.
+  The "running"→"done" status flip on clean exit lives inside
+  `shutdown()` (just before `appHandle.stop()` destroys the OpenTUI
+  renderer); `process.on("exit")` cannot be relied upon because
+  destroyRenderer collapses Bun's event loop on the next empty tick
+  and bypasses JS exit handlers (same constraint already documented
+  for `runtime.dispose()`). SIGKILL/OOM legitimately leave "running"
+  for next-startup recovery scans. Failure modes: store-open failure
+  (bad path / permission) → stderr signal + transcript-only resume
+  for the run; seed write failure → stderr signal + cancel-resume
+  disabled for the run; concurrent runtime CAS conflict → stderr
+  `onPersistError` + back-off without clobbering the newer state.
+  Picker resume threads the same `stateOpts` so a cancel checkpoint
+  is loaded, but mid-session runtime is not rebuilt — the picker
+  emits a stderr warning telling the operator to restart with
+  `koi tui --resume <id>` to honor the cursor. Hardened across 10
+  adversarial-review rounds; see PR #2105 for the full reasoning
+  matrix and the two persistent flip-flop areas locked in by the
+  skill protocol.
+- **`@koi/forge-tools` now emits `generation` on store change events (#2106, refs #1207)**: The in-memory forge store annotates `saved`/`updated`/`removed` notifier events with `generation = storeVersion` so downstream consumers (notably `@koi/middleware-policy-cache`) can refuse stale events that would otherwise silently downgrade authorization. `computeIdentityBrickId` is now exported from the package's public API for callers that need to mint content-addressed brick ids without re-implementing the hash. CLI behavior unchanged — pure additive contract on the existing notifier surface.
+- **`koi mcp` registry-discovery subcommands (#1646)**: new
+  `koi mcp search/info/install/uninstall` flow backed by the official MCP
+  registry at `registry.modelcontextprotocol.io/v0.1`. Install picks the
+  preferred package (HTTP remote → SSE remote → first usable stdio package),
+  verifies the connection (live `listTools` against a real OAuth flow when
+  needed) BEFORE any `.mcp.json` mutation, and persists the entry only on
+  success. Registry remotes are SSRF-checked (HTTPS-only outside loopback;
+  RFC1918/link-local/CGNAT/multicast IP literals refused). Install/uninstall
+  resolve the active config path with the same priority as
+  `list/auth/debug/logout` (project `./.mcp.json` → `~/.koi/.mcp.json` → legacy
+  `~/.claude/.mcp.json`); a malformed higher-priority candidate aborts rather
+  than falling through. `--yes` (or `--json`, which implies it) is required in
+  non-TTY contexts so install cannot wedge waiting on stdin. OAuth cleanup
+  uses a per-server index with `withTrackedWrite` so concurrent
+  install/auth/uninstall serialize against `clearAllOAuthState` and credentials
+  are never silently orphaned.
+- **Review fix sync**: `scripts/check-cli-wiring.ts` now records explicit
+  exemptions for runtime packages that are intentionally not default TUI imports:
+  external-agent discovery/monitor/procfs sidecars, HTTP gateway ingress,
+  optional ACE/intent-capsule middleware, programmatic-only RLM, and non-default
+  sandbox providers. `@koi/tools-builtin`'s Grep tool keeps the same CLI/TUI
+  surface, but its no-ripgrep fallback is now test-forced via `rgCommand` and
+  performs async file stat/read work to avoid blocking the event loop.
+- Service lifecycle parity is no longer stub-only: `koi serve` starts the
+  gateway HTTP health process on the configured service port (`/healthz`),
+  while `koi deploy`, `koi stop`, `koi logs`, and `koi status` now operate on
+  launchd/systemd service files generated around that `koi serve` entrypoint.
+  The service parser reads optional `deploy:` manifest settings (`port`,
+  `restart`, `restartDelaySec`, `envFile`, `logDir`, `system`) with CLI flags
+  taking precedence for `--port` and `--system`.
+
 - **`@koi/playbook-store-sqlite` + ACE manifest activation wired (#2088)**: CLI
   manifest gains an opt-in `ace:` block (`enabled`, `acknowledge_cross_session_state`,
   `max_injected_tokens`, `min_score`, `lambda`, `playbook_path`). When `enabled: true`

@@ -23,6 +23,7 @@ const TUI_IMPORT_ANALYSIS_PATHS: readonly string[] = [
   `${ROOT}packages/meta/cli/src/runtime-factory.ts`,
   `${ROOT}packages/meta/cli/src/shared-wiring.ts`,
   `${ROOT}packages/meta/cli/src/plugin-activation.ts`,
+  `${ROOT}packages/meta/cli/src/middleware-registry.ts`,
 ];
 const TUI_PRESET_STACKS_GLOB = "packages/meta/cli/src/preset-stacks/*.ts";
 
@@ -36,10 +37,16 @@ const EXEMPT: ReadonlySet<string> = new Set([
   "@koi/mcp-server",
   // Nexus filesystem — requires running Nexus Docker stack
   "@koi/fs-nexus",
+  // Config loader is CLI infrastructure, not a default TUI runtime provider.
+  "@koi/config",
   // Skills runtime — requires skill scanner config + filesystem scanning
   "@koi/skills-runtime",
   // Agent runtime — requires agent resolver dirs config
   "@koi/agent-runtime",
+  // External-agent discovery/introspection/monitoring are optional sidecar surfaces, not default TUI wiring.
+  "@koi/agent-discovery",
+  "@koi/agent-monitor",
+  "@koi/agent-procfs",
   // Hook prompt — requires PromptModelCaller injection
   "@koi/hook-prompt",
   // Memory recall scanner — used internally by memory-tools, not a standalone provider
@@ -73,8 +80,11 @@ const EXEMPT: ReadonlySet<string> = new Set([
   "@koi/debug",
   // Demand-forge package — opt-in (koi.optional: true), not default TUI middleware.
   "@koi/forge-demand",
-  // Gateway stack — server/webhook transports, not interactive local TUI wiring.
+  // Gateway stack — service/gateway transports, not interactive local TUI wiring.
+  // @koi/gateway-http is used by `koi serve`, but is still not part of default TUI assembly.
   "@koi/gateway",
+  "@koi/gateway-canvas",
+  "@koi/gateway-http",
   "@koi/gateway-webhook",
   // Delegation/security helpers — require explicit delegation or Nexus configuration.
   "@koi/governance-delegation",
@@ -84,11 +94,29 @@ const EXEMPT: ReadonlySet<string> = new Set([
   "@koi/ipc-local",
   // Long-running harness — alternate execution mode, not default interactive TUI wiring.
   "@koi/long-running",
+  // Eval framework — opt-in regression/scoring harness, not default interactive TUI wiring.
+  "@koi/eval",
   // Optional middleware packages that require explicit host configuration.
   "@koi/middleware-call-dedup",
   "@koi/middleware-collective-memory",
   "@koi/middleware-degenerate",
+  "@koi/middleware-ace",
+  "@koi/middleware-fs-rollback",
+  "@koi/middleware-intent-capsule",
   "@koi/middleware-output-verifier",
+  // Tool disclosure mutates advertised schemas and adds a companion provider; host opt-in needed.
+  "@koi/middleware-tool-disclosure",
+  // RLM requires per-request segment-local trust flags and is intentionally hidden from manifest discovery.
+  "@koi/middleware-rlm",
+  // Sandbox providers require explicit backend/runtime selection; the TUI default uses @koi/sandbox-os.
+  // Conformance is a golden-query/test suite package, not TUI runtime wiring.
+  "@koi/sandbox-conformance",
+  "@koi/sandbox-docker",
+  "@koi/sandbox-executor",
+  // Sandbox router/SSH are transitive implementation details behind
+  // @koi/runtime's createDefaultSandboxRouter/createRouterAdapterShim helpers.
+  "@koi/sandbox-router",
+  "@koi/sandbox-ssh",
   // Scratchpad/workspace/toolset components are opt-in runtime providers.
   "@koi/scratchpad-local",
   "@koi/toolsets",
@@ -235,10 +263,11 @@ async function main(): Promise<void> {
   }
 
   const source = tuiWiring.source;
-  const importRegex = /(?:from|import)\s+["'](@koi\/[^/"']+)/g;
+  const importRegex = /(?:from|import)\s+["'](@koi\/[^/"']+)|import\(\s*["'](@koi\/[^/"']+)/g;
   const cliImports = new Set<string>();
   for (const match of source.matchAll(importRegex)) {
-    if (match[1] !== undefined) cliImports.add(match[1]);
+    const packageName = match[1] ?? match[2];
+    if (packageName !== undefined) cliImports.add(packageName);
   }
 
   // Only check L2 tool/middleware packages (skip infra — they're used

@@ -18,10 +18,14 @@ import type { EngineEvent, InboundMessage, ModelAdapter } from "@koi/core";
 
 // runTurnState is a plain object so the closure inside mock.module can
 // reference it at call time (not at factory creation time), avoiding TDZ.
-const runTurnState: { events: readonly EngineEvent[] } = { events: [] };
+const runTurnState: { events: readonly EngineEvent[]; calls: unknown[] } = {
+  events: [],
+  calls: [],
+};
 
 mock.module("@koi/query-engine", () => ({
-  runTurn: mock(async function* (_opts: unknown) {
+  runTurn: mock(async function* (opts: unknown) {
+    runTurnState.calls.push(opts);
     for (const e of runTurnState.events) {
       yield e as EngineEvent;
     }
@@ -135,6 +139,7 @@ describe("createTranscriptAdapter — transcript commit semantics", () => {
 
   beforeEach(() => {
     transcript = [];
+    runTurnState.calls = [];
   });
 
   test("commits user + assistant messages on stopReason completed", async () => {
@@ -186,6 +191,88 @@ describe("createTranscriptAdapter — transcript commit semantics", () => {
     // The adapter should slice to last 10 + staged user = 11 in context
     // We verify this indirectly — the call should not throw
     await expect(collectEvents(transcript, [], "completed", "reply")).resolves.toBeDefined();
+  });
+
+  test("messages input is passed to the turn runner", async () => {
+    const adapter = createTranscriptAdapter({
+      engineId: "test-messages",
+      modelAdapter: makeModelAdapter(),
+      transcript,
+      maxTranscriptMessages: 10,
+      maxTurns: 5,
+    });
+    runTurnState.events = [makeDoneEvent("completed", "reply")];
+
+    for await (const _event of adapter.stream({
+      kind: "messages",
+      messages: [
+        {
+          senderId: "gateway",
+          threadId: "sess-a",
+          timestamp: 1,
+          content: [{ kind: "text", text: "gateway prompt" }],
+        },
+      ],
+      callHandlers: fakeHandlers,
+    })) {
+      // drain
+    }
+
+    const call = runTurnState.calls.at(-1) as { readonly messages: readonly InboundMessage[] };
+    expect(call.messages.at(-1)?.content).toEqual([{ kind: "text", text: "gateway prompt" }]);
+  });
+
+  test("messages input keeps transcript context isolated by threadId", async () => {
+    const adapter = createTranscriptAdapter({
+      engineId: "test-threaded-messages",
+      modelAdapter: makeModelAdapter(),
+      transcript,
+      maxTranscriptMessages: 10,
+      maxTurns: 5,
+    });
+
+    runTurnState.events = [makeDoneEvent("completed", "reply-a")];
+    for await (const _event of adapter.stream({
+      kind: "messages",
+      messages: [
+        {
+          senderId: "gateway",
+          threadId: "sess-a",
+          timestamp: 1,
+          content: [{ kind: "text", text: "prompt-a" }],
+        },
+      ],
+      callHandlers: fakeHandlers,
+    })) {
+      // drain
+    }
+
+    runTurnState.events = [makeDoneEvent("completed", "reply-b")];
+    for await (const _event of adapter.stream({
+      kind: "messages",
+      messages: [
+        {
+          senderId: "gateway",
+          threadId: "sess-b",
+          timestamp: 2,
+          content: [{ kind: "text", text: "prompt-b" }],
+        },
+      ],
+      callHandlers: fakeHandlers,
+    })) {
+      // drain
+    }
+
+    const secondCall = runTurnState.calls.at(-1) as {
+      readonly messages: readonly InboundMessage[];
+    };
+    const rendered = secondCall.messages
+      .flatMap((message) => message.content)
+      .map((block) => (block.kind === "text" ? block.text : ""))
+      .join("\n");
+    expect(rendered).toContain("prompt-b");
+    expect(rendered).not.toContain("prompt-a");
+    expect(rendered).not.toContain("reply-a");
   });
 });
 
@@ -429,5 +516,93 @@ describe("createTranscriptAdapter — #1742 silent-termination fallback", () => 
     // No synthetic fallback on the happy path; the runTurn mock doesn't emit
     // text_delta itself (the reply is in done.output.content), so we expect 0.
     expect(deltas).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cancel-resume: in-flight user message captured in saveState (#1683)
+// ---------------------------------------------------------------------------
+
+describe("createTranscriptAdapter — cancel-resume in-flight user capture", () => {
+  test("saveState during interrupted turn captures the staged user message", async () => {
+    const transcript: InboundMessage[] = [];
+    const adapter = createTranscriptAdapter({
+      engineId: "koi-tui",
+      modelAdapter: makeModelAdapter(),
+      transcript,
+      maxTranscriptMessages: 10,
+      maxTurns: 5,
+    });
+    // Configure runTurn to emit ONLY interrupted (no turn_end), so the
+    // staged user message is never committed to transcript.
+    runTurnState.events = [makeDoneEvent("interrupted", "")];
+    for await (const _ of adapter.stream({
+      kind: "text",
+      text: "in-flight prompt",
+      callHandlers: fakeHandlers,
+    }));
+    // saveState is what the persistence wrapper invokes on cancel.
+    const state = await adapter.saveState?.();
+    expect(state).toBeDefined();
+    const data = state?.data as { stagedUser?: InboundMessage; transcriptLen?: number };
+    expect(data.transcriptLen).toBe(0);
+    expect(data.stagedUser).toBeDefined();
+    expect(data.stagedUser?.senderId).toBe("user");
+    const block = data.stagedUser?.content[0];
+    expect(block?.kind === "text" && block.text === "in-flight prompt").toBe(true);
+  });
+
+  test("loadState does NOT push stagedUser into the transcript (host owns reinjection)", async () => {
+    // Round 5: pushing stagedUser inside loadState would diverge from the
+    // durable JSONL store and from the UI rehydrate stream, breaking
+    // repeated cancel-resume cycles and hiding context from the operator.
+    // Hosts that want canceled-prompt resubmission must extract it from
+    // engineState.data themselves and route through the same JSONL/UI
+    // path as a fresh prompt.
+    const transcript: InboundMessage[] = [];
+    const adapter = createTranscriptAdapter({
+      engineId: "koi-tui",
+      modelAdapter: makeModelAdapter(),
+      transcript,
+      maxTranscriptMessages: 10,
+      maxTurns: 5,
+    });
+    const stagedUser: InboundMessage = {
+      senderId: "user",
+      timestamp: 12345,
+      content: [{ kind: "text", text: "canceled prompt" }],
+    };
+    await adapter.loadState?.({
+      engineId: "koi-tui",
+      data: {
+        kind: "transcript-cursor",
+        transcriptLen: 0,
+        lastMessageTimestamp: 0,
+        stagedUser,
+      },
+    });
+    expect(transcript).toHaveLength(0);
+  });
+
+  test("saveState after a completed turn does not carry a stale staged user", async () => {
+    const transcript: InboundMessage[] = [];
+    const adapter = createTranscriptAdapter({
+      engineId: "koi-tui",
+      modelAdapter: makeModelAdapter(),
+      transcript,
+      maxTranscriptMessages: 10,
+      maxTurns: 5,
+    });
+    runTurnState.events = [makeDoneEvent("completed", "reply")];
+    for await (const _ of adapter.stream({
+      kind: "text",
+      text: "first prompt",
+      callHandlers: fakeHandlers,
+    }));
+    const state = await adapter.saveState?.();
+    const data = state?.data as { stagedUser?: InboundMessage };
+    // After a clean turn, the prompt is in transcript and saveState must
+    // not double-stage it; otherwise resume would reinject a duplicate.
+    expect(data.stagedUser).toBeUndefined();
   });
 });

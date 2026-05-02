@@ -5,6 +5,7 @@
 
 import type {
   ContentReplacement,
+  EngineState,
   KoiError,
   PendingFrame,
   RecoveryPlan,
@@ -14,7 +15,7 @@ import type {
   SessionRecord,
   SessionStatus,
 } from "@koi/core";
-import { notFound, validateNonEmpty } from "@koi/core";
+import { notFound, RETRYABLE_DEFAULTS, validateNonEmpty } from "@koi/core";
 
 export function createInMemorySessionPersistence(): SessionPersistence {
   const sessions = new Map<string, SessionRecord>();
@@ -120,6 +121,38 @@ export function createInMemorySessionPersistence(): SessionPersistence {
     return { ok: true, value: undefined };
   };
 
+  const updateLastEngineState = (
+    sid: string,
+    apply: (prev: EngineState | undefined) => EngineState | undefined,
+    nowMs: number,
+    expectedVersion?: number,
+  ): Result<void, KoiError> => {
+    const idCheck = validateNonEmpty(sid, "Session ID");
+    if (!idCheck.ok) return idCheck;
+    const record = sessions.get(sid);
+    if (record === undefined) {
+      return { ok: false, error: notFound(sid, `Session not found: ${sid}`) };
+    }
+    // CAS: if caller specified an expected version, reject when the
+    // persisted lastPersistedAt has moved since they observed it.
+    if (expectedVersion !== undefined && record.lastPersistedAt !== expectedVersion) {
+      return {
+        ok: false,
+        error: {
+          code: "CONFLICT",
+          message: `Session ${sid} version mismatch — expected ${expectedVersion}, found ${record.lastPersistedAt}`,
+          retryable: RETRYABLE_DEFAULTS.CONFLICT,
+        },
+      };
+    }
+    // Synchronous JS execution → the read, apply, and write run as one
+    // critical section. No other writer can interleave on this row between
+    // the get() above and the set() below.
+    const next = apply(record.lastEngineState);
+    sessions.set(sid, { ...record, lastEngineState: next, lastPersistedAt: nowMs });
+    return { ok: true, value: undefined };
+  };
+
   const setSessionStatus = (sid: string, status: SessionStatus): Result<void, KoiError> => {
     const idCheck = validateNonEmpty(sid, "Session ID");
     if (!idCheck.ok) return idCheck;
@@ -184,6 +217,7 @@ export function createInMemorySessionPersistence(): SessionPersistence {
     loadPendingFrames,
     clearPendingFrames,
     removePendingFrame,
+    updateLastEngineState,
     setSessionStatus,
     saveContentReplacement,
     loadContentReplacements,

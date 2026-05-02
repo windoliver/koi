@@ -2652,6 +2652,94 @@ describe("Golden: @koi/governance-scope", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Golden: @koi/middleware-policy-cache (2 queries)
+// ---------------------------------------------------------------------------
+
+import { createPolicyCacheMiddleware } from "@koi/middleware-policy-cache";
+
+describe("Golden: @koi/middleware-policy-cache", () => {
+  test("verified-only gate: cache without configured verifier rejects every register()", () => {
+    const handle = createPolicyCacheMiddleware();
+    const reject = handle.register({
+      toolId: "search",
+      brickId: "brick-unverified",
+      scope: "agent",
+      agentId: "agent-A",
+      execute: () => ({ action: "allow" }),
+    });
+    expect(reject.ok).toBe(false);
+    if (!reject.ok) {
+      expect(reject.error.code).toBe("VALIDATION");
+    }
+    expect(handle.size()).toBe(0);
+
+    const trusted = createPolicyCacheMiddleware({
+      verifier: (e) => e.brickId === "brick-verified",
+    });
+    const accept = trusted.register({
+      toolId: "search",
+      brickId: "brick-verified",
+      scope: "agent",
+      agentId: "agent-A",
+      execute: () => ({ action: "allow" }),
+    });
+    expect(accept.ok).toBe(true);
+    expect(trusted.size()).toBe(1);
+  });
+
+  test("cache-hit short-circuits before model: block decision skips next handler", async () => {
+    const handle = createPolicyCacheMiddleware({ verifier: () => true });
+    handle.register({
+      toolId: "search",
+      brickId: "brick-1",
+      scope: "agent",
+      agentId: "a",
+      execute: (input) => {
+        const q = (input as { readonly q?: unknown }).q;
+        return typeof q === "string" && q.length > 0
+          ? { action: "allow" }
+          : { action: "block", reason: "empty q" };
+      },
+    });
+
+    const ctx = {
+      session: { sessionId: "policy-cache-golden", agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core/middleware").TurnContext;
+
+    let executions = 0;
+    const handler: import("@koi/core/middleware").ToolHandler = async () => {
+      executions++;
+      return { output: "tool ran" };
+    };
+
+    // empty q → blocked, next never called
+    const blocked = await handle.middleware.wrapToolCall?.(
+      ctx,
+      { toolId: "search", input: { q: "" } },
+      handler,
+    );
+    expect(executions).toBe(0);
+    // Canonical block metadata — peers (event-trace, semantic-retry) must
+    // recognize this as a non-execution.
+    expect(blocked?.metadata?.isError).toBe(true);
+    expect(blocked?.metadata?.blockedByHook).toBe(true);
+    expect(blocked?.metadata?.policyDenied).toBe(true);
+    expect(blocked?.metadata?.hookName).toBe("policy-cache");
+
+    // non-empty q → allowed, next runs exactly once (cache hit does not change observable result)
+    const allowed = await handle.middleware.wrapToolCall?.(
+      ctx,
+      { toolId: "search", input: { q: "hi" } },
+      handler,
+    );
+    expect(executions).toBe(1);
+    expect(allowed?.output).toBe("tool ran");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/sandbox-router — multi-backend executor (issue #1641)
 // ---------------------------------------------------------------------------
 

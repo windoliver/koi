@@ -7,15 +7,6 @@ export interface ServeFlags extends BaseFlags {
   readonly port: number | undefined;
   readonly verbose: boolean;
   readonly logFormat: "text" | "json";
-  /** Nexus base URL — when set with apiKey, sessions persist to Nexus for HA. */
-  readonly nexusUrl: string | undefined;
-  readonly nexusApiKey: string | undefined;
-  /**
-   * Opt-in permissive authentication for local development only. When set,
-   * any client can claim any agentId. Server refuses to start unless the
-   * bind host is loopback and Nexus HA is disabled.
-   */
-  readonly unsafeDevAuth: boolean;
 }
 
 export function parseServeFlags(rest: readonly string[]): ServeFlags {
@@ -24,9 +15,6 @@ export function parseServeFlags(rest: readonly string[]): ServeFlags {
     readonly port: string | undefined;
     readonly verbose: boolean | undefined;
     readonly "log-format": string | undefined;
-    readonly "nexus-url": string | undefined;
-    readonly "nexus-api-key": string | undefined;
-    readonly "unsafe-dev-auth": boolean | undefined;
     readonly help: boolean | undefined;
     readonly version: boolean | undefined;
   };
@@ -38,9 +26,6 @@ export function parseServeFlags(rest: readonly string[]): ServeFlags {
         port: { type: "string", short: "p" },
         verbose: { type: "boolean", short: "v", default: false },
         "log-format": { type: "string" },
-        "nexus-url": { type: "string" },
-        "nexus-api-key": { type: "string" },
-        "unsafe-dev-auth": { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
         version: { type: "boolean", short: "V", default: false },
       },
@@ -63,9 +48,6 @@ export function parseServeFlags(rest: readonly string[]): ServeFlags {
         : undefined,
     verbose: values.verbose ?? false,
     logFormat: resolveLogFormatOrText(values["log-format"], skipValidators),
-    nexusUrl: values["nexus-url"],
-    nexusApiKey: values["nexus-api-key"],
-    unsafeDevAuth: values["unsafe-dev-auth"] ?? false,
   };
 }
 

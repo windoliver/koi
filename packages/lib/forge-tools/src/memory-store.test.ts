@@ -390,6 +390,36 @@ describe("memory-store: watcher", () => {
     expect(events).toEqual(["saved", "updated", "removed"]);
   });
 
+  test("notifications carry monotonic `generation` so policy-cache can suppress stale events", async () => {
+    // policy-cache (peer L2) gates invalidation on event.generation vs.
+    // cached entry.generation. If the notifier omits generation, every
+    // delayed `updated`/`removed` would unconditionally evict a freshly
+    // re-promoted deny — an authorization downgrade. Threading
+    // storeVersion through closes the loop end-to-end.
+    const events: Array<{ kind: string; generation?: number }> = [];
+    const unsub = store.watch?.((e) => {
+      events.push({
+        kind: e.kind,
+        ...(e.generation !== undefined ? { generation: e.generation } : {}),
+      });
+    });
+    const brick = makeToolBrick();
+    await store.save(brick);
+    await store.update(brick.id, { lifecycle: "verifying" });
+    await store.update(brick.id, { lifecycle: "active" });
+    await store.remove(brick.id);
+    unsub?.();
+    // Generations are monotonic non-decreasing across the lifecycle.
+    expect(events).toHaveLength(4);
+    const gens = events.map((e) => e.generation);
+    for (const g of gens) expect(typeof g).toBe("number");
+    expect(gens[0]).toBe(1);
+    expect(gens[1]).toBe(2);
+    expect(gens[2]).toBe(3);
+    // remove emits the version of the entry being removed.
+    expect(gens[3]).toBe(3);
+  });
+
   test("unsubscribed listener stops receiving events", async () => {
     const events: string[] = [];
     const unsub = store.watch?.((e) => {
