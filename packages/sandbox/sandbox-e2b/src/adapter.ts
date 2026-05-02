@@ -71,8 +71,9 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
           }
         | { readonly kind: "err"; readonly e: unknown }
         | { readonly kind: "timeout" };
+      const createPromise = resolved.client.createSandbox(opts);
       const outcome = await Promise.race<CreateOutcome>([
-        resolved.client.createSandbox(opts).then(
+        createPromise.then(
           (s): CreateOutcome => ({ kind: "ok", sdk: s }),
           (e: unknown): CreateOutcome => ({ kind: "err", e }),
         ),
@@ -81,12 +82,31 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
         ),
       ]);
       if (outcome.kind === "timeout") {
+        // Late-cleanup reconciler: keep ownership of the in-flight
+        // create. If the provider eventually returns a handle (after we
+        // already surfaced the timeout to the caller), best-effort kill
+        // the orphan microVM. Without this, retries accumulate billable
+        // leaks during a control-plane latency spike.
+        createPromise.then(
+          (lateSdk) => {
+            if (typeof lateSdk?.kill === "function") {
+              lateSdk.kill().catch(() => {
+                // Best-effort: orphan label is already in the surfaced
+                // error so operators can revoke out-of-band.
+              });
+            }
+          },
+          () => {
+            // Original create rejected after the timeout window; nothing
+            // to clean up.
+          },
+        );
         throw new Error(
           `sandbox-e2b: createSandbox(label=${label}) did not settle within ` +
-            `${CREATE_TIMEOUT_MS}ms — provisioning state INDETERMINATE. The provider ` +
-            `MAY have allocated a microVM that was never returned to the adapter; ` +
-            `search for label "${label}" out-of-band to revoke any orphan before ` +
-            `retrying, otherwise the leak compounds with each retry.`,
+            `${CREATE_TIMEOUT_MS}ms — provisioning state INDETERMINATE. The adapter ` +
+            `will best-effort kill any microVM that arrives late, but if the SDK ` +
+            `never returns a handle, search for label "${label}" out-of-band to ` +
+            `revoke any orphan before retrying.`,
         );
       }
       if (outcome.kind === "err") {

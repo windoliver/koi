@@ -188,6 +188,54 @@ describe("createE2bAdapter", () => {
     expect(elapsed).toBeLessThan(35_000);
   }, 40_000);
 
+  test("create() reconciles a late-arriving handle after timeout (best-effort kill)", async () => {
+    // Late-cleanup regression: when the local 30 s timeout fires but
+    // the SDK eventually returns a handle anyway, the adapter must
+    // best-effort kill the orphan microVM rather than leak a billable
+    // resource. Without the reconciler, retries during a control-plane
+    // latency spike would accumulate orphans.
+    const client = createFakeClient();
+    const handle = client.sandbox;
+    let killCalls = 0;
+    let resolveCreate!: (sdk: typeof handle) => void;
+    const lateHandle = {
+      ...handle,
+      kill: async (): Promise<void> => {
+        killCalls++;
+      },
+    };
+    Object.defineProperty(client, "createSandbox", {
+      value: () =>
+        new Promise<typeof handle>((r) => {
+          resolveCreate = r;
+        }),
+    });
+    const result = createE2bAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    // Override the timeout via a much shorter wait — but the timeout
+    // constant is internal. So instead, we resolve the promise BEFORE
+    // the timeout, after first observing the create() rejection by
+    // racing it against a local timeout shorter than the adapter's.
+    // Simpler approach: hand the promise back, time out create() by
+    // letting 30s pass is too long — so we replace setTimeout?
+    // Pragmatic: shrink the test by manually triggering: launch
+    // create(), don't await; resolve `resolveCreate` after the 30s
+    // adapter timeout. That makes the test 30s+ which is over the
+    // default. Allow 35s.
+    const createPromise = result.value.create(openProfile);
+    // Wait for the adapter timeout to fire and surface the
+    // INDETERMINATE error, THEN resolve the late createSandbox promise.
+    // The reconciler attached during the timeout path observes the
+    // late resolution and best-effort kills the orphan.
+    const err = await createPromise.catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/INDETERMINATE/);
+    resolveCreate(lateHandle);
+    // Give the late-cleanup .then a tick to fire.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(killCalls).toBe(1);
+  }, 40_000);
+
   test("create() postflights supportsMaxOutputBytes and tears down unusable handles", async () => {
     // Skew regression: an SDK whose handle lacks supportsMaxOutputBytes=true
     // would let create() return a billable sandbox where every exec()

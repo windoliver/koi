@@ -130,10 +130,11 @@ describe("createE2bInstance", () => {
 
   test("exec quarantines instance when SDK never confirms post-abort termination", async () => {
     // Hung provider regression: when the SDK never settles after abort
-    // the adapter must NOT report exit 130 — that signals a clean cancel
-    // and would invite higher-layer retry logic to replay a command that
-    // may still be running remotely. Surface exit 1 (indeterminate) plus
-    // a clear stderr warning, and quarantine the instance.
+    // the adapter must NOT report exit 130 (clean cancel) — that would
+    // invite retry logic to replay a command that may still be running
+    // remotely. The adapter throws an INDETERMINATE error and
+    // quarantines the instance so callers cannot mistake transport
+    // uncertainty for a normal command failure.
     const base = createFakeSandbox();
     const sdk = {
       ...base,
@@ -149,12 +150,13 @@ describe("createE2bInstance", () => {
     const ac = new AbortController();
     queueMicrotask(() => ac.abort());
     const start = performance.now();
-    const result = await instance.exec("sleep", ["999"], { signal: ac.signal });
+    const err = await instance
+      .exec("sleep", ["999"], { signal: ac.signal })
+      .catch((e: unknown) => e as Error);
     const elapsed = performance.now() - start;
-    // Indeterminate failure — NOT 130, so callers don't replay.
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toMatch(/INDETERMINATE/);
-    expect(result.stderr).toMatch(/abort timeout/i);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/INDETERMINATE/);
+    expect((err as Error).message).toMatch(/abort timeout/i);
     expect(elapsed).toBeLessThan(10_000);
     await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
     await instance.destroy();
@@ -200,9 +202,10 @@ describe("createE2bInstance", () => {
     // may still be running.
     const sdk = createFakeSandbox({ runError: new Error("transport flap") });
     const instance = createE2bInstance(sdk);
-    const result = await instance.exec("ls", []);
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toMatch(/INDETERMINATE/);
+    // The first call throws an INDETERMINATE error rather than
+    // returning a normal-looking SandboxAdapterResult — callers cannot
+    // mistake transport uncertainty for an ordinary command failure.
+    await expect(instance.exec("ls", [])).rejects.toThrow(/INDETERMINATE/);
     // Subsequent ops are blocked — the caller must teardown/recreate
     // before continuing.
     await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
@@ -276,7 +279,9 @@ describe("createE2bInstance", () => {
     const instance = createE2bInstance(sdk);
     const ac = new AbortController();
     queueMicrotask(() => ac.abort());
-    await instance.exec("sleep", ["999"], { signal: ac.signal });
+    // Abort timeout now throws INDETERMINATE; swallow it so we can
+    // verify the post-quarantine destroy() still reaches sdk.kill().
+    await instance.exec("sleep", ["999"], { signal: ac.signal }).catch(() => {});
     // Now quarantined. destroy() must still call sdk.kill().
     await instance.destroy();
     expect(killCalled).toBe(true);
@@ -412,11 +417,12 @@ describe("createE2bInstance", () => {
     expect(result.stdout).toBe("ok");
   });
 
-  test("exec returns failure (not 130) when SDK rejects with AbortError but caller never aborted", async () => {
+  test("exec throws INDETERMINATE (not exit 130) when SDK rejects with AbortError but caller never aborted", async () => {
     // Server-side eviction / transport-layer aborts can surface as
-    // AbortError-shaped rejections. Mapping those to exit 130 without a
-    // matching caller abort would tell higher layers the run was
-    // intentionally cancelled, breaking retry-safety.
+    // AbortError-shaped rejections. Mapping those to exit 130 without
+    // a matching caller abort would tell higher layers the run was
+    // intentionally cancelled. Throwing INDETERMINATE prevents
+    // higher-layer auto-retry of side-effecting commands.
     const base = createFakeSandbox();
     const sdk = {
       ...base,
@@ -430,9 +436,10 @@ describe("createE2bInstance", () => {
       },
     };
     const instance = createE2bInstance(sdk);
-    const result = await instance.exec("ls", []);
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("microvm evicted");
+    const err = await instance.exec("ls", []).catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/INDETERMINATE/);
+    expect((err as Error).message).toContain("microvm evicted");
   });
 
   test("exec maps exit 124 to timedOut and 137 to oomKilled (Docker-aligned)", async () => {
@@ -466,20 +473,16 @@ describe("createE2bInstance", () => {
     expect(sdk.runCalls).toHaveLength(0);
   });
 
-  test("exec maps SDK errors to non-zero result with stderr message", async () => {
+  test("exec throws INDETERMINATE when SDK rejects (not a normal exit-1 result)", async () => {
+    // SDK rejection means the remote command's state is unknown.
+    // Throwing forces callers to handle the indeterminate path
+    // explicitly rather than treating it as an ordinary failure.
     const sdk = createFakeSandbox({ runError: new Error("boom") });
     const instance = createE2bInstance(sdk);
-    const result = await instance.exec("ls", []);
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("boom");
-    expect(result.timedOut).toBe(false);
-  });
-
-  test("exec flags timedOut when SDK error message mentions timeout", async () => {
-    const sdk = createFakeSandbox({ runError: new Error("operation timed out") });
-    const instance = createE2bInstance(sdk);
-    const result = await instance.exec("ls", []);
-    expect(result.timedOut).toBe(true);
+    const err = await instance.exec("ls", []).catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/INDETERMINATE/);
+    expect((err as Error).message).toContain("boom");
   });
 
   test("readFile decodes string to bytes", async () => {

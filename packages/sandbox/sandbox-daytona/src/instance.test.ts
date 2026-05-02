@@ -142,19 +142,13 @@ describe("createDaytonaInstance", () => {
     expect(sdk.runCalls).toHaveLength(0);
   });
 
-  test("exec maps SDK errors to non-zero result", async () => {
+  test("exec throws INDETERMINATE when SDK rejects (not a normal exit-1 result)", async () => {
     const sdk = createFakeSandbox({ runError: new Error("boom") });
     const instance = createDaytonaInstance(sdk);
-    const result = await instance.exec("ls", []);
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("boom");
-  });
-
-  test("exec flags timedOut when SDK error message mentions timeout", async () => {
-    const sdk = createFakeSandbox({ runError: new Error("timed out") });
-    const instance = createDaytonaInstance(sdk);
-    const result = await instance.exec("ls", []);
-    expect(result.timedOut).toBe(true);
+    const err = await instance.exec("ls", []).catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/INDETERMINATE/);
+    expect((err as Error).message).toContain("boom");
   });
 
   test("readFile / writeFile round-trip via SDK", async () => {
@@ -204,9 +198,10 @@ describe("createDaytonaInstance", () => {
     // may still be running.
     const sdk = createFakeSandbox({ runError: new Error("transport flap") });
     const instance = createDaytonaInstance(sdk);
-    const result = await instance.exec("ls", []);
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toMatch(/INDETERMINATE/);
+    // First call throws an INDETERMINATE error rather than returning
+    // a normal-looking SandboxAdapterResult — callers cannot mistake
+    // transport uncertainty for an ordinary command failure.
+    await expect(instance.exec("ls", [])).rejects.toThrow(/INDETERMINATE/);
     await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
     await expect(instance.readFile("/x")).rejects.toThrow(/quarantined/);
   });
@@ -365,11 +360,10 @@ describe("createDaytonaInstance", () => {
     expect(result.stdout).toBe("ok");
   });
 
-  test("exec returns failure (not 130) when SDK rejects with AbortError but caller never aborted", async () => {
-    // Server-side eviction / transport-layer aborts can surface as
-    // AbortError-shaped rejections. Mapping those to exit 130 without a
-    // matching caller abort would tell higher layers the run was
-    // intentionally cancelled, breaking retry-safety.
+  test("exec throws INDETERMINATE (not exit 130) when SDK rejects with AbortError but caller never aborted", async () => {
+    // Server-side eviction surfaces as an AbortError-shaped rejection.
+    // Without a matching caller abort, this is INDETERMINATE — the
+    // adapter throws so callers cannot auto-retry side-effecting work.
     const base = createFakeSandbox();
     const sdk = {
       ...base,
@@ -383,9 +377,10 @@ describe("createDaytonaInstance", () => {
       },
     };
     const instance = createDaytonaInstance(sdk);
-    const result = await instance.exec("ls", []);
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("workspace evicted");
+    const err = await instance.exec("ls", []).catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/INDETERMINATE/);
+    expect((err as Error).message).toContain("workspace evicted");
   });
 
   test("operations after destroy throw", async () => {

@@ -69,8 +69,9 @@ export function createDaytonaAdapter(
           }
         | { readonly kind: "err"; readonly e: unknown }
         | { readonly kind: "timeout" };
+      const createPromise = resolved.client.createSandbox(opts);
       const createOutcome = await Promise.race<CreateOutcome>([
-        resolved.client.createSandbox(opts).then(
+        createPromise.then(
           (s): CreateOutcome => ({ kind: "ok", sdk: s }),
           (e: unknown): CreateOutcome => ({ kind: "err", e }),
         ),
@@ -79,12 +80,32 @@ export function createDaytonaAdapter(
         ),
       ]);
       if (createOutcome.kind === "timeout") {
+        // Late-cleanup reconciler: keep ownership of the in-flight
+        // create. If the provider eventually returns a handle, best-
+        // effort delete the orphan workspace. Without this, retries
+        // accumulate billable leaks during a control-plane latency spike.
+        createPromise.then(
+          (lateSdk) => {
+            if (typeof lateSdk?.delete === "function") {
+              lateSdk.delete().catch(() => {});
+            } else if (typeof lateSdk?.close === "function") {
+              // delete() is the authoritative path; close() is best-
+              // effort and may only detach. Fall back if delete is
+              // missing — at least it doesn't leave the workspace running
+              // in some SDK versions.
+              lateSdk.close().catch(() => {});
+            }
+          },
+          () => {
+            // Original create rejected after the timeout window.
+          },
+        );
         throw new Error(
           `sandbox-daytona: createSandbox(label=${label}) did not settle within ` +
-            `${CREATE_TIMEOUT_MS}ms — provisioning state INDETERMINATE. The provider ` +
-            `MAY have allocated a workspace that was never returned to the adapter; ` +
-            `search for label "${label}" out-of-band to revoke any orphan before ` +
-            `retrying, otherwise the leak compounds with each retry.`,
+            `${CREATE_TIMEOUT_MS}ms — provisioning state INDETERMINATE. The adapter ` +
+            `will best-effort delete any workspace that arrives late, but if the SDK ` +
+            `never returns a handle, search for label "${label}" out-of-band to ` +
+            `revoke any orphan before retrying.`,
         );
       }
       if (createOutcome.kind === "err") {

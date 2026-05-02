@@ -282,20 +282,18 @@ export function createE2bInstance(
         const durationMs = performance.now() - start;
         if (confirmed.kind === "timeout") {
           // Indeterminate — the remote command may still be running.
+          // Throw rather than return a normal-looking SandboxAdapterResult
+          // so callers cannot mistake transport uncertainty for an
+          // ordinary command failure and auto-retry side-effecting work.
+          // Quarantine still applies; destroy() remains callable.
           quarantined = true;
-          return {
-            exitCode: 1,
-            stdout: "",
-            stderr:
-              "sandbox-e2b: abort timeout — SDK did not confirm remote " +
-              `termination within ${POST_ABORT_KILL_CONFIRM_MS}ms. Remote command ` +
-              "state is INDETERMINATE; the original may still be running. Do NOT " +
-              "treat this as a clean cancellation — verify out-of-band before " +
-              "retrying the command. Instance has been quarantined.",
-            durationMs,
-            timedOut: false,
-            oomKilled: false,
-          };
+          throw new Error(
+            `sandbox-e2b: abort timeout — SDK did not confirm remote termination ` +
+              `within ${POST_ABORT_KILL_CONFIRM_MS}ms (after ${durationMs.toFixed(0)}ms ` +
+              `total). Remote command state is INDETERMINATE; the original may still ` +
+              `be running. Do NOT auto-retry this command — verify out-of-band before ` +
+              `re-running. Instance has been quarantined.`,
+          );
         }
         const settled = confirmed.s;
         // SDK rejected with AbortError → provider-confirmed cancellation.
@@ -313,21 +311,16 @@ export function createE2bInstance(
           }
           // Some other rejection arrived in the post-abort window. We
           // cannot prove the command was killed cleanly OR that it
-          // never ran — the remote state is INDETERMINATE. Quarantine
-          // so the caller is forced to teardown/recreate before reusing
-          // this handle and side-effecting commands cannot auto-retry.
+          // never ran — remote state is INDETERMINATE. Throw so callers
+          // cannot mistake this for a normal exit-1 failure and retry
+          // a side-effecting command. Quarantine still applies.
           quarantined = true;
           const message = e instanceof Error ? e.message : String(e);
-          return {
-            exitCode: 1,
-            stdout: "",
-            stderr:
-              "sandbox-e2b: SDK rejected after abort with non-AbortError; remote " +
+          throw new Error(
+            "sandbox-e2b: SDK rejected after abort with non-AbortError; remote " +
               `command state is INDETERMINATE — instance quarantined: ${message}`,
-            durationMs,
-            timedOut: false,
-            oomKilled: false,
-          };
+            { cause: e },
+          );
         }
         // SDK resolved with a result. The conventional kill exit codes
         // (130 SIGINT, 137 SIGKILL, 143 SIGTERM) confirm cancellation.
@@ -359,27 +352,21 @@ export function createE2bInstance(
       }
 
       if (winner.kind === "error") {
-        // SDK rejected without a confirmed abort. The remote command may
-        // have started, may still be running, or may never have left
-        // the wrapper — we cannot tell. Quarantine so callers cannot
-        // dispatch new commands (or auto-retry a side-effecting one)
-        // against a sandbox in INDETERMINATE state. destroy() remains
-        // callable so operators can attempt cleanup.
+        // SDK rejected without a confirmed abort. Remote command state
+        // is INDETERMINATE — could have started, may still be running,
+        // may never have left the wrapper. Throw rather than return a
+        // normal-looking SandboxAdapterResult so callers cannot
+        // mistake transport uncertainty for an ordinary command
+        // failure and auto-retry a side-effecting command. Quarantine
+        // still applies; destroy() remains callable for cleanup.
         quarantined = true;
-        const durationMs = performance.now() - start;
         const e = winner.e;
         const message = e instanceof Error ? e.message : String(e);
-        const timedOut = /timeout|timed out/i.test(message);
-        return {
-          exitCode: 1,
-          stdout: "",
-          stderr:
-            "sandbox-e2b: SDK rejected; remote command state is INDETERMINATE — " +
+        throw new Error(
+          "sandbox-e2b: SDK rejected; remote command state is INDETERMINATE — " +
             `instance quarantined (call destroy() to attempt cleanup): ${message}`,
-          durationMs,
-          timedOut,
-          oomKilled: false,
-        };
+          { cause: e },
+        );
       }
 
       // winner.kind === "result"

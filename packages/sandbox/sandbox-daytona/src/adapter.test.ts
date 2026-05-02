@@ -195,6 +195,37 @@ describe("createDaytonaAdapter", () => {
     expect(elapsed).toBeLessThan(35_000);
   }, 40_000);
 
+  test("create() reconciles a late-arriving handle after timeout (best-effort delete)", async () => {
+    // Late-cleanup regression: when the local timeout fires but the
+    // SDK eventually returns a handle anyway, the adapter must best-
+    // effort delete the orphan workspace.
+    const client = createFakeClient();
+    const handle = client.sandbox;
+    let deleteCalls = 0;
+    let resolveCreate!: (sdk: typeof handle) => void;
+    const lateHandle = {
+      ...handle,
+      delete: async (): Promise<void> => {
+        deleteCalls++;
+      },
+    };
+    Object.defineProperty(client, "createSandbox", {
+      value: () =>
+        new Promise<typeof handle>((r) => {
+          resolveCreate = r;
+        }),
+    });
+    const result = createDaytonaAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    const createPromise = result.value.create(openProfile);
+    const err = await createPromise.catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/INDETERMINATE/);
+    resolveCreate(lateHandle);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(deleteCalls).toBe(1);
+  }, 40_000);
+
   test("create() postflights supportsMaxOutputBytes and tears down unusable handles", async () => {
     // Skew regression: an SDK whose handle lacks supportsMaxOutputBytes=true
     // would let create() return a billable workspace where every exec()
