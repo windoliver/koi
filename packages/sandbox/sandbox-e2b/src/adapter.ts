@@ -54,9 +54,15 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
       // returning a handle), the label is the only breadcrumb operators
       // have to find and revoke the orphan.
       const label = `koi-${crypto.randomUUID()}`;
+      // AbortController so we can cancel a stalled provider call when
+      // our local timeout fires. Without this, repeated caller retries
+      // would accumulate background creates that may each materialize
+      // an orphan microVM if the control plane catches up later.
+      const createAbort = new AbortController();
       const opts: E2bCreateOpts = {
         apiKey: resolved.apiKey,
         label,
+        signal: createAbort.signal,
         ...(resolved.template !== undefined ? { template: resolved.template } : {}),
       };
       // Bounded provisioning: a stalled control plane must not wedge
@@ -82,11 +88,15 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
         ),
       ]);
       if (outcome.kind === "timeout") {
+        // Cancel the stalled provider call so it cannot continue running
+        // in the background and pile up orphan microVMs across caller
+        // retries. Wrappers that declare supportsCancelCreate=true honour
+        // this; others get a stricter warning below.
+        createAbort.abort();
         // Late-cleanup reconciler: keep ownership of the in-flight
         // create. If the provider eventually returns a handle (after we
         // already surfaced the timeout to the caller), best-effort kill
-        // the orphan microVM. Without this, retries accumulate billable
-        // leaks during a control-plane latency spike.
+        // the orphan microVM.
         createPromise.then(
           (lateSdk) => {
             if (typeof lateSdk?.kill === "function") {
@@ -101,12 +111,15 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
             // to clean up.
           },
         );
+        const cancelNote =
+          resolved.client.supportsCancelCreate === true
+            ? "the adapter signalled cancellation to the SDK and will best-effort kill any microVM that arrives late"
+            : "the SDK does not advertise supportsCancelCreate=true, so the original provider call may keep running in the background and a retry could compound an orphan leak — search for label out-of-band before retrying";
         throw new Error(
           `sandbox-e2b: createSandbox(label=${label}) did not settle within ` +
-            `${CREATE_TIMEOUT_MS}ms — provisioning state INDETERMINATE. The adapter ` +
-            `will best-effort kill any microVM that arrives late, but if the SDK ` +
-            `never returns a handle, search for label "${label}" out-of-band to ` +
-            `revoke any orphan before retrying.`,
+            `${CREATE_TIMEOUT_MS}ms — provisioning state INDETERMINATE. ${cancelNote}. ` +
+            `If the SDK never returns a handle, search for label "${label}" out-of-band ` +
+            `to revoke any orphan before retrying.`,
         );
       }
       if (outcome.kind === "err") {

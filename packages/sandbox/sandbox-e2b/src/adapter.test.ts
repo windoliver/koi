@@ -188,6 +188,32 @@ describe("createE2bAdapter", () => {
     expect(elapsed).toBeLessThan(35_000);
   }, 40_000);
 
+  test("create() aborts the provider call on local timeout (no orphan pile-up on retries)", async () => {
+    // Cancellable-create regression: without aborting the in-flight
+    // SDK call, repeated caller retries during a control-plane hang
+    // would accumulate background creates, each potentially
+    // materializing a billable orphan microVM.
+    const client = createFakeClient();
+    let observedAborted = false;
+    Object.defineProperty(client, "createSandbox", {
+      value: (opts: import("./types.js").E2bCreateOpts) =>
+        new Promise<typeof client.sandbox>((_, reject) => {
+          opts.signal?.addEventListener("abort", () => {
+            observedAborted = true;
+            reject(new Error("aborted by adapter"));
+          });
+        }),
+    });
+    const result = createE2bAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    const err = await result.value.create(openProfile).catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/INDETERMINATE/);
+    // Give the abort handler a tick to observe the signal.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(observedAborted).toBe(true);
+  }, 40_000);
+
   test("create() reconciles a late-arriving handle after timeout (best-effort kill)", async () => {
     // Late-cleanup regression: when the local 30 s timeout fires but
     // the SDK eventually returns a handle anyway, the adapter must

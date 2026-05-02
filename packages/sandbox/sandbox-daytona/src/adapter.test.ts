@@ -195,6 +195,61 @@ describe("createDaytonaAdapter", () => {
     expect(elapsed).toBeLessThan(35_000);
   }, 40_000);
 
+  test("create() aborts the provider call on local timeout (no orphan pile-up on retries)", async () => {
+    const client = createFakeClient();
+    let observedAborted = false;
+    Object.defineProperty(client, "createSandbox", {
+      value: (opts: import("./types.js").DaytonaCreateOpts) =>
+        new Promise<typeof client.sandbox>((_, reject) => {
+          opts.signal?.addEventListener("abort", () => {
+            observedAborted = true;
+            reject(new Error("aborted by adapter"));
+          });
+        }),
+    });
+    const result = createDaytonaAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    const err = await result.value.create(openProfile).catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/INDETERMINATE/);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(observedAborted).toBe(true);
+  }, 40_000);
+
+  test("create() does NOT fall back to close() in late cleanup (avoids hidden leaks)", async () => {
+    // Round-2 fix: close() may be a client-side detach that leaves the
+    // workspace billable. The reconciler must NOT use close() — emitting
+    // nothing is safer than a false-positive cleanup signal.
+    const client = createFakeClient();
+    const original = client.sandbox;
+    const { delete: _omitDelete, ...stripped } = original;
+    let closeCalls = 0;
+    let resolveCreate!: (sdk: typeof original) => void;
+    const lateHandle = {
+      ...stripped,
+      close: async (): Promise<void> => {
+        closeCalls++;
+      },
+    };
+    Object.defineProperty(client, "createSandbox", {
+      value: () =>
+        new Promise<typeof original>((r) => {
+          resolveCreate = r;
+        }),
+    });
+    const result = createDaytonaAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    const createPromise = result.value.create(openProfile);
+    const err = await createPromise.catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/INDETERMINATE/);
+    // @ts-expect-error -- intentionally giving a handle missing delete() to test the fallback is gone
+    resolveCreate(lateHandle);
+    await new Promise((r) => setTimeout(r, 100));
+    // close() must NOT be called as a fallback.
+    expect(closeCalls).toBe(0);
+  }, 40_000);
+
   test("create() reconciles a late-arriving handle after timeout (best-effort delete)", async () => {
     // Late-cleanup regression: when the local timeout fires but the
     // SDK eventually returns a handle anyway, the adapter must best-

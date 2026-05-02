@@ -52,10 +52,16 @@ export function createDaytonaAdapter(
 
       // Idempotency label per create attempt — see sandbox-e2b for rationale.
       const label = `koi-${crypto.randomUUID()}`;
+      // AbortController so we can cancel a stalled provider call when
+      // our local timeout fires. Without this, repeated caller retries
+      // would accumulate background creates that may each materialize
+      // an orphan workspace if the control plane catches up later.
+      const createAbort = new AbortController();
       const opts: DaytonaCreateOpts = {
         apiKey: resolved.apiKey,
         target: resolved.target,
         label,
+        signal: createAbort.signal,
         ...(resolved.apiUrl !== undefined ? { apiUrl: resolved.apiUrl } : {}),
       };
       // Bounded provisioning: a stalled control plane must not wedge
@@ -80,32 +86,40 @@ export function createDaytonaAdapter(
         ),
       ]);
       if (createOutcome.kind === "timeout") {
+        // Cancel the stalled provider call so it cannot continue running
+        // in the background.
+        createAbort.abort();
         // Late-cleanup reconciler: keep ownership of the in-flight
-        // create. If the provider eventually returns a handle, best-
-        // effort delete the orphan workspace. Without this, retries
-        // accumulate billable leaks during a control-plane latency spike.
+        // create. If the provider eventually returns a handle with an
+        // authoritative delete(), best-effort delete the orphan
+        // workspace. We DO NOT fall back to close() here — close() may
+        // be a client-side detach that leaves the workspace running and
+        // billable; pretending otherwise would hide a leak behind a
+        // false-positive cleanup signal.
         createPromise.then(
           (lateSdk) => {
             if (typeof lateSdk?.delete === "function") {
-              lateSdk.delete().catch(() => {});
-            } else if (typeof lateSdk?.close === "function") {
-              // delete() is the authoritative path; close() is best-
-              // effort and may only detach. Fall back if delete is
-              // missing — at least it doesn't leave the workspace running
-              // in some SDK versions.
-              lateSdk.close().catch(() => {});
+              lateSdk.delete().catch(() => {
+                // Best-effort: orphan label is in the surfaced error.
+              });
             }
+            // Late handle without delete(): emit nothing — the surfaced
+            // timeout error already directs operators to the label-based
+            // out-of-band recovery path.
           },
           () => {
             // Original create rejected after the timeout window.
           },
         );
+        const cancelNote =
+          resolved.client.supportsCancelCreate === true
+            ? "the adapter signalled cancellation to the SDK and will best-effort delete any workspace that arrives late with an authoritative delete() handle"
+            : "the SDK does not advertise supportsCancelCreate=true, so the original provider call may keep running in the background and a retry could compound an orphan leak — search for label out-of-band before retrying";
         throw new Error(
           `sandbox-daytona: createSandbox(label=${label}) did not settle within ` +
-            `${CREATE_TIMEOUT_MS}ms — provisioning state INDETERMINATE. The adapter ` +
-            `will best-effort delete any workspace that arrives late, but if the SDK ` +
-            `never returns a handle, search for label "${label}" out-of-band to ` +
-            `revoke any orphan before retrying.`,
+            `${CREATE_TIMEOUT_MS}ms — provisioning state INDETERMINATE. ${cancelNote}. ` +
+            `If the SDK never returns a handle, search for label "${label}" out-of-band ` +
+            `to revoke any orphan before retrying.`,
         );
       }
       if (createOutcome.kind === "err") {

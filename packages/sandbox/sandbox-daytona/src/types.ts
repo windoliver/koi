@@ -76,6 +76,13 @@ export interface DaytonaCreateOpts {
    * error so operators can revoke billable workspaces out-of-band.
    */
   readonly label: string;
+  /**
+   * Cancellation signal aborted by the adapter when its local create
+   * timeout fires. Wrappers SHOULD forward this to the underlying
+   * provider call so timed-out creates cannot continue running in the
+   * background and pile up orphan workspaces across retries.
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface DaytonaClient {
@@ -88,6 +95,15 @@ export interface DaytonaClient {
    * billable workspace under SDK skew. Must be the literal `true`.
    */
   readonly supportsWorkspaceDelete: true;
+  /**
+   * Affirmative declaration that the wrapper forwards `DaytonaCreateOpts.signal`
+   * and that an aborted signal cancels the in-flight provider call. Without
+   * this, the adapter's 30s timeout cannot prevent retries from
+   * accumulating orphan workspaces while the original create remains in
+   * flight on the control plane. Optional: when omitted or `false`, the
+   * timeout error explicitly warns that retries may pile up.
+   */
+  readonly supportsCancelCreate?: boolean;
 }
 
 export interface DaytonaAdapterConfig {

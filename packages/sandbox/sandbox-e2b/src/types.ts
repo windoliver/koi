@@ -85,6 +85,16 @@ export interface E2bCreateOpts {
    * error so operators can revoke matching sandboxes out-of-band.
    */
   readonly label: string;
+  /**
+   * Cancellation signal aborted by the adapter when its local create
+   * timeout fires. Wrappers SHOULD forward this to the underlying
+   * provider call so timed-out creates cannot continue running in the
+   * background and pile up orphan microVMs across retries. If the SDK
+   * cannot honour the signal, wrappers must declare so via
+   * `supportsCancelCreate=false` on the client; the adapter then surfaces
+   * a stricter timeout error noting the orphan-pileup risk.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /** Injectable client. Production wraps `@e2b/sdk`; tests use a fake. */
@@ -97,6 +107,16 @@ export interface E2bClient {
    * provision a single billable microVM under SDK skew. Must be `true`.
    */
   readonly supportsTeardown: true;
+  /**
+   * Affirmative declaration that the wrapper forwards `E2bCreateOpts.signal`
+   * to the underlying SDK and that an aborted signal cancels the in-flight
+   * provider call rather than letting it run to completion in the
+   * background. Without this, a 30s adapter-side timeout cannot prevent
+   * retries from accumulating orphan microVMs while the original create
+   * remains in flight on the control plane. Optional: when omitted or
+   * `false`, the timeout error explicitly warns that retries may pile up.
+   */
+  readonly supportsCancelCreate?: boolean;
 }
 
 /** Public adapter configuration. */
