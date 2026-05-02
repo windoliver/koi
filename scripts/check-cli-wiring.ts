@@ -108,8 +108,14 @@ const EXEMPT: ReadonlySet<string> = new Set([
   // RLM requires per-request segment-local trust flags and is intentionally hidden from manifest discovery.
   "@koi/middleware-rlm",
   // Sandbox providers require explicit backend/runtime selection; the TUI default uses @koi/sandbox-os.
+  // Conformance is a golden-query/test suite package, not TUI runtime wiring.
+  "@koi/sandbox-conformance",
   "@koi/sandbox-docker",
   "@koi/sandbox-executor",
+  // Sandbox router/SSH are transitive implementation details behind
+  // @koi/runtime's createDefaultSandboxRouter/createRouterAdapterShim helpers.
+  "@koi/sandbox-router",
+  "@koi/sandbox-ssh",
   // Scratchpad/workspace/toolset components are opt-in runtime providers.
   "@koi/scratchpad-local",
   "@koi/toolsets",
