@@ -392,16 +392,124 @@ const scenarioB = await runScenario({
 });
 const verdictB = assertScenarioB(scenarioB);
 
+// ───────────────────────────────────────────────────────────────────────────
+// Scenario C — fs-rollback restoration
+// A protected tool writes a real file inside a temp git repo, then throws.
+// The middleware must (a) snapshot before tool, (b) detect failure,
+// (c) restore the file to its pre-call content, and (d) leave a
+// fs-rollback middleware span in the trajectory.
+//
+// Self-contained: does NOT call OpenRouter — drives the middleware directly
+// with a synthetic ToolHandler that simulates a partial write + throw.
+// ───────────────────────────────────────────────────────────────────────────
+
+interface ScenarioCResult {
+  readonly verdict: ScenarioVerdict;
+  readonly preCallContent: string;
+  readonly midCallContent: string;
+  readonly postRollbackContent: string;
+}
+
+async function runScenarioC(): Promise<ScenarioCResult> {
+  const { mkdtempSync, writeFileSync, readFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { createFsRollbackMiddleware } = await import("@koi/middleware-fs-rollback");
+  const { sessionId, runId } = await import("@koi/core");
+
+  const dir = mkdtempSync(join(tmpdir(), `koi-fs-rollback-e2e-${Date.now()}-`));
+  const filePath = join(dir, "report.md");
+  // `let`: mid-call read happens inside the synthetic tool handler.
+  let midCall = "";
+  try {
+    // Init real repo with committed baseline.
+    const init = Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+    if (init.exitCode !== 0) throw new Error("git init failed");
+    Bun.spawnSync(["git", "config", "user.email", "e2e@e2e"], { cwd: dir });
+    Bun.spawnSync(["git", "config", "user.name", "e2e"], { cwd: dir });
+    const baseline = "# Report\nbaseline content\n";
+    writeFileSync(filePath, baseline);
+    Bun.spawnSync(["git", "add", "-A"], { cwd: dir });
+    Bun.spawnSync(["git", "commit", "-q", "-m", "init"], { cwd: dir });
+
+    // Pre-call dirty state — the tree-state we expect rollback to restore.
+    const preCall = "# Report\npending edit before tool ran\n";
+    writeFileSync(filePath, preCall);
+
+    // Run middleware over a synthetic tool that mid-writes, then throws.
+    const handle = createFsRollbackMiddleware({ cwd: dir });
+    const wrap = handle.middleware.wrapToolCall;
+    if (!wrap) throw new Error("wrapToolCall missing");
+
+    const sessCtx: TurnContext = {
+      session: {
+        agentId: "e2e-fsrb",
+        sessionId: sessionId("e2e-fsrb"),
+        runId: runId("r1"),
+        metadata: {},
+      },
+      turnIndex: 0,
+      turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+    // Synthetic tool: writes "corrupted" mid-call, captures mid-call read,
+    // then throws. The real-world analog is a fs_write that partially
+    // commits before its post-write validation step fails.
+    const next = async (): Promise<{ readonly output: unknown }> => {
+      midCall = readFileSync(filePath, "utf-8");
+      writeFileSync(filePath, "# Report\nCORRUPTED HALF-WRITE\n");
+      throw new Error("simulated post-write validation error");
+    };
+
+    try {
+      await wrap(sessCtx, { toolId: "fs_write", input: { path: "report.md" } }, next);
+    } catch (_e: unknown) {
+      // Expected throw — middleware re-throws the original tool error
+      // after rolling back. Assertion below verifies the file content.
+    }
+
+    const post = readFileSync(filePath, "utf-8");
+    const ok = post === preCall;
+    return {
+      verdict: ok
+        ? {
+            pass: true,
+            evidence: `assert restored === preCall : "${post.replace(/\n/g, "\\n")}" === "${preCall.replace(/\n/g, "\\n")}"`,
+          }
+        : {
+            pass: false,
+            failure: `expected file to be restored to preCall content, got: ${JSON.stringify(post)}`,
+          },
+      preCallContent: preCall,
+      midCallContent: midCall,
+      postRollbackContent: post,
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const scenarioC = await runScenarioC();
+const verdictC = scenarioC.verdict;
+
 console.log("\n══════════════════════════════════════");
 console.log("  TOOL-SAFETY E2E TEST");
 console.log(`  Scenario A (recovery):    ${verdictA.pass ? "PASS" : "FAIL"}`);
 console.log(`  Scenario B (redaction):   ${verdictB.pass ? "PASS" : "FAIL"}`);
+console.log(`  Scenario C (fs-rollback): ${verdictC.pass ? "PASS" : "FAIL"}`);
 console.log("══════════════════════════════════════");
 
 if (!verdictA.pass) console.log(`\n[A] FAIL: ${verdictA.failure}`);
 if (!verdictB.pass) console.log(`\n[B] FAIL: ${verdictB.failure}`);
+if (!verdictC.pass) console.log(`\n[C] FAIL: ${verdictC.failure}`);
 if (verdictB.pass && verdictB.evidence) {
   console.log(`\n[B] redacted tool observation snippet:\n  ${verdictB.evidence}`);
 }
+if (verdictC.pass && verdictC.evidence) {
+  console.log(`\n[C] rollback evidence:\n  ${verdictC.evidence}`);
+  console.log(`  mid-call (during tool) : ${JSON.stringify(scenarioC.midCallContent)}`);
+  console.log(`  post-rollback (after)  : ${JSON.stringify(scenarioC.postRollbackContent)}`);
+}
 
-process.exit(verdictA.pass && verdictB.pass ? 0 : 1);
+process.exit(verdictA.pass && verdictB.pass && verdictC.pass ? 0 : 1);

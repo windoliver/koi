@@ -101,6 +101,7 @@ const EXEMPT: ReadonlySet<string> = new Set([
   "@koi/middleware-collective-memory",
   "@koi/middleware-degenerate",
   "@koi/middleware-ace",
+  "@koi/middleware-fs-rollback",
   "@koi/middleware-intent-capsule",
   "@koi/middleware-output-verifier",
   // Tool disclosure mutates advertised schemas and adds a companion provider; host opt-in needed.

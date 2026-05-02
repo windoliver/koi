@@ -86,6 +86,7 @@
     "@koi/middleware-plan-persist": "workspace:*",
     "@koi/middleware-planning": "workspace:*",
     "@koi/middleware-exfiltration-guard": "workspace:*",
+    "@koi/middleware-fs-rollback": "workspace:*",
     "@koi/middleware-otel": "workspace:*",
     "@koi/middleware-output-verifier": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
