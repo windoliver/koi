@@ -22,10 +22,12 @@
  */
 
 import type {
+  EngineState,
   InboundMessage,
   KoiError,
   Result,
   SessionId,
+  SessionPersistence,
   SessionTranscript,
   TranscriptEntry,
 } from "@koi/core";
@@ -269,4 +271,110 @@ export async function resumeForSession(
   if (!loadResult.ok) return loadResult;
 
   return resumeFromTranscript(loadResult.value.entries);
+}
+
+// ---------------------------------------------------------------------------
+// State-aware resume (issue #1683)
+// ---------------------------------------------------------------------------
+
+export interface ResumeWithStateResult {
+  readonly messages: readonly InboundMessage[];
+  readonly issues: readonly RepairIssue[];
+  /**
+   * Engine state captured at the last cancel terminal, when one was persisted
+   * AND its `engineId` matches the caller's `expectedEngineId`. `undefined`
+   * means transcript-only resume — either the adapter never implemented
+   * `saveState`, the session has not been cancelled, no SessionPersistence
+   * was supplied, or the persisted state belongs to a different engine
+   * (version skew / adapter swap) and was rejected as foreign.
+   */
+  readonly lastEngineState: EngineState | undefined;
+  /**
+   * The session row's `lastPersistedAt` value at the moment we read it.
+   * Defined when the row exists, undefined when NOT_FOUND. Pass this to
+   * `wrapAdapterWithStatePersistence` as `initialEngineStateVersion` so
+   * the wrapper's CAS check protects against a concurrent process
+   * writing to the same row between resume and the first own write.
+   */
+  readonly lastPersistedAt: number | undefined;
+}
+
+export interface ResumeWithStateOptions {
+  /**
+   * `EngineAdapter.engineId` of the adapter that will receive `loadState`.
+   * The helper drops persisted state whose `engineId` does not match — this
+   * is the only line of defense against handing opaque state from one
+   * adapter (or one version) to another, which would otherwise crash inside
+   * `loadState` or replay from a wrong cursor.
+   */
+  readonly expectedEngineId: string;
+  /**
+   * Fired when a stored `lastEngineState` is dropped because its `engineId`
+   * does not match `expectedEngineId`. The resume still succeeds — the caller
+   * just gets a transcript-only path. Default: `console.warn`.
+   */
+  readonly onEngineMismatch?: (stored: EngineState, expected: string) => void;
+}
+
+/**
+ * Like `resumeForSession`, but additionally reads `lastEngineState` from a
+ * `SessionPersistence` store so callers can pass it to `EngineAdapter.loadState`
+ * before continuing.
+ *
+ * Validates the persisted state against `options.expectedEngineId` so callers
+ * cannot accidentally feed foreign adapter state into `loadState` after a
+ * version skew or adapter swap.
+ *
+ * Falls back gracefully (returns `lastEngineState: undefined`):
+ *   - persistence missing the session (NOT_FOUND)
+ *   - persistence returns a record with no `lastEngineState`
+ *   - stored state's `engineId` does not match `expectedEngineId`
+ *
+ * Other persistence errors propagate as the top-level error.
+ *
+ * Adapters without `loadState` should ignore the field; transcript replay
+ * alone is sufficient for them.
+ */
+export async function resumeWithEngineState(
+  sid: SessionId,
+  transcript: SessionTranscript,
+  persistence: SessionPersistence,
+  options: ResumeWithStateOptions,
+): Promise<Result<ResumeWithStateResult, KoiError>> {
+  const base = await resumeForSession(sid, transcript);
+  if (!base.ok) return base;
+
+  const sessionResult = await persistence.loadSession(sid);
+  if (!sessionResult.ok) {
+    if (sessionResult.error.code === "NOT_FOUND") {
+      return {
+        ok: true,
+        value: { ...base.value, lastEngineState: undefined, lastPersistedAt: undefined },
+      };
+    }
+    return sessionResult;
+  }
+
+  const stored = sessionResult.value.lastEngineState;
+  const safe =
+    stored !== undefined && stored.engineId === options.expectedEngineId ? stored : undefined;
+  if (stored !== undefined && safe === undefined) {
+    const onMismatch =
+      options.onEngineMismatch ??
+      ((s: EngineState, expected: string): void => {
+        console.warn(
+          `[@koi/session:resume] dropping persisted EngineState with engineId="${s.engineId}" (expected "${expected}") — falling back to transcript-only resume`,
+        );
+      });
+    onMismatch(stored, options.expectedEngineId);
+  }
+
+  return {
+    ok: true,
+    value: {
+      ...base.value,
+      lastEngineState: safe,
+      lastPersistedAt: sessionResult.value.lastPersistedAt,
+    },
+  };
 }

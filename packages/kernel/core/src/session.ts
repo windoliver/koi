@@ -199,6 +199,58 @@ export interface SessionPersistence {
     frameId: string,
   ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
 
+  // -- Engine state (atomic update) ---------------------------------------
+
+  /**
+   * Atomically update `lastEngineState` on an existing session row.
+   *
+   * The store guarantees the read-modify-write sequence runs as one
+   * critical section: `apply` sees the latest persisted state, and the
+   * resulting value is committed without any other LOCAL writer
+   * interleaving on the same row. `apply` MUST be pure and synchronous —
+   * the store calls it inline inside its transaction / event-loop tick.
+   *
+   * Scope of the guarantee:
+   *   - Local synchronous stores (in-memory, embedded SQLite/etc.): full
+   *     atomicity. A timed-out caller-side write cannot resurrect stale
+   *     state on top of a newer terminal because the store's transaction
+   *     either commits the new state or rejects it deterministically.
+   *   - Async / network / remote stores: this signature does NOT carry an
+   *     expected-version precondition, so a slow RPC dispatched on top of
+   *     this method can still land out of order at the remote server.
+   *     Implementations of remote `SessionPersistence` MUST add their own
+   *     version/CAS check inside the transaction body to be safe — and
+   *     should document that requirement. A future revision of this
+   *     contract may add an `expectedVersion?: number` parameter; for now
+   *     callers wanting cross-host failover should use a store that
+   *     enforces causality internally.
+   *
+   * Optional method: implementations may omit it; callers must check for
+   * presence and fall back to load-merge-save (with all the race caveats
+   * that implies) when absent.
+   *
+   * Returns NOT_FOUND when the session row doesn't exist (the contract
+   * intentionally does not auto-create — callers must `saveSession` first
+   * for the very first cancel of a fresh session).
+   *
+   * `expectedVersion` (optional): if provided, the store MUST verify that
+   * the current row's `lastPersistedAt` exactly equals this value INSIDE
+   * the transaction, and reject with code "CONFLICT" otherwise. This is
+   * the cross-process / cross-runtime safety primitive — callers that
+   * track the row version they last observed pass it here so a clear or
+   * write cannot wipe a newer checkpoint written by a different process
+   * resuming the same session. Stores that don't support precondition
+   * checking MUST reject with INTERNAL when `expectedVersion` is supplied
+   * so callers don't get false safety. Pass `undefined` (or omit) when no
+   * precondition applies (e.g. very first write by this wrapper).
+   */
+  readonly updateLastEngineState?: (
+    sessionId: string,
+    apply: (prev: EngineState | undefined) => EngineState | undefined,
+    nowMs: number,
+    expectedVersion?: number,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+
   // -- Session status ------------------------------------------------------
 
   /**

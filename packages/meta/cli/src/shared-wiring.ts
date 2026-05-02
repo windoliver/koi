@@ -27,11 +27,13 @@ import { isAbsolute, join } from "node:path";
 import type {
   ComponentProvider,
   CredentialComponent,
+  EngineState,
   HookConfig,
   InboundMessage,
   KoiMiddleware,
   OAuthChannel,
   SessionId,
+  SessionPersistence,
   SessionTranscript,
   Tool,
 } from "@koi/core";
@@ -59,7 +61,11 @@ import {
   createEnvCredentials,
   createSkillsMcpBridge,
 } from "@koi/runtime";
-import { createSessionTranscriptMiddleware, resumeForSession } from "@koi/session";
+import {
+  createSessionTranscriptMiddleware,
+  resumeForSession,
+  resumeWithEngineState,
+} from "@koi/session";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import {
   createBuiltinSearchProvider,
@@ -661,6 +667,42 @@ export interface ResumedSession {
    * operator (stderr for CLI, a system message for TUI).
    */
   readonly issueCount: number;
+  /**
+   * Engine state persisted at the last cancel terminal. Defined only when
+   * (1) the caller passed `persistence` + `expectedEngineId` to
+   * `resumeSessionFromJsonl`, (2) a session row exists with non-null
+   * `lastEngineState`, and (3) its `engineId` matches the expected adapter.
+   * Callers should pass this to `EngineAdapter.loadState` BEFORE consuming
+   * the next stream so the adapter resumes from the cancel cursor instead
+   * of replaying transcript-only.
+   */
+  readonly lastEngineState?: EngineState | undefined;
+  /**
+   * `lastPersistedAt` of the resumed session row, when one was found.
+   * Pass to `KoiRuntimeConfig.sessionPersistence.initialEngineStateVersion`
+   * so the wrapper's CAS check protects against a concurrent runtime
+   * writing to the row between resume and the first own write.
+   */
+  readonly lastPersistedAt?: number | undefined;
+}
+
+/** Optional state-aware resume parameters (issue #1683). */
+export interface ResumeStateOptions {
+  readonly persistence: SessionPersistence;
+  /** Engine ID of the adapter that will receive `loadState`. Foreign state is dropped. */
+  readonly expectedEngineId: string;
+  /** Fired when persisted state is dropped due to engineId mismatch. */
+  readonly onEngineMismatch?: (stored: EngineState, expected: string) => void;
+  /**
+   * Fired when reading the checkpoint row itself fails (store outage,
+   * SQLite lock, corruption). The resume call falls back to
+   * transcript-only and yields a normal `ResumedSession` with no
+   * `lastEngineState`. The host should surface UX so the operator knows
+   * the cancel cursor isn't being applied this run, but resume MUST NOT
+   * fail outright on a checkpoint-store error — the JSONL transcript
+   * remains the authoritative recovery surface.
+   */
+  readonly onCheckpointReadError?: (error: import("@koi/core").KoiError) => void;
 }
 
 /**
@@ -678,6 +720,7 @@ export async function resumeSessionFromJsonl(
   rawId: string,
   jsonlTranscript: SessionTranscript,
   sessionsDir: string,
+  stateOpts?: ResumeStateOptions,
 ): Promise<
   | { readonly ok: true; readonly value: ResumedSession }
   | { readonly ok: false; readonly error: string }
@@ -739,6 +782,42 @@ export async function resumeSessionFromJsonl(
   }
 
   const sid = sessionId(foundCanonical);
+
+  if (stateOpts !== undefined) {
+    const stateResult = await resumeWithEngineState(sid, jsonlTranscript, stateOpts.persistence, {
+      expectedEngineId: stateOpts.expectedEngineId,
+      ...(stateOpts.onEngineMismatch !== undefined
+        ? { onEngineMismatch: stateOpts.onEngineMismatch }
+        : {}),
+    });
+    if (stateResult.ok) {
+      return {
+        ok: true,
+        value: {
+          sid,
+          messages: stateResult.value.messages,
+          issueCount: stateResult.value.issues.length,
+          ...(stateResult.value.lastEngineState !== undefined
+            ? { lastEngineState: stateResult.value.lastEngineState }
+            : {}),
+          ...(stateResult.value.lastPersistedAt !== undefined
+            ? { lastPersistedAt: stateResult.value.lastPersistedAt }
+            : {}),
+        },
+      };
+    }
+    // Degrade to transcript-only resume on checkpoint-store error: the
+    // JSONL transcript is the authoritative recovery surface, so a
+    // SQLite outage / lock / corruption on the OPT-IN cancel checkpoint
+    // store must not prevent resume entirely. Surface the error through
+    // the host-supplied callback so the operator knows the cancel
+    // cursor isn't being applied this run.
+    if (stateOpts.onCheckpointReadError !== undefined) {
+      stateOpts.onCheckpointReadError(stateResult.error);
+    }
+    // fall through to transcript-only path below
+  }
+
   const result = await resumeForSession(sid, jsonlTranscript);
   if (!result.ok) {
     return { ok: false, error: result.error.message };

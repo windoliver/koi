@@ -25,7 +25,14 @@ import type {
   SessionStatus,
   SkippedRecoveryEntry,
 } from "@koi/core";
-import { agentId, internal, notFound, sessionId, validateNonEmpty } from "@koi/core";
+import {
+  agentId,
+  internal,
+  notFound,
+  RETRYABLE_DEFAULTS,
+  sessionId,
+  validateNonEmpty,
+} from "@koi/core";
 import { extractMessage } from "@koi/errors";
 import { openDb } from "./open-db.js";
 
@@ -281,6 +288,10 @@ export function createSqliteSessionPersistence(
     "UPDATE session_records SET status = $status WHERE sessionId = $sessionId",
   );
 
+  const updateLastEngineStateStmt = db.prepare(
+    "UPDATE session_records SET lastEngineState = $lastEngineState, lastPersistedAt = $lastPersistedAt WHERE sessionId = $sessionId",
+  );
+
   const selectSessionStmt = db.query<SessionRow, [string]>(
     "SELECT * FROM session_records WHERE sessionId = ?",
   );
@@ -458,6 +469,53 @@ export function createSqliteSessionPersistence(
     });
   };
 
+  const updateLastEngineState = (
+    sid: string,
+    apply: (prev: EngineState | undefined) => EngineState | undefined,
+    nowMs: number,
+    expectedVersion?: number,
+  ): Result<void, KoiError> => {
+    const idCheck = validateNonEmpty(sid, "Session ID");
+    if (!idCheck.ok) return idCheck;
+    // Atomic read-modify-write inside one SQLite transaction. SQLite holds
+    // the write lock for the duration so no other writer can interleave on
+    // this row between the SELECT and UPDATE. The expectedVersion CAS
+    // check happens INSIDE the transaction so a concurrent process that
+    // raced to update lastPersistedAt is detected and rejected.
+    const txResult = runSync("Failed to update lastEngineState", () =>
+      db.transaction((): "not_found" | "conflict" | "ok" => {
+        const row = selectSessionStmt.get(sid);
+        if (row === null) return "not_found";
+        if (expectedVersion !== undefined && row.lastPersistedAt !== expectedVersion) {
+          return "conflict";
+        }
+        const prev = parseEngineState(row.lastEngineState);
+        const next = apply(prev);
+        updateLastEngineStateStmt.run({
+          $sessionId: sid,
+          $lastEngineState: next !== undefined ? JSON.stringify(next) : null,
+          $lastPersistedAt: nowMs,
+        });
+        return "ok";
+      })(),
+    );
+    if (!txResult.ok) return txResult;
+    if (txResult.value === "not_found") {
+      return { ok: false, error: notFound(sid, `Session not found: ${sid}`) };
+    }
+    if (txResult.value === "conflict") {
+      return {
+        ok: false,
+        error: {
+          code: "CONFLICT",
+          message: `Session ${sid} version mismatch — expected ${expectedVersion}, found newer state`,
+          retryable: RETRYABLE_DEFAULTS.CONFLICT,
+        },
+      };
+    }
+    return { ok: true, value: undefined };
+  };
+
   const setSessionStatus = (sid: string, status: SessionStatus): Result<void, KoiError> => {
     const idCheck = validateNonEmpty(sid, "Session ID");
     if (!idCheck.ok) return idCheck;
@@ -560,6 +618,7 @@ export function createSqliteSessionPersistence(
     loadPendingFrames,
     clearPendingFrames,
     removePendingFrame,
+    updateLastEngineState,
     setSessionStatus,
     saveContentReplacement,
     loadContentReplacements,

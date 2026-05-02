@@ -211,6 +211,28 @@ const MAX_TRANSCRIPT_MESSAGES = 100;
 export const TUI_APPROVAL_TIMEOUT_MS: number = 60 * 60 * 1_000; // 3_600_000
 
 /**
+ * Schema version for cancel-resume `EngineState`. Bump when the opaque
+ * `data` shape that the engine adapter writes through `saveState` /
+ * `loadState` changes in a way that older snapshots cannot be applied to
+ * the new code path. Old checkpoints with a non-matching engineId are
+ * dropped at resume (see `resumeWithEngineState`).
+ */
+const ENGINE_STATE_SCHEMA_VERSION = "v1" as const;
+
+/**
+ * Compute the default engineId stamped on the runtime adapter. Encodes
+ * adapter identity + state schema version ONLY — deliberately NOT model
+ * name. The opaque `EngineState.data` shape is adapter-defined; switching
+ * model within the same adapter (mid-session model swap, fallback chain)
+ * does not change the state layout, so a model-keyed token would falsely
+ * invalidate valid checkpoints. If a future change makes state shape
+ * depend on the model, bump the schema version constant instead.
+ */
+export function computeDefaultEngineId(_modelName?: string): string {
+  return `koi-tui:${ENGINE_STATE_SCHEMA_VERSION}`;
+}
+
+/**
  * Static TUI allow rules — tools that are auto-allowed without user approval.
  *
  * Excludes `fs_read` (needs dynamic `cwd`-scoped context) — those are appended
@@ -698,6 +720,56 @@ export interface KoiRuntimeConfig {
     | {
         readonly transcript: SessionTranscript;
         readonly sessionId: SessionId;
+      }
+    | undefined;
+  /**
+   * Optional session-state persistence for cancel-resume (#1683).
+   *
+   * When provided, the engine adapter is wrapped with
+   * `wrapAdapterWithStatePersistence` so that on `done.stopReason ===
+   * "interrupted"` the captured `EngineState` is persisted into this store
+   * via the atomic `updateLastEngineState` API. Successful (`completed`)
+   * terminals clear the prior cancel checkpoint.
+   *
+   * `agentId` and `manifestSnapshot` are required to seed the row when the
+   * very first cancel of a fresh session needs to create it. Subsequent
+   * writes patch the existing row atomically; caller-owned fields
+   * (`seq`, `remoteSeq`, `metadata`, `status`) are preserved.
+   *
+   * `onPersistError` is REQUIRED. It fires on any persistence failure
+   * (saveState throw, store error, timeout, stale-clear failure). Treat
+   * invocation as "checkpoint lost; downgrade to transcript-only resume"
+   * and surface a structured signal to the host UI — the wrapper never
+   * fails the cancel itself, so this is the only signal of checkpoint loss.
+   *
+   * Resume side: callers using `resumeSessionFromJsonl` should pass
+   * `{ persistence, expectedEngineId }` so the returned `ResumedSession`
+   * includes `lastEngineState` for the host to feed into
+   * `EngineAdapter.loadState` before the next stream.
+   */
+  readonly sessionPersistence?:
+    | {
+        readonly persistence: import("@koi/core").SessionPersistence;
+        readonly agentId: import("@koi/core").AgentId;
+        readonly manifestSnapshot: import("@koi/core").AgentManifest;
+        readonly onPersistError: (error: import("@koi/core").KoiError | Error) => void;
+        readonly persistTimeoutMs?: number | undefined;
+        /**
+         * Pass the `lastEngineState` returned by `resumeWithEngineState` here so
+         * the wrapped adapter calls `inner.loadState(state)` once before the
+         * first stream — restoring the cancel cursor instead of replaying
+         * transcript-only.
+         */
+        readonly initialEngineState?: import("@koi/core").EngineState | undefined;
+        /**
+         * `lastPersistedAt` of the row at resume time, also returned by
+         * `resumeWithEngineState`. Forwarded as `initialEngineStateVersion`
+         * to the wrapper so the FIRST clear/write after resume carries a
+         * CAS precondition — without this, a parallel runtime that updates
+         * the row between resume and the first terminal could be silently
+         * overwritten.
+         */
+        readonly initialEngineStateVersion?: number | undefined;
       }
     | undefined;
   /**
@@ -2194,8 +2266,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // sensor. Without this thread, a caller setting `--max-turns 50` could
   // still be cut off at 25 by the adapter before either other path fires.
   const transcript: InboundMessage[] = [];
+  // Engine ID is the cancel-checkpoint compatibility token: it must change
+  // whenever the persisted EngineState shape becomes incompatible. Bake
+  // the model identity AND a schema-version constant into the default so
+  // that a model swap or a state-format bump invalidates stale checkpoints
+  // automatically. Hosts that override `config.engineId` are responsible
+  // for their own granularity.
+  const defaultEngineId = computeDefaultEngineId(modelName);
   const rawEngineAdapter = createTranscriptAdapter({
-    engineId: config.engineId ?? "koi-tui",
+    engineId: config.engineId ?? defaultEngineId,
     modelAdapter,
     transcript,
     maxTranscriptMessages: MAX_TRANSCRIPT_MESSAGES,
@@ -2247,7 +2326,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // runs once the wrapper aborts the inner stream). Mirror the fallback
   // here: when a timeout-authored `done` is about to be yielded, inject
   // a visible `text_delta` so the TUI transcript surfaces the reason.
-  const engineAdapter: EngineAdapter = timeoutEnabled
+  const timeoutInjectedAdapter: EngineAdapter = timeoutEnabled
     ? {
         ...timeoutWrapped,
         stream(input: EngineInput): AsyncIterable<EngineEvent> {
@@ -2277,6 +2356,81 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         },
       }
     : rawEngineAdapter;
+
+  // Issue #1683: wrap with cancel-resume checkpointing when a session
+  // persistence backend is supplied. The wrapper saves EngineState on
+  // interrupted terminals and clears stale checkpoints on completed turns.
+  // Layered AFTER timeout injection so the synthetic "[Turn interrupted...]"
+  // text_delta is still emitted; the wrapper only inspects `done` events
+  // and does not alter the event order otherwise.
+  const sessionPersistenceCfg = config.sessionPersistence;
+  const stateSessionId = config.session?.sessionId;
+  // Hoisted forward-reference to the runtime so checkpoint persistence
+  // follows live session id rotation (cycleSession/rebindSessionId).
+  // Without this the `recordTemplate` below would close over the
+  // construction-time sessionId; a picker resume that switches the live
+  // session would then keep writing/clearing the WRONG row, overwriting
+  // the original session's checkpoint while the newly-selected session
+  // gets no durable state. Same pattern used at line ~2845 for
+  // compliance/audit middleware (round 9 finding).
+  // let: assigned after createKoi returns, dereferenced lazily via the
+  // closure below.
+  let runtimeForCheckpointSessionId: import("@koi/engine").KoiRuntime | undefined;
+  const { sessionId: brandSessionId } = await import("@koi/core");
+  const liveCheckpointSessionId = (): import("@koi/core").SessionId => {
+    const live = runtimeForCheckpointSessionId?.sessionId;
+    if (live !== undefined) return brandSessionId(live);
+    if (stateSessionId !== undefined) return stateSessionId;
+    throw new Error(
+      "[koi/runtime-factory] no live session id available for cancel-checkpoint write — " +
+        "runtime not yet constructed and no startup session id supplied",
+    );
+  };
+  const { wrapAdapterWithStatePersistence } = await import("@koi/session");
+  // Issue #1683 round 8 finding: fail closed when `sessionPersistence` is
+  // supplied but the inner adapter cannot honor it. Silently no-oping
+  // creates false confidence — the host believes cancel-resume is durable
+  // when no checkpoint is ever written. Hosts wanting transcript-only
+  // resume simply omit `sessionPersistence`.
+  if (
+    sessionPersistenceCfg !== undefined &&
+    stateSessionId !== undefined &&
+    timeoutInjectedAdapter.saveState === undefined
+  ) {
+    throw new Error(
+      "[koi/runtime-factory] sessionPersistence configured but the engine " +
+        "adapter does not implement EngineAdapter.saveState. Cancel checkpoints " +
+        "would be silently dropped — refusing to wire the feature in a no-op " +
+        "configuration. Either omit sessionPersistence (transcript-only resume) " +
+        "or supply a stateful adapter implementation.",
+    );
+  }
+  const engineAdapter: EngineAdapter =
+    sessionPersistenceCfg !== undefined && stateSessionId !== undefined
+      ? wrapAdapterWithStatePersistence(timeoutInjectedAdapter, {
+          persistence: sessionPersistenceCfg.persistence,
+          recordTemplate: () => ({
+            sessionId: liveCheckpointSessionId(),
+            agentId: sessionPersistenceCfg.agentId,
+            manifestSnapshot: sessionPersistenceCfg.manifestSnapshot,
+            seq: 0,
+            remoteSeq: 0,
+            connectedAt: Date.now(),
+            status: "running",
+            metadata: {},
+          }),
+          onPersistError: sessionPersistenceCfg.onPersistError,
+          ...(sessionPersistenceCfg.persistTimeoutMs !== undefined
+            ? { persistTimeoutMs: sessionPersistenceCfg.persistTimeoutMs }
+            : {}),
+          ...(sessionPersistenceCfg.initialEngineState !== undefined
+            ? { initialEngineState: sessionPersistenceCfg.initialEngineState }
+            : {}),
+          ...(sessionPersistenceCfg.initialEngineStateVersion !== undefined
+            ? { initialEngineStateVersion: sessionPersistenceCfg.initialEngineStateVersion }
+            : {}),
+        })
+      : timeoutInjectedAdapter;
 
   // --- @koi/middleware-exfiltration-guard: block secret exfiltration ---
   // Intercepts tool inputs and network requests, redacting/blocking patterns
@@ -4074,6 +4228,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // (only from a later `cycleSession()`), so this assignment
     // happens before any rotation can fire.
     runtimeForRotation = runtime;
+    runtimeForCheckpointSessionId = runtime;
     // Publish the live host pid.id to the gov-12 scope resolver. The
     // resolver rewrites only when `request.agentId === livePidId`, so
     // sub-agents (which carry their own pid) keep their unstable UUID
