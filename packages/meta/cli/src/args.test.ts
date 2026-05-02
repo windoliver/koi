@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import type { CliFlags } from "./args.js";
 import {
   detectGlobalFlags,
@@ -32,6 +32,24 @@ function asFlags<T extends CliFlags>(guard: (f: CliFlags) => f is T, argv: reado
     );
   }
   return flags;
+}
+
+function withLogFormat<T>(value: string | undefined, fn: () => T): T {
+  const previous = process.env.LOG_FORMAT;
+  try {
+    if (value === undefined) {
+      delete process.env.LOG_FORMAT;
+    } else {
+      process.env.LOG_FORMAT = value;
+    }
+    return fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.LOG_FORMAT;
+    } else {
+      process.env.LOG_FORMAT = previous;
+    }
+  }
 }
 
 describe("parseArgs", () => {
@@ -143,7 +161,9 @@ describe("parseArgs", () => {
     });
 
     test("defaults log-format to text", () => {
-      expect(asFlags(isStartFlags, ["start"]).logFormat).toBe("text");
+      expect(withLogFormat(undefined, () => asFlags(isStartFlags, ["start"]).logFormat)).toBe(
+        "text",
+      );
     });
   });
 
@@ -287,7 +307,7 @@ describe("parseArgs", () => {
     // shell that still narrowed through is*Flags guards, silently
     // handing callers objects missing required fields.
     test("parseArgs(start --help) returns complete StartFlags shape", () => {
-      const f = asFlags(isStartFlags, ["start", "--help"]);
+      const f = withLogFormat(undefined, () => asFlags(isStartFlags, ["start", "--help"]));
       expect(f.help).toBe(true);
       expect(f.mode).toBeDefined();
       expect(f.logFormat).toBe("text");
@@ -398,28 +418,23 @@ describe("parseArgs", () => {
   });
 
   describe("logFormat env var", () => {
-    const origLogFormat = process.env.LOG_FORMAT;
-    afterEach(() => {
-      if (origLogFormat === undefined) {
-        delete process.env.LOG_FORMAT;
-      } else {
-        process.env.LOG_FORMAT = origLogFormat;
-      }
-    });
-
     test("LOG_FORMAT=json is respected when no flag given", () => {
-      process.env.LOG_FORMAT = "json";
-      expect(asFlags(isStartFlags, ["start"]).logFormat).toBe("json");
+      expect(withLogFormat("json", () => asFlags(isStartFlags, ["start"]).logFormat)).toBe("json");
     });
 
     test("--log-format flag overrides LOG_FORMAT env var", () => {
-      process.env.LOG_FORMAT = "json";
-      expect(asFlags(isStartFlags, ["start", "--log-format", "text"]).logFormat).toBe("text");
+      expect(
+        withLogFormat(
+          "json",
+          () => asFlags(isStartFlags, ["start", "--log-format", "text"]).logFormat,
+        ),
+      ).toBe("text");
     });
 
     test("unset LOG_FORMAT defaults to text", () => {
-      delete process.env.LOG_FORMAT;
-      expect(asFlags(isStartFlags, ["start"]).logFormat).toBe("text");
+      expect(withLogFormat(undefined, () => asFlags(isStartFlags, ["start"]).logFormat)).toBe(
+        "text",
+      );
     });
   });
 

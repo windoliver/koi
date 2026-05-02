@@ -4,6 +4,17 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 ## Recent updates
 
+Review fix sync: `@koi/middleware-intent-capsule` remains an optional runtime
+dependency, but now has standalone golden coverage in `golden-replay.test.ts`.
+The assertion exercises the public middleware contract without an LLM cassette:
+session start signs the mandate, `wrapModelCall` verifies and injects the signed
+mandate message when configured, and `onSessionEnd` removes the capsule so later
+calls fail closed with `capsule_not_found`. The CLI wiring gate also now documents
+the runtime-only/optional packages that are intentionally not default TUI imports:
+external-agent discovery/monitor/procfs sidecars, HTTP gateway ingress,
+programmatic-only RLM, ACE/intent-capsule opt-in middleware, and non-default
+sandbox providers.
+
 `@koi/playbook-store-sqlite` wired (#2088): added as a dependency of `@koi/runtime` to provide a durable, cross-process backend for ACE playbooks. The store uses WAL + foreign-keys + busy_timeout PRAGMAs, PRAGMA `user_version`-based migrations (currently v7 with a `store_identity` singleton table for resume-time file-replacement detection), and a single-writer file lock with atomic temp+link publish, kernel-bootId-aware crash recovery (Linux), in-process refcount for multi-handle reuse, and dead-PID reclamation. Surfaced through the L2 `PlaybookStore` contract from `@koi/ace-types`; the runtime itself does not auto-instantiate — the CLI's TUI activation path constructs the store when `ace.playbook_path` is set in the manifest. Two standalone golden queries cover migration to v7 and lock acquire/release semantics. No cassette trajectory recorded — pure persistence with no LLM-callable tool surface.
 
 `@koi/governance-scope` wired (#1882 gov-15): added as a dependency of `@koi/runtime`. The package provides capability-attenuation wrappers — `createScopedFs` (glob allowlist + ro/rw mode), `createScopedFetcher` (URLPattern allowlist), and `createScopedCredentials` (key-glob allowlist with microtask timing-oracle defense) — that bound the blast radius of a compromised or prompt-injected tool. Runtime wiring threads the operator-supplied `network.allow` and `credentials.allow` manifest fields through to `createScopedFetcher` and `createScopedCredentials` before passing them to tool/provider factories. `@koi/skills-runtime` gains `createScopedSkillsRuntime` (closes the Skill-tool credential-scope bypass) and `createProgressiveSkillProvider` (session-snapshot stability for provider attach). One standalone golden query added to `golden-queries.test.ts` covering `createScopedCredentials` fail-closed behavior and `createScopedFetcher` URL-allowlist enforcement. No cassette trajectory recorded — the package is pure capability enforcement with no LLM-callable tool surface beyond `authed_fetch` (wired through the CLI preset stack). See `docs/L2/governance-scope.md` for the full security model.

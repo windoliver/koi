@@ -12,8 +12,9 @@
  *   its package is modified on this branch, the corresponding L3 doc must also
  *   be updated.
  *
- * Staleness detection: compares git diff --name-only against merge-base so
- * these checks only fire on PRs that actually touched the relevant files.
+ * Staleness detection: compares git diff --name-only against merge-base and
+ * includes staged/unstaged files so local pre-commit runs see the docs that
+ * were just edited. In CI's clean checkout, this reduces to the branch diff.
  *
  * Usage: bun scripts/check-doc-wiring.ts
  */
@@ -50,8 +51,15 @@ function dirNameFromPackageName(name: string): string {
   return name.replace(/^@koi\//, "");
 }
 
-/** Returns files changed on this branch vs merge-base. Empty string if not in a PR context. */
+function addChangedFiles(target: Set<string>, output: string): void {
+  const trimmed = output.trim();
+  if (trimmed.length === 0) return;
+  for (const file of trimmed.split("\n")) target.add(file);
+}
+
+/** Returns files changed on this branch vs merge-base plus local staged/unstaged edits. */
 function branchChangedFiles(): ReadonlySet<string> {
+  const changed = new Set<string>();
   try {
     const mergeBase = execSync("git merge-base HEAD origin/main", {
       cwd: ROOT,
@@ -63,10 +71,27 @@ function branchChangedFiles(): ReadonlySet<string> {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
-    return new Set(out.length > 0 ? out.split("\n") : []);
+    addChangedFiles(changed, out);
   } catch {
-    return new Set();
+    // Not in a PR context; staged/unstaged detection below still works.
   }
+
+  for (const cmd of ["git diff --name-only --cached", "git diff --name-only"]) {
+    try {
+      addChangedFiles(
+        changed,
+        execSync(cmd, {
+          cwd: ROOT,
+          encoding: "utf-8",
+          stdio: ["pipe", "pipe", "pipe"],
+        }),
+      );
+    } catch {
+      // Ignore local diff failures; the merge-base branch diff remains authoritative in CI.
+    }
+  }
+
+  return changed;
 }
 
 /** Returns all L2 package names and their source directories that were touched on this branch. */
