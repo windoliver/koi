@@ -161,62 +161,46 @@ export function createDaytonaInstance(
         maxOutputBytes: cap,
       };
 
-      // Track whether abort fires *during* the SDK call so we can normalize
-      // a SDK-confirmed cancellation regardless of how the SDK surfaces it
-      // (AbortError throw, exit 137/143 on success, etc.). The listener is
-      // detached immediately after the await unblocks so a late abort
-      // (after the SDK already settled) does not flip the flag.
-      let abortedDuringCall = false;
-      const onAbort = (): void => {
-        abortedDuringCall = true;
-      };
-      options?.signal?.addEventListener("abort", onAbort);
+      // Authoritative cancellation detection via Promise.race: SDK
+      // resolution and abort observation compete at the same level so the
+      // winner unambiguously identifies which event happened first.
+      const sdkPromise = sdk.commands.run(cmd, sdkOpts);
+      const sig = options?.signal;
+      type Settled =
+        | { readonly kind: "result"; readonly r: Awaited<typeof sdkPromise> }
+        | { readonly kind: "error"; readonly e: unknown }
+        | { readonly kind: "abort" };
+      const sdkSettled: Promise<Settled> = sdkPromise.then(
+        (r): Settled => ({ kind: "result", r }),
+        (e: unknown): Settled => ({ kind: "error", e }),
+      );
+      const abortObserved: Promise<Settled> =
+        sig === undefined
+          ? new Promise<Settled>(() => {})
+          : new Promise<Settled>((resolve) => {
+              sig.addEventListener("abort", () => resolve({ kind: "abort" }), { once: true });
+            });
 
-      try {
-        const result = await sdk.commands.run(cmd, sdkOpts);
-        options?.signal?.removeEventListener("abort", onAbort);
+      const winner: Settled = await Promise.race([sdkSettled, abortObserved]);
+
+      if (winner.kind === "abort") {
+        // supportsAbort=true contract: SDK settles after kill confirmed.
+        await sdkSettled;
         const durationMs = performance.now() - start;
-
-        // Defensive re-trim against the SDK-enforced cap.
-        const capped = applyCombinedBudget(result.stdout, result.stderr, cap, result.truncated);
-        const stdout = capped.stdout;
-        const stderr = capped.stderr;
-        const truncated = capped.truncated;
-
-        const timedOut = result.exitCode === 124;
-        const oomKilled = result.exitCode === 137;
-
-        const baseResult = {
-          stdout,
-          stderr,
+        return {
+          exitCode: 130,
+          stdout: "",
+          stderr: "",
           durationMs,
-          ...(truncated ? { truncated: true as const } : {}),
+          timedOut: false,
+          oomKilled: false,
         };
-        if (abortedDuringCall) {
-          return {
-            exitCode: 130,
-            stdout: "",
-            stderr: "",
-            durationMs,
-            timedOut: false,
-            oomKilled: false,
-          };
-        }
-        return { exitCode: result.exitCode, timedOut, oomKilled, ...baseResult };
-      } catch (e: unknown) {
-        options?.signal?.removeEventListener("abort", onAbort);
+      }
+
+      if (winner.kind === "error") {
         const durationMs = performance.now() - start;
+        const e = winner.e;
         const message = e instanceof Error ? e.message : String(e);
-        if (abortedDuringCall) {
-          return {
-            exitCode: 130,
-            stdout: "",
-            stderr: "",
-            durationMs,
-            timedOut: false,
-            oomKilled: false,
-          };
-        }
         const timedOut = /timeout|timed out/i.test(message);
         return {
           exitCode: 1,
@@ -227,6 +211,22 @@ export function createDaytonaInstance(
           oomKilled: false,
         };
       }
+
+      const result = winner.r;
+      const durationMs = performance.now() - start;
+      const capped = applyCombinedBudget(result.stdout, result.stderr, cap, result.truncated);
+      const truncated = capped.truncated;
+      const timedOut = result.exitCode === 124;
+      const oomKilled = result.exitCode === 137;
+      return {
+        exitCode: result.exitCode,
+        stdout: capped.stdout,
+        stderr: capped.stderr,
+        durationMs,
+        timedOut,
+        oomKilled,
+        ...(truncated ? { truncated: true as const } : {}),
+      };
     },
 
     readFile: async (path: string): Promise<Uint8Array> => {

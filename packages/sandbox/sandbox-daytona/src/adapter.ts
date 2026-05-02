@@ -22,6 +22,26 @@ export function createDaytonaAdapter(
   if (!validated.ok) return validated;
   const resolved = validated.value;
 
+  // Preflight: if the injected client cannot guarantee delete-capable
+  // handles, refuse before we ever provision a workspace. The TS contract
+  // requires `supportsWorkspaceDelete: true`; this runtime check is the
+  // defence-in-depth backstop for JS callers.
+  if (resolved.client.supportsWorkspaceDelete !== true) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message:
+          "sandbox-daytona: DaytonaClient must declare supportsWorkspaceDelete=true. " +
+          "Without an up-front capability handshake the adapter would have to provision " +
+          "a workspace before discovering it cannot be deleted, leaking a billable " +
+          "workspace per failed create. Inject a wrapper that asserts true workspace " +
+          "deletion (not client-side detach via close()).",
+        retryable: false,
+      },
+    };
+  }
+
   const adapter: SandboxAdapter = {
     name: "daytona",
     create: async (profile: SandboxProfile) => {

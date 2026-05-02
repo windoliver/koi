@@ -109,6 +109,7 @@ export function createFakeClient(sandboxOpts: FakeSandboxOptions = {}): FakeClie
   return {
     calls,
     sandbox,
+    supportsWorkspaceDelete: true,
     createSandbox: async (opts: DaytonaCreateOpts): Promise<DaytonaSdkSandbox> => {
       calls.push({ opts });
       return sandbox;

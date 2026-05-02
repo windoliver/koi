@@ -207,76 +207,54 @@ export function createE2bInstance(
         maxOutputBytes: cap,
       };
 
-      // Track whether abort fires *during* the SDK call (i.e. before it
-      // settles). The listener fires synchronously on `abort()`, so observing
-      // this flag at settlement time tells us whether the cancellation
-      // happened in-flight — independent of whether the SDK confirms by
-      // throwing AbortError or by resolving with a kill exit code (137/143/0).
-      // We detach the listener immediately after the await unblocks so a
-      // late abort (caller cancels *after* the SDK already resolved) does
-      // not flip the flag and misclassify a finished command as cancelled.
-      let abortedDuringCall = false;
-      const onAbort = (): void => {
-        abortedDuringCall = true;
-      };
-      options?.signal?.addEventListener("abort", onAbort);
+      // Authoritative cancellation detection via Promise.race: the SDK's
+      // resolution and the abort event compete at the same level, so the
+      // winner unambiguously identifies which event happened first. A late
+      // abort that fires AFTER the SDK already resolved cannot win the
+      // race (settled-first promises beat pending ones in microtask FIFO),
+      // so a finished command is never misreported as cancelled.
+      const sdkPromise = sdk.commands.run(cmd, sdkOpts);
+      const sig = options?.signal;
+      type Settled =
+        | {
+            readonly kind: "result";
+            readonly r: typeof sdkPromise extends Promise<infer R> ? R : never;
+          }
+        | { readonly kind: "error"; readonly e: unknown }
+        | { readonly kind: "abort" };
+      const sdkSettled: Promise<Settled> = sdkPromise.then(
+        (r): Settled => ({ kind: "result", r }),
+        (e: unknown): Settled => ({ kind: "error", e }),
+      );
+      const abortObserved: Promise<Settled> =
+        sig === undefined
+          ? new Promise<Settled>(() => {}) // never settles when no signal
+          : new Promise<Settled>((resolve) => {
+              sig.addEventListener("abort", () => resolve({ kind: "abort" }), { once: true });
+            });
 
-      try {
-        const result = await sdk.commands.run(cmd, sdkOpts);
-        options?.signal?.removeEventListener("abort", onAbort);
+      const winner: Settled = await Promise.race([sdkSettled, abortObserved]);
+
+      if (winner.kind === "abort") {
+        // Per supportsAbort=true contract, the SDK must settle once the
+        // remote process is dead. Wait so retries are safe — but we already
+        // know cancellation is the cause.
+        await sdkSettled;
         const durationMs = performance.now() - start;
-
-        const capped = applyCombinedBudget(result.stdout, result.stderr, cap, result.truncated);
-        const stdout = capped.stdout;
-        const stderr = capped.stderr;
-        const truncated = capped.truncated;
-
-        // Map known exit-code conventions consistently with sandbox-docker so
-        // callers see uniform timeout/OOM signals across backends.
-        const timedOut = result.exitCode === 124;
-        const oomKilled = result.exitCode === 137;
-
-        const baseResult = {
-          stdout,
-          stderr,
+        return {
+          exitCode: 130,
+          stdout: "",
+          stderr: "",
           durationMs,
-          ...(truncated ? { truncated: true as const } : {}),
+          timedOut: false,
+          oomKilled: false,
         };
-        // If abort fired while we were awaiting the SDK and `supportsAbort`
-        // is true, the SDK was contractually killed — normalize whatever
-        // exit code it surfaced (137/143/0/etc.) to the cancellation contract.
-        // Without `supportsAbort` we pre-flight rejected the signal, so this
-        // branch is only reached on opt-in setups.
-        if (abortedDuringCall) {
-          return {
-            exitCode: 130,
-            stdout: "",
-            stderr: "",
-            durationMs,
-            timedOut: false,
-            oomKilled: false,
-          };
-        }
-        return { exitCode: result.exitCode, timedOut, oomKilled, ...baseResult };
-      } catch (e: unknown) {
-        options?.signal?.removeEventListener("abort", onAbort);
+      }
+
+      if (winner.kind === "error") {
         const durationMs = performance.now() - start;
+        const e = winner.e;
         const message = e instanceof Error ? e.message : String(e);
-        // Cancellation classification mirrors the success branch: only trust
-        // the in-flight `abortedDuringCall` flag. If the caller never aborted
-        // during the call, AbortError-shaped rejections from transport
-        // failures or provider eviction surface as real errors instead of
-        // a synthetic clean cancel.
-        if (abortedDuringCall) {
-          return {
-            exitCode: 130,
-            stdout: "",
-            stderr: "",
-            durationMs,
-            timedOut: false,
-            oomKilled: false,
-          };
-        }
         const timedOut = /timeout|timed out/i.test(message);
         return {
           exitCode: 1,
@@ -287,6 +265,28 @@ export function createE2bInstance(
           oomKilled: false,
         };
       }
+
+      // winner.kind === "result"
+      const result = winner.r;
+      const durationMs = performance.now() - start;
+
+      const capped = applyCombinedBudget(result.stdout, result.stderr, cap, result.truncated);
+      const truncated = capped.truncated;
+
+      // Map known exit-code conventions consistently with sandbox-docker so
+      // callers see uniform timeout/OOM signals across backends.
+      const timedOut = result.exitCode === 124;
+      const oomKilled = result.exitCode === 137;
+
+      return {
+        exitCode: result.exitCode,
+        stdout: capped.stdout,
+        stderr: capped.stderr,
+        durationMs,
+        timedOut,
+        oomKilled,
+        ...(truncated ? { truncated: true as const } : {}),
+      };
     },
 
     readFile: async (path: string): Promise<Uint8Array> => {

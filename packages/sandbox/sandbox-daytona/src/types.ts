@@ -72,6 +72,14 @@ export interface DaytonaCreateOpts {
 
 export interface DaytonaClient {
   readonly createSandbox: (opts: DaytonaCreateOpts) => Promise<DaytonaSdkSandbox>;
+  /**
+   * Affirmative declaration that `createSandbox` returns handles whose
+   * `delete()` performs a true workspace deletion (not a client-side
+   * detach). The adapter validates this **before** ever calling
+   * `createSandbox` so a delete-less wrapper cannot leak even one
+   * billable workspace under SDK skew. Must be the literal `true`.
+   */
+  readonly supportsWorkspaceDelete: true;
 }
 
 export interface DaytonaAdapterConfig {
