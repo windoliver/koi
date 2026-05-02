@@ -6,6 +6,23 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`koi mcp` registry-discovery subcommands (#1646)**: new
+  `koi mcp search/info/install/uninstall` flow backed by the official MCP
+  registry at `registry.modelcontextprotocol.io/v0.1`. Install picks the
+  preferred package (HTTP remote → SSE remote → first usable stdio package),
+  verifies the connection (live `listTools` against a real OAuth flow when
+  needed) BEFORE any `.mcp.json` mutation, and persists the entry only on
+  success. Registry remotes are SSRF-checked (HTTPS-only outside loopback;
+  RFC1918/link-local/CGNAT/multicast IP literals refused). Install/uninstall
+  resolve the active config path with the same priority as
+  `list/auth/debug/logout` (project `./.mcp.json` → `~/.koi/.mcp.json` → legacy
+  `~/.claude/.mcp.json`); a malformed higher-priority candidate aborts rather
+  than falling through. `--yes` (or `--json`, which implies it) is required in
+  non-TTY contexts so install cannot wedge waiting on stdin. OAuth cleanup
+  uses a per-server index with `withTrackedWrite` so concurrent
+  install/auth/uninstall serialize against `clearAllOAuthState` and credentials
+  are never silently orphaned.
+
 - **`@koi/playbook-store-sqlite` + ACE manifest activation wired (#2088)**: CLI
   manifest gains an opt-in `ace:` block (`enabled`, `acknowledge_cross_session_state`,
   `max_injected_tokens`, `min_score`, `lambda`, `playbook_path`). When `enabled: true`
