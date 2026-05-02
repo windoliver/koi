@@ -299,4 +299,25 @@ export interface AgentManifest {
         readonly tools?: readonly string[];
       }
     | undefined;
+  /**
+   * Context-engine slot configuration (issue #1767). Selects which
+   * `ContextEngine` implementation fills the `CONTEXT_ENGINE` subsystem
+   * token. When absent, the runtime applies its default (tiered compaction).
+   */
+  readonly context?: ContextManifestConfig | undefined;
+}
+
+/**
+ * Manifest fragment that selects and configures the active `ContextEngine`.
+ *
+ * - `engine` is a free-form identifier; resolution rules are runtime-defined
+ *   (e.g. `"@koi/context-manager"`, `"passthrough"`, `"@my-org/custom"`).
+ * - `version` optionally pins the engine's semver — the runtime SHOULD warn
+ *   when a resolved engine's identity does not match.
+ * - `config` is an opaque engine-specific bag forwarded to the engine factory.
+ */
+export interface ContextManifestConfig {
+  readonly engine?: string;
+  readonly version?: string;
+  readonly config?: JsonObject;
 }

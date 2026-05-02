@@ -151,6 +151,12 @@ export { createBrickRequiresExtension } from "./brick-requires-extension.js";
 export { createChildHandle } from "./child-handle.js";
 // compose bridge (lifecycle-aware terminals)
 export { createComposedCallHandlers, createTerminalHandlers } from "./compose-bridge.js";
+// context-engine provider — pluggable ECS slot wiring (issue #1767)
+export type { ContextEngineProviderOptions } from "./context-engine-provider.js";
+export { createContextEngineProvider } from "./context-engine-provider.js";
+// context-engine swap controller — runtime swap + rollback (issue #1767)
+export type { ContextEngineSwapController, SwapOptions } from "./context-engine-swap.js";
+export { createContextEngineSwapController } from "./context-engine-swap.js";
 // agent spawn adapter
 export type { CreateAgentSpawnFnOptions } from "./create-agent-spawn-fn.js";
 export { createAgentSpawnFn } from "./create-agent-spawn-fn.js";
