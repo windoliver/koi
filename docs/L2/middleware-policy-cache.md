@@ -123,13 +123,15 @@ Policy-cache short-circuits before `middleware-permissions` runs, so a naive imp
 
 ```typescript
 {
-  principal: ctx.session.userId ?? `agent:${ctx.session.agentId}`,
-  action: "tool.call",
-  resource: `tool:${request.toolId}`,
+  principal: JSON.stringify([ctx.session.agentId, ctx.session.userId ?? "__anonymous__", ctx.session.sessionId]),
+  action: "invoke",
+  resource: request.toolId,
   context: { source: "policy-cache", brickId, scope },
 }
 // → { effect: "deny", reason: "policy-cache: tool denied", disposition: "hard" }
 ```
+
+Identity is **byte-identical** to `@koi/middleware-permissions` — same `buildPrincipal(agentId, userId, sessionId)` formula, same `action: "invoke"`, same bare-`toolId` resource. Observers (audit, monitor) see one canonical permission identity per logical tool call rather than splitting policy-cache denies into a separate namespace.
 
 > **Trust boundary: dispatched `reason` is a fixed redacted constant.** The executor's free-form `reason` is **NEVER** forwarded into the permission-decision channel — `event-trace` and friends persist permission-decision reasons to long-lived trajectory storage, and the executor reason can carry rule internals or input fragments. The dispatched reason is always the literal `"policy-cache: tool denied"`. Operators wanting per-rule attribution wire `onExecutorError` (for the executor-throw path) or correlate via `brickId` in their own logs.
 

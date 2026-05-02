@@ -211,47 +211,48 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       return { ok: false, error };
     }
 
-    // Pre-pass: if this brickId is moving from a different (bucket, toolId),
-    // free the prior slot BEFORE checking `maxAgentBuckets`. Otherwise a
-    // cross-agent re-home at the cap would be spuriously rejected even
-    // though deleting the old bucket would immediately free a slot — for
-    // deny policies that means the new agent falls back to the unwrapped
-    // tool path during owner changes.
+    // Transactional admission. Decide the outcome BEFORE mutating any
+    // state — otherwise a failed cross-agent re-home at the bucket cap
+    // would silently delete the existing entry for the moving brickId
+    // (clearing brickIndex + the prior slot) and then bail with VALIDATION,
+    // leaving the cache strictly worse than before.
     const targetBucketKey = entry.scope === "agent" ? `agent:${entry.agentId}` : "global";
     const prior = brickIndex.get(entry.brickId);
-    if (
-      prior !== undefined &&
-      (prior.bucket !== targetBucketKey || prior.toolId !== entry.toolId)
-    ) {
-      if (prior.bucket === "global") {
-        globalCache.delete(prior.toolId);
-      } else {
-        const priorAgentId = prior.bucket.slice("agent:".length);
-        const priorMap = agentCaches.get(priorAgentId);
-        if (priorMap !== undefined) {
-          priorMap.delete(prior.toolId);
-          // GC empty agent bucket — but never the bucket we're about to insert
-          // into, which would force a fresh allocation and double-charge the
-          // bucket cap.
-          if (
-            priorMap.size === 0 &&
-            priorAgentId !== (entry.scope === "agent" ? entry.agentId : "")
-          ) {
-            agentCaches.delete(priorAgentId);
-          }
-        }
-      }
-      // Forward index points at the stale slot; clear so the cap check sees
-      // a clean state. We re-set after insertion below.
-      brickIndex.delete(entry.brickId);
-    }
+    const isMove =
+      prior !== undefined && (prior.bucket !== targetBucketKey || prior.toolId !== entry.toolId);
+    const priorAgentId =
+      prior !== undefined && prior.bucket !== "global"
+        ? prior.bucket.slice("agent:".length)
+        : undefined;
+    const priorMap =
+      prior === undefined
+        ? undefined
+        : prior.bucket === "global"
+          ? globalCache
+          : priorAgentId !== undefined
+            ? agentCaches.get(priorAgentId)
+            : undefined;
+    // The move would free a prior agent bucket only if it was the LAST
+    // entry there AND that bucket isn't the destination.
+    const moveWillFreeAgentBucket =
+      isMove &&
+      priorAgentId !== undefined &&
+      priorMap !== undefined &&
+      priorMap.size === 1 &&
+      priorAgentId !== (entry.scope === "agent" ? entry.agentId : undefined);
 
-    const slot = bucketFor(entry);
-    if (slot === null) {
-      // Process-wide agent-bucket cap reached. Fail-closed: refuse the new
-      // registration rather than evicting an existing agent's bucket, which
-      // could drop verified denies for that agent and silently reopen tools.
-      // Marked retryable so forge can shed load or evict explicitly first.
+    // A new agent bucket is needed only if the destination is agent-scoped
+    // and that agent doesn't already have a bucket.
+    const destNeedsNewAgentBucket = entry.scope === "agent" && !agentCaches.has(entry.agentId);
+
+    if (
+      destNeedsNewAgentBucket &&
+      agentCaches.size >= maxAgentBuckets &&
+      !moveWillFreeAgentBucket
+    ) {
+      // Cap reached and the move (if any) would NOT free a slot. Refuse
+      // without mutating state. Marked retryable so forge can shed load
+      // or evict explicitly first.
       const error: KoiError = {
         code: "VALIDATION",
         message: `policy-cache: agent-bucket cap reached (${String(maxAgentBuckets)}); refusing registration for ${entry.brickId}`,
@@ -259,6 +260,29 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
         context: { brickId: entry.brickId, toolId: entry.toolId, maxAgentBuckets },
       };
       return { ok: false, error };
+    }
+
+    // Admission guaranteed — safe to mutate now.
+    if (isMove && prior !== undefined) {
+      if (prior.bucket === "global") {
+        globalCache.delete(prior.toolId);
+      } else if (priorAgentId !== undefined && priorMap !== undefined) {
+        priorMap.delete(prior.toolId);
+        if (
+          priorMap.size === 0 &&
+          priorAgentId !== (entry.scope === "agent" ? entry.agentId : "")
+        ) {
+          agentCaches.delete(priorAgentId);
+        }
+      }
+      brickIndex.delete(entry.brickId);
+    }
+
+    const slot = bucketFor(entry);
+    if (slot === null) {
+      // Unreachable: pre-check guaranteed allocation succeeds. Throw rather
+      // than silently corrupt state.
+      throw new Error("policy-cache: bucket allocation failed after pre-check passed");
     }
     const { key: bucket, map: bucketMap } = slot;
 
@@ -391,7 +415,16 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
     const dispatch = ctx.dispatchPermissionDecision;
     if (dispatch === undefined) return;
     try {
-      const principal = ctx.session.userId ?? `agent:${ctx.session.agentId}`;
+      // Identity MUST match middleware-permissions exactly so observers
+      // (audit, monitor) see one canonical permission identity per logical
+      // tool call, rather than splitting policy-cache denies into a separate
+      // namespace. Mirrors `buildPrincipal(agentId, userId, sessionId)` and
+      // `queryForTool` from @koi/middleware-permissions: the values are
+      // duplicated here (not imported) because L2 packages cannot import
+      // from peer L2 packages.
+      const userId = ctx.session.userId ?? "__anonymous__";
+      const sessionId = ctx.session.sessionId as unknown as string;
+      const principal = JSON.stringify([ctx.session.agentId, userId, sessionId]);
       const ctxField: JsonObject = {
         source: NAME,
         brickId: entry.brickId,
@@ -405,8 +438,8 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       const result: void | Promise<void> = dispatch(
         {
           principal,
-          action: "tool.call",
-          resource: `tool:${toolId}`,
+          action: "invoke",
+          resource: toolId,
           context: ctxField,
         },
         { effect: "deny", reason: SYNTHETIC_DENY_REASON, disposition: "hard" },

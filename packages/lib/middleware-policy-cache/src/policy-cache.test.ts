@@ -829,10 +829,14 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
     await handle.middleware.wrapToolCall?.(ctx, makeReq("rm"), next as ToolHandler);
     expect(next).not.toHaveBeenCalled();
     expect(sink).toHaveLength(1);
+    // Identity MUST mirror @koi/middleware-permissions exactly so observers
+    // (audit, monitor) see one canonical permission identity per logical
+    // tool call: principal = JSON([agentId, userId|"__anonymous__", sessionId]),
+    // action = "invoke", resource = toolId.
     expect(sink[0]?.query).toMatchObject({
-      principal: "agent:agent-A",
-      action: "tool.call",
-      resource: "tool:rm",
+      principal: JSON.stringify(["agent-A", "__anonymous__", "s"]),
+      action: "invoke",
+      resource: "rm",
       context: { source: "policy-cache", brickId: "brick-1", scope: "agent" },
     });
     expect(sink[0]?.decision).toMatchObject({ effect: "deny", disposition: "hard" });
@@ -922,14 +926,16 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
     }
   });
 
-  test("uses session.userId as principal when present", async () => {
+  test("principal includes session.userId when present (matches permissions identity)", async () => {
     const handle = createPolicyCacheMiddleware();
     handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
     const sink: Array<{ query: unknown; decision: unknown }> = [];
     const ctx = ctxWithDispatch("agent-A", sink, "user-42");
     const next = mock(async () => makeResp());
     await handle.middleware.wrapToolCall?.(ctx, makeReq("rm"), next as ToolHandler);
-    expect(sink[0]?.query).toMatchObject({ principal: "user-42" });
+    expect(sink[0]?.query).toMatchObject({
+      principal: JSON.stringify(["agent-A", "user-42", "s"]),
+    });
   });
 
   test("absent dispatchPermissionDecision is a silent no-op (no throw)", async () => {
@@ -1027,6 +1033,37 @@ describe("createPolicyCacheMiddleware: process-wide agent-bucket cap", () => {
     expect(handle.register(makeAgentPolicy("a1", "t", "b1")).ok).toBe(false);
     // …but global is its own bucket and continues to work.
     expect(handle.register(makeGlobalPolicy("t", "b-g")).ok).toBe(true);
+  });
+
+  test("failed re-home at cap does NOT delete the existing entry (transactional admission)", async () => {
+    // Round 2 review: when the source bucket still has OTHER live entries,
+    // a cross-agent re-home at the cap cannot free a slot. The earlier
+    // implementation deleted the moving brick first and only THEN learned
+    // it couldn't allocate the destination — leaving the original entry
+    // gone and the new one un-installed: an authorization downgrade for
+    // any deny policy.
+    const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 2 });
+    // a1 has TWO live entries (a deny we care about, plus a sibling).
+    expect(handle.register(makeAgentPolicy("a1", "danger", "brick-deny", "block")).ok).toBe(true);
+    expect(handle.register(makeAgentPolicy("a1", "other", "brick-sibling")).ok).toBe(true);
+    // a2 fills the cap.
+    expect(handle.register(makeAgentPolicy("a2", "x", "brick-x")).ok).toBe(true);
+
+    // Attempt to re-home brick-deny to a3 (a NEW agent). Cap is full and
+    // a1's bucket still has the sibling — the move cannot free a slot.
+    const result = handle.register(makeAgentPolicy("a3", "danger", "brick-deny", "block"));
+    expect(result.ok).toBe(false);
+
+    // The existing deny on a1 must still be enforced.
+    const next = mock(async () => makeResp());
+    const resp = await handle.middleware.wrapToolCall?.(
+      ctxFor("a1"),
+      makeReq("danger"),
+      next as ToolHandler,
+    );
+    expect(next).not.toHaveBeenCalled();
+    expect(resp?.metadata).toMatchObject({ policyDenied: true });
+    expect(handle.size()).toBe(3);
   });
 
   test("cross-agent re-home at the bucket cap is NOT spuriously rejected", () => {
