@@ -174,181 +174,182 @@ function rollbackError(path: string, reason: RollbackReason, cause?: unknown): E
   });
 }
 
-export function createFsRollbackMiddleware(config?: FsRollbackConfig): FsRollbackHandle {
-  const protectedTools = new Set<string>(config?.protectedTools ?? DEFAULT_PROTECTED_TOOLS);
-  const cwd = config?.cwd ?? process.cwd();
-  const fs: FsSeam = config?.fs ?? defaultFs;
-  // let: one-shot warning when a protected call targets a path outside
-  // `cwd`. Without this, callers cannot observe that protection was
-  // silently skipped — issued at most once per middleware instance.
-  let outOfScopeWarned = false;
+async function realpathOr(p: string): Promise<string> {
+  const { realpath } = await import("node:fs/promises");
+  try {
+    return await realpath(p);
+  } catch {
+    return p;
+  }
+}
 
-  const capabilityFragment: CapabilityFragment = {
-    label: "fs-rollback",
-    description: "Snapshot/restore target file around protected tool calls",
+interface Containment {
+  readonly realCwd: string;
+  readonly realAbsPath: string;
+  readonly absPath: string;
+  readonly inside: boolean;
+}
+
+async function resolveContainment(cwd: string, raw: string): Promise<Containment> {
+  const { resolve, relative, isAbsolute, dirname, basename } = await import("node:path");
+  const absPath = resolve(cwd, raw);
+  const realCwd = await realpathOr(cwd);
+  const realTargetParent = await realpathOr(dirname(absPath));
+  const realAbsPath = `${realTargetParent}/${basename(absPath)}`;
+  const rel = relative(realCwd, realAbsPath);
+  const inside = rel.length === 0 || (!rel.startsWith("..") && !isAbsolute(rel));
+  return { realCwd, realAbsPath, absPath, inside };
+}
+
+async function takeSnapshot(fs: FsSeam, absPath: string): Promise<Snapshot> {
+  const r = await fs.read(absPath);
+  if (r.existed && r.stat.kind !== "file") {
+    throw rollbackError(absPath, "unsupported_kind");
+  }
+  return {
+    path: absPath,
+    existed: r.existed,
+    bytes: r.existed ? r.bytes : undefined,
+    stat: r.existed ? r.stat : undefined,
   };
+}
 
-  async function takeSnapshot(absPath: string): Promise<Snapshot> {
-    const r = await fs.read(absPath);
-    if (r.existed && r.stat.kind !== "file") {
-      // Refuse to snapshot symlinks/dirs/other — restore semantics for
-      // those are surprising (writeFile through a symlink writes to the
-      // target outside the workspace; unlink of a dir fails).
-      throw rollbackError(absPath, "unsupported_kind");
-    }
-    return {
-      path: absPath,
-      existed: r.existed,
-      bytes: r.existed ? r.bytes : undefined,
-      stat: r.existed ? r.stat : undefined,
-    };
+async function recheckContainment(snapshot: Snapshot, realCwd: string): Promise<void> {
+  const { dirname, basename, relative, isAbsolute } = await import("node:path");
+  const realParent = await realpathOr(dirname(snapshot.path));
+  const realResolved = `${realParent}/${basename(snapshot.path)}`;
+  const rel = relative(realCwd, realResolved);
+  if (rel.length > 0 && (rel.startsWith("..") || isAbsolute(rel))) {
+    throw rollbackError(snapshot.path, "conflict");
+  }
+}
+
+async function restoreExisting(
+  fs: FsSeam,
+  snapshot: Snapshot,
+  current: FsStat | undefined,
+): Promise<void> {
+  if (current === undefined) {
+    await fs.atomicWrite(snapshot.path, snapshot.bytes ?? new Uint8Array());
+    return;
+  }
+  if (current.kind !== "file") throw rollbackError(snapshot.path, "conflict");
+  if (snapshot.stat !== undefined && current.ino !== snapshot.stat.ino) {
+    throw rollbackError(snapshot.path, "conflict");
+  }
+  await fs.atomicWrite(snapshot.path, snapshot.bytes ?? new Uint8Array());
+}
+
+async function restoreNew(
+  fs: FsSeam,
+  snapshot: Snapshot,
+  current: FsStat | undefined,
+): Promise<void> {
+  if (current === undefined) return;
+  if (current.kind !== "file") throw rollbackError(snapshot.path, "conflict");
+  await fs.unlink(snapshot.path);
+}
+
+async function restoreSnapshot(fs: FsSeam, snapshot: Snapshot, realCwd: string): Promise<void> {
+  await recheckContainment(snapshot, realCwd);
+  const current = await fs.stat(snapshot.path);
+  if (snapshot.existed) await restoreExisting(fs, snapshot, current);
+  else await restoreNew(fs, snapshot, current);
+}
+
+const CAPABILITY_FRAGMENT: CapabilityFragment = {
+  label: "fs-rollback",
+  description: "Snapshot/restore target file around protected tool calls",
+};
+
+interface Resolved {
+  readonly fs: FsSeam;
+  readonly cwd: string;
+  readonly protectedTools: ReadonlySet<string>;
+  warnedRef: { value: boolean };
+}
+
+function emitOutOfScopeWarning(r: Resolved, toolId: string, absPath: string): void {
+  if (r.warnedRef.value) return;
+  r.warnedRef.value = true;
+  // eslint-disable-next-line no-console -- one-shot operator warning
+  console.warn(
+    `[@koi/middleware-fs-rollback] protected tool ${toolId} targeted ${absPath} outside rollback scope (${r.cwd}); call is unprotected. Configure cwd to a broader root to extend coverage.`,
+  );
+}
+
+async function snapshotOrThrow(fs: FsSeam, absPath: string): Promise<Snapshot> {
+  try {
+    return await takeSnapshot(fs, absPath);
+  } catch (readErr: unknown) {
+    if ((readErr as { readonly internal?: boolean }).internal === true) throw readErr;
+    throw rollbackError(absPath, "snapshot_failed", readErr);
+  }
+}
+
+async function rollbackOrThrow(fs: FsSeam, snapshot: Snapshot, realCwd: string): Promise<void> {
+  try {
+    await restoreSnapshot(fs, snapshot, realCwd);
+  } catch (rollbackErr: unknown) {
+    if ((rollbackErr as { readonly internal?: boolean }).internal === true) throw rollbackErr;
+    throw rollbackError(snapshot.path, "restore_failed", rollbackErr);
+  }
+}
+
+async function handleProtectedCall(
+  r: Resolved,
+  request: ToolRequest,
+  next: ToolHandler,
+): Promise<ToolResponse> {
+  const raw = extractPath(request.input);
+  if (raw === undefined) return next(request);
+
+  const containment = await resolveContainment(r.cwd, raw);
+  if (!containment.inside) {
+    emitOutOfScopeWarning(r, request.toolId, containment.absPath);
+    return next(request);
   }
 
-  async function restoreSnapshot(snapshot: Snapshot, realCwd: string): Promise<void> {
-    // TOCTOU defense: re-validate containment at rollback time. A
-    // protected tool can replace a parent dir with a symlink mid-call;
-    // without this re-check, fs.write/unlink would follow the new symlink
-    // and mutate files outside the workspace.
-    const { realpath } = await import("node:fs/promises");
-    const { dirname, basename, relative, isAbsolute } = await import("node:path");
-    // let: realpath the parent at rollback time; if it no longer resolves
-    // inside cwd, the parent was replaced or symlinked elsewhere.
-    let realParent: string;
-    try {
-      realParent = await realpath(dirname(snapshot.path));
-    } catch {
-      realParent = dirname(snapshot.path);
-    }
-    const realResolved = `${realParent}/${basename(snapshot.path)}`;
-    const rel = relative(realCwd, realResolved);
-    if (rel.length > 0 && (rel.startsWith("..") || isAbsolute(rel))) {
-      throw rollbackError(snapshot.path, "conflict");
-    }
-    // Re-stat to detect concurrent unlink+recreate (different ino) or
-    // a kind change (regular file → symlink). These would mean another
-    // writer raced us, so we fail closed rather than clobber their write.
-    const current = await fs.stat(snapshot.path);
-    if (snapshot.existed) {
-      if (current === undefined) {
-        // Tool deleted the file before failing. Recreate it.
-        await fs.atomicWrite(snapshot.path, snapshot.bytes ?? new Uint8Array());
-        return;
-      }
-      if (current.kind !== "file") {
-        throw rollbackError(snapshot.path, "conflict");
-      }
-      if (snapshot.stat !== undefined && current.ino !== snapshot.stat.ino) {
-        // File was unlinked and recreated by someone else — different
-        // inode means we're not looking at our original file anymore.
-        throw rollbackError(snapshot.path, "conflict");
-      }
-      await fs.atomicWrite(snapshot.path, snapshot.bytes ?? new Uint8Array());
-    } else {
-      if (current === undefined) {
-        // Tool didn't actually create the file (or already cleaned up).
-        return;
-      }
-      if (current.kind !== "file") {
-        // A symlink or dir appeared at this path — not the partial write
-        // we'd unlink. Refuse.
-        throw rollbackError(snapshot.path, "conflict");
-      }
-      await fs.unlink(snapshot.path);
-    }
+  const snapshot = await snapshotOrThrow(r.fs, containment.absPath);
+
+  // let: response on success path; toolError on throw
+  let response: ToolResponse | undefined;
+  // let: thrown error from inner handler
+  let toolError: unknown;
+  try {
+    response = await next(request);
+  } catch (e: unknown) {
+    toolError = e;
   }
 
+  const failed = toolError !== undefined || (response !== undefined && isFailingResponse(response));
+  if (!failed) return response as ToolResponse;
+
+  await rollbackOrThrow(r.fs, snapshot, containment.realCwd);
+  if (toolError !== undefined) throw toolError;
+  return response as ToolResponse;
+}
+
+export function createFsRollbackMiddleware(config?: FsRollbackConfig): FsRollbackHandle {
+  const resolved: Resolved = {
+    fs: config?.fs ?? defaultFs,
+    cwd: config?.cwd ?? process.cwd(),
+    protectedTools: new Set<string>(config?.protectedTools ?? DEFAULT_PROTECTED_TOOLS),
+    // Mutable container so warn-once state is per-instance without `let` in the closure.
+    warnedRef: { value: false },
+  };
   const middleware: KoiMiddleware = {
     name: "fs-rollback",
     priority: 180,
-
-    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
-
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => CAPABILITY_FRAGMENT,
     async wrapToolCall(
       _ctx: TurnContext,
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
-      if (!protectedTools.has(request.toolId)) return next(request);
-
-      const raw = extractPath(request.input);
-      if (raw === undefined) return next(request);
-
-      const { resolve, relative, isAbsolute, dirname, basename } = await import("node:path");
-      const { realpath } = await import("node:fs/promises");
-      const absPath = resolve(cwd, raw);
-      // Containment guard: realpath both the workspace root and the
-      // target's parent directory before comparing. A pure lexical check
-      // would miss a symlinked parent (e.g. `cwd/proxy/file.txt` where
-      // `cwd/proxy` symlinks to `/etc`). With realpath, any parent
-      // symlink that escapes the workspace makes the relative check fail.
-      // let: real paths resolved via fs realpath; fall back to lexical
-      // when the path doesn't exist yet (new file creation).
-      let realCwd: string;
-      let realTargetParent: string;
-      try {
-        realCwd = await realpath(cwd);
-      } catch {
-        realCwd = cwd;
-      }
-      try {
-        realTargetParent = await realpath(dirname(absPath));
-      } catch {
-        // Parent doesn't exist yet — fall back to lexical resolution.
-        realTargetParent = dirname(absPath);
-      }
-      const realAbsPath = `${realTargetParent}/${basename(absPath)}`;
-      const rel = relative(realCwd, realAbsPath);
-      if (rel.length === 0) return next(request);
-      if (rel.startsWith("..") || isAbsolute(rel)) {
-        if (!outOfScopeWarned) {
-          outOfScopeWarned = true;
-          // eslint-disable-next-line no-console -- one-shot operator warning
-          console.warn(
-            `[@koi/middleware-fs-rollback] protected tool ${request.toolId} targeted ${absPath} outside rollback scope (${cwd}); call is unprotected. Configure cwd to a broader root to extend coverage.`,
-          );
-        }
-        return next(request);
-      }
-
-      // Fail closed on read errors (other than ENOENT — that's "new file"
-      // and produces a snapshot with existed=false). Silent passthrough
-      // would turn a "protected" write into an unprotected one with no
-      // signal to the caller.
-      // let: snapshot may throw on EACCES / EMFILE / unsupported kind.
-      let snapshot: Snapshot;
-      try {
-        snapshot = await takeSnapshot(absPath);
-      } catch (readErr: unknown) {
-        // If takeSnapshot already produced our typed error (e.g. unsupported_kind), pass it through.
-        if ((readErr as { readonly internal?: boolean }).internal === true) throw readErr;
-        throw rollbackError(absPath, "snapshot_failed", readErr);
-      }
-
-      // let: response captured on success path; toolError captured on throw.
-      let response: ToolResponse | undefined;
-      // let: thrown error from inner handler
-      let toolError: unknown;
-      try {
-        response = await next(request);
-      } catch (e: unknown) {
-        toolError = e;
-      }
-
-      const failed =
-        toolError !== undefined || (response !== undefined && isFailingResponse(response));
-
-      if (!failed) return response as ToolResponse;
-
-      try {
-        await restoreSnapshot(snapshot, realCwd);
-      } catch (rollbackErr: unknown) {
-        if ((rollbackErr as { readonly internal?: boolean }).internal === true) throw rollbackErr;
-        throw rollbackError(snapshot.path, "restore_failed", rollbackErr);
-      }
-      if (toolError !== undefined) throw toolError;
-      return response as ToolResponse;
+      if (!resolved.protectedTools.has(request.toolId)) return next(request);
+      return handleProtectedCall(resolved, request, next);
     },
   };
-
   return { middleware };
 }
