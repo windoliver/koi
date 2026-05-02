@@ -157,7 +157,36 @@ describe("createE2bInstance", () => {
     // (Use a generous upper bound for CI variance.)
     expect(elapsed).toBeLessThan(10_000);
     // Subsequent ops must reject — the instance is quarantined.
-    await expect(instance.exec("ls", [])).rejects.toThrow(/destroyed/);
+    await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
+    // But destroy() must still be callable so callers have a teardown path.
+    await instance.destroy();
+  }, 15_000);
+
+  test("quarantined instance still allows destroy() to attempt teardown", async () => {
+    // Regression: quarantine must not foreclose the only programmatic
+    // teardown path; setting destroyed=true would make destroy() a no-op
+    // and strand the billable remote sandbox.
+    let killCalled = false;
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      kill: async (): Promise<void> => {
+        killCalled = true;
+      },
+      commands: {
+        ...base.commands,
+        supportsAbort: true,
+        run: async (): Promise<import("./types.js").E2bRunResult> =>
+          new Promise<import("./types.js").E2bRunResult>(() => {}),
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    const ac = new AbortController();
+    queueMicrotask(() => ac.abort());
+    await instance.exec("sleep", ["999"], { signal: ac.signal });
+    // Now quarantined. destroy() must still call sdk.kill().
+    await instance.destroy();
+    expect(killCalled).toBe(true);
   }, 15_000);
 
   test("exec returns 130 when caller aborts mid-flight, regardless of how the SDK surfaces it", async () => {

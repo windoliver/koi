@@ -113,6 +113,21 @@ describe("createE2bAdapter", () => {
     expect(client.sandbox.runCalls[0]?.opts?.timeoutMs).toBe(7777);
   });
 
+  test("create() rejects when SDK handle has no callable kill() (no deferred-leak surprise)", async () => {
+    // Skew: a wrapper provisions a real microVM but the returned handle
+    // has no kill(). Without an upfront check destroy() would discover the
+    // gap only at teardown, after the remote sandbox already existed.
+    const client = createFakeClient();
+    const original = client.sandbox;
+    const { kill: _omit, ...stripped } = original;
+    Object.defineProperty(client, "createSandbox", {
+      value: async () => stripped,
+    });
+    const result = createE2bAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    await expect(result.value.create(openProfile)).rejects.toThrow(/kill\(\)/);
+  });
+
   test("per-call exec options override profile defaults", async () => {
     const client = createFakeClient();
     const result = createE2bAdapter({ apiKey: "k", client });

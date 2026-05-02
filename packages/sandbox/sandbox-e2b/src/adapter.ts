@@ -34,6 +34,21 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
         ...(resolved.template !== undefined ? { template: resolved.template } : {}),
       };
       const sdk = await resolved.client.createSandbox(opts);
+      // Runtime teardown-capability check. The TS contract already requires
+      // sdk.kill (E2bSdkSandbox), but a JS caller / version-skewed wrapper
+      // could provision a real microVM and only surface the gap at destroy()
+      // time, by which point the remote sandbox is already running. Best-
+      // effort kill here so we either have a working teardown path or a
+      // surfaced leak — never a deferred-leak surprise.
+      if (typeof sdk.kill !== "function") {
+        // We have nothing else to call; the gap IS the leak.
+        throw new Error(
+          "sandbox-e2b: createSandbox returned a handle without a callable kill() method. " +
+            "destroy() has no programmatic teardown path, so the just-provisioned remote " +
+            "sandbox MAY have leaked. Verify the sandbox state out-of-band and inject a " +
+            "kill-capable SDK wrapper before retrying.",
+        );
+      }
       return createE2bInstance(sdk, extractProfileDefaults(profile));
     },
   };

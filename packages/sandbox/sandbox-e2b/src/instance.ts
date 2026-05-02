@@ -106,9 +106,21 @@ export function createE2bInstance(
 ): SandboxInstance {
   let destroyed = false;
   let destroyPending: Promise<void> | undefined;
+  // Quarantine is a soft variant of destroyed: it blocks new exec/file ops
+  // (the SDK lifecycle is unknown) but still allows destroy() to attempt
+  // teardown. Setting destroyed=true straight away in the abort-timeout
+  // path would be wrong — it removes the only programmatic way to kill a
+  // possibly-still-running remote sandbox.
+  let quarantined = false;
 
   function ensureLive(op: string): void {
     if (destroyed) throw new Error(`sandbox-e2b: instance already destroyed (${op})`);
+    if (quarantined) {
+      throw new Error(
+        `sandbox-e2b: instance is quarantined after a kill-confirmation timeout ` +
+          `(${op}); call destroy() to attempt cleanup.`,
+      );
+    }
     if (destroyPending !== undefined) {
       throw new Error(`sandbox-e2b: instance is being destroyed (${op})`);
     }
@@ -252,9 +264,10 @@ export function createE2bInstance(
         const durationMs = performance.now() - start;
         if (confirmed === "timeout") {
           // SDK never confirmed termination. The instance may still be
-          // running remote side effects; force teardown so subsequent
-          // ops reject and operators can revoke out-of-band.
-          destroyed = true;
+          // running remote side effects. Quarantine it (block new ops)
+          // but leave destroy() callable so operators have a programmatic
+          // teardown path — the only one we have for the remote VM.
+          quarantined = true;
           return {
             exitCode: 130,
             stdout: "",

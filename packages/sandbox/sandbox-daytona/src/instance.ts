@@ -72,9 +72,19 @@ export function createDaytonaInstance(
 ): SandboxInstance {
   let destroyed = false;
   let destroyPending: Promise<void> | undefined;
+  // Soft variant of destroyed: blocks new ops but still allows destroy()
+  // to attempt the authoritative SDK delete. The abort-timeout path uses
+  // this so the only programmatic teardown path remains available.
+  let quarantined = false;
 
   function ensureLive(op: string): void {
     if (destroyed) throw new Error(`sandbox-daytona: instance already destroyed (${op})`);
+    if (quarantined) {
+      throw new Error(
+        `sandbox-daytona: instance is quarantined after a kill-confirmation timeout ` +
+          `(${op}); call destroy() to attempt cleanup.`,
+      );
+    }
     if (destroyPending !== undefined) {
       throw new Error(`sandbox-daytona: instance is being destroyed (${op})`);
     }
@@ -196,7 +206,10 @@ export function createDaytonaInstance(
         ]);
         const durationMs = performance.now() - start;
         if (confirmed === "timeout") {
-          destroyed = true;
+          // Quarantine — leave destroy() callable so sdk.delete() can still
+          // attempt the authoritative workspace deletion. Setting destroyed
+          // would make destroy() a no-op and strand the billable workspace.
+          quarantined = true;
           return {
             exitCode: 130,
             stdout: "",
