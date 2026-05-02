@@ -230,6 +230,53 @@ describe("createE2bInstance", () => {
     await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
   });
 
+  test("readFile bounds remote I/O and quarantines on timeout (no caller hang)", async () => {
+    // Hung-control-plane regression: a stalled readBytes must not wedge
+    // the caller forever. The adapter bounds the call and quarantines
+    // so retries don't accumulate against an unknown remote state.
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      files: {
+        ...base.files,
+        readBytes: () => new Promise<Uint8Array>(() => {}),
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    const start = performance.now();
+    const err = await instance.readFile("/x").catch((e: unknown) => e as Error);
+    const elapsed = performance.now() - start;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/INDETERMINATE/);
+    expect(elapsed).toBeLessThan(35_000);
+    await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
+  }, 40_000);
+
+  test("writeFile quarantines on SDK rejection (partial-write retry hazard)", async () => {
+    // A timed-out / rejected write may have partially applied — we
+    // cannot prove the remote filesystem state. Quarantine forces the
+    // caller to teardown/recreate before retrying, preventing
+    // double-write corruption.
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      files: {
+        ...base.files,
+        writeBytes: async (): Promise<void> => {
+          throw new Error("provider 503");
+        },
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    const err = await instance
+      .writeFile("/x", new Uint8Array([1, 2, 3]))
+      .catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/INDETERMINATE/);
+    expect((err as Error).message).toContain("provider 503");
+    await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
+  });
+
   test("destroy() retry coalesces: concurrent calls do not issue overlapping kills", async () => {
     // Single-flight + retry semantics: concurrent destroy() callers
     // must coalesce onto one in-flight kill (no overlapping remote

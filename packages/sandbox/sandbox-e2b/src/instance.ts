@@ -133,6 +133,45 @@ export function createE2bInstance(
     }
   }
 
+  // Bound remote file I/O so a stalled control plane cannot wedge
+  // callers indefinitely. On timeout or rejection the remote write may
+  // have been partially applied — quarantine so retries don't compound
+  // the indeterminate state.
+  const FILE_IO_TIMEOUT_MS = 30_000;
+  async function runBoundedFileOp<T>(op: string, path: string, call: () => Promise<T>): Promise<T> {
+    type Outcome =
+      | { readonly kind: "ok"; readonly v: T }
+      | { readonly kind: "err"; readonly e: unknown }
+      | { readonly kind: "timeout" };
+    const outcome = await Promise.race<Outcome>([
+      call().then(
+        (v): Outcome => ({ kind: "ok", v }),
+        (e: unknown): Outcome => ({ kind: "err", e }),
+      ),
+      new Promise<Outcome>((resolve) =>
+        setTimeout(() => resolve({ kind: "timeout" }), FILE_IO_TIMEOUT_MS),
+      ),
+    ]);
+    if (outcome.kind === "ok") return outcome.v;
+    if (outcome.kind === "timeout") {
+      quarantined = true;
+      throw new Error(
+        `sandbox-e2b: ${op}(${path}) did not settle within ${FILE_IO_TIMEOUT_MS}ms — ` +
+          `remote filesystem state is INDETERMINATE; the operation may have partially ` +
+          `applied. Instance has been quarantined; call destroy() before retrying.`,
+      );
+    }
+    // Rejection — remote state is unknown; treat as indeterminate.
+    quarantined = true;
+    const e = outcome.e;
+    const message = e instanceof Error ? e.message : String(e);
+    throw new Error(
+      `sandbox-e2b: ${op}(${path}) rejected; remote filesystem state is INDETERMINATE — ` +
+        `instance quarantined (call destroy() to attempt cleanup): ${message}`,
+      { cause: e },
+    );
+  }
+
   return {
     exec: async (
       command: string,
@@ -397,19 +436,21 @@ export function createE2bInstance(
       // No text-only fallback: the SandboxInstance contract is byte-oriented.
       // Re-encoding a string read through TextEncoder would silently corrupt
       // non-UTF-8 payloads, so refuse rather than weaken the contract.
-      if (sdk.files.readBytes === undefined) {
+      const readBytes = sdk.files.readBytes;
+      if (readBytes === undefined) {
         throw new Error(
           "sandbox-e2b: readFile requires sdk.files.readBytes for binary-safe reads. " +
             "Inject an SDK wrapper that exposes readBytes.",
         );
       }
-      return sdk.files.readBytes(path);
+      return runBoundedFileOp("readFile", path, () => readBytes(path));
     },
 
     writeFile: async (path: string, content: Uint8Array): Promise<void> => {
       ensureLive("writeFile");
-      if (sdk.files.writeBytes !== undefined) {
-        await sdk.files.writeBytes(path, content);
+      const writeBytes = sdk.files.writeBytes;
+      if (writeBytes !== undefined) {
+        await runBoundedFileOp("writeFile", path, () => writeBytes(path, content));
         return;
       }
       // Text-mode fallback: only succeeds for UTF-8 payloads.
@@ -423,7 +464,7 @@ export function createE2bInstance(
           { cause: e },
         );
       }
-      await sdk.files.write(path, text);
+      await runBoundedFileOp("writeFile", path, () => sdk.files.write(path, text));
     },
 
     /**

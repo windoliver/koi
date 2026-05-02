@@ -100,10 +100,21 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
         createPromise.then(
           (lateSdk) => {
             if (typeof lateSdk?.kill === "function") {
-              lateSdk.kill().catch(() => {
-                // Best-effort: orphan label is already in the surfaced
-                // error so operators can revoke out-of-band.
+              lateSdk.kill().catch((killErr: unknown) => {
+                // Late cleanup failed — surface so operators can detect
+                // the orphan via logs/metrics. Empty .catch would hide
+                // exactly the failure mode this code is trying to handle.
+                const cause = killErr instanceof Error ? killErr.message : String(killErr);
+                console.warn(
+                  `[sandbox-e2b] LATE_CLEANUP_FAILED label=${label} cause="${cause}" — ` +
+                    `orphan microVM may still be running and billable. Revoke out-of-band.`,
+                );
               });
+            } else {
+              console.warn(
+                `[sandbox-e2b] LATE_CLEANUP_NO_KILL label=${label} — late handle missing kill(); ` +
+                  `orphan microVM may still be running. Revoke out-of-band.`,
+              );
             }
           },
           () => {

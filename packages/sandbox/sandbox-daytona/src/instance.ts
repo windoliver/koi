@@ -82,6 +82,43 @@ export function createDaytonaInstance(
   type DeleteOutcome = { readonly kind: "ok" } | { readonly kind: "err"; readonly e: unknown };
   let deleteInFlight: Promise<DeleteOutcome> | undefined;
 
+  // Bound remote file I/O so a stalled control plane cannot wedge
+  // callers indefinitely. On timeout or rejection the remote write may
+  // have been partially applied — quarantine to prevent retry compounding.
+  const FILE_IO_TIMEOUT_MS = 30_000;
+  async function runBoundedFileOp<T>(op: string, path: string, call: () => Promise<T>): Promise<T> {
+    type Outcome =
+      | { readonly kind: "ok"; readonly v: T }
+      | { readonly kind: "err"; readonly e: unknown }
+      | { readonly kind: "timeout" };
+    const outcome = await Promise.race<Outcome>([
+      call().then(
+        (v): Outcome => ({ kind: "ok", v }),
+        (e: unknown): Outcome => ({ kind: "err", e }),
+      ),
+      new Promise<Outcome>((resolve) =>
+        setTimeout(() => resolve({ kind: "timeout" }), FILE_IO_TIMEOUT_MS),
+      ),
+    ]);
+    if (outcome.kind === "ok") return outcome.v;
+    if (outcome.kind === "timeout") {
+      quarantined = true;
+      throw new Error(
+        `sandbox-daytona: ${op}(${path}) did not settle within ${FILE_IO_TIMEOUT_MS}ms — ` +
+          `remote filesystem state is INDETERMINATE; the operation may have partially ` +
+          `applied. Instance has been quarantined; call destroy() before retrying.`,
+      );
+    }
+    quarantined = true;
+    const e = outcome.e;
+    const message = e instanceof Error ? e.message : String(e);
+    throw new Error(
+      `sandbox-daytona: ${op}(${path}) rejected; remote filesystem state is INDETERMINATE — ` +
+        `instance quarantined (call destroy() to attempt cleanup): ${message}`,
+      { cause: e },
+    );
+  }
+
   function ensureLive(op: string): void {
     if (destroyed) throw new Error(`sandbox-daytona: instance already destroyed (${op})`);
     if (quarantined) {
@@ -324,19 +361,21 @@ export function createDaytonaInstance(
 
     readFile: async (path: string): Promise<Uint8Array> => {
       ensureLive("readFile");
-      if (sdk.files.readBytes === undefined) {
+      const readBytes = sdk.files.readBytes;
+      if (readBytes === undefined) {
         throw new Error(
           "sandbox-daytona: readFile requires sdk.files.readBytes for binary-safe reads. " +
             "Inject an SDK wrapper that exposes readBytes.",
         );
       }
-      return sdk.files.readBytes(path);
+      return runBoundedFileOp("readFile", path, () => readBytes(path));
     },
 
     writeFile: async (path: string, content: Uint8Array): Promise<void> => {
       ensureLive("writeFile");
-      if (sdk.files.writeBytes !== undefined) {
-        await sdk.files.writeBytes(path, content);
+      const writeBytes = sdk.files.writeBytes;
+      if (writeBytes !== undefined) {
+        await runBoundedFileOp("writeFile", path, () => writeBytes(path, content));
         return;
       }
       let text: string;
@@ -349,7 +388,7 @@ export function createDaytonaInstance(
           { cause: e },
         );
       }
-      await sdk.files.write(path, text);
+      await runBoundedFileOp("writeFile", path, () => sdk.files.write(path, text));
     },
 
     /**

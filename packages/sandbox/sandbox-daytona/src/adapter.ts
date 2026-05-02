@@ -99,13 +99,26 @@ export function createDaytonaAdapter(
         createPromise.then(
           (lateSdk) => {
             if (typeof lateSdk?.delete === "function") {
-              lateSdk.delete().catch(() => {
-                // Best-effort: orphan label is in the surfaced error.
+              lateSdk.delete().catch((deleteErr: unknown) => {
+                // Late cleanup failed — surface so operators can detect
+                // the orphan via logs/metrics. Empty .catch would hide
+                // exactly the failure mode this code is trying to handle.
+                const cause = deleteErr instanceof Error ? deleteErr.message : String(deleteErr);
+                console.warn(
+                  `[sandbox-daytona] LATE_CLEANUP_FAILED label=${label} cause="${cause}" — ` +
+                    `orphan workspace may still be running and billable. Revoke out-of-band.`,
+                );
               });
+            } else {
+              // Late handle without delete(): close() is a non-authoritative
+              // detach so we deliberately do nothing programmatic — but
+              // we MUST emit a warning so the leak is observable.
+              console.warn(
+                `[sandbox-daytona] LATE_CLEANUP_NO_DELETE label=${label} — late handle missing ` +
+                  `delete(); close() would only detach so no automatic cleanup attempted. ` +
+                  `Orphan workspace may still be running. Revoke out-of-band.`,
+              );
             }
-            // Late handle without delete(): emit nothing — the surfaced
-            // timeout error already directs operators to the label-based
-            // out-of-band recovery path.
           },
           () => {
             // Original create rejected after the timeout window.
