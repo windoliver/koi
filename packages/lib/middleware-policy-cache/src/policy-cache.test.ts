@@ -221,6 +221,56 @@ describe("createPolicyCacheMiddleware: verified-only promotion gate", () => {
     ).toBe(true);
   });
 
+  test("register rejects stale generation against destination slot occupant with DIFFERENT brickId (round-10 regression)", () => {
+    // Round 10 review: registration overwrites by (bucket, toolId), so
+    // an out-of-order retry of an older brick id whose generation is
+    // strictly less than the brick currently bound to that slot must be
+    // rejected even though the same-brickId gate doesn't fire (different
+    // brickIds). Otherwise the older brick's policy silently replaces
+    // the newer one in the slot.
+    const handle = mw();
+    // Step 1: install brick-old@gen=1 for tool T.
+    expect(
+      handle.register({
+        scope: "agent",
+        agentId: "a",
+        toolId: "T",
+        brickId: "brick-old",
+        generation: 1,
+        execute: () => ({ action: "block", reason: "old" }),
+      }).ok,
+    ).toBe(true);
+    // Step 2: replace with brick-new@gen=2.
+    expect(
+      handle.register({
+        scope: "agent",
+        agentId: "a",
+        toolId: "T",
+        brickId: "brick-new",
+        generation: 2,
+        execute: () => ({ action: "block", reason: "new" }),
+      }).ok,
+    ).toBe(true);
+    // Step 3: out-of-order retry of brick-old@gen=1 must be refused —
+    // its generation is older than the current slot occupant (brick-new@2).
+    const replay = handle.register({
+      scope: "agent",
+      agentId: "a",
+      toolId: "T",
+      brickId: "brick-old",
+      generation: 1,
+      execute: () => ({ action: "allow" }),
+    });
+    expect(replay.ok).toBe(false);
+    if (!replay.ok) {
+      expect(replay.error.code).toBe("VALIDATION");
+      expect(replay.error.context).toMatchObject({
+        incomingGeneration: 1,
+        currentGeneration: 2,
+      });
+    }
+  });
+
   test("brickId-only forge state CANNOT be replayed for a different tool/scope/agent (round-5 regression)", () => {
     // Round 5 review: a verifier that only checks brickId is replay-able.
     // This regression test pins the contract: the verifier sees the full

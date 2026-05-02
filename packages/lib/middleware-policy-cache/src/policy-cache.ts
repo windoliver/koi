@@ -289,18 +289,29 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
     // out of order would otherwise silently roll authorization state
     // backward. Hosts that omit `generation` opt out of this protection.
     if (entry.generation !== undefined) {
-      const existingRef = brickIndex.get(entry.brickId);
-      if (existingRef !== undefined) {
-        const existingMap =
-          existingRef.bucket === "global"
+      // Check (a) same-brickId replay AND (b) the destination
+      // (bucket, toolId) slot. The slot check is required because
+      // registration overwrites by (bucket, toolId), so an out-of-order
+      // retry of an older brick id whose generation is strictly less
+      // than the brick currently bound to that slot would otherwise
+      // bypass the same-brickId gate and roll authorization backward.
+      const candidates: PolicyEntry[] = [];
+      const sameBrickRef = brickIndex.get(entry.brickId);
+      if (sameBrickRef !== undefined) {
+        const map =
+          sameBrickRef.bucket === "global"
             ? globalCache
-            : agentCaches.get(existingRef.bucket.slice("agent:".length));
-        const existing = existingMap?.get(existingRef.toolId);
-        if (
-          existing !== undefined &&
-          existing.generation !== undefined &&
-          entry.generation < existing.generation
-        ) {
+            : agentCaches.get(sameBrickRef.bucket.slice("agent:".length));
+        const e = map?.get(sameBrickRef.toolId);
+        if (e !== undefined) candidates.push(e);
+      }
+      const destMap = entry.scope === "global" ? globalCache : agentCaches.get(entry.agentId);
+      const destOccupant = destMap?.get(entry.toolId);
+      if (destOccupant !== undefined && destOccupant.brickId !== entry.brickId) {
+        candidates.push(destOccupant);
+      }
+      for (const existing of candidates) {
+        if (existing.generation !== undefined && entry.generation < existing.generation) {
           const error: KoiError = {
             code: "VALIDATION",
             message: `policy-cache: refusing stale generation ${String(entry.generation)} for brick ${entry.brickId} (current ${String(existing.generation)})`,
