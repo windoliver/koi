@@ -1,0 +1,30 @@
+{
+  "name": "@koi/sandbox-ssh",
+  "description": "SSH-backed SandboxAdapter for remote command execution via ssh2",
+  "version": "0.1.0",
+  "private": true,
+  "koi": {
+    "optional": true
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "ssh2": "1.16.0"
+  },
+  "devDependencies": {
+    "@koi/sandbox-conformance": "workspace:*",
+    "@types/ssh2": "1.15.5"
+  }
+}

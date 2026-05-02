@@ -1,7 +1,8 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/core API surface . has stable type surface 1`] = `
-"import { S as SessionId, A as AgentId, E as EngineState, P as ProcessState, B as BrickRef, a as PatchableRegistryFields, b as AgentGroupId, T as TransitionReason, c as AgentCondition, d as AgentStatus, R as RegistryEntry, e as Tool, f as SkillComponent, g as AgentDescriptor, I as ImplementationArtifact, h as BrickArtifact, D as DelegationDenyReason, i as PermissionConfig, C as CapabilityProof, j as BrickKind, k as SubsystemToken, l as ToolPolicy, m as Agent, n as ComponentProvider, o as BrickId, p as TaskBoardSnapshot, q as AgentManifest, K as KoiMiddleware, r as AgentRegistry, s as ToolCallId, t as TaskId, u as EngineEvent, v as SupervisionConfig, M as ModelChunk, w as TaskItemId } from './assembly-HASH.js';
+"export { AdapterCapabilities, AdapterCapability, BackendDescriptor, BackendState, CapabilityRequirements } from './adapter-HASH.js';
+import { S as SessionId, A as AgentId, E as EngineState, P as ProcessState, B as BrickRef, a as PatchableRegistryFields, b as AgentGroupId, T as TransitionReason, c as AgentCondition, d as AgentStatus, R as RegistryEntry, e as Tool, f as SkillComponent, g as AgentDescriptor, I as ImplementationArtifact, h as BrickArtifact, D as DelegationDenyReason, i as PermissionConfig, C as CapabilityProof, j as BrickKind, k as SubsystemToken, l as ToolPolicy, m as Agent, n as ComponentProvider, o as BrickId, p as TaskBoardSnapshot, q as AgentManifest, K as KoiMiddleware, r as AgentRegistry, s as ToolCallId, t as TaskId, u as EngineEvent, v as SupervisionConfig, M as ModelChunk, w as TaskItemId } from './assembly-HASH.js';
 export { x as AGENT_SIGNALS, y as ALL_BRICK_KINDS, z as ANS_SCOPE_PRIORITY, F as AbortReason, G as AdvisoryLock, H as AgentArtifact, J as AgentEnv, L as AgentMessage, N as AgentMessageInput, O as AgentSignal, Q as AnsConfig, U as ApprovalDecision, V as ApprovalHandler, W as ApprovalRequest, X as ArtifactId, Y as ArtifactRef, Z as AskId, _ as AttachResult, $ as BROWSER, a0 as BrickArtifactBase, a1 as BrickComposition, a2 as BrickDisclosureLevel, a3 as BrickDriftContext, a4 as BrickFitnessMetrics, a5 as BrickLifecycle, a6 as BrickPage, a7 as BrickPort, a8 as BrickRegistryBackend, a9 as BrickRegistryChangeEvent, aa as BrickRegistryChangeKind, ab as BrickRegistryReader, ac as BrickRegistryWriter, ad as BrickRequires, ae as BrickSearchQuery, af as BrickSignature, ag as BrickSnapshot, ah as BrickSource, ai as BrickSummary, aj as BrickUpdate, ak as BrowserActionOptions, al as BrowserConsoleEntry, am as BrowserConsoleLevel, an as BrowserConsoleOptions, ao as BrowserConsoleResult, ap as BrowserDriver, aq as BrowserEvaluateOptions, ar as BrowserEvaluateResult, as as BrowserFormField, at as BrowserNavigateOptions, au as BrowserNavigateResult, av as BrowserRefInfo, aw as BrowserScreenshotOptions, ax as BrowserScreenshotResult, ay as BrowserScrollOptions, az as BrowserSnapshotOptions, aA as BrowserSnapshotResult, aB as BrowserTabCloseOptions, aC as BrowserTabFocusOptions, aD as BrowserTabInfo, aE as BrowserTabNewOptions, aF as BrowserTraceOptions, aG as BrowserTraceResult, aH as BrowserTypeOptions, aI as BrowserUploadFile, aJ as BrowserUploadOptions, aK as BrowserWaitOptions, aL as BrowserWaitUntil, aM as COLLECTIVE_MEMORY_DEFAULTS, aN as COMPONENT_PRIORITY, aO as CREDENTIALS, aP as CapabilityConfig, aQ as CapabilityFragment, aR as ChangeNotifier, aS as ChannelConfig, aT as ChannelIdentity, aU as ChildCompletionResult, aV as ChildHandle, aW as ChildIsolation, aX as ChildLifecycleEvent, aY as ChildSpec, aZ as CircuitBreakerConfig, a_ as CleanupPolicy, a$ as CollectiveMemory, b0 as CollectiveMemoryCategory, b1 as CollectiveMemoryDefaults, b2 as CollectiveMemoryEntry, b3 as CollectiveMemorySource, b4 as CompanionSkillDefinition, b5 as ComplianceRecord, b6 as ComplianceRecorder, b7 as ComponentEvent, b8 as ComponentEventKind, b9 as ComposedCallHandlers, ba as CompositeArtifact, bb as CompositionCheck, bc as CompositionError, bd as CompositionErrorKind, be as CompositionOperator, bf as CompositionPort, bg as CompositionWire, bh as CompositionWireEndpoint, bi as ConfigChange, bj as ConstraintChecker, bk as ConstraintQuery, bl as ContentMarker, bm as ContextPressureTrend, bn as CorrelationIds, bo as CounterExample, bp as CredentialComponent, bq as CredentialKind, br as CredentialRequirement, bs as CronSchedule, bt as DATA_SOURCES, bu as DEFAULT_ANS_CONFIG, bv as DEFAULT_BRICK_FITNESS, bw as DEFAULT_BRICK_SEARCH_LIMIT, bx as DEFAULT_CHILD_ISOLATION, by as DEFAULT_CIRCUIT_BREAKER_CONFIG, bz as DEFAULT_CLEANUP_POLICY, bA as DEFAULT_CLEANUP_TIMEOUT_MS, bB as DEFAULT_COLLECTIVE_MEMORY, bC as DEFAULT_DEGENERACY_CONFIG, bD as DEFAULT_DELIVERY_POLICY, bE as DEFAULT_FORK_MAX_TURNS, bF as DEFAULT_INBOX_POLICY, bG as DEFAULT_MUTATION_PRESSURE_POLICY, bH as DEFAULT_REPUTATION_QUERY_LIMIT, bI as DEFAULT_SANDBOXED_POLICY, bJ as DEFAULT_SCHEDULER_CONFIG, bK as DEFAULT_SKILL_SEARCH_LIMIT, bL as DEFAULT_SUPERVISION_CONFIG, bM as DEFAULT_TASK_BOARD_CONFIG, bN as DEFAULT_TRAIL_CONFIG, bO as DEFAULT_TRAIL_STRENGTH, bP as DEFAULT_UNSANDBOXED_POLICY, bQ as DEFAULT_VIOLATION_QUERY_LIMIT, bR as DELEGATION, bS as DataClassification, bT as DataSourceDescriptor, bU as DataSourceProtocol, bV as DecisionRecord, bW as DeferredDeliveryPolicy, bX as DegeneracyConfig, bY as DelegationBackend, bZ as DelegationComponent, b_ as DelegationConfig, b$ as DelegationEvent, c0 as DelegationGrant, c1 as DelegationId, c2 as DelegationManagerConfig, c3 as DelegationScope, c4 as DelegationVerifyResult, c5 as DeliveryPolicy, c6 as ENV, c7 as EVENTS, c8 as EXTERNAL_AGENTS, c9 as EngineAdapter, ca as EngineCapabilities, cb as EngineInput, cc as EngineInputBase, cd as EngineMetrics, ce as EngineOutput, cf as EngineStopReason, cg as EventComponent, ch as EvolutionKind, ci as ExternalAgentDescriptor, cj as ExternalAgentProtocol, ck as ExternalAgentSource, cl as ExternalAgentTransport, cm as FILESYSTEM, cn as FeedbackKind, co as FileSystemConfig, cp as FilesystemCapability, cq as FilesystemSkillSource, cr as ForgeAttestationSignature, cs as ForgeBuildDefinition, ct as ForgeBuilder, cu as ForgeProvenance, cv as ForgeQuery, cw as ForgeResourceRef, cx as ForgeRunMetadata, cy as ForgeScope, cz as ForgeStageDigest, cA as ForgeStore, cB as ForgeVerificationSummary, cC as ForgedSkillSource, cD as GOVERNANCE, cE as GOVERNANCE_ALLOW, cF as GOVERNANCE_BACKEND, cG as GOVERNANCE_VARIABLES, cH as GovernanceBackend, cI as GovernanceCheck, cJ as GovernanceController, cK as GovernanceEvent, cL as GovernanceSnapshot, cM as GovernanceVariable, cN as GovernanceVariableContributor, cO as GovernanceVerdict, cP as HANDOFF, cQ as HandoffAcceptError, cR as HandoffAcceptResult, cS as HandoffComponent, cT as HandoffEnvelope, cU as HandoffEvent, cV as HandoffId, cW as HandoffStatus, cX as INBOX, cY as InTotoStatementV1, cZ as InTotoSubject, c_ as InboxComponent, c$ as InboxItem, d0 as InboxMode, d1 as InboxPolicy, d2 as LatencySampler, d3 as LockHandle, d4 as LockMode, d5 as LockRequest, d6 as MAILBOX, d7 as MAX_PIPELINE_LENGTH, d8 as MAX_PIPELINE_STEPS, d9 as MEMORY, da as MailboxComponent, db as ManagedTaskBoard, dc as ManifestSandboxConfig, dd as ManifestSandboxPersistence, de as ManifestSpawnConfig, df as MemoryComponent, dg as MemoryRecallOptions, dh as MemoryResult, di as MemoryStoreOptions, dj as MemoryTier, dk as MessageFilter, dl as MessageId, dm as MessageKind, dn as MiddlewareBundle, dp as MiddlewareConfig, dq as MiddlewarePhase, dr as ModelAdapter, ds as ModelConfig, dt as ModelContentBlock, du as ModelHandler, dv as ModelRequest, dw as ModelResponse, dx as ModelStopReason, dy as ModelStreamHandler, dz as ModelTextBlock, dA as ModelThinkingBlock, dB as ModelToolCallBlock, dC as MutationPressure, dD as MutationPressurePolicy, dE as NAME_SERVICE, dF as NameBinding, dG as NameChangeEvent, dH as NameChangeKind, dI as NameQuery, dJ as NameRecord, dK as NameRegistration, dL as NameResolution, dM as NameServiceBackend, dN as NameServiceReader, dO as NameServiceWriter, dP as NameSuggestion, dQ as NamespaceMode, dR as NetworkCapability, dS as OnDemandDeliveryPolicy, dT as PersistentGrant, dU as PersistentGrantCallback, dV as PipelineComposition, dW as PipelineStep, dX as PolicyEvaluator, dY as PolicyRequest, dZ as PolicyRequestKind, d_ as PolicyValidationResult, d$ as ProcessAccounter, e0 as ProcessDescriptor, e1 as ProcessId, e2 as PublisherId, e3 as REGISTRY, e4 as REPUTATION, e5 as REPUTATION_LEVEL_ORDER, e6 as RESET_BOUNDARIES, e7 as RegistryComponent, e8 as RegistryEvent, e9 as RegistryFilter, ea as ReputationBackend, eb as ReputationFeedback, ec as ReputationLevel, ed as ReputationQuery, ee as ReputationQueryResult, ef as ReputationScore, eg as ResolvedWorkspaceConfig, eh as ResourceCapability, ei as RestartType, ej as RevocationRegistry, ek as RuleDescriptor, el as RunId, em as SANDBOX_REQUIRED_BY_KIND, en as SCHEDULER, eo as SCRATCHPAD, ep as SCRATCHPAD_DEFAULTS, eq as ScheduleId, er as ScheduleStore, es as ScheduledTask, et as ScheduledTaskStatus, eu as SchedulerComponent, ev as SchedulerConfig, ew as SchedulerEvent, ex as SchedulerStats, ey as ScopeChecker, ez as ScratchpadChangeEvent, eA as ScratchpadComponent, eB as ScratchpadEntry, eC as ScratchpadEntrySummary, eD as ScratchpadFilter, eE as ScratchpadGeneration, eF as ScratchpadPath, eG as ScratchpadWriteInput, eH as ScratchpadWriteResult, eI as SearchConfig, eJ as SelectionStrategy, eK as SensorReading, eL as SessionContext, eM as ShadowWarning, eN as SignalSink, eO as SignalSource, eP as SigningBackend, eQ as SkillArtifact, eR as SkillConfig, eS as SkillExecutionMode, eT as SkillId, eU as SkillMetadata, eV as SkillPage, eW as SkillPublishRequest, eX as SkillRegistryBackend, eY as SkillRegistryChangeEvent, eZ as SkillRegistryChangeKind, e_ as SkillRegistryEntry, e$ as SkillRegistryReader, f0 as SkillRegistryWriter, f1 as SkillSearchQuery, f2 as SkillSource, f3 as SkillVersion, f4 as SkippedComponent, f5 as SnapshotEvent, f6 as SnapshotId, f7 as SnapshotQuery, f8 as SnapshotStore, f9 as SpawnFn, fa as SpawnInheritanceConfig, fb as SpawnLedger, fc as SpawnRequest, fd as SpawnResult, fe as StopGateResult, ff as StoreChangeEvent, fg as StoreChangeKind, fh as StoreChangeNotifier, fi as StreamingDeliveryPolicy, fj as SupervisionStrategy, fk as TASK_KIND_NAMES, fl as Task, fm as TaskBoard, fn as TaskBoardConfig, fo as TaskBoardEvent, fp as TaskBoardStore, fq as TaskBoardStoreEvent, fr as TaskBoardStoreFilter, fs as TaskBoardStoreNotifier, ft as TaskFilter, fu as TaskHistoryFilter, fv as TaskInput, fw as TaskItem, fx as TaskItemInput, fy as TaskItemPatch, fz as TaskItemStatus, fA as TaskKindName, fB as TaskOptions, fC as TaskPatch, fD as TaskQueueBackend, fE as TaskReconcileAction, fF as TaskReconciler, fG as TaskResult, fH as TaskRunRecord, fI as TaskScheduler, fJ as TaskSchedulingHints, fK as TaskStatus, fL as TaskStore, fM as TerminationOutcome, fN as TestCase, fO as ToolArtifact, fP as ToolCapabilities, fQ as ToolConfig, fR as ToolDescriptor, fS as ToolExecuteOptions, fT as ToolFilterSpec, fU as ToolHandler, fV as ToolOrigin, fW as ToolRequest, fX as ToolResponse, fY as ToolSummary, fZ as TrailConfig, f_ as TrustTier, f$ as TrustTransitionCaller, g0 as TurnContext, g1 as TurnId, g2 as USER_MODEL, g3 as UserModelComponent, g4 as UserSignal, g5 as UserSnapshot, g6 as VALID_LIFECYCLE_TRANSITIONS, g7 as VALID_TASK_KIND_NAMES, g8 as VALID_TASK_TRANSITIONS, g9 as VALID_TRANSITIONS, ga as VIOLATION_SEVERITY_ORDER, gb as VariantAttempt, gc as VersionChangeEvent, gd as VersionChangeKind, ge as VersionEntry, gf as VersionIndexBackend, gg as VersionIndexReader, gh as VersionIndexWriter, gi as VersionedBrickRef, gj as Violation, gk as ViolationFilter, gl as ViolationPage, gm as ViolationSeverity, gn as ViolationStore, go as VisibilityContext, gp as WEBHOOK, gq as WORKSPACE, gr as WorkspaceBackend, gs as WorkspaceComponent, gt as WorkspaceId, gu as WorkspaceInfo, gv as ZONE_REGISTRY, gw as agentGroupId, gx as agentId, gy as agentToken, gz as artifactId, gA as askId, gB as brickId, gC as channelToken, gD as delegationId, gE as exitCodeForTransitionReason, gF as forgedSkill, gG as fsSkill, gH as governanceContributorToken, gI as handoffId, gJ as intersectPermissions, gK as isAskVerdict, gL as isAttachResult, gM as isBrickKind, gN as isDeliveryPolicy, gO as isPermissionSubset, gP as isTerminalTaskStatus, gQ as isValidTaskKindName, gR as isValidTransition, gS as mapContentBlocksForEngine, gT as mapRegistryEntryToDescriptor, gU as mapScheduledTaskStatusToProcessState, gV as mapStopReasonToOutcome, gU as mapTaskStatusToProcessState, gW as matchesFilter, gX as messageId, gY as middlewareToken, gZ as publisherId, g_ as runId, g$ as scheduleId, h0 as scratchpadPath, h1 as searchSummariesWithFallback, h2 as sessionId, h3 as skillId, h4 as skillToken, h5 as snapshotId, h6 as taskId, h7 as taskItemId, h8 as token, h9 as toolCallId, ha as toolFilterFromManifest, hb as toolFilterFromSpawnRequest, hc as toolToken, hd as turnId, he as unionDenyLists, hf as validatePolicyForKind, hg as validateSpawnRequest, hh as workspaceId } from './assembly-HASH.js';
 export { AGENT_DEFINITION_PRIORITY, AgentDefinition, AgentDefinitionSource } from './agent-HASH.js';
 export { AgentResolver, AgentResolverQuery, LiveAgentHandle, TaskableAgent, TaskableAgentSummary } from './agent-HASH.js';
@@ -36,7 +37,7 @@ export { DecisionSignal, DecisionSignalKind, RichContent, RichStepMetrics, RichT
 export { ActionEntry, IssueEntry, ReportStore, ReportSummary, RunCost, RunDuration, RunReport } from './run-HASH.js';
 export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance, SandboxInstanceState, SandboxProcessHandle, SandboxSpawnOptions, SandboxStdinPipe } from './sandbox-HASH.js';
 export { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult } from './sandbox-HASH.js';
-export { FilesystemPolicy, NetworkPolicy, NexusFuseMount, ResourceLimits, SandboxProfile } from './sandbox-HASH.js';
+export { FilesystemPolicy, NetworkPolicy, NexusFuseMount, ResourceLimits, SandboxProfile, SandboxSshTarget } from './sandbox-HASH.js';
 export { RISK_ANALYSIS_UNKNOWN, RISK_LEVEL_ORDER, RiskAnalysis, RiskFinding, RiskLevel, SecurityAnalyzer } from './security-HASH.js';
 export { OutboundWebhookConfig, WebhookComponent, WebhookDeliveryStatus, WebhookEndpointHealth, WebhookEventKind, WebhookPayload, WebhookSummary } from './webhook.js';
 
@@ -2999,6 +3000,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -3062,6 +3064,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -3306,6 +3309,7 @@ import './permission-HASH.js';
 import './zone.js';
 import './filesystem-HASH.js';
 import './memory.js';
+import './adapter-HASH.js';
 "
 `;
 
@@ -3428,6 +3432,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -3445,6 +3450,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -3829,6 +3835,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 "
 `;
 
@@ -3842,6 +3849,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -3859,6 +3867,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -4026,6 +4035,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -4043,6 +4053,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -4196,6 +4207,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -4403,6 +4415,7 @@ import './permission-HASH.js';
 import './model-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -4420,6 +4433,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -4479,6 +4493,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -4983,6 +4998,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './filesystem-HASH.js';
 import './memory.js';
@@ -4999,6 +5015,7 @@ import './channel.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -5265,6 +5282,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -5282,6 +5300,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -5289,8 +5308,62 @@ import './memory.js';
 "
 `;
 
+exports[`@koi/core API surface ./adapter-capabilities has stable type surface 1`] = `
+"/**
+ * Capability declarations and backend lifecycle types for SandboxAdapter selection.
+ *
+ * Used by the sandbox router (\`@koi/sandbox-router\`) to filter and rank
+ * adapters when fulfilling a \`SandboxProfile.required\` requirement set.
+ */
+/** Discrete capability flags an adapter may support. */
+type AdapterCapability = "exec" | "copy-files" | "spawn" | "persistence" | "network" | "filesystem-rw" | "gpu";
+/**
+ * Static capability declaration on a SandboxAdapter.
+ *
+ * \`priority\` is the selection tiebreaker — lower values are preferred when two
+ * adapters both satisfy a profile's requirements. Suggested ranges:
+ *   0-9   local in-process / OS subprocess
+ *   10-19 containerized (Docker)
+ *   20-29 remote (SSH)
+ *   30-39 cloud-hosted ephemeral sandbox
+ */
+interface AdapterCapabilities {
+    readonly supports: ReadonlySet<AdapterCapability>;
+    readonly priority: number;
+}
+/**
+ * Backend-level lifecycle state. Distinct from instance-level
+ * \`SandboxInstanceState\` (which is \`active | detached | destroyed\`).
+ *
+ *   created    — constructed but \`init()\` has not been awaited yet
+ *   ready      — operating normally; eligible for selection
+ *   degraded   — recent consecutive failures; selectable but lower priority
+ *                than ready peers; reverts to \`ready\` on next success
+ *   terminated — \`shutdown()\` returned, OR \`init()\` failed permanently
+ */
+type BackendState = "created" | "ready" | "degraded" | "terminated";
+/** Read-only summary an adapter exposes to the router and to callers. */
+interface BackendDescriptor {
+    readonly name: string;
+    /** Semver of the adapter package. Used in selection-decision audit metadata. */
+    readonly version: string;
+    readonly state: BackendState;
+    readonly capabilities: AdapterCapabilities;
+}
+/** Capability requirements declared on a \`SandboxProfile\`. */
+interface CapabilityRequirements {
+    readonly required: ReadonlySet<AdapterCapability>;
+    /** Optional: capabilities that disqualify an adapter even if all required are met. */
+    readonly forbidden?: ReadonlySet<AdapterCapability>;
+}
+
+export type { AdapterCapabilities, AdapterCapability, BackendDescriptor, BackendState, CapabilityRequirements };
+"
+`;
+
 exports[`@koi/core API surface ./sandbox-adapter has stable type surface 1`] = `
-"import { SandboxProfile } from './sandbox-HASH.js';
+"import { AdapterCapabilities } from './adapter-HASH.js';
+import { SandboxProfile } from './sandbox-HASH.js';
 
 /**
  * Sandbox adapter contract — pluggable sandbox backends for isolated execution.
@@ -5396,6 +5469,12 @@ interface SandboxInstance {
  *
  * Each backend (OS-level, E2B, Vercel, Cloudflare, Daytona, K8s)
  * implements this contract as an independent L2 package.
+ *
+ * The optional \`capabilities\`, \`version\`, \`init\`, and \`shutdown\` fields are
+ * read by \`@koi/sandbox-router\` to perform capability-based selection and
+ * track adapter lifecycle. Adapters that do not declare \`capabilities\` are
+ * not eligible for router-driven selection (they can still be invoked
+ * directly by callers that hold a reference to the adapter).
  */
 interface SandboxAdapter {
     readonly name: string;
@@ -5410,6 +5489,24 @@ interface SandboxAdapter {
      * Optional — adapters that don't support persistence omit this.
      */
     readonly findOrCreate?: ((scope: string, profile: SandboxProfile) => Promise<SandboxInstance>) | undefined;
+    /** Semver of the adapter package. Surfaced in selection-decision audit metadata. */
+    readonly version?: string;
+    /**
+     * Static capability declaration. Required for router-driven selection;
+     * absent for adapters used only by direct reference.
+     */
+    readonly capabilities?: AdapterCapabilities;
+    /**
+     * Optional one-shot initialization. The router awaits this before marking
+     * the adapter \`ready\`. A rejection causes the adapter to be marked
+     * \`terminated\` and excluded from selection for the lifetime of the router.
+     */
+    readonly init?: () => Promise<void>;
+    /**
+     * Optional teardown. The router awaits this on \`router.shutdown()\`. After
+     * shutdown the adapter is \`terminated\` and ineligible for selection.
+     */
+    readonly shutdown?: () => Promise<void>;
 }
 
 export type { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance, SandboxInstanceState, SandboxProcessHandle, SandboxSpawnOptions, SandboxStdinPipe };
@@ -5478,7 +5575,9 @@ export type { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor,
 `;
 
 exports[`@koi/core API surface ./sandbox-profile has stable type surface 1`] = `
-"/**
+"import { CapabilityRequirements } from './adapter-HASH.js';
+
+/**
  * Sandbox profile contract — platform-agnostic isolation policy.
  *
  * Defines what a sandboxed process is allowed to do: filesystem access,
@@ -5514,6 +5613,21 @@ interface NexusFuseMount {
     readonly mountPath: string;
     readonly agentId?: string;
 }
+/**
+ * Generic SSH connection target. Consumed only by \`@koi/sandbox-ssh\`.
+ * Other adapters MUST ignore this field.
+ *
+ * Kept as a generic L0 struct so no SSH library types leak into the kernel.
+ * Auth is key-based only — no password fields exist here by design.
+ */
+interface SandboxSshTarget {
+    readonly host: string;
+    readonly user: string;
+    /** Absolute path to a private key file readable by the calling process. */
+    readonly keyPath: string;
+    /** TCP port. Defaults to 22 when omitted. */
+    readonly port?: number;
+}
 /** Declarative sandbox profile — platform-agnostic policy. */
 interface SandboxProfile {
     readonly filesystem: FilesystemPolicy;
@@ -5521,9 +5635,16 @@ interface SandboxProfile {
     readonly resources: ResourceLimits;
     readonly env?: Readonly<Record<string, string>>;
     readonly nexusMounts?: readonly NexusFuseMount[];
+    /**
+     * Capabilities the chosen backend MUST satisfy. Read by \`@koi/sandbox-router\`
+     * to filter the adapter set. Profiles that omit this field accept any adapter.
+     */
+    readonly required?: CapabilityRequirements;
+    /** SSH target for the SSH backend. Ignored by all other adapters. */
+    readonly ssh?: SandboxSshTarget;
 }
 
-export type { FilesystemPolicy, NetworkPolicy, NexusFuseMount, ResourceLimits, SandboxProfile };
+export type { FilesystemPolicy, NetworkPolicy, NexusFuseMount, ResourceLimits, SandboxProfile, SandboxSshTarget };
 "
 `;
 
@@ -5537,6 +5658,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -5623,6 +5745,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -5640,6 +5763,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -5657,6 +5781,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -5787,6 +5912,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -6171,6 +6297,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -6188,6 +6315,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
@@ -6455,6 +6583,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './hook.js';
 import './sandbox-HASH.js';
+import './adapter-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';

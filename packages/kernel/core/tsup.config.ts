@@ -35,6 +35,7 @@ export default defineConfig({
     "src/brick-snapshot.ts",
     "src/brick-store.ts",
     "src/filesystem-backend.ts",
+    "src/adapter-capabilities.ts",
     "src/sandbox-adapter.ts",
     "src/sandbox-executor.ts",
     "src/permission-backend.ts",

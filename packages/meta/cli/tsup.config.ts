@@ -31,5 +31,9 @@ export default defineConfig({
   // require chromium-bidi chunks esbuild cannot resolve. Both packages are
   // only ever imported via async import() inside lazy browser-init paths —
   // they are never executed at startup — so keeping them external is safe.
-  external: ["bun:sqlite", "re2-wasm", "playwright", "playwright-core"],
+  // ssh2 ships native .node bindings (and an optional cpu-features dep) that
+  // esbuild's native-node-modules plugin cannot bundle. ssh2 is only reached
+  // via the optional @koi/sandbox-ssh adapter — keep it external so require()
+  // resolves at runtime against the published node_modules tree.
+  external: ["bun:sqlite", "re2-wasm", "playwright", "playwright-core", "ssh2", "cpu-features"],
 });
