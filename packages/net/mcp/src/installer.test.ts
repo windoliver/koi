@@ -255,16 +255,14 @@ describe("installMcpServer", () => {
     }
   });
 
-  test("surfaces rollback failure in error message instead of swallowing it", async () => {
+  test("verify failure leaves .mcp.json untouched (verify-before-commit)", async () => {
     const { path, cleanup } = tmpFile();
     try {
-      // Pre-create directory then make the file path unwritable AFTER the
-      // initial install succeeds. Easiest cross-platform way: monkey-patch
-      // the verify to fail, and force rollback to fail by replacing the
-      // file content with non-JSON between add and rollback. We simulate
-      // this by giving the rollback path a directory where a file is
-      // expected — concrete approach: set configPath to an existing dir.
-      // Simpler: have the verify fn delete the file before returning err.
+      // Pre-existing config that must survive a failed verify.
+      await Bun.write(
+        path,
+        JSON.stringify({ mcpServers: { existing: { command: "npx", args: ["x"] } } }),
+      );
       const result = await installMcpServer({
         server: {
           ...baseServer,
@@ -272,23 +270,21 @@ describe("installMcpServer", () => {
         },
         configPath: path,
         deps: {
-          verifyConnection: async () => {
-            // Corrupt the file so that the subsequent rollback's read fails
-            // with VALIDATION (invalid JSON), exercising the error-surfacing
-            // path in failWithRollback.
-            await Bun.write(path, "{not json");
-            return {
-              ok: false,
-              error: { code: "EXTERNAL", message: "verify failed", retryable: false },
-            };
-          },
+          verifyConnection: async () => ({
+            ok: false,
+            error: { code: "EXTERNAL", message: "verify failed", retryable: false },
+          }),
         },
       });
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error("unreachable");
       expect(result.error.message).toContain("verify failed");
-      expect(result.error.message).toContain("Rollback also failed");
-      expect(result.error.context).toMatchObject({ cleanupRequired: true });
+      // Pre-existing entry intact, new entry never written.
+      const file = (await Bun.file(path).json()) as {
+        mcpServers: Record<string, ExternalServerConfig>;
+      };
+      expect(file.mcpServers["existing"]).toBeDefined();
+      expect(file.mcpServers[baseServer.name]).toBeUndefined();
     } finally {
       cleanup();
     }

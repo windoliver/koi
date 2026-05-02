@@ -158,6 +158,14 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
     await storage.withLock(storageKey, async () => {
       await storage.set(storageKey, JSON.stringify(tokens));
     });
+    // Best-effort: track the token key so uninstall/rollback can wipe
+    // it together with DCR client records. Failure here means a future
+    // cleanup will miss this record, so log to stderr — silent leakage
+    // is the failure mode we're trying to prevent.
+    await trackOAuthKey(storage, serverName, serverUrl, storageKey).catch((err: unknown) => {
+      const detail = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[koi] warning: OAuth cleanup index update failed (${detail})\n`);
+    });
   };
 
   const clearTokens = async (): Promise<boolean> => {
@@ -380,6 +388,91 @@ export function computeServerKey(serverName: string, serverUrl: string): string 
  *
  * Format: `mcp-oauth-client|{sha256(serverName + "|" + serverUrl + "|" + redirectUri + "|" + authority)[:16]}`.
  */
+/**
+ * Index key listing every storage key we own for a (server, url) pair.
+ * Cleanup walks this list so token blobs AND DCR client records are
+ * removed together — the bare token-key delete left DCR client info
+ * (computed from a port-bound redirectUri) orphaned on disk.
+ *
+ * Format: `mcp-oauth-index|{serverName}|{sha256(url)[:16]}`.
+ */
+export function computeOAuthIndexKey(serverName: string, serverUrl: string): string {
+  const hash = createHash("sha256").update(serverUrl).digest("hex").substring(0, 16);
+  return `mcp-oauth-index|${serverName}|${hash}`;
+}
+
+/**
+ * Record an owned key in the per-server cleanup index. Idempotent.
+ * Failures here are non-fatal for the caller — but they do mean a
+ * future cleanup will leak that record. The caller should log if
+ * tracking fails so leaks are at least observable.
+ */
+export async function trackOAuthKey(
+  storage: SecureStorage,
+  serverName: string,
+  serverUrl: string,
+  ownedKey: string,
+): Promise<void> {
+  const idx = computeOAuthIndexKey(serverName, serverUrl);
+  await storage.withLock(idx, async () => {
+    const raw = await storage.get(idx);
+    let keys: readonly string[] = [];
+    if (raw !== undefined) {
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          keys = parsed.filter((k): k is string => typeof k === "string");
+        }
+      } catch {
+        // Corrupt index — replace it.
+      }
+    }
+    if (!keys.includes(ownedKey)) {
+      const next = [...keys, ownedKey];
+      await storage.set(idx, JSON.stringify(next));
+    }
+  });
+}
+
+/**
+ * Remove ALL persisted OAuth state for a (server, url) pair: token
+ * blob, every DCR client record we registered, and the index itself.
+ * Throws on the first underlying storage error — callers must surface
+ * partial-cleanup failures rather than silently leaving credentials
+ * behind.
+ */
+export async function clearAllOAuthState(
+  storage: SecureStorage,
+  serverName: string,
+  serverUrl: string,
+): Promise<void> {
+  const idx = computeOAuthIndexKey(serverName, serverUrl);
+  // Read index first (no lock needed for read-then-delete; if a
+  // concurrent writer adds a key after our read, that record will be
+  // orphaned, but cleanup is operator-driven and rare enough that the
+  // race is acceptable vs. holding a lock across many deletes).
+  let trackedKeys: readonly string[] = [];
+  const raw = await storage.get(idx);
+  if (raw !== undefined) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        trackedKeys = parsed.filter((k): k is string => typeof k === "string");
+      }
+    } catch {
+      // Corrupt index — fall through to canonical-key delete below.
+    }
+  }
+  // Always delete the canonical token key, even if the index is
+  // missing or corrupt: tokens persisted before the index existed
+  // would otherwise leak.
+  await storage.delete(computeServerKey(serverName, serverUrl));
+  for (const key of trackedKeys) {
+    await storage.delete(key);
+  }
+  await storage.delete(idx);
+}
+
 export function computeClientKey(
   serverName: string,
   serverUrl: string,
@@ -458,6 +551,13 @@ export async function writeClientInfo(
   const key = computeClientKey(serverName, serverUrl, redirectUri, authority);
   await storage.withLock(key, async () => {
     await storage.set(key, JSON.stringify(info));
+  });
+  // Track for cleanup — see note in storeTokens above. The client
+  // record is computed from a port-bound redirectUri so cleanup
+  // cannot reconstruct it without this index.
+  await trackOAuthKey(storage, serverName, serverUrl, key).catch((err: unknown) => {
+    const detail = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[koi] warning: OAuth cleanup index update failed (${detail})\n`);
   });
 }
 

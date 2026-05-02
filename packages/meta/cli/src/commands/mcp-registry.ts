@@ -22,7 +22,7 @@ import type {
   ResolvedMcpServerConfig,
 } from "@koi/mcp";
 import {
-  computeServerKey,
+  clearAllOAuthState,
   createRegistryCache,
   createRegistryClient,
   installMcpServer,
@@ -139,12 +139,13 @@ export async function runInstall(flags: McpFlags): Promise<ExitCode> {
 
   const configPath = resolve(process.cwd(), ".mcp.json");
   // For HTTP installs the verify path may complete an OAuth flow that
-  // persists tokens before listTools fails; if that happens we want
-  // rollback to wipe the stored credentials too. The installer calls
-  // clearStoredCredentials only on the failure paths.
-  const oauthKey =
+  // persists both tokens AND a DCR client record; if verify fails we
+  // want both wiped. We pass the server URL (not just a derived key)
+  // so cleanup can walk the per-server index and delete every owned
+  // record, not just the canonical token blob.
+  const oauthTarget =
     picked.value.type === "http" && picked.value.url !== undefined
-      ? computeServerKey(server.name, picked.value.url)
+      ? { name: server.name, url: picked.value.url }
       : undefined;
   const result = await installMcpServer({
     server,
@@ -152,7 +153,9 @@ export async function runInstall(flags: McpFlags): Promise<ExitCode> {
     skipVerify: flags.skipVerify,
     deps: {
       verifyConnection: defaultVerifyConnection,
-      ...(oauthKey !== undefined ? { clearStoredCredentials: clearOAuthTokensFor(oauthKey) } : {}),
+      ...(oauthTarget !== undefined
+        ? { clearStoredCredentials: clearAllOAuthStateFor(oauthTarget) }
+        : {}),
     },
   });
   if (!result.ok) return failFlags(flags, result.error.message);
@@ -175,18 +178,18 @@ export async function runUninstall(flags: McpFlags): Promise<ExitCode> {
   const configPath = resolve(process.cwd(), ".mcp.json");
 
   // Read the URL straight from the raw .mcp.json so we can clear OAuth
-  // tokens even when the file is malformed or contains entries the
+  // state even when the file is malformed or contains entries the
   // normalizer would reject. Without this, an entry that fails
   // normalization (e.g. unsupported transport, missing env var) would
   // still be removed by `removeServerFromMcpJson`, but stored OAuth
   // tokens would remain — config gone, credentials retained.
-  const oauthKey = await readOAuthKeyFromRawConfig(configPath, name);
+  const oauthTarget = await readOAuthTargetFromRawConfig(configPath, name);
 
   const result = await uninstallMcpServer({
     name,
     configPath,
-    ...(oauthKey !== undefined
-      ? { deps: { clearStoredCredentials: clearOAuthTokensFor(oauthKey) } }
+    ...(oauthTarget !== undefined
+      ? { deps: { clearStoredCredentials: clearAllOAuthStateFor(oauthTarget) } }
       : {}),
   });
   if (!result.ok) return failFlags(flags, result.error.message);
@@ -308,13 +311,18 @@ function stdoutOAuthChannel(): OAuthChannel {
   };
 }
 
-async function readOAuthKeyFromRawConfig(
+interface OAuthTarget {
+  readonly name: string;
+  readonly url: string;
+}
+
+async function readOAuthTargetFromRawConfig(
   configPath: string,
   name: string,
-): Promise<string | undefined> {
+): Promise<OAuthTarget | undefined> {
   // Best-effort, defensive raw read. Cannot rely on `loadMcpJsonFile` because
   // it normalizes/filters entries. We just need {url} for the http entry
-  // matching `name` so we can compute its OAuth storage key.
+  // matching `name` so cleanup can walk its OAuth state.
   try {
     const text = await Bun.file(configPath).text();
     const parsed: unknown = JSON.parse(text);
@@ -325,23 +333,22 @@ async function readOAuthKeyFromRawConfig(
     if (entry === null || typeof entry !== "object") return undefined;
     const e = entry as { type?: unknown; url?: unknown };
     if ((e.type === undefined || e.type === "http") && typeof e.url === "string") {
-      return computeServerKey(name, e.url);
+      return { name, url: e.url };
     }
   } catch {
-    /* malformed file or absent — leave key undefined */
+    /* malformed file or absent — no OAuth target */
   }
   return undefined;
 }
 
-function clearOAuthTokensFor(key: string): (name: string) => Promise<void> {
+function clearAllOAuthStateFor(target: OAuthTarget): (name: string) => Promise<void> {
+  // Storage failures (keychain locked, permission denied, corrupt
+  // record) propagate up to the installer/uninstaller, which converts
+  // them into a partial-success error so the operator learns that
+  // credentials may persist instead of a false "removed" report.
   return async (_name: string): Promise<void> => {
-    try {
-      const storage = createSecureStorage();
-      await storage.delete(key);
-    } catch {
-      // Best-effort: keychain may be unavailable. Removal of mcp.json entry
-      // already succeeded, which is the user-visible part of uninstall.
-    }
+    const storage = createSecureStorage();
+    await clearAllOAuthState(storage, target.name, target.url);
   };
 }
 

@@ -82,7 +82,7 @@ export { createPkceChallenge } from "./oauth/pkce.js";
 export type { OAuthAuthProvider, OAuthProviderOptions } from "./oauth/provider.js";
 export { createOAuthAuthProvider } from "./oauth/provider.js";
 export type { TokenManager, TokenManagerOptions } from "./oauth/tokens.js";
-export { computeServerKey, createTokenManager } from "./oauth/tokens.js";
+export { clearAllOAuthState, computeServerKey, createTokenManager } from "./oauth/tokens.js";
 // OAuth
 export type {
   AuthServerMetadata,

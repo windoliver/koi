@@ -305,39 +305,50 @@ export async function installMcpServer(
   if (!picked.ok) return picked;
   const entry = picked.value;
 
+  // Verify-before-commit: previously the entry was written first and
+  // verification followed. That window made install non-atomic — other
+  // Koi processes (CLI, TUI) could observe an unverified entry while a
+  // long-running OAuth flow stalled. Now we resolve + verify against
+  // the picked entry without touching `.mcp.json`, then write only on
+  // success. No rollback needed for verify failure; the file was never
+  // mutated.
+
+  if (options.skipVerify !== true) {
+    const verify = options.deps?.verifyConnection;
+    if (verify !== undefined) {
+      const resolved = resolveForVerify(options.server.name, entry);
+      if (!resolved.ok) {
+        return await abortWithCredentialCleanup(
+          options.server.name,
+          resolved.error,
+          options.deps?.clearStoredCredentials,
+        );
+      }
+      const verified = await verify(resolved.value);
+      if (!verified.ok) {
+        return await abortWithCredentialCleanup(
+          options.server.name,
+          {
+            ...verified.error,
+            message: `Install verification failed for "${options.server.name}": ${verified.error.message}`,
+          },
+          options.deps?.clearStoredCredentials,
+        );
+      }
+    }
+  }
+
+  // Verification succeeded (or was skipped). Commit to .mcp.json.
   const added = await addServerToMcpJson(options.configPath, options.server.name, entry, {
     overwrite: options.overwrite ?? false,
   });
-  if (!added.ok) return added;
-
-  if (options.skipVerify === true) {
-    return { ok: true, value: { entry } };
-  }
-
-  const verify = options.deps?.verifyConnection;
-  if (verify === undefined) {
-    return { ok: true, value: { entry } };
-  }
-
-  const resolved = resolveForVerify(options.server.name, entry);
-  if (!resolved.ok) {
-    return await failWithRollback(
-      options.configPath,
+  if (!added.ok) {
+    // Conflict (or write failure) after a successful verify can leave
+    // OAuth tokens persisted in the keychain even though no .mcp.json
+    // entry exists. Clean those up so we don't leak credentials.
+    return await abortWithCredentialCleanup(
       options.server.name,
-      resolved.error,
-      options.deps?.clearStoredCredentials,
-    );
-  }
-
-  const verified = await verify(resolved.value);
-  if (!verified.ok) {
-    return await failWithRollback(
-      options.configPath,
-      options.server.name,
-      {
-        ...verified.error,
-        message: `Install verification failed for "${options.server.name}": ${verified.error.message}`,
-      },
+      added.error,
       options.deps?.clearStoredCredentials,
     );
   }
@@ -410,81 +421,42 @@ function resolveForVerify(
   };
 }
 
-async function failWithRollback(
-  configPath: string,
+/**
+ * Verify-before-commit aborts never wrote to .mcp.json, so there is
+ * nothing to roll back. We only need to wipe credentials that
+ * verification (e.g. an OAuth flow) may have persisted before the
+ * outer failure was decided. If credential cleanup itself fails,
+ * surface it — silent failure here means a "cleanly aborted" install
+ * can still leave an authorized server on disk/keychain.
+ */
+async function abortWithCredentialCleanup(
   name: string,
   primaryError: KoiError,
   clearCredentials?: (name: string) => Promise<void>,
 ): Promise<Result<never, KoiError>> {
-  let rollbackResult: Result<void, KoiError>;
-  try {
-    rollbackResult = await removeServerFromMcpJson(configPath, name);
-  } catch (cause: unknown) {
-    rollbackResult = {
-      ok: false,
-      error: {
-        code: "EXTERNAL",
-        message: `rollback threw: ${cause instanceof Error ? cause.message : String(cause)}`,
-        retryable: false,
-        cause: cause instanceof Error ? cause : undefined,
-        context: { configPath, name },
-      },
-    };
+  if (clearCredentials === undefined) {
+    return { ok: false, error: primaryError };
   }
-  // Credential wipe — runs whether the config rollback succeeded or not.
-  // Verification may have completed an OAuth flow that persisted tokens
-  // (and possibly a DCR client) before failing on listTools; without
-  // this, we'd leave live credentials behind for a server that no longer
-  // has a config entry. If cleanup itself throws, surface it: silent
-  // failure here means a "cleanly rolled-back" install can still leave
-  // an authorized server.
   let credentialError: string | undefined;
-  if (clearCredentials !== undefined) {
-    try {
-      await clearCredentials(name);
-    } catch (cause: unknown) {
-      credentialError = cause instanceof Error ? cause.message : String(cause);
-    }
+  try {
+    await clearCredentials(name);
+  } catch (cause: unknown) {
+    credentialError = cause instanceof Error ? cause.message : String(cause);
   }
-  if (rollbackResult.ok) {
-    if (credentialError === undefined) {
-      return { ok: false, error: primaryError };
-    }
-    return {
-      ok: false,
-      error: {
-        ...primaryError,
-        message:
-          `${primaryError.message}. Config rolled back, but credential cleanup ` +
-          `failed (${credentialError}); stored OAuth material may persist.`,
-        context: {
-          ...(primaryError.context ?? {}),
-          credentialCleanupFailed: true,
-          credentialError,
-        },
-      },
-    };
+  if (credentialError === undefined) {
+    return { ok: false, error: primaryError };
   }
-  // Rollback failed: surface that the partial install is still on disk so
-  // the user can fix it manually instead of silently leaving a broken entry.
-  const credentialNote =
-    credentialError !== undefined
-      ? ` Credential cleanup also failed (${credentialError}); stored OAuth material may persist.`
-      : "";
   return {
     ok: false,
     error: {
       ...primaryError,
       message:
-        `${primaryError.message}. Rollback also failed (${rollbackResult.error.message}); ` +
-        `manual cleanup of "${name}" from ${configPath} is required.${credentialNote}`,
+        `${primaryError.message}. Credential cleanup failed (${credentialError}); ` +
+        `stored OAuth material may persist.`,
       context: {
         ...(primaryError.context ?? {}),
-        rollbackError: rollbackResult.error.message,
-        cleanupRequired: true,
-        ...(credentialError !== undefined
-          ? { credentialCleanupFailed: true, credentialError }
-          : {}),
+        credentialCleanupFailed: true,
+        credentialError,
       },
     },
   };
