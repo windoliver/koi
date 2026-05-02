@@ -1557,6 +1557,42 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     }
   }
 
+  // Issue #1683 round 4: when checkpointing is enabled, eagerly persist
+  // an authoritative SessionRecord so the very-first cancel of a fresh
+  // session merges into REAL counters/metadata rather than the wrapper
+  // synthesizing them from a placeholder template. Skip on resume — the
+  // row already exists from the prior session, and overwriting it would
+  // reset `seq`/`remoteSeq`/`metadata` that other tooling may inspect.
+  // No-op when KOI_SESSION_STATE_DB is unset.
+  if (stateSessionPersistence !== undefined && flags.resume === undefined) {
+    const { agentId: agentIdCtor } = await import("@koi/core");
+    const seedAgentId = agentIdCtor(`koi-tui:${tuiSessionId}`);
+    const seedRecord: import("@koi/core").SessionRecord = {
+      sessionId: tuiSessionId,
+      agentId: seedAgentId,
+      manifestSnapshot: {
+        name: "koi-tui",
+        version: "0",
+        model: { name: modelName },
+      },
+      seq: 0,
+      remoteSeq: 0,
+      connectedAt: Date.now(),
+      lastPersistedAt: Date.now(),
+      status: "idle",
+      metadata: {
+        ...(resolvedManifestPath !== undefined ? { manifestPath: resolvedManifestPath } : {}),
+      },
+    };
+    const seedResult = await stateSessionPersistence.saveSession(seedRecord);
+    if (!seedResult.ok) {
+      process.stderr.write(
+        `koi tui: cancel checkpoint store seed failed (${seedResult.error.message}) — disabling cancel-resume for this run\n`,
+      );
+      stateSessionPersistence = undefined;
+    }
+  }
+
   // Persist manifest provenance so future resumes can enforce audit intent
   // against the original session's manifest, not the cwd at resume time.
   // Also persist a frozen ACE snapshot — at resume we must compare against
