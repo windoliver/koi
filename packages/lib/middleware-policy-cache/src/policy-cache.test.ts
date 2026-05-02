@@ -844,6 +844,31 @@ describe("createPolicyCacheMiddleware: LRU eviction (recency-aware, per-owner)",
     expect(r2.output).toBe("ok");
   });
 
+  test("re-registering an existing entry refreshes its LRU position (round-9 regression)", async () => {
+    // Round 9 review: Map.set on an existing key does NOT move it to the
+    // end of insertion order, so without an explicit delete+set on
+    // overwrite, a freshly re-promoted deny would stay in its old LRU
+    // slot and be evicted by the very next insert into a full bucket —
+    // converting a verified deny back into a cache miss.
+    const handle = mw({ maxEntries: 3 });
+    handle.register(makeAgentPolicy("a", "deny-tool", "brick-deny", "block"));
+    handle.register(makeAgentPolicy("a", "t1", "brick-1"));
+    handle.register(makeAgentPolicy("a", "t2", "brick-2"));
+    // Re-register the deny — should bump its LRU position to MRU.
+    handle.register(makeAgentPolicy("a", "deny-tool", "brick-deny", "block"));
+    // Adding a 4th entry forces eviction of the LRU slot. The deny was
+    // just refreshed, so t1 (now oldest) is evicted, NOT the deny.
+    handle.register(makeAgentPolicy("a", "t3", "brick-3"));
+
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+    const next = mock(async () => makeResp());
+    // Deny is still cached and enforced.
+    const r = await wrap(ctxFor("a"), makeReq("deny-tool"), next as ToolHandler);
+    expect(next).not.toHaveBeenCalled();
+    expect(r.metadata?.policyDenied).toBe(true);
+  });
+
   test("noisy agent CANNOT evict another agent's deny via capacity pressure", async () => {
     // Per-owner partition: maxEntries=2 PER agent, not 2 globally.
     const handle = mw({ maxEntries: 2 });

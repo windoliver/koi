@@ -412,6 +412,15 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       }
     }
 
+    // Refresh LRU recency on overwrite. JavaScript `Map.set` on an
+    // existing key does NOT move the entry to the end of insertion order,
+    // so without an explicit delete+set a freshly re-promoted deny would
+    // stay in its old LRU slot and could be evicted by the very next
+    // insert into a full bucket. That converts a verified deny into a
+    // cache miss — an authorization downgrade exactly on the
+    // re-promotion / quarantine-recovery flows meant to restore broken
+    // denies safely.
+    bucketMap.delete(entry.toolId);
     bucketMap.set(entry.toolId, entry);
     brickIndex.set(entry.brickId, { bucket, toolId: entry.toolId });
     // Re-registration clears any prior quarantine on this brickId.
