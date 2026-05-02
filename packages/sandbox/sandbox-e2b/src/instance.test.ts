@@ -128,13 +128,12 @@ describe("createE2bInstance", () => {
     expect(result.timedOut).toBe(false);
   });
 
-  test("exec surfaces failure (not 130) when caller aborts but SDK rejects with non-AbortError", async () => {
-    // After the caller aborts, a transport error / provider eviction / kill-
-    // confirmation failure can surface as a non-AbortError rejection. That
-    // means the SDK did NOT confirm clean cancellation, so the remote command
-    // may still be running or have partially applied. Reporting exit 130
-    // here would tell higher layers it was safely cancelled — instead we
-    // surface the failure so cleanup/retry is handled correctly.
+  test("exec returns 130 when caller aborts mid-flight, regardless of how the SDK surfaces it", async () => {
+    // Provider SDKs are not required to throw AbortError on cancellation —
+    // a conforming wrapper can resolve with a kill exit code (137/143) or
+    // even reject with a non-AbortError after a confirmed kill. As long as
+    // the caller's signal aborted during the call, we normalize to 130 so
+    // higher layers see consistent cancellation semantics.
     const base = createFakeSandbox();
     const sdk = {
       ...base,
@@ -148,7 +147,8 @@ describe("createE2bInstance", () => {
           await new Promise<void>((resolve) => {
             opts?.signal?.addEventListener("abort", () => resolve(), { once: true });
           });
-          throw new Error("transport reset"); // not AbortError
+          // SDK resolves with exit 137 (SIGKILL) — no AbortError thrown.
+          return { exitCode: 137, stdout: "", stderr: "" };
         },
       },
     };
@@ -156,8 +156,7 @@ describe("createE2bInstance", () => {
     const ac = new AbortController();
     queueMicrotask(() => ac.abort());
     const result = await instance.exec("ls", [], { signal: ac.signal });
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("transport reset");
+    expect(result.exitCode).toBe(130);
   });
 
   test("exec returns failure (not 130) when SDK rejects with AbortError but caller never aborted", async () => {

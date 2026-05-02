@@ -116,6 +116,27 @@ describe("createDaytonaAdapter", () => {
     expect(client.sandbox.runCalls[0]?.opts?.timeoutMs).toBe(7777);
   });
 
+  test("create() fails fast when SDK handle has no delete() and tears down the workspace", async () => {
+    // Lifecycle capability gap: a delete-less SDK would let create() succeed
+    // but destroy() later refuse, leaking a billable workspace. The adapter
+    // must reject before exposing the instance and best-effort-close the
+    // just-provisioned workspace.
+    const client = createFakeClient();
+    // Strip `delete` from the sandbox the client will return.
+    const original = client.sandbox;
+    const { delete: _omit, ...stripped } = original;
+    Object.defineProperty(client, "sandbox", { value: stripped });
+    const orig = client.createSandbox;
+    Object.defineProperty(client, "createSandbox", {
+      value: async () => stripped,
+    });
+    const result = createDaytonaAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    await expect(result.value.create(openProfile)).rejects.toThrow(/delete-capable/);
+    expect(original.closed()).toBe(true);
+    void orig;
+  });
+
   test("per-call exec options override profile defaults", async () => {
     const client = createFakeClient();
     const result = createDaytonaAdapter({ apiKey: "k", client });

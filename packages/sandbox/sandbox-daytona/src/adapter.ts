@@ -36,6 +36,27 @@ export function createDaytonaAdapter(
         ...(resolved.apiUrl !== undefined ? { apiUrl: resolved.apiUrl } : {}),
       };
       const sdk = await resolved.client.createSandbox(opts);
+      // Fail fast on lifecycle capability mismatch BEFORE handing the
+      // instance to callers. If we proceeded, the workspace would be live
+      // and billable but unkillable: destroy() would later refuse without
+      // sdk.delete, and close() may be a client-side detach that leaks the
+      // remote workspace. Tear down what we just provisioned and surface
+      // the misconfiguration immediately.
+      if (sdk.delete === undefined) {
+        try {
+          await sdk.close();
+        } catch {
+          // Best-effort — even if close fails, the originating error is
+          // the lifecycle gap, not the cleanup attempt.
+        }
+        throw new Error(
+          "sandbox-daytona: createSandbox returned an SDK handle without delete(). " +
+            "This adapter requires delete-capable wrappers because close() in several " +
+            "Daytona SDK versions is a client-side detach that leaves the workspace " +
+            "running and billable. The just-provisioned workspace was best-effort " +
+            "closed; inject a delete-capable wrapper before retrying.",
+        );
+      }
       return createDaytonaInstance(sdk, extractProfileDefaults(profile));
     },
   };

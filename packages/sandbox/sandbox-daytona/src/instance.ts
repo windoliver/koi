@@ -149,8 +149,20 @@ export function createDaytonaInstance(
         maxOutputBytes: cap,
       };
 
+      // Track whether abort fires *during* the SDK call so we can normalize
+      // a SDK-confirmed cancellation regardless of how the SDK surfaces it
+      // (AbortError throw, exit 137/143 on success, etc.). The listener is
+      // detached immediately after the await unblocks so a late abort
+      // (after the SDK already settled) does not flip the flag.
+      let abortedDuringCall = false;
+      const onAbort = (): void => {
+        abortedDuringCall = true;
+      };
+      options?.signal?.addEventListener("abort", onAbort);
+
       try {
         const result = await sdk.commands.run(cmd, sdkOpts);
+        options?.signal?.removeEventListener("abort", onAbort);
         const durationMs = performance.now() - start;
 
         // Defensive re-trim against the SDK-enforced cap.
@@ -168,23 +180,22 @@ export function createDaytonaInstance(
           durationMs,
           ...(truncated ? { truncated: true as const } : {}),
         };
-        // Trust the SDK's resolved result. A signal that aborts after the
-        // command has already finished must NOT rewrite the exit code to 130
-        // — callers would conclude their side-effecting command was cancelled
-        // and retry it, when it actually ran to completion. Cancellation is
-        // only honoured when the SDK itself signals it (handled in catch).
+        if (abortedDuringCall) {
+          return {
+            exitCode: 130,
+            stdout: "",
+            stderr: "",
+            durationMs,
+            timedOut: false,
+            oomKilled: false,
+          };
+        }
         return { exitCode: result.exitCode, timedOut, oomKilled, ...baseResult };
       } catch (e: unknown) {
+        options?.signal?.removeEventListener("abort", onAbort);
         const durationMs = performance.now() - start;
         const message = e instanceof Error ? e.message : String(e);
-        // Map to exit 130 only when BOTH the caller actually aborted AND the
-        // SDK explicitly acknowledges cancellation (AbortError name). Other
-        // post-abort rejections (transport, eviction, kill-confirmation
-        // failures) must surface as errors so higher layers handle cleanup
-        // and retry safely instead of treating them as clean user cancels.
-        const sig: AbortSignal | undefined = options?.signal;
-        const sdkConfirmedAbort = e instanceof Error && e.name === "AbortError";
-        if (sig?.aborted && sdkConfirmedAbort) {
+        if (abortedDuringCall) {
           return {
             exitCode: 130,
             stdout: "",

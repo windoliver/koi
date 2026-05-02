@@ -193,21 +193,25 @@ export function createE2bInstance(
         maxOutputBytes: cap,
       };
 
+      // Track whether abort fires *during* the SDK call (i.e. before it
+      // settles). The listener fires synchronously on `abort()`, so observing
+      // this flag at settlement time tells us whether the cancellation
+      // happened in-flight — independent of whether the SDK confirms by
+      // throwing AbortError or by resolving with a kill exit code (137/143/0).
+      // We detach the listener immediately after the await unblocks so a
+      // late abort (caller cancels *after* the SDK already resolved) does
+      // not flip the flag and misclassify a finished command as cancelled.
+      let abortedDuringCall = false;
+      const onAbort = (): void => {
+        abortedDuringCall = true;
+      };
+      options?.signal?.addEventListener("abort", onAbort);
+
       try {
-        // Always await the SDK call. When `supportsAbort` is true the SDK is
-        // contractually required to settle this promise after the remote
-        // process is gone, so we never report cancellation before termination.
         const result = await sdk.commands.run(cmd, sdkOpts);
+        options?.signal?.removeEventListener("abort", onAbort);
         const durationMs = performance.now() - start;
 
-        // Apply the combined-byte budget only when the SDK enforced it
-        // server-side. Without enforcement the payload was already buffered,
-        // so a post-hoc slice would not actually bound memory — we'd be
-        // claiming a guarantee we cannot keep. When `cap` is undefined the
-        // SDK's result is passed through verbatim, and the caller sees
-        // whatever the SDK returned.
-        // The SDK enforces the cap server-side; this is a defensive
-        // re-trim for SDKs whose server-side enforcement is approximate.
         const capped = applyCombinedBudget(result.stdout, result.stderr, cap, result.truncated);
         const stdout = capped.stdout;
         const stderr = capped.stderr;
@@ -224,25 +228,32 @@ export function createE2bInstance(
           durationMs,
           ...(truncated ? { truncated: true as const } : {}),
         };
-        // Once the SDK has resolved with a result we trust it. A signal that
-        // aborts after the command has already finished must NOT rewrite the
-        // exit code to 130 — that would tell callers their side-effecting
-        // command was cancelled when in fact it ran to completion, inviting
-        // duplicate execution on retry. Cancellation is only honoured when
-        // the SDK itself signals it (rejection / AbortError, handled below).
+        // If abort fired while we were awaiting the SDK and `supportsAbort`
+        // is true, the SDK was contractually killed — normalize whatever
+        // exit code it surfaced (137/143/0/etc.) to the cancellation contract.
+        // Without `supportsAbort` we pre-flight rejected the signal, so this
+        // branch is only reached on opt-in setups.
+        if (abortedDuringCall) {
+          return {
+            exitCode: 130,
+            stdout: "",
+            stderr: "",
+            durationMs,
+            timedOut: false,
+            oomKilled: false,
+          };
+        }
         return { exitCode: result.exitCode, timedOut, oomKilled, ...baseResult };
       } catch (e: unknown) {
+        options?.signal?.removeEventListener("abort", onAbort);
         const durationMs = performance.now() - start;
         const message = e instanceof Error ? e.message : String(e);
-        // Map to exit 130 only when BOTH the caller actually aborted AND the
-        // SDK explicitly acknowledges cancellation (AbortError name). Anything
-        // else — transport failures, provider eviction, kill-confirmation
-        // failures that happen after abort() — must surface as a real error so
-        // higher layers do not mistake them for a clean user cancel and
-        // skip cleanup/retry of partially-applied side effects.
-        const sig: AbortSignal | undefined = options?.signal;
-        const sdkConfirmedAbort = e instanceof Error && e.name === "AbortError";
-        if (sig?.aborted && sdkConfirmedAbort) {
+        // Cancellation classification mirrors the success branch: only trust
+        // the in-flight `abortedDuringCall` flag. If the caller never aborted
+        // during the call, AbortError-shaped rejections from transport
+        // failures or provider eviction surface as real errors instead of
+        // a synthetic clean cancel.
+        if (abortedDuringCall) {
           return {
             exitCode: 130,
             stdout: "",
