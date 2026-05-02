@@ -761,6 +761,15 @@ export interface KoiRuntimeConfig {
          * transcript-only.
          */
         readonly initialEngineState?: import("@koi/core").EngineState | undefined;
+        /**
+         * `lastPersistedAt` of the row at resume time, also returned by
+         * `resumeWithEngineState`. Forwarded as `initialEngineStateVersion`
+         * to the wrapper so the FIRST clear/write after resume carries a
+         * CAS precondition — without this, a parallel runtime that updates
+         * the row between resume and the first terminal could be silently
+         * overwritten.
+         */
+        readonly initialEngineStateVersion?: number | undefined;
       }
     | undefined;
   /**
@@ -2395,6 +2404,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             : {}),
           ...(sessionPersistenceCfg.initialEngineState !== undefined
             ? { initialEngineState: sessionPersistenceCfg.initialEngineState }
+            : {}),
+          ...(sessionPersistenceCfg.initialEngineStateVersion !== undefined
+            ? { initialEngineStateVersion: sessionPersistenceCfg.initialEngineStateVersion }
             : {}),
         })
       : timeoutInjectedAdapter;

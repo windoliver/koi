@@ -636,5 +636,42 @@ describe("wrapAdapterWithStatePersistence", () => {
     if (!after.ok) throw new Error("expected ok");
     // Checkpoint preserved — host can retry against the same row.
     expect(after.value.lastEngineState).toEqual(captured);
+    // Durable poison marker written so a SECOND attempt converges by
+    // clearing the checkpoint instead of preserving forever.
+    expect(typeof after.value.metadata.__koi_loadFailedAt).toBe("number");
+  });
+
+  test("second consecutive loadState failure clears the poisoned checkpoint (cross-process convergence)", async () => {
+    // Pre-existing row carries the marker from a prior process's failure.
+    await store.saveSession({
+      ...template(),
+      lastEngineState: captured,
+      lastPersistedAt: 1,
+      metadata: { ...template().metadata, __koi_loadFailedAt: 1 },
+    });
+
+    const inner: EngineAdapter = {
+      ...makeAdapter([completedDone], captured),
+      loadState: async () => {
+        throw new Error("still broken in this fresh process");
+      },
+    };
+    const errors: Array<KoiError | Error> = [];
+    const wrapped = wrapAdapterWithStatePersistence(inner, {
+      persistence: store,
+      recordTemplate: template,
+      onPersistError: (e) => errors.push(e),
+      initialEngineState: captured,
+    });
+    for await (const _ of wrapped.stream({ kind: "text", text: "hi" }));
+
+    const after = await store.loadSession(SID);
+    if (!after.ok) throw new Error("expected ok");
+    // Checkpoint cleared so the next resume falls back to transcript-only
+    // instead of preserving a broken cursor forever across restarts.
+    expect(after.value.lastEngineState).toBeUndefined();
+    // Marker dropped along with the cleared checkpoint — a future fresh
+    // checkpoint that fails to load starts the cycle from scratch.
+    expect("__koi_loadFailedAt" in after.value.metadata).toBe(false);
   });
 });

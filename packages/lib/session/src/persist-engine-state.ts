@@ -217,6 +217,22 @@ export function wrapAdapterWithStatePersistence(
   };
 }
 
+/**
+ * Metadata key written to the session row after a `loadState` failure so
+ * the NEXT load attempt — same process or another — knows the checkpoint
+ * has already been tried and failed once. Without it, the in-memory
+ * `loadFailedRef` shield is recreated on every process start, and a
+ * deterministically-broken checkpoint can poison resume forever as each
+ * fresh process preserves it again.
+ *
+ * Convergence: 1st failure → marker written, checkpoint preserved (host's
+ * `onPersistError` handler may retry/wipe externally). 2nd failure (any
+ * process) → marker observed, checkpoint cleared atomically, marker
+ * dropped. Successful load → marker dropped (a future failure on a NEW
+ * checkpoint starts the cycle fresh).
+ */
+const POISON_MARKER_KEY = "__koi_loadFailedAt" as const;
+
 async function* streamWithLazyLoad(
   inner: EngineAdapter,
   input: EngineInput,
@@ -227,18 +243,85 @@ async function* streamWithLazyLoad(
   if (initial !== undefined && loadState !== undefined) {
     try {
       await loadState(initial);
-      // Successful load supersedes any prior failure shield.
       deps.loadFailedRef.failed = false;
+      // Drop any prior poison marker so a future failure on a NEW
+      // checkpoint starts a fresh one-shot preservation window.
+      await dropPoisonMarker(deps);
     } catch (e: unknown) {
-      // PRESERVE the persisted checkpoint. Mark the shield so the next
-      // non-interrupted terminal SKIPS the auto-clear once. Host's
-      // onPersistError handler is the durable signal — operators decide
-      // whether to retry resume, surface UX, or wipe the row externally.
-      deps.loadFailedRef.failed = true;
       deps.onPersistError(e instanceof Error ? e : new Error(extractMessage(e)));
+      deps.loadFailedRef.failed = true;
+      // Durable convergence: write a poison marker on first failure;
+      // CLEAR the checkpoint on second failure (marker already present).
+      await convergePoisonedCheckpoint(deps);
     }
   }
   for await (const ev of inner.stream(input)) yield ev;
+}
+
+async function convergePoisonedCheckpoint(deps: WrapStreamDeps): Promise<void> {
+  const sid = deps.recordTemplate().sessionId;
+  const loaded = await deps.persistence.loadSession(sid);
+  if (!loaded.ok) {
+    // NOT_FOUND or read error — no row to mark/clear.
+    if (loaded.error.code !== "NOT_FOUND") deps.onPersistError(loaded.error);
+    return;
+  }
+  const meta = loaded.value.metadata;
+  if (typeof meta[POISON_MARKER_KEY] === "number") {
+    // Second consecutive failure on this checkpoint — clear it AND drop
+    // the marker. Use updateLastEngineState's CAS to avoid clobbering a
+    // concurrent successful write; a separate saveSession is needed to
+    // reset metadata, but the state clear is the load-bearing convergence.
+    const nowVal = deps.now();
+    const r = await deps.persistence.updateLastEngineState?.(
+      sid,
+      () => undefined,
+      nowVal,
+      loaded.value.lastPersistedAt,
+    );
+    if (r?.ok) {
+      deps.lastWrittenAtRef.value = nowVal;
+      const stripped: SessionRecord = {
+        ...loaded.value,
+        lastEngineState: undefined,
+        lastPersistedAt: nowVal,
+        metadata: stripPoisonMarker(meta),
+      };
+      const m = await deps.persistence.saveSession(stripped);
+      if (!m.ok && m.error.code !== "NOT_FOUND") deps.onPersistError(m.error);
+    } else if (r && !r.ok && r.error.code !== "NOT_FOUND" && r.error.code !== "CONFLICT") {
+      deps.onPersistError(r.error);
+    }
+    return;
+  }
+  // First failure — best-effort marker write so the next attempt converges.
+  // No CAS available for whole-row writes; concurrent successful writes
+  // could clobber the marker, but that case implies the checkpoint is now
+  // newer (and presumably loadable), so losing the marker is benign.
+  const marked: SessionRecord = {
+    ...loaded.value,
+    metadata: { ...meta, [POISON_MARKER_KEY]: deps.now() },
+  };
+  const w = await deps.persistence.saveSession(marked);
+  if (!w.ok && w.error.code !== "NOT_FOUND") deps.onPersistError(w.error);
+}
+
+async function dropPoisonMarker(deps: WrapStreamDeps): Promise<void> {
+  const sid = deps.recordTemplate().sessionId;
+  const loaded = await deps.persistence.loadSession(sid);
+  if (!loaded.ok) return;
+  const meta = loaded.value.metadata;
+  if (!(POISON_MARKER_KEY in meta)) return;
+  const cleaned: SessionRecord = { ...loaded.value, metadata: stripPoisonMarker(meta) };
+  const r = await deps.persistence.saveSession(cleaned);
+  if (!r.ok && r.error.code !== "NOT_FOUND") deps.onPersistError(r.error);
+}
+
+function stripPoisonMarker(
+  meta: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  const { [POISON_MARKER_KEY]: _omit, ...rest } = meta;
+  return rest;
 }
 
 interface WrapStreamDeps {
