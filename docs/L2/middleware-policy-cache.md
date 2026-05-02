@@ -8,16 +8,39 @@ This package is the v2 restoration of the v1 `middleware-policy-cache`. It is th
 
 ---
 
-## ⚠️ Verified-only: every entry must carry proof
+## ⚠️ Verified-only: every entry must carry a non-forgeable attestation
 
-`register(entry)` rejects any `PolicyEntry` whose `verified` flag is not `true`. There is no opt-out. The cache exists *because* forge has independently certified the brick — accepting unverified entries would defeat the safety story and let an unstable harness output silently override the model.
+`register(entry)` rejects any `PolicyEntry` whose `attestation` was not minted by `attestVerified()` from this same package. There is no opt-out and no boolean back-door. The cache exists *because* forge has independently certified the brick — accepting unverified entries would defeat the safety story and let an unstable harness output silently override the model.
+
+**Why a token, not a boolean.** A `verified: boolean` field is caller-controlled — any buggy or compromised wiring layer with access to `register()` could self-assert verification by setting `verified: true`. The token is held in a module-private `WeakSet`, so a hand-rolled `{ brickId, source }` literal — even with the right shape — is rejected at admission. Calling `attestVerified()` is the only way to mint a token, which makes "I am marking this as verified" a deliberate, grep-able action with a name that documents intent.
+
+**Tokens are bound to a specific brickId.** `attestVerified({brickId, source})` returns a token whose `brickId` is checked at `register()` against the entry's `brickId`. A token minted for brick A cannot be reused to install a policy for brick B.
 
 **`register` returns a `Result<void, KoiError>`:**
 
 - `{ ok: true, value: undefined }` — entry accepted, future tool calls for `entry.toolId` will short-circuit
-- `{ ok: false, error: { code: "POLICY_NOT_VERIFIED", ... } }` — caller must ensure forge verification before retrying
+- `{ ok: false, error: { code: "VALIDATION", ... } }` — attestation missing, hand-rolled, or bound to a different brickId; caller must mint a fresh token via `attestVerified()` after forge verification
 
-The wiring layer (e.g. `forge-optimizer` reacting to a `StoreChangeEvent` of kind `"promoted"`) is responsible for compiling the brick into a `PolicyEntry` with `verified: true`. The cache trusts that flag the same way `@koi/middleware-permissions` trusts an approval-cache hit — both are downstream of an explicit verification step.
+```ts
+import { attestVerified, createPolicyCacheMiddleware } from "@koi/middleware-policy-cache";
+
+const handle = createPolicyCacheMiddleware({ notifier: brickStoreNotifier });
+
+notifier.subscribe((e) => {
+  if (e.kind === "promoted" && /* forge metadata says verified */) {
+    handle.register({
+      scope: "agent",
+      agentId: "...",
+      toolId: "...",
+      brickId: e.brickId,
+      attestation: attestVerified({ brickId: e.brickId, source: "forge" }),
+      execute: compiledExecutor,
+    });
+  }
+});
+```
+
+The wiring layer is responsible for confirming forge has independently certified the brick before calling `attestVerified()`. The cache trusts the brand the same way `@koi/middleware-permissions` trusts an approval-cache hit — both are downstream of an explicit verification step.
 
 ---
 

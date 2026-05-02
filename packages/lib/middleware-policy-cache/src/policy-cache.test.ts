@@ -7,7 +7,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
-import { createPolicyCacheMiddleware, type PolicyEntry } from "./policy-cache.js";
+import { attestVerified, createPolicyCacheMiddleware, type PolicyEntry } from "./policy-cache.js";
 
 function ctxFor(agentId: string): TurnContext {
   return {
@@ -39,14 +39,18 @@ function makeAgentPolicy(
   toolId: string,
   brickId: string,
   decision: "allow" | "block" = "allow",
-  verified = true,
+  attest: "valid" | "missing" = "valid",
 ): PolicyEntry {
   return {
     scope: "agent",
     agentId,
     toolId,
     brickId,
-    verified,
+    attestation:
+      attest === "valid"
+        ? attestVerified({ brickId, source: "test" })
+        : // Hand-rolled token (NOT minted via attestVerified) — must be rejected.
+          ({ brickId, source: "test" } as never),
     execute: () =>
       decision === "allow" ? { action: "allow" } : { action: "block", reason: "blocked by policy" },
   };
@@ -61,7 +65,7 @@ function makeGlobalPolicy(
     scope: "global",
     toolId,
     brickId,
-    verified: true,
+    attestation: attestVerified({ brickId, source: "test" }),
     execute: () =>
       decision === "allow" ? { action: "allow" } : { action: "block", reason: "blocked by policy" },
   };
@@ -79,7 +83,9 @@ describe("createPolicyCacheMiddleware: shape", () => {
 describe("createPolicyCacheMiddleware: verified-only promotion gate", () => {
   test("register rejects unverified entries (deterministic gate)", () => {
     const handle = createPolicyCacheMiddleware();
-    const result = handle.register(makeAgentPolicy("agent-A", "search", "brick-1", "allow", false));
+    const result = handle.register(
+      makeAgentPolicy("agent-A", "search", "brick-1", "allow", "missing"),
+    );
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
@@ -90,7 +96,9 @@ describe("createPolicyCacheMiddleware: verified-only promotion gate", () => {
 
   test("register accepts verified entries", () => {
     const handle = createPolicyCacheMiddleware();
-    const result = handle.register(makeAgentPolicy("agent-A", "search", "brick-1", "allow", true));
+    const result = handle.register(
+      makeAgentPolicy("agent-A", "search", "brick-1", "allow", "valid"),
+    );
     expect(result.ok).toBe(true);
     expect(handle.size()).toBe(1);
   });
@@ -98,13 +106,47 @@ describe("createPolicyCacheMiddleware: verified-only promotion gate", () => {
   test("promotion gate is deterministic across identical inputs", () => {
     const h1 = createPolicyCacheMiddleware();
     const h2 = createPolicyCacheMiddleware();
-    const e = makeAgentPolicy("agent-A", "search", "brick-1", "allow", true);
+    const e = makeAgentPolicy("agent-A", "search", "brick-1", "allow", "valid");
     expect(h1.register(e).ok).toBe(true);
     expect(h2.register(e).ok).toBe(true);
 
-    const u = makeAgentPolicy("agent-A", "search", "brick-2", "allow", false);
+    const u = makeAgentPolicy("agent-A", "search", "brick-2", "allow", "missing");
     expect(h1.register(u).ok).toBe(false);
     expect(h2.register(u).ok).toBe(false);
+  });
+
+  test("hand-rolled attestation literal (not minted via attestVerified) is rejected", () => {
+    // The brand check is the trust boundary: a buggy/compromised wiring
+    // layer that constructs `{ brickId, source }` by hand cannot pass
+    // admission, even though the shape matches the public type.
+    const handle = createPolicyCacheMiddleware();
+    const result = handle.register({
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "search",
+      brickId: "brick-1",
+      attestation: { brickId: "brick-1", source: "fake" } as never,
+      execute: () => ({ action: "block", reason: "x" }),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+    expect(handle.size()).toBe(0);
+  });
+
+  test("attestation with mismatched brickId is rejected", () => {
+    // Tokens are bound to a specific brickId at mint time.
+    const handle = createPolicyCacheMiddleware();
+    const wrongIdToken = attestVerified({ brickId: "brick-OTHER", source: "test" });
+    const result = handle.register({
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "search",
+      brickId: "brick-1",
+      attestation: wrongIdToken,
+      execute: () => ({ action: "block", reason: "x" }),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
   });
 });
 
@@ -185,7 +227,7 @@ describe("createPolicyCacheMiddleware: cache-hit bypass equivalence", () => {
       agentId: "agent-A",
       toolId: "search",
       brickId: "brick-pure",
-      verified: true,
+      attestation: attestVerified({ brickId: "brick-pure", source: "test" }),
       execute: (input) => {
         runs += 1;
         const q = (input as { readonly q?: unknown }).q;
@@ -221,7 +263,7 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantin
       agentId: "agent-A",
       toolId: "search",
       brickId: "brick-throws",
-      verified: true,
+      attestation: attestVerified({ brickId: "brick-throws", source: "test" }),
       execute: () => {
         throw new Error("schema drift");
       },
@@ -260,7 +302,7 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantin
       agentId: "agent-A",
       toolId: "search",
       brickId: "brick-broken",
-      verified: true,
+      attestation: attestVerified({ brickId: "brick-broken", source: "test" }),
       execute: () => {
         throw new Error("compile error");
       },
@@ -291,7 +333,7 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantin
       agentId: "agent-A",
       toolId: "search",
       brickId: "brick-flaky",
-      verified: true,
+      attestation: attestVerified({ brickId: "brick-flaky", source: "test" }),
       execute: () => {
         if (throwOnce) throw new Error("transient compile fault");
         return { action: "allow" };
@@ -313,7 +355,7 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantin
       agentId: "agent-A",
       toolId: "search",
       brickId: "brick-flaky",
-      verified: true,
+      attestation: attestVerified({ brickId: "brick-flaky", source: "test" }),
       execute: () => ({ action: "allow" }),
     });
 
@@ -337,7 +379,7 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantin
       agentId: "agent-A",
       toolId: "search",
       brickId: "brick-broken",
-      verified: true,
+      attestation: attestVerified({ brickId: "brick-broken", source: "test" }),
       execute: () => {
         throw new Error("fault");
       },
@@ -363,7 +405,7 @@ describe("createPolicyCacheMiddleware: executor failure (fail-closed + quarantin
       agentId: "agent-A",
       toolId: "search",
       brickId: "brick-throws",
-      verified: true,
+      attestation: attestVerified({ brickId: "brick-throws", source: "test" }),
       execute: () => {
         throw new Error("compile error");
       },
@@ -547,7 +589,7 @@ describe("createPolicyCacheMiddleware: event-driven invalidation", () => {
       agentId: "agent-A",
       toolId: "rm",
       brickId: "brick-1",
-      verified: true,
+      attestation: attestVerified({ brickId: "brick-1", source: "test" }),
       generation: 5,
       execute: () => ({ action: "block", reason: "x" }),
     });
@@ -572,7 +614,7 @@ describe("createPolicyCacheMiddleware: event-driven invalidation", () => {
       agentId: "agent-A",
       toolId: "rm",
       brickId: "brick-1",
-      verified: true,
+      attestation: attestVerified({ brickId: "brick-1", source: "test" }),
       generation: 5,
       execute: () => ({ action: "block", reason: "x" }),
     });
@@ -595,7 +637,7 @@ describe("createPolicyCacheMiddleware: event-driven invalidation", () => {
       agentId: "agent-A",
       toolId: "rm",
       brickId: "brick-1",
-      verified: true,
+      attestation: attestVerified({ brickId: "brick-1", source: "test" }),
       generation: 5,
       execute: () => ({ action: "allow" }),
     });
@@ -854,7 +896,7 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
       agentId: "agent-A",
       toolId: "rm",
       brickId: "brick-1",
-      verified: true,
+      attestation: attestVerified({ brickId: "brick-1", source: "test" }),
       execute: () => ({
         action: "block",
         reason: "internal-rule-id-42 fired on path=/secret/credentials.json",
@@ -907,7 +949,7 @@ describe("createPolicyCacheMiddleware: synthetic permission-decision dispatch", 
       agentId: "agent-A",
       toolId: "rm",
       brickId: "brick-1",
-      verified: true,
+      attestation: attestVerified({ brickId: "brick-1", source: "test" }),
       execute: () => {
         throw new Error("boom");
       },
@@ -1110,7 +1152,7 @@ describe("createPolicyCacheMiddleware: input-mutation defense", () => {
       agentId: "agent-A",
       toolId: "fs.write",
       brickId: "brick-1",
-      verified: true,
+      attestation: attestVerified({ brickId: "brick-1", source: "test" }),
       execute: (input) => {
         // Attempt to rewrite the path the real tool will receive.
         (input as Record<string, unknown>).path = "/etc/passwd";
@@ -1135,7 +1177,7 @@ describe("createPolicyCacheMiddleware: input-mutation defense", () => {
       agentId: "agent-A",
       toolId: "fs.write",
       brickId: "brick-1",
-      verified: true,
+      attestation: attestVerified({ brickId: "brick-1", source: "test" }),
       execute: (input) => {
         const opts = (input as Record<string, unknown>).options as Record<string, unknown>;
         opts.mode = 0o777;

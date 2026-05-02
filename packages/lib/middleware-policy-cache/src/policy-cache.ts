@@ -45,8 +45,18 @@ export type PolicyDecision =
 interface PolicyEntryBase {
   readonly toolId: string;
   readonly brickId: string;
-  /** Forge verification proof. Required to be true; rejected otherwise. */
-  readonly verified: boolean;
+  /**
+   * Non-forgeable verification token. Obtained by calling
+   * `attestVerified({brickId, source})` AFTER the wiring layer has
+   * confirmed forge has independently certified this brick. Replaces the
+   * previous `verified: boolean` field — a boolean is caller-controlled
+   * and cannot prevent a buggy or compromised wiring layer from silently
+   * marking arbitrary executors as authoritative. The token is bound to
+   * the same `brickId` as the entry; `register()` rejects entries whose
+   * attestation has the wrong brickId or wasn't produced by
+   * `attestVerified()`.
+   */
+  readonly attestation: VerifiedAttestation;
   /** Pure function of input → decision. Must not depend on external state. */
   readonly execute: (input: JsonObject) => PolicyDecision;
   /**
@@ -59,6 +69,55 @@ interface PolicyEntryBase {
    * falls back to best-effort eviction with no stale-event protection.
    */
   readonly generation?: number;
+}
+
+/**
+ * Non-forgeable proof that a brick has been verified by forge. Construct
+ * via `attestVerified()` — direct object literals do not satisfy the
+ * runtime brand check inside `register()`, so a buggy or compromised
+ * wiring layer cannot self-assert verification by hand-rolling
+ * `{ brickId, source }` objects.
+ */
+export interface VerifiedAttestation {
+  readonly brickId: string;
+  readonly source: string;
+}
+
+// Module-private brand store. WeakSet membership is the runtime proof;
+// since the brand is held in module scope, callers cannot obtain it
+// without going through `attestVerified()`.
+const VERIFIED_BRAND = new WeakSet<VerifiedAttestation>();
+
+/**
+ * Mint a verification token AFTER the wiring layer has confirmed forge has
+ * independently certified the brick. The token is bound to `brickId` and is
+ * checked at `register()` against the entry's brickId. This is the only
+ * supported way to install a policy in the cache.
+ *
+ * Hosts wire this immediately after observing a `StoreChangeEvent` of kind
+ * `"promoted"` whose forge metadata indicates verification:
+ *
+ * ```ts
+ * notifier.subscribe((e) => {
+ *   if (e.kind === "promoted" && e.policyChange?.to === "verified") {
+ *     handle.register({
+ *       ...,
+ *       attestation: attestVerified({ brickId: e.brickId, source: "forge" }),
+ *     });
+ *   }
+ * });
+ * ```
+ */
+export function attestVerified(args: {
+  readonly brickId: string;
+  readonly source: string;
+}): VerifiedAttestation {
+  const token: VerifiedAttestation = Object.freeze({
+    brickId: args.brickId,
+    source: args.source,
+  });
+  VERIFIED_BRAND.add(token);
+  return token;
 }
 
 /**
@@ -201,7 +260,18 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
   };
 
   const register = (entry: PolicyEntry): Result<void> => {
-    if (entry.verified !== true) {
+    // Non-forgeable attestation check. The attestation MUST have been
+    // minted by `attestVerified()` (membership in module-private
+    // VERIFIED_BRAND) AND its brickId MUST match the entry's brickId.
+    // A hand-rolled `{ brickId, source }` literal — even with the right
+    // shape — is rejected: it isn't in the brand set. This closes the
+    // boolean-spoofing window where a buggy or compromised wiring layer
+    // could install arbitrary executors by setting `verified: true`.
+    if (
+      entry.attestation === undefined ||
+      !VERIFIED_BRAND.has(entry.attestation) ||
+      entry.attestation.brickId !== entry.brickId
+    ) {
       const error: KoiError = {
         code: "VALIDATION",
         message: `policy-cache: refusing unverified brick ${entry.brickId} for tool ${entry.toolId}`,

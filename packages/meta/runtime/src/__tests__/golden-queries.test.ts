@@ -2655,7 +2655,7 @@ describe("Golden: @koi/governance-scope", () => {
 // Golden: @koi/middleware-policy-cache (2 queries)
 // ---------------------------------------------------------------------------
 
-import { createPolicyCacheMiddleware } from "@koi/middleware-policy-cache";
+import { attestVerified, createPolicyCacheMiddleware } from "@koi/middleware-policy-cache";
 
 describe("Golden: @koi/middleware-policy-cache", () => {
   test("verified-only gate: register rejects unverified entries (deterministic)", () => {
@@ -2665,7 +2665,8 @@ describe("Golden: @koi/middleware-policy-cache", () => {
       brickId: "brick-unverified",
       scope: "agent",
       agentId: "agent-A",
-      verified: false,
+      // Hand-rolled token (not minted via attestVerified) — must be rejected.
+      attestation: { brickId: "brick-unverified", source: "fake" } as never,
       execute: () => ({ action: "allow" }),
     });
     expect(reject.ok).toBe(false);
@@ -2679,7 +2680,7 @@ describe("Golden: @koi/middleware-policy-cache", () => {
       brickId: "brick-verified",
       scope: "agent",
       agentId: "agent-A",
-      verified: true,
+      attestation: attestVerified({ brickId: "brick-verified", source: "test" }),
       execute: () => ({ action: "allow" }),
     });
     expect(accept.ok).toBe(true);
@@ -2693,7 +2694,7 @@ describe("Golden: @koi/middleware-policy-cache", () => {
       brickId: "brick-1",
       scope: "agent",
       agentId: "a",
-      verified: true,
+      attestation: attestVerified({ brickId: "brick-1", source: "test" }),
       execute: (input) => {
         const q = (input as { readonly q?: unknown }).q;
         return typeof q === "string" && q.length > 0

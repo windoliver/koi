@@ -13,5 +13,6 @@ export type {
   PolicyCacheHandle,
   PolicyDecision,
   PolicyEntry,
+  VerifiedAttestation,
 } from "./policy-cache.js";
-export { createPolicyCacheMiddleware } from "./policy-cache.js";
+export { attestVerified, createPolicyCacheMiddleware } from "./policy-cache.js";
