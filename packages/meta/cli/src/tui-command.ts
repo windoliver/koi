@@ -2427,27 +2427,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   if (aceCloseHook !== undefined) {
     process.on("exit", aceCloseHook);
   }
-  // Issue #1683: flip cancel-checkpoint session row to "done" on CLEAN
-  // exit only so recovery tooling can still distinguish a crash from a
-  // normal close. "Clean" here means:
-  //   - code 0: natural event-loop drain
-  //   - code 130: user-initiated /quit (TUI convention: 128+SIGINT=130)
-  // Any other code (1 = validation failure, 137 = SIGKILL, 139 = SIGSEGV,
-  // etc.) legitimately leaves the row at "running" so the next-startup
-  // recovery scan picks it up as a crash candidate. The store is closed
-  // unconditionally so WAL files flush regardless of exit reason.
-  // Best-effort — exit handlers are sync, errors are swallowed.
+  // Issue #1683: close the cancel-checkpoint store on process exit so WAL
+  // files flush. The status flip to "done" lives inside shutdown() (before
+  // appHandle.stop() destroys the OpenTUI renderer) because process.on("exit")
+  // does NOT fire reliably here — destroyRenderer collapses Bun's event loop
+  // on the next empty tick, bypassing JS exit handlers. close() is registered
+  // anyway as a best-effort fallback for paths that DO reach process exit
+  // (e.g. validation-failure process.exit(1) before the runtime is built).
   if (stateSessionPersistence !== undefined) {
     const persistOnExit = stateSessionPersistence;
-    process.on("exit", (code: number) => {
-      if (code === 0 || code === 130) {
-        try {
-          const r = persistOnExit.setSessionStatus(tuiSessionId, "done");
-          if (r instanceof Promise) r.catch(() => {});
-        } catch {
-          /* swallow — exit handler */
-        }
-      }
+    process.on("exit", () => {
       try {
         const c = persistOnExit.close();
         if (c instanceof Promise) c.catch(() => {});
@@ -3975,6 +3964,27 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // may hold timers or open file handles.
     governanceBridge?.dispose();
     securityBridge.dispose();
+    // Issue #1683: flip the cancel-checkpoint session row to "done" BEFORE
+    // appHandle.stop() destroys the OpenTUI renderer. After destroyRenderer,
+    // Bun's event loop collapses on the next empty tick and process.on("exit")
+    // handlers do NOT fire reliably (same root cause documented at line ~3937
+    // for runtime.dispose()). Doing the flip here, while the renderer is
+    // still alive, guarantees the status update lands on every clean
+    // shutdown path that flows through shutdown() — /quit, SIGTERM,
+    // SIGHUP, supervisor stop. SIGKILL/OOM still legitimately leave
+    // "running" because shutdown() never runs in those cases. exitCode
+    // gates the flip: validation-failure exits (process.exit(1)) reach
+    // bin.ts directly without going through shutdown(), so they never
+    // get here; the gate just keeps semantics explicit for callers that
+    // pass non-zero exit codes through shutdown() (none today).
+    if (stateSessionPersistence !== undefined && exitCode === 0) {
+      try {
+        const r = stateSessionPersistence.setSessionStatus(tuiSessionId, "done");
+        if (r instanceof Promise) await r.catch(() => undefined);
+      } catch {
+        /* swallow — best-effort, must not block shutdown */
+      }
+    }
     try {
       await appHandle?.stop();
       // Print the resume hint here — after the TUI renderer has
