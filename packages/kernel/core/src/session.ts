@@ -206,19 +206,28 @@ export interface SessionPersistence {
    *
    * The store guarantees the read-modify-write sequence runs as one
    * critical section: `apply` sees the latest persisted state, and the
-   * resulting value is committed without any other writer interleaving on
-   * the same row. This is the only safe primitive for cancel-resume
-   * checkpointing under any topology where two writes to the same session
-   * can race (timed-out late writes, concurrent terminals, multi-host
-   * failover) — `saveSession` is a full upsert with no CAS.
+   * resulting value is committed without any other LOCAL writer
+   * interleaving on the same row. `apply` MUST be pure and synchronous —
+   * the store calls it inline inside its transaction / event-loop tick.
+   *
+   * Scope of the guarantee:
+   *   - Local synchronous stores (in-memory, embedded SQLite/etc.): full
+   *     atomicity. A timed-out caller-side write cannot resurrect stale
+   *     state on top of a newer terminal because the store's transaction
+   *     either commits the new state or rejects it deterministically.
+   *   - Async / network / remote stores: this signature does NOT carry an
+   *     expected-version precondition, so a slow RPC dispatched on top of
+   *     this method can still land out of order at the remote server.
+   *     Implementations of remote `SessionPersistence` MUST add their own
+   *     version/CAS check inside the transaction body to be safe — and
+   *     should document that requirement. A future revision of this
+   *     contract may add an `expectedVersion?: number` parameter; for now
+   *     callers wanting cross-host failover should use a store that
+   *     enforces causality internally.
    *
    * Optional method: implementations may omit it; callers must check for
    * presence and fall back to load-merge-save (with all the race caveats
    * that implies) when absent.
-   *
-   * `apply` runs synchronously inside the store's critical section — it
-   * MUST be pure and fast. Use it to compute the new `EngineState` from
-   * the prior one, returning `undefined` to clear the field.
    *
    * Returns NOT_FOUND when the session row doesn't exist (the contract
    * intentionally does not auto-create — callers must `saveSession` first
