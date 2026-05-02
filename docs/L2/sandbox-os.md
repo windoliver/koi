@@ -574,9 +574,9 @@ The bwrap backend uses `--unshare-all` + `--ro-bind / /` (open mode) or explicit
   This correctly handles credential files like `~/.netrc`, `~/.npmrc`, `~/.pypirc`.
 - **Non-existent paths** → skipped; `--tmpfs` on a non-existent path crashes bwrap.
 
-`ensureDenyReadPaths()` runs before `buildBwrapPrefix()` to pre-create *missing directory*
-mount points (bwrap cannot `mkdir` after `--ro-bind / /`). Only paths that do not already
-exist are created — existing files are never overwritten with directories.
+Missing `denyRead` paths are not created on the host. This avoids mutating credential paths
+such as `~/.netrc` or arbitrary profile-supplied paths while still masking files and
+directories that exist when the sandbox is built.
 
 **Closed mode** — only explicit `allowRead` paths are mounted. `buildBwrapPrefix` omits the
 `--ro-bind / /` root bind; `/dev`, `/proc`, `/tmp` are always added via their overlays.
