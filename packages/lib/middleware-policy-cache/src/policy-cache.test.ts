@@ -528,6 +528,82 @@ describe("createPolicyCacheMiddleware: event-driven invalidation", () => {
     expect(handle.size()).toBe(0);
   });
 
+  test("stale notifier event (older generation) does NOT evict current entry", () => {
+    // Round 1 (fresh loop) review: a delayed event for a prior generation
+    // is otherwise indistinguishable from a current-generation event and
+    // can silently evict a freshly re-promoted deny.
+    let listener: ((e: StoreChangeEvent) => void) | undefined;
+    const notifier: StoreChangeNotifier = {
+      notify: () => {},
+      subscribe: (cb) => {
+        listener = cb;
+        return () => {};
+      },
+    };
+    const handle = createPolicyCacheMiddleware({ notifier });
+    // Register fresh entry at generation 5.
+    handle.register({
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "rm",
+      brickId: "brick-1",
+      verified: true,
+      generation: 5,
+      execute: () => ({ action: "block", reason: "x" }),
+    });
+    expect(handle.size()).toBe(1);
+    // A late event from generation 3 must NOT evict.
+    listener?.({ kind: "updated", brickId: "brick-1" as never, generation: 3 });
+    expect(handle.size()).toBe(1);
+  });
+
+  test("current-or-newer generation event DOES evict", () => {
+    let listener: ((e: StoreChangeEvent) => void) | undefined;
+    const notifier: StoreChangeNotifier = {
+      notify: () => {},
+      subscribe: (cb) => {
+        listener = cb;
+        return () => {};
+      },
+    };
+    const handle = createPolicyCacheMiddleware({ notifier });
+    handle.register({
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "rm",
+      brickId: "brick-1",
+      verified: true,
+      generation: 5,
+      execute: () => ({ action: "block", reason: "x" }),
+    });
+    listener?.({ kind: "removed", brickId: "brick-1" as never, generation: 5 });
+    expect(handle.size()).toBe(0);
+  });
+
+  test("legacy events without generation evict (best-effort, backward compat)", () => {
+    let listener: ((e: StoreChangeEvent) => void) | undefined;
+    const notifier: StoreChangeNotifier = {
+      notify: () => {},
+      subscribe: (cb) => {
+        listener = cb;
+        return () => {};
+      },
+    };
+    const handle = createPolicyCacheMiddleware({ notifier });
+    handle.register({
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "rm",
+      brickId: "brick-1",
+      verified: true,
+      generation: 5,
+      execute: () => ({ action: "allow" }),
+    });
+    // Event without generation falls back to evicting (legacy hosts).
+    listener?.({ kind: "removed", brickId: "brick-1" as never });
+    expect(handle.size()).toBe(0);
+  });
+
   test("notifier ignores 'saved' and 'promoted' (wiring layer handles promotion)", () => {
     let listener: ((e: StoreChangeEvent) => void) | undefined;
     const notifier: StoreChangeNotifier = {
@@ -951,6 +1027,24 @@ describe("createPolicyCacheMiddleware: process-wide agent-bucket cap", () => {
     expect(handle.register(makeAgentPolicy("a1", "t", "b1")).ok).toBe(false);
     // …but global is its own bucket and continues to work.
     expect(handle.register(makeGlobalPolicy("t", "b-g")).ok).toBe(true);
+  });
+
+  test("cross-agent re-home at the bucket cap is NOT spuriously rejected", () => {
+    // Round 1 (fresh loop) review caught that `register()` checked the
+    // bucket cap before freeing the prior bucket of a moving brickId, so
+    // a cross-agent owner change at the cap returned VALIDATION even
+    // though the move would immediately free a slot. Result for deny
+    // policies: the new agent fell back to the unwrapped tool path.
+    const handle = createPolicyCacheMiddleware({ maxAgentBuckets: 2 });
+    expect(handle.register(makeAgentPolicy("a1", "t", "brick-roving", "block")).ok).toBe(true);
+    expect(handle.register(makeAgentPolicy("a2", "t", "b2")).ok).toBe(true);
+    // Cap is full. A fresh new-agent registration must still fail.
+    expect(handle.register(makeAgentPolicy("a3", "t", "b3")).ok).toBe(false);
+    // But re-homing the existing brick-roving from a1 → a3 must succeed:
+    // deleting a1's slot (it had only that brick) frees a bucket.
+    const result = handle.register(makeAgentPolicy("a3", "t", "brick-roving", "block"));
+    expect(result.ok).toBe(true);
+    expect(handle.size()).toBe(2);
   });
 
   test("re-homing a brick across many agents does NOT leak empty buckets", () => {

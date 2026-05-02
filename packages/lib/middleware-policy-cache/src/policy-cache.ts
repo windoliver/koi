@@ -49,6 +49,16 @@ interface PolicyEntryBase {
   readonly verified: boolean;
   /** Pure function of input → decision. Must not depend on external state. */
   readonly execute: (input: JsonObject) => PolicyDecision;
+  /**
+   * Monotonically increasing generation token for this brick. When set on
+   * both `register()` and the corresponding `StoreChangeEvent.generation`,
+   * the cache ignores notifier events whose generation is strictly older
+   * than the currently stored entry — protects a freshly re-promoted deny
+   * from being evicted by a delayed event for a prior generation. Hosts
+   * that cannot supply a generation may omit the field; the cache then
+   * falls back to best-effort eviction with no stale-event protection.
+   */
+  readonly generation?: number;
 }
 
 /**
@@ -201,29 +211,18 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       return { ok: false, error };
     }
 
-    const slot = bucketFor(entry);
-    if (slot === null) {
-      // Process-wide agent-bucket cap reached. Fail-closed: refuse the new
-      // registration rather than evicting an existing agent's bucket, which
-      // could drop verified denies for that agent and silently reopen tools.
-      // Marked retryable so forge can shed load or evict explicitly first.
-      const error: KoiError = {
-        code: "VALIDATION",
-        message: `policy-cache: agent-bucket cap reached (${String(maxAgentBuckets)}); refusing registration for ${entry.brickId}`,
-        retryable: true,
-        context: { brickId: entry.brickId, toolId: entry.toolId, maxAgentBuckets },
-      };
-      return { ok: false, error };
-    }
-    const { key: bucket, map: bucketMap } = slot;
-
-    // Stale forward entry: this brickId previously lived under a different
-    // bucket/toolId — drop it from there before re-inserting here. If that
-    // empties the prior agent bucket, GC it: empty buckets still count
-    // against `maxAgentBuckets`, so leaking them turns cross-agent
-    // re-registration into a slow-burn DoS on the control plane.
+    // Pre-pass: if this brickId is moving from a different (bucket, toolId),
+    // free the prior slot BEFORE checking `maxAgentBuckets`. Otherwise a
+    // cross-agent re-home at the cap would be spuriously rejected even
+    // though deleting the old bucket would immediately free a slot — for
+    // deny policies that means the new agent falls back to the unwrapped
+    // tool path during owner changes.
+    const targetBucketKey = entry.scope === "agent" ? `agent:${entry.agentId}` : "global";
     const prior = brickIndex.get(entry.brickId);
-    if (prior !== undefined && (prior.bucket !== bucket || prior.toolId !== entry.toolId)) {
+    if (
+      prior !== undefined &&
+      (prior.bucket !== targetBucketKey || prior.toolId !== entry.toolId)
+    ) {
       if (prior.bucket === "global") {
         globalCache.delete(prior.toolId);
       } else {
@@ -242,7 +241,26 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
           }
         }
       }
+      // Forward index points at the stale slot; clear so the cap check sees
+      // a clean state. We re-set after insertion below.
+      brickIndex.delete(entry.brickId);
     }
+
+    const slot = bucketFor(entry);
+    if (slot === null) {
+      // Process-wide agent-bucket cap reached. Fail-closed: refuse the new
+      // registration rather than evicting an existing agent's bucket, which
+      // could drop verified denies for that agent and silently reopen tools.
+      // Marked retryable so forge can shed load or evict explicitly first.
+      const error: KoiError = {
+        code: "VALIDATION",
+        message: `policy-cache: agent-bucket cap reached (${String(maxAgentBuckets)}); refusing registration for ${entry.brickId}`,
+        retryable: true,
+        context: { brickId: entry.brickId, toolId: entry.toolId, maxAgentBuckets },
+      };
+      return { ok: false, error };
+    }
+    const { key: bucket, map: bucketMap } = slot;
 
     // Stale reverse entry: another brickId already occupies this (bucket, toolId).
     const existing = bucketMap.get(entry.toolId);
@@ -293,9 +311,32 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
   let unsubscribeNotifier: (() => void) | undefined;
   if (config.notifier !== undefined) {
     unsubscribeNotifier = config.notifier.subscribe((event: StoreChangeEvent) => {
-      if (event.kind === "updated" || event.kind === "removed" || event.kind === "quarantined") {
-        evict(event.brickId);
+      if (event.kind !== "updated" && event.kind !== "removed" && event.kind !== "quarantined") {
+        return;
       }
+      // Generation-aware invalidation. A stale event for a prior generation
+      // of the same brickId is otherwise indistinguishable from a current
+      // event and can silently evict a freshly re-promoted deny. When both
+      // sides supply a generation, ignore events strictly older than what
+      // the cache currently holds. Hosts that omit `generation` get the
+      // legacy best-effort behavior — eviction proceeds.
+      const ref = brickIndex.get(event.brickId);
+      if (ref !== undefined) {
+        const map =
+          ref.bucket === "global"
+            ? globalCache
+            : agentCaches.get(ref.bucket.slice("agent:".length));
+        const current = map?.get(ref.toolId);
+        if (
+          current !== undefined &&
+          event.generation !== undefined &&
+          current.generation !== undefined &&
+          event.generation < current.generation
+        ) {
+          return;
+        }
+      }
+      evict(event.brickId);
     });
   }
 
