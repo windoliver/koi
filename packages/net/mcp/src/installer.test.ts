@@ -90,7 +90,7 @@ describe("pickPackageForInstall", () => {
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.error.message).toContain("requires manual configuration");
+    expect(result.error.message).toContain("no auto-installable candidate");
     expect(result.error.message).toContain("API_KEY");
   });
 

@@ -155,16 +155,13 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
   };
 
   const storeTokens = async (tokens: OAuthTokens): Promise<void> => {
+    // Index-first ordering: a token blob written without an index entry
+    // is invisible to clearAllOAuthState() and would survive uninstall.
+    // Tracking errors propagate so the caller learns the persist failed
+    // rather than seeing a phantom-success that leaves orphaned state.
+    await trackOAuthKey(storage, serverName, serverUrl, storageKey);
     await storage.withLock(storageKey, async () => {
       await storage.set(storageKey, JSON.stringify(tokens));
-    });
-    // Best-effort: track the token key so uninstall/rollback can wipe
-    // it together with DCR client records. Failure here means a future
-    // cleanup will miss this record, so log to stderr — silent leakage
-    // is the failure mode we're trying to prevent.
-    await trackOAuthKey(storage, serverName, serverUrl, storageKey).catch((err: unknown) => {
-      const detail = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[koi] warning: OAuth cleanup index update failed (${detail})\n`);
     });
   };
 
@@ -435,6 +432,40 @@ export async function trackOAuthKey(
 }
 
 /**
+ * Remove a single key from the cleanup index. Used to roll back a
+ * tracking entry when persisting the underlying record fails after
+ * the index update succeeded.
+ */
+export async function untrackOAuthKey(
+  storage: SecureStorage,
+  serverName: string,
+  serverUrl: string,
+  ownedKey: string,
+): Promise<void> {
+  const idx = computeOAuthIndexKey(serverName, serverUrl);
+  await storage.withLock(idx, async () => {
+    const raw = await storage.get(idx);
+    if (raw === undefined) return;
+    let keys: readonly string[] = [];
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        keys = parsed.filter((k): k is string => typeof k === "string");
+      }
+    } catch {
+      return;
+    }
+    const next = keys.filter((k) => k !== ownedKey);
+    if (next.length === keys.length) return;
+    if (next.length === 0) {
+      await storage.delete(idx);
+    } else {
+      await storage.set(idx, JSON.stringify(next));
+    }
+  });
+}
+
+/**
  * Remove ALL persisted OAuth state for a (server, url) pair: token
  * blob, every DCR client record we registered, and the index itself.
  * Throws on the first underlying storage error — callers must surface
@@ -549,16 +580,26 @@ export async function writeClientInfo(
   authority: string = "",
 ): Promise<void> {
   const key = computeClientKey(serverName, serverUrl, redirectUri, authority);
-  await storage.withLock(key, async () => {
-    await storage.set(key, JSON.stringify(info));
-  });
-  // Track for cleanup — see note in storeTokens above. The client
-  // record is computed from a port-bound redirectUri so cleanup
-  // cannot reconstruct it without this index.
-  await trackOAuthKey(storage, serverName, serverUrl, key).catch((err: unknown) => {
-    const detail = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[koi] warning: OAuth cleanup index update failed (${detail})\n`);
-  });
+  // Index-first ordering: the client record is computed from a
+  // port-bound redirectUri, so cleanup cannot reconstruct the key
+  // without this index. If tracking fails, abort before persisting the
+  // record — orphaned client material would otherwise survive uninstall
+  // forever.
+  await trackOAuthKey(storage, serverName, serverUrl, key);
+  try {
+    await storage.withLock(key, async () => {
+      await storage.set(key, JSON.stringify(info));
+    });
+  } catch (cause: unknown) {
+    // Roll the index entry back so a permanently-failed write doesn't
+    // leave a phantom key the next cleanup tries to delete.
+    await untrackOAuthKey(storage, serverName, serverUrl, key).catch(() => {
+      // Untrack failed too — the index now has a phantom entry, but
+      // delete-of-nonexistent on cleanup is a no-op. Prefer surfacing
+      // the original write error.
+    });
+    throw cause;
+  }
 }
 
 function isExpired(tokens: OAuthTokens): boolean {

@@ -44,50 +44,68 @@ export interface UninstallOptions {
 export function pickPackageForInstall(
   server: RegistryServer,
 ): Result<ExternalServerConfig, KoiError> {
-  const httpRemote = server.remotes?.find((r) => (r.transport?.type ?? "http") === "http");
-  if (httpRemote !== undefined) {
-    const headersResult = remoteHeaders(httpRemote.headers);
-    if (!headersResult.ok) return headersResult;
+  // Walk every advertised install candidate before declaring a registry
+  // entry non-installable. The previous behavior bailed at the first
+  // unusable remote (e.g. one that needs a manual header) even when a
+  // perfectly usable package or alternate remote followed it. Now we
+  // collect every reject reason and only fail when *no* candidate
+  // worked, so a guarded HTTP remote no longer hides a usable npm
+  // package alongside it.
+  const rejects: string[] = [];
+
+  for (const remote of server.remotes ?? []) {
+    const transport = remote.transport?.type ?? "http";
+    if (transport !== "http" && transport !== "sse") continue;
+    const headersResult = remoteHeaders(remote.headers);
+    if (!headersResult.ok) {
+      rejects.push(`${transport} remote ${remote.url}: ${headersResult.error.message}`);
+      continue;
+    }
     const headers = headersResult.value;
-    // Always include an empty `oauth` block so `koi mcp auth <name>`
-    // can run Dynamic Client Registration if the server requires auth.
-    // The OAuth provider is only consulted on a 401, so this is inert
-    // for servers that don't require authentication.
-    const cfg: ExternalServerConfig = {
-      type: "http",
-      url: httpRemote.url,
-      oauth: {},
-      ...(headers !== undefined ? { headers } : {}),
-    };
-    return { ok: true, value: cfg };
-  }
-  const sseRemote = server.remotes?.find((r) => r.transport?.type === "sse");
-  if (sseRemote !== undefined) {
-    const headersResult = remoteHeaders(sseRemote.headers);
-    if (!headersResult.ok) return headersResult;
-    const headers = headersResult.value;
+    if (transport === "http") {
+      // Always include an empty `oauth` block so `koi mcp auth <name>`
+      // can run Dynamic Client Registration if the server requires auth.
+      // The OAuth provider is only consulted on a 401, so this is inert
+      // for servers that don't require authentication.
+      const cfg: ExternalServerConfig = {
+        type: "http",
+        url: remote.url,
+        oauth: {},
+        ...(headers !== undefined ? { headers } : {}),
+      };
+      return { ok: true, value: cfg };
+    }
     const cfg: ExternalServerConfig = {
       type: "sse",
-      url: sseRemote.url,
+      url: remote.url,
       ...(headers !== undefined ? { headers } : {}),
     };
     return { ok: true, value: cfg };
   }
+
   for (const pkg of server.packages ?? []) {
     const stdio = packageToStdio(pkg);
     if (stdio.kind === "ok") return { ok: true, value: stdio.value };
     if (stdio.kind === "reject") {
-      return {
-        ok: false,
-        error: {
-          code: "VALIDATION",
-          message: `Registry entry "${server.name}@${server.version}" requires manual configuration: ${stdio.reason}`,
-          retryable: false,
-          context: { name: server.name, version: server.version, reason: stdio.reason },
-        },
-      };
+      rejects.push(`package ${pkg.registryType}:${pkg.identifier}: ${stdio.reason}`);
     }
   }
+
+  if (rejects.length > 0) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message:
+          `Registry entry "${server.name}@${server.version}" has no auto-installable candidate ` +
+          `(${rejects.length} candidate${rejects.length === 1 ? "" : "s"} require manual config: ` +
+          `${rejects.join("; ")})`,
+        retryable: false,
+        context: { name: server.name, version: server.version, rejected: rejects },
+      },
+    };
+  }
+
   return {
     ok: false,
     error: {
