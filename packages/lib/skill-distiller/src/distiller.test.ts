@@ -19,7 +19,18 @@ const TRACE: DistillationTrace = {
     { role: "user", text: "format pr 42" },
     { role: "assistant", toolCalls: [{ name: "read_file", argsJson: "{}" }] },
     { role: "tool", text: "ok" },
+    { role: "assistant", toolCalls: [{ name: "write_file", argsJson: "{}" }] },
+    { role: "tool", text: "ok" },
     { role: "assistant", text: "done" },
+  ],
+};
+
+const SINGLE_TOOL_TRACE: DistillationTrace = {
+  traceId: "t-single",
+  sessionId: "s1",
+  turns: [
+    { role: "user", text: "hi" },
+    { role: "assistant", toolCalls: [{ name: "read_file", argsJson: "{}" }] },
   ],
 };
 
@@ -56,11 +67,7 @@ describe("createDistiller", () => {
   test("propagates LLM failure as EXTERNAL with cause code", async () => {
     const llm: DistillerLLM = async () => ({
       ok: false,
-      error: {
-        code: "RATE_LIMIT",
-        message: "slow down",
-        retryable: true,
-      },
+      error: { code: "RATE_LIMIT", message: "slow down", retryable: true },
     });
     const d = createDistiller({ llm });
     const r = await d.distill(TRACE);
@@ -71,6 +78,28 @@ describe("createDistiller", () => {
     }
   });
 
+  test("preserves retryable=true when wrapping a transient LLM failure", async () => {
+    const llm: DistillerLLM = async () => ({
+      ok: false,
+      error: { code: "RATE_LIMIT", message: "slow down", retryable: true },
+    });
+    const d = createDistiller({ llm });
+    const r = await d.distill(TRACE);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.retryable).toBe(true);
+  });
+
+  test("preserves retryable=false when wrapping a terminal LLM failure", async () => {
+    const llm: DistillerLLM = async () => ({
+      ok: false,
+      error: { code: "INTERNAL", message: "bug", retryable: false },
+    });
+    const d = createDistiller({ llm });
+    const r = await d.distill(TRACE);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.retryable).toBe(false);
+  });
+
   test("propagates parse failure as VALIDATION", async () => {
     const llm: DistillerLLM = async () => ({ ok: true, value: "not json" });
     const d = createDistiller({ llm });
@@ -79,9 +108,36 @@ describe("createDistiller", () => {
     if (!r.ok) expect(r.error.code).toBe("VALIDATION");
   });
 
-  test("omits sessionId from source when trace has none", async () => {
+  test("rejects draft whose toolSequence references tools not in the trace", async () => {
     const d = createDistiller({ llm: okLLM(VALID_DRAFT) });
-    const r = await d.distill({ traceId: "t1", turns: [{ role: "user" }] });
+    const r = await d.distill(SINGLE_TOOL_TRACE);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe("VALIDATION");
+      expect(r.error.context?.errorKind).toBe("DRAFT_TOOL_NOT_GROUNDED");
+    }
+  });
+
+  test("rejects draft with empty toolSequence", async () => {
+    const d = createDistiller({ llm: okLLM({ ...VALID_DRAFT, toolSequence: [] }) });
+    const r = await d.distill(TRACE);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_TOOLS_EMPTY");
+  });
+
+  test("rejects draft with empty triggers (un-discoverable skill)", async () => {
+    const d = createDistiller({ llm: okLLM({ ...VALID_DRAFT, triggers: [] }) });
+    const r = await d.distill(TRACE);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_TRIGGERS_EMPTY");
+  });
+
+  test("omits sessionId from source when trace has none", async () => {
+    const d = createDistiller({ llm: okLLM({ ...VALID_DRAFT, toolSequence: ["read_file"] }) });
+    const r = await d.distill({
+      traceId: "t1",
+      turns: [{ role: "assistant", toolCalls: [{ name: "read_file", argsJson: "{}" }] }],
+    });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.source.sessionId).toBeUndefined();
   });

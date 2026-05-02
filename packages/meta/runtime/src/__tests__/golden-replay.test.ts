@@ -16312,6 +16312,8 @@ describe("Golden: @koi/skill-distiller", () => {
         { role: "user" as const, text: "format pr 42" },
         { role: "assistant" as const, toolCalls: [{ name: "read_file", argsJson: "{}" }] },
         { role: "tool" as const, text: "ok" },
+        { role: "assistant" as const, toolCalls: [{ name: "write_file", argsJson: "{}" }] },
+        { role: "tool" as const, text: "ok" },
         { role: "assistant" as const, text: "done" },
       ],
     };

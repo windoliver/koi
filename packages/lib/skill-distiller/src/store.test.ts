@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { SkillStoreReplacement } from "./store.js";
 import { createSkillStore } from "./store.js";
 import type { DistillationRecord } from "./types.js";
 
@@ -24,12 +25,32 @@ describe("createSkillStore — basic semantics", () => {
     expect(s.size()).toBe(1);
   });
 
-  test("add returns 'added' when same name has different hash (replacement)", () => {
-    const s = createSkillStore();
+  test("add returns 'replaced' when same name has different hash, fires onReplaced with prev+next", () => {
+    const events: SkillStoreReplacement[] = [];
+    const s = createSkillStore({ onReplaced: (r) => events.push(r) });
     s.add(rec("a", "h1"));
-    expect(s.add(rec("a", "h2"))).toBe("added");
+    expect(s.add(rec("a", "h2"))).toBe("replaced");
     expect(s.size()).toBe(1);
     expect(s.get("a")?.draftHash).toBe("h2");
+    expect(events.length).toBe(1);
+    expect(events[0]?.previous.draftHash).toBe("h1");
+    expect(events[0]?.next.draftHash).toBe("h2");
+  });
+
+  test("replacement does not trigger LRU eviction (entry count unchanged)", () => {
+    const evicted: string[] = [];
+    const s = createSkillStore({ maxSize: 2, onEvicted: (r) => evicted.push(r.draft.name) });
+    s.add(rec("a", "h1"));
+    s.add(rec("b", "hb"));
+    expect(s.add(rec("a", "h2"))).toBe("replaced");
+    expect(evicted).toEqual([]);
+    expect(s.size()).toBe(2);
+  });
+
+  test("onReplaced is silent when not provided (backward compatible)", () => {
+    const s = createSkillStore();
+    s.add(rec("a", "h1"));
+    expect(() => s.add(rec("a", "h2"))).not.toThrow();
   });
 
   test("has and hasHash reflect contents", () => {

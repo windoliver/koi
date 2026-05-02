@@ -1,23 +1,35 @@
 import type { DistillationRecord } from "./types.js";
 
-export type SkillStoreAddStatus = "added" | "duplicate";
+export type SkillStoreAddStatus = "added" | "duplicate" | "replaced";
 export type SkillStoreEvictReason = "lru";
+
+/** Caller-visible signal when a same-name insert with a different hash occurs. */
+export interface SkillStoreReplacement {
+  readonly previous: DistillationRecord;
+  readonly next: DistillationRecord;
+}
 
 export interface SkillStoreConfig {
   /** Max records retained. Default: Infinity (no eviction). */
   readonly maxSize?: number;
   /** Fires when an entry is evicted by LRU pressure. */
   readonly onEvicted?: (record: DistillationRecord, reason: SkillStoreEvictReason) => void;
+  /**
+   * Fires when a same-name insert with a different draftHash overwrites an existing record.
+   * Receives both the previous and next record so the caller can audit, archive, or revert.
+   * Without a handler, replacements are silent.
+   */
+  readonly onReplaced?: (replacement: SkillStoreReplacement) => void;
 }
 
 export interface SkillStore {
   /**
-   * Insert or replace a record by `draft.name`. Returns:
-   *  - "duplicate" when an existing entry with the same name AND draftHash is present (no change)
-   *  - "added" when the entry is new, or when an existing entry's hash differs (replacement)
-   *
-   * On "added" the entry becomes the most-recently-used. If the store would exceed `maxSize`,
-   * the least-recently-used entry is evicted and `onEvicted` fires.
+   * Insert a record by `draft.name`. Returns:
+   *  - "duplicate" — existing entry with same name AND draftHash; no change beyond MRU bump
+   *  - "added" — new name; entry inserted as MRU; may trigger LRU eviction
+   *  - "replaced" — existing entry with same name but different draftHash; previous record
+   *    is overwritten and `onReplaced` fires (so callers can audit) before the new entry
+   *    becomes MRU
    */
   readonly add: (record: DistillationRecord) => SkillStoreAddStatus;
   readonly has: (name: string) => boolean;
@@ -56,9 +68,15 @@ export function createSkillStore(config: SkillStoreConfig = {}): SkillStore {
   return {
     add: (record: DistillationRecord): SkillStoreAddStatus => {
       const existing = entries.get(record.draft.name);
-      if (existing !== undefined && existing.draftHash === record.draftHash) {
-        touch(record.draft.name, existing);
-        return "duplicate";
+      if (existing !== undefined) {
+        if (existing.draftHash === record.draftHash) {
+          touch(record.draft.name, existing);
+          return "duplicate";
+        }
+        config.onReplaced?.({ previous: existing, next: record });
+        touch(record.draft.name, record);
+        // No LRU eviction needed — same-name replacement preserves entry count.
+        return "replaced";
       }
       touch(record.draft.name, record);
       evictIfFull();

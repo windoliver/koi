@@ -12,25 +12,37 @@ const baseDraft: SkillDraft = {
   expectedOutputs: ["formatted markdown"],
 };
 
-describe("computeDraftHash", () => {
-  test("returns identical hash for drafts with same name and tools", () => {
+describe("computeDraftHash — stability (description is wording, not behavior)", () => {
+  test("ignores description wording", () => {
+    const a = computeDraftHash(baseDraft);
+    const b = computeDraftHash({ ...baseDraft, description: "Wholly different prose." });
+    expect(a).toBe(b);
+  });
+
+  test("ignores parameter description and required flag (only name participates)", () => {
     const a = computeDraftHash(baseDraft);
     const b = computeDraftHash({
       ...baseDraft,
-      description: "Wholly different prose",
-      triggers: ["completely different triggers"],
-      parameters: [],
+      parameters: [{ name: "title", description: "different prose", required: false }],
     });
     expect(a).toBe(b);
   });
 
-  test("ignores tool order", () => {
+  test("trigger order does not matter", () => {
+    const a = computeDraftHash(baseDraft);
+    const b = computeDraftHash({ ...baseDraft, triggers: ["clean up pr", "format pr"] });
+    expect(a).toBe(b);
+  });
+});
+
+describe("computeDraftHash — sensitivity (behavior changes must change identity)", () => {
+  test("differs when tool order differs", () => {
     const a = computeDraftHash(baseDraft);
     const b = computeDraftHash({
       ...baseDraft,
       toolSequence: ["git_commit", "read_file", "write_file"],
     });
-    expect(a).toBe(b);
+    expect(a).not.toBe(b);
   });
 
   test("differs when tool set differs", () => {
@@ -44,21 +56,67 @@ describe("computeDraftHash", () => {
     const b = computeDraftHash({ ...baseDraft, name: "format-pr-v2" });
     expect(a).not.toBe(b);
   });
+
+  test("differs when triggers differ", () => {
+    const a = computeDraftHash(baseDraft);
+    const b = computeDraftHash({ ...baseDraft, triggers: ["a wholly new entry phrase"] });
+    expect(a).not.toBe(b);
+  });
+
+  test("differs when parameter names differ", () => {
+    const a = computeDraftHash(baseDraft);
+    const b = computeDraftHash({
+      ...baseDraft,
+      parameters: [{ name: "renamed", description: "PR title", required: true }],
+    });
+    expect(a).not.toBe(b);
+  });
+
+  test("differs when expectedInputs differ", () => {
+    const a = computeDraftHash(baseDraft);
+    const b = computeDraftHash({ ...baseDraft, expectedInputs: ["different contract"] });
+    expect(a).not.toBe(b);
+  });
+
+  test("differs when expectedOutputs differ", () => {
+    const a = computeDraftHash(baseDraft);
+    const b = computeDraftHash({ ...baseDraft, expectedOutputs: ["different contract"] });
+    expect(a).not.toBe(b);
+  });
 });
 
-describe("computeSourceHash", () => {
-  test("identical for traces with same id, session, and turn count", () => {
-    const trace: DistillationTrace = {
+describe("computeSourceHash — content provenance", () => {
+  test("identical for byte-identical traces", () => {
+    const turns = [{ role: "user" as const, text: "hi" }];
+    const a: DistillationTrace = { traceId: "t1", sessionId: "s1", turns };
+    const b: DistillationTrace = { traceId: "t1", sessionId: "s1", turns: [...turns] };
+    expect(computeSourceHash(a)).toBe(computeSourceHash(b));
+  });
+
+  test("differs when turn text differs (same IDs, same shape)", () => {
+    const a: DistillationTrace = {
       traceId: "t1",
       sessionId: "s1",
-      turns: [{ role: "user", text: "hi" }],
+      turns: [{ role: "user", text: "first" }],
     };
-    const other: DistillationTrace = {
+    const b: DistillationTrace = {
       traceId: "t1",
       sessionId: "s1",
-      turns: [{ role: "assistant", text: "different prose, same shape" }],
+      turns: [{ role: "user", text: "second" }],
     };
-    expect(computeSourceHash(trace)).toBe(computeSourceHash(other));
+    expect(computeSourceHash(a)).not.toBe(computeSourceHash(b));
+  });
+
+  test("differs when tool call args differ (redaction / mutation detection)", () => {
+    const a: DistillationTrace = {
+      traceId: "t",
+      turns: [{ role: "assistant", toolCalls: [{ name: "read_file", argsJson: '{"path":"a"}' }] }],
+    };
+    const b: DistillationTrace = {
+      traceId: "t",
+      turns: [{ role: "assistant", toolCalls: [{ name: "read_file", argsJson: '{"path":"b"}' }] }],
+    };
+    expect(computeSourceHash(a)).not.toBe(computeSourceHash(b));
   });
 
   test("differs when traceId differs", () => {
@@ -67,17 +125,13 @@ describe("computeSourceHash", () => {
     expect(computeSourceHash(a)).not.toBe(computeSourceHash(b));
   });
 
-  test("treats missing sessionId distinctly from empty string", () => {
-    const noSession: DistillationTrace = {
-      traceId: "t",
-      turns: [{ role: "user" }],
-    };
+  test("treats missing sessionId equivalent to empty string (both normalize to '')", () => {
+    const noSession: DistillationTrace = { traceId: "t", turns: [{ role: "user" }] };
     const emptySession: DistillationTrace = {
       traceId: "t",
       sessionId: "",
       turns: [{ role: "user" }],
     };
-    // Both normalize sessionId to "" — current contract treats them equivalently.
     expect(computeSourceHash(noSession)).toBe(computeSourceHash(emptySession));
   });
 });
