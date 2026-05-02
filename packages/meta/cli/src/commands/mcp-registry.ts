@@ -183,8 +183,12 @@ export async function runInstall(flags: McpFlags): Promise<ExitCode> {
 export async function runUninstall(flags: McpFlags): Promise<ExitCode> {
   const name = flags.server ?? "";
   // Find whichever config file actually contains the entry so uninstall
-  // can target home configs, not just the project-local file.
-  const configPath = await resolveMcpJsonPathContaining(name);
+  // can target home configs, not just the project-local file. A
+  // malformed project file aborts here rather than falling through to
+  // the home config — see resolveMcpJsonPathContaining for why.
+  const resolved = await resolveMcpJsonPathContaining(name);
+  if (!resolved.ok) return failFlags(flags, resolved.error);
+  const configPath = resolved.path;
 
   // Read the URL straight from the raw .mcp.json so we can clear OAuth
   // state even when the file is malformed or contains entries the
@@ -339,24 +343,61 @@ function resolveActiveMcpJsonPath(): string {
   return resolve(process.cwd(), ".mcp.json");
 }
 
-async function resolveMcpJsonPathContaining(name: string): Promise<string> {
-  // Walk candidates and return the first one whose mcpServers contains
-  // `name`. Falls back to project-local so the downstream NOT_FOUND
-  // error is reported against a sensible path.
+async function resolveMcpJsonPathContaining(
+  name: string,
+): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
+  // Walk candidates in priority order. CRITICAL: a malformed
+  // higher-priority file (project ./.mcp.json) must NOT silently
+  // fall through to the home config. Running uninstall from a
+  // directory with a broken project file would otherwise delete
+  // the home entry of the same name. Stop and surface the error
+  // so the operator can fix the local file before we touch state
+  // they may not have intended to modify.
   for (const candidate of candidateMcpJsonPaths()) {
     if (!existsSync(candidate)) continue;
+    let text: string;
     try {
-      const text = await Bun.file(candidate).text();
-      const parsed: unknown = JSON.parse(text);
-      if (parsed === null || typeof parsed !== "object") continue;
-      const servers = (parsed as { mcpServers?: unknown }).mcpServers;
-      if (servers === null || typeof servers !== "object") continue;
-      if (Object.hasOwn(servers, name)) return candidate;
-    } catch {
-      /* malformed — skip */
+      text = await Bun.file(candidate).text();
+    } catch (err: unknown) {
+      return {
+        ok: false,
+        error: `Cannot read ${candidate}: ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (err: unknown) {
+      return {
+        ok: false,
+        error: `Refusing to fall through: ${candidate} is malformed (${err instanceof Error ? err.message : String(err)}). Fix or remove it before running uninstall.`,
+      };
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {
+        ok: false,
+        error: `Refusing to fall through: ${candidate} did not contain a JSON object. Fix or remove it before running uninstall.`,
+      };
+    }
+    const servers = (parsed as { mcpServers?: unknown }).mcpServers;
+    if (
+      servers !== undefined &&
+      (servers === null || typeof servers !== "object" || Array.isArray(servers))
+    ) {
+      return {
+        ok: false,
+        error: `Refusing to fall through: ${candidate} has a malformed mcpServers field. Fix it before running uninstall.`,
+      };
+    }
+    if (servers !== undefined && Object.hasOwn(servers, name)) {
+      return { ok: true, path: candidate };
+    }
+    // Well-formed but does not claim `name`: keep searching for an
+    // entry in lower-priority files.
   }
-  return resolve(process.cwd(), ".mcp.json");
+  // No candidate file claimed the entry. Default to project-local so the
+  // downstream NOT_FOUND error is reported against a sensible path.
+  return { ok: true, path: resolve(process.cwd(), ".mcp.json") };
 }
 
 interface OAuthTarget {
