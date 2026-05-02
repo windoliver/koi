@@ -128,6 +128,29 @@ describe("createE2bInstance", () => {
     expect(result.timedOut).toBe(false);
   });
 
+  test("exec returns failure (not 130) when SDK rejects with AbortError but caller never aborted", async () => {
+    // Server-side eviction / transport-layer aborts can surface as
+    // AbortError-shaped rejections. Mapping those to exit 130 without a
+    // matching caller abort would tell higher layers the run was
+    // intentionally cancelled, breaking retry-safety.
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      commands: {
+        ...base.commands,
+        run: async (): Promise<import("./types.js").E2bRunResult> => {
+          const err = new Error("microvm evicted by provider");
+          err.name = "AbortError";
+          throw err;
+        },
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    const result = await instance.exec("ls", []);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("microvm evicted");
+  });
+
   test("exec maps exit 124 to timedOut and 137 to oomKilled (Docker-aligned)", async () => {
     const base = createFakeSandbox();
     function makeSdk(code: number): typeof base {

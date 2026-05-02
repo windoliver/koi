@@ -210,13 +210,17 @@ export function createE2bInstance(
       } catch (e: unknown) {
         const durationMs = performance.now() - start;
         const message = e instanceof Error ? e.message : String(e);
-        // If the caller cancelled, classify the rejection as cancellation
-        // rather than a generic failure — preserves retry-safety semantics.
-        const abortedNow: boolean = options?.signal?.aborted ?? false;
-        const looksLikeAbort =
-          e instanceof Error &&
-          (e.name === "AbortError" || /aborted|cancel(led)?/i.test(e.message));
-        if (abortedNow || looksLikeAbort) {
+        // Only classify as caller cancellation when the caller actually
+        // aborted the supplied signal. Mapping bare AbortError/transport
+        // aborts/server-evictions to exit 130 without that proof would
+        // misreport backend failures as clean user cancels and break
+        // retry-safety: higher layers would believe the run was
+        // intentionally cancelled while the remote command may have
+        // failed mid-side-effect for unrelated reasons.
+        // Re-read through a local — TS narrows `aborted` to false|undefined
+        // after the pre-dispatch guard, but the signal can fire mid-flight.
+        const sig: AbortSignal | undefined = options?.signal;
+        if (sig !== undefined && sig.aborted) {
           return {
             exitCode: 130,
             stdout: "",

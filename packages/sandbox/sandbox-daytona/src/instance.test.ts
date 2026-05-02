@@ -190,6 +190,47 @@ describe("createDaytonaInstance", () => {
     expect(base.runCalls).toHaveLength(1);
   });
 
+  test("destroy preserves the SDK `this` receiver (real SDK objects rely on it)", async () => {
+    // Regression: `const fn = sdk.delete; await fn();` would lose the
+    // receiver and break any real SDK that uses `this` inside delete().
+    const base = createFakeSandbox();
+    let observed: unknown;
+    const sdk = {
+      ...base,
+      marker: "daytona-handle",
+      delete: function (this: { marker: string }): Promise<void> {
+        observed = this.marker;
+        return Promise.resolve();
+      },
+    };
+    const instance = createDaytonaInstance(sdk);
+    await instance.destroy();
+    expect(observed).toBe("daytona-handle");
+  });
+
+  test("exec returns failure (not 130) when SDK rejects with AbortError but caller never aborted", async () => {
+    // Server-side eviction / transport-layer aborts can surface as
+    // AbortError-shaped rejections. Mapping those to exit 130 without a
+    // matching caller abort would tell higher layers the run was
+    // intentionally cancelled, breaking retry-safety.
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      commands: {
+        ...base.commands,
+        run: async (): Promise<import("./types.js").DaytonaRunResult> => {
+          const err = new Error("workspace evicted");
+          err.name = "AbortError";
+          throw err;
+        },
+      },
+    };
+    const instance = createDaytonaInstance(sdk);
+    const result = await instance.exec("ls", []);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("workspace evicted");
+  });
+
   test("operations after destroy throw", async () => {
     const sdk = createFakeSandbox();
     const instance = createDaytonaInstance(sdk);

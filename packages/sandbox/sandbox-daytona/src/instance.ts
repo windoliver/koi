@@ -167,11 +167,12 @@ export function createDaytonaInstance(
       } catch (e: unknown) {
         const durationMs = performance.now() - start;
         const message = e instanceof Error ? e.message : String(e);
-        const abortedNow: boolean = options?.signal?.aborted ?? false;
-        const looksLikeAbort =
-          e instanceof Error &&
-          (e.name === "AbortError" || /aborted|cancel(led)?/i.test(e.message));
-        if (abortedNow || looksLikeAbort) {
+        // Only treat as caller cancellation when the caller actually aborted
+        // the supplied signal. AbortError-shaped rejections from server-side
+        // eviction or transport failures must surface as failures, otherwise
+        // higher layers will retry-or-skip work that may have partially run.
+        const sig: AbortSignal | undefined = options?.signal;
+        if (sig !== undefined && sig.aborted) {
           return {
             exitCode: 130,
             stdout: "",
@@ -240,8 +241,7 @@ export function createDaytonaInstance(
     destroy: async (): Promise<void> => {
       if (destroyed) return;
       if (destroyPending !== undefined) return destroyPending;
-      const deleteFn = sdk.delete;
-      if (deleteFn === undefined) {
+      if (sdk.delete === undefined) {
         throw new Error(
           "sandbox-daytona: destroy() requires sdk.delete to permanently delete the " +
             "remote workspace. The injected SDK exposes only close(), which in several " +
@@ -251,7 +251,9 @@ export function createDaytonaInstance(
       }
       destroyPending = (async () => {
         try {
-          await deleteFn();
+          // Call as a method so real SDK implementations that depend on `this`
+          // get the correct receiver; copying into a local would lose it.
+          await sdk.delete?.();
           destroyed = true;
         } finally {
           destroyPending = undefined;
