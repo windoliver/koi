@@ -116,13 +116,12 @@ describe("createDaytonaAdapter", () => {
     expect(client.sandbox.runCalls[0]?.opts?.timeoutMs).toBe(7777);
   });
 
-  test("create() fails fast when SDK handle has no delete() (no close-fallback leak)", async () => {
-    // Lifecycle capability gap: a delete-less SDK would let create() succeed
-    // but destroy() later refuse, leaking a billable workspace. The adapter
-    // rejects before exposing the instance — and does NOT call close() as
-    // a cleanup, since close() in several Daytona SDK versions is a
-    // client-side detach that would also leak. Operators must revoke the
-    // workspace out-of-band.
+  test("create() rejects when SDK handle lies about delete() (best-effort close + clear leak warning)", async () => {
+    // Skew: a buggy/lying wrapper passes supportsWorkspaceDelete=true but
+    // returns a handle without delete(). The adapter best-effort calls
+    // close() (because in some SDK versions it really does delete) and
+    // surfaces a clear error noting the workspace MAY have leaked, so
+    // operators know to verify out-of-band.
     const client = createFakeClient();
     const original = client.sandbox;
     const { delete: _omit, ...stripped } = original;
@@ -131,10 +130,24 @@ describe("createDaytonaAdapter", () => {
     });
     const result = createDaytonaAdapter({ apiKey: "k", client });
     if (!result.ok) throw new Error("validate failed");
-    await expect(result.value.create(openProfile)).rejects.toThrow(/delete-capable/);
-    // Adapter must NOT call close() — it cannot be trusted to actually
-    // delete the workspace, so calling it would hide the leak.
-    expect(original.closed()).toBe(false);
+    await expect(result.value.create(openProfile)).rejects.toThrow(/MAY have leaked/);
+    // Best-effort cleanup was attempted.
+    expect(original.closed()).toBe(true);
+  });
+
+  test("createDaytonaAdapter rejects clients that don't declare supportsWorkspaceDelete", () => {
+    // Preflight gate: without the affirmative declaration, the adapter
+    // refuses synchronously — never even gives callers a chance to invoke
+    // create() and provision a workspace under skew.
+    const fake = createFakeClient();
+    const { supportsWorkspaceDelete: _drop, ...client } = fake;
+    // @ts-expect-error -- intentionally violating the contract to exercise the runtime guard
+    const result = createDaytonaAdapter({ apiKey: "k", client });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toMatch(/supportsWorkspaceDelete/);
+    }
   });
 
   test("per-call exec options override profile defaults", async () => {

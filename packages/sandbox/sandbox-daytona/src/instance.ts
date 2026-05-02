@@ -184,9 +184,31 @@ export function createDaytonaInstance(
       const winner: Settled = await Promise.race([sdkSettled, abortObserved]);
 
       if (winner.kind === "abort") {
-        // supportsAbort=true contract: SDK settles after kill confirmed.
-        await sdkSettled;
+        // Bounded kill-confirmation wait — never hang forever on a
+        // degraded provider. On timeout, quarantine the instance so
+        // subsequent ops reject and operators can revoke out-of-band.
+        const POST_ABORT_KILL_CONFIRM_MS = 5_000;
+        const confirmed = await Promise.race([
+          sdkSettled.then(() => "settled" as const),
+          new Promise<"timeout">((resolve) =>
+            setTimeout(() => resolve("timeout"), POST_ABORT_KILL_CONFIRM_MS),
+          ),
+        ]);
         const durationMs = performance.now() - start;
+        if (confirmed === "timeout") {
+          destroyed = true;
+          return {
+            exitCode: 130,
+            stdout: "",
+            stderr:
+              "sandbox-daytona: abort timeout — SDK did not confirm remote " +
+              `termination within ${POST_ABORT_KILL_CONFIRM_MS}ms. Instance has ` +
+              "been quarantined; verify the workspace state out-of-band.",
+            durationMs,
+            timedOut: false,
+            oomKilled: false,
+          };
+        }
         return {
           exitCode: 130,
           stdout: "",

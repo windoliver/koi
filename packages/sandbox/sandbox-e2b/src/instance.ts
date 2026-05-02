@@ -236,11 +236,37 @@ export function createE2bInstance(
       const winner: Settled = await Promise.race([sdkSettled, abortObserved]);
 
       if (winner.kind === "abort") {
-        // Per supportsAbort=true contract, the SDK must settle once the
-        // remote process is dead. Wait so retries are safe — but we already
-        // know cancellation is the cause.
-        await sdkSettled;
+        // Per supportsAbort=true the SDK should settle once the remote
+        // process is dead — but we cannot wait forever on a degraded
+        // provider, or a hung transport would turn cancellation into a
+        // permanent hang. Cap the kill-confirmation wait; on timeout
+        // surface the cancel and quarantine the instance so callers do
+        // not retry against a workspace whose lifecycle state is unknown.
+        const POST_ABORT_KILL_CONFIRM_MS = 5_000;
+        const confirmed = await Promise.race([
+          sdkSettled.then(() => "settled" as const),
+          new Promise<"timeout">((resolve) =>
+            setTimeout(() => resolve("timeout"), POST_ABORT_KILL_CONFIRM_MS),
+          ),
+        ]);
         const durationMs = performance.now() - start;
+        if (confirmed === "timeout") {
+          // SDK never confirmed termination. The instance may still be
+          // running remote side effects; force teardown so subsequent
+          // ops reject and operators can revoke out-of-band.
+          destroyed = true;
+          return {
+            exitCode: 130,
+            stdout: "",
+            stderr:
+              "sandbox-e2b: abort timeout — SDK did not confirm remote " +
+              `termination within ${POST_ABORT_KILL_CONFIRM_MS}ms. Instance has ` +
+              "been quarantined; verify the workspace state out-of-band.",
+            durationMs,
+            timedOut: false,
+            oomKilled: false,
+          };
+        }
         return {
           exitCode: 130,
           stdout: "",

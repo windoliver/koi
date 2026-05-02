@@ -57,21 +57,30 @@ export function createDaytonaAdapter(
       };
       const sdk = await resolved.client.createSandbox(opts);
       // Runtime check for JS callers (TS types already require delete()).
-      // We deliberately do NOT call sdk.close() on failure: in several
-      // Daytona SDK versions close() is a client-side detach that leaves
-      // the remote workspace running and billable, so attempting it would
-      // hide the leak instead of preventing it. Surface the lifecycle gap
-      // loudly so operators can revoke the workspace out-of-band; do not
-      // pretend to clean up.
+      // The supportsWorkspaceDelete preflight already rejects most skew,
+      // but a buggy/lying wrapper can still pass the flag check and return
+      // a delete-less handle. We have no authoritative way to delete the
+      // workspace out-of-band from inside this adapter, but we do attempt
+      // sdk.close() best-effort: in some SDK versions close() really does
+      // delete, in others it's a detach that leaks. Surfacing the gap
+      // loudly is more useful than a silent leak; the error explicitly
+      // tells operators to verify the workspace state out-of-band.
       if (typeof sdk.delete !== "function") {
+        let cleanupNote = "no cleanup attempted";
+        try {
+          await sdk.close();
+          cleanupNote =
+            "sdk.close() was invoked best-effort but may be a client-side " +
+            "detach that leaves the workspace running";
+        } catch (closeErr) {
+          cleanupNote = `sdk.close() also failed: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`;
+        }
         throw new Error(
-          "sandbox-daytona: createSandbox returned an SDK handle without a callable " +
-            "delete() method. This adapter requires delete-capable wrappers because " +
-            "close() in several Daytona SDK versions is a client-side detach that " +
-            "leaves the remote workspace running and billable; falling back to it " +
-            "would silently leak. The workspace just provisioned cannot be safely " +
-            "torn down through this client — revoke it out-of-band and inject a " +
-            "delete-capable wrapper before retrying.",
+          "sandbox-daytona: createSandbox returned a handle without a callable " +
+            "delete() method despite client.supportsWorkspaceDelete=true. The just-" +
+            `provisioned workspace MAY have leaked (${cleanupNote}). Verify the ` +
+            "workspace state out-of-band and fix the wrapper to honour its " +
+            "delete-capability declaration.",
         );
       }
       return createDaytonaInstance(sdk, extractProfileDefaults(profile));

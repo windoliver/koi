@@ -128,6 +128,38 @@ describe("createE2bInstance", () => {
     expect(result.timedOut).toBe(false);
   });
 
+  test("exec quarantines instance when SDK never confirms post-abort termination", async () => {
+    // Hung provider regression: if the SDK promise never settles after
+    // abort, exec must not wait forever. The adapter caps the kill-
+    // confirmation wait, returns a clear cancellation error, and forces
+    // the instance into a destroyed state so subsequent ops reject.
+    const base = createFakeSandbox();
+    const sdk = {
+      ...base,
+      commands: {
+        ...base.commands,
+        supportsAbort: true,
+        run: async (): Promise<import("./types.js").E2bRunResult> => {
+          // Never settles.
+          return new Promise<import("./types.js").E2bRunResult>(() => {});
+        },
+      },
+    };
+    const instance = createE2bInstance(sdk);
+    const ac = new AbortController();
+    queueMicrotask(() => ac.abort());
+    const start = performance.now();
+    const result = await instance.exec("sleep", ["999"], { signal: ac.signal });
+    const elapsed = performance.now() - start;
+    expect(result.exitCode).toBe(130);
+    expect(result.stderr).toMatch(/abort timeout/i);
+    // The abort-confirmation wait is bounded; we should see ~5s, not infinite.
+    // (Use a generous upper bound for CI variance.)
+    expect(elapsed).toBeLessThan(10_000);
+    // Subsequent ops must reject — the instance is quarantined.
+    await expect(instance.exec("ls", [])).rejects.toThrow(/destroyed/);
+  }, 15_000);
+
   test("exec returns 130 when caller aborts mid-flight, regardless of how the SDK surfaces it", async () => {
     // Provider SDKs are not required to throw AbortError on cancellation —
     // a conforming wrapper can resolve with a kill exit code (137/143) or
