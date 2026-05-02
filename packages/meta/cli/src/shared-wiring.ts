@@ -122,6 +122,13 @@ export function __setUserHooksConfigPathForTests(path: string | undefined): void
   testHookPathOverride = path;
 }
 
+let testMcpHomeDirOverride: string | undefined;
+
+/** Test seam — never call in production code. */
+export function __setUserMcpHomeDirForTests(path: string | undefined): void {
+  testMcpHomeDirOverride = path;
+}
+
 /**
  * Resolve the user hooks config path lazily.
  *
@@ -196,14 +203,15 @@ export async function loadUserMcpSetup(
     // vs "VALIDATION" or "EXTERNAL" for parse/schema failures.
     const isAbsent = projectResult.error.code === "NOT_FOUND";
     if (isAbsent) {
-      const homeResult = await loadMcpJsonFile(join(homedir(), ".koi", ".mcp.json"));
+      const mcpHomeDir = testMcpHomeDirOverride ?? homedir();
+      const homeResult = await loadMcpJsonFile(join(mcpHomeDir, ".koi", ".mcp.json"));
       if (homeResult.ok) {
         result = homeResult;
       } else if (homeResult.error.code === "NOT_FOUND") {
         // Legacy compatibility: prior versions stored MCP config at
         // ~/.claude/.mcp.json. Read it with a deprecation warning so
         // operators don't lose their servers on upgrade.
-        const legacyResult = await loadMcpJsonFile(join(homedir(), ".claude", ".mcp.json"));
+        const legacyResult = await loadMcpJsonFile(join(mcpHomeDir, ".claude", ".mcp.json"));
         if (legacyResult.ok) {
           process.stderr.write(
             `[koi] warning: reading MCP config from deprecated ~/.claude/.mcp.json. ` +

@@ -8,6 +8,7 @@
  * The SandboxResult in sandbox-executor.ts describes code-level return values (output, durationMs).
  */
 
+import type { AdapterCapabilities } from "./adapter-capabilities.js";
 import type { SandboxProfile } from "./sandbox-profile.js";
 
 // ---------------------------------------------------------------------------
@@ -143,6 +144,12 @@ export interface SandboxInstance {
  *
  * Each backend (OS-level, E2B, Vercel, Cloudflare, Daytona, K8s)
  * implements this contract as an independent L2 package.
+ *
+ * The optional `capabilities`, `version`, `init`, and `shutdown` fields are
+ * read by `@koi/sandbox-router` to perform capability-based selection and
+ * track adapter lifecycle. Adapters that do not declare `capabilities` are
+ * not eligible for router-driven selection (they can still be invoked
+ * directly by callers that hold a reference to the adapter).
  */
 export interface SandboxAdapter {
   readonly name: string;
@@ -159,4 +166,22 @@ export interface SandboxAdapter {
   readonly findOrCreate?:
     | ((scope: string, profile: SandboxProfile) => Promise<SandboxInstance>)
     | undefined;
+  /** Semver of the adapter package. Surfaced in selection-decision audit metadata. */
+  readonly version?: string;
+  /**
+   * Static capability declaration. Required for router-driven selection;
+   * absent for adapters used only by direct reference.
+   */
+  readonly capabilities?: AdapterCapabilities;
+  /**
+   * Optional one-shot initialization. The router awaits this before marking
+   * the adapter `ready`. A rejection causes the adapter to be marked
+   * `terminated` and excluded from selection for the lifetime of the router.
+   */
+  readonly init?: () => Promise<void>;
+  /**
+   * Optional teardown. The router awaits this on `router.shutdown()`. After
+   * shutdown the adapter is `terminated` and ineligible for selection.
+   */
+  readonly shutdown?: () => Promise<void>;
 }

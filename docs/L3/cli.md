@@ -6,6 +6,38 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`@koi/forge-tools` now emits `generation` on store change events (#2106, refs #1207)**: The in-memory forge store annotates `saved`/`updated`/`removed` notifier events with `generation = storeVersion` so downstream consumers (notably `@koi/middleware-policy-cache`) can refuse stale events that would otherwise silently downgrade authorization. `computeIdentityBrickId` is now exported from the package's public API for callers that need to mint content-addressed brick ids without re-implementing the hash. CLI behavior unchanged — pure additive contract on the existing notifier surface.
+- **`koi mcp` registry-discovery subcommands (#1646)**: new
+  `koi mcp search/info/install/uninstall` flow backed by the official MCP
+  registry at `registry.modelcontextprotocol.io/v0.1`. Install picks the
+  preferred package (HTTP remote → SSE remote → first usable stdio package),
+  verifies the connection (live `listTools` against a real OAuth flow when
+  needed) BEFORE any `.mcp.json` mutation, and persists the entry only on
+  success. Registry remotes are SSRF-checked (HTTPS-only outside loopback;
+  RFC1918/link-local/CGNAT/multicast IP literals refused). Install/uninstall
+  resolve the active config path with the same priority as
+  `list/auth/debug/logout` (project `./.mcp.json` → `~/.koi/.mcp.json` → legacy
+  `~/.claude/.mcp.json`); a malformed higher-priority candidate aborts rather
+  than falling through. `--yes` (or `--json`, which implies it) is required in
+  non-TTY contexts so install cannot wedge waiting on stdin. OAuth cleanup
+  uses a per-server index with `withTrackedWrite` so concurrent
+  install/auth/uninstall serialize against `clearAllOAuthState` and credentials
+  are never silently orphaned.
+- **Review fix sync**: `scripts/check-cli-wiring.ts` now records explicit
+  exemptions for runtime packages that are intentionally not default TUI imports:
+  external-agent discovery/monitor/procfs sidecars, HTTP gateway ingress,
+  optional ACE/intent-capsule middleware, programmatic-only RLM, and non-default
+  sandbox providers. `@koi/tools-builtin`'s Grep tool keeps the same CLI/TUI
+  surface, but its no-ripgrep fallback is now test-forced via `rgCommand` and
+  performs async file stat/read work to avoid blocking the event loop.
+- Service lifecycle parity is no longer stub-only: `koi serve` starts the
+  gateway HTTP health process on the configured service port (`/healthz`),
+  while `koi deploy`, `koi stop`, `koi logs`, and `koi status` now operate on
+  launchd/systemd service files generated around that `koi serve` entrypoint.
+  The service parser reads optional `deploy:` manifest settings (`port`,
+  `restart`, `restartDelaySec`, `envFile`, `logDir`, `system`) with CLI flags
+  taking precedence for `--port` and `--system`.
+
 - **`@koi/playbook-store-sqlite` + ACE manifest activation wired (#2088)**: CLI
   manifest gains an opt-in `ace:` block (`enabled`, `acknowledge_cross_session_state`,
   `max_injected_tokens`, `min_score`, `lambda`, `playbook_path`). When `enabled: true`
@@ -580,7 +612,10 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/bash-ast` | L0u | AST-based bash classifier (PR #1660) — `classifyBashCommand()`, `initializeBashAst()`, `matchSimpleCommand()`. Replaces the regex-only `@koi/bash-security` classifier for `@koi/tools-bash` |
 | `@koi/bash-security` | L0u | Prefilter (injection + path validation) + transitional regex TTP fallback for `@koi/bash-ast` `too-complex` outcomes |
 | `@koi/tools-bash` | L2 | Bash execution tool — `createBashTool()` and `createBashBackgroundTool()`, both routed through `@koi/bash-ast` for classification. Classifier includes a `destructive` category (#1721) enforced inside `execute()` after the permission modal, so session-wide `[a]` grants cannot authorize catastrophic commands (`rm -rf /`, `mkfs*`, `dd of=/dev/*`, fork bomb, `chmod -R 777 /`, `shutdown`/`reboot`). Regression tests added (#1914) for `spawnBash` abort/orphan signal handling: process-group kill, fd-redirecting descendants, pre-abort guard, SIGKILL escalation |
-| `@koi/sandbox-os` | L2 | OS sandbox adapter — `createOsAdapter()` + `restrictiveProfile()` for Bash confinement (`tui` command) |
+| `@koi/sandbox-os` | L2 | OS sandbox adapter — `restrictiveProfile()` for Bash confinement (`tui` command). Multi-backend executor (issue #1641): adapter declares capabilities `{exec, network, filesystem-rw}` priority `0` so `@koi/sandbox-router` can match it during capability-driven selection (`spawn`/`copy-files` intentionally NOT declared) |
+| `@koi/sandbox-router` | L2 | Multi-backend executor router (issue #1641) — `createSandboxRouter` selects an adapter from a chain by capability matching + priority, falls back through the chain on `create()` failure, surfaces a `SelectionDecision` audit. Wired into the `executionStack` via `createDefaultSandboxRouter()` + `createRouterAdapterShim()` so `koi tui` bash exec transparently picks the lowest-priority eligible backend (sandbox-os → sandbox-docker if reachable) |
+| `@koi/sandbox-ssh` | L2 | SSH-backed `SandboxAdapter` (issue #1641) — key auth only, POSIX shell quoting, per-scope connection pool, honors `timeoutMs`/`signal`/streaming via `SshExecOptions`. Optional CLI consumer — included in router only when callers add it via `createDefaultSandboxRouter({ extraAdapters })` |
+| `@koi/sandbox-conformance` | L2 | Reusable conformance test suite for `SandboxAdapter` implementors (issue #1641) — used at test time only by the per-adapter `__tests__/conformance.test.ts` files |
 | `@koi/rules-loader` | L0u | Hierarchical project rules file injection — discovers CLAUDE.md/AGENTS.md/.koi/context.md from cwd to git root, merges root-first into system prompt |
 | `@koi/context-manager` | L0u | Token-aware transcript compaction — `enforceBudget()` micro/full cascade, `resolveConfig()` + `budgetConfigFromResolved()` for per-model window from `@koi/model-registry`. Wired into `createTranscriptAdapter()` in `engine-adapter.ts`; both `koi start` and `koi tui` use it. `KOI_COMPACTION_WINDOW` env var overrides the window for testing (#1623) |
 | `@koi/audit-sink-sqlite` | L2 | WAL-mode SQLite audit sink — opt-in via `KOI_AUDIT_SQLITE` env var, parallel to NDJSON sink. Collision guard prevents dual-writer corruption (#1849) |

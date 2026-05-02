@@ -535,6 +535,17 @@ export interface StoreChangeEvent {
   readonly policyChange?: { readonly from: ToolPolicy; readonly to: ToolPolicy };
   /** Human-readable reason for the change (e.g., quarantine cause). */
   readonly reason?: string;
+  /**
+   * Monotonically increasing generation/version of this brick. When set,
+   * downstream consumers (e.g. policy caches) MUST ignore any event whose
+   * generation is strictly less than the most recently observed generation
+   * for the same brickId — a stale event from a prior generation otherwise
+   * looks identical to a current-generation event and can silently evict
+   * a freshly registered entry, downgrading authorization. Stores that
+   * cannot supply a generation may omit the field; consumers then fall
+   * back to best-effort eviction with no stale-event protection.
+   */
+  readonly generation?: number;
 }
 
 /**

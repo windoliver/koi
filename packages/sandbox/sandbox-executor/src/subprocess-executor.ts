@@ -433,11 +433,15 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
           ? [setsidPath, bunPath, "run", runnerPath, codePath, JSON.stringify(input ?? null)]
           : [bunPath, "run", runnerPath, codePath, JSON.stringify(input ?? null)];
 
+        // fd=3 is a dedicated protocol pipe — the runner emits the framing
+        // marker there so user code on stdout/stderr cannot race it. Eliminates
+        // the CI flake where a tight `process.stderr.write` burst overruns a
+        // stderr-side marker on slow runners.
         const spawnOpts = {
-          stdout: "pipe" as const,
-          stderr: "pipe" as const,
-          // Ignore stdin so the sandboxed child cannot read from parent's stdin.
-          stdin: "ignore" as const,
+          // [stdin, stdout, stderr, fd3] — Bun's stdio array form.
+          // Mutable tuple required by Bun's SpawnOptions; the values are still
+          // validated at spawn-time.
+          stdio: ["ignore", "pipe", "pipe", "pipe"] as ["ignore", "pipe", "pipe", "pipe"],
           ...(cwd !== undefined ? { cwd } : {}),
           env: childEnv,
         };
@@ -467,6 +471,21 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
         const STDERR_TAIL_BYTES = 64 * 1024;
         const stdoutP = readBoundedText(proc.stdout, maxOutputBytes);
         const stderrP = readBoundedText(proc.stderr, maxOutputBytes, STDERR_TAIL_BYTES);
+        // fd=3 carries only the framed result (RESULT_MARKER + JSON). Cap is
+        // small — payloads are bounded by JSON.stringify of the user's return
+        // value; 256 KB is generous and prevents pathological growth from
+        // infecting parent memory.
+        const FD3_MAX_BYTES = 256 * 1024;
+        // Bun returns fd=3 as a raw number on `proc.stdio[3]`. Wrap via
+        // `Bun.file(fd).stream()` to get a ReadableStream the bounded reader
+        // can consume. If fd=3 is missing for any reason, the parser falls
+        // back to scanning stderr (legacy path).
+        const fd3Raw = (proc as unknown as { readonly stdio?: readonly unknown[] }).stdio?.[3];
+        const fd3Stream = typeof fd3Raw === "number" ? Bun.file(fd3Raw).stream() : undefined;
+        const fd3P =
+          fd3Stream !== undefined
+            ? readBoundedText(fd3Stream, FD3_MAX_BYTES)
+            : Promise.resolve({ text: "", truncated: false, tail: "" } as const);
 
         // Await child exit FIRST so the timer is cleared as soon as the child exits —
         // post-exit drain time does not count against the deadline. If the timer fired
@@ -476,7 +495,7 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
 
         // Drain both pipes (they are already closed after child exit — this just
         // consumes any buffered bytes and resolves the reader promises).
-        const [, stderrResult] = await Promise.all([stdoutP, stderrP]);
+        const [, stderrResult, fd3Result] = await Promise.all([stdoutP, stderrP, fd3P]);
 
         const durationMs = Date.now() - start;
 
@@ -494,16 +513,15 @@ export function createSubprocessExecutor(config?: SubprocessExecutorConfig): San
           return { ok: false, error };
         }
 
-        // Search for the framing marker. The marker appears at the END of stderr,
-        // so try the head first, then fall back to the tail if the head was truncated.
-        // Only return CRASH if BOTH searches fail.
-        const framedFromHead = parseFramedResult(stderrResult.text);
+        // Search for the framing marker. Preferred channel is fd=3 — a
+        // dedicated pipe the runner writes only the marker+JSON to, so user
+        // code on stdout/stderr cannot interleave with it. Falls back to
+        // stderr (head, then tail when truncated) for backward compat with
+        // older runners or direct-exec scenarios where fd=3 is unavailable.
         const framed =
-          framedFromHead !== undefined
-            ? framedFromHead
-            : stderrResult.truncated
-              ? parseFramedResult(stderrResult.tail)
-              : undefined;
+          parseFramedResult(fd3Result.text) ??
+          parseFramedResult(stderrResult.text) ??
+          (stderrResult.truncated ? parseFramedResult(stderrResult.tail) : undefined);
 
         if (framed === undefined) {
           const snippet = stderrResult.truncated
