@@ -544,6 +544,68 @@ describe("createDistiller", () => {
     if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
   });
 
+  test("variable-arg check sees real variability even when redactor collapses values", async () => {
+    // Redactor maps both distinct paths to the same placeholder. Grounding
+    // must run on the RAW trace so the variability is still detected.
+    const trace: DistillationTrace = {
+      traceId: "t-collapse",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "read_file", argsJson: '{"path":"/srv/tenant-1/data"}' }],
+        },
+        {
+          role: "assistant",
+          toolCalls: [{ name: "read_file", argsJson: '{"path":"/srv/tenant-2/data"}' }],
+        },
+      ],
+    };
+    const llm: DistillerLLM = async () =>
+      ({
+        ok: true,
+        value: JSON.stringify({
+          ...VALID_DRAFT,
+          toolSequence: ["read_file", "read_file"],
+          parameters: [], // missing the path parameter
+        }),
+      }) as const;
+    const collapsing = (t: DistillationTrace): DistillationTrace => ({
+      ...t,
+      turns: t.turns.map((turn) =>
+        turn.toolCalls === undefined
+          ? turn
+          : {
+              ...turn,
+              toolCalls: turn.toolCalls.map((c) => ({
+                name: c.name,
+                argsJson: c.argsJson.replace(/"\/srv\/[^"]+"/g, '"<redacted>"'),
+              })),
+            },
+      ),
+    });
+    const r = await createDistiller({ llm, redactor: collapsing }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
+  });
+
+  test("variable-arg check tracks tools whose JSON args are top-level arrays", async () => {
+    const trace: DistillationTrace = {
+      traceId: "t-array",
+      turns: [
+        { role: "assistant", toolCalls: [{ name: "delete", argsJson: '["/a"]' }] },
+        { role: "assistant", toolCalls: [{ name: "delete", argsJson: '["/b"]' }] },
+      ],
+    };
+    const noParam = okLLM({
+      ...VALID_DRAFT,
+      toolSequence: ["delete", "delete"],
+      parameters: [],
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: noParam }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
+  });
+
   test("variable-arg check recurses into nested tool argument structures", async () => {
     // Nested target.path varies — must require a parameter for it.
     const trace: DistillationTrace = {

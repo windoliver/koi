@@ -223,8 +223,16 @@ function collectVariableArgKeys(trace: DistillationTrace): readonly VariableArg[
         continue;
       }
       const flat = new Map<string, string>();
-      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      if (Array.isArray(parsed)) {
+        // Top-level array args (e.g. delete(["/a"])) get a synthetic root key
+        // so list-shaped destructive inputs are still tracked for variability.
+        flat.set("<root>", JSON.stringify(parsed));
+      } else if (parsed !== null && typeof parsed === "object") {
         flattenArgKeys("", parsed, flat);
+      } else {
+        // Non-object/non-array root (string, number, bool, null) — record as
+        // a single synthetic root value so primitives are tracked too.
+        flat.set("<root>", JSON.stringify(parsed));
       }
       for (const [k, v] of flat) {
         recordValue(`${call.name}::${k}`, v);
@@ -380,13 +388,15 @@ export function createDistiller(config: DistillerConfig): Distiller {
       if (trace.turns.length === 0) {
         return { ok: false, error: emptyTraceError() };
       }
-      // Deep-clone before redaction so an in-place redactor cannot mutate the
-      // caller's trace or alter what gets hashed on the audit record.
-      const cloned = structuredClone(trace);
-      // Redaction runs BEFORE prompt rendering so secrets never reach the LLM.
-      // Grounding still uses the redacted trace so the literal-leak check
-      // operates on the same tokens the model actually saw.
-      const redacted = redact(cloned);
+      // Two independent deep clones: one feeds the redactor (whose output
+      // crosses the trust boundary to the LLM), the other stays inside this
+      // process as the raw evidence that grounding/leak-detection runs on.
+      // An in-place redactor would otherwise mutate the same object we use
+      // for grounding, which would re-open the round-4 hole where redaction
+      // can hide real input variability.
+      const rawForGrounding = structuredClone(trace);
+      const forRedaction = structuredClone(trace);
+      const redacted = redact(forRedaction);
       const prompt = renderDistillationPrompt(redacted);
       let llmResult: Result<string, KoiError>;
       try {
@@ -399,7 +409,7 @@ export function createDistiller(config: DistillerConfig): Distiller {
       }
       const draftResult = parseSkillDraft(llmResult.value);
       if (!draftResult.ok) return draftResult;
-      const grounded = groundDraftInTrace(draftResult.value, redacted);
+      const grounded = groundDraftInTrace(draftResult.value, rawForGrounding);
       if (!grounded.ok) return grounded;
       const draft = grounded.value;
       const record: DistillationRecord = {
