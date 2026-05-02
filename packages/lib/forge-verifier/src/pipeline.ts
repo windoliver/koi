@@ -26,7 +26,7 @@ function stageError(code: KoiErrorCode, stage: string, message: string, cause?: 
  * verification.
  */
 function fingerprintStages<I>(stages: readonly VerifierStage<I>[]): string {
-  return stages.map((s) => s.name).join("|");
+  return stages.map((s) => `${s.name}@${s.version ?? "0"}`).join("|");
 }
 
 function composeCacheKey<I>(userKey: string, stages: readonly VerifierStage<I>[]): string {
@@ -131,12 +131,15 @@ export async function runPipeline<I>(
     }
   }
 
-  const summary: ForgeVerificationSummary = {
+  // Freeze the summary and its digests before either returning or caching.
+  // A caller that mutates the returned object cannot then poison the cache,
+  // and a stage cannot reach back through the digest array to rewrite it.
+  const summary: ForgeVerificationSummary = Object.freeze({
     passed: true,
     sandbox,
     totalDurationMs,
-    stageResults: digests,
-  };
+    stageResults: Object.freeze(digests.map((d) => Object.freeze({ ...d }))),
+  });
 
   if (composedKey !== undefined && cache !== undefined) {
     try {

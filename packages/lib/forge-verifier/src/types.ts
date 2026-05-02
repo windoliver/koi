@@ -30,9 +30,16 @@ export type StageOutcome =
 /**
  * Extension point. To add a new stage, write a `VerifierStage` value and
  * pass it into the `stages` array — no edits to `runPipeline`.
+ *
+ * `version` participates in the cache fingerprint. Two stages with the same
+ * `name` but different `version` produce different cache keys, so tightening
+ * a stage's logic without renaming it invalidates prior cached pass results.
+ * Defaults to `"0"` when omitted; bump it whenever the stage's check
+ * semantics change in a way callers should re-verify.
  */
 export interface VerifierStage<I = unknown> {
   readonly name: string;
+  readonly version?: string | undefined;
   readonly run: (artifact: I, ctx: StageContext) => StageOutcome | Promise<StageOutcome>;
 }
 

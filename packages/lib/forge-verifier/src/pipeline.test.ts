@@ -25,6 +25,7 @@ function counted<I>(stage: VerifierStage<I>): {
   return {
     stage: {
       name: stage.name,
+      ...(stage.version !== undefined ? { version: stage.version } : {}),
       run: async (artifact, ctx) => {
         n += 1;
         return stage.run(artifact, ctx);
@@ -252,6 +253,46 @@ describe("runPipeline — security regressions", () => {
     if (!result.ok) return;
     // Final summary still reflects the true stage names.
     expect(result.value.stageResults.map((s) => s.stage)).toEqual(["s1", "s2"]);
+  });
+
+  test("cache fingerprint includes stage version — bumping version invalidates prior cache", async () => {
+    const cache = createMemoryCache();
+    const v1 = counted({ name: "checker", version: "1", run: async () => PASS });
+    const r1 = await runPipeline([v1.stage], artifact, { cacheKey: "k", cache });
+    expect(r1.ok).toBe(true);
+    expect(v1.calls()).toBe(1);
+
+    // Same name, bumped version — must re-run.
+    const v2 = counted({ name: "checker", version: "2", run: async () => PASS });
+    const r2 = await runPipeline([v2.stage], artifact, { cacheKey: "k", cache });
+    expect(r2.ok).toBe(true);
+    expect(v2.calls()).toBe(1);
+  });
+
+  test("cache returns a frozen, isolated snapshot — caller mutation cannot poison the cache", async () => {
+    const cache = createMemoryCache();
+    const stage = createSyntaxStage(okCheck);
+    const r1 = await runPipeline([stage], artifact, { cacheKey: "k", cache });
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+
+    // Hostile caller tries to mutate the returned summary.
+    expect(() => {
+      (r1.value as unknown as { passed: boolean }).passed = false;
+    }).toThrow();
+    const firstDigest = r1.value.stageResults[0];
+    if (firstDigest !== undefined) {
+      expect(() => {
+        (firstDigest as unknown as { stage: string }).stage = "TAMPERED";
+      }).toThrow();
+    }
+
+    // Cache must still serve a clean summary.
+    const r2 = await runPipeline([stage], artifact, { cacheKey: "k", cache });
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    expect(r2.value.passed).toBe(true);
+    expect(r2.value.stageResults.map((s) => s.stage)).toEqual(["syntax"]);
   });
 
   test("cache.set failure does not turn success into rejection", async () => {
