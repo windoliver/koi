@@ -45,16 +45,19 @@ function writeResult(data: RunnerResult): void {
  * `parseFramedResult` (`lastIndexOf(RESULT_MARKER)`) unable to find it when
  * the pipe abruptly closes.
  *
- * Trick: write a zero-length buffer with a completion callback. The Writable
- * `write(chunk, cb)` contract fires `cb` only after the chunk (and every
- * write queued before it) has been flushed to the underlying resource. Since
- * writes are FIFO, awaiting this callback guarantees all prior user writes
- * are in the kernel pipe before we synchronously emit the marker.
+ * Strategy: call `process.stderr.end(cb)` to end the Writable stream — the
+ * callback fires only after every queued write has flushed to fd=2. We use
+ * `end` rather than a zero-length `write(cb)` because `write(cb)` short-
+ * circuits to fire cb synchronously when the internal buffer is empty, even
+ * though queued chunks are still pending in libuv's pipe wrap (observed under
+ * Bun on Linux). After `end` resolves, we still emit the marker via
+ * `writeSync(2, ...)` — that's a direct syscall on the underlying fd, which
+ * remains open and writable independent of the JS stream's lifecycle. We also
+ * yield through `setImmediate` to let any final libuv tick complete.
  */
-function drainStderr(): Promise<void> {
-  return new Promise<void>((resolve) => {
-    process.stderr.write("", () => resolve());
-  });
+async function drainStderr(): Promise<void> {
+  await new Promise<void>((resolve) => process.stderr.end(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 /**

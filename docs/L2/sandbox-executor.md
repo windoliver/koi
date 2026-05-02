@@ -5,6 +5,10 @@ subprocess that loads untrusted code, runs it, and returns the result through a
 stderr-framed protocol. OS-level isolation (seatbelt/bwrap) is delegated to
 `@koi/sandbox-os`; this package is the executor wrapper.
 
+## Recent updates
+
+- **Stderr drain before result marker (#2106)**: `subprocess-runner.ts` now awaits a zero-length `process.stderr.write` callback before emitting the framing marker via `writeSync(2, ...)`. On Linux CI runners under heavy `process.stderr.write` bursts, the runner's `process.exit(0)` would drop libuv-queued user writes and leave the kernel pipe ordered such that the parent's `parseFramedResult` (`lastIndexOf(RESULT_MARKER)`) could not locate the marker — surfacing as `CRASH: Sandbox exited without result marker` for legitimately successful executions. Awaiting the FIFO drain callback guarantees prior user writes flush before the marker, so it lands last on the parent's stream regardless of CI/runner timing.
+
 ## Why it exists
 
 `@koi/forge` (verifier) and `@koi/sandbox-ipc` need to run brick code in a separate
