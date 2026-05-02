@@ -93,6 +93,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/middleware-intent-capsule",
   "@koi/middleware-memory-recall",
   "@koi/middleware-output-verifier",
+  "@koi/middleware-policy-cache",
   "@koi/middleware-strict-agentic",
   "@koi/middleware-turn-prelude",
   "@koi/nexus-delegation",

@@ -243,7 +243,12 @@ export function createInMemoryForgeStore(): ForgeStore {
     const stored: BrickArtifact = { ...structuredClone(brick), storeVersion: 1 };
     bricks.set(brick.id, stored);
     indexInsert(stored);
-    notifier.notify({ kind: "saved", brickId: brick.id, scope: brick.scope });
+    notifier.notify({
+      kind: "saved",
+      brickId: brick.id,
+      scope: brick.scope,
+      generation: stored.storeVersion ?? 1,
+    });
     return { ok: true, value: undefined };
   };
 
@@ -287,7 +292,11 @@ export function createInMemoryForgeStore(): ForgeStore {
     if (existing === undefined) return { ok: false, error: notFoundError(id) };
     bricks.delete(id);
     indexDelete(existing);
-    notifier.notify({ kind: "removed", brickId: id });
+    notifier.notify({
+      kind: "removed",
+      brickId: id,
+      generation: existing.storeVersion ?? 0,
+    });
     return { ok: true, value: undefined };
   };
 
@@ -383,7 +392,12 @@ export function createInMemoryForgeStore(): ForgeStore {
     indexDelete(existing);
     bricks.set(id, versioned);
     indexInsert(versioned);
-    notifier.notify({ kind: "updated", brickId: id, scope: versioned.scope });
+    notifier.notify({
+      kind: "updated",
+      brickId: id,
+      scope: versioned.scope,
+      generation: versioned.storeVersion ?? currentVersion + 1,
+    });
     return { ok: true, value: undefined };
   };
 

@@ -90,6 +90,7 @@
     "@koi/middleware-otel": "workspace:*",
     "@koi/middleware-output-verifier": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
+    "@koi/middleware-policy-cache": "workspace:*",
     "@koi/middleware-prompt-cache": "workspace:*",
     "@koi/middleware-reflex": "workspace:*",
     "@koi/middleware-rlm": "workspace:*",

@@ -6,6 +6,7 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`@koi/forge-tools` now emits `generation` on store change events (#2106, refs #1207)**: The in-memory forge store annotates `saved`/`updated`/`removed` notifier events with `generation = storeVersion` so downstream consumers (notably `@koi/middleware-policy-cache`) can refuse stale events that would otherwise silently downgrade authorization. `computeIdentityBrickId` is now exported from the package's public API for callers that need to mint content-addressed brick ids without re-implementing the hash. CLI behavior unchanged — pure additive contract on the existing notifier surface.
 - **`koi mcp` registry-discovery subcommands (#1646)**: new
   `koi mcp search/info/install/uninstall` flow backed by the official MCP
   registry at `registry.modelcontextprotocol.io/v0.1`. Install picks the

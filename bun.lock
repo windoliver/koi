@@ -597,6 +597,14 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/lib/middleware-policy-cache": {
+      "name": "@koi/middleware-policy-cache",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/lib/middleware-prompt-cache": {
       "name": "@koi/middleware-prompt-cache",
       "version": "0.0.0",
@@ -1221,6 +1229,7 @@
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-plan-persist": "workspace:*",
         "@koi/middleware-planning": "workspace:*",
+        "@koi/middleware-policy-cache": "workspace:*",
         "@koi/middleware-prompt-cache": "workspace:*",
         "@koi/middleware-reflex": "workspace:*",
         "@koi/middleware-report": "workspace:*",
@@ -2278,6 +2287,8 @@
     "@koi/middleware-plan-persist": ["@koi/middleware-plan-persist@workspace:packages/lib/middleware-plan-persist"],
 
     "@koi/middleware-planning": ["@koi/middleware-planning@workspace:packages/lib/middleware-planning"],
+
+    "@koi/middleware-policy-cache": ["@koi/middleware-policy-cache@workspace:packages/lib/middleware-policy-cache"],
 
     "@koi/middleware-prompt-cache": ["@koi/middleware-prompt-cache@workspace:packages/lib/middleware-prompt-cache"],
 

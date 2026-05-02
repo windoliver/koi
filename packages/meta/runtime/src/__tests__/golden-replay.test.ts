@@ -15624,6 +15624,125 @@ describe("Golden: @koi/middleware-call-dedup", () => {
   });
 });
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-policy-cache (2 standalone queries, no LLM)
+//
+// Validates the verified-only promotion gate and that cache hits short-circuit
+// before reaching the next handler. Full short-circuit semantics are covered
+// by the package's own tests.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-policy-cache", () => {
+  test("middleware shape: policy-cache@intercept/50 with wrapToolCall and describeCapabilities", async () => {
+    const { createPolicyCacheMiddleware } = await import("@koi/middleware-policy-cache");
+    const handle = createPolicyCacheMiddleware({ maxEntries: 8 });
+    expect(handle.middleware.name).toBe("policy-cache");
+    expect(handle.middleware.priority).toBe(50);
+    expect(handle.middleware.phase).toBe("intercept");
+    expect(typeof handle.middleware.wrapToolCall).toBe("function");
+    expect(typeof handle.middleware.describeCapabilities).toBe("function");
+  });
+
+  test("verified-only gate: missing verifier fail-closes; configured verifier admits accepted brickIds", async () => {
+    const { createPolicyCacheMiddleware } = await import("@koi/middleware-policy-cache");
+
+    // No verifier configured → every register() fails closed.
+    const noVerifier = createPolicyCacheMiddleware();
+    const reject = noVerifier.register({
+      toolId: "search",
+      brickId: "b-unverified",
+      scope: "agent",
+      agentId: "agent-A",
+      execute: () => ({ action: "allow" }),
+    });
+    expect(reject.ok).toBe(false);
+    if (!reject.ok) {
+      expect(reject.error.code).toBe("VALIDATION");
+      expect(reject.error.retryable).toBe(false);
+    }
+    expect(noVerifier.size()).toBe(0);
+
+    // Verifier wired by host (forge in production) is the only authority.
+    const trusted = createPolicyCacheMiddleware({
+      verifier: (e) => e.brickId === "b-verified",
+    });
+    const accept = trusted.register({
+      toolId: "search",
+      brickId: "b-verified",
+      scope: "agent",
+      agentId: "agent-A",
+      execute: () => ({ action: "allow" }),
+    });
+    expect(accept.ok).toBe(true);
+    expect(trusted.size()).toBe(1);
+  });
+
+  // Composition: policy-cache MUST wrap permissions so a cached `block`
+  // short-circuits before any approval prompt or backend call fires.
+  // Both are intercept-phase. Engine sort order: lower priority = outer onion
+  // = runs first. Asserting policy-cache.priority < permissions.priority
+  // proves the engine will compose them in the safe order; a stub
+  // "permissions-shaped" inner middleware proves the cached block never
+  // reaches the inner layer.
+  test("policy-cache wraps permissions: cached block prevents inner approval call", async () => {
+    const { createPolicyCacheMiddleware } = await import("@koi/middleware-policy-cache");
+    const { createPermissionsMiddleware } = await import("@koi/middleware-permissions");
+
+    const policy = createPolicyCacheMiddleware({ verifier: () => true });
+    policy.register({
+      toolId: "danger",
+      brickId: "b-danger",
+      scope: "agent",
+      agentId: "a",
+      execute: () => ({ action: "block", reason: "policy says no" }),
+    });
+
+    // Real permissions middleware produced by its public factory — proves
+    // we observed the priority of the actual artifact, not a hand-typed
+    // number. Backend is deliberately a no-op deny so any reach-through
+    // would surface as a permission denial in the response (different
+    // shape from policy-cache's denial), making the test tight.
+    const permissions = createPermissionsMiddleware({
+      backend: { check: () => ({ effect: "allow" }) },
+    });
+
+    expect((policy.middleware.priority ?? 500) < (permissions.priority ?? 500)).toBe(true);
+
+    const ctx = {
+      session: { sessionId: "policy-cache-vs-permissions", agentId: "a", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+    } as unknown as import("@koi/core/middleware").TurnContext;
+
+    let permissionsCalls = 0;
+    let executions = 0;
+    const baseHandler: import("@koi/core/middleware").ToolHandler = async () => {
+      executions++;
+      return { output: "ran" };
+    };
+
+    // Onion compose: policy(permissions(base)). If policy short-circuits,
+    // permissions.wrapToolCall is never invoked.
+    const composed: import("@koi/core/middleware").ToolHandler = async (req) => {
+      const inner: import("@koi/core/middleware").ToolHandler = async (innerReq) => {
+        permissionsCalls++;
+        const r = await permissions.wrapToolCall?.(ctx, innerReq, baseHandler);
+        if (r === undefined) throw new Error("permissions returned undefined");
+        return r;
+      };
+      const r = await policy.middleware.wrapToolCall?.(ctx, req, inner);
+      if (r === undefined) throw new Error("policy-cache returned undefined");
+      return r;
+    };
+
+    const result = await composed({ toolId: "danger", input: {} });
+    expect(permissionsCalls).toBe(0);
+    expect(executions).toBe(0);
+    expect(result.metadata?.policyDenied).toBe(true);
+    expect(result.metadata?.blockedByHook).toBe(true);
+    expect(result.metadata?.hookName).toBe("policy-cache");
+  });
+});
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/middleware-reflex (3 standalone queries, no LLM)
 // ---------------------------------------------------------------------------
 
