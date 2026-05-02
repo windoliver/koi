@@ -466,6 +466,73 @@ describe("createDistiller", () => {
     if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_LITERAL_LEAKED");
   });
 
+  test("detects email PII leaked into a draft field", async () => {
+    const trace: DistillationTrace = {
+      traceId: "t-email",
+      turns: [
+        { role: "user", text: "follow up with alice@example.com about the report" },
+        { role: "assistant", toolCalls: [{ name: "read_file", argsJson: "{}" }] },
+        { role: "assistant", toolCalls: [{ name: "write_file", argsJson: "{}" }] },
+      ],
+    };
+    const burned = okLLM({
+      ...VALID_DRAFT,
+      description: "Send a status update to alice@example.com after formatting.",
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: burned }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_LITERAL_LEAKED");
+  });
+
+  test("rejects draft missing a parameter for a tool arg that varies across invocations", async () => {
+    // read_file is called twice with different "path" values — that key is
+    // variable and must be exposed as a parameter, not baked in.
+    const trace: DistillationTrace = {
+      traceId: "t-var",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "read_file", argsJson: '{"path":"/srv/a"}' }],
+        },
+        {
+          role: "assistant",
+          toolCalls: [{ name: "read_file", argsJson: '{"path":"/srv/b"}' }],
+        },
+      ],
+    };
+    const noParam = okLLM({
+      ...VALID_DRAFT,
+      toolSequence: ["read_file", "read_file"],
+      parameters: [], // missing "path"
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: noParam }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
+  });
+
+  test("accepts draft whose parameter name covers a variable tool arg", async () => {
+    const trace: DistillationTrace = {
+      traceId: "t-var-ok",
+      turns: [
+        {
+          role: "assistant",
+          toolCalls: [{ name: "read_file", argsJson: '{"path":"/srv/a"}' }],
+        },
+        {
+          role: "assistant",
+          toolCalls: [{ name: "read_file", argsJson: '{"path":"/srv/b"}' }],
+        },
+      ],
+    };
+    const withParam = okLLM({
+      ...VALID_DRAFT,
+      toolSequence: ["read_file", "read_file"],
+      parameters: [{ name: "path", description: "file to read", required: true }],
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: withParam }).distill(trace);
+    expect(r.ok).toBe(true);
+  });
+
   test("still marks transient thrown LLM exceptions (timeout, 429) as retryable", async () => {
     const llm: DistillerLLM = async () => {
       throw new Error("429 Too Many Requests");

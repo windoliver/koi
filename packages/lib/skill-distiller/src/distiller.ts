@@ -84,13 +84,24 @@ const LITERAL_MIN_LENGTH = 6;
 const LEAK_PROBE_FIELDS_DOC =
   "name / description / triggers / expectedInputs / expectedOutputs / parameter fields";
 
-// A trace literal is a string value inside a tool call's argsJson that looks
-// like a resource identifier (path, ID, URL, scoped key) — long enough and
-// shaped enough that it almost certainly should be parameterized instead of
-// burned into a reusable skill description.
+// Common identifier shapes that should never survive verbatim into a reusable
+// skill: emails (PII), UUIDs, IPv4 addresses, JWT-shaped tokens.
+const EMAIL_RE = /[\w.+-]+@[\w-]+\.[\w.-]+/;
+const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
+const IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/;
+const JWT_RE = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/;
+
+// A trace literal is a string value (from tool args or turn text) that looks
+// like a resource identifier or PII token — long enough and shaped enough that
+// it almost certainly should be parameterized rather than burned into a
+// reusable skill description.
 function looksLikeResourceLiteral(s: string): boolean {
   if (s.length < LITERAL_MIN_LENGTH) return false;
   if (/^[\s.,!?]+$/.test(s)) return false;
+  if (EMAIL_RE.test(s)) return true;
+  if (UUID_RE.test(s)) return true;
+  if (IPV4_RE.test(s)) return true;
+  if (JWT_RE.test(s)) return true;
   if (/[/.:_-]/.test(s)) return true;
   if (/^[A-Za-z0-9]{8,}$/.test(s)) return true;
   return false;
@@ -164,6 +175,56 @@ function findLeakedLiteral(draft: SkillDraft, trace: DistillationTrace): string 
   return undefined;
 }
 
+// Walk every tool call's argsJson and collect the set of values seen for each
+// (toolName, argKey) pair. A key whose value differs across invocations is a
+// "variable" arg — exactly the kind of input that must be exposed as a skill
+// parameter so the next caller can supply it. Keys that were always identical
+// are constants of the procedure and don't need parameterization.
+function collectVariableArgKeys(trace: DistillationTrace): readonly string[] {
+  const seen = new Map<string, Set<string>>();
+  for (const turn of trace.turns) {
+    if (turn.toolCalls === undefined) continue;
+    for (const call of turn.toolCalls) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(call.argsJson);
+      } catch {
+        continue;
+      }
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+        const composite = `${call.name}::${k}`;
+        const bag = seen.get(composite) ?? new Set<string>();
+        bag.add(JSON.stringify(v));
+        seen.set(composite, bag);
+      }
+    }
+  }
+  const variable: string[] = [];
+  for (const [composite, values] of seen) {
+    if (values.size > 1) {
+      const key = composite.split("::")[1];
+      if (key !== undefined) variable.push(key);
+    }
+  }
+  return variable;
+}
+
+// True if any draft parameter plausibly captures `argKey`. We accept exact
+// match, case-insensitive substring (e.g. "tenantId" satisfies a "tenant"
+// parameter), or the inverse so single-word parameter names cover compound
+// keys. This is a best-effort name match — the goal is to catch the obvious
+// "model returned zero parameters for a procedure with variable args" miss,
+// not to police the LLM's naming choices.
+function paramCoversArgKey(parameters: SkillDraft["parameters"], argKey: string): boolean {
+  const k = argKey.toLowerCase();
+  for (const p of parameters) {
+    const n = p.name.toLowerCase();
+    if (n === k || n.includes(k) || k.includes(n)) return true;
+  }
+  return false;
+}
+
 function ungroundedError(reason: string, errorKind: string): KoiError {
   return {
     code: "VALIDATION",
@@ -213,6 +274,18 @@ function groundDraftInTrace(
         "DRAFT_TOOL_NOT_GROUNDED",
       ),
     };
+  }
+  const variableKeys = collectVariableArgKeys(trace);
+  for (const key of variableKeys) {
+    if (!paramCoversArgKey(draft.parameters, key)) {
+      return {
+        ok: false,
+        error: ungroundedError(
+          `tool argument "${key}" varies across invocations in the trace but no draft parameter covers it — the skill would replay with a stale value baked in. Add a parameter for "${key}".`,
+          "DRAFT_VARIABLE_ARG_UNPARAMETERIZED",
+        ),
+      };
+    }
   }
   const leaked = findLeakedLiteral(draft, trace);
   if (leaked !== undefined) {
