@@ -6,6 +6,38 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **TUI cancel-resume integration (#2105, issue #1683)**: opt-in via
+  `KOI_SESSION_STATE_DB` env var pointing at a writable SQLite path.
+  When set, the TUI opens a `createSqliteSessionPersistence` store,
+  wires `wrapAdapterWithStatePersistence` around the transcript adapter
+  (refused at construction if the store doesn't implement atomic CAS
+  via `updateLastEngineState`), seeds an authoritative `SessionRecord`
+  on fresh sessions (`status="running"`, manifestPath in metadata), and
+  on `--resume <sid>` calls `resumeWithEngineState` with
+  `expectedEngineId=computeDefaultEngineId()` (`koi-tui:v1` schema-only
+  token, no model). The resumed session row's status flip back to
+  `"running"` is deferred until AFTER all validation gates (sidecar,
+  manifest provenance, audit intent, ACE config) pass — so a
+  `process.exit(1)` on a rejected resume leaves the row at its prior
+  "done" rather than falsely marking it "running" for recovery scans.
+  The "running"→"done" status flip on clean exit lives inside
+  `shutdown()` (just before `appHandle.stop()` destroys the OpenTUI
+  renderer); `process.on("exit")` cannot be relied upon because
+  destroyRenderer collapses Bun's event loop on the next empty tick
+  and bypasses JS exit handlers (same constraint already documented
+  for `runtime.dispose()`). SIGKILL/OOM legitimately leave "running"
+  for next-startup recovery scans. Failure modes: store-open failure
+  (bad path / permission) → stderr signal + transcript-only resume
+  for the run; seed write failure → stderr signal + cancel-resume
+  disabled for the run; concurrent runtime CAS conflict → stderr
+  `onPersistError` + back-off without clobbering the newer state.
+  Picker resume threads the same `stateOpts` so a cancel checkpoint
+  is loaded, but mid-session runtime is not rebuilt — the picker
+  emits a stderr warning telling the operator to restart with
+  `koi tui --resume <id>` to honor the cursor. Hardened across 10
+  adversarial-review rounds; see PR #2105 for the full reasoning
+  matrix and the two persistent flip-flop areas locked in by the
+  skill protocol.
 - **`@koi/forge-tools` now emits `generation` on store change events (#2106, refs #1207)**: The in-memory forge store annotates `saved`/`updated`/`removed` notifier events with `generation = storeVersion` so downstream consumers (notably `@koi/middleware-policy-cache`) can refuse stale events that would otherwise silently downgrade authorization. `computeIdentityBrickId` is now exported from the package's public API for callers that need to mint content-addressed brick ids without re-implementing the hash. CLI behavior unchanged — pure additive contract on the existing notifier surface.
 - **`koi mcp` registry-discovery subcommands (#1646)**: new
   `koi mcp search/info/install/uninstall` flow backed by the official MCP

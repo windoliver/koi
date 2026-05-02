@@ -4,6 +4,35 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 ## Recent updates
 
+`@koi/session` cancel-resume surface (#2105, issue #1683): no L2 dependency
+set changes — `@koi/runtime` already depends on `@koi/session`. Behavioral
+additions surfaced through the existing dep:
+`wrapAdapterWithStatePersistence` (caller-side wrapper that snapshots
+`EngineState` on `done.stopReason==="interrupted"` and clears stale
+checkpoints on every other terminal), `resumeWithEngineState` (extends
+`resumeForSession` with `lastEngineState` + `lastPersistedAt`), and an
+optional `expectedVersion?: number` parameter on the L0
+`SessionPersistence.updateLastEngineState` contract for cross-process
+CAS. Both bundled stores (in-memory + SQLite) honor `expectedVersion`
+inside their transactions; stores without atomic CAS are refused at
+wrap construction time. Failure modes: on `loadState` exception the
+wrapper signals `onPersistError`, atomically clears the unloadable
+checkpoint via CAS (CONFLICT → silent back-off so a concurrent newer
+write isn't clobbered), and yields a synthetic `done(stopReason="error")`
+without calling `inner.stream` — fail-closed so a richer adapter that
+partially mutates its cursor before throwing can't leak that state.
+Hardened across 10 review-loop rounds: cross-process CAS clobber, in-
+memory poison shield not durable across processes, transcript-cursor
+saveState/loadState made non-pass-through, exit-handler-after-OpenTUI-
+destroyRenderer (status flip moved inside `shutdown()` so the L0
+`status` lifecycle ("running" on start → "done" on clean exit) is
+actually enforced), live-session-id rebind on picker resume. Two
+persistent flip-flops (preserve-vs-clear loadState semantics; staged-
+user reinjection) locked in per the skill protocol — see PR #2105 for
+the full reasoning matrix. Golden replay coverage unchanged: this
+package was already integrated; the change extends its surface, not
+the integrated set.
+
 `@koi/skill-distiller` wired (#2104, issue #1649): added as a dependency of `@koi/runtime` to provide auto-distillation of successful agent traces into reusable parameterized skill drafts. The package is library-only — runtime ships the building blocks (`createDistiller`, `createDistillationPolicy`, `createDedupeIndex`, `createAuditLog`, `createStagingQueue`, `createSkillStore`, `createRelevanceScorer`) but does not yet register an automatic post-task hook into the agent loop; production wiring (observe → policy → distill → stage → review → store) is intentionally deferred to a follow-up issue so callers control when distillation runs. Two standalone golden queries in `golden-replay.test.ts` (`Golden: @koi/skill-distiller`) cover end-to-end pipeline assembly and `DistillationPolicy.shouldDistill` behavior with a synthetic trace fixture. No cassette trajectory recorded — the package has no LLM-callable tool surface; the LLM is consumed *internally* by `Distiller` as the cheap-model summarizer and is mocked in tests via the `DistillerLLM` injection point. Hardened across 20+ adversarial-review rounds: mandatory `redactor` (or explicit `allowUnredactedTrace` opt-in), deep-clone-and-freeze on every store/staging/audit insert, hash-based dedupe in `SkillStore` (prevents content-equivalent drafts evicting unrelated skills under different names), contiguous-prefix tool grounding (no leading-step omission), single-use resource-literal coverage (paths/IDs/UUIDs/emails/JWTs/numeric-IDs-under-identifier-keys must be parameterized — even when the tool was invoked once), 1:1 variable-arg cover with whole-token matching (no `grid` satisfying `id`), nested-object leaf flattening (`copy.src` and `copy.dst` are independent), array-recursive resource scan, byte-accurate (UTF-8 via `TextEncoder`) prompt budget with fail-closed truncation, per-field caps in `parseSkillDraft` (16 KiB total + per-field length/count limits), and provenance hashes on the redacted trace. See `docs/L2/skill-distiller.md` for the full contract; 239 unit tests cover hash invariants, adversarial parser inputs, store LRU+hash interaction, staging state-machine edges, and a cassette-driven harness that replays every recorded ATIF trajectory through the full pipeline.
 
 `@koi/middleware-policy-cache` wired (#2106, refs #1207): added as a dependency of `@koi/runtime`. The package short-circuits authorization decisions for forge-verified tool bricks promoted to policy mode — runs at `intercept@50` (outer of `permissions@100`), so a cached `block` synthesizes the canonical deny + dispatches a `PermissionDecision` to audit observers without ever entering permissions or the executor. **Trust model**: `register()` is fail-closed by default — every entry is rejected unless the host wires a `verifier` closure captured at construction time against forge's verified-set; `verifyOnHit` defaults to `true` so a mid-lifetime revocation re-binds trust on every hit (verifier-flip-false → tombstone + canonical deny). **Stale-event protection**: `StoreChangeEvent.generation` is honored end-to-end — `register()` refuses strictly older generations, the notifier path ignores stale events, and slot-replacement gates the strict downgrade corner (versioned cached entry displaced by unversioned incoming → refused with `VALIDATION` error). Forge-tools' in-memory store now emits `generation = storeVersion` on `saved`/`updated`/`removed` so the contract holds across the seam. Two standalone golden queries cover middleware shape (`policy-cache@intercept/50`, `wrapToolCall`, `describeCapabilities`) and composition correctness (cached `block` prevents inner permissions approval call). An 8-test cross-package integration suite under `packages/meta/runtime/src/__tests__/forge-policy-cache.integration.test.ts` exercises the real forge store ↔ real cache wiring: generation propagation through save/update/remove, matching-generation eviction, stale-event rollback protection, slot-replacement downgrade refusal, legacy-host displacement, and dispose unsubscribe. Hardened across three `/review-loop` runs (30+ rounds total, 13 fixes) covering attestation-token forging, brickId replay, post-registration mutation, generation-aware invalidation, per-turn block cap, dispatch timeout, full-bucket policy, agent-bucket LRU, executor closure trust, and verifier-throw-vs-revocation semantics. See `docs/L2/middleware-policy-cache.md` for the full trust model and config reference.
