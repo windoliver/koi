@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-05-01T19:14:24.429Z",
+      "timestamp": "2026-05-02T04:59:19.155Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-05-01T19:14:24.430Z",
+      "timestamp": "2026-05-02T04:59:19.156Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,9 +50,9 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-05-01T19:14:24.453Z",
+      "timestamp": "2026-05-02T04:59:19.175Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "Use the fs_write_then_fail tool exactly once with path=\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-5caP2p/written.txt\" and content=\"will-be-rolled-back\". After the tool call, briefly explain in one sentence what happened to the user.",
+      "message": "Use the fs_write_then_fail tool exactly once with path=\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-vQQePO/written.txt\" and content=\"will-be-rolled-back\". After the tool call, briefly explain in one sentence what happened to the user.",
       "observation": {
         "results": [
           {
@@ -61,10 +61,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 234,
-        "completion_tokens": 66
+        "prompt_tokens": 233,
+        "completion_tokens": 65
       },
-      "duration_ms": 816,
+      "duration_ms": 744,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -77,25 +77,25 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "6a37f7dca8345710fcb33c39610ab41021e56f9b981c0c4dad5cd39d5f702571",
+        "promptPrefixFingerprint": "227040e7be4b6799da4f6588f5ad13304659483d60611f09ccd4c7869b38ae97",
         "turnIndex": 0
       }
     },
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-05-01T19:14:28.681Z",
+      "timestamp": "2026-05-02T04:59:19.929Z",
       "tool_calls": [
         {
           "tool_call_id": "call_fs_write_then_fail_3",
           "function_name": "fs_write_then_fail",
           "arguments": {
-            "path": "/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-5caP2p/written.txt",
+            "path": "/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-vQQePO/written.txt",
             "content": "will-be-rolled-back"
           }
         }
       ],
-      "duration_ms": 2,
+      "duration_ms": 1,
       "outcome": "failure",
       "extra": {
         "__rich_error": {
@@ -109,9 +109,9 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-05-01T19:14:28.682Z",
+      "timestamp": "2026-05-02T04:59:19.930Z",
       "model_name": "middleware:exfiltration-guard",
-      "duration_ms": 824.5676249999997,
+      "duration_ms": 751.5074999999997,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -120,7 +120,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1777662865273,
+        "_original_timestamp": 1777697959925,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -129,10 +129,10 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-05-01T19:14:28.690Z",
+      "timestamp": "2026-05-02T04:59:19.937Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "fs_write_then_fail({\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-5caP2p/written.txt\",\"content\":\"will-be-rolled-back\"})",
-      "duration_ms": 3416.9818339999983,
+      "message": "fs_write_then_fail({\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-vQQePO/written.txt\",\"content\":\"will-be-rolled-back\"})",
+      "duration_ms": 12.082917000001544,
       "outcome": "failure",
       "extra": {
         "type": "middleware_span",
@@ -152,10 +152,10 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-05-01T19:14:28.691Z",
+      "timestamp": "2026-05-02T04:59:19.938Z",
       "model_name": "hook:on-tool-exec",
       "message": "tool.failed → on-tool-exec",
-      "duration_ms": 5.854583000000275,
+      "duration_ms": 5.295500000000175,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -172,9 +172,9 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-05-01T19:14:28.692Z",
+      "timestamp": "2026-05-02T04:59:19.939Z",
       "model_name": "middleware:permissions",
-      "duration_ms": 822.1151659999996,
+      "duration_ms": 749.7337919999991,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -191,7 +191,7 @@
             "filteredCount": 0
           }
         ],
-        "_original_timestamp": 1777662865272,
+        "_original_timestamp": 1777697959924,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -200,10 +200,10 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-05-01T19:14:28.693Z",
+      "timestamp": "2026-05-02T04:59:19.940Z",
       "model_name": "middleware:permissions",
-      "message": "fs_write_then_fail({\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-5caP2p/written.txt\",\"content\":\"will-be-rolled-back\"})",
-      "duration_ms": 3416.402000000002,
+      "message": "fs_write_then_fail({\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-vQQePO/written.txt\",\"content\":\"will-be-rolled-back\"})",
+      "duration_ms": 11.26641699999891,
       "outcome": "failure",
       "extra": {
         "type": "middleware_span",
@@ -217,13 +217,13 @@
             "phase": "execute",
             "toolId": "fs_write_then_fail",
             "resource": "fs_write_then_fail",
-            "toolInput": "{\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-5caP2p/written.txt\",\"content\":\"will-be-rolled-back\"}",
+            "toolInput": "{\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-vQQePO/written.txt\",\"content\":\"will-be-rolled-back\"}",
             "action": "allow",
-            "durationMs": 0,
+            "durationMs": 1,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1777662868689,
+        "_original_timestamp": 1777697959936,
         "__koi": {
           "identifier": "middleware:permissions"
         },
@@ -235,10 +235,10 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-05-01T19:14:28.694Z",
+      "timestamp": "2026-05-02T04:59:19.941Z",
       "model_name": "middleware:fs-rollback",
-      "message": "fs_write_then_fail({\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-5caP2p/written.txt\",\"content\":\"will-be-rolled-back\"})",
-      "duration_ms": 3413.9148749999986,
+      "message": "fs_write_then_fail({\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-vQQePO/written.txt\",\"content\":\"will-be-rolled-back\"})",
+      "duration_ms": 8.822249999999258,
       "outcome": "failure",
       "extra": {
         "type": "middleware_span",
@@ -247,7 +247,7 @@
         "phase": "resolve",
         "priority": 180,
         "nextCalled": true,
-        "_original_timestamp": 1777662868688,
+        "_original_timestamp": 1777697959935,
         "__koi": {
           "identifier": "middleware:fs-rollback"
         },
@@ -259,9 +259,9 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-05-01T19:14:28.695Z",
+      "timestamp": "2026-05-02T04:59:19.942Z",
       "model_name": "middleware:skill-injector",
-      "duration_ms": 819.0323749999989,
+      "duration_ms": 747.8317499999994,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -270,7 +270,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "_original_timestamp": 1777662865271,
+        "_original_timestamp": 1777697959923,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -279,9 +279,9 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-05-01T19:14:28.696Z",
+      "timestamp": "2026-05-02T04:59:19.943Z",
       "model_name": "middleware:hooks",
-      "duration_ms": 818.5443750000013,
+      "duration_ms": 747.512084,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -297,7 +297,7 @@
             "aggregated": "pass"
           }
         ],
-        "_original_timestamp": 1777662865270,
+        "_original_timestamp": 1777697959922,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -306,10 +306,10 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-05-01T19:14:28.697Z",
+      "timestamp": "2026-05-02T04:59:19.944Z",
       "model_name": "middleware:hooks",
-      "message": "fs_write_then_fail({\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-5caP2p/written.txt\",\"content\":\"will-be-rolled-back\"})",
-      "duration_ms": 7.416333000001032,
+      "message": "fs_write_then_fail({\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-fs-rollback-vQQePO/written.txt\",\"content\":\"will-be-rolled-back\"})",
+      "duration_ms": 5.928916999999274,
       "outcome": "failure",
       "extra": {
         "type": "middleware_span",
@@ -326,7 +326,7 @@
             "aggregated": "pass"
           }
         ],
-        "_original_timestamp": 1777662868687,
+        "_original_timestamp": 1777697959934,
         "__koi": {
           "identifier": "middleware:hooks"
         },
@@ -338,21 +338,21 @@
     {
       "step_id": 13,
       "source": "agent",
-      "timestamp": "2026-05-01T19:14:28.698Z",
+      "timestamp": "2026-05-02T04:59:19.945Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "error: simulated post-write failure for fs-rollback golden",
       "observation": {
         "results": [
           {
-            "content": "The tool attempted to write \"will-be-rolled-back\" to the specified file, but a simulated failure occurred after the write, triggering a rollback.\n"
+            "content": "The tool attempted to write to the file but then simulated a failure, so the changes should be rolled back.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 334,
-        "completion_tokens": 33
+        "prompt_tokens": 331,
+        "completion_tokens": 23
       },
-      "duration_ms": 808,
+      "duration_ms": 451,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -365,17 +365,17 @@
           }
         ],
         "responseModel": "google/gemini-2.0-flash-001",
-        "promptPrefixFingerprint": "6a37f7dca8345710fcb33c39610ab41021e56f9b981c0c4dad5cd39d5f702571",
+        "promptPrefixFingerprint": "227040e7be4b6799da4f6588f5ad13304659483d60611f09ccd4c7869b38ae97",
         "turnIndex": 1,
-        "_original_timestamp": 1777662868697
+        "_original_timestamp": 1777697959942
       }
     },
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-05-01T19:14:29.509Z",
+      "timestamp": "2026-05-02T04:59:20.397Z",
       "model_name": "middleware:exfiltration-guard",
-      "duration_ms": 809.3704589999979,
+      "duration_ms": 452.423334000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -392,9 +392,9 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-05-01T19:14:29.510Z",
+      "timestamp": "2026-05-02T04:59:20.398Z",
       "model_name": "middleware:permissions",
-      "duration_ms": 809.3342080000002,
+      "duration_ms": 452.38779199999954,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -411,7 +411,7 @@
             "filteredCount": 0
           }
         ],
-        "_original_timestamp": 1777662869508,
+        "_original_timestamp": 1777697960396,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -420,9 +420,9 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-05-01T19:14:29.511Z",
+      "timestamp": "2026-05-02T04:59:20.399Z",
       "model_name": "middleware:skill-injector",
-      "duration_ms": 809.023709000001,
+      "duration_ms": 452.13754100000006,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -431,7 +431,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "_original_timestamp": 1777662869507,
+        "_original_timestamp": 1777697960395,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -440,9 +440,9 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-05-01T19:14:29.512Z",
+      "timestamp": "2026-05-02T04:59:20.400Z",
       "model_name": "middleware:hooks",
-      "duration_ms": 808.9562079999996,
+      "duration_ms": 452.09499999999935,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -458,7 +458,7 @@
             "aggregated": "pass"
           }
         ],
-        "_original_timestamp": 1777662869506,
+        "_original_timestamp": 1777697960394,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -467,7 +467,7 @@
     {
       "step_id": 18,
       "source": "system",
-      "timestamp": "2026-05-01T19:14:29.520Z",
+      "timestamp": "2026-05-02T04:59:20.406Z",
       "model_name": "middleware:hooks",
       "observation": {
         "results": [
@@ -476,7 +476,7 @@
           }
         ]
       },
-      "duration_ms": 0.16479099999924074,
+      "duration_ms": 0.07729199999994307,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
