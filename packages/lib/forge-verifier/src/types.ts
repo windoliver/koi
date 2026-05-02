@@ -55,8 +55,18 @@ export interface VerificationCache {
   readonly set: (key: string, summary: ForgeVerificationSummary) => void | Promise<void>;
 }
 
-export interface VerifyOptions {
-  readonly cacheKey?: string | undefined;
+/**
+ * Caller-supplied function that derives a cache key from the artifact under
+ * verification. Required (not a plain string) so the cache cannot serve a
+ * pass result for one artifact in response to a request about a different
+ * artifact — the key must be a function of the artifact's content, not an
+ * external label. The orchestrator further composes this with a stage-list
+ * fingerprint, so callers do not need to encode the verifier configuration.
+ */
+export type CacheKeyFn<I> = (artifact: I) => string;
+
+export interface VerifyOptions<I = unknown> {
+  readonly cacheKey?: CacheKeyFn<I> | undefined;
   readonly cache?: VerificationCache | undefined;
   readonly signal?: AbortSignal | undefined;
 }

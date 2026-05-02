@@ -47,8 +47,8 @@ function fingerprintStages<I>(stages: readonly VerifierStage<I>[]): string {
   return JSON.stringify(stages.map((s) => [s.name, s.version ?? "0"]));
 }
 
-function composeCacheKey<I>(userKey: string, stages: readonly VerifierStage<I>[]): string {
-  return `${userKey}::${fingerprintStages(stages)}`;
+function composeCacheKey<I>(artifactKey: string, stages: readonly VerifierStage<I>[]): string {
+  return `${artifactKey}::${fingerprintStages(stages)}`;
 }
 
 async function runStage<I>(
@@ -91,13 +91,15 @@ async function runStage<I>(
 export async function runPipeline<I>(
   stages: readonly VerifierStage<I>[],
   artifact: I,
-  options?: VerifyOptions,
+  options?: VerifyOptions<I>,
 ): Promise<Result<ForgeVerificationSummary>> {
-  const cacheKey = options?.cacheKey;
+  const cacheKeyFn = options?.cacheKey;
   const cache = options?.cache;
   const signal = options?.signal;
   const composedKey =
-    cacheKey !== undefined && cache !== undefined ? composeCacheKey(cacheKey, stages) : undefined;
+    cacheKeyFn !== undefined && cache !== undefined
+      ? composeCacheKey(cacheKeyFn(artifact), stages)
+      : undefined;
 
   if (composedKey !== undefined && cache !== undefined) {
     const hit = await cache.get(composedKey);
@@ -150,6 +152,22 @@ export async function runPipeline<I>(
     digests = [...digests, { stage: stage.name, passed: true, durationMs }];
     if (outcome.sandboxed === true) {
       sandbox = true;
+    }
+
+    // Re-check abort *after* every stage (including the last) and *before*
+    // returning success. A long-running stage that finishes after the signal
+    // fires must not be allowed to commit a pass result the caller has
+    // already given up on. (`signal.aborted` is mutable; TS narrows on the
+    // entry check above so we read it through the maybe-undefined wrapper.)
+    if (signal?.aborted) {
+      return {
+        ok: false,
+        error: stageError(
+          "TIMEOUT",
+          stage.name,
+          `Pipeline aborted during or after stage "${stage.name}"`,
+        ),
+      };
     }
   }
 

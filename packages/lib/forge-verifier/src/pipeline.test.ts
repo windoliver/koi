@@ -112,11 +112,11 @@ describe("runPipeline", () => {
     const syntax = counted(createSyntaxStage(okCheck));
     const stages = [syntax.stage] as const;
 
-    const first = await runPipeline(stages, artifact, { cacheKey: "k1", cache });
+    const first = await runPipeline(stages, artifact, { cacheKey: () => "k1", cache });
     expect(first.ok).toBe(true);
     expect(syntax.calls()).toBe(1);
 
-    const second = await runPipeline(stages, artifact, { cacheKey: "k1", cache });
+    const second = await runPipeline(stages, artifact, { cacheKey: () => "k1", cache });
     expect(second.ok).toBe(true);
     expect(syntax.calls()).toBe(1); // not incremented
     if (!second.ok || !first.ok) return;
@@ -126,7 +126,7 @@ describe("runPipeline", () => {
   test("failed pipelines are not cached", async () => {
     const cache = createMemoryCache();
     const stages = [createSyntaxStage(failCheck("nope"))];
-    await runPipeline(stages, { name: "a" }, { cacheKey: "k2", cache });
+    await runPipeline(stages, { name: "a" }, { cacheKey: () => "k2", cache });
     const cached = await cache.get("k2");
     expect(cached).toBeUndefined();
   });
@@ -162,7 +162,9 @@ describe("runPipeline", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("TIMEOUT");
-    expect(result.error.context?.stage).toBe("never");
+    // Post-stage abort check fires before the next iteration entry check,
+    // so the abort is attributed to the stage that aborted, not the next.
+    expect(result.error.context?.stage).toBe("first");
   });
 
   test("StageContext.previous reflects prior digests", async () => {
@@ -199,14 +201,14 @@ describe("runPipeline — security regressions", () => {
   test("cache key is bound to stage list — adding a new stage invalidates prior cache", async () => {
     const cache = createMemoryCache();
     const v1 = counted(createSyntaxStage(okCheck));
-    const r1 = await runPipeline([v1.stage], artifact, { cacheKey: "user-key", cache });
+    const r1 = await runPipeline([v1.stage], artifact, { cacheKey: () => "user-key", cache });
     expect(r1.ok).toBe(true);
     expect(v1.calls()).toBe(1);
 
     const v2a = counted(createSyntaxStage(okCheck));
     const v2b = counted(createTypeStage(okCheck));
     const r2 = await runPipeline([v2a.stage, v2b.stage], artifact, {
-      cacheKey: "user-key",
+      cacheKey: () => "user-key",
       cache,
     });
     expect(r2.ok).toBe(true);
@@ -219,11 +221,11 @@ describe("runPipeline — security regressions", () => {
   test("cache key is bound to stage list — renaming a stage invalidates prior cache", async () => {
     const cache = createMemoryCache();
     const before = counted({ name: "alpha", run: async () => PASS });
-    const r1 = await runPipeline([before.stage], artifact, { cacheKey: "k", cache });
+    const r1 = await runPipeline([before.stage], artifact, { cacheKey: () => "k", cache });
     expect(r1.ok).toBe(true);
 
     const after = counted({ name: "beta", run: async () => PASS });
-    const r2 = await runPipeline([after.stage], artifact, { cacheKey: "k", cache });
+    const r2 = await runPipeline([after.stage], artifact, { cacheKey: () => "k", cache });
     expect(r2.ok).toBe(true);
     expect(after.calls()).toBe(1);
   });
@@ -259,13 +261,13 @@ describe("runPipeline — security regressions", () => {
   test("cache fingerprint includes stage version — bumping version invalidates prior cache", async () => {
     const cache = createMemoryCache();
     const v1 = counted({ name: "checker", version: "1", run: async () => PASS });
-    const r1 = await runPipeline([v1.stage], artifact, { cacheKey: "k", cache });
+    const r1 = await runPipeline([v1.stage], artifact, { cacheKey: () => "k", cache });
     expect(r1.ok).toBe(true);
     expect(v1.calls()).toBe(1);
 
     // Same name, bumped version — must re-run.
     const v2 = counted({ name: "checker", version: "2", run: async () => PASS });
-    const r2 = await runPipeline([v2.stage], artifact, { cacheKey: "k", cache });
+    const r2 = await runPipeline([v2.stage], artifact, { cacheKey: () => "k", cache });
     expect(r2.ok).toBe(true);
     expect(v2.calls()).toBe(1);
   });
@@ -273,7 +275,7 @@ describe("runPipeline — security regressions", () => {
   test("cache returns a frozen, isolated snapshot — caller mutation cannot poison the cache", async () => {
     const cache = createMemoryCache();
     const stage = createSyntaxStage(okCheck);
-    const r1 = await runPipeline([stage], artifact, { cacheKey: "k", cache });
+    const r1 = await runPipeline([stage], artifact, { cacheKey: () => "k", cache });
     expect(r1.ok).toBe(true);
     if (!r1.ok) return;
 
@@ -289,7 +291,7 @@ describe("runPipeline — security regressions", () => {
     }
 
     // Cache must still serve a clean summary.
-    const r2 = await runPipeline([stage], artifact, { cacheKey: "k", cache });
+    const r2 = await runPipeline([stage], artifact, { cacheKey: () => "k", cache });
     expect(r2.ok).toBe(true);
     if (!r2.ok) return;
     expect(r2.value.passed).toBe(true);
@@ -302,8 +304,8 @@ describe("runPipeline — security regressions", () => {
     // would collide. JSON-encoding must keep them apart.
     const a = counted({ name: "a|b", version: "1", run: async () => PASS });
     const b = counted({ name: "a", version: "1|b@1", run: async () => PASS });
-    await runPipeline([a.stage], artifact, { cacheKey: "k", cache });
-    await runPipeline([b.stage], artifact, { cacheKey: "k", cache });
+    await runPipeline([a.stage], artifact, { cacheKey: () => "k", cache });
+    await runPipeline([b.stage], artifact, { cacheKey: () => "k", cache });
     expect(a.calls()).toBe(1);
     expect(b.calls()).toBe(1);
   });
@@ -326,7 +328,7 @@ describe("runPipeline — security regressions", () => {
       set: async () => {},
     };
     const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
-      cacheKey: "k",
+      cacheKey: () => "k",
       cache: hostileCache,
     });
     expect(result.ok).toBe(true);
@@ -345,10 +347,44 @@ describe("runPipeline — security regressions", () => {
     const cache = createMemoryCache();
     const v1 = counted(createSyntaxStage(okCheck, "1"));
     const v2 = counted(createSyntaxStage(okCheck, "2"));
-    await runPipeline([v1.stage], artifact, { cacheKey: "k", cache });
-    await runPipeline([v2.stage], artifact, { cacheKey: "k", cache });
+    await runPipeline([v1.stage], artifact, { cacheKey: () => "k", cache });
+    await runPipeline([v2.stage], artifact, { cacheKey: () => "k", cache });
     expect(v1.calls()).toBe(1);
     expect(v2.calls()).toBe(1);
+  });
+
+  test("abort during the final stage still maps to TIMEOUT", async () => {
+    const ac = new AbortController();
+    const stages: readonly VerifierStage<FakeArtifact>[] = [
+      {
+        name: "only",
+        run: async () => {
+          ac.abort();
+          return PASS; // Stage ignored the signal and returned success.
+        },
+      },
+    ];
+    const result = await runPipeline(stages, artifact, { signal: ac.signal });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("TIMEOUT");
+    expect(result.error.context?.stage).toBe("only");
+  });
+
+  test("cache key derived from artifact — different artifacts do not share cache", async () => {
+    const cache = createMemoryCache();
+    const stage = counted(createSyntaxStage(okCheck));
+    const artifactA: FakeArtifact = { name: "A" };
+    const artifactB: FakeArtifact = { name: "B" };
+    const key: (a: FakeArtifact) => string = (a) => a.name;
+    await runPipeline([stage.stage], artifactA, { cacheKey: key, cache });
+    expect(stage.calls()).toBe(1);
+    // A different artifact under the same key fn must not see the prior pass.
+    await runPipeline([stage.stage], artifactB, { cacheKey: key, cache });
+    expect(stage.calls()).toBe(2);
+    // But re-verifying A should still hit the cache.
+    await runPipeline([stage.stage], artifactA, { cacheKey: key, cache });
+    expect(stage.calls()).toBe(2);
   });
 
   test("cache.set failure does not turn success into rejection", async () => {
@@ -359,7 +395,7 @@ describe("runPipeline — security regressions", () => {
       },
     };
     const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
-      cacheKey: "k",
+      cacheKey: () => "k",
       cache: flakyCache,
     });
     expect(result.ok).toBe(true);

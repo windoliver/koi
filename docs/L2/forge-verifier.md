@@ -43,11 +43,12 @@ via the same `VerifierStage` interface.
   StageOutcome | Promise<StageOutcome>` and wraps it with the canonical
   stage name (`"syntax"`, `"type"`, `"test"`). Sync and async checks are
   both supported (the orchestrator awaits unconditionally).
-- `VerifyOptions` — `cacheKey?: string` (when set, the orchestrator
-  consults `cache.get(cacheKey)` before running stages and writes the
-  successful summary back via `cache.set`); `cache?: VerificationCache`
-  (the storage backend); `signal?: AbortSignal` (forwarded to every
-  stage via `StageContext`).
+- `VerifyOptions<I>` — `cacheKey?: (artifact: I) => string` (a function,
+  not a static string, so the cache key MUST be derived from the
+  artifact under verification — prevents one artifact's pass result
+  from being served to a different artifact under the same external
+  label); `cache?: VerificationCache`; `signal?: AbortSignal`.
+- `CacheKeyFn<I>` — exported alias for `(artifact: I) => string`.
 - `VerificationCache` — two methods: `get(key): ForgeVerificationSummary
   | undefined | Promise<...>`, `set(key, summary): void | Promise<void>`.
   Both `T | Promise<T>` so an in-memory `Map` and a remote KV present
@@ -72,7 +73,7 @@ via the same `VerifierStage` interface.
 | Cache hit | When the composed key resolves, no stages run and the cached summary is returned verbatim. The pipeline does not re-validate cached summaries. |
 | Cache miss | Pipeline runs normally. On `passed: true`, the summary is stored via `cache.set`. **Cache writes are best-effort**: a `cache.set` throw is caught, logged via `console.debug`, and the successful verification is still returned. Verifier availability does not depend on cache availability. |
 | `sandbox` field | Always `false` — this package does not run a sandbox. Sandbox-bearing stages must be added by a downstream package and the orchestrator forwards their `sandbox` claim through (see "Sandbox flag" below). |
-| Cancellation | `signal.aborted` checked between stages. Aborting after a stage starts but before it finishes is the stage's responsibility (it receives the signal). |
+| Cancellation | `signal.aborted` is checked **before each stage starts AND after each stage completes (including the final stage)** before any success summary is returned. A stage that ignores the signal and returns a late `ok: true` cannot commit a pass that the caller has already given up on. The error is attributed to the stage that aborted. |
 
 ### Sandbox flag
 
