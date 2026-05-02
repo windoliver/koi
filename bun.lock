@@ -554,7 +554,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/git-utils": "workspace:*",
       },
       "devDependencies": {
         "@koi/test": "workspace:*",

@@ -1,6 +1,6 @@
 {
   "name": "@koi/middleware-fs-rollback",
-  "description": "Snapshot/restore working tree around protected tool calls via git stash (L2)",
+  "description": "Snapshot/restore the target file around protected tool calls (L2)",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -17,8 +17,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/git-utils": "workspace:*"
+    "@koi/core": "workspace:*"
   },
   "devDependencies": {
     "@koi/test": "workspace:*"

@@ -829,30 +829,43 @@ describe("Golden: @koi/middleware-tool-error-formatter", () => {
 describe("Golden: @koi/middleware-fs-rollback", () => {
   test("createFsRollbackMiddleware exposes the expected middleware identity", async () => {
     const { createFsRollbackMiddleware } = await import("@koi/middleware-fs-rollback");
-    const handle = createFsRollbackMiddleware({
-      runGit: async () => ({ ok: false, stdout: "", stderr: "stub" }),
-      cwd: "/tmp",
-    });
+    const handle = createFsRollbackMiddleware({ cwd: "/tmp" });
     expect(handle.middleware.name).toBe("fs-rollback");
     expect(handle.middleware.priority).toBe(180);
     expect(typeof handle.middleware.wrapToolCall).toBe("function");
   });
 
-  test("snapshot decision: non-protected tools passthrough; protected tools take a snapshot when tree is dirty", async () => {
+  test("snapshot decision: non-protected tools passthrough; protected tools snapshot the target path", async () => {
     const { createFsRollbackMiddleware } = await import("@koi/middleware-fs-rollback");
-    const calls: string[] = [];
+    const reads: string[] = [];
+    const writes: string[] = [];
+    const unlinks: string[] = [];
+    const files = new Map<string, Uint8Array>([
+      ["/tmp/golden-fsrb/file.txt", new TextEncoder().encode("PRE")],
+    ]);
+    const stub = { mtimeMs: 1, size: 1, ino: 1, kind: "file" as const };
     const handle = createFsRollbackMiddleware({
-      cwd: "/tmp/golden-fakerepo",
-      runGit: async (args) => {
-        calls.push(args.join(" "));
-        if (args[0] === "rev-parse")
-          return { ok: true, stdout: "/tmp/golden-fakerepo", stderr: "" };
-        if (args[0] === "status") return { ok: true, stdout: " M file.txt", stderr: "" };
-        if (args[0] === "stash" && args[1] === "push")
-          return { ok: true, stdout: "Saved working directory", stderr: "" };
-        if (args[0] === "stash" && args[1] === "list")
-          return { ok: true, stdout: "stash@{0}: On main: koi-fs-rollback:s:c:1", stderr: "" };
-        return { ok: true, stdout: "", stderr: "" };
+      cwd: "/tmp/golden-fsrb",
+      fs: {
+        async read(p) {
+          reads.push(p);
+          const b = files.get(p);
+          return b === undefined ? { existed: false } : { existed: true, bytes: b, stat: stub };
+        },
+        async stat(p) {
+          return files.has(p) ? stub : undefined;
+        },
+        async write(p, b) {
+          writes.push(p);
+          files.set(p, b);
+        },
+        async atomicWrite(p, b) {
+          files.set(p, b);
+        },
+        async unlink(p) {
+          unlinks.push(p);
+          files.delete(p);
+        },
       },
     });
     const wrap = handle.middleware.wrapToolCall;
@@ -876,7 +889,7 @@ describe("Golden: @koi/middleware-fs-rollback", () => {
       { toolId: "echo", input: { text: "hi" } as JsonObject } satisfies ToolRequest,
       async () => ({ output: "ok" }) satisfies ToolResponse,
     );
-    expect(calls.length).toBe(0);
+    expect(reads.length).toBe(0);
 
     await wrap(
       sessCtx,
@@ -886,28 +899,47 @@ describe("Golden: @koi/middleware-fs-rollback", () => {
       } satisfies ToolRequest,
       async () => ({ output: "ok" }) satisfies ToolResponse,
     );
-    const pushIdx = calls.findIndex((c) => c.startsWith("stash push"));
-    expect(pushIdx).toBeGreaterThanOrEqual(0);
+    expect(reads).toContain("/tmp/golden-fsrb/file.txt");
+    // Success path must NOT touch the target file beyond the read.
+    expect(writes.length).toBe(0);
+    expect(unlinks.length).toBe(0);
   });
 
-  test("repo-detection branching: cwd outside any git repo no-ops the middleware", async () => {
+  test("rollback path: tool throws → snapshot bytes are restored, original error rethrows", async () => {
     const { createFsRollbackMiddleware } = await import("@koi/middleware-fs-rollback");
-    const calls: string[] = [];
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
+    const files = new Map<string, Uint8Array>([
+      ["/tmp/golden-fsrb-fail/file.txt", enc.encode("PRE")],
+    ]);
+    const stub = { mtimeMs: 1, size: 1, ino: 1, kind: "file" as const };
     const handle = createFsRollbackMiddleware({
-      cwd: "/tmp/no-git-here",
-      runGit: async (args) => {
-        calls.push(args.join(" "));
-        if (args[0] === "rev-parse")
-          return { ok: false, stdout: "", stderr: "not a git repository" };
-        return { ok: true, stdout: "", stderr: "" };
+      cwd: "/tmp/golden-fsrb-fail",
+      fs: {
+        async read(p) {
+          const b = files.get(p);
+          return b === undefined ? { existed: false } : { existed: true, bytes: b, stat: stub };
+        },
+        async stat(p) {
+          return files.has(p) ? stub : undefined;
+        },
+        async write(p, b) {
+          files.set(p, b);
+        },
+        async atomicWrite(p, b) {
+          files.set(p, b);
+        },
+        async unlink(p) {
+          files.delete(p);
+        },
       },
     });
     const wrap = handle.middleware.wrapToolCall;
     if (!wrap) throw new Error();
     const sessCtx = {
       session: {
-        agentId: "fsrb-nogit",
-        sessionId: sessionId("fsrb-nogit"),
+        agentId: "fsrb-fail",
+        sessionId: sessionId("fsrb-fail"),
         runId: runId("r1"),
         metadata: {} as JsonObject,
       },
@@ -916,19 +948,18 @@ describe("Golden: @koi/middleware-fs-rollback", () => {
       messages: [],
       metadata: {},
     } satisfies TurnContext;
-    const origWarn = console.warn;
-    console.warn = () => undefined;
-    try {
-      await wrap(
+    const original = new Error("tool blew up");
+    await expect(
+      wrap(
         sessCtx,
-        { toolId: "fs_write", input: { path: "x.txt" } as JsonObject } satisfies ToolRequest,
-        async () => ({ output: "ok" }) satisfies ToolResponse,
-      );
-      expect(calls.find((c) => c.startsWith("stash"))).toBeUndefined();
-      expect(calls.find((c) => c.startsWith("rev-parse"))).toBeDefined();
-    } finally {
-      console.warn = origWarn;
-    }
+        { toolId: "fs_write", input: { path: "file.txt" } as JsonObject } satisfies ToolRequest,
+        async () => {
+          files.set("/tmp/golden-fsrb-fail/file.txt", enc.encode("CORRUPT"));
+          throw original;
+        },
+      ),
+    ).rejects.toBe(original);
+    expect(dec.decode(files.get("/tmp/golden-fsrb-fail/file.txt"))).toBe("PRE");
   });
 
   test("trajectory fixture (cassette replay) records fs-rollback middleware spans plus a failing protected tool step", async () => {

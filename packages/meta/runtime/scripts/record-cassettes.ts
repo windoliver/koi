@@ -2283,27 +2283,16 @@ async function recordAgentSummarySidecar(fixtures: string, name: string): Promis
   );
 }
 
-// @koi/middleware-fs-rollback — fs-rollback golden fixture setup.
-// Tool writes a file inside this temp git repo and then throws; the
-// middleware should capture a stash before the call and restore on failure
-// so the working tree is clean after the turn. We initialize a real git
-// repo so `git stash` actually has somewhere to store the snapshot.
+// @koi/middleware-fs-rollback — fs-rollback golden fixture setup. Tool
+// writes a file inside a temp dir and then throws; the middleware
+// snapshots the target file's bytes before the call and unlinks (or
+// restores) on failure so the partial write is undone.
 const { mkdtempSync: mkdtempSyncForFsRollback } = await import("node:fs");
 const { tmpdir: tmpDirForFsRollback } = await import("node:os");
 const { join: joinForFsRollback } = await import("node:path");
 const fsRollbackTmpDir = mkdtempSyncForFsRollback(
   joinForFsRollback(tmpDirForFsRollback(), "koi-golden-fs-rollback-"),
 );
-const fsRollbackInitProc = Bun.spawnSync(["git", "init", "--quiet"], { cwd: fsRollbackTmpDir });
-if (fsRollbackInitProc.exitCode !== 0) {
-  throw new Error("git init failed in fs-rollback fixture");
-}
-Bun.spawnSync(["git", "config", "user.email", "test@test.com"], { cwd: fsRollbackTmpDir });
-Bun.spawnSync(["git", "config", "user.name", "Test"], { cwd: fsRollbackTmpDir });
-// Seed a baseline file + commit so HEAD exists (stash needs a parent commit).
-await Bun.write(`${fsRollbackTmpDir}/baseline.txt`, "untouched\n");
-Bun.spawnSync(["git", "add", "."], { cwd: fsRollbackTmpDir });
-Bun.spawnSync(["git", "commit", "--quiet", "-m", "init"], { cwd: fsRollbackTmpDir });
 
 const fsRollbackHandle = createFsRollbackMiddleware({
   cwd: fsRollbackTmpDir,
