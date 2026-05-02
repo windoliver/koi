@@ -2,7 +2,7 @@ import type { KoiError, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
 import { computeDraftHash, computeSourceHash } from "./hash.js";
 import { parseSkillDraft } from "./parse.js";
-import { renderDistillationPrompt } from "./prompt.js";
+import { renderDistillationPromptDetailed } from "./prompt.js";
 import type {
   DistillationRecord,
   DistillationTrace,
@@ -397,7 +397,24 @@ export function createDistiller(config: DistillerConfig): Distiller {
       const rawForGrounding = structuredClone(trace);
       const forRedaction = structuredClone(trace);
       const redacted = redact(forRedaction);
-      const prompt = renderDistillationPrompt(redacted);
+      const { prompt, truncated } = renderDistillationPromptDetailed(redacted);
+      if (truncated) {
+        // Fail closed: a truncated prompt means the LLM never saw the tail of
+        // the trace, but grounding accepts contiguous prefixes. Combining
+        // those would let us persist a partial procedure that drops the
+        // session's later validation/finalization steps. Reject here so the
+        // caller can split, summarize, or shrink the trace before retrying.
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message:
+              "trace exceeds the distillation prompt budget — refusing to distill a truncated trace, which would persist a partial procedure",
+            retryable: RETRYABLE_DEFAULTS.VALIDATION,
+            context: { errorKind: "TRACE_TOO_LARGE" },
+          },
+        };
+      }
       let llmResult: Result<string, KoiError>;
       try {
         llmResult = await config.llm({ prompt, modelHint: "cheap" });

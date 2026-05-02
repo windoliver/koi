@@ -81,11 +81,22 @@ function joinTurnsWithinBudget(summaries: readonly string[], budget: number): st
   return kept.join("\n");
 }
 
+export interface RenderedPrompt {
+  readonly prompt: string;
+  /** True if any turn summaries were dropped to fit the byte budget. */
+  readonly truncated: boolean;
+}
+
 export function renderDistillationPrompt(trace: DistillationTrace): string {
+  return renderDistillationPromptDetailed(trace).prompt;
+}
+
+export function renderDistillationPromptDetailed(trace: DistillationTrace): RenderedPrompt {
   const summaries = trace.turns.map(summarizeTurn);
   const header = `${SYSTEM_INSTRUCTIONS}\n\nTRACE id=${trace.traceId} turns=${trace.turns.length}\n`;
   const footer = "\n\nReturn the JSON now.";
   const turnsBudget = MAX_PROMPT_BYTES - header.length - footer.length;
   const turns = joinTurnsWithinBudget(summaries, Math.max(0, turnsBudget));
-  return `${header}${turns}${footer}`;
+  const truncated = turns.includes(TRUNCATION_NOTICE);
+  return { prompt: `${header}${turns}${footer}`, truncated };
 }

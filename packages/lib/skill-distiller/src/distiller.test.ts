@@ -544,6 +544,26 @@ describe("createDistiller", () => {
     if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_VARIABLE_ARG_UNPARAMETERIZED");
   });
 
+  test("rejects distillation when trace exceeds the prompt budget (would persist a partial procedure)", async () => {
+    // 1000 turns each ~150 bytes — well past the 32 KiB prompt budget. The
+    // distiller must NOT happily produce a prefix-skill from a truncated
+    // prompt; it has to fail closed so the caller can shrink the trace.
+    const turns = Array.from({ length: 1000 }, (_, i) => ({
+      role: "assistant" as const,
+      text: `step ${i}: do a small chunk of work and report back to the user`,
+    }));
+    const llm: DistillerLLM = async () => ({ ok: true, value: JSON.stringify(VALID_DRAFT) });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm }).distill({
+      traceId: "huge",
+      turns,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe("VALIDATION");
+      expect(r.error.context?.errorKind).toBe("TRACE_TOO_LARGE");
+    }
+  });
+
   test("variable-arg check sees real variability even when redactor collapses values", async () => {
     // Redactor maps both distinct paths to the same placeholder. Grounding
     // must run on the RAW trace so the variability is still detected.
