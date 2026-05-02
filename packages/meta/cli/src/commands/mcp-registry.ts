@@ -5,6 +5,7 @@
  * `@koi/mcp` for the heavy lifting, render text or JSON.
  */
 
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type {
   AuthCompleteNotification,
@@ -137,7 +138,13 @@ export async function runInstall(flags: McpFlags): Promise<ExitCode> {
     }
   }
 
-  const configPath = resolve(process.cwd(), ".mcp.json");
+  // Mirror loadConfigs resolution: prefer project ./.mcp.json when it
+  // exists, then ~/.koi/.mcp.json, else create the project file. This
+  // keeps install/uninstall in sync with list/auth/debug/logout — a
+  // user whose active MCP setup lives in the home config no longer
+  // ends up with split state where install creates a project-local
+  // file the rest of the CLI never reads.
+  const configPath = resolveActiveMcpJsonPath();
   // For HTTP installs the verify path may complete an OAuth flow that
   // persists both tokens AND a DCR client record; if verify fails we
   // want both wiped. We pass the server URL (not just a derived key)
@@ -175,7 +182,9 @@ export async function runInstall(flags: McpFlags): Promise<ExitCode> {
 
 export async function runUninstall(flags: McpFlags): Promise<ExitCode> {
   const name = flags.server ?? "";
-  const configPath = resolve(process.cwd(), ".mcp.json");
+  // Find whichever config file actually contains the entry so uninstall
+  // can target home configs, not just the project-local file.
+  const configPath = await resolveMcpJsonPathContaining(name);
 
   // Read the URL straight from the raw .mcp.json so we can clear OAuth
   // state even when the file is malformed or contains entries the
@@ -309,6 +318,45 @@ function stdoutOAuthChannel(): OAuthChannel {
       // directly. Remote-mode submission is not supported from CLI install.
     },
   };
+}
+
+function candidateMcpJsonPaths(): readonly string[] {
+  const cwd = process.cwd();
+  const home = process.env.HOME ?? ".";
+  return [
+    resolve(cwd, ".mcp.json"),
+    resolve(home, ".koi", ".mcp.json"),
+    resolve(home, ".claude", ".mcp.json"),
+  ];
+}
+
+function resolveActiveMcpJsonPath(): string {
+  // Pick the first existing candidate; fall back to project-local for
+  // a fresh install.
+  for (const candidate of candidateMcpJsonPaths()) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return resolve(process.cwd(), ".mcp.json");
+}
+
+async function resolveMcpJsonPathContaining(name: string): Promise<string> {
+  // Walk candidates and return the first one whose mcpServers contains
+  // `name`. Falls back to project-local so the downstream NOT_FOUND
+  // error is reported against a sensible path.
+  for (const candidate of candidateMcpJsonPaths()) {
+    if (!existsSync(candidate)) continue;
+    try {
+      const text = await Bun.file(candidate).text();
+      const parsed: unknown = JSON.parse(text);
+      if (parsed === null || typeof parsed !== "object") continue;
+      const servers = (parsed as { mcpServers?: unknown }).mcpServers;
+      if (servers === null || typeof servers !== "object") continue;
+      if (Object.hasOwn(servers, name)) return candidate;
+    } catch {
+      /* malformed — skip */
+    }
+  }
+  return resolve(process.cwd(), ".mcp.json");
 }
 
 interface OAuthTarget {
