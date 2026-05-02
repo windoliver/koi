@@ -701,6 +701,41 @@ export interface KoiRuntimeConfig {
       }
     | undefined;
   /**
+   * Optional session-state persistence for cancel-resume (#1683).
+   *
+   * When provided, the engine adapter is wrapped with
+   * `wrapAdapterWithStatePersistence` so that on `done.stopReason ===
+   * "interrupted"` the captured `EngineState` is persisted into this store
+   * via the atomic `updateLastEngineState` API. Successful (`completed`)
+   * terminals clear the prior cancel checkpoint.
+   *
+   * `agentId` and `manifestSnapshot` are required to seed the row when the
+   * very first cancel of a fresh session needs to create it. Subsequent
+   * writes patch the existing row atomically; caller-owned fields
+   * (`seq`, `remoteSeq`, `metadata`, `status`) are preserved.
+   *
+   * `onPersistError` fires on any persistence failure (saveState throw,
+   * store error, timeout). Hosts that promise durable resume MUST supply
+   * one and treat invocation as "checkpoint lost; downgrade to
+   * transcript-only resume".
+   *
+   * Resume side: callers using `resumeSessionFromJsonl` should pass
+   * `{ persistence, expectedEngineId }` so the returned `ResumedSession`
+   * includes `lastEngineState` for the host to feed into
+   * `EngineAdapter.loadState` before the next stream.
+   */
+  readonly sessionPersistence?:
+    | {
+        readonly persistence: import("@koi/core").SessionPersistence;
+        readonly agentId: import("@koi/core").AgentId;
+        readonly manifestSnapshot: import("@koi/core").AgentManifest;
+        readonly onPersistError?:
+          | ((error: import("@koi/core").KoiError | Error) => void)
+          | undefined;
+        readonly persistTimeoutMs?: number | undefined;
+      }
+    | undefined;
+  /**
    * Optional SkillsRuntime for MCP bridge integration.
    * When provided and .mcp.json exists, MCP tools are registered as skills
    * via createSkillsMcpBridge.
@@ -2247,7 +2282,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // runs once the wrapper aborts the inner stream). Mirror the fallback
   // here: when a timeout-authored `done` is about to be yielded, inject
   // a visible `text_delta` so the TUI transcript surfaces the reason.
-  const engineAdapter: EngineAdapter = timeoutEnabled
+  const timeoutInjectedAdapter: EngineAdapter = timeoutEnabled
     ? {
         ...timeoutWrapped,
         stream(input: EngineInput): AsyncIterable<EngineEvent> {
@@ -2277,6 +2312,38 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         },
       }
     : rawEngineAdapter;
+
+  // Issue #1683: wrap with cancel-resume checkpointing when a session
+  // persistence backend is supplied. The wrapper saves EngineState on
+  // interrupted terminals and clears stale checkpoints on completed turns.
+  // Layered AFTER timeout injection so the synthetic "[Turn interrupted...]"
+  // text_delta is still emitted; the wrapper only inspects `done` events
+  // and does not alter the event order otherwise.
+  const sessionPersistenceCfg = config.sessionPersistence;
+  const stateSessionId = config.session?.sessionId;
+  const { wrapAdapterWithStatePersistence } = await import("@koi/session");
+  const engineAdapter: EngineAdapter =
+    sessionPersistenceCfg !== undefined && stateSessionId !== undefined
+      ? wrapAdapterWithStatePersistence(timeoutInjectedAdapter, {
+          persistence: sessionPersistenceCfg.persistence,
+          recordTemplate: () => ({
+            sessionId: stateSessionId,
+            agentId: sessionPersistenceCfg.agentId,
+            manifestSnapshot: sessionPersistenceCfg.manifestSnapshot,
+            seq: 0,
+            remoteSeq: 0,
+            connectedAt: Date.now(),
+            status: "running",
+            metadata: {},
+          }),
+          ...(sessionPersistenceCfg.onPersistError !== undefined
+            ? { onPersistError: sessionPersistenceCfg.onPersistError }
+            : {}),
+          ...(sessionPersistenceCfg.persistTimeoutMs !== undefined
+            ? { persistTimeoutMs: sessionPersistenceCfg.persistTimeoutMs }
+            : {}),
+        })
+      : timeoutInjectedAdapter;
 
   // --- @koi/middleware-exfiltration-guard: block secret exfiltration ---
   // Intercepts tool inputs and network requests, redacting/blocking patterns

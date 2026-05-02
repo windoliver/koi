@@ -887,6 +887,33 @@ describe("createKoiRuntime — trustedHost enforcement", () => {
 // check — no model calls, no verdict synthesis (that is Task 14's territory).
 // ---------------------------------------------------------------------------
 
+describe("createKoiRuntime — sessionPersistence wiring (#1683)", () => {
+  test("assembles when sessionPersistence is provided alongside session.sessionId", async () => {
+    const { createInMemorySessionPersistence, createInMemoryTranscript } = await import(
+      "@koi/session"
+    );
+    const { sessionId, agentId } = await import("@koi/core");
+    const persistence = createInMemorySessionPersistence();
+    runtimeHandle = await createKoiRuntime({
+      ...makeConfig(),
+      session: {
+        sessionId: sessionId("rf-state-1"),
+        transcript: createInMemoryTranscript(),
+      },
+      sessionPersistence: {
+        persistence,
+        agentId: agentId("rf-state-agent"),
+        manifestSnapshot: {
+          name: "rf-state",
+          version: "0",
+          model: { name: "stub" },
+        },
+      },
+    });
+    expect(runtimeHandle.runtime).toBeDefined();
+  });
+});
+
 describe("runtime-factory — governance audit wiring (#1393)", () => {
   test("auditSqlitePath + violationSqlitePath wire compliance and violations onto governanceBackend", async () => {
     const { tmpdir } = await import("node:os");
