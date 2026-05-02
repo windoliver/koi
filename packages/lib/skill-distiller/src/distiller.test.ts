@@ -40,7 +40,11 @@ const okLLM =
 
 describe("createDistiller", () => {
   test("returns a record with stable hashes for valid trace", async () => {
-    const d = createDistiller({ llm: okLLM(VALID_DRAFT), now: () => 1700000000000 });
+    const d = createDistiller({
+      allowUnredactedTrace: true,
+      llm: okLLM(VALID_DRAFT),
+      now: () => 1700000000000,
+    });
     const r = await d.distill(TRACE);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -57,7 +61,7 @@ describe("createDistiller", () => {
       calls += 1;
       return { ok: true, value: "{}" };
     };
-    const d = createDistiller({ llm });
+    const d = createDistiller({ allowUnredactedTrace: true, llm });
     const r = await d.distill({ traceId: "t", turns: [] });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.context?.errorKind).toBe("TRACE_EMPTY");
@@ -69,7 +73,7 @@ describe("createDistiller", () => {
       ok: false,
       error: { code: "RATE_LIMIT", message: "slow down", retryable: true },
     });
-    const d = createDistiller({ llm });
+    const d = createDistiller({ allowUnredactedTrace: true, llm });
     const r = await d.distill(TRACE);
     expect(r.ok).toBe(false);
     if (!r.ok) {
@@ -83,7 +87,7 @@ describe("createDistiller", () => {
       ok: false,
       error: { code: "RATE_LIMIT", message: "slow down", retryable: true },
     });
-    const d = createDistiller({ llm });
+    const d = createDistiller({ allowUnredactedTrace: true, llm });
     const r = await d.distill(TRACE);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.retryable).toBe(true);
@@ -94,7 +98,7 @@ describe("createDistiller", () => {
       ok: false,
       error: { code: "INTERNAL", message: "bug", retryable: false },
     });
-    const d = createDistiller({ llm });
+    const d = createDistiller({ allowUnredactedTrace: true, llm });
     const r = await d.distill(TRACE);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.retryable).toBe(false);
@@ -102,14 +106,14 @@ describe("createDistiller", () => {
 
   test("propagates parse failure as VALIDATION", async () => {
     const llm: DistillerLLM = async () => ({ ok: true, value: "not json" });
-    const d = createDistiller({ llm });
+    const d = createDistiller({ allowUnredactedTrace: true, llm });
     const r = await d.distill(TRACE);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe("VALIDATION");
   });
 
   test("rejects draft whose toolSequence references tools not in the trace", async () => {
-    const d = createDistiller({ llm: okLLM(VALID_DRAFT) });
+    const d = createDistiller({ allowUnredactedTrace: true, llm: okLLM(VALID_DRAFT) });
     const r = await d.distill(SINGLE_TOOL_TRACE);
     expect(r.ok).toBe(false);
     if (!r.ok) {
@@ -121,7 +125,7 @@ describe("createDistiller", () => {
   test("rejects draft whose toolSequence is in the wrong order", async () => {
     // TRACE invokes read_file then write_file. Reverse order is rejected.
     const reordered = okLLM({ ...VALID_DRAFT, toolSequence: ["write_file", "read_file"] });
-    const d = createDistiller({ llm: reordered });
+    const d = createDistiller({ allowUnredactedTrace: true, llm: reordered });
     const r = await d.distill(TRACE);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_TOOL_NOT_GROUNDED");
@@ -131,7 +135,7 @@ describe("createDistiller", () => {
     // TRACE invokes read_file then write_file. Sub-procedure of just write_file
     // is a valid ordered subsequence (skipping read_file is OK).
     const subset = okLLM({ ...VALID_DRAFT, toolSequence: ["write_file"] });
-    const d = createDistiller({ llm: subset });
+    const d = createDistiller({ allowUnredactedTrace: true, llm: subset });
     const r = await d.distill(TRACE);
     expect(r.ok).toBe(true);
   });
@@ -154,7 +158,7 @@ describe("createDistiller", () => {
       ...VALID_DRAFT,
       description: "Read /etc/secret-tenant-data.yaml and write the formatted result.",
     });
-    const d = createDistiller({ llm: burned });
+    const d = createDistiller({ allowUnredactedTrace: true, llm: burned });
     const r = await d.distill(traceWithPath);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_LITERAL_LEAKED");
@@ -175,7 +179,7 @@ describe("createDistiller", () => {
       ],
     };
     const burned = okLLM({ ...VALID_DRAFT, expectedInputs: ["account acct-77c19ab3"] });
-    const d = createDistiller({ llm: burned });
+    const d = createDistiller({ allowUnredactedTrace: true, llm: burned });
     const r = await d.distill(trace);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_LITERAL_LEAKED");
@@ -196,7 +200,7 @@ describe("createDistiller", () => {
       ],
     };
     const burned = okLLM({ ...VALID_DRAFT, triggers: ["format pr for acct-77c19ab3"] });
-    const r = await createDistiller({ llm: burned }).distill(trace);
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: burned }).distill(trace);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_LITERAL_LEAKED");
   });
@@ -219,7 +223,7 @@ describe("createDistiller", () => {
       ...VALID_DRAFT,
       parameters: [{ name: "title", description: "the path /srv/tenant-9/data", required: true }],
     });
-    const r = await createDistiller({ llm: burned }).distill(trace);
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: burned }).distill(trace);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_LITERAL_LEAKED");
   });
@@ -267,7 +271,7 @@ describe("createDistiller", () => {
     const llm: DistillerLLM = async () => {
       throw new Error("ECONNRESET");
     };
-    const r = await createDistiller({ llm }).distill(TRACE);
+    const r = await createDistiller({ allowUnredactedTrace: true, llm }).distill(TRACE);
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.error.code).toBe("EXTERNAL");
@@ -295,32 +299,90 @@ describe("createDistiller", () => {
       ...VALID_DRAFT,
       description: "Read the input file at {path} and write the formatted result.",
     });
-    const d = createDistiller({ llm: generic });
+    const d = createDistiller({ allowUnredactedTrace: true, llm: generic });
     const r = await d.distill(trace);
     expect(r.ok).toBe(true);
   });
 
   test("rejects draft with empty toolSequence", async () => {
-    const d = createDistiller({ llm: okLLM({ ...VALID_DRAFT, toolSequence: [] }) });
+    const d = createDistiller({
+      allowUnredactedTrace: true,
+      llm: okLLM({ ...VALID_DRAFT, toolSequence: [] }),
+    });
     const r = await d.distill(TRACE);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_TOOLS_EMPTY");
   });
 
   test("rejects draft with empty triggers (un-discoverable skill)", async () => {
-    const d = createDistiller({ llm: okLLM({ ...VALID_DRAFT, triggers: [] }) });
+    const d = createDistiller({
+      allowUnredactedTrace: true,
+      llm: okLLM({ ...VALID_DRAFT, triggers: [] }),
+    });
     const r = await d.distill(TRACE);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_TRIGGERS_EMPTY");
   });
 
   test("omits sessionId from source when trace has none", async () => {
-    const d = createDistiller({ llm: okLLM({ ...VALID_DRAFT, toolSequence: ["read_file"] }) });
+    const d = createDistiller({
+      allowUnredactedTrace: true,
+      llm: okLLM({ ...VALID_DRAFT, toolSequence: ["read_file"] }),
+    });
     const r = await d.distill({
       traceId: "t1",
       turns: [{ role: "assistant", toolCalls: [{ name: "read_file", argsJson: "{}" }] }],
     });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.source.sessionId).toBeUndefined();
+  });
+
+  test("throws at construction when neither redactor nor allowUnredactedTrace is set", () => {
+    const llm: DistillerLLM = async () => ({ ok: true, value: JSON.stringify(VALID_DRAFT) });
+    expect(() => createDistiller({ llm })).toThrow(/redactor/);
+  });
+
+  test("deep-clones trace so an in-place redactor cannot mutate the caller's input", async () => {
+    const trace: DistillationTrace = {
+      traceId: "t-mut",
+      turns: [
+        { role: "user", text: "hi" },
+        { role: "assistant", toolCalls: [{ name: "read_file", argsJson: '{"path":"/x"}' }] },
+        { role: "assistant", toolCalls: [{ name: "write_file", argsJson: "{}" }] },
+      ],
+    };
+    const before = JSON.stringify(trace);
+    const llm: DistillerLLM = async () => ({ ok: true, value: JSON.stringify(VALID_DRAFT) });
+    // Intentionally hostile redactor: mutates whatever it sees in place.
+    const redactor = (t: DistillationTrace): DistillationTrace => {
+      for (const turn of t.turns) {
+        if (turn.toolCalls === undefined) continue;
+        for (const c of turn.toolCalls) {
+          (c as { argsJson: string }).argsJson = "MUTATED";
+        }
+      }
+      return t;
+    };
+    const r = await createDistiller({ llm, redactor }).distill(trace);
+    expect(r.ok).toBe(true);
+    expect(JSON.stringify(trace)).toBe(before);
+  });
+
+  test("detects literals leaked through turn.text (not just tool args)", async () => {
+    const trace: DistillationTrace = {
+      traceId: "t-text-leak",
+      turns: [
+        { role: "user", text: "process tenant /srv/tenant-99/data please" },
+        { role: "assistant", toolCalls: [{ name: "read_file", argsJson: "{}" }] },
+        { role: "assistant", toolCalls: [{ name: "write_file", argsJson: "{}" }] },
+      ],
+    };
+    const burned = okLLM({
+      ...VALID_DRAFT,
+      description: "Process /srv/tenant-99/data and emit a formatted report.",
+    });
+    const r = await createDistiller({ allowUnredactedTrace: true, llm: burned }).distill(trace);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.context?.errorKind).toBe("DRAFT_LITERAL_LEAKED");
   });
 });

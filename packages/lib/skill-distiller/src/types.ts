@@ -65,8 +65,20 @@ export type TraceRedactor = (trace: DistillationTrace) => DistillationTrace;
 export interface DistillerConfig {
   readonly llm: DistillerLLM;
   readonly now?: () => number;
-  /** Sanitize the trace before prompt rendering. Default: identity (no redaction). */
+  /**
+   * Sanitize the trace before prompt rendering. The original trace is deep-cloned
+   * before the redactor sees it, so in-place mutation cannot leak back to the caller
+   * or corrupt audit provenance. Either this OR `allowUnredactedTrace: true` must
+   * be set; otherwise `createDistiller` throws so the unsafe path is never the
+   * default at any integration point.
+   */
   readonly redactor?: TraceRedactor;
+  /**
+   * Explicit opt-in to forwarding raw trace contents to the LLM. Use only when the
+   * trace is already known to be free of secrets/PII (synthetic fixtures, test
+   * cassettes, replay tests). Required when `redactor` is omitted.
+   */
+  readonly allowUnredactedTrace?: boolean;
 }
 
 export interface Distiller {

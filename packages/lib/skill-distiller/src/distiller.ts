@@ -83,7 +83,15 @@ function collectTraceLiterals(trace: DistillationTrace): readonly string[] {
       for (const x of Object.values(v as Record<string, unknown>)) visit(x);
     }
   };
+  // Tokenize turn.text so individual identifier-shaped words count, not the
+  // whole sentence. Tool output and user messages routinely surface paths/IDs
+  // that the LLM would otherwise be free to copy into the draft.
+  const tokenize = (text: string): readonly string[] =>
+    text.split(/[\s,;()<>{}[\]"]+/).filter((t) => t.length > 0);
   for (const turn of trace.turns) {
+    if (turn.text !== undefined) {
+      for (const token of tokenize(turn.text)) visit(token);
+    }
     if (turn.toolCalls === undefined) continue;
     for (const call of turn.toolCalls) {
       let parsed: unknown;
@@ -184,6 +192,13 @@ function groundDraftInTrace(
 }
 
 export function createDistiller(config: DistillerConfig): Distiller {
+  if (config.redactor === undefined && config.allowUnredactedTrace !== true) {
+    throw new Error(
+      "createDistiller: must supply `redactor` (recommended) or set " +
+        "`allowUnredactedTrace: true` to acknowledge that raw trace text and " +
+        "tool args will be forwarded to the LLM. The unsafe path is never the default.",
+    );
+  }
   const now = config.now ?? Date.now;
   const redact = config.redactor ?? ((t) => t);
   return {
@@ -191,10 +206,13 @@ export function createDistiller(config: DistillerConfig): Distiller {
       if (trace.turns.length === 0) {
         return { ok: false, error: emptyTraceError() };
       }
+      // Deep-clone before redaction so an in-place redactor cannot mutate the
+      // caller's trace or alter what gets hashed on the audit record.
+      const cloned = structuredClone(trace);
       // Redaction runs BEFORE prompt rendering so secrets never reach the LLM.
       // Grounding still uses the redacted trace so the literal-leak check
       // operates on the same tokens the model actually saw.
-      const redacted = redact(trace);
+      const redacted = redact(cloned);
       const prompt = renderDistillationPrompt(redacted);
       let llmResult: Result<string, KoiError>;
       try {

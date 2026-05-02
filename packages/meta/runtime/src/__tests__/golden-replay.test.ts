@@ -16302,6 +16302,7 @@ describe("Golden: @koi/skill-distiller", () => {
     });
 
     const distiller = createDistiller({
+      allowUnredactedTrace: true,
       llm: async () => ({ ok: true, value: llmJson }),
       now: () => 1700000000000,
     });
