@@ -126,6 +126,7 @@
     "@koi/scheduler-provider": "workspace:*",
     "@koi/session": "workspace:*",
     "@koi/settings": "workspace:*",
+    "@koi/skill-distiller": "workspace:*",
     "@koi/skill-scanner": "workspace:*",
     "@koi/skill-tool": "workspace:*",
     "@koi/playbook-store-sqlite": "workspace:*",
