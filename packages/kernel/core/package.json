@@ -133,6 +133,10 @@
       "types": "./dist/brick-store.d.ts",
       "import": "./dist/brick-store.js"
     },
+    "./adapter-capabilities": {
+      "types": "./dist/adapter-capabilities.d.ts",
+      "import": "./dist/adapter-capabilities.js"
+    },
     "./sandbox-adapter": {
       "types": "./dist/sandbox-adapter.d.ts",
       "import": "./dist/sandbox-adapter.js"

@@ -26,6 +26,73 @@ L2  @koi/sandbox-docker
 Docker is optional — `koi` field `optional: true`. Missing Docker yields a typed
 `SANDBOX_UNAVAILABLE` error from `createDockerAdapter`; nothing throws.
 
+## Capabilities
+
+Declared on the returned adapter (see `@koi/sandbox-router` for selection semantics):
+
+```
+supports: { exec, copy-files, network, filesystem-rw }
+priority: 10
+```
+
+`spawn` and `persistence` are intentionally NOT declared — the instance has no
+`spawn()` (use `exec()`) and the adapter has no `findOrCreate` (no cross-session
+container reuse).
+
+## Threat model
+
+### Trust boundary
+
+- Inside: code executed via `instance.exec(cmd, args)` — runs as the image's
+  default user inside an isolated container with the configured network and
+  filesystem policy applied.
+- Outside: the host kernel, the Docker daemon socket (`/var/run/docker.sock` or
+  configured path), all other host processes and files not bind-mounted in.
+
+### Privileged surfaces
+
+- **Docker daemon socket.** The default client connects to `dockerd` over a
+  Unix socket. Anyone who can talk to that socket can run arbitrary containers
+  on the host; treat it as root-equivalent. Limit access via Unix permissions.
+- **Image trust.** The `image` field controls which container starts. Untrusted
+  images can include backdoors or supply-chain implants. Pin to digests
+  (`@sha256:...`) in production.
+- **Bind mounts.** When the profile's `filesystem.allowRead`/`allowWrite` lists
+  host paths, those become readable/writable from inside the container.
+
+### Escape vectors
+
+- **Daemon-socket abuse:** code that gains the daemon socket inside a container
+  can spawn a privileged sibling container with the host filesystem mounted.
+  Mitigated by: never bind-mount the daemon socket into a sandboxed container.
+- **Kernel exploits:** containers share the host kernel; a kernel CVE can break
+  isolation. Mitigated by: keep the host kernel patched; configure
+  `--security-opt` profiles where available.
+- **Resource exhaustion:** without `--memory`/`--pids-limit`, a busy container
+  can starve the host. Mitigated by: `profile.resources` translates to
+  container limits; defaults are conservative.
+- **Filesystem leak:** bind-mounted paths grant read/write outside the
+  container. Mitigated by: profile `denyRead`/`denyWrite` are honored when
+  computing mount options; callers should declare the smallest path set needed.
+
+### Mitigations
+
+- Network defaults to `--network none` unless `profile.network.allow=true`.
+- Resources are clamped to the profile's `maxMemoryMb` / `maxPids` when set.
+- `instance.destroy()` removes the container; failures surface as typed errors.
+
+### Residual risk
+
+- Docker daemon socket compromise — out-of-scope for adapter; treat the daemon
+  as a trust-boundary above the adapter.
+- Kernel-level isolation gaps — adapter cannot defend against them.
+
+### Out-of-scope
+
+- Hardware side-channels (Spectre/Meltdown class).
+- Image supply-chain integrity (use Sigstore/cosign at a higher layer).
+- Multi-tenant host isolation (use a hypervisor-based sandbox for that tier).
+
 ## Public API
 
 ```typescript
