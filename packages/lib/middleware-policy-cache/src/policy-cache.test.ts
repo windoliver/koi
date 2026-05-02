@@ -390,22 +390,140 @@ describe("createPolicyCacheMiddleware: verified-only promotion gate", () => {
     const next = mock(async () => makeResp());
     const wrap = handle.middleware.wrapToolCall;
     if (wrap === undefined) throw new Error("wrapToolCall missing");
-    // First hit: still verified, deny enforced.
     const r1 = await wrap(CTX, makeReq("rm"), next as ToolHandler);
     expect(r1.metadata?.policyDenied).toBe(true);
     expect(next).not.toHaveBeenCalled();
     // Host revokes the brick out-of-band.
     verifiedSet.delete("brick-1");
-    // Next hit: re-verifier returns false → entry evicted and call
-    // falls through to the normal permissions path (next).
+    // Round 5 (v3 loop): revocation TOMBSTONES the entry (quarantine).
+    // Two consecutive calls after a transient verifier failure must
+    // BOTH block — eviction would have left the second call as a
+    // cache miss that delegates to next() and silently reopens the
+    // tool. Quarantine ensures the entry remains a blocking tombstone
+    // until an explicit notifier event or successful re-registration.
     const r2 = await wrap(CTX, makeReq("rm"), next as ToolHandler);
-    expect(r2.metadata?.policyDenied).toBeUndefined();
-    expect(next).toHaveBeenCalledTimes(1);
-    // Cache emptied — no stale state remains.
-    expect(handle.size()).toBe(0);
+    expect(r2.metadata?.policyDenied).toBe(true);
+    const r3 = await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    expect(r3.metadata?.policyDenied).toBe(true);
+    expect(next).not.toHaveBeenCalled();
+    // Entry remains as quarantined tombstone — protects against the
+    // transient-verifier-failure → reopened-tool authorization
+    // downgrade on subsequent calls.
+    expect(handle.size()).toBe(1);
   });
 
-  test("verifyOnHit treats a throwing verifier as no-longer-verified (fail closed → delegate)", async () => {
+  test("verifyOnHit revocation tombstones the agent-scope entry; global stays intact (round-5 v3)", async () => {
+    // Round 5 (v3 loop): revocation tombstones via quarantine instead
+    // of evicting. The agent-scope entry remains in cache as a
+    // blocking tombstone, the global entry continues to coexist, and
+    // the call is blocked. Either path is a deny — what matters is
+    // that next() is not reached.
+    const verifiedSet = new Set<string>(["brick-agent-1", "brick-global"]);
+    const handle = createPolicyCacheMiddleware({
+      verifier: (e) => verifiedSet.has(e.brickId),
+      verifyOnHit: true,
+    });
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-agent-1", "allow"));
+    handle.register(makeGlobalPolicy("rm", "brick-global", "block"));
+    expect(handle.size()).toBe(2);
+    const next = mock(async () => makeResp());
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+    verifiedSet.delete("brick-agent-1");
+    const r = await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    expect(r.metadata?.policyDenied).toBe(true);
+    expect(next).not.toHaveBeenCalled();
+    // Tombstone retained; global deny still coexists.
+    expect(handle.size()).toBe(2);
+  });
+
+  test("verifyOnHit by default re-verifies (round-2 v3): drift after admission still blocked", async () => {
+    // Round 2 (v3 loop) review: hit-time re-verification must be the
+    // default. A verified executor's closure body can drift after
+    // admission (TS readonly is compile-time only); only re-binding
+    // trust on every hit closes that gap. Hosts that need bare
+    // fast-path opt out via `verifyOnHit: false`.
+    const verifiedSet = new Set<string>(["brick-1"]);
+    const handle = createPolicyCacheMiddleware({
+      verifier: (e) => verifiedSet.has(e.brickId),
+      // verifyOnHit not set → defaults to true.
+    });
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    const next = mock(async () => makeResp());
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+    // First hit: verified → block.
+    expect((await wrap(CTX, makeReq("rm"), next as ToolHandler)).metadata?.policyDenied).toBe(true);
+    // Drift: verifier flips to false.
+    verifiedSet.delete("brick-1");
+    // Default re-verifier catches the drift even without explicit
+    // verifyOnHit: true.
+    const r = await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    expect(r.metadata?.policyDenied).toBe(true);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  test("verifyOnHit: false opts out of hit-time re-verification (fast-path)", async () => {
+    let verifierCalls = 0;
+    const handle = createPolicyCacheMiddleware({
+      verifier: (e) => {
+        verifierCalls++;
+        return e.brickId === "brick-1";
+      },
+      verifyOnHit: false,
+    });
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    const callsAfterRegister = verifierCalls;
+    const next = mock(async () => makeResp());
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+    await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    // Verifier was called only at registration, not on hits.
+    expect(verifierCalls).toBe(callsAfterRegister);
+  });
+
+  test("verifyOnHit throwing verifier is treated as TRANSIENT, not revocation (round-7 v3)", async () => {
+    // Round 7 (v3 loop): a thrown verifier (verified-set unavailable,
+    // lookup bug, restart gap) MUST NOT tombstone a previously
+    // admitted tool. Distinguish from `false` (explicit revocation):
+    //   - throw → transient, trust the prior admission for this call,
+    //     surface telemetry via `onDispatchError`.
+    //   - false → revocation, quarantine + block.
+    // Without this split, a verifier outage would convert previously
+    // allowed tools into persistent hard denies.
+    const errors: Array<{ reason: string }> = [];
+    let mode: "ok" | "throw" = "ok";
+    const handle = createPolicyCacheMiddleware({
+      verifier: (e) => {
+        if (mode === "throw") throw new Error("verifier degraded");
+        return e.brickId === "brick-1";
+      },
+      verifyOnHit: true,
+      onDispatchError: (info) => {
+        errors.push({ reason: info.reason });
+      },
+    });
+    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    const next = mock(async () => makeResp());
+    const wrap = handle.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("wrapToolCall missing");
+    mode = "throw";
+    // Transient throw: the cached policy still applies. Our cached
+    // policy returns block, so the call is still denied — but via the
+    // executor path, not the quarantine tombstone path.
+    const r = await wrap(CTX, makeReq("rm"), next as ToolHandler);
+    expect(r.metadata?.policyDenied).toBe(true);
+    expect(next).not.toHaveBeenCalled();
+    // Telemetry surfaced.
+    expect(errors).toEqual([{ reason: "threw" }]);
+    // Critically: NOT quarantined. After the transient outage clears,
+    // the entry remains usable.
+    mode = "ok";
+    expect(handle.size()).toBe(1);
+  });
+
+  test("verifyOnHit transient throw on an ALLOW policy still allows the call (no spurious denial)", async () => {
     let mode: "ok" | "throw" = "ok";
     const handle = createPolicyCacheMiddleware({
       verifier: (e) => {
@@ -414,13 +532,21 @@ describe("createPolicyCacheMiddleware: verified-only promotion gate", () => {
       },
       verifyOnHit: true,
     });
-    handle.register(makeAgentPolicy("agent-A", "rm", "brick-1", "block"));
+    handle.register({
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "rm",
+      brickId: "brick-1",
+      execute: () => ({ action: "allow" }),
+    });
     const next = mock(async () => makeResp());
     const wrap = handle.middleware.wrapToolCall;
     if (wrap === undefined) throw new Error("wrapToolCall missing");
     mode = "throw";
+    // Round 7 v3: transient verifier failures must not flip an admitted
+    // allow into a hard deny. The cached executor returns allow → call
+    // proceeds to next().
     const r = await wrap(CTX, makeReq("rm"), next as ToolHandler);
-    // Verifier threw → eviction + delegate.
     expect(r.metadata?.policyDenied).toBeUndefined();
     expect(next).toHaveBeenCalledTimes(1);
   });
@@ -837,15 +963,51 @@ describe("createPolicyCacheMiddleware: eviction", () => {
     expect(handle.size()).toBe(0);
   });
 
-  test("slot replacement without generation on either side fails closed (round-10 v2)", () => {
-    const handle = mw();
-    expect(handle.register(makeAgentPolicy("agent-A", "search", "brick-1", "allow")).ok).toBe(true);
-    // Same slot, different brickId, no generation on incoming →
-    // refused. Best-effort ordering is too weak for an authz cache.
-    const r = handle.register(makeAgentPolicy("agent-A", "search", "brick-2", "block"));
+  test("slot replacement: legacy-on-legacy is allowed; versioned-displaced-by-unversioned is refused (round-4 v3)", () => {
+    // Round 4 (v3 loop) compromise: the round-10 v2 blanket "either
+    // side lacks generation = refuse" stranded legacy hosts. The new
+    // rule is asymmetric — refuse only the strict downgrade attack
+    // (versioned displaced by unversioned), allow the other three
+    // corners (both legacy, upgrade-to-versioned, both versioned).
+
+    // Both legacy: allowed.
+    const legacy = mw();
+    expect(legacy.register(makeAgentPolicy("agent-A", "search", "brick-1", "allow")).ok).toBe(true);
+    expect(legacy.register(makeAgentPolicy("agent-A", "search", "brick-2", "block")).ok).toBe(true);
+    expect(legacy.size()).toBe(1);
+
+    // Upgrade legacy → versioned: allowed.
+    const upgrade = mw();
+    expect(upgrade.register(makeAgentPolicy("agent-A", "search", "brick-1", "allow")).ok).toBe(
+      true,
+    );
+    expect(
+      upgrade.register({
+        scope: "agent",
+        agentId: "agent-A",
+        toolId: "search",
+        brickId: "brick-2",
+        generation: 1,
+        execute: () => ({ action: "block", reason: "x" }),
+      }).ok,
+    ).toBe(true);
+
+    // Versioned displaced by unversioned: REFUSED (downgrade attack).
+    const downgrade = mw();
+    expect(
+      downgrade.register({
+        scope: "agent",
+        agentId: "agent-A",
+        toolId: "search",
+        brickId: "brick-1",
+        generation: 5,
+        execute: () => ({ action: "block", reason: "x" }),
+      }).ok,
+    ).toBe(true);
+    const r = downgrade.register(makeAgentPolicy("agent-A", "search", "brick-2", "allow"));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe("VALIDATION");
-    expect(handle.size()).toBe(1);
+    expect(downgrade.size()).toBe(1);
   });
 
   test("re-registering same brickId for different toolId cleans stale forward entry", () => {
@@ -858,11 +1020,108 @@ describe("createPolicyCacheMiddleware: eviction", () => {
     expect(handle.size()).toBe(0);
   });
 
-  test("respects maxEntries with LRU eviction of oldest", () => {
+  test("per-bucket capacity overflow FAILS CLOSED instead of LRU-evicting (round-1 v3)", () => {
+    // Round 1 (v3 loop) review: LRU-evicting on overflow can silently
+    // drop a verified deny when a noisy bucket churns through
+    // promotions. The miss-path falls through to the weaker downstream
+    // permissions path → authorization downgrade. Refuse new
+    // registrations when the bucket is full so existing denies are
+    // preserved; the host can shed load or explicitly evict before
+    // retrying. The error is retryable.
     const handle = mw({ maxEntries: 2 });
-    handle.register(makeAgentPolicy("agent-A", "a", "ba"));
+    expect(handle.register(makeAgentPolicy("agent-A", "a", "ba")).ok).toBe(true);
+    expect(handle.register(makeAgentPolicy("agent-A", "b", "bb")).ok).toBe(true);
+    const overflow = handle.register(makeAgentPolicy("agent-A", "c", "bc"));
+    expect(overflow.ok).toBe(false);
+    if (!overflow.ok) {
+      expect(overflow.error.code).toBe("VALIDATION");
+      expect(overflow.error.retryable).toBe(true);
+      expect(overflow.error.context).toMatchObject({
+        bucket: "agent:agent-A",
+        maxEntries: 2,
+      });
+    }
+    // The two prior denies remain enforceable.
+    expect(handle.size()).toBe(2);
+    // After explicit evict, room reopens.
+    handle.evict("ba");
+    expect(handle.register(makeAgentPolicy("agent-A", "c", "bc")).ok).toBe(true);
+  });
+
+  test("fullBucketPolicy: 'lru' opts in to LRU eviction (round-9 v3)", () => {
+    // Round 9 (v3 loop) compromise: hosts that need newly verified
+    // denies to install even under bucket pressure can opt into LRU
+    // eviction. Default stays "fail-closed" so existing entries
+    // (which may be denies) are not dropped silently.
+    const handle = mw({ maxEntries: 2, fullBucketPolicy: "lru" });
+    expect(handle.register(makeAgentPolicy("agent-A", "a", "ba")).ok).toBe(true);
+    expect(handle.register(makeAgentPolicy("agent-A", "b", "bb")).ok).toBe(true);
+    // Bucket full — but LRU mode allows the new entry to install.
+    expect(handle.register(makeAgentPolicy("agent-A", "c", "bc")).ok).toBe(true);
+    expect(handle.size()).toBe(2);
+  });
+
+  test("same-brick re-registration without generation preserves the stored generation (round-9 v3)", () => {
+    // Round 9 (v3 loop) review: a same-brick refresh that omits
+    // `generation` would otherwise strip the stored generation,
+    // disabling stale-invalidation protection. The stored entry
+    // inherits the prior generation across same-brick refreshes.
+    let listener: ((e: StoreChangeEvent) => void) | undefined;
+    const notifier: StoreChangeNotifier = {
+      notify: () => {},
+      subscribe: (cb) => {
+        listener = cb;
+        return () => {};
+      },
+    };
+    const handle = mw({ notifier });
+    handle.register({
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "rm",
+      brickId: "brick-1",
+      generation: 5,
+      execute: () => ({ action: "block", reason: "x" }),
+    });
+    // Same-brick refresh, no generation supplied.
+    expect(
+      handle.register({
+        scope: "agent",
+        agentId: "agent-A",
+        toolId: "rm",
+        brickId: "brick-1",
+        execute: () => ({ action: "block", reason: "x'" }),
+      }).ok,
+    ).toBe(true);
+    // A stale event with generation < stored should still be suppressed
+    // — proving the stored generation was inherited (not stripped).
+    listener?.({ kind: "removed", brickId: "brick-1" as never, generation: 3 });
+    expect(handle.size()).toBe(1);
+  });
+
+  test("overwrite by toolId in a full bucket is allowed (no slot count change)", () => {
+    const handle = mw({ maxEntries: 2 });
+    handle.register({
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "a",
+      brickId: "ba",
+      generation: 1,
+      execute: () => ({ action: "block", reason: "x" }),
+    });
     handle.register(makeAgentPolicy("agent-A", "b", "bb"));
-    handle.register(makeAgentPolicy("agent-A", "c", "bc"));
+    // Re-register tool "a" with a NEWER brickId/generation: same slot,
+    // not a new slot, so cap doesn't trip.
+    expect(
+      handle.register({
+        scope: "agent",
+        agentId: "agent-A",
+        toolId: "a",
+        brickId: "ba2",
+        generation: 2,
+        execute: () => ({ action: "block", reason: "y" }),
+      }).ok,
+    ).toBe(true);
     expect(handle.size()).toBe(2);
   });
 });
@@ -1040,6 +1299,33 @@ describe("createPolicyCacheMiddleware: event-driven invalidation", () => {
     });
     listener?.({ kind: "removed", brickId: "brick-1" as never });
     expect(handle.size()).toBe(1);
+  });
+
+  test("unversionedInvalidationPolicy='evict' accepts unversioned event against versioned cache (round-3 v3)", () => {
+    // Round 3 (v3 loop) review: hosts with versioned cache entries but
+    // a partially-upgraded notifier need an explicit way to opt back
+    // into best-effort eviction so revoke/update events don't strand
+    // stale state behind manual cleanup.
+    let listener: ((e: StoreChangeEvent) => void) | undefined;
+    const notifier: StoreChangeNotifier = {
+      notify: () => {},
+      subscribe: (cb) => {
+        listener = cb;
+        return () => {};
+      },
+    };
+    const handle = mw({ notifier, unversionedInvalidationPolicy: "evict" });
+    handle.register({
+      scope: "agent",
+      agentId: "agent-A",
+      toolId: "rm",
+      brickId: "brick-1",
+      generation: 5,
+      execute: () => ({ action: "allow" }),
+    });
+    listener?.({ kind: "removed", brickId: "brick-1" as never });
+    // Compat mode: legacy unversioned events still evict.
+    expect(handle.size()).toBe(0);
   });
 
   test("ungenerated event against ungenerated cache: still evicts (legacy compat)", () => {

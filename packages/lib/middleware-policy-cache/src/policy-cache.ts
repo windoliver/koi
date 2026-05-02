@@ -109,21 +109,66 @@ export interface PolicyCacheConfig {
   readonly verifier?: (entry: PolicyEntry) => boolean;
   /**
    * Re-run the verifier on every cache hit before invoking the
-   * executor. Defaults to `false` (verify-once at registration) for
-   * the fast-path semantics this package is designed around.
+   * executor. **Defaults to `true`.**
    *
-   * Set `true` when the host cannot guarantee that a verified executor
-   * is behaviorally stable for its lifetime — e.g. when the executor's
-   * captured state is observable-mutable and forge cannot prove
-   * content-immutability through brickId hashing alone. With this flag
-   * on, a mid-lifetime revocation (verifier flips to false because
-   * forge revoked the brick or the closure's identity changed) evicts
-   * the entry and falls through to the next middleware, restoring the
-   * normal permissions path. The cost is one verifier call per cache
-   * hit; hosts who need this should keep their verifier O(1) (in-memory
-   * hash-set lookup against forge's verified-set).
+   * Why default-on. Forge cannot generally prove content-immutability
+   * for an arbitrary executor closure (TS `readonly` is compile-time
+   * only, captured state can drift), so re-binding trust on every hit
+   * is the only sound default. A mid-lifetime revocation (verifier
+   * flips to false, or throws) evicts the entry and re-runs lookup
+   * against the remaining cache hierarchy. If no other entry remains,
+   * the call FAILS CLOSED with a canonical synthetic deny — observer
+   * health is on the deny path here, intentionally, because the
+   * alternative (delegate to next) would silently downgrade a verified
+   * deny.
+   *
+   * Availability tradeoff. Verifier outages turn previously cached
+   * traffic into hard denials. Hosts MUST keep the verifier O(1)
+   * (in-memory hash-set lookup against forge's verified-set) and warm
+   * the verified-set BEFORE accepting traffic. A fail-closed restart
+   * gap is preferable to a fail-open authorization downgrade for an
+   * authz cache.
+   *
+   * Opt-out (`false`). Hosts that can guarantee content-immutability
+   * end-to-end (content-addressed bricks, no captured mutable state)
+   * may opt out for the bare fast-path. The trust binding then lasts
+   * for the entry's lifetime — only registration-time verification.
    */
   readonly verifyOnHit?: boolean | undefined;
+  /**
+   * Whether to evict on `updated`/`removed`/`quarantined` notifier
+   * events that lack a `generation` when the cached entry has one.
+   *
+   * - `"suppress"` (default): fail closed — refuse to act on unversioned
+   *   invalidations against versioned entries. Prevents a delayed event
+   *   from an unknown version from dropping a freshly re-promoted deny.
+   *   Hosts that mix versioned registrations with legacy unversioned
+   *   notifiers must rotate the brickId or call `evict()` explicitly.
+   * - `"evict"`: backward-compat mode — accept unversioned events as
+   *   best-effort eviction. May lose a freshly re-promoted deny if the
+   *   notifier delivers a stale event, but never strands invalidation
+   *   from legacy hosts.
+   *
+   * Hosts SHOULD upgrade their notifier to emit `generation` end-to-end
+   * (see `@koi/forge-tools`'s in-memory store for an example) and keep
+   * the default `"suppress"`.
+   */
+  readonly unversionedInvalidationPolicy?: "suppress" | "evict" | undefined;
+  /**
+   * What to do when a `register()` would add a new (scope, owner,
+   * toolId) slot to a bucket that is already at `maxEntries`.
+   *
+   * - `"fail-closed"` (default): refuse the new registration, leaving
+   *   existing entries intact. Round 1 (v3 loop) ask. Prevents a noisy
+   *   bucket from silently evicting a verified deny via LRU; the host
+   *   sheds load or explicitly evicts before retrying.
+   * - `"lru"`: evict the least-recently-used entry to make room.
+   *   Round 9 (v3 loop) compromise: hosts that need newly verified
+   *   denies to install even under memory pressure (and accept the
+   *   theoretical risk of evicting an older deny in favor of the new
+   *   one) opt in.
+   */
+  readonly fullBucketPolicy?: "fail-closed" | "lru" | undefined;
   /** Maximum cached policies per bucket (per-agent and global). Default: 100. */
   readonly maxEntries?: number | undefined;
   /**
@@ -227,12 +272,18 @@ export interface PolicyCacheHandle {
 const DEFAULT_MAX_ENTRIES = 100;
 const DEFAULT_MAX_AGENT_BUCKETS = 1000;
 const DEFAULT_PER_TURN_BLOCK_CAP = 5;
-// Default 0 — fire-and-forget. Observer health stays OFF the deny hot
-// path. Hosts that want bounded await for durability can opt in by
-// setting `dispatchTimeoutMs` explicitly. Mirrors the practical
-// behavior of @koi/middleware-permissions, which also doesn't await
-// observer dispatch in the enforcement path.
-const DEFAULT_DISPATCH_TIMEOUT_MS = 0;
+// Default 100ms — a small bounded await balancing the tradeoffs
+// between rounds 4/7 v3:
+//   - Round 4: an unbounded await couples deny enforcement to observer
+//     health (slow sink → stalled deny path).
+//   - Round 7: a 0ms fire-and-forget can lose the only audit record for
+//     a cache-hit deny if the process tears down before the dispatch
+//     promise resolves.
+// 100ms gives audit a fair chance to durably record under normal
+// conditions while keeping the deny fast-path bounded. Hosts that
+// require strict durability set this higher; hosts on the bare
+// fast-path set it to 0 (fire-and-forget).
+const DEFAULT_DISPATCH_TIMEOUT_MS = 100;
 
 // Distinguishes a dispatch-timeout from a real rejection so the
 // observer-error hook can classify them. Plain object (not Error
@@ -413,32 +464,40 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       return { ok: false, error };
     }
 
-    // Fail-closed against missing generations on slot replacement.
-    // Round 10 (v2 loop) review: best-effort ordering is too weak for
-    // an authorization cache. If the destination slot is already
-    // populated, both sides MUST carry a generation — otherwise an
-    // event-driven promoter or retrying caller could silently replace a
-    // newer cached deny with an older entry just because it arrived
-    // later. First-time registration into an empty slot is still
-    // allowed without a generation (no rollback risk; nothing to
-    // displace).
+    // Slot-replacement gating against generation mismatch.
+    //
+    // Round 10 v2 wanted "fail closed when either side lacks
+    // generation"; round 4 v3 pushed back that a blanket fail-closed
+    // strands legacy hosts. Compromise: refuse only the asymmetric
+    // case where a versioned entry would be displaced by an
+    // unversioned one (the strict downgrade attack the original guard
+    // was added for). The other three corners are allowed:
+    //
+    //   existing.gen | incoming.gen | action
+    //   -------------|--------------|----------------------------------
+    //   undefined    | undefined    | allow (legacy mode, both sides)
+    //   undefined    | defined      | allow (upgrade to versioned)
+    //   defined      | undefined    | REFUSE (downgrade attack)
+    //   defined      | defined      | falls through to ordering check
     const destMapForCheck = entry.scope === "global" ? globalCache : agentCaches.get(entry.agentId);
     const destOccupantForCheck = destMapForCheck?.get(entry.toolId);
-    if (destOccupantForCheck !== undefined && destOccupantForCheck.brickId !== entry.brickId) {
-      if (entry.generation === undefined || destOccupantForCheck.generation === undefined) {
-        const error: KoiError = {
-          code: "VALIDATION",
-          message: `policy-cache: refusing slot replacement without generation on both sides for tool ${entry.toolId} (incoming brick ${entry.brickId})`,
-          retryable: false,
-          context: {
-            brickId: entry.brickId,
-            toolId: entry.toolId,
-            incomingGeneration: entry.generation,
-            currentGeneration: destOccupantForCheck.generation,
-          },
-        };
-        return { ok: false, error };
-      }
+    if (
+      destOccupantForCheck !== undefined &&
+      destOccupantForCheck.brickId !== entry.brickId &&
+      destOccupantForCheck.generation !== undefined &&
+      entry.generation === undefined
+    ) {
+      const error: KoiError = {
+        code: "VALIDATION",
+        message: `policy-cache: refusing unversioned replacement of versioned entry for tool ${entry.toolId} (incoming brick ${entry.brickId})`,
+        retryable: false,
+        context: {
+          brickId: entry.brickId,
+          toolId: entry.toolId,
+          currentGeneration: destOccupantForCheck.generation,
+        },
+      };
+      return { ok: false, error };
     }
 
     // Generation-gated registration. When both the incoming and the
@@ -555,6 +614,61 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       return { ok: false, error };
     }
 
+    // Pre-mutation per-bucket capacity check. Round 1 (v3 loop) review:
+    // LRU-evicting on overflow can silently drop a verified deny when a
+    // noisy bucket churns through allow/deny promotions, after which
+    // wrapToolCall's miss-path falls through to next() and the tool
+    // becomes reachable through the weaker downstream permissions path.
+    // Authorization downgrade. Fail closed instead — refuse the new
+    // registration when the bucket is full so existing denies are
+    // preserved. The error is retryable so forge can shed load or
+    // explicitly evict before retrying.
+    //
+    // The bucket the entry will land in (after any cross-bucket move).
+    const projectedBucketKey: string =
+      entry.scope === "agent" ? `agent:${entry.agentId}` : "global";
+    const projectedBucket = entry.scope === "global" ? globalCache : agentCaches.get(entry.agentId);
+    // The new entry would land in this bucket only if no slot already
+    // holds the same toolId (overwrite) AND the move is not bringing
+    // the entry from the SAME (bucket, toolId) slot.
+    const willAddNewSlot =
+      projectedBucket !== undefined &&
+      !projectedBucket.has(entry.toolId) &&
+      !(
+        prior !== undefined &&
+        prior.bucket === projectedBucketKey &&
+        prior.toolId === entry.toolId
+      );
+    if (projectedBucket !== undefined && willAddNewSlot && projectedBucket.size >= maxEntries) {
+      if ((config.fullBucketPolicy ?? "fail-closed") === "lru") {
+        // Opt-in LRU eviction (round 9 v3): make room by dropping the
+        // least-recently-used entry so a newly verified deny can
+        // install even under bucket pressure.
+        const lruToolId = projectedBucket.keys().next().value;
+        if (lruToolId !== undefined) {
+          const oldEntry = projectedBucket.get(lruToolId);
+          projectedBucket.delete(lruToolId);
+          if (oldEntry !== undefined) {
+            brickIndex.delete(oldEntry.brickId);
+            quarantined.delete(oldEntry.brickId);
+          }
+        }
+      } else {
+        const error: KoiError = {
+          code: "VALIDATION",
+          message: `policy-cache: per-bucket capacity ${String(maxEntries)} reached for bucket ${projectedBucketKey}; refusing registration of ${entry.brickId} (would risk evicting a verified deny)`,
+          retryable: true,
+          context: {
+            brickId: entry.brickId,
+            toolId: entry.toolId,
+            bucket: projectedBucketKey,
+            maxEntries,
+          },
+        };
+        return { ok: false, error };
+      }
+    }
+
     // Admission guaranteed — safe to mutate now.
     if (isMove && prior !== undefined) {
       if (prior.bucket === "global") {
@@ -586,18 +700,9 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       quarantined.delete(existing.brickId);
     }
 
-    // Capacity check is per-bucket — one tenant cannot evict another's deny.
-    if (bucketMap.size >= maxEntries && !bucketMap.has(entry.toolId)) {
-      const lruToolId = bucketMap.keys().next().value;
-      if (lruToolId !== undefined) {
-        const oldEntry = bucketMap.get(lruToolId);
-        bucketMap.delete(lruToolId);
-        if (oldEntry !== undefined) {
-          brickIndex.delete(oldEntry.brickId);
-          quarantined.delete(oldEntry.brickId);
-        }
-      }
-    }
+    // Per-bucket capacity is enforced at admission above (fail closed).
+    // Reaching this point means there is room — overwrite-by-toolId is
+    // explicitly allowed (it does not change the slot count).
 
     // Refresh LRU recency on overwrite. JavaScript `Map.set` on an
     // existing key does NOT move the entry to the end of insertion order,
@@ -615,7 +720,21 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
     // verified deny into an allow on the next call. The shallow freeze
     // doesn't (and can't) protect the closure body itself, but it does
     // pin the policy-cache's view of the entry to what the verifier saw.
-    const stored: PolicyEntry = Object.freeze({ ...entry });
+    // Preserve a versioned generation across same-brick refreshes that
+    // omit `generation` (round 9 v3). Without this, a re-registration
+    // of the same brickId without `generation` would strip the stored
+    // generation, and subsequent unversioned notifier events would be
+    // free to evict the freshly promoted deny — exactly the stale-
+    // event protection the generation field was added for.
+    const sameBrickRefresh = existing !== undefined && existing.brickId === entry.brickId;
+    const inheritedGeneration =
+      sameBrickRefresh && existing?.generation !== undefined && entry.generation === undefined
+        ? existing.generation
+        : undefined;
+    const stored: PolicyEntry = Object.freeze({
+      ...entry,
+      ...(inheritedGeneration !== undefined ? { generation: inheritedGeneration } : {}),
+    });
     bucketMap.delete(stored.toolId);
     bucketMap.set(stored.toolId, stored);
     brickIndex.set(stored.brickId, { bucket, toolId: stored.toolId });
@@ -675,11 +794,20 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
         ) {
           return;
         }
-        // Round 10 (v2 loop): if the cached entry knows its generation
-        // but the event lacks one, treat the event as untrusted and
-        // skip eviction. A delayed `removed`/`updated` from an unknown
-        // version could otherwise drop a freshly re-promoted deny.
-        if (current !== undefined && current.generation !== undefined && !eventGenValid) {
+        // If the cached entry has a generation but the event lacks one,
+        // behavior follows `unversionedInvalidationPolicy`:
+        //  - "suppress" (default): skip — a delayed event from an
+        //    unknown version could otherwise drop a freshly re-promoted
+        //    deny (round 10 v2).
+        //  - "evict": legacy backward compat — accept the event so
+        //    hosts running unversioned notifiers don't strand stale
+        //    invalidations behind manual cleanup (round 3 v3).
+        if (
+          current !== undefined &&
+          current.generation !== undefined &&
+          !eventGenValid &&
+          (config.unversionedInvalidationPolicy ?? "suppress") === "suppress"
+        ) {
           return;
         }
       }
@@ -925,25 +1053,66 @@ export function createPolicyCacheMiddleware(config: PolicyCacheConfig = {}): Pol
       const entry = findEntry(ctx, request.toolId);
       if (entry === undefined) return next(request);
 
-      // Optional re-verification on every hit. Defends against drift
-      // between the verifier's view at registration and now — a brick
-      // revoked since admission, or a closure whose external identity
-      // has changed in a way the host's verifier can detect. A throwing
-      // verifier is treated as "not verified" (fail closed: evict and
-      // delegate to the normal permissions path). When `verifyOnHit` is
-      // false (the default), the cached entry is trusted for its
-      // lifetime — the package's fast-path contract.
-      if (config.verifyOnHit === true && config.verifier !== undefined) {
-        let stillVerified: boolean;
+      // Hit-time re-verification. Defends against drift between the
+      // verifier's view at registration and now — a brick revoked since
+      // admission, or a closure whose external identity has changed in
+      // a way the host's verifier can detect.
+      //
+      // Default-on. A verified executor's closure body can drift after
+      // admission (TS `readonly` is compile-time only), so the only
+      // sound default is to re-bind trust on every hit. Hosts that can
+      // prove content-immutability (content-addressed bricks, no
+      // captured mutable state) and need the bare fast-path can opt
+      // out via `verifyOnHit: false`.
+      //
+      // Quarantine-on-failure (round 5 v3). Round 2 v3 fix evicted the
+      // entry and ran the loop until a still-verified entry was found
+      // or the cache emptied. That worked for the *current* call but
+      // permanently removed the only enforcing entry — the very next
+      // call missed cache and reached next(). A transient verifier
+      // outage thus reopened a deny indefinitely. Fix: do NOT evict.
+      // Tombstone via the existing `quarantined` set, which makes
+      // every future call to this brickId fall through the quarantine
+      // fast-path (always blocks). Quarantine is cleared by:
+      //   - successful re-registration (host's verified-set re-binds)
+      //   - explicit `evict()` from the host
+      //   - notifier `removed`/`quarantined` events
+      const verifyOnHit = config.verifyOnHit !== false;
+      if (verifyOnHit && config.verifier !== undefined) {
+        // Distinguish explicit revocation from transient verifier
+        // outages (round 7 v3). A `false` return is an explicit
+        // revocation by the host's verified-set: tombstone via
+        // quarantine. A thrown exception is a transient error
+        // (verified-set unavailable, lookup bug, restart gap) and
+        // MUST NOT brick previously admitted tools — surface telemetry
+        // via `onDispatchError` and trust the prior admission for this
+        // call. Without this split, every verifier outage would
+        // convert previously-allowed tools into persistent hard denies.
+        let outcome: "verified" | "revoked" | "transient";
         try {
-          stillVerified = config.verifier(entry) === true;
-        } catch {
-          stillVerified = false;
+          outcome = config.verifier(entry) === true ? "verified" : "revoked";
+        } catch (cause) {
+          outcome = "transient";
+          try {
+            config.onDispatchError?.({
+              brickId: entry.brickId,
+              toolId: request.toolId,
+              scope: entry.scope,
+              cause,
+              reason: "threw",
+            });
+          } catch {
+            // Throwing handler must not change enforcement.
+          }
         }
-        if (!stillVerified) {
-          evict(entry.brickId);
-          return next(request);
+        if (outcome === "revoked") {
+          // Tombstone then fall through to the shared quarantine
+          // fast-path below — that path runs the per-turn cap counter
+          // and reportDecision, both of which an early return would
+          // skip.
+          quarantined.add(entry.brickId);
         }
+        // outcome === "transient": proceed using the prior admission.
       }
 
       // Per-turn block budget. Mirrors @koi/middleware-permissions'
