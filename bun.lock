@@ -386,6 +386,14 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/forge-verifier": {
+      "name": "@koi/forge-verifier",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+      },
+    },
     "packages/lib/fs-local": {
       "name": "@koi/fs-local",
       "version": "0.0.0",
@@ -2212,6 +2220,8 @@
     "@koi/forge-tools": ["@koi/forge-tools@workspace:packages/lib/forge-tools"],
 
     "@koi/forge-types": ["@koi/forge-types@workspace:packages/lib/forge-types"],
+
+    "@koi/forge-verifier": ["@koi/forge-verifier@workspace:packages/lib/forge-verifier"],
 
     "@koi/fs-local": ["@koi/fs-local@workspace:packages/lib/fs-local"],
 
