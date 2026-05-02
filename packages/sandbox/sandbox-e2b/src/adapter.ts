@@ -139,16 +139,11 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
             "SDK wrapper before retrying.",
         );
       }
-      // Postflight: the instance contract makes `commands.supportsMaxOutputBytes=true`
-      // mandatory at exec() time. If we let a handle through without it,
-      // every subsequent exec() would hard-fail and the caller would be
-      // billed for an unusable sandbox. Tear down here instead so the
-      // capability gap surfaces before any caller can dispatch a command.
-      if (sdk.commands?.supportsMaxOutputBytes !== true) {
-        // Bounded cleanup: a stalled sdk.kill() must not wedge create()
-        // forever. After 10 s, surface the indeterminate teardown so
-        // operators know to verify the sandbox out-of-band.
-        const CLEANUP_TIMEOUT_MS = 10_000;
+      // Bounded cleanup helper for postflight failures. A stalled
+      // sdk.kill() must not wedge create() forever; after 10s surface
+      // the indeterminate teardown so operators know to verify out-of-band.
+      const CLEANUP_TIMEOUT_MS = 10_000;
+      async function killAndDescribe(): Promise<string> {
         const cleanupOutcome = await Promise.race<
           | { readonly kind: "ok" }
           | { readonly kind: "err"; readonly e: unknown }
@@ -162,20 +157,51 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
             setTimeout(() => resolve({ kind: "timeout" } as const), CLEANUP_TIMEOUT_MS),
           ),
         ]);
-        let cleanupNote: string;
-        if (cleanupOutcome.kind === "ok") {
-          cleanupNote = "best-effort kill() succeeded";
-        } else if (cleanupOutcome.kind === "timeout") {
-          cleanupNote = `kill() did not settle within ${CLEANUP_TIMEOUT_MS}ms — remote sandbox state INDETERMINATE; verify out-of-band (label="${label}")`;
-        } else {
-          const e = cleanupOutcome.e;
-          cleanupNote = `kill() also failed: ${e instanceof Error ? e.message : String(e)} — verify the sandbox state out-of-band (label="${label}")`;
+        if (cleanupOutcome.kind === "ok") return "best-effort kill() succeeded";
+        if (cleanupOutcome.kind === "timeout") {
+          return `kill() did not settle within ${CLEANUP_TIMEOUT_MS}ms — remote sandbox state INDETERMINATE; verify out-of-band (label="${label}")`;
         }
+        const e = cleanupOutcome.e;
+        return `kill() also failed: ${e instanceof Error ? e.message : String(e)} — verify the sandbox state out-of-band (label="${label}")`;
+      }
+
+      // Postflight: the instance contract makes `commands.supportsMaxOutputBytes=true`
+      // mandatory at exec() time. If we let a handle through without it,
+      // every subsequent exec() would hard-fail and the caller would be
+      // billed for an unusable sandbox. Tear down here instead so the
+      // capability gap surfaces before any caller can dispatch a command.
+      if (sdk.commands?.supportsMaxOutputBytes !== true) {
+        const cleanupNote = await killAndDescribe();
         throw new Error(
           "sandbox-e2b: createSandbox returned a handle without commands.supportsMaxOutputBytes=true. " +
             "exec() requires server-side cap enforcement; without it, the SandboxExecOptions " +
             "1 MB default could not be honoured before unbounded output reached the host. " +
             `Refusing to return an unusable handle — ${cleanupNote}. Inject a cap-capable SDK wrapper.`,
+        );
+      }
+      // Postflight: the SandboxInstance contract advertises byte-oriented
+      // readFile/writeFile. A handle without `files.readBytes` would
+      // hard-fail every readFile() call after we already started billing
+      // for the microVM; a handle without `files.writeBytes` would
+      // silently corrupt non-UTF-8 payloads on writeFile(). Tear down
+      // here so the capability gap surfaces before the caller pays.
+      if (typeof sdk.files?.readBytes !== "function") {
+        const cleanupNote = await killAndDescribe();
+        throw new Error(
+          "sandbox-e2b: createSandbox returned a handle without files.readBytes. " +
+            "SandboxInstance.readFile is byte-oriented and the text-only fallback " +
+            "would corrupt non-UTF-8 payloads on re-encode. Refusing to return an " +
+            `unusable handle — ${cleanupNote}. Inject an SDK wrapper that exposes readBytes.`,
+        );
+      }
+      if (typeof sdk.files?.writeBytes !== "function") {
+        const cleanupNote = await killAndDescribe();
+        throw new Error(
+          "sandbox-e2b: createSandbox returned a handle without files.writeBytes. " +
+            "SandboxInstance.writeFile must accept arbitrary bytes; a text-only fallback " +
+            "would reject non-UTF-8 input only after the caller already paid for the " +
+            `microVM. Refusing to return an unusable handle — ${cleanupNote}. Inject an ` +
+            "SDK wrapper that exposes writeBytes.",
         );
       }
       return createE2bInstance(sdk, extractProfileDefaults(profile));

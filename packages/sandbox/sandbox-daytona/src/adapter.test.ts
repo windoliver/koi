@@ -226,6 +226,48 @@ describe("createDaytonaAdapter", () => {
     expect(deleteCalls).toBe(1);
   }, 40_000);
 
+  test("create() postflights files.readBytes and tears down handles without binary read", async () => {
+    const client = createFakeClient();
+    const original = client.sandbox;
+    let deleteCalls = 0;
+    const { readBytes: _omitRead, ...filesNoReadBytes } = original.files;
+    const handle = {
+      ...original,
+      files: filesNoReadBytes,
+      delete: async (): Promise<void> => {
+        deleteCalls++;
+      },
+    };
+    Object.defineProperty(client, "createSandbox", {
+      value: async () => handle,
+    });
+    const result = createDaytonaAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    await expect(result.value.create(openProfile)).rejects.toThrow(/files\.readBytes/);
+    expect(deleteCalls).toBe(1);
+  });
+
+  test("create() postflights files.writeBytes and tears down handles without binary write", async () => {
+    const client = createFakeClient();
+    const original = client.sandbox;
+    let deleteCalls = 0;
+    const { writeBytes: _omitWrite, ...filesNoWriteBytes } = original.files;
+    const handle = {
+      ...original,
+      files: filesNoWriteBytes,
+      delete: async (): Promise<void> => {
+        deleteCalls++;
+      },
+    };
+    Object.defineProperty(client, "createSandbox", {
+      value: async () => handle,
+    });
+    const result = createDaytonaAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    await expect(result.value.create(openProfile)).rejects.toThrow(/files\.writeBytes/);
+    expect(deleteCalls).toBe(1);
+  });
+
   test("create() postflights supportsMaxOutputBytes and tears down unusable handles", async () => {
     // Skew regression: an SDK whose handle lacks supportsMaxOutputBytes=true
     // would let create() return a billable workspace where every exec()

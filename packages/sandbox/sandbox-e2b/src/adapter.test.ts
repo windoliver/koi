@@ -236,6 +236,50 @@ describe("createE2bAdapter", () => {
     expect(killCalls).toBe(1);
   }, 40_000);
 
+  test("create() postflights files.readBytes and tears down handles without binary read", async () => {
+    // Without readBytes, every readFile() would hard-fail after the
+    // microVM is already billed. Postflight catches this at create.
+    const client = createFakeClient();
+    const original = client.sandbox;
+    let killCalls = 0;
+    const { readBytes: _omitRead, ...filesNoReadBytes } = original.files;
+    const handle = {
+      ...original,
+      files: filesNoReadBytes,
+      kill: async (): Promise<void> => {
+        killCalls++;
+      },
+    };
+    Object.defineProperty(client, "createSandbox", {
+      value: async () => handle,
+    });
+    const result = createE2bAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    await expect(result.value.create(openProfile)).rejects.toThrow(/files\.readBytes/);
+    expect(killCalls).toBe(1);
+  });
+
+  test("create() postflights files.writeBytes and tears down handles without binary write", async () => {
+    const client = createFakeClient();
+    const original = client.sandbox;
+    let killCalls = 0;
+    const { writeBytes: _omitWrite, ...filesNoWriteBytes } = original.files;
+    const handle = {
+      ...original,
+      files: filesNoWriteBytes,
+      kill: async (): Promise<void> => {
+        killCalls++;
+      },
+    };
+    Object.defineProperty(client, "createSandbox", {
+      value: async () => handle,
+    });
+    const result = createE2bAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    await expect(result.value.create(openProfile)).rejects.toThrow(/files\.writeBytes/);
+    expect(killCalls).toBe(1);
+  });
+
   test("create() postflights supportsMaxOutputBytes and tears down unusable handles", async () => {
     // Skew regression: an SDK whose handle lacks supportsMaxOutputBytes=true
     // would let create() return a billable sandbox where every exec()

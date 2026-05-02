@@ -173,21 +173,47 @@ export function createDaytonaAdapter(
       // would hard-fail and the caller would be billed for an unusable
       // workspace. Tear down here so the capability gap surfaces before
       // any command can be dispatched.
-      if (sdk.commands?.supportsMaxOutputBytes !== true) {
+      async function deleteAndDescribe(): Promise<string> {
         const deleteOutcome = await boundedCleanup(() => sdk.delete());
-        let cleanupNote: string;
-        if (deleteOutcome.kind === "ok") {
-          cleanupNote = "best-effort delete() succeeded";
-        } else if (deleteOutcome.kind === "timeout") {
-          cleanupNote = `delete() did not settle within ${CLEANUP_TIMEOUT_MS}ms — workspace state INDETERMINATE; verify out-of-band (label="${label}")`;
-        } else {
-          cleanupNote = `delete() also failed: ${deleteOutcome.e instanceof Error ? deleteOutcome.e.message : String(deleteOutcome.e)} — verify the workspace state out-of-band (label="${label}")`;
+        if (deleteOutcome.kind === "ok") return "best-effort delete() succeeded";
+        if (deleteOutcome.kind === "timeout") {
+          return `delete() did not settle within ${CLEANUP_TIMEOUT_MS}ms — workspace state INDETERMINATE; verify out-of-band (label="${label}")`;
         }
+        return `delete() also failed: ${deleteOutcome.e instanceof Error ? deleteOutcome.e.message : String(deleteOutcome.e)} — verify the workspace state out-of-band (label="${label}")`;
+      }
+
+      if (sdk.commands?.supportsMaxOutputBytes !== true) {
+        const cleanupNote = await deleteAndDescribe();
         throw new Error(
           "sandbox-daytona: createSandbox returned a handle without commands.supportsMaxOutputBytes=true. " +
             "exec() requires server-side cap enforcement; without it, the SandboxExecOptions " +
             "1 MB default could not be honoured before unbounded output reached the host. " +
             `Refusing to return an unusable handle — ${cleanupNote}. Inject a cap-capable SDK wrapper.`,
+        );
+      }
+      // Postflight: the SandboxInstance contract advertises byte-oriented
+      // readFile/writeFile. A handle without `files.readBytes` would
+      // hard-fail every readFile() after we already started billing for
+      // the workspace; a handle without `files.writeBytes` would silently
+      // corrupt non-UTF-8 payloads on writeFile(). Tear down here so the
+      // capability gap surfaces before the caller pays.
+      if (typeof sdk.files?.readBytes !== "function") {
+        const cleanupNote = await deleteAndDescribe();
+        throw new Error(
+          "sandbox-daytona: createSandbox returned a handle without files.readBytes. " +
+            "SandboxInstance.readFile is byte-oriented and the text-only fallback " +
+            "would corrupt non-UTF-8 payloads on re-encode. Refusing to return an " +
+            `unusable handle — ${cleanupNote}. Inject an SDK wrapper that exposes readBytes.`,
+        );
+      }
+      if (typeof sdk.files?.writeBytes !== "function") {
+        const cleanupNote = await deleteAndDescribe();
+        throw new Error(
+          "sandbox-daytona: createSandbox returned a handle without files.writeBytes. " +
+            "SandboxInstance.writeFile must accept arbitrary bytes; a text-only fallback " +
+            "would reject non-UTF-8 input only after the caller already paid for the " +
+            `workspace. Refusing to return an unusable handle — ${cleanupNote}. Inject an ` +
+            "SDK wrapper that exposes writeBytes.",
         );
       }
       return createDaytonaInstance(sdk, extractProfileDefaults(profile));
