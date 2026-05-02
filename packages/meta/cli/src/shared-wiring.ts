@@ -669,6 +669,13 @@ export interface ResumedSession {
    * of replaying transcript-only.
    */
   readonly lastEngineState?: EngineState | undefined;
+  /**
+   * `lastPersistedAt` of the resumed session row, when one was found.
+   * Pass to `KoiRuntimeConfig.sessionPersistence.initialEngineStateVersion`
+   * so the wrapper's CAS check protects against a concurrent runtime
+   * writing to the row between resume and the first own write.
+   */
+  readonly lastPersistedAt?: number | undefined;
 }
 
 /** Optional state-aware resume parameters (issue #1683). */
@@ -784,6 +791,9 @@ export async function resumeSessionFromJsonl(
           issueCount: stateResult.value.issues.length,
           ...(stateResult.value.lastEngineState !== undefined
             ? { lastEngineState: stateResult.value.lastEngineState }
+            : {}),
+          ...(stateResult.value.lastPersistedAt !== undefined
+            ? { lastPersistedAt: stateResult.value.lastPersistedAt }
             : {}),
         },
       };

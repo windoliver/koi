@@ -232,11 +232,23 @@ export interface SessionPersistence {
    * Returns NOT_FOUND when the session row doesn't exist (the contract
    * intentionally does not auto-create — callers must `saveSession` first
    * for the very first cancel of a fresh session).
+   *
+   * `expectedVersion` (optional): if provided, the store MUST verify that
+   * the current row's `lastPersistedAt` exactly equals this value INSIDE
+   * the transaction, and reject with code "CONFLICT" otherwise. This is
+   * the cross-process / cross-runtime safety primitive — callers that
+   * track the row version they last observed pass it here so a clear or
+   * write cannot wipe a newer checkpoint written by a different process
+   * resuming the same session. Stores that don't support precondition
+   * checking MUST reject with INTERNAL when `expectedVersion` is supplied
+   * so callers don't get false safety. Pass `undefined` (or omit) when no
+   * precondition applies (e.g. very first write by this wrapper).
    */
   readonly updateLastEngineState?: (
     sessionId: string,
     apply: (prev: EngineState | undefined) => EngineState | undefined,
     nowMs: number,
+    expectedVersion?: number,
   ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
 
   // -- Session status ------------------------------------------------------

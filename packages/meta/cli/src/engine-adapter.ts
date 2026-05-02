@@ -81,6 +81,64 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
       modelCall: modelAdapter.complete,
       modelStream: modelAdapter.stream,
     },
+    // Cancel-resume hooks (issue #1683). The transcript-backed adapter has
+    // no partial-turn state to capture — interrupted turns are discarded
+    // entirely and the next stream starts from the committed transcript.
+    // The state we persist on cancel is therefore a "transcript cursor": a
+    // snapshot of the committed message count + a content fingerprint at
+    // cancel time. On resume, `loadState` validates that the live
+    // transcript array still matches that cursor; if it does, the cancel
+    // checkpoint is consistent with the JSONL replay and the wrapper's
+    // engineId-based compatibility gate has done its job. If the live
+    // transcript has diverged (e.g. external edit, partial JSONL load),
+    // loadState throws so the wrapper signals onPersistError and the host
+    // can fall back to transcript-only resume. This makes the
+    // sessionPersistence runtime option real (durable cancel-resume row
+    // is written) while honestly reflecting what state this adapter can
+    // recover. Adapters with richer state (partial-stream cursor,
+    // langgraph checkpointer) implement saveState/loadState differently.
+    saveState: async () => ({
+      engineId,
+      data: {
+        kind: "transcript-cursor",
+        transcriptLen: transcript.length,
+        // Last message's timestamp acts as a lightweight fingerprint —
+        // catches replace-in-place mutations that preserve length.
+        lastMessageTimestamp:
+          transcript.length > 0 ? (transcript[transcript.length - 1]?.timestamp ?? 0) : 0,
+      },
+    }),
+    loadState: async (state) => {
+      const data = state.data as
+        | {
+            readonly kind?: string;
+            readonly transcriptLen?: number;
+            readonly lastMessageTimestamp?: number;
+          }
+        | undefined;
+      if (data?.kind !== "transcript-cursor") {
+        throw new Error(
+          `[${engineId}] EngineState shape mismatch — expected kind="transcript-cursor"`,
+        );
+      }
+      const expectedLen = data.transcriptLen ?? -1;
+      if (transcript.length !== expectedLen) {
+        throw new Error(
+          `[${engineId}] transcript divergence — checkpoint snapshotted ${expectedLen} messages, live transcript has ${transcript.length}`,
+        );
+      }
+      const expectedTs = data.lastMessageTimestamp ?? 0;
+      const liveTs =
+        transcript.length > 0 ? (transcript[transcript.length - 1]?.timestamp ?? 0) : 0;
+      if (liveTs !== expectedTs) {
+        throw new Error(
+          `[${engineId}] transcript fingerprint mismatch — last message timestamp ${liveTs} ≠ checkpoint ${expectedTs}`,
+        );
+      }
+      // Cursor matches: nothing to apply (the transcript IS our state).
+      // The wrapper's engineId compatibility check already filtered out
+      // foreign adapter state; reaching here means the resume is sound.
+    },
     stream(input: EngineInput): AsyncIterable<EngineEvent> {
       const handlers = input.callHandlers;
       if (handlers === undefined) {

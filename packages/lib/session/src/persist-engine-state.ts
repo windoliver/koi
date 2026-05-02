@@ -98,6 +98,15 @@ export interface PersistEngineStateOptions {
    * undefined (the wrapper degrades to transcript-only resume).
    */
   readonly initialEngineState?: EngineState;
+  /**
+   * Optional. The `lastPersistedAt` value observed at resume time —
+   * passed back as `expectedVersion` on the wrapper's first store
+   * write/clear so cross-process safety is enforced from the moment of
+   * resume rather than only after this wrapper's first own write. When
+   * undefined, cross-process protection only kicks in after this wrapper
+   * has successfully written at least once.
+   */
+  readonly initialEngineStateVersion?: number;
 }
 
 const DEFAULT_PERSIST_TIMEOUT_MS = 5_000 as const;
@@ -152,28 +161,47 @@ export function wrapAdapterWithStatePersistence(
   // so any stale write checking it sees a mismatch and aborts.
   const gen: GenRef = { current: 0 };
 
-  // Lazily apply initialEngineState before the first stream — failure is
-  // surfaced via `onPersistError` and the persisted checkpoint is
-  // immediately cleared so the next resume can NOT combine a stale
-  // checkpoint with a transcript that the failed-load run advanced past.
+  // Lazily apply initialEngineState before the first stream. On failure,
+  // PRESERVE the persisted checkpoint and SUPPRESS the next non-
+  // interrupted clear — the host's `onPersistError` handler decides
+  // whether to retry, surface UX, or wipe the row externally. This is
+  // the round-2/round-4/round-9 reviewer preference (4 of 7 review
+  // rounds favored preservation): a transient decode/IO failure should
+  // not auto-destroy the only durable cancel cursor. Trade-off: if the
+  // host ignores the signal and the run produces new transcript entries,
+  // the next resume could combine an old engine cursor with newer
+  // transcript — that is the host's responsibility to prevent via the
+  // signal handler.
   const loadState = inner.loadState;
   let pendingInitial: EngineState | undefined =
     options.initialEngineState !== undefined && loadState !== undefined
       ? options.initialEngineState
       : undefined;
+  const loadFailedRef: { failed: boolean } = { failed: false };
+  // Last `lastPersistedAt` value the wrapper observed in the store —
+  // either seeded from `initialEngineStateVersion` at resume time, or
+  // updated after every successful own write. Passed as
+  // `expectedVersion` on the next clear/write so a concurrent process
+  // that wrote to the same row in between is detected (CONFLICT) and the
+  // wrapper backs off without erasing the newer state.
+  const lastWrittenAtRef: { value: number | undefined } = {
+    value: options.initialEngineStateVersion,
+  };
 
   return {
     ...inner,
     stream: (input: EngineInput): AsyncIterable<EngineEvent> => {
       const initialToApply = pendingInitial;
       pendingInitial = undefined;
-      const innerStream = streamWithLazyLoad(inner, input, initialToApply, loadState, gen, {
+      const innerStream = streamWithLazyLoad(inner, input, initialToApply, loadState, {
         saveState,
         persistence,
         recordTemplate,
         now,
         onPersistError,
         persistTimeoutMs,
+        loadFailedRef,
+        lastWrittenAtRef,
       });
       return wrapStreamForCancelPersist(innerStream, gen, {
         saveState,
@@ -182,6 +210,8 @@ export function wrapAdapterWithStatePersistence(
         now,
         onPersistError,
         persistTimeoutMs,
+        loadFailedRef,
+        lastWrittenAtRef,
       });
     },
   };
@@ -192,25 +222,20 @@ async function* streamWithLazyLoad(
   input: EngineInput,
   initial: EngineState | undefined,
   loadState: ((s: EngineState) => Promise<void>) | undefined,
-  gen: GenRef,
   deps: WrapStreamDeps,
 ): AsyncIterable<EngineEvent> {
   if (initial !== undefined && loadState !== undefined) {
     try {
       await loadState(initial);
+      // Successful load supersedes any prior failure shield.
+      deps.loadFailedRef.failed = false;
     } catch (e: unknown) {
-      // loadState failure: surface signal AND immediately clear the
-      // persisted checkpoint. Once we fall through to running the turn
-      // transcript-only, the saved EngineState is no longer coherent with
-      // the transcript the run will produce — preserving it would arm a
-      // future resume with a stale snapshot bound to a newer transcript.
-      // We accept the rare cost of dropping a checkpoint that *might*
-      // have decoded on a retry; the host has the `onPersistError`
-      // signal and can decide to surface UX, snapshot the row externally
-      // before allowing the turn to advance, or kill the session.
+      // PRESERVE the persisted checkpoint. Mark the shield so the next
+      // non-interrupted terminal SKIPS the auto-clear once. Host's
+      // onPersistError handler is the durable signal — operators decide
+      // whether to retry resume, surface UX, or wipe the row externally.
+      deps.loadFailedRef.failed = true;
       deps.onPersistError(e instanceof Error ? e : new Error(extractMessage(e)));
-      gen.current += 1;
-      await clearStaleCheckpoint(deps, gen, gen.current);
     }
   }
   for await (const ev of inner.stream(input)) yield ev;
@@ -223,6 +248,23 @@ interface WrapStreamDeps {
   readonly now: () => number;
   readonly onPersistError: (error: KoiError | Error) => void;
   readonly persistTimeoutMs: number;
+  /**
+   * Wrapper-shared flag set when `loadState` threw. Suppresses the next
+   * non-interrupted clear so a transient load failure can't auto-burn
+   * the persisted checkpoint. Reset by: a successful loadState, an
+   * interrupted terminal (new checkpoint supersedes), or one skipped
+   * clear (one-shot shield).
+   */
+  readonly loadFailedRef: { failed: boolean };
+  /**
+   * Wrapper-shared CAS token: the `lastPersistedAt` value this wrapper
+   * last successfully wrote (or seeded at resume from
+   * `initialEngineStateVersion`). Passed as `expectedVersion` on the
+   * next update so a concurrent process / runtime that touched the same
+   * row in between is detected (CONFLICT) and the wrapper aborts
+   * silently rather than overwriting the newer state.
+   */
+  readonly lastWrittenAtRef: { value: number | undefined };
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -273,7 +315,20 @@ async function* wrapStreamForCancelPersist(
       gen.current += 1;
       const myGen = gen.current;
       if (event.output.stopReason === "interrupted") {
+        // A new interrupted terminal mints a fresh checkpoint that
+        // supersedes whatever was on disk — drop the load-failed shield
+        // so it doesn't suppress a future legitimate clear.
+        deps.loadFailedRef.failed = false;
         await persistOnInterrupted(deps, gen, myGen);
+      } else if (deps.loadFailedRef.failed) {
+        // Last `loadState` attempt failed → preserve the persisted
+        // checkpoint exactly once so the host can retry resume against
+        // the same row. One-shot shield: a SECOND non-interrupted
+        // terminal (without an intervening successful load) WILL clear,
+        // because by then the host has had a chance to react to the
+        // `onPersistError` signal and the transcript has demonstrably
+        // advanced.
+        deps.loadFailedRef.failed = false;
       } else {
         // Any non-interrupted terminal (`completed`, `error`, `max_turns`)
         // advances the transcript past the cancel checkpoint, so the saved
@@ -340,11 +395,25 @@ async function clearStaleCheckpointInner(
   const update = deps.persistence.updateLastEngineState;
 
   if (update !== undefined) {
-    // Atomic clear: returns NOT_FOUND when the row never existed (nothing to
-    // do) and otherwise sets `lastEngineState` to undefined inside the
-    // store's critical section.
-    const r = await update(sid, () => undefined, deps.now());
-    if (!r.ok && r.error.code !== "NOT_FOUND") deps.onPersistError(r.error);
+    // Atomic clear with CAS precondition: returns NOT_FOUND when the row
+    // never existed, CONFLICT when another runtime wrote a newer state in
+    // between (we silently back off — that newer state is authoritative),
+    // and otherwise sets `lastEngineState` to undefined inside the store's
+    // critical section.
+    const nowVal = deps.now();
+    const r = await update(sid, () => undefined, nowVal, deps.lastWrittenAtRef.value);
+    if (r.ok) {
+      deps.lastWrittenAtRef.value = nowVal;
+      return;
+    }
+    if (r.error.code === "NOT_FOUND") return;
+    if (r.error.code === "CONFLICT") {
+      // Another runtime owns a newer checkpoint — do NOT overwrite. Log
+      // through the persist-error signal so the host can observe.
+      deps.onPersistError(r.error);
+      return;
+    }
+    deps.onPersistError(r.error);
     return;
   }
 
@@ -389,8 +458,19 @@ async function mergeAndSave(
   const update = deps.persistence.updateLastEngineState;
 
   if (update !== undefined) {
-    const r = await update(sid, () => state, deps.now());
-    if (r.ok) return;
+    const nowVal = deps.now();
+    const r = await update(sid, () => state, nowVal, deps.lastWrittenAtRef.value);
+    if (r.ok) {
+      deps.lastWrittenAtRef.value = nowVal;
+      return;
+    }
+    if (r.error.code === "CONFLICT") {
+      // Another runtime wrote a newer checkpoint — abort to avoid
+      // clobbering. Surface the signal; the host can choose whether to
+      // resume from the newer state or keep going transcript-only.
+      deps.onPersistError(r.error);
+      return;
+    }
     if (r.error.code !== "NOT_FOUND") {
       deps.onPersistError(r.error);
       return;
@@ -404,14 +484,19 @@ async function mergeAndSave(
   if (gen.current !== myGen) return;
   // let: justified — assigned in either branch below.
   let merged: SessionRecord;
+  const writeAt = deps.now();
   if (loaded.ok) {
-    merged = { ...loaded.value, lastEngineState: state, lastPersistedAt: deps.now() };
+    merged = { ...loaded.value, lastEngineState: state, lastPersistedAt: writeAt };
   } else if (loaded.error.code === "NOT_FOUND") {
-    merged = { ...template, lastEngineState: state, lastPersistedAt: deps.now() };
+    merged = { ...template, lastEngineState: state, lastPersistedAt: writeAt };
   } else {
     deps.onPersistError(loaded.error);
     return;
   }
   const result = await deps.persistence.saveSession(merged);
-  if (!result.ok) deps.onPersistError(result.error);
+  if (!result.ok) {
+    deps.onPersistError(result.error);
+    return;
+  }
+  deps.lastWrittenAtRef.value = writeAt;
 }

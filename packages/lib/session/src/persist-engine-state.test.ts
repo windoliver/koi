@@ -560,7 +560,51 @@ describe("wrapAdapterWithStatePersistence", () => {
     expect(events.at(-1)?.kind).toBe("done");
   });
 
-  test("loadState failure clears the persisted checkpoint immediately (transcript will advance)", async () => {
+  test("CAS backoff: cancel write skips when another runtime wrote to the row first", async () => {
+    // Resume scenario: wrapper is seeded with the lastPersistedAt it
+    // observed at load time. Between resume and the first cancel, ANOTHER
+    // runtime (e.g. a parallel TUI on the same SQLite db) writes a newer
+    // checkpoint. Our wrapper's cancel write must NOT clobber that newer
+    // state — the CAS precondition fires CONFLICT, signal goes through
+    // onPersistError, persisted row stays as the other runtime left it.
+    const otherState: EngineState = { engineId: "test-engine", data: { from: "other" } };
+    await store.saveSession({
+      ...template(),
+      lastEngineState: { engineId: "test-engine", data: { from: "ours" } },
+      lastPersistedAt: 1_000,
+    });
+    // Wrapper resumes seeded with version 1_000 (what we observed).
+    const errors: Array<KoiError | Error> = [];
+    const wrapped = wrapAdapterWithStatePersistence(makeAdapter([interruptedDone], captured), {
+      persistence: store,
+      recordTemplate: template,
+      onPersistError: (e) => errors.push(e),
+      initialEngineStateVersion: 1_000,
+    });
+    // Simulate the other runtime writing in between (lastPersistedAt advances).
+    await store.saveSession({
+      ...template(),
+      lastEngineState: otherState,
+      lastPersistedAt: 5_000,
+    });
+    // Now our cancel fires.
+    for await (const _ of wrapped.stream({ kind: "text", text: "hi" }));
+
+    expect(errors).toHaveLength(1);
+    const e0 = errors[0];
+    if (e0 !== undefined && "code" in e0) {
+      expect(e0.code).toBe("CONFLICT");
+    } else {
+      throw new Error("expected KoiError with CONFLICT");
+    }
+    // The other runtime's state survives — we did NOT clobber it.
+    const after = await store.loadSession(SID);
+    if (!after.ok) throw new Error("expected ok");
+    expect(after.value.lastEngineState).toEqual(otherState);
+    expect(after.value.lastPersistedAt).toBe(5_000);
+  });
+
+  test("transient loadState failure preserves the persisted checkpoint (one-shot clear shield)", async () => {
     // Seed a persisted checkpoint as if a prior cancel had written it.
     await store.saveSession({
       ...template(),
@@ -568,10 +612,10 @@ describe("wrapAdapterWithStatePersistence", () => {
       lastPersistedAt: 1,
     });
 
-    // loadState throws — the wrapper still runs the turn (transcript-only
-    // fallback) but MUST NOT leave a stale checkpoint armed against the
-    // newer transcript that this run will produce. A later resume would
-    // otherwise combine an old engine cursor with newer entries.
+    // loadState throws — host gets onPersistError signal but the
+    // persisted row is preserved so the host can retry resume against
+    // the same checkpoint. One-shot: the NEXT non-interrupted terminal
+    // (without an intervening successful load) DOES clear.
     const inner: EngineAdapter = {
       ...makeAdapter([completedDone], captured),
       loadState: async () => {
@@ -590,6 +634,7 @@ describe("wrapAdapterWithStatePersistence", () => {
     expect(errors).toHaveLength(1);
     const after = await store.loadSession(SID);
     if (!after.ok) throw new Error("expected ok");
-    expect(after.value.lastEngineState).toBeUndefined();
+    // Checkpoint preserved — host can retry against the same row.
+    expect(after.value.lastEngineState).toEqual(captured);
   });
 });

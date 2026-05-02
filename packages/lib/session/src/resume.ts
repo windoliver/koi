@@ -289,6 +289,14 @@ export interface ResumeWithStateResult {
    * (version skew / adapter swap) and was rejected as foreign.
    */
   readonly lastEngineState: EngineState | undefined;
+  /**
+   * The session row's `lastPersistedAt` value at the moment we read it.
+   * Defined when the row exists, undefined when NOT_FOUND. Pass this to
+   * `wrapAdapterWithStatePersistence` as `initialEngineStateVersion` so
+   * the wrapper's CAS check protects against a concurrent process
+   * writing to the same row between resume and the first own write.
+   */
+  readonly lastPersistedAt: number | undefined;
 }
 
 export interface ResumeWithStateOptions {
@@ -341,7 +349,7 @@ export async function resumeWithEngineState(
     if (sessionResult.error.code === "NOT_FOUND") {
       return {
         ok: true,
-        value: { ...base.value, lastEngineState: undefined },
+        value: { ...base.value, lastEngineState: undefined, lastPersistedAt: undefined },
       };
     }
     return sessionResult;
@@ -366,6 +374,7 @@ export async function resumeWithEngineState(
     value: {
       ...base.value,
       lastEngineState: safe,
+      lastPersistedAt: sessionResult.value.lastPersistedAt,
     },
   };
 }

@@ -233,6 +233,44 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
       );
       expect(observed).toEqual(seed);
     });
+
+    test("updateLastEngineState rejects with CONFLICT when expectedVersion mismatches", async () => {
+      const store = createStore();
+      if (store.updateLastEngineState === undefined) return;
+      // Seed at lastPersistedAt = 1000.
+      await store.saveSession(
+        makeSession({ sessionId: sessionId("s-cas-conflict"), lastPersistedAt: 1_000 }),
+      );
+      // Caller observed version 999 (stale) — write must fail.
+      const r = await store.updateLastEngineState(
+        "s-cas-conflict",
+        () => ({ engineId: "e", data: {} }),
+        2_000,
+        999,
+      );
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("CONFLICT");
+      // Row unchanged.
+      const after = await store.loadSession("s-cas-conflict");
+      if (!after.ok) throw new Error("expected ok");
+      expect(after.value.lastEngineState).toBeUndefined();
+      expect(after.value.lastPersistedAt).toBe(1_000);
+    });
+
+    test("updateLastEngineState succeeds when expectedVersion matches", async () => {
+      const store = createStore();
+      if (store.updateLastEngineState === undefined) return;
+      await store.saveSession(
+        makeSession({ sessionId: sessionId("s-cas-ok"), lastPersistedAt: 1_000 }),
+      );
+      const next: EngineState = { engineId: "e", data: { n: 42 } };
+      const r = await store.updateLastEngineState("s-cas-ok", () => next, 2_000, 1_000);
+      expect(r.ok).toBe(true);
+      const after = await store.loadSession("s-cas-ok");
+      if (!after.ok) throw new Error("expected ok");
+      expect(after.value.lastEngineState).toEqual(next);
+      expect(after.value.lastPersistedAt).toBe(2_000);
+    });
   });
 
   // -----------------------------------------------------------------------

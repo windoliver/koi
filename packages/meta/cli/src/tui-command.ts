@@ -114,7 +114,11 @@ import { loadPolicyFile } from "./policy-file.js";
 import { resolveManifestPath } from "./resolve-manifest-path.js";
 import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
-import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js";
+import {
+  computeDefaultEngineId,
+  createKoiRuntime,
+  TUI_APPROVAL_TIMEOUT_MS,
+} from "./runtime-factory.js";
 import { createSecurityBridge, type SecurityBridge } from "./security-bridge.js";
 import {
   buildScopedCredentials,
@@ -1481,9 +1485,61 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Dispatching `rehydrate_messages` alone only updates the UI — the
   // model would still see an empty history and treat the resumed
   // session as a fresh conversation.
+  // Issue #1683: opt-in durable cancel-resume, gated on KOI_SESSION_STATE_DB.
+  // When set, build a SQLite SessionPersistence and use it for both the
+  // resume path (loading lastEngineState + version) and the runtime config
+  // (wrapping the engine adapter to checkpoint on cancel, with CAS via
+  // initialEngineStateVersion to guard against cross-runtime overwrite).
+  // Unset / construction failure → transcript-only resume, identical to
+  // before this PR.
+  const stateDbPath = process.env.KOI_SESSION_STATE_DB;
+  let stateSessionPersistence: import("@koi/core").SessionPersistence | undefined;
+  if (stateDbPath !== undefined && stateDbPath !== "") {
+    try {
+      const { createSqliteSessionPersistence } = await import("@koi/session");
+      stateSessionPersistence = createSqliteSessionPersistence({ dbPath: stateDbPath });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `koi tui: cancel checkpoint store unavailable at ${stateDbPath} (${msg}) — cancel-resume disabled for this run\n`,
+      );
+    }
+  }
+
   let resumedMessagesToPrime: readonly InboundMessage[] = [];
+  let resumedEngineState: import("@koi/core").EngineState | undefined;
+  let resumedStateVersion: number | undefined;
   if (flags.resume !== undefined) {
-    const resumeResult = await resumeSessionFromJsonl(flags.resume, jsonlTranscript, SESSIONS_DIR);
+    const stateOpts =
+      stateSessionPersistence !== undefined
+        ? {
+            persistence: stateSessionPersistence,
+            // Compatibility token — must match `computeDefaultEngineId`
+            // stamped by the runtime adapter. Mid-session model swap is
+            // safe (engineId no longer carries model). Schema bump or
+            // adapter swap correctly invalidates stale checkpoints.
+            expectedEngineId: computeDefaultEngineId(),
+            onEngineMismatch: (
+              _stored: import("@koi/core").EngineState,
+              expected: string,
+            ): void => {
+              process.stderr.write(
+                `koi tui: persisted engine state from a different engine — dropping (expected ${expected})\n`,
+              );
+            },
+            onCheckpointReadError: (err: import("@koi/core").KoiError): void => {
+              process.stderr.write(
+                `koi tui: cancel checkpoint store read failed (${err.message}) — resuming from transcript only\n`,
+              );
+            },
+          }
+        : undefined;
+    const resumeResult = await resumeSessionFromJsonl(
+      flags.resume,
+      jsonlTranscript,
+      SESSIONS_DIR,
+      stateOpts,
+    );
     if (!resumeResult.ok) {
       process.stderr.write(
         `koi tui: cannot resume session "${flags.resume}" — ${resumeResult.error}\n`,
@@ -1491,6 +1547,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       process.exit(1);
     }
     tuiSessionId = resumeResult.value.sid;
+    resumedEngineState = resumeResult.value.lastEngineState;
+    resumedStateVersion = resumeResult.value.lastPersistedAt;
     store.dispatch({
       kind: "rehydrate_messages",
       messages: resumeResult.value.messages,
@@ -1502,6 +1560,47 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       process.stderr.write(
         `koi tui: resumed with ${resumeResult.value.issueCount} repair issue(s)\n`,
       );
+    }
+    if (resumedEngineState !== undefined) {
+      process.stderr.write("koi tui: resuming from cancel checkpoint\n");
+    }
+  }
+
+  // Issue #1683: seed an authoritative SessionRecord on fresh sessions so
+  // the very-first cancel merges into REAL counters/metadata (not the
+  // wrapper's placeholder template). Skip on resume — the prior session's
+  // row is authoritative; overwriting it would clobber `seq`/`metadata`
+  // that other tooling may inspect. Seed failure disables checkpointing
+  // for the run with a stderr signal — better to lose the cursor than
+  // persist garbage.
+  if (stateSessionPersistence !== undefined && flags.resume === undefined) {
+    const { agentId: agentIdCtor } = await import("@koi/core");
+    const seedRecord: import("@koi/core").SessionRecord = {
+      sessionId: tuiSessionId,
+      agentId: agentIdCtor(`koi-tui:${tuiSessionId}`),
+      manifestSnapshot: {
+        name: "koi-tui",
+        version: "0",
+        model: { name: modelName },
+      },
+      seq: 0,
+      remoteSeq: 0,
+      connectedAt: Date.now(),
+      lastPersistedAt: Date.now(),
+      // The TUI process IS the running session. SIGKILL/OOM legitimately
+      // leaves "running" for next-startup recovery scans; clean shutdown
+      // flips to "done" via the exit handler installed below.
+      status: "running",
+      metadata: {
+        ...(resolvedManifestPath !== undefined ? { manifestPath: resolvedManifestPath } : {}),
+      },
+    };
+    const seedResult = await stateSessionPersistence.saveSession(seedRecord);
+    if (!seedResult.ok) {
+      process.stderr.write(
+        `koi tui: cancel checkpoint store seed failed (${seedResult.error.message}) — disabling cancel-resume for this run\n`,
+      );
+      stateSessionPersistence = undefined;
     }
   }
 
@@ -2304,6 +2403,27 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   if (aceCloseHook !== undefined) {
     process.on("exit", aceCloseHook);
   }
+  // Issue #1683: flip cancel-checkpoint session row to "done" on clean
+  // exit so recovery tooling distinguishes a normal close from a
+  // SIGKILL/OOM crash candidate (which legitimately leaves "running").
+  // Best-effort — exit handlers are sync, errors are swallowed.
+  if (stateSessionPersistence !== undefined) {
+    const persistOnExit = stateSessionPersistence;
+    process.on("exit", () => {
+      try {
+        const r = persistOnExit.setSessionStatus(tuiSessionId, "done");
+        if (r instanceof Promise) r.catch(() => {});
+      } catch {
+        /* swallow — exit handler */
+      }
+      try {
+        const c = persistOnExit.close();
+        if (c instanceof Promise) c.catch(() => {});
+      } catch {
+        /* swallow — possibly already closed */
+      }
+    });
+  }
   // Persist session provenance (deferred from earlier so storeId is known).
   // On --resume the sidecar already exists and contains the original
   // storeId — do not rewrite it; the original must remain authoritative.
@@ -2369,6 +2489,36 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // failed iterations don't pollute the resumable JSONL transcript.
     // Loop mode is a self-correcting execution, not a conversation.
     ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: tuiSessionId } }),
+    // Issue #1683: cancel-resume checkpoint wiring. Activates only when
+    // `KOI_SESSION_STATE_DB` was set (and the SQLite open succeeded) and
+    // we're not in loop mode. Loop mode skips both session and checkpoint
+    // by design — failed iterations must not pollute resumable state.
+    // initialEngineState/initialEngineStateVersion are forwarded from the
+    // resume so the wrapped adapter restores the cancel cursor and the
+    // CAS check protects against a parallel runtime overwriting our row.
+    ...(stateSessionPersistence !== undefined && !isLoopMode
+      ? {
+          sessionPersistence: {
+            persistence: stateSessionPersistence,
+            agentId: (await import("@koi/core")).agentId(`koi-tui:${tuiSessionId}`),
+            manifestSnapshot: {
+              name: "koi-tui",
+              version: "0",
+              model: { name: modelName },
+            } satisfies import("@koi/core").AgentManifest,
+            onPersistError: (err: import("@koi/core").KoiError | Error): void => {
+              const msg = "message" in err ? err.message : String(err);
+              process.stderr.write(
+                `koi tui: cancel checkpoint write failed (${msg}); next resume will fall back to transcript-only\n`,
+              );
+            },
+            ...(resumedEngineState !== undefined ? { initialEngineState: resumedEngineState } : {}),
+            ...(resumedStateVersion !== undefined
+              ? { initialEngineStateVersion: resumedStateVersion }
+              : {}),
+          },
+        }
+      : {}),
     skillsRuntime: skillRuntime,
     skillsProgressive: true,
     mcpOAuthChannel: tuiOAuthChannel,
