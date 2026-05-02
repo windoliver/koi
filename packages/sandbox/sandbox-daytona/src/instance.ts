@@ -172,7 +172,7 @@ export function createDaytonaInstance(
         // eviction or transport failures must surface as failures, otherwise
         // higher layers will retry-or-skip work that may have partially run.
         const sig: AbortSignal | undefined = options?.signal;
-        if (sig !== undefined && sig.aborted) {
+        if (sig?.aborted) {
           return {
             exitCode: 130,
             stdout: "",

@@ -220,7 +220,7 @@ export function createE2bInstance(
         // Re-read through a local — TS narrows `aborted` to false|undefined
         // after the pre-dispatch guard, but the signal can fire mid-flight.
         const sig: AbortSignal | undefined = options?.signal;
-        if (sig !== undefined && sig.aborted) {
+        if (sig?.aborted) {
           return {
             exitCode: 130,
             stdout: "",
