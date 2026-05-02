@@ -116,6 +116,27 @@ describe("createDaytonaAdapter", () => {
     expect(client.sandbox.runCalls[0]?.opts?.timeoutMs).toBe(7777);
   });
 
+  test("create() surfaces idempotency label on ambiguous provider failure", async () => {
+    // Orphan-on-retry regression: createSandbox can reject after the remote
+    // workspace has already been allocated; the adapter must surface the
+    // label so operators can revoke the orphan out-of-band before retrying.
+    const labels: string[] = [];
+    const client = {
+      supportsWorkspaceDelete: true,
+      createSandbox: async (opts: { label: string }) => {
+        labels.push(opts.label);
+        throw new Error("provider 503");
+      },
+    } as unknown as Parameters<typeof createDaytonaAdapter>[0]["client"];
+    const result = createDaytonaAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    await expect(result.value.create(openProfile)).rejects.toThrow(
+      /createSandbox\(label=koi-[0-9a-f-]+\) failed.*provider 503/i,
+    );
+    expect(labels).toHaveLength(1);
+    expect(labels[0]).toMatch(/^koi-/);
+  });
+
   test("create() rejects when SDK handle lies about delete() (best-effort close + clear leak warning)", async () => {
     // Skew: a buggy/lying wrapper passes supportsWorkspaceDelete=true but
     // returns a handle without delete(). The adapter best-effort calls

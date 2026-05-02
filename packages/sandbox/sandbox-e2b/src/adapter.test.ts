@@ -113,6 +113,27 @@ describe("createE2bAdapter", () => {
     expect(client.sandbox.runCalls[0]?.opts?.timeoutMs).toBe(7777);
   });
 
+  test("create() surfaces idempotency label on ambiguous provider failure", async () => {
+    // Orphan-on-retry regression: when createSandbox rejects, the provider
+    // MAY have already provisioned the microVM. The adapter must surface
+    // the label it generated so operators can find and revoke the orphan
+    // out-of-band before retrying.
+    const labels: string[] = [];
+    const client = {
+      createSandbox: async (opts: { label: string }) => {
+        labels.push(opts.label);
+        throw new Error("transient transport error");
+      },
+    } as unknown as Parameters<typeof createE2bAdapter>[0]["client"];
+    const result = createE2bAdapter({ apiKey: "k", client });
+    if (!result.ok) throw new Error("validate failed");
+    await expect(result.value.create(openProfile)).rejects.toThrow(
+      /createSandbox\(label=koi-[0-9a-f-]+\) failed.*transport error/i,
+    );
+    expect(labels).toHaveLength(1);
+    expect(labels[0]).toMatch(/^koi-/);
+  });
+
   test("create() rejects when SDK handle has no callable kill() (no deferred-leak surprise)", async () => {
     // Skew: a wrapper provisions a real microVM but the returned handle
     // has no kill(). Without an upfront check destroy() would discover the

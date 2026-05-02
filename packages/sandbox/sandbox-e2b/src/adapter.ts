@@ -29,11 +29,31 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
         throw new Error(formatUnsupportedProfileError(unsupported));
       }
 
+      // Generate an idempotency label per create attempt. The wrapper is
+      // contracted to forward it to the provider; on ambiguous failure
+      // (provider provisioned the microVM but the SDK call rejected before
+      // returning a handle), the label is the only breadcrumb operators
+      // have to find and revoke the orphan.
+      const label = `koi-${crypto.randomUUID()}`;
       const opts: E2bCreateOpts = {
         apiKey: resolved.apiKey,
+        label,
         ...(resolved.template !== undefined ? { template: resolved.template } : {}),
       };
-      const sdk = await resolved.client.createSandbox(opts);
+      let sdk: Awaited<ReturnType<typeof resolved.client.createSandbox>>;
+      try {
+        sdk = await resolved.client.createSandbox(opts);
+      } catch (e: unknown) {
+        const cause = e instanceof Error ? e.message : String(e);
+        throw new Error(
+          `sandbox-e2b: createSandbox(label=${label}) failed: ${cause}. The provider ` +
+            `MAY have provisioned a microVM before the call rejected; if a sandbox ` +
+            `with label "${label}" exists, revoke it out-of-band to avoid a billable ` +
+            `leak. Retry only after confirming the cleanup, otherwise the orphan ` +
+            `will remain alongside any newly created sandbox.`,
+          { cause: e },
+        );
+      }
       // Runtime teardown-capability check. The TS contract already requires
       // sdk.kill (E2bSdkSandbox), but a JS caller / version-skewed wrapper
       // could provision a real microVM and only surface the gap at destroy()

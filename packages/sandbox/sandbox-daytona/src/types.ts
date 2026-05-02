@@ -68,6 +68,14 @@ export interface DaytonaCreateOpts {
   readonly apiKey: string;
   readonly apiUrl?: string;
   readonly target?: string;
+  /**
+   * Adapter-generated unique label per create attempt. Wrappers MUST
+   * forward this to the provider so an ambiguous create failure (workspace
+   * was provisioned but the call rejected before returning a handle) leaves
+   * a looked-up-able orphan. The adapter surfaces the label in the failure
+   * error so operators can revoke billable workspaces out-of-band.
+   */
+  readonly label: string;
 }
 
 export interface DaytonaClient {

@@ -77,6 +77,14 @@ export interface E2bSdkSandbox {
 export interface E2bCreateOpts {
   readonly apiKey: string;
   readonly template?: string;
+  /**
+   * Adapter-generated unique label per create attempt. Wrappers MUST forward
+   * this to the provider so an ambiguous create failure (provider provisioned
+   * the microVM but the call rejected before returning a handle) leaves a
+   * looked-up-able orphan. The adapter surfaces this label in the failure
+   * error so operators can revoke matching sandboxes out-of-band.
+   */
+  readonly label: string;
 }
 
 /** Injectable client. Production wraps `@e2b/sdk`; tests use a fake. */

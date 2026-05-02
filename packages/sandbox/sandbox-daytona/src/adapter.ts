@@ -50,12 +50,27 @@ export function createDaytonaAdapter(
         throw new Error(formatUnsupportedProfileError(unsupported));
       }
 
+      // Idempotency label per create attempt — see sandbox-e2b for rationale.
+      const label = `koi-${crypto.randomUUID()}`;
       const opts: DaytonaCreateOpts = {
         apiKey: resolved.apiKey,
         target: resolved.target,
+        label,
         ...(resolved.apiUrl !== undefined ? { apiUrl: resolved.apiUrl } : {}),
       };
-      const sdk = await resolved.client.createSandbox(opts);
+      let sdk: Awaited<ReturnType<typeof resolved.client.createSandbox>>;
+      try {
+        sdk = await resolved.client.createSandbox(opts);
+      } catch (e: unknown) {
+        const cause = e instanceof Error ? e.message : String(e);
+        throw new Error(
+          `sandbox-daytona: createSandbox(label=${label}) failed: ${cause}. The ` +
+            `provider MAY have provisioned a workspace before the call rejected; if ` +
+            `a workspace with label "${label}" exists, revoke it out-of-band to ` +
+            `avoid a billable leak. Retry only after confirming cleanup.`,
+          { cause: e },
+        );
+      }
       // Runtime check for JS callers (TS types already require delete()).
       // The supportsWorkspaceDelete preflight already rejects most skew,
       // but a buggy/lying wrapper can still pass the flag check and return
