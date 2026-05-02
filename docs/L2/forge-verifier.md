@@ -16,11 +16,14 @@ via the same `VerifierStage` interface.
 - `runPipeline(stages, artifact, options?): Promise<Result<ForgeVerificationSummary>>`
   — sequential orchestrator. Awaits each `VerifierStage.run` in order,
   records the `ForgeStageDigest` (name, passed, durationMs), and short-
-  circuits on the first `{ ok: false }` outcome. The returned summary is
-  always well-formed: `passed` reflects every stage, `totalDurationMs` is
-  monotonic, `stageResults` contains exactly the stages that ran. On
-  failure the returned `KoiError` carries `code: "VALIDATION"` and
-  `context.stage` identifying the failing stage.
+  circuits on the first `{ ok: false }` outcome. **Rejects an empty
+  `stages` array** with `INVALID_CONFIG` so a misconfigured caller cannot
+  silently turn "no verifier configured" into a passing artifact.
+  The returned summary is always well-formed: `passed` reflects every
+  stage, `totalDurationMs` is monotonic, `stageResults` contains exactly
+  the stages that ran. On failure the returned `KoiError` carries
+  `code: "VALIDATION"` (or `"INTERNAL"` / `"TIMEOUT"` / `"INVALID_CONFIG"`)
+  and `context.stage` identifying the failing stage.
 - `VerifierStage<I>` — the extension point. Two fields: `name: string`
   and `run: (artifact: I, ctx: StageContext) => Promise<StageOutcome>`.
   Adding a new stage means writing a new `VerifierStage` value and
@@ -43,12 +46,23 @@ via the same `VerifierStage` interface.
   StageOutcome | Promise<StageOutcome>` and wraps it with the canonical
   stage name (`"syntax"`, `"type"`, `"test"`). Sync and async checks are
   both supported (the orchestrator awaits unconditionally).
-- `VerifyOptions<I>` — `cacheKey?: (artifact: I) => string` (a function,
-  not a static string, so the cache key MUST be derived from the
-  artifact under verification — prevents one artifact's pass result
-  from being served to a different artifact under the same external
-  label); `cache?: VerificationCache`; `signal?: AbortSignal`.
-- `CacheKeyFn<I>` — exported alias for `(artifact: I) => string`.
+- `VerifyOptions<I>` —
+  - `artifactFingerprint?: (artifact: I) => string` — required for any
+    caching. Caller MUST return a value derived from artifact content
+    (a constant, candidate id, or external label is a contract violation
+    and silently aliases unrelated artifacts in the cache). The library
+    composes this with the stage list so callers do not encode verifier
+    config themselves.
+  - `namespace?: string` — optional caller partition (tenant, env,
+    suite). Folded into the cache key. Defaults to `""`.
+  - `cache?: VerificationCache` — storage backend.
+  - `signal?: AbortSignal` — forwarded to every stage.
+- `ArtifactFingerprintFn<I>` — exported alias for `(artifact: I) => string`.
+- **Cache-hit validation**: every cache hit is checked against the current
+  stage list (length, name and `passed: true` per index). A backend that
+  returns `stageResults: []` (or wrong stage names, or `passed: false`)
+  is rejected and the pipeline re-verifies — the cache cannot fail-open
+  on a corrupted or hostile payload.
 - `VerificationCache` — two methods: `get(key): ForgeVerificationSummary
   | undefined | Promise<...>`, `set(key, summary): void | Promise<void>`.
   Both `T | Promise<T>` so an in-memory `Map` and a remote KV present

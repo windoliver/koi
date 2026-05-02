@@ -112,11 +112,11 @@ describe("runPipeline", () => {
     const syntax = counted(createSyntaxStage(okCheck));
     const stages = [syntax.stage] as const;
 
-    const first = await runPipeline(stages, artifact, { cacheKey: () => "k1", cache });
+    const first = await runPipeline(stages, artifact, { artifactFingerprint: () => "k1", cache });
     expect(first.ok).toBe(true);
     expect(syntax.calls()).toBe(1);
 
-    const second = await runPipeline(stages, artifact, { cacheKey: () => "k1", cache });
+    const second = await runPipeline(stages, artifact, { artifactFingerprint: () => "k1", cache });
     expect(second.ok).toBe(true);
     expect(syntax.calls()).toBe(1); // not incremented
     if (!second.ok || !first.ok) return;
@@ -126,7 +126,7 @@ describe("runPipeline", () => {
   test("failed pipelines are not cached", async () => {
     const cache = createMemoryCache();
     const stages = [createSyntaxStage(failCheck("nope"))];
-    await runPipeline(stages, { name: "a" }, { cacheKey: () => "k2", cache });
+    await runPipeline(stages, { name: "a" }, { artifactFingerprint: () => "k2", cache });
     const cached = await cache.get("k2");
     expect(cached).toBeUndefined();
   });
@@ -201,14 +201,17 @@ describe("runPipeline — security regressions", () => {
   test("cache key is bound to stage list — adding a new stage invalidates prior cache", async () => {
     const cache = createMemoryCache();
     const v1 = counted(createSyntaxStage(okCheck));
-    const r1 = await runPipeline([v1.stage], artifact, { cacheKey: () => "user-key", cache });
+    const r1 = await runPipeline([v1.stage], artifact, {
+      artifactFingerprint: () => "user-key",
+      cache,
+    });
     expect(r1.ok).toBe(true);
     expect(v1.calls()).toBe(1);
 
     const v2a = counted(createSyntaxStage(okCheck));
     const v2b = counted(createTypeStage(okCheck));
     const r2 = await runPipeline([v2a.stage, v2b.stage], artifact, {
-      cacheKey: () => "user-key",
+      artifactFingerprint: () => "user-key",
       cache,
     });
     expect(r2.ok).toBe(true);
@@ -221,11 +224,17 @@ describe("runPipeline — security regressions", () => {
   test("cache key is bound to stage list — renaming a stage invalidates prior cache", async () => {
     const cache = createMemoryCache();
     const before = counted({ name: "alpha", run: async () => PASS });
-    const r1 = await runPipeline([before.stage], artifact, { cacheKey: () => "k", cache });
+    const r1 = await runPipeline([before.stage], artifact, {
+      artifactFingerprint: () => "k",
+      cache,
+    });
     expect(r1.ok).toBe(true);
 
     const after = counted({ name: "beta", run: async () => PASS });
-    const r2 = await runPipeline([after.stage], artifact, { cacheKey: () => "k", cache });
+    const r2 = await runPipeline([after.stage], artifact, {
+      artifactFingerprint: () => "k",
+      cache,
+    });
     expect(r2.ok).toBe(true);
     expect(after.calls()).toBe(1);
   });
@@ -261,13 +270,13 @@ describe("runPipeline — security regressions", () => {
   test("cache fingerprint includes stage version — bumping version invalidates prior cache", async () => {
     const cache = createMemoryCache();
     const v1 = counted({ name: "checker", version: "1", run: async () => PASS });
-    const r1 = await runPipeline([v1.stage], artifact, { cacheKey: () => "k", cache });
+    const r1 = await runPipeline([v1.stage], artifact, { artifactFingerprint: () => "k", cache });
     expect(r1.ok).toBe(true);
     expect(v1.calls()).toBe(1);
 
     // Same name, bumped version — must re-run.
     const v2 = counted({ name: "checker", version: "2", run: async () => PASS });
-    const r2 = await runPipeline([v2.stage], artifact, { cacheKey: () => "k", cache });
+    const r2 = await runPipeline([v2.stage], artifact, { artifactFingerprint: () => "k", cache });
     expect(r2.ok).toBe(true);
     expect(v2.calls()).toBe(1);
   });
@@ -275,7 +284,7 @@ describe("runPipeline — security regressions", () => {
   test("cache returns a frozen, isolated snapshot — caller mutation cannot poison the cache", async () => {
     const cache = createMemoryCache();
     const stage = createSyntaxStage(okCheck);
-    const r1 = await runPipeline([stage], artifact, { cacheKey: () => "k", cache });
+    const r1 = await runPipeline([stage], artifact, { artifactFingerprint: () => "k", cache });
     expect(r1.ok).toBe(true);
     if (!r1.ok) return;
 
@@ -291,7 +300,7 @@ describe("runPipeline — security regressions", () => {
     }
 
     // Cache must still serve a clean summary.
-    const r2 = await runPipeline([stage], artifact, { cacheKey: () => "k", cache });
+    const r2 = await runPipeline([stage], artifact, { artifactFingerprint: () => "k", cache });
     expect(r2.ok).toBe(true);
     if (!r2.ok) return;
     expect(r2.value.passed).toBe(true);
@@ -304,51 +313,96 @@ describe("runPipeline — security regressions", () => {
     // would collide. JSON-encoding must keep them apart.
     const a = counted({ name: "a|b", version: "1", run: async () => PASS });
     const b = counted({ name: "a", version: "1|b@1", run: async () => PASS });
-    await runPipeline([a.stage], artifact, { cacheKey: () => "k", cache });
-    await runPipeline([b.stage], artifact, { cacheKey: () => "k", cache });
+    await runPipeline([a.stage], artifact, { artifactFingerprint: () => "k", cache });
+    await runPipeline([b.stage], artifact, { artifactFingerprint: () => "k", cache });
     expect(a.calls()).toBe(1);
     expect(b.calls()).toBe(1);
   });
 
   test("cache hit from a hostile backend is normalized — caller cannot poison shared state", async () => {
-    const mutable: ForgeStageDigestLike[] = [{ stage: "leak", passed: true, durationMs: 1 }];
+    // Backend returns a payload that is consistent with the stage list (so it
+    // passes validation) but mutable. The pipeline must still freeze and copy.
+    const mutable: ForgeStageDigestLike[] = [{ stage: "syntax", passed: true, durationMs: 1 }];
     const stored: {
       passed: boolean;
       sandbox: boolean;
       totalDurationMs: number;
       stageResults: ForgeStageDigestLike[];
-    } = {
-      passed: true,
-      sandbox: false,
-      totalDurationMs: 1,
-      stageResults: mutable,
-    };
+    } = { passed: true, sandbox: false, totalDurationMs: 1, stageResults: mutable };
     const hostileCache = {
       get: async () => stored as unknown as ForgeVerificationSummary,
       set: async () => {},
     };
     const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
-      cacheKey: () => "k",
+      artifactFingerprint: () => "k",
       cache: hostileCache,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // Returned value is frozen even though the backend handed back a mutable object.
     expect(() => {
       (result.value as unknown as { passed: boolean }).passed = false;
     }).toThrow();
-    // Mutating the backend's stored object after the call must not be observable
-    // through the returned summary (it was deep-copied by freezeSummary).
+    // Mutating the backend's stored object after the call must not be visible
+    // through the returned summary (deep-copied by freezeSummary).
     mutable.push({ stage: "INJECTED", passed: true, durationMs: 0 });
-    expect(result.value.stageResults.map((s) => s.stage)).toEqual(["leak"]);
+    expect(result.value.stageResults.map((s) => s.stage)).toEqual(["syntax"]);
+  });
+
+  test("malformed cache payload (wrong stage names) is rejected — pipeline re-verifies", async () => {
+    const stage = counted(createSyntaxStage(okCheck));
+    const malformedCache = {
+      get: async () =>
+        ({
+          passed: true,
+          sandbox: false,
+          totalDurationMs: 0,
+          stageResults: [], // empty — would be a fail-open if trusted
+        }) as ForgeVerificationSummary,
+      set: async () => {},
+    };
+    const result = await runPipeline([stage.stage], artifact, {
+      artifactFingerprint: () => "k",
+      cache: malformedCache,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(stage.calls()).toBe(1); // re-verified despite the cache hit
+    expect(result.value.stageResults.map((s) => s.stage)).toEqual(["syntax"]);
+  });
+
+  test("malformed cache payload (wrong stage name) is rejected", async () => {
+    const stage = counted(createSyntaxStage(okCheck));
+    const malformedCache = {
+      get: async () =>
+        ({
+          passed: true,
+          sandbox: false,
+          totalDurationMs: 1,
+          stageResults: [{ stage: "different-name", passed: true, durationMs: 1 }],
+        }) as ForgeVerificationSummary,
+      set: async () => {},
+    };
+    const result = await runPipeline([stage.stage], artifact, {
+      artifactFingerprint: () => "k",
+      cache: malformedCache,
+    });
+    expect(result.ok).toBe(true);
+    expect(stage.calls()).toBe(1);
+  });
+
+  test("empty stages list is rejected — fail-closed against misconfiguration", async () => {
+    const result = await runPipeline([] as readonly VerifierStage<FakeArtifact>[], artifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
   });
 
   test("built-in factory accepts version — bump invalidates prior cache", async () => {
     const cache = createMemoryCache();
     const v1 = counted(createSyntaxStage(okCheck, "1"));
     const v2 = counted(createSyntaxStage(okCheck, "2"));
-    await runPipeline([v1.stage], artifact, { cacheKey: () => "k", cache });
-    await runPipeline([v2.stage], artifact, { cacheKey: () => "k", cache });
+    await runPipeline([v1.stage], artifact, { artifactFingerprint: () => "k", cache });
+    await runPipeline([v2.stage], artifact, { artifactFingerprint: () => "k", cache });
     expect(v1.calls()).toBe(1);
     expect(v2.calls()).toBe(1);
   });
@@ -377,13 +431,13 @@ describe("runPipeline — security regressions", () => {
     const artifactA: FakeArtifact = { name: "A" };
     const artifactB: FakeArtifact = { name: "B" };
     const key: (a: FakeArtifact) => string = (a) => a.name;
-    await runPipeline([stage.stage], artifactA, { cacheKey: key, cache });
+    await runPipeline([stage.stage], artifactA, { artifactFingerprint: key, cache });
     expect(stage.calls()).toBe(1);
     // A different artifact under the same key fn must not see the prior pass.
-    await runPipeline([stage.stage], artifactB, { cacheKey: key, cache });
+    await runPipeline([stage.stage], artifactB, { artifactFingerprint: key, cache });
     expect(stage.calls()).toBe(2);
     // But re-verifying A should still hit the cache.
-    await runPipeline([stage.stage], artifactA, { cacheKey: key, cache });
+    await runPipeline([stage.stage], artifactA, { artifactFingerprint: key, cache });
     expect(stage.calls()).toBe(2);
   });
 
@@ -395,7 +449,7 @@ describe("runPipeline — security regressions", () => {
       },
     };
     const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
-      cacheKey: () => "k",
+      artifactFingerprint: () => "k",
       cache: flakyCache,
     });
     expect(result.ok).toBe(true);

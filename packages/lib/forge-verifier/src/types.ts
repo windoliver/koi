@@ -56,17 +56,30 @@ export interface VerificationCache {
 }
 
 /**
- * Caller-supplied function that derives a cache key from the artifact under
- * verification. Required (not a plain string) so the cache cannot serve a
- * pass result for one artifact in response to a request about a different
- * artifact — the key must be a function of the artifact's content, not an
- * external label. The orchestrator further composes this with a stage-list
- * fingerprint, so callers do not need to encode the verifier configuration.
+ * Caller-supplied function that derives a content fingerprint from the
+ * artifact under verification. The library composes this with the stage
+ * fingerprint AND an optional namespace to form the actual cache key, so
+ * the cache can never serve one artifact's pass to a different artifact
+ * (assuming a content-derived fingerprint — the runtime cannot prove
+ * function purity, so callers MUST return a value that varies with
+ * artifact content; a constant or external label is a contract violation).
  */
-export type CacheKeyFn<I> = (artifact: I) => string;
+export type ArtifactFingerprintFn<I> = (artifact: I) => string;
 
 export interface VerifyOptions<I = unknown> {
-  readonly cacheKey?: CacheKeyFn<I> | undefined;
+  /**
+   * Derive a content fingerprint from the artifact. Required for any
+   * caching to occur. A library-side composeKey wraps this with the
+   * stage list and namespace so callers can return just the artifact
+   * digest.
+   */
+  readonly artifactFingerprint?: ArtifactFingerprintFn<I> | undefined;
+  /**
+   * Optional caller namespace folded into the cache key. Use this to
+   * partition the cache by tenant, environment, or verifier suite. Defaults
+   * to the empty string.
+   */
+  readonly namespace?: string | undefined;
   readonly cache?: VerificationCache | undefined;
   readonly signal?: AbortSignal | undefined;
 }

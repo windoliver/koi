@@ -19,17 +19,9 @@ function stageError(code: KoiErrorCode, stage: string, message: string, cause?: 
 }
 
 /**
- * Compose the cache key with a fingerprint of the stage list so that adding,
- * removing, or renaming a stage invalidates previously cached summaries.
- * A cache hit is only valid for the exact stage configuration that produced
- * it — otherwise version skew lets a prior pass result mask a now-failing
- * verification.
- */
-/**
  * Deep-freeze a summary so neither callers nor any cache backend can hand
  * back mutable state. Applied to fresh results before returning AND to every
- * cache hit before it's trusted, so the immutability guarantee holds
- * regardless of the cache implementation.
+ * cache hit before it's trusted.
  */
 function freezeSummary(summary: ForgeVerificationSummary): ForgeVerificationSummary {
   return Object.freeze({
@@ -42,13 +34,40 @@ function freezeSummary(summary: ForgeVerificationSummary): ForgeVerificationSumm
 
 function fingerprintStages<I>(stages: readonly VerifierStage<I>[]): string {
   // JSON-encode so reserved characters in `name` or `version` cannot collide.
-  // E.g. a version of `"|x@2"` would alias a different pipeline under naive
-  // `${name}@${version}` joins.
   return JSON.stringify(stages.map((s) => [s.name, s.version ?? "0"]));
 }
 
-function composeCacheKey<I>(artifactKey: string, stages: readonly VerifierStage<I>[]): string {
-  return `${artifactKey}::${fingerprintStages(stages)}`;
+function composeCacheKey<I>(
+  namespace: string,
+  artifactDigest: string,
+  stages: readonly VerifierStage<I>[],
+): string {
+  // JSON-encode each component so neither namespace nor digest can contain a
+  // separator that aliases a different (namespace, digest, stages) tuple.
+  return JSON.stringify([namespace, artifactDigest, fingerprintStages(stages)]);
+}
+
+/**
+ * Validate that a cached summary actually corresponds to the current stage
+ * list. A corrupted, malicious, or stale cache backend can otherwise return
+ * an empty `stageResults` array (or one with the wrong stage names) and the
+ * pipeline would skip every check while reporting `passed: true`.
+ */
+function isCachedSummaryConsistent<I>(
+  summary: ForgeVerificationSummary,
+  stages: readonly VerifierStage<I>[],
+): boolean {
+  if (summary.passed !== true) return false;
+  if (!Array.isArray(summary.stageResults)) return false;
+  if (summary.stageResults.length !== stages.length) return false;
+  for (let i = 0; i < stages.length; i++) {
+    const expected = stages[i];
+    const got = summary.stageResults[i];
+    if (expected === undefined || got === undefined) return false;
+    if (got.stage !== expected.name) return false;
+    if (got.passed !== true) return false;
+  }
+  return true;
 }
 
 async function runStage<I>(
@@ -93,23 +112,37 @@ export async function runPipeline<I>(
   artifact: I,
   options?: VerifyOptions<I>,
 ): Promise<Result<ForgeVerificationSummary>> {
-  const cacheKeyFn = options?.cacheKey;
+  // Fail closed: a misconfigured caller, feature flag, or assembly bug
+  // must NOT silently turn "no verifier configured" into "artifact passed".
+  if (stages.length === 0) {
+    return {
+      ok: false,
+      error: {
+        code: "INVALID_CONFIG",
+        message: "runPipeline requires at least one stage; refusing to fail-open.",
+        retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
+      },
+    };
+  }
+
+  const fingerprint = options?.artifactFingerprint;
+  const namespace = options?.namespace ?? "";
   const cache = options?.cache;
   const signal = options?.signal;
   const composedKey =
-    cacheKeyFn !== undefined && cache !== undefined
-      ? composeCacheKey(cacheKeyFn(artifact), stages)
+    fingerprint !== undefined && cache !== undefined
+      ? composeCacheKey(namespace, fingerprint(artifact), stages)
       : undefined;
 
   if (composedKey !== undefined && cache !== undefined) {
     const hit = await cache.get(composedKey);
-    if (hit !== undefined) {
+    if (hit !== undefined && isCachedSummaryConsistent(hit, stages)) {
       // Normalize through freezeSummary so any cache backend (not just the
-      // in-memory one) is held to the same immutability contract — a remote
-      // cache can otherwise return a mutable object that later callers
-      // poison for everyone.
+      // in-memory one) is held to the same immutability contract.
       return { ok: true, value: freezeSummary(hit) };
     }
+    // Inconsistent or malformed hit — treat as a miss and re-verify.
+    // (We do not write through here; the post-pipeline cache.set will.)
   }
 
   // let justified: digests accumulates immutably-replaced array as stages run;
