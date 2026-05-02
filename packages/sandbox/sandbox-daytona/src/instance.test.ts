@@ -261,6 +261,44 @@ describe("createDaytonaInstance", () => {
     await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
   });
 
+  test("exec quarantines instance when SDK throws SYNCHRONOUSLY (not just async reject)", async () => {
+    // Sync-throw regression: a wrapper that throws before returning a
+    // promise must still flow through the quarantine path. Otherwise
+    // the remote command may have been dispatched but the instance
+    // stays "live" — callers retry against unknown state and risk
+    // duplicate side effects.
+    const base = createFakeSandbox();
+    const run: typeof base.commands.run = (_cmd, _opts) => {
+      throw new Error("sync wrapper throw");
+    };
+    const sdk = { ...base, commands: { ...base.commands, run } };
+    const instance = createDaytonaInstance(sdk);
+    await expect(instance.exec("ls", [])).rejects.toThrow(/INDETERMINATE/);
+    await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
+  });
+
+  test("readFile quarantines when sdk.files.readBytes throws SYNCHRONOUSLY", async () => {
+    const base = createFakeSandbox();
+    const readBytes = (_path: string): Promise<Uint8Array> => {
+      throw new Error("sync wrapper throw");
+    };
+    const sdk = { ...base, files: { ...base.files, readBytes } };
+    const instance = createDaytonaInstance(sdk);
+    await expect(instance.readFile("/x")).rejects.toThrow(/INDETERMINATE/);
+    await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
+  });
+
+  test("destroy quarantines when sdk.delete throws SYNCHRONOUSLY", async () => {
+    const base = createFakeSandbox();
+    const del: NonNullable<typeof base.delete> = () => {
+      throw new Error("sync wrapper throw");
+    };
+    const sdk = { ...base, delete: del };
+    const instance = createDaytonaInstance(sdk);
+    await expect(instance.destroy()).rejects.toThrow(/sync wrapper throw/);
+    await expect(instance.exec("ls", [])).rejects.toThrow(/quarantined/);
+  });
+
   test("destroy() retry coalesces: concurrent calls do not issue overlapping deletes", async () => {
     // Concurrent destroy() callers must coalesce onto one in-flight
     // delete (no overlapping remote mutations); only a SERIAL retry

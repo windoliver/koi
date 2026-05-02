@@ -144,7 +144,11 @@ export function createE2bInstance(
       | { readonly kind: "err"; readonly e: unknown }
       | { readonly kind: "timeout" };
     const outcome = await Promise.race<Outcome>([
-      call().then(
+      // Promise.try converts a synchronous throw inside call() into a
+      // rejection so the quarantine path always runs. A bare call().then()
+      // would let a sync-throwing SDK wrapper escape this helper entirely
+      // and leave the instance "live" with INDETERMINATE remote state.
+      Promise.try(call).then(
         (v): Outcome => ({ kind: "ok", v }),
         (e: unknown): Outcome => ({ kind: "err", e }),
       ),
@@ -292,7 +296,11 @@ export function createE2bInstance(
               sig.addEventListener("abort", () => resolve({ kind: "abort" }), { once: true });
               if (sig.aborted) resolve({ kind: "abort" });
             });
-      const sdkPromise = sdk.commands.run(cmd, sdkOpts);
+      // Promise.try so a synchronous throw from a wrapper still flows
+      // through the quarantine path below — without it, a sync throw
+      // would escape exec() before quarantine could engage and the
+      // remote command may already have been dispatched.
+      const sdkPromise = Promise.try(() => sdk.commands.run(cmd, sdkOpts));
       const sdkSettled: Promise<SdkOutcome> = sdkPromise.then(
         (r): SdkOutcome => ({ kind: "result", r }),
         (e: unknown): SdkOutcome => ({ kind: "error", e }),
@@ -485,7 +493,10 @@ export function createE2bInstance(
         // is still pending breaks coalescing — duplicate provider
         // mutations, racy partial-failure paths, idempotency-skew bugs.
         if (killInFlight === undefined) {
-          const teardown = sdk.kill();
+          // Promise.try so a synchronous throw from sdk.kill() flows
+          // through the quarantine + retry path rather than escaping
+          // destroyPending half-set.
+          const teardown = Promise.try(() => sdk.kill());
           const promise: Promise<KillOutcome> = teardown.then(
             (): KillOutcome => ({ kind: "ok" }),
             (e: unknown): KillOutcome => ({ kind: "err", e }),

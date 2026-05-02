@@ -77,7 +77,10 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
           }
         | { readonly kind: "err"; readonly e: unknown }
         | { readonly kind: "timeout" };
-      const createPromise = resolved.client.createSandbox(opts);
+      // Promise.try so a synchronous throw from a wrapper flows through
+      // the timeout race + late-cleanup reconciler rather than escaping
+      // create() with no idempotency-label breadcrumb.
+      const createPromise = Promise.try(() => resolved.client.createSandbox(opts));
       const outcome = await Promise.race<CreateOutcome>([
         createPromise.then(
           (s): CreateOutcome => ({ kind: "ok", sdk: s }),
@@ -106,7 +109,10 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
         createPromise.then(
           (lateSdk) => {
             if (typeof lateSdk?.kill === "function") {
-              const killCall = lateSdk.kill();
+              // Promise.try so a synchronous throw from kill() flows
+              // through the bounded timeout / failure paths instead of
+              // becoming an unhandled rejection.
+              const killCall = Promise.try(() => lateSdk.kill());
               Promise.race<
                 | { readonly kind: "ok" }
                 | { readonly kind: "timeout" }

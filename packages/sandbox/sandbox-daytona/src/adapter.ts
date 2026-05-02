@@ -75,7 +75,10 @@ export function createDaytonaAdapter(
           }
         | { readonly kind: "err"; readonly e: unknown }
         | { readonly kind: "timeout" };
-      const createPromise = resolved.client.createSandbox(opts);
+      // Promise.try so a synchronous throw from a wrapper flows through
+      // the timeout race + late-cleanup reconciler rather than escaping
+      // create() with no idempotency-label breadcrumb.
+      const createPromise = Promise.try(() => resolved.client.createSandbox(opts));
       const createOutcome = await Promise.race<CreateOutcome>([
         createPromise.then(
           (s): CreateOutcome => ({ kind: "ok", sdk: s }),
@@ -105,7 +108,10 @@ export function createDaytonaAdapter(
         createPromise.then(
           (lateSdk) => {
             if (typeof lateSdk?.delete === "function") {
-              const deleteCall = lateSdk.delete();
+              // Promise.try so a synchronous throw from delete() flows
+              // through the bounded timeout / failure paths instead of
+              // becoming an unhandled rejection.
+              const deleteCall = Promise.try(() => lateSdk.delete());
               Promise.race<
                 | { readonly kind: "ok" }
                 | { readonly kind: "timeout" }
