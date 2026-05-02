@@ -28,7 +28,10 @@ via the same `VerifierStage` interface.
 - `StageContext` — read-only context passed to each stage. Exposes
   `previous: readonly ForgeStageDigest[]` (digests of stages that have
   already run in this pipeline) and `signal?: AbortSignal` (propagated
-  from `VerifyOptions.signal`). Stages must not mutate `previous`.
+  from `VerifyOptions.signal`). The `previous` array and each digest in
+  it are runtime-frozen via `Object.freeze`, so a stage that casts away
+  the `readonly` modifier still cannot rewrite the verification trail —
+  attempted mutations throw in strict mode and are no-ops elsewhere.
 - `StageOutcome` — discriminated on `ok`. Success carries no payload
   (digests are owned by the orchestrator). Failure carries `reason:
   string` and optional `cause: unknown`. The orchestrator converts
@@ -63,8 +66,9 @@ via the same `VerifierStage` interface.
 | Order | `stages` are run in array order, sequentially. No parallelism. |
 | Short-circuit | First `{ ok: false }` stops the pipeline. Remaining stages do not run and do not appear in `stageResults`. |
 | Timing | Each stage's `durationMs` is measured with `performance.now()`. `totalDurationMs` is the sum of measured stage spans, not wall-clock end-to-end (so cache hits report 0). |
-| Cache hit | When `cacheKey` is set and `cache.get` returns a summary, no stages run and the cached summary is returned verbatim. The pipeline does not re-validate cached summaries. |
-| Cache miss | Pipeline runs normally. On `passed: true`, the summary is stored via `cache.set` before returning. On failure, the cache is not written. |
+| Cache key | The user-supplied `cacheKey` is composed with a fingerprint of the stage list (stage names joined by `\|`) before any cache call. Adding, removing, or renaming a stage therefore invalidates prior cache entries automatically — a cache hit is only valid for the exact stage configuration that produced it. |
+| Cache hit | When the composed key resolves, no stages run and the cached summary is returned verbatim. The pipeline does not re-validate cached summaries. |
+| Cache miss | Pipeline runs normally. On `passed: true`, the summary is stored via `cache.set`. **Cache writes are best-effort**: a `cache.set` throw is caught, logged via `console.debug`, and the successful verification is still returned. Verifier availability does not depend on cache availability. |
 | `sandbox` field | Always `false` — this package does not run a sandbox. Sandbox-bearing stages must be added by a downstream package and the orchestrator forwards their `sandbox` claim through (see "Sandbox flag" below). |
 | Cancellation | `signal.aborted` checked between stages. Aborting after a stage starts but before it finishes is the stage's responsibility (it receives the signal). |
 
@@ -84,7 +88,8 @@ orchestrator OR-folds those flags into the summary's `sandbox` value.
 | Stage returns `{ ok: false, reason }` | `VALIDATION` | `{ stage: <name>, reason }` |
 | Stage `run` throws | `INTERNAL` | `{ stage: <name> }` (cause attached) |
 | `signal.aborted` between stages | `TIMEOUT` | `{ stage: <next-name> }` |
-| Cache `get`/`set` throws | propagated (not caught) | — |
+| Cache `get` throws | propagated (not caught) | — |
+| Cache `set` throws | swallowed; success returned | logged via `console.debug` |
 
 `retryable` follows `RETRYABLE_DEFAULTS` — `VALIDATION` and `INTERNAL`
 are not retryable, `TIMEOUT` is.

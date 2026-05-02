@@ -191,6 +191,92 @@ describe("runPipeline", () => {
   });
 });
 
+describe("runPipeline — security regressions", () => {
+  const artifact: FakeArtifact = { name: "sec" };
+
+  test("cache key is bound to stage list — adding a new stage invalidates prior cache", async () => {
+    const cache = createMemoryCache();
+    const v1 = counted(createSyntaxStage(okCheck));
+    const r1 = await runPipeline([v1.stage], artifact, { cacheKey: "user-key", cache });
+    expect(r1.ok).toBe(true);
+    expect(v1.calls()).toBe(1);
+
+    const v2a = counted(createSyntaxStage(okCheck));
+    const v2b = counted(createTypeStage(okCheck));
+    const r2 = await runPipeline([v2a.stage, v2b.stage], artifact, {
+      cacheKey: "user-key",
+      cache,
+    });
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    expect(v2a.calls()).toBe(1);
+    expect(v2b.calls()).toBe(1);
+    expect(r2.value.stageResults.map((s) => s.stage)).toEqual(["syntax", "type"]);
+  });
+
+  test("cache key is bound to stage list — renaming a stage invalidates prior cache", async () => {
+    const cache = createMemoryCache();
+    const before = counted({ name: "alpha", run: async () => PASS });
+    const r1 = await runPipeline([before.stage], artifact, { cacheKey: "k", cache });
+    expect(r1.ok).toBe(true);
+
+    const after = counted({ name: "beta", run: async () => PASS });
+    const r2 = await runPipeline([after.stage], artifact, { cacheKey: "k", cache });
+    expect(r2.ok).toBe(true);
+    expect(after.calls()).toBe(1);
+  });
+
+  test("StageContext.previous is frozen — stages cannot mutate prior digests", async () => {
+    const captured: { previous: readonly ForgeStageDigestLike[] }[] = [];
+    const stages: readonly VerifierStage<FakeArtifact>[] = [
+      { name: "s1", run: async () => PASS },
+      {
+        name: "s2",
+        run: async (_a, ctx) => {
+          captured.push({ previous: ctx.previous });
+          // Hostile stage casts away readonly and tries to corrupt the trail.
+          const mutable = ctx.previous as unknown as ForgeStageDigestLike[];
+          expect(() => mutable.push({ stage: "FAKE", passed: true, durationMs: 0 })).toThrow();
+          const first = ctx.previous[0];
+          if (first !== undefined) {
+            expect(() => {
+              (first as unknown as { stage: string }).stage = "TAMPERED";
+            }).toThrow();
+          }
+          return PASS;
+        },
+      },
+    ];
+    const result = await runPipeline(stages, artifact);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Final summary still reflects the true stage names.
+    expect(result.value.stageResults.map((s) => s.stage)).toEqual(["s1", "s2"]);
+  });
+
+  test("cache.set failure does not turn success into rejection", async () => {
+    const flakyCache = {
+      get: async () => undefined,
+      set: async () => {
+        throw new Error("cache backend down");
+      },
+    };
+    const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
+      cacheKey: "k",
+      cache: flakyCache,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.passed).toBe(true);
+  });
+});
+
+interface ForgeStageDigestLike {
+  readonly stage: string;
+  readonly passed: boolean;
+  readonly durationMs: number;
+}
+
 describe("createMemoryCache", () => {
   test("get returns undefined for unknown key", async () => {
     const cache = createMemoryCache();
