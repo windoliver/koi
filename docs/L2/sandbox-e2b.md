@@ -1,0 +1,111 @@
+# @koi/sandbox-e2b — E2B hosted-cloud SandboxAdapter
+
+L2 package. Wraps the E2B Cloud Sandbox SDK as a Koi `SandboxAdapter`, producing `SandboxInstance` handles backed by remote microVMs.
+
+---
+
+## What This Feature Enables
+
+A `SandboxAdapter` whose `create(profile)` returns a `SandboxInstance` running on E2B's hosted infrastructure. The instance exposes:
+
+- `exec(command, args, options)` — run a command. `AbortSignal` is forwarded into the SDK and also raced locally so callers always see prompt cancellation (`exitCode = 130`).
+- `readFile(path)` / `writeFile(path, content)` — sandbox file I/O. The adapter prefers binary-safe `readBytes` / `writeBytes` when the injected SDK exposes them; otherwise falls back to text mode and **rejects** non-UTF-8 writes (fail-closed) rather than silently corrupting bytes.
+- `destroy()` — kill the remote sandbox. The SDK call is bounded at 10 s; on timeout the instance transitions to a quarantined state, surfaces a clear leak warning, and `destroy()` remains retryable so callers don't get wedged behind an unbounded teardown. Idempotent on success; concurrent calls coalesce. The injected `E2bClient` must declare `supportsTeardown: true` (preflight, before any provisioning).
+
+The adapter accepts a pluggable `client` for unit tests (no real network) and falls back to `E2B_API_KEY` from the environment when `apiKey` is omitted.
+
+---
+
+## Why It Exists
+
+`@koi/sandbox-os` covers local sandboxing, `@koi/sandbox-docker` covers containers, but neither offers ephemeral isolated microVMs across regions. E2B is the lowest-friction managed option — its API surface maps directly onto Koi's `SandboxAdapter` contract, so a thin adapter is all we need.
+
+---
+
+## Architecture
+
+```
+@koi/sandbox-e2b (L2)
+├── adapter.ts   — createE2bAdapter(config): Result<SandboxAdapter, KoiError>
+├── instance.ts  — createE2bInstance(sdk): SandboxInstance
+├── types.ts     — E2bAdapterConfig, E2bClient, E2bSdkSandbox
+├── validate.ts  — validateE2bConfig: env fallback + client requirement
+└── index.ts     — public API surface
+
+Dependencies
+- @koi/core (L0) — SandboxAdapter, SandboxInstance, SandboxProfile, KoiError, Result
+```
+
+The package depends only on `@koi/core`. The E2B SDK is **not** a static dependency — callers inject a thin `E2bClient` adapter that wraps `@e2b/sdk` (or any compatible API). This keeps the install footprint zero and tests deterministic.
+
+---
+
+## Public API
+
+### `createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapter, KoiError>`
+
+Validates config and returns an adapter. Returns `{ ok: false, error: { code: "VALIDATION", ... } }` when the client is missing and no `E2B_API_KEY` is in the environment.
+
+`E2bAdapterConfig` fields:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `apiKey` | `string` | `process.env.E2B_API_KEY` | E2B API key |
+| `template` | `string` | `undefined` | Custom sandbox template ID |
+| `client` | `E2bClient` | (required) | Injected SDK wrapper |
+
+### `createE2bInstance(sdk: E2bSdkSandbox): SandboxInstance`
+
+Low-level helper exposed for adapters that already hold an SDK handle.
+
+---
+
+## Profile Mapping (fail-closed)
+
+The hosted backend has no provider-side hook for filesystem allow/deny lists, network deny, Nexus FUSE mounts, or process/memory caps yet (those land with `@koi/sandbox-cloud-base` — issue #1379). Until then `create(profile)` **rejects** profiles that ask for any of those fields, rather than silently weakening isolation:
+
+| Profile request | Behaviour |
+|-----------------|-----------|
+| `network.allow=false` | `create()` throws — refuses to provision |
+| `filesystem.defaultReadAccess="closed"` | `create()` throws |
+| `filesystem.allow{Read,Write}` / `deny{Read,Write}` | `create()` throws |
+| `nexusMounts` (non-empty) | `create()` throws |
+| `resources.maxMemoryMb` / `maxPids` / `maxOpenFiles` | `create()` throws |
+| `env` | forwarded as default per-call `envs` (per-call `env` wins) |
+| `resources.timeoutMs` | forwarded as default per-call `timeoutMs` (per-call wins) |
+
+Errors include the unsupported field list so callers know exactly what policy was *not* applied.
+
+## Per-call exec capability gating
+
+`SandboxExecOptions.stdin`, `maxOutputBytes`, and `signal` each gate on a matching SDK capability flag (`commands.supportsStdin` / `supportsMaxOutputBytes` / `supportsAbort`). When a flag is absent and the caller supplied that field, the adapter throws fail-closed — the alternative would be silently dropping stdin (commands hang), letting output grow unbounded, or returning before the remote process has actually been killed (duplicate side effects on retry).
+
+The adapter honours the `SandboxExecOptions.maxOutputBytes` contract: the caller-supplied cap (or the contract default of 1 MB when omitted) is always forwarded server-side. Because a post-hoc trim of an already-buffered payload would not actually bound memory or bandwidth, the adapter **fails closed** if the injected SDK does not advertise `commands.supportsMaxOutputBytes=true` — every `exec()` rejects rather than risk unbounded buffering. The cap applies as a **single byte budget across stdout + stderr**, with byte-accurate UTF-8 truncation (no replacement-character inflation), and `truncated=true` is set whenever any byte is dropped.
+
+`readFile` requires `sdk.files.readBytes` for binary-safe reads. `writeFile` accepts UTF-8 payloads on text-only SDKs and rejects non-UTF-8 input fail-closed.
+
+---
+
+## Tests
+
+```
+src/validate.test.ts   — config validation, env fallback
+src/instance.test.ts   — exec/readFile/writeFile/destroy delegation
+src/adapter.test.ts    — adapter factory, create() → instance
+```
+
+Tests use a hand-rolled `FakeE2bClient` — no network, no real `@e2b/sdk` import.
+
+---
+
+## Layer Compliance
+
+```
+L0  @koi/core ────────────────────────────────────────┐
+    SandboxAdapter, SandboxInstance, SandboxProfile,   │
+    KoiError, Result                                   │
+                                                       │
+L2  @koi/sandbox-e2b ◄─────────────────────────────────
+    only imports @koi/core
+    optional package — assembled at runtime
+```

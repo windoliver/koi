@@ -1,0 +1,22 @@
+name: sandbox-hosted-nightly
+on:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+jobs:
+  faults:
+    name: synthetic-faults (${{ matrix.provider }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [e2b, daytona]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.x
+      - run: bun install --frozen-lockfile
+      - run: bun run scripts/sandbox-hosted-e2e.ts --provider ${{ matrix.provider }} --faults
