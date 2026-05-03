@@ -36,13 +36,38 @@ export interface SlotController {
  * If `controller.current()` returns `undefined` the middleware is a
  * passthrough (slot empty / not yet wired).
  */
-export function createContextEngineSlotMiddleware(controller: SlotController): KoiMiddleware {
+export interface SlotMiddlewareOptions {
+  /**
+   * Called when a turn ends through the error/abort path (before
+   * `endTurn`). Used by `createKoi` to evict the per-turn TurnContext
+   * cache entry for the failed turn so it does not accumulate prompt
+   * history for the runtime's lifetime. The runtime's normal turn_end
+   * path already evicts on success.
+   */
+  readonly onFailedTurn?: (turnId: TurnId) => void;
+  /**
+   * Called when a turn enters the model-call path with a real
+   * `TurnContext`. Used by `createKoi` to populate the per-turn ctx
+   * cache from the streaming and non-streaming paths uniformly so
+   * terminal-path `onAfterTurn` synthesis sees the actual messages
+   * even on done-only native streaming adapters. Without this, only
+   * the cooperating-adapter `getTurnContext()` path populated the
+   * cache, leaving streaming turns with empty messages on synth.
+   */
+  readonly onTurnStart?: (ctx: import("@koi/core").TurnContext) => void;
+}
+
+export function createContextEngineSlotMiddleware(
+  controller: SlotController,
+  options: SlotMiddlewareOptions = {},
+): KoiMiddleware {
   return {
     name: "context-engine",
     phase: "resolve",
     priority: 500,
     wrapModelCall: async (ctx, request, next) => {
       controller.beginTurn(ctx.turnId);
+      options.onTurnStart?.(ctx);
       try {
         // Pass turnId so overlapping turns each resolve their own pinned
         // engine — without this, a later beginTurn would clobber the pin
@@ -72,6 +97,7 @@ export function createContextEngineSlotMiddleware(controller: SlotController): K
         // an aborted turn would leave `controller.current()` stuck on the
         // pre-failure engine forever, defeating turn-aware swap reads on
         // the very recovery path that needs them.
+        options.onFailedTurn?.(ctx.turnId);
         controller.endTurn(ctx.turnId);
         throw err;
       }
@@ -81,6 +107,7 @@ export function createContextEngineSlotMiddleware(controller: SlotController): K
     // under streaming.
     wrapModelStream: (ctx, request, next) => {
       controller.beginTurn(ctx.turnId);
+      options.onTurnStart?.(ctx);
       const engine = controller.current(ctx.turnId);
       return {
         async *[Symbol.asyncIterator](): AsyncIterator<
@@ -110,6 +137,7 @@ export function createContextEngineSlotMiddleware(controller: SlotController): K
                 console.warn("[context-engine] onAfterTurn after failed stream threw", hookErr);
               }
             }
+            options.onFailedTurn?.(ctx.turnId);
             controller.endTurn(ctx.turnId);
             throw err;
           }

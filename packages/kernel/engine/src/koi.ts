@@ -165,6 +165,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   let contextEngineProxy: ContextEngine | undefined;
   const contextEngineProviders: ComponentProvider[] = [];
   const contextEngineMiddleware: KoiMiddleware[] = [];
+  // Stable ref for the per-run TurnContext cache. createKoi creates the
+  // slot middleware once but the cache map is per-run state inside
+  // streamEvents, so the middleware closes over this container and
+  // streamEvents reassigns `.current` each run.
+  const turnCtxByTurnIdRef: { current: Map<string, TurnContext> | undefined } = {
+    current: undefined,
+  };
   if (options.contextEngineFactory !== undefined) {
     const initialEngine = options.contextEngineFactory(manifest.context);
     // Identity drift check: when the manifest pins an engine name (and
@@ -217,7 +224,29 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     });
     contextEngineProxy = proxyResult.proxy;
     contextEngineProviders.push(proxyResult.provider);
-    contextEngineMiddleware.push(createContextEngineSlotMiddleware(ctrlRef));
+    contextEngineMiddleware.push(
+      createContextEngineSlotMiddleware(ctrlRef, {
+        // Evict the per-turn ctx cache when a turn fails. Without this,
+        // turnCtxByTurnId would retain full prompt history for the
+        // runtime's lifetime since terminal cleanup only purges entries
+        // for turns still in pinnedTurnIds(), and the slot middleware
+        // releases the pin before terminal cleanup runs. The ref is
+        // populated by streamEvents per run.
+        onFailedTurn: (failedTurnId) => {
+          turnCtxByTurnIdRef.current?.delete(failedTurnId as string);
+        },
+        // Populate the per-turn ctx cache from the slot middleware so
+        // native streaming adapters (which do not flow through
+        // adapter.terminals.getTurnContext()) still register a real
+        // TurnContext for terminal-path onAfterTurn synthesis. Without
+        // this, a done-only streaming turn would synth onAfterTurn with
+        // messages: [] and stateful engines would checkpoint against
+        // empty input.
+        onTurnStart: (turnCtx) => {
+          turnCtxByTurnIdRef.current?.set(turnCtx.turnId as string, turnCtx);
+        },
+      }),
+    );
   }
   // Middleware-level double-wire guard (#1767, round 7). Reject any
   // user-supplied middleware that also names itself "context-engine" — it
@@ -810,6 +839,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // most recent turn would have a real ctx and older pinned turns
     // would receive a synthetic ctx with the wrong turnId.
     const turnCtxByTurnId = new Map<string, TurnContext>();
+    // Publish to the createKoi-scope ref so the slot middleware (created
+    // once at setup) can evict failed-turn entries through onFailedTurn.
+    turnCtxByTurnIdRef.current = turnCtxByTurnId;
     // The specific turnId that reached a `done` event without first
     // emitting `turn_end` (the cooperating-adapter shortcut). Only this
     // turn's pinned engine receives a synthetic `onAfterTurn` during
