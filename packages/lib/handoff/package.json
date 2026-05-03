@@ -1,0 +1,25 @@
+{
+  "name": "@koi/handoff",
+  "description": "Structured context relay between agents — typed envelopes + auto-injecting middleware",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check --vcs-enabled=false src/",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/nexus-client": "workspace:*"
+  },
+  "devDependencies": {},
+  "koi": {}
+}

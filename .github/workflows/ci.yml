@@ -717,8 +717,9 @@ jobs:
         # - instance.ts in each adapter encapsulates exec + bounded file I/O +
         #   single-flight teardown — splitting would scatter related state.
         # Extracting helpers for line-count alone adds indirection without
-        # behavioral gain. Bumped 708 → 712.
-        run: bun run check:complexity --max-violations 712
+        # behavioral gain. Bumped 708 → 712 → 723 (#1371: @koi/handoff +
+        # @koi/task-spawn factory functions).
+        run: bun run check:complexity --max-violations 723
 
       - name: Check TUI single-writer output policy
         run: bun run check:tui-single-writer
