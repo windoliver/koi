@@ -193,6 +193,33 @@ describe("createKoi assembly", () => {
     expect(runtime.agent.has(CONTEXT_ENGINE)).toBe(false);
   });
 
+  test("manifest.context.engine without contextEngineFactory throws — no silent inert", async () => {
+    await expect(
+      createKoi({
+        manifest: testManifest({
+          context: { engine: "@koi/context-manager", version: "1.0.0" },
+        }),
+        adapter: mockAdapter([]),
+      }),
+    ).rejects.toThrow(/contextEngineFactory/);
+  });
+
+  test("manifest.context.engine with matching factory assembles successfully", async () => {
+    type ContextEngine = import("@koi/core").ContextEngine;
+    const factory = (): ContextEngine => ({
+      identity: { name: "@koi/context-manager", version: "1.0.0" },
+      prepare: (_ctx, msgs) => msgs,
+    });
+    const runtime = await createKoi({
+      manifest: testManifest({
+        context: { engine: "@koi/context-manager", version: "1.0.0" },
+      }),
+      adapter: mockAdapter([]),
+      contextEngineFactory: factory,
+    });
+    expect(runtime.agent.state).toBe("created");
+  });
+
   test("manifest lifecycle overrides default type", async () => {
     const runtime = await createKoi({
       manifest: testManifest({ lifecycle: "worker" }),

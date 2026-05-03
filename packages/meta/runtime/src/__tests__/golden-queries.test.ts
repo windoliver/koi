@@ -889,6 +889,55 @@ describe("Golden: @koi/context-manager", () => {
     const b: ContextEngine = createPassthroughContextEngine();
     expect(a.identity.name).not.toBe(b.identity.name);
   });
+
+  test("ContextEngine middleware actually rewrites adapter-visible messages (round-3 regression)", async () => {
+    // End-to-end: createContextEngineMiddleware MUST drive engine.prepare()
+    // before the model adapter sees the request. Codex round-3 finding 1
+    // flagged that the slot was attached but never invoked.
+    const { createContextEngineMiddleware } = await import("@koi/context-manager");
+    type ModelHandler = import("@koi/core").ModelHandler;
+    type ModelRequest = import("@koi/core").ModelRequest;
+    type ModelResponse = import("@koi/core").ModelResponse;
+    type TurnContext = import("@koi/core").TurnContext;
+
+    const captured: ModelRequest[] = [];
+    const adapter: ModelHandler = async (req) => {
+      captured.push(req);
+      const r: ModelResponse = { content: "ok", model: "x" };
+      return r;
+    };
+
+    const engine: ContextEngine = {
+      identity: { name: "@test/transformer", version: "0.0.1" },
+      prepare: (_ctx, msgs) => [
+        // Replace the inbound list with a synthetic compacted message so the
+        // assertion below proves engine.prepare was invoked between the
+        // middleware boundary and the adapter.
+        ...msgs,
+        {
+          senderId: "compacted",
+          timestamp: 999,
+          content: [{ kind: "text" as const, text: "PREPARE_RAN" }],
+        },
+      ],
+    };
+
+    const mw = createContextEngineMiddleware(engine);
+    const original: InboundMessage[] = [makeMsg("user", "hi")];
+    await mw.wrapModelCall?.(
+      { metadata: {} } as unknown as TurnContext,
+      { messages: original },
+      adapter,
+    );
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.messages.length).toBe(original.length + 1);
+    expect(captured[0]?.messages.at(-1)?.senderId).toBe("compacted");
+    const last = captured[0]?.messages.at(-1);
+    if (last !== undefined && last.content[0]?.kind === "text") {
+      expect(last.content[0].text).toBe("PREPARE_RAN");
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

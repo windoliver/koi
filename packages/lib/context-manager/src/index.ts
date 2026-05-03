@@ -10,6 +10,7 @@
 
 export type { BackoffTracker } from "./backoff.js";
 export { createBackoffTracker } from "./backoff.js";
+export { createContextEngineMiddleware } from "./context-engine-middleware.js";
 export type { ContextEngineOptions } from "./create-context-engine.js";
 export { createContextEngine, DEFAULT_CONTEXT_ENGINE_IDENTITY } from "./create-context-engine.js";
 export type { DecisionSignalExtractorConfig } from "./decision-extract.js";

@@ -104,6 +104,26 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // agent assembled via createKoi() gets a fresh engine instance — sharing one
   // instance across agents would leak occupancy state between turns. User
   // providers can still override via lower priority.
+  if (manifest.context?.engine !== undefined && options.contextEngineFactory === undefined) {
+    // The manifest pins a context engine but no host-side resolver was
+    // supplied. Failing closed here is the only safe option: continuing
+    // would silently ignore the manifest selection and run with whatever
+    // (or no) engine is wired, which is exactly the misconfiguration the
+    // selector is supposed to prevent.
+    throw KoiRuntimeError.from(
+      "VALIDATION",
+      `manifest.context.engine="${manifest.context.engine}" requires a host-supplied contextEngineFactory in CreateKoiOptions. Resolve the manifest selector to a ContextEngine factory before calling createKoi(), or remove manifest.context to fall back to the runtime's default behavior.`,
+      {
+        retryable: false,
+        context: {
+          manifestEngine: manifest.context.engine,
+          ...(manifest.context.version !== undefined
+            ? { manifestVersion: manifest.context.version }
+            : {}),
+        },
+      },
+    );
+  }
   const contextEngineProviders =
     options.contextEngineFactory !== undefined
       ? [createContextEngineProvider(options.contextEngineFactory())]
