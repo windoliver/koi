@@ -18,32 +18,35 @@ import { verifySlackRequest } from "./verify-signature.js";
 
 /** Replay window in `verify-signature.ts` is 5 minutes — match it here. */
 const DEDUPE_TTL_MS = 5 * 60 * 1000;
-/**
- * Cap dedupe-cache size to keep memory bounded under sustained traffic.
- * Eviction is FIFO when the queue is full.
- */
-const DEDUPE_MAX_ENTRIES = 5000;
 
 /**
- * In-memory FIFO dedupe with TTL. Slack retries unacked deliveries via
- * `Retry-Num`, and replay attacks within the verification window are still
- * possible after signature checking, so every accepted signed request must
- * pass through this gate before dispatch.
+ * In-memory dedupe with TTL-only eviction. Slack retries unacked deliveries
+ * via `Retry-Num`, and replay attacks within the verification window are
+ * still possible after signature checking, so every accepted signed request
+ * must pass through this gate before dispatch.
+ *
+ * Eviction is strictly TTL-based: entries are removed only when their replay
+ * window has expired, never to make room. A size-based FIFO cap would let an
+ * older still-live `event_id` be evicted right before its retry arrives,
+ * defeating the dedupe under sustained traffic. Map insertion order matches
+ * expiry order (TTL is fixed), so each `observe` amortizes O(1) sweep of
+ * already-expired keys from the front.
  */
 function createIngressDedupe(): {
   readonly observe: (key: string, nowMs: number) => boolean;
   readonly size: () => number;
 } {
   const seen = new Map<string, number>();
+  const sweepExpired = (nowMs: number): void => {
+    for (const [k, exp] of seen) {
+      if (exp > nowMs) return;
+      seen.delete(k);
+    }
+  };
   return {
     observe: (key: string, nowMs: number): boolean => {
-      const expiry = seen.get(key);
-      if (expiry !== undefined && expiry > nowMs) return true;
-      if (expiry !== undefined) seen.delete(key);
-      if (seen.size >= DEDUPE_MAX_ENTRIES) {
-        const oldest = seen.keys().next().value;
-        if (oldest !== undefined) seen.delete(oldest);
-      }
+      sweepExpired(nowMs);
+      if (seen.has(key)) return true;
       seen.set(key, nowMs + DEDUPE_TTL_MS);
       return false;
     },
@@ -536,14 +539,16 @@ function wireSocketModeEvents(
         handler({ kind: "slash_command", command: wrapper as never });
       }),
     );
-    // Interactive: ack ALWAYS (3-second deadline), but only dispatch if a
-    // handler is attached AND we haven't already processed this envelope.
-    // Unsupported payload types (modal submission, shortcuts) are
-    // ack'd-and-dropped to suppress the user-visible error.
+    // Interactive: handler-count check BEFORE ack so a button click is never
+    // ack'd-and-dropped during startup or handler churn. Without a consumer
+    // we must not ack — Slack already received the click; ack'ing here would
+    // permanently consume it with no retry path. Letting the 3s deadline
+    // elapse surfaces a user-visible "didn't work" error in Slack, which is
+    // the correct signal that the action was not delivered.
     client.on("interactive", (raw: unknown) => {
       const wrapper = raw as Record<string, unknown>;
-      ack(wrapper);
       if (getHandlerCount() === 0) return;
+      ack(wrapper);
       // Retried button click → already deduped from a previous delivery.
       if (observeDelivery(deliveryKey(wrapper))) return;
       const payload = (wrapper["payload"] ?? wrapper) as Record<string, unknown>;

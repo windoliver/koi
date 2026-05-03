@@ -229,6 +229,46 @@ describe("@koi/channel-slack — Socket Mode", () => {
     await adapter.disconnect();
   });
 
+  test("Socket Mode dedupe survives >5000 unique deliveries before retry (no FIFO eviction of live keys)", async () => {
+    const web = makeWebClient();
+    const sock = makeSocketClient();
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      botUserId: "BOT",
+      deployment: { mode: "socket", appToken: "xapp-test" },
+      clients: { webClient: web.client, socketClient: sock.client },
+    });
+    const received: InboundMessage[] = [];
+    adapter.onMessage(async (m) => {
+      received.push(m);
+    });
+    await adapter.connect();
+
+    const onMsg = sock.listeners.get("message");
+    // First delivery: unique envelope we'll retry later.
+    const target = {
+      envelope_id: "TARGET-EARLY",
+      ack: () => {},
+      event: { type: "message", text: "first", user: "U1", channel: "C1", ts: "1.0" },
+    };
+    onMsg?.(target);
+    // 6000 distinct subsequent deliveries — would FIFO-evict TARGET-EARLY
+    // under the old size-cap design.
+    for (let i = 0; i < 6000; i++) {
+      onMsg?.({
+        envelope_id: `E-${i}`,
+        ack: () => {},
+        event: { type: "message", text: `m${i}`, user: "U1", channel: "C1", ts: `${i}.0` },
+      });
+    }
+    // Retry of the original within the 5-minute replay window — must dedupe.
+    onMsg?.(target);
+    await new Promise((r) => setTimeout(r, 10));
+    // 1 (target) + 6000 (unique) + 0 (retry deduped) = 6001
+    expect(received).toHaveLength(6001);
+    await adapter.disconnect();
+  });
+
   test("Socket Mode does NOT ack message events when no onMessage handler is registered (Slack retries)", async () => {
     const web = makeWebClient();
     const sock = makeSocketClient();
@@ -251,7 +291,7 @@ describe("@koi/channel-slack — Socket Mode", () => {
     await adapter.disconnect();
   });
 
-  test("Socket Mode ACKs interactive payloads even with no handler (3-second deadline)", async () => {
+  test("Socket Mode does NOT ack interactive payloads with no handler (no silent drop)", async () => {
     const web = makeWebClient();
     const sock = makeSocketClient();
     const adapter = createSlackChannel({
@@ -268,8 +308,10 @@ describe("@koi/channel-slack — Socket Mode", () => {
       },
       payload: { type: "block_actions", user: { id: "U" }, actions: [] },
     });
-    // Interactive has a hard ack deadline so we always ack, even with no handler.
-    expect(acked).toBe(true);
+    // No handler attached: ack'ing here would permanently consume the click
+    // with no retry path. Letting the 3s deadline elapse surfaces a
+    // user-visible error in Slack instead of silently swallowing the action.
+    expect(acked).toBe(false);
     await adapter.disconnect();
   });
 
