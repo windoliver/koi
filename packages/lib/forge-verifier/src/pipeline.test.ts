@@ -2692,4 +2692,62 @@ describe("R28 cache.set NOT suppressed when a follower consumed the shared succe
     const next = await nextPromise;
     expect(next.ok).toBe(true);
   });
+
+  test("R30 microtask-drain catches synchronous-abort race before cache.set decision", async () => {
+    // R6 finding: liveConsumers was checked once before await cache.set.
+    // If a caller's abort listener fires synchronously after the stage
+    // resolves but before the suppression check, the count update could
+    // be missed without a microtask yield. R30 adds an `await
+    // Promise.resolve()` between stage completion and the suppression
+    // check to drain any pending listeners.
+    //
+    // Reproduce: leader + follower; both abort the moment the stage's
+    // last microtask resolves. The write must be suppressed.
+    let stageCalls = 0;
+    let stageResolve: (() => void) | undefined;
+    const stage: VerifierStage<FakeArtifact> = {
+      name: "race",
+      version: "1",
+      run: async () => {
+        stageCalls += 1;
+        await new Promise<void>((r) => {
+          stageResolve = r;
+        });
+        return PASS;
+      },
+    };
+    const cache = createMemoryCache();
+    const artifact: FakeArtifact = { name: "race-cache" };
+    const baseOpts = {
+      cache,
+      namespace: "race",
+      acknowledgeTrustedCache: true as const,
+      executionContextKey: "ctx",
+    };
+    const leaderAc = new AbortController();
+    const followerAc = new AbortController();
+    const leader = runPipeline([stage], artifact, { ...baseOpts, signal: leaderAc.signal });
+    await new Promise((r) => setTimeout(r, 10));
+    const follower = runPipeline([stage], artifact, { ...baseOpts, signal: followerAc.signal });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stageCalls).toBe(1);
+    // Resolve the stage and abort BOTH callers in the same microtask
+    // window — the microtask drain in work() must let the listeners
+    // fire before the suppression check.
+    if (stageResolve === undefined) throw new Error("no resolve");
+    stageResolve();
+    leaderAc.abort();
+    followerAc.abort();
+    await Promise.all([leader, follower]);
+    await new Promise((r) => setTimeout(r, 30));
+    // Cache must NOT have been populated. Verify by issuing a fresh
+    // call (start it, then resolve its stage) and confirming a new
+    // execution happened rather than a cache hit.
+    const nextPromise = runPipeline([stage], artifact, baseOpts);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stageCalls).toBe(2); // fresh execution — phantom write was suppressed
+    if (stageResolve !== undefined) stageResolve();
+    const next = await nextPromise;
+    expect(next.ok).toBe(true);
+  });
 });

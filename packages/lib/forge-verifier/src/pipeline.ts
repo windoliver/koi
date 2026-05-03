@@ -1143,13 +1143,33 @@ export async function runPipeline<I>(
       // signal aborts. If every caller aborted before completion, no
       // live consumer ever accepted this result — caching it would
       // serve a "passed: true" entry that no participant actually
-      // received. R29's coarse `signal.aborted && !hasFollower` gate
-      // missed the case where a follower attached and then aborted.
+      // received.
+      //
+      // Drain pending microtasks first so any abort listeners that
+      // fired synchronously while the stage loop was finishing have a
+      // chance to decrement `liveConsumers` before we make the
+      // suppression decision. (Without this yield, an abort that
+      // raced the final stage's resolve could be missed.)
+      await Promise.resolve();
       if (liveConsumers === 0) {
         console.debug("[forge-verifier] cache.set suppressed (no live consumer)");
       } else {
         try {
           await cache.set(composedKey, { key: composedKey, summary });
+          // Best-effort post-write check: if every consumer aborted
+          // DURING the cache.set network round-trip, the write has
+          // already committed (most cache backends do not expose
+          // delete or signal-cancellation). Log so operators can
+          // correlate the rare race; we cannot retract a committed
+          // write without a delete API on `VerificationCache`. The
+          // pre-write microtask drain above eliminates the common
+          // synchronous-abort race; this only catches the in-flight
+          // network case.
+          if (liveConsumers === 0) {
+            console.debug(
+              "[forge-verifier] cache.set committed but all consumers aborted during write (best-effort race)",
+            );
+          }
         } catch (e: unknown) {
           // Cache writes are best-effort. A backend outage must not flip a
           // successful verification into a rejection. Surface via console.debug
