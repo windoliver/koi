@@ -109,26 +109,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
   });
   const governanceProvider = createGovernanceProvider(options.governance);
-  // Pluggable context-engine slot (#1767). createKoi owns the full wiring:
-  // factory → engine → swap controller → ComponentProvider → middleware,
-  // so the slot is never half-wired. Host supplies a factory; we forward the
-  // resolved manifest.context bag and validate the returned identity matches
-  // any pinned selector before assembly.
-  if (manifest.context?.engine !== undefined && options.contextEngineFactory === undefined) {
-    throw KoiRuntimeError.from(
-      "VALIDATION",
-      `manifest.context.engine="${manifest.context.engine}" requires a host-supplied contextEngineFactory in CreateKoiOptions. Resolve the manifest selector to a ContextEngine factory before calling createKoi(), or remove manifest.context to fall back to the runtime's default behavior.`,
-      {
-        retryable: false,
-        context: {
-          manifestEngine: manifest.context.engine,
-          ...(manifest.context.version !== undefined
-            ? { manifestVersion: manifest.context.version }
-            : {}),
-        },
-      },
-    );
-  }
+  // Pluggable context-engine slot (#1767). createKoi owns the full wiring
+  // when a `contextEngineFactory` is supplied. When the host wires the slot
+  // manually (own ComponentProvider + middleware), `manifest.context.engine`
+  // is still allowed; we validate the resulting slot identity post-assembly
+  // instead of rejecting at the factory boundary.
   let contextEngineSwapController: ContextEngineSwapController | undefined;
   let contextEngineProxy: ContextEngine | undefined;
   const contextEngineProviders: ComponentProvider[] = [];
@@ -206,6 +191,38 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         "VALIDATION",
         "createKoi: a user-supplied ComponentProvider attached CONTEXT_ENGINE while contextEngineFactory is also set. The runtime cannot guarantee that ECS reads (`agent.component(CONTEXT_ENGINE)`) and the engine driving model requests reference the same instance. Choose one wiring path: drop contextEngineFactory and manage swaps manually, or remove the external CONTEXT_ENGINE provider and let createKoi own the slot.",
         { retryable: false, context: { conflictKind: "context-engine-double-wire" } },
+      );
+    }
+  } else if (manifest.context?.engine !== undefined) {
+    // Manual wiring path: host installs its own CONTEXT_ENGINE provider
+    // (and presumably its own middleware) without a contextEngineFactory.
+    // The slot must still match `manifest.context.engine` (and version, if
+    // pinned) so operator tooling can trust the manifest. If the slot is
+    // empty entirely, the manifest pins an engine that nothing wired —
+    // fail loud so the host doesn't silently skip context preparation.
+    const slotEngine = agent.component(CONTEXT_ENGINE);
+    if (slotEngine === undefined) {
+      throw KoiRuntimeError.from(
+        "VALIDATION",
+        `createKoi: manifest.context.engine="${manifest.context.engine}" but no CONTEXT_ENGINE component was attached. Either pass contextEngineFactory or include a ComponentProvider that attaches CONTEXT_ENGINE.`,
+        { retryable: false, context: { manifestEngine: manifest.context.engine } },
+      );
+    }
+    if (slotEngine.identity.name !== manifest.context.engine) {
+      throw KoiRuntimeError.from(
+        "VALIDATION",
+        `createKoi: CONTEXT_ENGINE slot identity "${slotEngine.identity.name}" disagrees with manifest.context.engine "${manifest.context.engine}".`,
+        { retryable: false, context: { slotIdentity: slotEngine.identity } },
+      );
+    }
+    if (
+      manifest.context.version !== undefined &&
+      manifest.context.version !== slotEngine.identity.version
+    ) {
+      throw KoiRuntimeError.from(
+        "VALIDATION",
+        `createKoi: CONTEXT_ENGINE slot version "${slotEngine.identity.version}" disagrees with manifest.context.version "${manifest.context.version}".`,
+        { retryable: false, context: { slotIdentity: slotEngine.identity } },
       );
     }
   }
@@ -2224,32 +2241,41 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       if (unsubRegistryWatch !== undefined) unsubRegistryWatch();
       cleanupForgeSubscription();
       runSignal.removeEventListener("abort", onAbort);
-      // #1767 round 9/10/11: guarantee turn-pin release AND post-turn
-      // bookkeeping even when the run exits via `done` without
-      // `onAfterTurn` (cooperating adapters that yield `done` directly,
-      // error/abort paths, consumer break). If a pin is still active, the
-      // adapter completed a turn that never received a runtime-level
-      // `onAfterTurn`. Synthesize one so stateful engines (eviction,
-      // backoff, checkpoint) still see post-turn bookkeeping; then release
-      // the pin so subsequent swaps are visible to the next run.
+      // #1767 round 9/10/11/12: guarantee turn-pin release AND post-turn
+      // bookkeeping for the context engine even when the run exits via
+      // `done` without `onAfterTurn` (cooperating adapters that yield
+      // `done` directly, error/abort paths, consumer break). If a pin is
+      // still active, the adapter completed a turn that never received a
+      // runtime-level `onAfterTurn`. Invoke ONLY the context engine's
+      // own `onAfterTurn` directly through the controller — broadcasting
+      // to all middleware on these incomplete-turn paths would falsely
+      // signal a successful turn to unrelated middleware (e.g. counters,
+      // checkpoints, stop-gate retries that key off `ctx.stopBlocked`).
       if (contextEngineSwapController?.hasActivePin() === true) {
-        try {
-          const fallbackTurnCtx = createTurnContext({
-            session: sessionCtx,
-            turnIndex: currentTurnIndex,
-            messages: [],
-            signal: runSignal,
-            approvalHandler: options.approvalHandler,
-            sendStatus: options.sendStatus,
-          });
-          await runTurnHooks(allMiddleware, "onAfterTurn", fallbackTurnCtx);
-        } catch (hookErr: unknown) {
-          // Bookkeeping hooks must not corrupt cleanup. Log and continue
-          // to endTurn so the controller is not left wedged.
-          console.warn(
-            "[koi] context-engine onAfterTurn synth failed during terminal cleanup",
-            hookErr,
-          );
+        const pinnedEngine = contextEngineSwapController.current();
+        if (pinnedEngine.onAfterTurn !== undefined) {
+          try {
+            const fallbackTurnCtx = createTurnContext({
+              session: sessionCtx,
+              turnIndex: currentTurnIndex,
+              messages: [],
+              signal: runSignal,
+              approvalHandler: options.approvalHandler,
+              sendStatus: options.sendStatus,
+              // Mark this as a non-clean turn end so that even if a
+              // future code path observes this ctx, it can distinguish
+              // it from a real `turn_end`-driven onAfterTurn.
+              stopBlocked: true,
+            });
+            await pinnedEngine.onAfterTurn(fallbackTurnCtx);
+          } catch (hookErr: unknown) {
+            // Bookkeeping hooks must not corrupt cleanup. Log and
+            // continue to endTurn so the controller is not left wedged.
+            console.warn(
+              "[koi] context-engine onAfterTurn synth failed during terminal cleanup",
+              hookErr,
+            );
+          }
         }
       }
       contextEngineSwapController?.endTurn();

@@ -29,14 +29,16 @@ export interface SwapOptions {
 
 export interface ContextEngineSwapController {
   /**
-   * Returns the engine currently serving requests. While a turn is pinned
-   * (see `beginTurn`/`endTurn`), this returns the engine snapshotted at the
-   * start of that turn — so swaps issued mid-turn do NOT change `current()`
-   * until the turn ends. This keeps ECS reads (`agent.component(
-   * CONTEXT_ENGINE)`) and slot-middleware execution paired on the same
-   * engine across `prepare()` → `onAfterTurn`.
+   * Returns the engine currently serving requests. With a `turnId`, returns
+   * the engine pinned for that specific turn (correct under overlapping or
+   * re-entrant turns). Without a `turnId`, returns the most-recently-pinned
+   * engine (LIFO) if any pin is active, otherwise the live `active` engine —
+   * used by ECS reads (`agent.component(CONTEXT_ENGINE)`) which have no
+   * turn context. ECS reads under overlapping turns observe the most-recent
+   * pin; within slot middleware, the turnId-keyed lookup keeps `prepare()`
+   * and `onAfterTurn` paired on the same engine even across overlap.
    */
-  readonly current: () => ContextEngine;
+  readonly current: (turnId?: TurnId) => ContextEngine;
   readonly history: () => readonly ContextEngineSwapEvent[];
   readonly swap: (to: ContextEngine, options: SwapOptions) => ContextEngineSwapEvent | undefined;
   readonly rollback: (options: SwapOptions) => ContextEngineSwapEvent | undefined;
@@ -102,29 +104,41 @@ export function createContextEngineSwapController(
   // target the caller declared at swap time (if any). Rollback resolves to
   // the declared target when set, otherwise to the immediately prior engine.
   const priorStack: SwapStackFrame[] = [];
-  // Per-turn pin: while set, `current()` returns the pinned engine even
-  // after swaps. Cleared in `endTurn`. We store turnId alongside the engine
-  // so endTurn can no-op for stale releases (defensive against out-of-order
-  // calls under concurrent or interrupted turns).
-  let turnPin: { readonly turnId: TurnId; readonly engine: ContextEngine } | undefined;
+  // Per-turn pins: keyed by `turnId` so overlapping/re-entrant turns each
+  // hold their own snapshot. Without per-turn keying, a later beginTurn
+  // would clobber an earlier turn's pin and make that earlier turn's
+  // `onAfterTurn` resolve against the wrong engine. Insertion-ordered Map
+  // preserves LIFO semantics for the no-arg `current()` lookup (last
+  // beginTurn wins, matching the most-recent caller's expectation).
+  const turnPins = new Map<TurnId, ContextEngine>();
 
-  const current = (): ContextEngine => turnPin?.engine ?? active;
+  const lastPinnedEngine = (): ContextEngine | undefined => {
+    let last: ContextEngine | undefined;
+    for (const e of turnPins.values()) last = e;
+    return last;
+  };
+
+  const current = (turnId?: TurnId): ContextEngine => {
+    if (turnId !== undefined) {
+      const pinned = turnPins.get(turnId);
+      if (pinned !== undefined) return pinned;
+    }
+    return lastPinnedEngine() ?? active;
+  };
   const historyView = (): readonly ContextEngineSwapEvent[] => history;
 
   const beginTurn = (turnId: TurnId): void => {
-    if (turnPin?.turnId === turnId) return;
-    turnPin = { turnId, engine: active };
+    if (turnPins.has(turnId)) return;
+    turnPins.set(turnId, active);
   };
 
   const endTurn = (turnId?: TurnId): void => {
     if (turnId === undefined) {
       // Unconditional release — runtime terminal-path cleanup.
-      turnPin = undefined;
+      turnPins.clear();
       return;
     }
-    if (turnPin?.turnId === turnId) {
-      turnPin = undefined;
-    }
+    turnPins.delete(turnId);
   };
 
   const swap = (to: ContextEngine, options: SwapOptions): ContextEngineSwapEvent | undefined => {
@@ -184,7 +198,7 @@ export function createContextEngineSwapController(
     return evt;
   };
 
-  const hasActivePin = (): boolean => turnPin !== undefined;
+  const hasActivePin = (): boolean => turnPins.size > 0;
 
   return {
     current,

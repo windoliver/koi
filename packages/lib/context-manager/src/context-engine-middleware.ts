@@ -17,7 +17,7 @@
  *      `contextEngineFactory`. You then own swap orchestration too.
  */
 
-import type { ContextEngine, KoiMiddleware } from "@koi/core";
+import type { ContextEngine, KoiMiddleware, ModelChunk } from "@koi/core";
 
 /**
  * Build a `KoiMiddleware` that calls `engine.prepare()` before each model
@@ -27,17 +27,46 @@ import type { ContextEngine, KoiMiddleware } from "@koi/core";
  *
  * Use only when you are NOT passing `contextEngineFactory` to `createKoi()`
  * — see the module-level docs.
+ *
+ * Accepts either:
+ *   - a `ContextEngine` instance (fixed for the lifetime of the runtime), or
+ *   - a `() => ContextEngine` getter (resolved on every model call), so
+ *     manually wired hosts that own their own swap controller can plug
+ *     `() => controller.current()` here and get swap-aware behavior
+ *     without rebuilding the runtime.
+ *
+ * Implements both `wrapModelCall` (non-streaming) and `wrapModelStream`
+ * (native streaming adapters) so `prepare()` runs on every model path —
+ * a manual middleware that only intercepted `wrapModelCall` would silently
+ * skip context preparation under streaming adapters.
  */
-export function createContextEngineMiddleware(engine: ContextEngine): KoiMiddleware {
+export function createContextEngineMiddleware(
+  engineOrGetter: ContextEngine | (() => ContextEngine),
+): KoiMiddleware {
+  const resolve =
+    typeof engineOrGetter === "function" ? engineOrGetter : (): ContextEngine => engineOrGetter;
   return {
     name: "context-engine",
     phase: "resolve",
     priority: 500,
     wrapModelCall: async (ctx, request, next) => {
+      const engine = resolve();
       const prepared = await engine.prepare(ctx, request.messages);
       return next({ ...request, messages: prepared });
     },
+    wrapModelStream: (ctx, request, next) => {
+      const engine = resolve();
+      return {
+        async *[Symbol.asyncIterator](): AsyncIterator<ModelChunk, undefined, undefined> {
+          const prepared = await engine.prepare(ctx, request.messages);
+          for await (const chunk of next({ ...request, messages: prepared })) {
+            yield chunk;
+          }
+        },
+      };
+    },
     onAfterTurn: async (ctx) => {
+      const engine = resolve();
       if (engine.onAfterTurn !== undefined) {
         await engine.onAfterTurn(ctx);
       }

@@ -19,7 +19,7 @@ import type { ContextEngine, KoiMiddleware, TurnId } from "@koi/core";
  * pass a leaner stub.
  */
 export interface SlotController {
-  readonly current: () => ContextEngine | undefined;
+  readonly current: (turnId?: TurnId) => ContextEngine | undefined;
   readonly beginTurn: (turnId: TurnId) => void;
   readonly endTurn: (turnId: TurnId) => void;
 }
@@ -44,7 +44,10 @@ export function createContextEngineSlotMiddleware(controller: SlotController): K
     wrapModelCall: async (ctx, request, next) => {
       controller.beginTurn(ctx.turnId);
       try {
-        const engine = controller.current();
+        // Pass turnId so overlapping turns each resolve their own pinned
+        // engine — without this, a later beginTurn would clobber the pin
+        // and break prepare/onAfterTurn pairing on the earlier turn.
+        const engine = controller.current(ctx.turnId);
         if (engine === undefined) return await next(request);
         const prepared = await engine.prepare(ctx, request.messages);
         return await next({ ...request, messages: prepared });
@@ -63,7 +66,7 @@ export function createContextEngineSlotMiddleware(controller: SlotController): K
     // under streaming.
     wrapModelStream: (ctx, request, next) => {
       controller.beginTurn(ctx.turnId);
-      const engine = controller.current();
+      const engine = controller.current(ctx.turnId);
       return {
         async *[Symbol.asyncIterator](): AsyncIterator<
           import("@koi/core").ModelChunk,
@@ -87,9 +90,10 @@ export function createContextEngineSlotMiddleware(controller: SlotController): K
       };
     },
     onAfterTurn: async (ctx) => {
-      // Resolve through the controller so we hit the same engine pinned
-      // since beginTurn — even if a host issued a swap mid-turn.
-      const engine = controller.current();
+      // Resolve through the controller with this turn's turnId so we hit
+      // the same engine pinned since beginTurn — even under overlapping
+      // turns or a mid-turn swap.
+      const engine = controller.current(ctx.turnId);
       try {
         if (engine?.onAfterTurn !== undefined) {
           await engine.onAfterTurn(ctx);
