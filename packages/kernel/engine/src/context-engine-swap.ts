@@ -66,6 +66,14 @@ export interface ContextEngineSwapController {
    * pin (otherwise stateful engines lose post-turn bookkeeping).
    */
   readonly hasActivePin: () => boolean;
+  /**
+   * The set of turnIds with active pins, in insertion order. Used by the
+   * runtime's terminal cleanup so it can release each pin individually
+   * (with `endTurn(turnId)`) and run `onAfterTurn` against the engine
+   * pinned for THAT turn — instead of collapsing all pins via no-arg
+   * cleanup, which would corrupt unrelated overlapping turns.
+   */
+  readonly pinnedTurnIds: () => readonly TurnId[];
 }
 
 function sameIdentity(a: ContextEngineIdentity, b: ContextEngineIdentity): boolean {
@@ -199,6 +207,7 @@ export function createContextEngineSwapController(
   };
 
   const hasActivePin = (): boolean => turnPins.size > 0;
+  const pinnedTurnIds = (): readonly TurnId[] => Array.from(turnPins.keys());
 
   return {
     current,
@@ -208,5 +217,6 @@ export function createContextEngineSwapController(
     beginTurn,
     endTurn,
     hasActivePin,
+    pinnedTurnIds,
   };
 }
