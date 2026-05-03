@@ -202,7 +202,16 @@ function canonicalJson(
   onStack.add(value);
   try {
     if (Array.isArray(value)) {
-      return `[${value.map((v) => canonicalJson(v, onStack, budget, depth + 1)).join(",")}]`;
+      // Iterate 0..length-1 explicitly so a sparse array (`new Array(1)`)
+      // does NOT serialize equal to `[]`. `Array.prototype.map` skips holes,
+      // which would alias different artifact shapes to the same cache key.
+      // Holes are also rejected upstream by `rejectUnsupportedShape`, but
+      // the explicit loop here is defense in depth at the encoder.
+      const parts: string[] = [];
+      for (let i = 0; i < value.length; i++) {
+        parts.push(canonicalJson(value[i], onStack, budget, depth + 1));
+      }
+      return `[${parts.join(",")}]`;
     }
     const obj = value as Record<string, unknown>;
     const keys = Object.keys(obj).sort();
@@ -426,7 +435,14 @@ export async function runPipeline<I>(
   // same composedKey in this process, await its result instead of running
   // a duplicate pipeline. Registered BEFORE cache.get + stages so concurrent
   // callers cannot all miss + all run.
-  if (composedKey !== undefined) {
+  //
+  // Coalescing is DISABLED when the caller provides a signal: different
+  // callers have different cancellation timelines, and a leader's TIMEOUT
+  // (from its own abort firing) must not propagate to followers that did
+  // not abort. Signal-bearing callers run their own pipeline; only
+  // signal-free callers coalesce, where the leader's result is genuinely
+  // shareable.
+  if (composedKey !== undefined && signal === undefined) {
     const existing = inflight.get(composedKey);
     if (existing !== undefined) return existing;
   }
@@ -600,14 +616,12 @@ export async function runPipeline<I>(
     return { ok: true, value: summary };
   };
 
-  if (composedKey !== undefined) {
+  if (composedKey !== undefined && signal === undefined) {
+    const key = composedKey;
     const promise = work().finally(() => {
-      // Use composedKey snapshot — the closure captures the value at
-      // registration time. A late deletion of the WRONG key (e.g. if
-      // composedKey were re-assigned later) would orphan in-flight entries.
-      inflight.delete(composedKey);
+      inflight.delete(key);
     });
-    inflight.set(composedKey, promise);
+    inflight.set(key, promise);
     return promise;
   }
   return work();
@@ -693,6 +707,16 @@ function rejectUnsupportedShape(
       );
     }
     const arrDescs = Object.getOwnPropertyDescriptors(value);
+    // Reject sparse arrays: every index in [0, length) MUST have an own
+    // data descriptor. A hole would be skipped by Array.prototype.map and
+    // alias to a denser array's cache key — different content, same key.
+    for (let i = 0; i < value.length; i++) {
+      if (!Object.hasOwn(arrDescs, String(i))) {
+        throw new TypeError(
+          `Artifact at ${path}[${i}] is a hole; verifier rejects sparse arrays (holes are skipped by serializers and would alias dense arrays in the cache key).`,
+        );
+      }
+    }
     for (const [k, desc] of Object.entries(arrDescs)) {
       if (k === "length") continue;
       if (typeof desc.get === "function" || typeof desc.set === "function") {

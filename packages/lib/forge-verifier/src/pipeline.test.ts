@@ -991,7 +991,84 @@ describe("built-in stage factories propagate StageContext", () => {
   });
 });
 
+describe("sparse arrays (no cache-key aliasing with dense arrays)", () => {
+  test("sparse array at root is rejected pre-clone — would alias dense in cache key", async () => {
+    // `new Array(1)` has length 1 with a hole at index 0. `[].length === 0`
+    // and `[undefined].length === 1`. A naive serializer would alias the
+    // sparse array to one of those depending on whether holes are skipped.
+    const sparse = new Array(1);
+    const result = await runPipeline(
+      [createSyntaxStage(okCheck)],
+      sparse as unknown as FakeArtifact,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("hole");
+  });
+
+  test("sparse array nested in plain object is rejected", async () => {
+    const sparse: unknown[] = [];
+    sparse[2] = "x"; // creates holes at 0 and 1
+    const result = await runPipeline([createSyntaxStage(okCheck)], {
+      name: "x",
+      arr: sparse,
+    } as unknown as FakeArtifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("hole");
+  });
+
+  test("dense array with explicit undefined values is accepted (not a hole)", async () => {
+    // [undefined] is dense — index 0 has an own data descriptor with
+    // value=undefined. Should pass validation and produce a stable key.
+    const result = await runPipeline([createSyntaxStage(okCheck)], {
+      name: "x",
+      arr: [undefined, undefined],
+    } as unknown as FakeArtifact);
+    expect(result.ok).toBe(true);
+  });
+});
+
 describe("single-flight (concurrent identical requests are coalesced)", () => {
+  test("signal-bearing callers do NOT coalesce — leader abort cannot poison follower", async () => {
+    // Leader's signal aborts mid-stage; follower has its own signal that
+    // never fires. Without isolation, follower would inherit leader's
+    // TIMEOUT. With it, follower runs its own pipeline and succeeds.
+    let stageStarts = 0;
+    const cache = createMemoryCache();
+    const artifact: FakeArtifact = { name: "iso" };
+    const slow: VerifierStage<FakeArtifact> = {
+      name: "slow",
+      run: async () => {
+        stageStarts += 1;
+        await new Promise((r) => setTimeout(r, 30));
+        return PASS;
+      },
+    };
+    const leaderAc = new AbortController();
+    const followerAc = new AbortController();
+    const leaderPromise = runPipeline([slow], artifact, {
+      cache,
+      namespace: "iso",
+      signal: leaderAc.signal,
+    });
+    const followerPromise = runPipeline([slow], artifact, {
+      cache,
+      namespace: "iso",
+      signal: followerAc.signal,
+    });
+    // Leader aborts immediately; follower never aborts.
+    leaderAc.abort();
+    const [leader, follower] = await Promise.all([leaderPromise, followerPromise]);
+    expect(leader.ok).toBe(false); // leader honored its own abort
+    expect(follower.ok).toBe(true); // follower ran independently — NOT poisoned by leader's TIMEOUT
+    expect(stageStarts).toBeGreaterThanOrEqual(1); // follower ran its stage
+  });
+});
+
+describe("single-flight (legacy: concurrent signal-free requests ARE coalesced)", () => {
   test("two concurrent runPipeline calls with the same key share one stage execution", async () => {
     let stageCalls = 0;
     let resolveStage: (() => void) | undefined;
