@@ -493,6 +493,45 @@ describe("@koi/channel-slack — Socket Mode", () => {
     expect(received).toHaveLength(1);
     await adapter.disconnect();
   });
+
+  test("connect() fails when auth.test throws (refuses unknown bot identity)", async () => {
+    // Regression: silently falling back to "unknown" botUserId disables
+    // self-message filtering, so bot-authored events would loop back into
+    // the agent. A failing auth.test must hard-fail connect() instead.
+    const web = makeWebClient();
+    const webWithFailingAuth: WebClientLike = {
+      ...web.client,
+      auth: {
+        test: async () => {
+          throw new Error("network down");
+        },
+      },
+    };
+    const sock = makeSocketClient();
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "socket", appToken: "xapp-test" },
+      clients: { webClient: webWithFailingAuth, socketClient: sock.client },
+    });
+    await expect(adapter.connect()).rejects.toThrow(/network down/);
+  });
+
+  test("connect() fails when auth.test returns no user_id", async () => {
+    const web = makeWebClient();
+    const webNoUser: WebClientLike = {
+      ...web.client,
+      auth: {
+        test: async () => ({}),
+      },
+    };
+    const sock = makeSocketClient();
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "socket", appToken: "xapp-test" },
+      clients: { webClient: webNoUser, socketClient: sock.client },
+    });
+    await expect(adapter.connect()).rejects.toThrow(/unknown bot identity/);
+  });
 });
 
 describe("@koi/channel-slack — HTTP Events mode", () => {

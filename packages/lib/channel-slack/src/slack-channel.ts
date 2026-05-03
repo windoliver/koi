@@ -251,7 +251,10 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
       // from the very first event. Self-messages would otherwise be dispatched
       // back into the agent loop and cause feedback spirals.
       if (botUserId === undefined) {
-        botUserId = await resolveBotUserId(webClient);
+        // null = SDK has no `auth.test` surface (test doubles) — fall back
+        // to the placeholder so unit tests still work. Real failures bubble
+        // up and fail connect() per the resolveBotUserId contract.
+        botUserId = (await resolveBotUserId(webClient)) ?? "unknown";
       }
       // Wire Socket Mode listeners BEFORE start() so we don't miss the first
       // event. Listeners dispatch through a closure-captured `dispatch` so they
@@ -590,19 +593,25 @@ function ack(wrapper: Record<string, unknown>): void {
 
 /**
  * Resolve the bot's own user ID via Slack's `auth.test` so self-authored
- * events can be filtered out by the normalizer. Best-effort: if the SDK
- * surface doesn't expose `auth.test` (e.g. test doubles), or the call fails,
- * returns the literal `"unknown"` so the adapter still functions but the
- * caller is encouraged to set `botUserId` explicitly.
+ * events can be filtered out by the normalizer. Returns `null` only when the
+ * SDK surface does not expose `auth.test` at all (test doubles); in that
+ * case the caller falls back to the `"unknown"` placeholder.
+ *
+ * For real Slack clients we MUST get a real user_id — failing open with a
+ * placeholder lets the bot's own messages re-enter the agent loop and
+ * cause feedback spirals. Network failures and missing `user_id` therefore
+ * throw, which fails `connect()` so the host can retry.
  */
-async function resolveBotUserId(webClient: WebClientLike): Promise<string> {
-  if (webClient.auth?.test === undefined) return "unknown";
-  try {
-    const result = await webClient.auth.test();
-    return result.user_id ?? "unknown";
-  } catch {
-    return "unknown";
+async function resolveBotUserId(webClient: WebClientLike): Promise<string | null> {
+  if (webClient.auth?.test === undefined) return null;
+  const result = await webClient.auth.test();
+  if (typeof result.user_id !== "string" || result.user_id.length === 0) {
+    throw new Error(
+      "[channel-slack] auth.test returned no user_id — refusing to connect with an " +
+        "unknown bot identity (self-authored messages would loop back into the agent).",
+    );
   }
+  return result.user_id;
 }
 
 async function createWebClient(token: string): Promise<WebClientLike> {

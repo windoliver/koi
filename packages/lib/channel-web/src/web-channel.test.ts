@@ -421,6 +421,36 @@ describe("@koi/channel-web", () => {
     wsBob.close();
   });
 
+  test("revokeSubscriptions removes sockets from routing synchronously (no post-revoke leak)", async () => {
+    // Regression: sending immediately after revoke must not deliver to
+    // Alice even though Bun's async close handshake hasn't completed yet.
+    h = await startHarness({ authenticate: (ctx) => ({ senderId: ctx.token ?? "anon" }) });
+    const aliceMessages: string[] = [];
+    const wsAlice = new WebSocket(`ws://127.0.0.1:${h.port}/ws?thread=t-shared`, {
+      headers: { authorization: "Bearer alice" },
+    } as unknown as undefined);
+    wsAlice.addEventListener("message", (e: MessageEvent) => {
+      aliceMessages.push(String(e.data));
+    });
+    await new Promise<void>((r) => wsAlice.addEventListener("open", () => r(), { once: true }));
+
+    (
+      h.adapter as unknown as {
+        readonly revokeSubscriptions: (
+          p: (s: { readonly senderId: string; readonly threadId: string | undefined }) => boolean,
+        ) => number;
+      }
+    ).revokeSubscriptions((s) => s.senderId === "alice");
+
+    // Send DURING the close handshake — must not reach Alice.
+    await h.adapter.send({
+      content: [{ kind: "text", text: "post-revoke" }],
+      threadId: "t-shared",
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(aliceMessages).toHaveLength(0);
+  });
+
   test("WS upgrade accepts ?token= query (browsers can't set Authorization header)", async () => {
     h = await startHarness({
       authenticate: (ctx) => (ctx.token === "secret-tok" ? { senderId: "alice" } : null),

@@ -484,11 +484,18 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
   function revokeSubscriptions(
     predicate: (s: { readonly senderId: string; readonly threadId: string | undefined }) => boolean,
   ): number {
+    // Remove matching sockets from the routing set BEFORE closing so a
+    // concurrent `route()` cannot deliver post-revocation traffic during
+    // the async close handshake. Bun's `close` callback prunes again, but
+    // the routing-visible set must shrink synchronously here for tenant
+    // isolation under entitlement changes.
+    const next = new Set(sockets);
     // let requires justification: counts how many sockets matched and were closed
     let count = 0;
     for (const ws of sockets) {
       const data = ws.data;
       if (!predicate({ senderId: data.senderId, threadId: data.threadId })) continue;
+      next.delete(ws);
       try {
         ws.close(1008, "Subscription revoked");
         count++;
@@ -496,6 +503,7 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
         // socket may already be closing — ignore
       }
     }
+    sockets = next;
     return count;
   }
 
