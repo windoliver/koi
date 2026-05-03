@@ -84,6 +84,15 @@ export interface WebChannelConfig {
    */
   readonly allowUnauthenticated?: boolean;
   readonly originAllowList?: readonly string[] | undefined;
+  /**
+   * Opt out of the cross-origin fail-closed default. When `authenticate` is
+   * configured, the constructor refuses to start unless `originAllowList` is
+   * also set — this prevents CSRF-style abuse for hosts that authenticate
+   * via browser-ambient credentials (cookies, etc.). Setting this to `true`
+   * allows any origin and is ONLY safe when the host's auth scheme is not
+   * browser-ambient (e.g. tokens issued and managed entirely by your own JS).
+   */
+  readonly allowAnyOrigin?: boolean;
 }
 
 export interface WebChannelAdapter extends ChannelAdapter {
@@ -115,6 +124,32 @@ interface RawInbound {
 }
 
 /**
+ * Validate one content block. We require a known `kind` plus the fields that
+ * `kind` mandates so malformed blocks are rejected synchronously at the HTTP
+ * boundary — never accepted with 202 and discovered as undeliverable later.
+ */
+function isContentBlock(b: unknown): b is ContentBlock {
+  if (typeof b !== "object" || b === null) return false;
+  const r = b as { readonly kind?: unknown; readonly text?: unknown; readonly url?: unknown };
+  switch (r.kind) {
+    case "text":
+      return typeof r.text === "string";
+    case "image":
+    case "file":
+      return typeof r.url === "string";
+    case "button":
+      return (
+        typeof (r as { readonly label?: unknown }).label === "string" &&
+        typeof (r as { readonly value?: unknown }).value === "string"
+      );
+    case "custom":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
  * Validate an inbound payload and convert to InboundMessage. The senderId is
  * NEVER taken from the request body — it must come from the verified principal
  * passed in by the caller. This prevents impersonation at the HTTP boundary.
@@ -122,7 +157,8 @@ interface RawInbound {
 function parseInbound(raw: unknown, principalSenderId: string): InboundMessage | null {
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as RawInbound;
-  if (!Array.isArray(r.content)) return null;
+  if (!Array.isArray(r.content) || r.content.length === 0) return null;
+  if (!r.content.every(isContentBlock)) return null;
   const threadId = typeof r.threadId === "string" ? r.threadId : undefined;
   const metadata =
     typeof r.metadata === "object" && r.metadata !== null ? (r.metadata as JsonObject) : undefined;
@@ -178,6 +214,21 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
       "[channel-web] no authentication configured. Either pass `authenticate` " +
         "or set `allowUnauthenticated: true` to explicitly opt into open mode " +
         "(local dev only).",
+    );
+  }
+
+  // Fail closed against CSRF-style cross-origin abuse: when the host wires
+  // browser-managed credentials (cookies, ambient bearer tokens via
+  // `authenticate`) we MUST require an explicit `originAllowList`. Without
+  // it, any third-party origin could drive authenticated POSTs and WS
+  // upgrades into the agent endpoint. Hosts that want any-origin behavior
+  // must opt in deliberately.
+  if (authenticate !== undefined && allowList === undefined && config.allowAnyOrigin !== true) {
+    throw new Error(
+      "[channel-web] authenticated transport requires an explicit `originAllowList`. " +
+        "Pass the array of trusted browser origins, or set `allowAnyOrigin: true` " +
+        "(only safe when the auth scheme is not browser-ambient — e.g. tokens " +
+        "issued and managed entirely by your own JS).",
     );
   }
 

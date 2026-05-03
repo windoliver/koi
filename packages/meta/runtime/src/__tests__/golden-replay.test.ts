@@ -2773,7 +2773,14 @@ describe("Golden: @koi/channel-web", () => {
   test("Bun.serve binds and POST /messages dispatches an InboundMessage", async () => {
     const { createWebChannel } = await import("@koi/channel-web");
 
-    const channel = createWebChannel({ port: 0, allowUnauthenticated: true });
+    // In open mode, the adapter stamps every inbound message with
+    // `config.senderId` — body-supplied senderId is intentionally ignored
+    // because the transport never trusts it.
+    const channel = createWebChannel({
+      port: 0,
+      allowUnauthenticated: true,
+      senderId: "golden-user",
+    });
     await channel.connect();
     const port = (channel as unknown as { readonly port: number }).port;
     expect(port).toBeGreaterThan(0);

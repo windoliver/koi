@@ -68,7 +68,8 @@ Returns a fully wired `ChannelAdapter`. `connect()` starts the server,
 | `hostname` | `string` | `"127.0.0.1"` | Bind address |
 | `path` | `string` | `"/"` | Path prefix for `messages` and `events` |
 | `authenticate` | `(ctx: WebAuthContext) => WebAuthResult \| null \| Promise<...>` | open mode | Resolves the principal. Receives `{ token, threadId, request }`; returns `{ senderId }` to allow or `null` to deny (401). The host is responsible for binding `threadId` to the principal — this is where multi-tenant isolation is enforced. |
-| `originAllowList` | `readonly string[] \| undefined` | undefined (allow all) | CORS origin allow-list |
+| `originAllowList` | `readonly string[] \| undefined` | undefined | CORS origin allow-list. **Required** when `authenticate` is set, unless `allowAnyOrigin: true` is also set (CSRF fail-closed default). |
+| `allowAnyOrigin` | `boolean` | `false` | Opt out of the CSRF fail-closed default. Only safe when the auth scheme is not browser-ambient (e.g. tokens issued and managed entirely by your own JS — not cookies). |
 | `senderId` | `string` | `"web-user"` | Default `senderId` for open mode (no `authenticate`). Production deployments MUST configure `authenticate` instead. |
 
 ### Capabilities

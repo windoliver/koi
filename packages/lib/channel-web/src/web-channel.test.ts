@@ -17,6 +17,10 @@ async function startHarness(
     port: 0,
     hostname: "127.0.0.1",
     allowUnauthenticated: true,
+    // Test harness opt-in: skip the CSRF fail-closed gate. Real consumers
+    // pass `originAllowList` (or `allowAnyOrigin: true` if their auth is
+    // not browser-ambient).
+    allowAnyOrigin: true,
     ...config,
   });
   await adapter.connect();
@@ -42,7 +46,27 @@ describe("@koi/channel-web", () => {
 
   test("createWebChannel constructs cleanly when authenticate is provided", () => {
     expect(() =>
-      createWebChannel({ port: 0, authenticate: () => ({ senderId: "u" }) }),
+      createWebChannel({
+        port: 0,
+        authenticate: () => ({ senderId: "u" }),
+        originAllowList: ["https://app.example"],
+      }),
+    ).not.toThrow();
+  });
+
+  test("createWebChannel throws when authenticate is set without originAllowList (CSRF gate)", () => {
+    expect(() => createWebChannel({ port: 0, authenticate: () => ({ senderId: "u" }) })).toThrow(
+      /originAllowList/,
+    );
+  });
+
+  test("createWebChannel allows authenticate with no allowList when allowAnyOrigin is opted in", () => {
+    expect(() =>
+      createWebChannel({
+        port: 0,
+        authenticate: () => ({ senderId: "u" }),
+        allowAnyOrigin: true,
+      }),
     ).not.toThrow();
   });
 
@@ -131,6 +155,37 @@ describe("@koi/channel-web", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ senderId: "x" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test("POST rejects content blocks with unknown kind synchronously (no async data loss)", async () => {
+    h = await startHarness();
+    const res = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: [{ oops: 1 }] }),
+    });
+    expect(res.status).toBe(400);
+    expect(h.received).toHaveLength(0);
+  });
+
+  test("POST rejects empty content[] with 400", async () => {
+    h = await startHarness();
+    const res = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: [] }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test("POST rejects text block with non-string text field with 400", async () => {
+    h = await startHarness();
+    const res = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: [{ kind: "text", text: 123 }] }),
     });
     expect(res.status).toBe(400);
   });
