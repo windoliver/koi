@@ -80,9 +80,11 @@ export interface VerificationCache {
 
 export interface VerifyOptions {
   /**
-   * Optional caller namespace folded into the cache key. Use this to
-   * partition the cache by tenant, environment, or verifier suite. Defaults
-   * to the empty string.
+   * Caller namespace folded into the cache key. REQUIRED when `cache` is
+   * provided — partitions the cache by tenant, environment, or verifier
+   * suite so two callers sharing a backend cannot replay each other's
+   * attestations. Must be a non-empty string. Use a constant per (tenant,
+   * environment) pair; the value is opaque to the verifier.
    */
   readonly namespace?: string | undefined;
   /**
@@ -93,5 +95,15 @@ export interface VerifyOptions {
    * silently bypassed for that run rather than served a non-bound key.
    */
   readonly cache?: VerificationCache | undefined;
+  /**
+   * Behavior when `cache.get` throws (transient backend outage, etc.).
+   *
+   *   - `"miss"` (default): treat as a cache miss and re-run stages. Safest
+   *     for read-only verifiers — degraded backend cannot block verification.
+   *   - `"fail"`: return INTERNAL inside the Result envelope. Use when stages
+   *     have non-idempotent side effects and re-execution must not silently
+   *     happen because the cache became unreachable.
+   */
+  readonly cacheReadFailure?: "miss" | "fail" | undefined;
   readonly signal?: AbortSignal | undefined;
 }

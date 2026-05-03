@@ -232,9 +232,27 @@ export async function runPipeline<I>(
     };
   }
 
-  const namespace = options?.namespace ?? "";
+  const namespace = options?.namespace;
   const cache = options?.cache;
+  const cacheReadFailure = options?.cacheReadFailure ?? "miss";
   const signal = options?.signal;
+
+  // Fail closed against silent cross-tenant replay: a shared cache backend
+  // with two callers that both forget to set `namespace` would happily serve
+  // each other's attestations whenever artifact content + stage metadata
+  // match. Require an explicit non-empty namespace whenever a cache is
+  // provided. Callers that do not need partitioning can pass any constant.
+  if (cache !== undefined && (typeof namespace !== "string" || namespace.length === 0)) {
+    return {
+      ok: false,
+      error: {
+        code: "INVALID_CONFIG",
+        message:
+          "VerifyOptions.namespace is required (non-empty string) when cache is provided; defaulting to '' would replay attestations across callers sharing the backend.",
+        retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
+      },
+    };
+  }
 
   // Snapshot the artifact via structuredClone before BOTH fingerprinting
   // AND running stages. This binds the cache key, the verification work,
@@ -319,6 +337,11 @@ export async function runPipeline<I>(
       // so two structurally-equal artifacts always produce the same key and
       // a cyclic snapshot bypasses caching rather than aliasing.
       const digest = canonicalJson(snapshot, new WeakSet<object>(), { count: 0 });
+      if (typeof namespace !== "string") {
+        // Unreachable: validated above when cache !== undefined. Defensive
+        // guard for the type narrow rather than an `as` cast.
+        throw new Error("namespace must be a string when cache is provided");
+      }
       composedKey = composeCacheKey(namespace, digest, stages);
     } catch (e: unknown) {
       // Cyclic snapshot (or other digest failure) — bypass caching for this
@@ -340,18 +363,21 @@ export async function runPipeline<I>(
     try {
       hit = await cache.get(composedKey);
     } catch (e: unknown) {
-      // Cache READS map to a typed Result. The advertised contract is
-      // exception-free; a backend outage during read is a stage-attributable
-      // INTERNAL error, not an unhandled rejection that crashes the caller.
-      // Reads are NOT silently swallowed (unlike writes): a read failure
-      // means we cannot prove the cache is empty, so re-running stages
-      // could double-execute side effects. Surface and let the caller
-      // decide.
+      // Cache read failure handling is policy: "miss" (default) treats the
+      // outage as a cache miss and re-runs stages, so a degraded backend
+      // cannot block all verification. "fail" returns INTERNAL inside the
+      // Result envelope — appropriate when stages have non-idempotent side
+      // effects and silent re-execution must be avoided. Either way, the
+      // exception never escapes the documented Promise<Result<...>> contract.
       const detail = e instanceof Error ? e.message : "cache.get threw";
-      return {
-        ok: false,
-        error: stageError("INTERNAL", "<cache>", `Cache read failed: ${detail}`, e),
-      };
+      if (cacheReadFailure === "fail") {
+        return {
+          ok: false,
+          error: stageError("INTERNAL", "<cache>", `Cache read failed: ${detail}`, e),
+        };
+      }
+      console.debug("[forge-verifier] cache.get failed, treating as miss:", e);
+      hit = undefined;
     }
     // Re-check after the await — a remote cache.get can take real time and
     // a caller that aborted during the read must not receive a cached pass
