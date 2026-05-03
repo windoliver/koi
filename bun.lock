@@ -743,6 +743,15 @@
         "@koi/watch-patterns": "workspace:*",
       },
     },
+    "packages/lib/middleware-user-model": {
+      "name": "@koi/middleware-user-model",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+    },
     "packages/lib/model-registry": {
       "name": "@koi/model-registry",
       "version": "0.0.0",
@@ -1284,6 +1293,7 @@
         "@koi/middleware-tool-error-formatter": "workspace:*",
         "@koi/middleware-turn-ack": "workspace:*",
         "@koi/middleware-turn-prelude": "workspace:*",
+        "@koi/middleware-user-model": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/nexus-client": "workspace:*",
@@ -2408,6 +2418,8 @@
     "@koi/middleware-turn-ack": ["@koi/middleware-turn-ack@workspace:packages/lib/middleware-turn-ack"],
 
     "@koi/middleware-turn-prelude": ["@koi/middleware-turn-prelude@workspace:packages/lib/middleware-turn-prelude"],
+
+    "@koi/middleware-user-model": ["@koi/middleware-user-model@workspace:packages/lib/middleware-user-model"],
 
     "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
 

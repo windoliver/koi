@@ -108,6 +108,7 @@
     "@koi/middleware-tool-error-formatter": "workspace:*",
     "@koi/middleware-turn-ack": "workspace:*",
     "@koi/middleware-turn-prelude": "workspace:*",
+    "@koi/middleware-user-model": "workspace:*",
     "@koi/outcome-evaluator": "workspace:*",
     "@koi/watch-patterns": "workspace:*",
     "@koi/model-router": "workspace:*",
