@@ -7,7 +7,7 @@
  * Growth rule: each new package PR adds assertions here.
  */
 
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
 import { readdir } from "node:fs/promises";
 import type { EngineAdapter, EngineEvent, EngineInput, ModelChunk } from "@koi/core";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
@@ -896,6 +896,199 @@ describe("Golden: @koi/context-manager", () => {
   // contextEngineFactory). End-to-end coverage of prepare()-driven
   // adapter integration now flows through the auto-wired controller path
   // exercised by the other golden-replay tests in this file.
+
+  // ---------------------------------------------------------------------------
+  // Pluggable context-engine slot — corner cases (#1767)
+  // ---------------------------------------------------------------------------
+
+  describe("manifest config validation", () => {
+    test("rejects out-of-range microTargetFraction", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { microTargetFraction: 1.5 },
+        }),
+      ).toThrow(/microTargetFraction.*must be in \(0, 1\]/);
+    });
+
+    test("rejects previewChars=0", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { previewChars: 0 },
+        }),
+      ).toThrow(/previewChars=0 must be > 0/);
+    });
+
+    test("rejects non-integer prunePreserveLastK", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { prunePreserveLastK: 1.5 },
+        }),
+      ).toThrow(/prunePreserveLastK=1\.5 must be an integer/);
+    });
+
+    test("rejects soft > hard cross-field invariant", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { softTriggerFraction: 0.9, hardTriggerFraction: 0.5 },
+        }),
+      ).toThrow(/softTriggerFraction \(0\.9\) must be <= hardTriggerFraction \(0\.5\)/);
+    });
+
+    test("rejects micro >= soft cross-field invariant", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { microTargetFraction: 0.6, softTriggerFraction: 0.6 },
+        }),
+      ).toThrow(/microTargetFraction \(0\.6\) must be < softTriggerFraction \(0\.6\)/);
+    });
+
+    test("rejects contextWindowSize=0", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { contextWindowSize: 0 },
+        }),
+      ).toThrow(/contextWindowSize=0 must be > 0/);
+    });
+
+    test("rejects non-numeric value with field name in message", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { contextWindowSize: "100000" as unknown as number },
+        }),
+      ).toThrow(/contextWindowSize.*finite, non-negative number/);
+    });
+
+    test("accepts a valid manifest config bag and applies contextWindowSize", async () => {
+      const engine = createContextEngine({
+        engine: "@koi/context-manager",
+        version: "1.0.0",
+        config: { contextWindowSize: 50_000, softTriggerFraction: 0.6 },
+      });
+      const ctx = {
+        session: {
+          agentId: "a" as never,
+          runId: "r" as never,
+          sessionId: "s" as never,
+          metadata: {},
+        },
+        turnIndex: 0,
+        turnId: "t-cfg" as never,
+        messages: [],
+        metadata: {},
+      } satisfies TurnContext;
+      await engine.prepare(ctx, [makeMsg("user", "hi")]);
+      const occ = await engine.describeOccupancy?.();
+      expect(occ?.maxTokens).toBe(50_000);
+    });
+
+    test("direct options path also enforces invariants", () => {
+      expect(() => createContextEngine({ contextWindowSize: 0 })).toThrow(
+        /contextWindowSize=0 must be > 0/,
+      );
+      expect(() => createContextEngine({ microTargetFraction: 2 })).toThrow(
+        /microTargetFraction.*must be in \(0, 1\]/,
+      );
+    });
+  });
+
+  describe("per-turn occupancy lifecycle", () => {
+    function makeCtx(turnId: string): TurnContext {
+      return {
+        session: {
+          agentId: "a" as never,
+          runId: "r" as never,
+          sessionId: "s" as never,
+          metadata: {},
+        },
+        turnIndex: 0,
+        turnId: turnId as never,
+        messages: [],
+        metadata: {},
+      } satisfies TurnContext;
+    }
+
+    test("describeOccupancy reports peak across overlapping turns", async () => {
+      const engine = createContextEngine({ contextWindowSize: 100_000 });
+      const small: InboundMessage[] = [makeMsg("user", "tiny")];
+      const large: InboundMessage[] = [];
+      for (let i = 0; i < 6; i++) large.push(makeMsg("user", `B${i}: ${block}`));
+
+      await engine.prepare(makeCtx("turn-A"), small);
+      const occA = await engine.describeOccupancy?.();
+      const peakAfterA = occA?.estimatedTokens ?? 0;
+
+      await engine.prepare(makeCtx("turn-B"), large);
+      const occBoth = await engine.describeOccupancy?.();
+      expect(occBoth?.estimatedTokens).toBeGreaterThan(peakAfterA);
+
+      // Releasing the larger turn drops the peak back to A's level.
+      engine.onAfterTurn?.(makeCtx("turn-B"));
+      const occAfterRelease = await engine.describeOccupancy?.();
+      expect(occAfterRelease?.estimatedTokens).toBe(peakAfterA);
+
+      // Releasing both leaves no active turns → zero pressure.
+      engine.onAfterTurn?.(makeCtx("turn-A"));
+      const occEmpty = await engine.describeOccupancy?.();
+      expect(occEmpty?.estimatedTokens).toBe(0);
+      expect(occEmpty?.pressure).toBe(0);
+    });
+
+    test("re-entrant turnId overwrites prior estimate without leaking", async () => {
+      const engine = createContextEngine({ contextWindowSize: 100_000 });
+      await engine.prepare(makeCtx("turn-X"), [makeMsg("user", `${block}${block}`)]);
+      const heavy = (await engine.describeOccupancy?.())?.estimatedTokens ?? 0;
+      expect(heavy).toBeGreaterThan(0);
+
+      // Same turnId, smaller payload — must replace, not accumulate.
+      await engine.prepare(makeCtx("turn-X"), [makeMsg("user", "hi")]);
+      const light = (await engine.describeOccupancy?.())?.estimatedTokens ?? 0;
+      expect(light).toBeLessThan(heavy);
+
+      engine.onAfterTurn?.(makeCtx("turn-X"));
+      const empty = await engine.describeOccupancy?.();
+      expect(empty?.estimatedTokens).toBe(0);
+    });
+  });
+
+  describe("swap controller resilience", () => {
+    test("subscriber throw does not break swap or block other subscribers", () => {
+      const def = createContextEngine();
+      const pass = createPassthroughContextEngine();
+      const ctrl = createContextEngineSwapController(def);
+
+      const seenByGood: string[] = [];
+      const errSpy = spyOn(console, "error").mockImplementation(() => {});
+      ctrl.subscribe(() => {
+        throw new Error("subscriber boom");
+      });
+      ctrl.subscribe((notice) => {
+        seenByGood.push(notice.to.name);
+      });
+
+      const swap = ctrl.swap(pass, {
+        turnId: "run-x:t1" as Parameters<typeof ctrl.swap>[1]["turnId"],
+        reason: "test",
+      });
+      expect(swap?.to.name).toBe("@koi/context-manager/passthrough");
+      expect(ctrl.current()).toBe(pass);
+      expect(seenByGood).toEqual(["@koi/context-manager/passthrough"]);
+      errSpy.mockRestore();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
