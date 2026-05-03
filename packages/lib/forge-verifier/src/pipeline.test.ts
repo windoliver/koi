@@ -991,6 +991,38 @@ describe("built-in stage factories propagate StageContext", () => {
   });
 });
 
+describe("topology-aware canonical encoding (shared refs distinct from duplicates)", () => {
+  test("DAG with shared subobject does NOT alias the same artifact with two independent copies", async () => {
+    // Stages observe `===` reference identity, so a cached pass for the
+    // shared-ref graph is not valid for the independent-copy graph and
+    // vice versa. Topology must be part of the cache key.
+    const cache = createMemoryCache();
+    const sharedStage = counted(createSyntaxStage(okCheck));
+    const dupStage = counted(createSyntaxStage(okCheck));
+    const shared = { kind: "leaf", n: 1 };
+    const dagShared: FakeArtifact = { name: "x", a: shared, b: shared } as unknown as FakeArtifact;
+    const dagDup: FakeArtifact = {
+      name: "x",
+      a: { kind: "leaf", n: 1 },
+      b: { kind: "leaf", n: 1 },
+    } as unknown as FakeArtifact;
+    await runPipeline([sharedStage.stage], dagShared, { cache, namespace: "topo" });
+    await runPipeline([dupStage.stage], dagDup, { cache, namespace: "topo" });
+    expect(sharedStage.calls()).toBe(1);
+    expect(dupStage.calls()).toBe(1); // would be 0 if topologies aliased
+  });
+
+  test("identical DAG submitted twice still hits cache (topology-stable)", async () => {
+    const cache = createMemoryCache();
+    const stage = counted(createSyntaxStage(okCheck));
+    const shared = { kind: "leaf" };
+    const dag = { name: "x", a: shared, b: shared } as unknown as FakeArtifact;
+    await runPipeline([stage.stage], dag, { cache, namespace: "topo" });
+    await runPipeline([stage.stage], dag, { cache, namespace: "topo" });
+    expect(stage.calls()).toBe(1); // same DAG → same key → cache hit
+  });
+});
+
 describe("sparse arrays (no cache-key aliasing with dense arrays)", () => {
   test("sparse array at root is rejected pre-clone — would alias dense in cache key", async () => {
     // `new Array(1)` has length 1 with a hole at index 0. `[].length === 0`

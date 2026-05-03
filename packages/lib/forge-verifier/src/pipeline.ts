@@ -28,6 +28,66 @@ import type { StageContext, StageOutcome, VerifierStage, VerifyOptions } from ".
  */
 const inflight = new Map<string, Promise<Result<ForgeVerificationSummary>>>();
 
+/**
+ * Race an in-flight leader promise against this caller's own AbortSignal.
+ * If the signal fires first, return TIMEOUT to THIS caller — the leader
+ * keeps running for other followers. If the leader resolves first, return
+ * its result verbatim. Either way, no cross-caller leakage.
+ */
+async function waitWithSignal(
+  leader: Promise<Result<ForgeVerificationSummary>>,
+  signal: AbortSignal,
+): Promise<Result<ForgeVerificationSummary>> {
+  if (signal.aborted) {
+    return {
+      ok: false,
+      error: {
+        code: "TIMEOUT",
+        message: "Caller aborted while awaiting in-flight verification.",
+        retryable: RETRYABLE_DEFAULTS.TIMEOUT,
+        context: { stage: "<inflight>" },
+      },
+    };
+  }
+  return new Promise((resolve) => {
+    const onAbort = (): void => {
+      resolve({
+        ok: false,
+        error: {
+          code: "TIMEOUT",
+          message: "Caller aborted while awaiting in-flight verification.",
+          retryable: RETRYABLE_DEFAULTS.TIMEOUT,
+          context: { stage: "<inflight>" },
+        },
+      });
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    leader.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        // Leader threw (should be unreachable — work() always returns Result),
+        // but defensively map to INTERNAL inside the envelope rather than
+        // letting the rejection propagate.
+        const detail = err instanceof Error ? err.message : "in-flight verification threw";
+        resolve({
+          ok: false,
+          error: {
+            code: "INTERNAL",
+            message: `Leader pipeline threw: ${detail}`,
+            retryable: RETRYABLE_DEFAULTS.INTERNAL,
+            context: { stage: "<inflight>" },
+            cause: err,
+          },
+        });
+      },
+    );
+  });
+}
+
 function stageError(code: KoiErrorCode, stage: string, message: string, cause?: unknown): KoiError {
   return {
     code,
@@ -176,51 +236,66 @@ interface NodeBudget {
   count: number;
 }
 
+interface CanonicalState {
+  readonly onStack: WeakSet<object>;
+  readonly seen: WeakMap<object, number>;
+  readonly budget: NodeBudget;
+  refCounter: number;
+}
+
 /**
- * Stack-tracking serializer. `onStack` contains only ancestors of the
- * current node, so a DAG with shared subobjects reached via different
- * paths is NOT misclassified as a cycle — only true back-edges (a node
- * reached while it is still being processed) throw.
+ * Topology-aware canonical serializer. Tracks two things:
+ *
+ *   - `onStack`: ancestors of the current node — a re-entry is a TRUE
+ *     cycle and throws (no deterministic linearization exists).
+ *   - `seen`: every previously-visited object → integer ID. Re-encountering
+ *     a shared subobject (DAG aliasing) emits `ref:N` instead of recursing.
+ *     This makes shared-reference DAGs cacheable AND distinct from
+ *     identical-content non-shared graphs: stages observe reference
+ *     identity (`a.x === a.y`), so the cached pass is bound to topology.
  */
-function canonicalJson(
-  value: unknown,
-  onStack: WeakSet<object>,
-  budget: NodeBudget,
-  depth = 0,
-): string {
+function canonicalJson(value: unknown, state: CanonicalState, depth = 0): string {
   if (depth > MAX_ARTIFACT_DEPTH) {
     throw new Error(`snapshot exceeds maximum depth (${MAX_ARTIFACT_DEPTH})`);
   }
-  budget.count += 1;
-  if (budget.count > MAX_ARTIFACT_NODES) {
+  state.budget.count += 1;
+  if (state.budget.count > MAX_ARTIFACT_NODES) {
     throw new Error(`snapshot exceeds maximum node count (${MAX_ARTIFACT_NODES})`);
   }
   if (value === null || typeof value !== "object") return encodePrimitive(value);
-  if (onStack.has(value)) {
+  if (state.onStack.has(value)) {
     throw new Error("snapshot contains a cycle; cannot derive a deterministic cache key");
   }
-  onStack.add(value);
+  // Topology-aware aliasing: a node reached via a non-back-edge that we've
+  // already serialized once gets a stable reference ID. Different DAG
+  // topologies produce different keys; identical-content non-shared graphs
+  // never collide with shared-reference graphs.
+  const priorId = state.seen.get(value);
+  if (priorId !== undefined) {
+    return `ref:${priorId}`;
+  }
+  const id = state.refCounter++;
+  state.seen.set(value, id);
+  state.onStack.add(value);
   try {
     if (Array.isArray(value)) {
       // Iterate 0..length-1 explicitly so a sparse array (`new Array(1)`)
       // does NOT serialize equal to `[]`. `Array.prototype.map` skips holes,
       // which would alias different artifact shapes to the same cache key.
-      // Holes are also rejected upstream by `rejectUnsupportedShape`, but
-      // the explicit loop here is defense in depth at the encoder.
       const parts: string[] = [];
       for (let i = 0; i < value.length; i++) {
-        parts.push(canonicalJson(value[i], onStack, budget, depth + 1));
+        parts.push(canonicalJson(value[i], state, depth + 1));
       }
-      return `[${parts.join(",")}]`;
+      return `#${id}[${parts.join(",")}]`;
     }
     const obj = value as Record<string, unknown>;
     const keys = Object.keys(obj).sort();
     const parts = keys.map(
-      (k) => `${JSON.stringify(k)}:${canonicalJson(obj[k], onStack, budget, depth + 1)}`,
+      (k) => `${JSON.stringify(k)}:${canonicalJson(obj[k], state, depth + 1)}`,
     );
-    return `{${parts.join(",")}}`;
+    return `#${id}{${parts.join(",")}}`;
   } finally {
-    onStack.delete(value);
+    state.onStack.delete(value);
   }
 }
 
@@ -415,7 +490,12 @@ export async function runPipeline<I>(
       // the snapshot boundary. canonicalJson is sorted-keys + cycle-rejecting,
       // so two structurally-equal artifacts always produce the same key and
       // a cyclic snapshot bypasses caching rather than aliasing.
-      const digest = canonicalJson(snapshot, new WeakSet<object>(), { count: 0 });
+      const digest = canonicalJson(snapshot, {
+        onStack: new WeakSet<object>(),
+        seen: new WeakMap<object, number>(),
+        budget: { count: 0 },
+        refCounter: 0,
+      });
       if (typeof namespace !== "string") {
         // Unreachable: validated above when cache !== undefined. Defensive
         // guard for the type narrow rather than an `as` cast.
@@ -432,19 +512,24 @@ export async function runPipeline<I>(
   }
 
   // Single-flight coalescing: if another caller is already verifying the
-  // same composedKey in this process, await its result instead of running
-  // a duplicate pipeline. Registered BEFORE cache.get + stages so concurrent
-  // callers cannot all miss + all run.
+  // same composedKey in this process, share its work instead of running
+  // a duplicate pipeline. Crucially registered BEFORE cache.get + stages
+  // so concurrent callers cannot all miss + all run.
   //
-  // Coalescing is DISABLED when the caller provides a signal: different
-  // callers have different cancellation timelines, and a leader's TIMEOUT
-  // (from its own abort firing) must not propagate to followers that did
-  // not abort. Signal-bearing callers run their own pipeline; only
-  // signal-free callers coalesce, where the leader's result is genuinely
-  // shareable.
-  if (composedKey !== undefined && signal === undefined) {
+  // Cancellation is per-WAITER, not per-key:
+  //   - Leader runs work() with its own signal (captured by `signal` below).
+  //   - Followers attach to the leader's promise, but RACE it against
+  //     their own signal so a follower's abort short-circuits its wait
+  //     without affecting the leader or other followers.
+  //   - Only signal-free callers may BECOME the leader (signal-bearing
+  //     leaders would impose their cancellation on every follower). A
+  //     signal-bearing caller arriving with no leader runs alone.
+  if (composedKey !== undefined) {
     const existing = inflight.get(composedKey);
-    if (existing !== undefined) return existing;
+    if (existing !== undefined) {
+      if (signal === undefined) return existing;
+      return waitWithSignal(existing, signal);
+    }
   }
 
   const work = async (): Promise<Result<ForgeVerificationSummary>> => {
