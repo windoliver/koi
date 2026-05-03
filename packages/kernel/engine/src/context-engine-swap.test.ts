@@ -100,20 +100,24 @@ describe("createContextEngineSwapController", () => {
     expect(next).toBeUndefined();
   });
 
-  test("rollback returns undefined when declared target no longer on stack", () => {
+  test("swap rejects unreachable rollbackTarget up-front instead of deferring to rollback time", () => {
     const ctrl = createContextEngineSwapController(engineA);
     const engineMissing: ContextEngine = {
       identity: { name: "missing", version: "0.0.0" },
       prepare: (_c, m) => m,
     };
-    ctrl.swap(engineB, {
-      turnId: t(1),
-      reason: "experiment",
-      rollbackTarget: engineMissing.identity,
-    });
-    expect(ctrl.rollback({ turnId: t(2), reason: "want missing" })).toBeUndefined();
-    // Active engine unchanged when rollback refuses to satisfy the target.
-    expect(ctrl.current()).toBe(engineB);
+    // Validating at swap time means a configuration typo or stale target
+    // fails fast, instead of turning rollback() into a silent no-op at
+    // incident time when operators need it most.
+    expect(() =>
+      ctrl.swap(engineB, {
+        turnId: t(1),
+        reason: "experiment",
+        rollbackTarget: engineMissing.identity,
+      }),
+    ).toThrow(/rollbackTarget.*not reachable/);
+    // Stack untouched; active engine unchanged.
+    expect(ctrl.current()).toBe(engineA);
   });
 
   test("swap may carry an explicit rollbackTarget identity", () => {

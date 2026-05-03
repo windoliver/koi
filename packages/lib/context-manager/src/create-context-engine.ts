@@ -139,7 +139,28 @@ function checkBudgetInvariants(out: Readonly<Record<string, number | string>>): 
   }
 }
 
+// Allowlist of every key the manifest config bag may carry. Anything
+// outside this set is rejected at boot — silently dropping unknown keys
+// hid schema drift across versioned manifests, which exactly defeats the
+// "pinned, traceable context behavior" the slot exists to provide.
+const ALLOWED_MANIFEST_CONFIG_KEYS: ReadonlySet<string> = new Set([
+  ...NUMERIC_BUDGET_KEYS,
+  "modelId",
+]);
+
 function validateManifestBudget(cfg: Readonly<Record<string, unknown>>): BudgetConfig {
+  const unknown = Object.keys(cfg).filter((k) => !ALLOWED_MANIFEST_CONFIG_KEYS.has(k));
+  if (unknown.length > 0) {
+    throw new Error(
+      `createContextEngine: manifest.context.config has unknown key(s): ${unknown
+        .map((k) => `"${k}"`)
+        .join(", ")}. Allowed keys: ${[...ALLOWED_MANIFEST_CONFIG_KEYS]
+        .map((k) => `"${k}"`)
+        .join(
+          ", ",
+        )}. Reject schema drift up-front rather than booting with defaults silently substituted.`,
+    );
+  }
   const out: Record<string, number | string> = {};
   for (const key of NUMERIC_BUDGET_KEYS) {
     const v = cfg[key];

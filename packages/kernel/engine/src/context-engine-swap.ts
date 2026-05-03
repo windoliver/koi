@@ -253,6 +253,23 @@ export function createContextEngineSwapController(
         `ContextEngineSwapController: refusing to swap to "${to.identity.name}@${to.identity.version}" — manifest pinned ${pinDescription()}. Pass { force: true } to override.`,
       );
     }
+    // Validate the caller-supplied `rollbackTarget` against the engines
+    // that will actually be reachable after this swap commits: every
+    // engine already on `priorStack`, plus the current `active` engine
+    // which is about to be pushed. A typo or stale target would otherwise
+    // silently pass swap() and turn rollback() into a no-op at incident
+    // time, exactly when operators need it to work.
+    if (options.rollbackTarget !== undefined) {
+      const target = options.rollbackTarget;
+      const reachable =
+        sameIdentity(active.identity, target) ||
+        priorStack.some((frame) => sameIdentity(frame.prior.identity, target));
+      if (!reachable) {
+        throw new Error(
+          `ContextEngineSwapController: rollbackTarget "${target.name}@${target.version}" is not reachable from the controller's prior stack. Provide a target that matches an engine currently on the rollback path, or omit rollbackTarget to default to the immediately prior engine.`,
+        );
+      }
+    }
     // Snapshot pinned turns BEFORE flipping `active` so observers see
     // exactly which in-flight turns are still serving on the pre-swap
     // engine. `swap()` only repoints new-turn lookups; per-turn pins
