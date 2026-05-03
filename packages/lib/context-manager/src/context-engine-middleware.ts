@@ -15,6 +15,17 @@
  *   2. Manage the engine yourself: pair this middleware with
  *      `createContextEngineProvider(engine)` and skip
  *      `contextEngineFactory`. You then own swap orchestration too.
+ *
+ * **Lifecycle gap on cooperating-adapter shortcut:** when an adapter
+ * yields `done` directly without first emitting `turn_end`, the runtime's
+ * normal `onAfterTurn` middleware hook does NOT fire. The auto-wired
+ * `contextEngineFactory` path closes this with a kernel-level synthesizer
+ * keyed off the swap controller; this manual middleware has no equivalent
+ * and so a successful done-only turn will skip `engine.onAfterTurn` for
+ * stateful engines (`createContextEngine` per-turn occupancy, eviction
+ * queues, checkpoint bookkeeping). If your adapter takes the
+ * cooperating-shortcut path, prefer `contextEngineFactory` instead of
+ * this middleware.
  */
 
 import type { ContextEngine, KoiMiddleware, ModelChunk } from "@koi/core";
