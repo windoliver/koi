@@ -76,7 +76,7 @@ import {
 import { AgentEntity } from "./agent-entity.js";
 import { createBrickRequiresExtension } from "./brick-requires-extension.js";
 import { createTerminalHandlers } from "./compose-bridge.js";
-import { createContextEngineProvider } from "./context-engine-provider.js";
+import { createContextEngineProxyProvider } from "./context-engine-provider.js";
 import { createContextEngineSlotMiddleware } from "./context-engine-runtime.js";
 import {
   type ContextEngineSwapController,
@@ -156,15 +156,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       }
     }
     contextEngineSwapController = createContextEngineSwapController(initialEngine);
-    // Provider attaches the live engine instance under CONTEXT_ENGINE; we
-    // re-attach via a wrapping provider that resolves through the controller
-    // so a swap reflects in agent.component(CONTEXT_ENGINE) reads as well.
+    const ctrlRef = contextEngineSwapController;
+    // Attach a proxy under CONTEXT_ENGINE that delegates to the swap
+    // controller's current engine on every read. AgentEntity freezes
+    // assembled components, so attaching the boot-time instance directly
+    // would leave `agent.component(CONTEXT_ENGINE)` pointing at the old
+    // engine forever after a swap.
     contextEngineProviders.push(
-      createContextEngineProvider(initialEngine, { priority: COMPONENT_PRIORITY.BUNDLED }),
+      createContextEngineProxyProvider(() => ctrlRef.current(), {
+        priority: COMPONENT_PRIORITY.BUNDLED,
+      }),
     );
-    contextEngineMiddleware.push(
-      createContextEngineSlotMiddleware(() => contextEngineSwapController?.current()),
-    );
+    contextEngineMiddleware.push(createContextEngineSlotMiddleware(() => ctrlRef.current()));
   }
   const allProviders = [governanceProvider, ...contextEngineProviders, ...providers];
   const { agent, conflicts } = await AgentEntity.assemble(pid, manifest, allProviders);

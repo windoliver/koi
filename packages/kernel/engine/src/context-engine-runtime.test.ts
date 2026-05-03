@@ -68,6 +68,61 @@ describe("createContextEngineSlotMiddleware", () => {
     expect(captured[0]?.messages).toEqual(original);
   });
 
+  test("wrapModelStream also drives engine.prepare (native streaming path)", async () => {
+    type ModelChunk = import("@koi/core").ModelChunk;
+    const captured: ModelRequest[] = [];
+    const engine: ContextEngine = {
+      identity: { name: "stream-engine", version: "1.0.0" },
+      prepare: (_c, msgs) => [
+        ...msgs,
+        { senderId: "stream-tag", timestamp: 1, content: [{ kind: "text", text: "S" }] },
+      ],
+    };
+    const ctrl = createContextEngineSwapController(engine);
+    const mw = createContextEngineSlotMiddleware(() => ctrl.current());
+
+    const next = (req: ModelRequest): AsyncIterable<ModelChunk> => {
+      captured.push(req);
+      return {
+        async *[Symbol.asyncIterator](): AsyncIterator<ModelChunk, undefined, undefined> {
+          yield { kind: "text_delta", delta: "ok" };
+        },
+      };
+    };
+
+    if (mw.wrapModelStream === undefined) throw new Error("wrapModelStream missing");
+    const stream = mw.wrapModelStream(ctx, { messages: [] }, next);
+    const chunks: ModelChunk[] = [];
+    for await (const c of stream) chunks.push(c);
+
+    expect(chunks).toHaveLength(1);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.messages.at(-1)?.senderId).toBe("stream-tag");
+  });
+
+  test("wrapModelStream is a passthrough when slot is empty", async () => {
+    type ModelChunk = import("@koi/core").ModelChunk;
+    const original = [
+      { senderId: "user", timestamp: 0, content: [{ kind: "text" as const, text: "hi" }] },
+    ];
+    const captured: ModelRequest[] = [];
+    const next = (req: ModelRequest): AsyncIterable<ModelChunk> => {
+      captured.push(req);
+      return {
+        async *[Symbol.asyncIterator](): AsyncIterator<ModelChunk, undefined, undefined> {
+          yield { kind: "text_delta", delta: "ok" };
+        },
+      };
+    };
+    const mw = createContextEngineSlotMiddleware(() => undefined);
+    if (mw.wrapModelStream === undefined) throw new Error("wrapModelStream missing");
+    const stream = mw.wrapModelStream(ctx, { messages: original }, next);
+    for await (const _ of stream) {
+      // drain
+    }
+    expect(captured[0]?.messages).toEqual(original);
+  });
+
   test("bridges onAfterTurn to the current engine's hook", async () => {
     let calls = 0;
     const engine: ContextEngine = {

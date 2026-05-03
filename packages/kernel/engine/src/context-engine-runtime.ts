@@ -34,6 +34,30 @@ export function createContextEngineSlotMiddleware(
       const prepared = await engine.prepare(ctx, request.messages);
       return next({ ...request, messages: prepared });
     },
+    // Native streaming adapters take this path instead of wrapModelCall.
+    // Both must drive engine.prepare() or compaction silently disappears
+    // under streaming.
+    wrapModelStream: (ctx, request, next) => {
+      const engine = getEngine();
+      if (engine === undefined) {
+        return next(request);
+      }
+      // The chunk source is async but `wrapModelStream` returns a synchronous
+      // AsyncIterable. We resolve `prepare()` lazily in the iterator so the
+      // surrounding chain composition still works without an outer await.
+      return {
+        async *[Symbol.asyncIterator](): AsyncIterator<
+          import("@koi/core").ModelChunk,
+          undefined,
+          undefined
+        > {
+          const prepared = await engine.prepare(ctx, request.messages);
+          for await (const chunk of next({ ...request, messages: prepared })) {
+            yield chunk;
+          }
+        },
+      };
+    },
     onAfterTurn: async (ctx) => {
       const engine = getEngine();
       if (engine?.onAfterTurn !== undefined) {

@@ -153,7 +153,12 @@ export { createChildHandle } from "./child-handle.js";
 export { createComposedCallHandlers, createTerminalHandlers } from "./compose-bridge.js";
 // context-engine provider — pluggable ECS slot wiring (issue #1767)
 export type { ContextEngineProviderOptions } from "./context-engine-provider.js";
-export { createContextEngineProvider } from "./context-engine-provider.js";
+export {
+  createContextEngineProvider,
+  createContextEngineProxyProvider,
+} from "./context-engine-provider.js";
+// context-engine slot middleware — controller-backed, auto-injected by createKoi
+export { createContextEngineSlotMiddleware } from "./context-engine-runtime.js";
 // context-engine swap controller — runtime swap + rollback (issue #1767)
 export type { ContextEngineSwapController, SwapOptions } from "./context-engine-swap.js";
 export { createContextEngineSwapController } from "./context-engine-swap.js";

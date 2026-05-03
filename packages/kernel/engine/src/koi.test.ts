@@ -178,10 +178,37 @@ describe("createKoi assembly", () => {
     expect(factoryCalls).toBe(2);
     expect(runtimeA.agent.has(CONTEXT_ENGINE)).toBe(true);
     expect(runtimeB.agent.has(CONTEXT_ENGINE)).toBe(true);
-    // Each agent gets its OWN engine instance — no shared mutable state.
-    expect(runtimeA.agent.component(CONTEXT_ENGINE)).not.toBe(
-      runtimeB.agent.component(CONTEXT_ENGINE),
-    );
+    // Each agent gets its OWN proxy with its OWN identity — no cross-agent leak.
+    const idA = runtimeA.agent.component(CONTEXT_ENGINE)?.identity;
+    const idB = runtimeB.agent.component(CONTEXT_ENGINE)?.identity;
+    expect(idA?.version).not.toBe(idB?.version);
+  });
+
+  test("post-swap, agent.component(CONTEXT_ENGINE) reflects the new engine", async () => {
+    const { CONTEXT_ENGINE } = await import("@koi/core");
+    type ContextEngine = import("@koi/core").ContextEngine;
+    type TurnId = import("@koi/core").TurnId;
+    const factory = (): ContextEngine => ({
+      identity: { name: "boot", version: "1.0.0" },
+      prepare: (_c, m) => m,
+    });
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+      contextEngineFactory: factory,
+    });
+    expect(runtime.agent.component(CONTEXT_ENGINE)?.identity.name).toBe("boot");
+    const replacement: ContextEngine = {
+      identity: { name: "swapped", version: "2.0.0" },
+      prepare: (_c, m) => m,
+    };
+    runtime.contextEngineSwapController?.swap(replacement, {
+      turnId: "run-1:t1" as TurnId,
+      reason: "test",
+    });
+    // ECS read MUST follow the swap — boot-time aliasing was the round-5 bug.
+    expect(runtime.agent.component(CONTEXT_ENGINE)?.identity.name).toBe("swapped");
+    expect(runtime.agent.component(CONTEXT_ENGINE)?.identity.version).toBe("2.0.0");
   });
 
   test("omitting contextEngineFactory leaves the CONTEXT_ENGINE slot empty", async () => {
