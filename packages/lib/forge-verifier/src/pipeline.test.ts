@@ -561,6 +561,61 @@ describe("runPipeline — security regressions", () => {
     expect(result.error.message).toContain("non-plain");
   });
 
+  test("artifact with an accessor (getter) is rejected without executing the getter", async () => {
+    let getterFired = false;
+    const obj = { name: "x" };
+    Object.defineProperty(obj, "trapped", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        getterFired = true;
+        return 42;
+      },
+    });
+    const stages = [createSyntaxStage(okCheck)];
+    const result = await runPipeline(stages, obj as unknown as FakeArtifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("accessor");
+    // Critical: validation MUST NOT have invoked the getter.
+    expect(getterFired).toBe(false);
+  });
+
+  test("top-level function artifact is rejected", async () => {
+    const stages = [createSyntaxStage(okCheck)];
+    const fn = (() => 1) as unknown as FakeArtifact;
+    const result = await runPipeline(stages, fn);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("function");
+  });
+
+  test("symbol-keyed own properties are rejected", async () => {
+    const sym = Symbol("hidden");
+    const obj = { name: "x", [sym]: { secret: 1 } };
+    const result = await runPipeline([createSyntaxStage(okCheck)], obj as unknown as FakeArtifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("symbol");
+  });
+
+  test("non-enumerable own properties are rejected", async () => {
+    const obj = { name: "x" };
+    Object.defineProperty(obj, "hidden", {
+      enumerable: false,
+      configurable: true,
+      value: 99,
+    });
+    const result = await runPipeline([createSyntaxStage(okCheck)], obj as unknown as FakeArtifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("non-enumerable");
+  });
+
   test("self-referential plain object is accepted (cycle guard)", async () => {
     type Cyclic = { name: string; self?: Cyclic };
     const obj: Cyclic = { name: "cyc" };

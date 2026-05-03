@@ -120,10 +120,11 @@ attests to. An early stage that tries to rewrite nested fields throws
 in strict mode (which all our code is in), so a later stage cannot
 verify content different from what was fingerprinted.
 
-**Supported artifact shape**: plain objects (`Object.prototype` /
-null prototype), arrays, primitives, and other plain-data values
-that round-trip through `structuredClone`. Explicitly **rejected**
-with `INVALID_CONFIG` (anywhere in the artifact graph):
+**Supported artifact shape**: primitives (string, number, boolean,
+undefined), arrays, and plain objects (`Object.prototype` or null
+prototype) that contain only data properties. Explicitly **rejected**
+with `INVALID_CONFIG` (anywhere in the artifact graph, including the
+root):
 
 - `Map` / `Set` — `Object.freeze` does not block `.set` / `.add` /
   `.delete`, so the immutability claim cannot be honored.
@@ -134,7 +135,18 @@ with `INVALID_CONFIG` (anywhere in the artifact graph):
   the prototype, so stages would receive a plain-object that is not
   the shape the caller passed in and the cached pass would attest
   to a different value.
-- Functions and other non-cloneable values.
+- Functions and symbols — non-cloneable, and at the root would also
+  bypass freezing entirely.
+- Accessor properties (getters/setters) — invoking a getter during
+  validation would execute caller-supplied code on the verifier's
+  call stack BEFORE any sandboxed stage. Validation walks
+  `Object.getOwnPropertyDescriptors` (not `Object.entries`) so
+  getters are never invoked.
+- Symbol-keyed own properties — `structuredClone` drops them, so
+  they would never appear in the snapshot, the cache key, or what
+  stages see.
+- Non-enumerable own properties — same reason as symbol keys; would
+  silently disappear from the verified snapshot.
 
 This keeps the cache pass guarantee tight: every cached attestation
 is bound to the exact frozen snapshot that every stage saw.

@@ -143,14 +143,24 @@ export async function runPipeline<I>(
   // will throw — surface that as INVALID_CONFIG.
   let snapshot: I;
   try {
-    if (artifact !== null && typeof artifact === "object") {
-      // Validate shape FIRST — reject Map/Set/typed-array/class-instance
-      // before structuredClone has a chance to silently coerce or drop info.
+    // Reject anything that is not a primitive or a plain-data object root.
+    // Functions, symbols at the root, etc. cannot be `structuredClone`d
+    // safely and would otherwise sneak past validation as an `else` case.
+    if (artifact === null || typeof artifact !== "object") {
+      const t = typeof artifact;
+      if (t !== "string" && t !== "number" && t !== "boolean" && t !== "undefined") {
+        throw new TypeError(
+          `Artifact root has unsupported type "${t}"; verifier requires plain-data artifacts.`,
+        );
+      }
+      snapshot = artifact;
+    } else {
+      // Validate shape FIRST — reject Map/Set/typed-array/class-instance,
+      // accessor properties, symbol/non-enumerable own keys before
+      // structuredClone has a chance to silently coerce or drop info.
       rejectUnsupportedShape(artifact, "$", new WeakSet<object>());
       snapshot = structuredClone(artifact);
       deepFreeze(snapshot);
-    } else {
-      snapshot = artifact;
     }
   } catch (e: unknown) {
     const detail = e instanceof Error ? e.message : "non-cloneable artifact";
@@ -314,7 +324,17 @@ export async function runPipeline<I>(
  *   shape than the input.
  */
 function rejectUnsupportedShape(value: unknown, path: string, seen: WeakSet<object>): void {
-  if (value === null || typeof value !== "object") return;
+  if (value === null || typeof value !== "object") {
+    // Functions and symbols nested inside a graph are also rejected here
+    // (typeof "object" excludes them). structuredClone would throw, but
+    // catching it here gives a much better path-rooted error message.
+    if (typeof value === "function" || typeof value === "symbol") {
+      throw new TypeError(
+        `Artifact at ${path} has unsupported type "${typeof value}"; verifier requires plain-data artifacts.`,
+      );
+    }
+    return;
+  }
   // Cycle guard: a self-referential plain object is legal for
   // `structuredClone`, but unbounded recursion here would let a crafted
   // artifact knock the verifier over. Validate each object exactly once.
@@ -345,8 +365,32 @@ function rejectUnsupportedShape(value: unknown, path: string, seen: WeakSet<obje
       `Artifact at ${path} is a non-plain object (${proto.constructor.name}); verifier requires plain-data artifacts.`,
     );
   }
-  for (const [k, v] of Object.entries(value)) {
-    rejectUnsupportedShape(v, `${path}.${k}`, seen);
+  // Reject any symbol-keyed own properties — structuredClone drops them, so
+  // they would never appear in the snapshot, the cache key, or what stages
+  // see, even though the caller's artifact carries them.
+  const symbols = Object.getOwnPropertySymbols(value);
+  if (symbols.length > 0) {
+    throw new TypeError(
+      `Artifact at ${path} has symbol-keyed own properties; verifier requires plain-data artifacts (symbol keys are not preserved by structuredClone).`,
+    );
+  }
+  // Use descriptor walk (NOT Object.entries) so getters are NOT invoked
+  // during validation. Reject accessors and non-enumerable own properties
+  // outright — both would either execute caller code on the verifier's
+  // call stack or be silently dropped from the snapshot.
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const [k, desc] of Object.entries(descriptors)) {
+    if (typeof desc.get === "function" || typeof desc.set === "function") {
+      throw new TypeError(
+        `Artifact at ${path}.${k} is an accessor (getter/setter); verifier rejects accessors so caller code never executes during validation.`,
+      );
+    }
+    if (desc.enumerable !== true) {
+      throw new TypeError(
+        `Artifact at ${path}.${k} is non-enumerable; verifier requires plain-data artifacts (non-enumerable properties are not preserved by structuredClone).`,
+      );
+    }
+    rejectUnsupportedShape(desc.value, `${path}.${k}`, seen);
   }
 }
 
