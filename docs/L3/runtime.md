@@ -575,5 +575,6 @@ Changes visible at the `@koi/runtime` integration boundary:
 
 ## Changelog
 
+- 2026-05-03: `@koi/dashboard-client` integrated as L2 dep (#1381) and `@koi/dashboard-types` as L0u dep. SDK is read-only HTTP/WS over the dashboard API and sits outside the agent loop, so it is `GOLDEN_QUERY_EXEMPT` (mirrors the gateway-* SDKs). No new tools, middleware, hooks, or model-loop behavior — re-export only.
 - 2026-04-30: `@koi/eval` integrated as L2 dep (#1380). `tsconfig.json` adds `DOM` to `lib` so types pulled in via `@koi/governance-scope` (`URLPattern`) resolve under `--noEmit`.
 - 2026-04-29: Adversarial review hardening (#1378) — bounded shutdown waits, pre-await accounting, identity-based dedup (transport+name), allowlist-based env exposure, reused in-flight scans, and lint cleanup.

@@ -1,5 +1,33 @@
 // Core factory
 
+// Dashboard SDK + shared contracts — re-exported so consumers depend on @koi/runtime alone
+export type { DashboardClient, DashboardClientConfig } from "@koi/dashboard-client";
+export { createDashboardClient } from "@koi/dashboard-client";
+export type {
+  AgentStatus,
+  AgentStatusEvent,
+  ApiResult as DashboardApiResult,
+  MetricEvent,
+  MetricPoint,
+  MetricQuery,
+  SessionEvent,
+  SessionSummary,
+  TraceEvent,
+  TraceSpan,
+  TraceView,
+  WsClientFrame,
+  WsEvent,
+  WsSubscribe,
+  WsTopic,
+  WsUnsubscribe,
+} from "@koi/dashboard-types";
+export {
+  isAgentStatusEvent,
+  isMetricEvent,
+  isSessionEvent,
+  isTraceEvent,
+  isWsEvent,
+} from "@koi/dashboard-types";
 // Debug session API — re-exported from @koi/debug for runtime consumers
 export type {
   DebugAttachConfig,
