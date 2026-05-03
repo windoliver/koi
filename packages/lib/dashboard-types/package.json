@@ -1,0 +1,22 @@
+{
+  "name": "@koi/dashboard-types",
+  "description": "Dashboard contracts: AgentStatus, SessionSummary, MetricPoint, TraceView, REST envelope, WS subscribe protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  }
+}

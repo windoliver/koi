@@ -4,6 +4,28 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 ## Recent updates
 
+`@koi/middleware-user-model` wired (#1389): added as a dependency of `@koi/runtime`. The package fuses three observation channels — pre-action ambiguity detection, post-action correction (incl. optional drift detection sub-channel), and pluggable sensor enrichment via the L0 `SignalSource` contract — into a single `[User Context]` block injected at the head of `ModelRequest.messages`. Default priority `415` (`intercept` phase) places it outside permissions/audit but inside the model adapter. Each channel is independently optional and degrades gracefully: failing `SignalSource.read()` is skipped, memory recall throwing yields empty preferences, classifier failures fall through to fail-closed-on-drift / fail-open-on-salience per the doc. Two standalone golden queries cover the factory wiring (priority 415, all hooks present) and the `formatUserContext` rendering invariant ([User Context] open/close, preferences + sensor state lines). No cassette trajectory recorded — the middleware has no LLM-callable tool surface; the optional drift-detection LLM classifier is a caller-supplied function, mocked in unit tests via `createKeywordDriftDetector`. See `docs/L2/middleware-user-model.md` for the full contract.
+
+`@koi/handoff` + `@koi/task-spawn` wiring (#1371, PR #2117): both L2 packages
+are now `@koi/runtime` dependencies and ship golden-query coverage in
+`src/__tests__/golden-queries.test.ts`. Coverage includes the happy-path
+prepare→inject→accept pipeline plus integration corner cases: TTL-expired
+envelopes hidden from middleware, double-`accept_handoff` rejected with
+`ALREADY_ACCEPTED`, middleware reservation reverts on model throw, copilot
+routing via live idle agent, `maxDurationMs` aborts hung spawn, unknown
+`agent_type` returns enumerated error. See `docs/L2/handoff.md` and
+`docs/L2/task-spawn.md` for the per-package state-machine and precedence
+rules.
+
+Review-finding wiring sync: no runtime dependency set changes. The existing
+`@koi/scheduler` integration now persists a task's `running` status before
+dispatch starts, so async stores cannot observe an executing task as still
+`pending`; a failed status write prevents dispatch. The existing
+`@koi/sandbox-os` integration no longer pre-creates missing `denyRead` paths on
+the host before sandbox launch. Existing denied files/directories are still
+masked, while absent paths are skipped so credential-like deny entries such as
+`.netrc`, `.npmrc`, `.pypirc`, and `.git-credentials` are not materialized.
+
 `@koi/session` cancel-resume surface (#2105, issue #1683): no L2 dependency
 set changes — `@koi/runtime` already depends on `@koi/session`. Behavioral
 additions surfaced through the existing dep:
@@ -90,6 +112,8 @@ Runtime wiring is unchanged. The integrated behavior now documents structured
 exhaustion, capped foreground Bash timeouts, and clamped web-search abort timers.
 
 `@koi/governance-security` wired (#1397): added as a dependency of `@koi/runtime`. Two standalone golden queries added to `golden-replay.test.ts` (`Golden: @koi/governance-security`) covering `createRulesAnalyzer` SQL injection detection (critical) and `createPiiDetector` email address detection. No cassette trajectory recorded — the package is a pure analysis library with no LLM-callable tools.
+
+`@koi/gateway-nexus` + `@koi/gateway-stack` wired (#1368, gateway-4): two new L2/L3 packages added as `@koi/runtime` dependencies. `@koi/gateway-nexus` is a Nexus-backed `SessionStore` — write-through local cache, coalesced async write queue (with bounded retry, drainPath ordering, tombstone-based delete-cancel-write protection), degradation state machine with `lastFailureAt` cooldown. After Nexus #4000 sunset removed bare `read`/`write`/`delete` JSON-RPC methods, the store calls `read_bulk`/`write_batch`/`delete_batch` and translates the in-band `"File not found"` shape back to `NOT_FOUND` so callers retain the same semantics. `@koi/gateway-stack` is the L3 wiring that composes core gateway + canvas + webhook + optional Nexus into one bundle, sets `preserveSessionsOnStop: true` automatically when a `nexusTransport` is provided, refuses ambiguous `deps.store + nexusTransport` pairings, and exposes a `health()` + `healthHandler` returning 200 healthy / 503 degraded. Both packages are exempt from cassette recording (`GOLDEN_QUERY_EXEMPT`) — gateway infrastructure that sits outside the agent loop. Coverage is the unit suites (54 + 12 tests) plus tmux-driven E2E harnesses against a real Nexus container under `packages/net/gateway-stack/scripts/` (soak, concurrent storm, mid-flight `kill -9` failover, REPL-driven multi-pane validation). Wiring the chat TUI as a remote `gateway-stack` client is tracked separately as #2122 (Phase 3-gateway-5).
 
 `@koi/gateway-http` wired (#1639): added as a dependency of `@koi/runtime` together with the L0u `@koi/gateway-types` contract package. `@koi/gateway-http` is an L2 HTTP/WS ingress package — the production-mode counterpart to `@koi/gateway-webhook`, providing per-channel HMAC SHA-256 (over raw bytes, Slack-format `v0:{ts}:{body}`), per-tenant nonce + idempotency isolation, three-tier rate limiting (source-IP front-door, per-tenant bucket, `maxInFlight` cap), strict CORS allowlists, structured `gateway.request` / `gateway.startup` audit events, and an HTTP-first graceful shutdown that bounds `pauseIngress()` by the grace budget. The package is wired through the L0u `Gateway` contract (`@koi/gateway-types`) so it does not depend on `@koi/gateway` directly — peer L2 isolation is preserved. `@koi/runtime` declares it as a workspace dependency and adds the project reference, but does not re-export the surface; deployment commands (`koi up` / future `koi serve`) are expected to import `@koi/gateway-http` directly when wiring an HTTP-mode gateway, mirroring v1's `@koi/gateway-stack` pattern (#1368). The package is exempt from cassette recording (`GOLDEN_QUERY_EXEMPT`) because, like `@koi/gateway-webhook`, it is HTTP ingress infrastructure that sits outside the agent loop — no tool or middleware surface to exercise via LLM replay. Coverage is provided by the package's own 132-test suite (23 pentest scenarios, audit integration, shutdown drain e2e) plus 10 rounds of adversarial review hardening.
 
@@ -555,5 +579,6 @@ Changes visible at the `@koi/runtime` integration boundary:
 
 ## Changelog
 
+- 2026-05-03: `@koi/dashboard-client` integrated as L2 dep (#1381) and `@koi/dashboard-types` as L0u dep. SDK is read-only HTTP/WS over the dashboard API and sits outside the agent loop, so it is `GOLDEN_QUERY_EXEMPT` (mirrors the gateway-* SDKs). No new tools, middleware, hooks, or model-loop behavior — re-export only.
 - 2026-04-30: `@koi/eval` integrated as L2 dep (#1380). `tsconfig.json` adds `DOM` to `lib` so types pulled in via `@koi/governance-scope` (`URLPattern`) resolve under `--noEmit`.
 - 2026-04-29: Adversarial review hardening (#1378) — bounded shutdown waits, pre-await accounting, identity-based dedup (transport+name), allowlist-based env exposure, reused in-flight scans, and lint cleanup.

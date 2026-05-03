@@ -684,6 +684,79 @@ describe("createGateway", () => {
   });
 
   // =========================================================================
+  // preserveSessionsOnStop
+  // =========================================================================
+
+  describe("preserveSessionsOnStop", () => {
+    test("default: stop() deletes owned sessions from the store", async () => {
+      const auth = createTestAuthenticator({
+        ok: true,
+        sessionId: "s-pres-default",
+        agentId: "a1",
+        metadata: {},
+      });
+      const store = createInMemorySessionStore();
+      gateway = createGateway({}, { transport, auth, store });
+      await gateway.start(0);
+      await authenticateConn(transport, gateway, "s-pres-default");
+      expect(storeHas(store, "s-pres-default")).toBe(true);
+
+      await gateway.stop();
+      expect(storeHas(store, "s-pres-default")).toBe(false);
+    });
+
+    test("preserveSessionsOnStop=true: stop() leaves owned sessions in the store", async () => {
+      const auth = createTestAuthenticator({
+        ok: true,
+        sessionId: "s-pres-keep",
+        agentId: "a1",
+        metadata: {},
+      });
+      const store = createInMemorySessionStore();
+      gateway = createGateway({ preserveSessionsOnStop: true }, { transport, auth, store });
+      await gateway.start(0);
+      await authenticateConn(transport, gateway, "s-pres-keep");
+      expect(storeHas(store, "s-pres-keep")).toBe(true);
+
+      await gateway.stop();
+      // Session must survive stop() so a peer can reconnect via the shared store.
+      expect(storeHas(store, "s-pres-keep")).toBe(true);
+
+      // Re-create gateway to satisfy the afterEach stop() and clean the store.
+      gateway = createGateway({}, { transport: createMockTransport(), auth });
+    });
+
+    test("preserveSessionsOnStop=true persists final disconnectedAt before stop returns (round-6 fix 1)", async () => {
+      // Without inline final-state persist, cleanupConn cannot find the
+      // session (sessionByConn is cleared by stop) and the Nexus record
+      // would keep stale disconnectedAt/seq across rolling restarts.
+      const auth = createTestAuthenticator({
+        ok: true,
+        sessionId: "s-pres-final",
+        agentId: "a1",
+        metadata: {},
+      });
+      const store = createInMemorySessionStore();
+      gateway = createGateway({ preserveSessionsOnStop: true }, { transport, auth, store });
+      await gateway.start(0);
+      await authenticateConn(transport, gateway, "s-pres-final");
+      // Pre-stop: no disconnectedAt yet (still connected).
+      const before = storeGet(store, "s-pres-final");
+      expect(before).toBeDefined();
+      expect(before?.disconnectedAt).toBeUndefined();
+
+      await gateway.stop();
+      // Post-stop: session retained AND disconnectedAt stamped so a
+      // restarted gateway can see the clean disconnect for TTL eviction.
+      const after = storeGet(store, "s-pres-final");
+      expect(after).toBeDefined();
+      expect(typeof after?.disconnectedAt).toBe("number");
+
+      gateway = createGateway({}, { transport: createMockTransport(), auth });
+    });
+  });
+
+  // =========================================================================
   // Disconnected-session TTL sweep
   // =========================================================================
 

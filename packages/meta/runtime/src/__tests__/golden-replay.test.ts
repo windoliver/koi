@@ -16834,3 +16834,51 @@ describe("Golden: @koi/skill-distiller", () => {
     expect(store.has("alpha")).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-user-model (2 queries)
+//
+// Standalone — exercises the factory and the formatter directly. The
+// middleware fuses three channels (pre-action, post-action, sensor) into a
+// single `[User Context]` block; verifying that the block renders and that
+// the factory wires the documented hooks is enough to gate orphan / golden
+// CI without depending on a recorded LLM trajectory.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-user-model", () => {
+  test("factory wires onSessionStart/onBeforeTurn/wrapModelCall hooks at priority 415", async () => {
+    const { createUserModelMiddleware } = await import("@koi/middleware-user-model");
+    type MemoryComponent = import("@koi/core").MemoryComponent;
+    const memory: MemoryComponent = {
+      recall: () => Promise.resolve([]),
+      store: () => Promise.resolve(),
+    };
+    const mw = createUserModelMiddleware({ memory, allowSharedScope: true });
+    expect(mw.name).toBe("user-model");
+    expect(mw.priority).toBe(415);
+    expect(typeof mw.onBeforeTurn).toBe("function");
+    expect(typeof mw.wrapModelCall).toBe("function");
+    expect(typeof mw.onSessionStart).toBe("function");
+    expect(typeof mw.onSessionEnd).toBe("function");
+  });
+
+  test("formatUserContext renders preferences + sensor state inside the [User Context] block", async () => {
+    const { formatUserContext } = await import("@koi/middleware-user-model");
+    type UserSnapshot = import("@koi/core").UserSnapshot;
+    const snapshot: UserSnapshot = {
+      preferences: [{ content: "prefers YAML", score: 0.95 }],
+      state: { ide: { language: "typescript" } },
+      ambiguityDetected: false,
+    };
+    const text = formatUserContext(snapshot, {
+      maxPreferenceTokens: 400,
+      maxSensorTokens: 100,
+      maxMetaTokens: 100,
+    });
+    expect(text.startsWith("[User Context]")).toBe(true);
+    expect(text.endsWith("[/User Context]")).toBe(true);
+    expect(text).toContain("prefers YAML");
+    expect(text).toContain("ide:");
+    expect(text).toContain("typescript");
+  });
+});

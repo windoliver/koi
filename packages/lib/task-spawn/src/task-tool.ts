@@ -1,0 +1,114 @@
+/**
+ * Task tool factory — creates a Tool that delegates work to subagents,
+ * with optional copilot routing for live idle agents.
+ */
+
+import type { JsonObject, TaskableAgentSummary, Tool } from "@koi/core";
+import { DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
+import { extractOutput } from "./output.js";
+import {
+  type AgentResolver,
+  createMapAgentResolver,
+  createTaskToolDescriptor,
+  DEFAULT_DESCRIPTOR_TTL_MS,
+  DEFAULT_MAX_DURATION_MS,
+  TASK_TOOL_DESCRIPTOR,
+  type TaskSpawnConfig,
+} from "./types.js";
+
+function resolveAgentResolver(config: TaskSpawnConfig): AgentResolver {
+  if (config.agentResolver !== undefined) return config.agentResolver;
+  if (config.agents !== undefined) return createMapAgentResolver(config.agents);
+  throw new Error("TaskSpawnConfig requires either 'agents' or 'agentResolver'");
+}
+
+/**
+ * Creates the `task` tool for subagent delegation.
+ *
+ * Flow:
+ * 1. Build dynamic descriptor from agent summaries (refreshed on TTL)
+ * 2. Validate `description` and resolve `agent_type`
+ * 3. If a live idle copilot exists and `message` is configured → message it
+ * 4. Otherwise spawn a fresh worker via `config.spawn`
+ * 5. Return extracted output as the tool result
+ */
+export async function createTaskTool(config: TaskSpawnConfig): Promise<Tool> {
+  const maxDurationMs = config.maxDurationMs ?? DEFAULT_MAX_DURATION_MS;
+  const ttlMs = DEFAULT_DESCRIPTOR_TTL_MS;
+  const resolver = resolveAgentResolver(config);
+
+  // let justified: cached descriptor refreshed when TTL elapses
+  let cachedSummaries: readonly TaskableAgentSummary[] = await Promise.resolve(resolver.list());
+  let cachedDescriptor =
+    cachedSummaries.length > 0 ? createTaskToolDescriptor(cachedSummaries) : TASK_TOOL_DESCRIPTOR;
+  let refreshedAt = Date.now();
+
+  async function refreshDescriptorIfStale(): Promise<void> {
+    if (Date.now() - refreshedAt < ttlMs) return;
+    cachedSummaries = await Promise.resolve(resolver.list());
+    cachedDescriptor =
+      cachedSummaries.length > 0 ? createTaskToolDescriptor(cachedSummaries) : TASK_TOOL_DESCRIPTOR;
+    refreshedAt = Date.now();
+  }
+
+  return {
+    get descriptor() {
+      void refreshDescriptorIfStale();
+      return cachedDescriptor;
+    },
+    origin: "primordial",
+    policy: DEFAULT_UNSANDBOXED_POLICY,
+
+    async execute(args: JsonObject): Promise<unknown> {
+      await refreshDescriptorIfStale();
+
+      const description = args.description;
+      if (typeof description !== "string" || description.length === 0) {
+        return "Error: 'description' is required and must be a non-empty string";
+      }
+
+      const agentType =
+        typeof args.agent_type === "string" && args.agent_type.length > 0
+          ? args.agent_type
+          : config.defaultAgent;
+
+      if (agentType === undefined) {
+        return "Error: 'agent_type' is required when no default agent is configured";
+      }
+
+      const resolveResult = await Promise.resolve(resolver.resolve(agentType));
+      if (!resolveResult.ok) {
+        const available = cachedSummaries.map((s) => s.key).join(", ");
+        return `Error: unknown agent type '${agentType}'. Available: ${available}`;
+      }
+      const agent = resolveResult.value;
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort("timeout"), maxDurationMs);
+
+      try {
+        if (config.message !== undefined && resolver.findLive !== undefined) {
+          const handle = await Promise.resolve(resolver.findLive(agentType));
+          if (handle !== undefined && handle.state === "idle") {
+            const result = await config.message({
+              agentId: handle.agentId,
+              description,
+              signal: controller.signal,
+            });
+            return extractOutput(result);
+          }
+        }
+
+        const result = await config.spawn({
+          description,
+          agentName: agent.name,
+          manifest: agent.manifest,
+          signal: controller.signal,
+        });
+        return extractOutput(result);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}

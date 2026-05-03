@@ -350,3 +350,41 @@ Verify:
 grep -r "from.*@koi/engine" packages/task-spawn/src/*.ts   # expect: no matches
 grep -r "from.*@koi/node" packages/task-spawn/src/*.ts     # expect: no matches
 ```
+
+---
+
+## Implementation notes (v2 rewrite, #1371)
+
+The v2 port drops the `@koi/delegation`-based mailbox path (no L0u `delegation`
+package in v2). Copilot routing is wired through `MessageFn` supplied by the
+caller; spawn vs message selection is implemented in `task-tool.ts`.
+
+### `RegistryAgentResolver.findLive` precedence
+
+Live-agent matching uses **strict precedence** to avoid cross-role routing:
+
+1. `metadata.taskAgentType` — set by spawners that want to be reachable via
+   task-spawn. Matches even when the local catalog is empty (version-skew
+   tolerance: an explicit catalog key doesn't depend on local resolution).
+2. `metadata.agentName` — alternate explicit catalog key. If present and
+   it doesn't match the requested key, the entry is **skipped** — we do
+   not fall through to the manifest-name check (would otherwise route a
+   `researcher` request to a `deployer` whose manifest happens to be named
+   `researcher`).
+3. `metadata.name` (manifest name) — engine spawn-child default. Matches only
+   when the local catalog can resolve the requested key, comparing the
+   live-entry's `name` against the catalog's `manifest.name`.
+
+Among matches, `waiting+Ready` (idle) is preferred over `running` (busy).
+
+### `createTaskTool` corner cases
+
+- `maxDurationMs` (default 5 min) installs a single `AbortController`; the
+  `signal` is forwarded to both `spawn()` and `message()` callbacks. A hung
+  callback that cooperates with `signal.aborted` resolves with a failure
+  output that is rendered through `extractOutput`.
+- Unknown `agent_type` returns a string error listing the available keys
+  (does not throw — keeps the agent loop alive).
+- The `task` descriptor's `agent_type` enum is rebuilt from `resolver.list()`
+  on a TTL (default 30 s) so newly-registered agents become callable without
+  a restart.
