@@ -12,4 +12,5 @@ export type {
   GatewayFrameKind,
   RoutingContext,
   Session,
+  SessionStore,
 } from "./types.js";

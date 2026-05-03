@@ -717,8 +717,14 @@ jobs:
         # - instance.ts in each adapter encapsulates exec + bounded file I/O +
         #   single-flight teardown — splitting would scatter related state.
         # Extracting helpers for line-count alone adds indirection without
-        # behavioral gain. Bumped 708 → 712.
-        run: bun run check:complexity --max-violations 712
+        # behavioral gain. Bumped 708 → 712 → 723 (#1371: @koi/handoff +
+        # @koi/task-spawn factory functions) → 728 (#1361: @koi/channel-web
+        # + @koi/channel-slack — Bun.serve HTTP/WS adapter and Slack
+        # Bolt-style adapter both keep the lifecycle/handler/dispatch
+        # state colocated; splitting would scatter related state across
+        # files. Five additions: 1 hard-limit on slack-channel.ts +
+        # 4 soft-limit/function violations across the two factories.
+        run: bun run check:complexity --max-violations 728
 
       - name: Check TUI single-writer output policy
         run: bun run check:tui-single-writer

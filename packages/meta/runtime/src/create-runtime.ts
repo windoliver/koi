@@ -74,6 +74,7 @@ import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-
 import { createFeedbackLoopMiddleware } from "@koi/middleware-feedback-loop";
 import { createIntentCapsuleMiddleware } from "@koi/middleware-intent-capsule";
 import { createOtelMiddleware, type OtelMiddlewareConfig } from "@koi/middleware-otel";
+import { createUserModelMiddleware } from "@koi/middleware-user-model";
 import { createJsonlTranscript, createSessionTranscriptMiddleware } from "@koi/session";
 import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
 import { createCredentialPathGuard, type FsToolOptions } from "@koi/tools-builtin";
@@ -285,17 +286,29 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         ? [...baseWithFeedbackLoop, intentCapsuleMiddleware]
         : baseWithFeedbackLoop;
 
+    // Install user-model middleware when config.userModel is provided and not already
+    // present. Priority 415 — between intent-capsule (290) and ACE (800). Fuses
+    // pre-action ambiguity, post-action correction, and sensor channels into one
+    // pinned `[User Context]` system message before each model call.
+    const hasUserModel = new Set(baseWithIntentCapsule.map((mw) => mw.name)).has("user-model");
+    const userModelMiddleware =
+      config.userModel !== undefined && !hasUserModel
+        ? createUserModelMiddleware(config.userModel)
+        : undefined;
+    const baseWithUserModel: readonly KoiMiddleware[] =
+      userModelMiddleware !== undefined
+        ? [...baseWithIntentCapsule, userModelMiddleware]
+        : baseWithIntentCapsule;
+
     // Install ACE middleware when config.ace is provided and not already present.
     // Phase observe / priority 800 — runs after intercept + resolve so injection
     // observes the final systemPrompt and trajectory recording captures the real
     // outcome of every model + tool call. (#1715)
-    const hasAce = new Set(baseWithIntentCapsule.map((mw) => mw.name)).has("ace");
+    const hasAce = new Set(baseWithUserModel.map((mw) => mw.name)).has("ace");
     const aceMiddleware =
       config.ace !== undefined && !hasAce ? createAceMiddleware(config.ace) : undefined;
     const baseWithAce: readonly KoiMiddleware[] =
-      aceMiddleware !== undefined
-        ? [...baseWithIntentCapsule, aceMiddleware]
-        : baseWithIntentCapsule;
+      aceMiddleware !== undefined ? [...baseWithUserModel, aceMiddleware] : baseWithUserModel;
 
     // Install forge-demand detector when config.forgeDemand is provided and not already
     // present. Priority 445 — outer relative to feedback-loop (450) so the detector

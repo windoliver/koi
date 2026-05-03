@@ -28,6 +28,7 @@
       - "packages/**/config/**"
       - "packages/**/context-manager/**"
       - "packages/**/crystallize/**"
+      - "packages/**/dashboard-types/**"
       - "packages/**/dream/**"
       - "packages/**/edit-match/**"
       - "packages/**/errors/**"
@@ -67,6 +68,7 @@
     - any-glob-to-any-file:
       - "packages/**/agent/cli/**"
       - "packages/**/cli/**"
+      - "packages/**/gateway-stack/**"
       - "packages/**/runtime/**"
 
 # L2 is the catch-all: any package change that is not L0, L1, L0u, or L3.
@@ -88,6 +90,7 @@
       - "!packages/**/context-manager/**"
       - "!packages/**/core/**"
       - "!packages/**/crystallize/**"
+      - "!packages/**/dashboard-types/**"
       - "!packages/**/dream/**"
       - "!packages/**/edit-match/**"
       - "!packages/**/engine/**"
@@ -98,6 +101,7 @@
       - "!packages/**/file-type/**"
       - "!packages/**/forge-types/**"
       - "!packages/**/fs-scoped/**"
+      - "!packages/**/gateway-stack/**"
       - "!packages/**/gateway-types/**"
       - "!packages/**/git-utils/**"
       - "!packages/**/hash/**"

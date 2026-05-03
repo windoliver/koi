@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 
 import type { SandboxProfile } from "@koi/core";
 
@@ -142,29 +142,15 @@ export function buildBwrapPrefix(profile: SandboxProfile): readonly string[] {
 }
 
 /**
- * Ensure that denyRead directory paths exist so bwrap can mount tmpfs over them.
+ * Compatibility hook retained for callers that imported it directly.
  *
- * bwrap's `--tmpfs PATH` needs PATH to exist as a directory *before* the
- * ro-bind root is in place — bwrap cannot create mount points inside a
- * read-only root.  For directory-typed denyRead entries that are absent on
- * the host (e.g. `~/.ssh` on a fresh container), we create them here.
- *
- * Only paths that do not already exist are created.  Paths that already exist
- * as regular files (e.g. `~/.netrc`) are intentionally skipped — they are
- * handled via `--bind /dev/null` in `buildBwrapPrefix()` instead.
- *
- * Call this in `createInstance` before `buildBwrapPrefix` — only relevant for bwrap.
+ * Missing denyRead paths are intentionally not created on the host. Creating
+ * absent mount points can mutate credential paths such as ~/.netrc or arbitrary
+ * profile-supplied paths. buildBwrapPrefix() masks existing files/directories
+ * and skips absent paths.
  */
-export function ensureDenyReadPaths(profile: SandboxProfile): void {
-  for (const rawPath of profile.filesystem.denyRead ?? []) {
-    const path = expandHome(rawPath);
-    if (existsSync(path)) continue; // already exists (file or dir) — leave it alone
-    try {
-      mkdirSync(path, { recursive: true });
-    } catch {
-      // Ignore: permission denied, parent is read-only, race, etc.
-    }
-  }
+export function ensureDenyReadPaths(_profile: SandboxProfile): void {
+  // no-op by design
 }
 
 export function hasAnyUlimitResource(profile: SandboxProfile): boolean {
