@@ -137,11 +137,31 @@ function validateManifestBudget(cfg: Readonly<Record<string, unknown>>): BudgetC
   return out as BudgetConfig;
 }
 
+/**
+ * Cross-field invariant check applied to direct `ContextEngineOptions`
+ * input. Mirrors the manifest path's `checkBudgetInvariants` so direct
+ * callers cannot construct an engine that reports `pressure: 0` /
+ * `maxTokens: 0` because of an out-of-range budget knob.
+ */
+function validateDirectOptions(opts: ContextEngineOptions): ContextEngineOptions {
+  // Convert to a plain record for the same shared check. Only fields
+  // present on the input are validated; defaults are applied later by
+  // createContextEngine.
+  const numeric: Record<string, number | string> = {};
+  for (const key of NUMERIC_BUDGET_KEYS) {
+    const v = (opts as Readonly<Record<string, unknown>>)[key];
+    if (v !== undefined) numeric[key] = coerceFiniteNumber(key, v);
+  }
+  if (opts.modelId !== undefined) numeric.modelId = opts.modelId;
+  checkBudgetInvariants(numeric);
+  return opts;
+}
+
 function normalizeOptions(
   arg: ContextEngineOptions | ContextManifestConfig | undefined,
 ): ContextEngineOptions {
   if (arg === undefined) return {};
-  if (!isManifestConfig(arg)) return arg;
+  if (!isManifestConfig(arg)) return validateDirectOptions(arg);
   // Validate the JSON `config` bag before handing it to `enforceBudget`.
   // Runtime-only fields (replacementStore, tokenEstimator instances)
   // cannot appear in JSON; only numeric/string knobs are accepted.

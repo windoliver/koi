@@ -1968,6 +1968,44 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             const result = await adapterIterator.next();
 
             if (result.done) {
+              // Bare stream exhaustion — adapter ended without emitting
+              // turn_end/done. Drain any active context-engine pin
+              // before idling/terminating so per-turn state (occupancy,
+              // eviction, checkpoint) is released. Mark as stopBlocked
+              // because EOF without a real `done` is an interrupted
+              // terminal path, not a successful turn.
+              if (
+                contextEngineSwapController !== undefined &&
+                contextEngineSwapController.hasActivePin()
+              ) {
+                for (const pinnedTurnId of contextEngineSwapController.pinnedTurnIds()) {
+                  const pinnedEngine = contextEngineSwapController.current(pinnedTurnId);
+                  if (pinnedEngine.onAfterTurn !== undefined) {
+                    try {
+                      const realCtx = turnCtxByTurnId.get(pinnedTurnId as string);
+                      const baseCtx: TurnContext = realCtx ?? {
+                        ...createTurnContext({
+                          session: sessionCtx,
+                          turnIndex: currentTurnIndex,
+                          messages: [],
+                          signal: runSignal,
+                          approvalHandler: options.approvalHandler,
+                          sendStatus: options.sendStatus,
+                        }),
+                        turnId: pinnedTurnId,
+                      };
+                      await pinnedEngine.onAfterTurn({ ...baseCtx, stopBlocked: true });
+                    } catch (hookErr: unknown) {
+                      console.warn(
+                        "[koi] context-engine onAfterTurn synth failed during EOF cleanup",
+                        hookErr,
+                      );
+                    }
+                  }
+                  contextEngineSwapController.endTurn(pinnedTurnId);
+                  turnCtxByTurnId.delete(pinnedTurnId as string);
+                }
+              }
               // Adapter stream exhausted — idle if reusable, else terminate
               if (agent.manifest.reuse === true) {
                 enterIdle = true;
