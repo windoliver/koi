@@ -136,6 +136,31 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       },
     );
   }
+  // Reject manifest.context that carries `version`/`config` without
+  // `engine` AND without a factory. Without this, a host can declare
+  // compaction thresholds or pin a version in the manifest, the runtime
+  // silently drops them, and behavior diverges from the manifest with no
+  // error signal until prompts overflow in production.
+  if (
+    manifest.context !== undefined &&
+    manifest.context.engine === undefined &&
+    (manifest.context.version !== undefined || manifest.context.config !== undefined) &&
+    options.contextEngineFactory === undefined
+  ) {
+    throw KoiRuntimeError.from(
+      "VALIDATION",
+      `createKoi: manifest.context carries version/config but no engine and no contextEngineFactory was supplied — these fields would be silently ignored. Either declare manifest.context.engine + pass contextEngineFactory, or remove the orphan version/config.`,
+      {
+        retryable: false,
+        context: {
+          ...(manifest.context.version !== undefined
+            ? { manifestVersion: manifest.context.version }
+            : {}),
+          hasConfig: manifest.context.config !== undefined,
+        },
+      },
+    );
+  }
   let contextEngineSwapController: ContextEngineSwapController | undefined;
   let contextEngineProxy: ContextEngine | undefined;
   const contextEngineProviders: ComponentProvider[] = [];

@@ -217,10 +217,13 @@ export function createContextEngineSwapController(
     if (top === undefined) {
       return undefined;
     }
-    // Honor the declared rollback target on the top frame if set: walk down
-    // the stack until we find the engine matching that identity, popping all
-    // frames in between. Without a declared target, pop one frame.
+    // Resolve the candidate target WITHOUT mutating priorStack. We must
+    // run all refusal checks (pin enforcement, missing-target) up front so
+    // that a rejected rollback leaves history intact and the operator can
+    // retry with `force: true`. Mutating the stack before the pin check
+    // would discard the frame needed for that retry.
     let target: ContextEngine;
+    let truncateLength: number;
     if (top.rollbackTarget !== undefined) {
       const idx = findFrameMatching(priorStack, top.rollbackTarget);
       if (idx === -1) {
@@ -229,10 +232,10 @@ export function createContextEngineSwapController(
         return undefined;
       }
       target = priorStack[idx]?.prior ?? top.prior;
-      priorStack.length = idx;
+      truncateLength = idx;
     } else {
       target = top.prior;
-      priorStack.pop();
+      truncateLength = priorStack.length - 1;
     }
     // Apply the same manifest-pin enforcement to the rollback destination
     // as `swap()`. Without this, a forced swap chain followed by an
@@ -247,6 +250,8 @@ export function createContextEngineSwapController(
         `ContextEngineSwapController: refusing to rollback to "${target.identity.name}@${target.identity.version}" — manifest pinned engine to "${pinnedIdentity.name}@${pinnedIdentity.version}". Pass { force: true } to override.`,
       );
     }
+    // Commit only after every refusal check has passed.
+    priorStack.length = truncateLength;
     const evt: ContextEngineSwapEvent = {
       kind: "context-engine-swap",
       turnId: options.turnId,
