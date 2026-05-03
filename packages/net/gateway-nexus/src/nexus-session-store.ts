@@ -303,6 +303,27 @@ function reportError(onError: ((e: KoiError) => void) | undefined, err: unknown)
   });
 }
 
+function makeWriteFn(
+  transport: NexusTransport,
+  degradationConfig: DegradationConfig,
+  getDeg: () => DegradationState,
+  setDeg: (s: DegradationState) => void,
+): (path: string, data: string) => Promise<void> {
+  return async (path, data) => {
+    // Single-path write via `write_batch` — bare `write` was removed from
+    // the HTTP RPC surface (nexi-lab/nexus#4000).
+    const r = await transport.call<unknown>("write_batch", {
+      files: [[path, { __type__: "bytes", data: Buffer.from(data, "utf-8").toString("base64") }]],
+    });
+    if (r.ok) {
+      setDeg(recordSuccess(getDeg()));
+      return;
+    }
+    setDeg(recordFailure(getDeg(), degradationConfig));
+    throw new Error(r.error.message, { cause: r.error });
+  };
+}
+
 export function createNexusSessionStore(
   options: NexusSessionStoreOptions,
 ): NexusSessionStoreHandle {
@@ -318,23 +339,13 @@ export function createNexusSessionStore(
   const inFlightDeletes = new Set<Promise<unknown>>();
   // let justified: degradation state is replaced atomically on every Nexus call.
   let degradation = createDegradationState();
+  const getDeg = (): DegradationState => degradation;
+  const setDeg = (s: DegradationState): void => {
+    degradation = s;
+  };
 
   const queue: WriteQueue = createWriteQueue(
-    async (path, data) => {
-      // Single-path write via `write_batch` — bare `write` was removed from
-      // the HTTP RPC surface (nexi-lab/nexus#4000). The wire shape is a
-      // tuple list `[[path, content]]`; the server returns one entry per
-      // file with `{content_id, version, modified_at}`.
-      const r = await transport.call<unknown>("write_batch", {
-        files: [[path, { __type__: "bytes", data: Buffer.from(data, "utf-8").toString("base64") }]],
-      });
-      if (r.ok) {
-        degradation = recordSuccess(degradation);
-        return;
-      }
-      degradation = recordFailure(degradation, degradationConfig);
-      throw new Error(r.error.message, { cause: r.error });
-    },
+    makeWriteFn(transport, degradationConfig, getDeg, setDeg),
     config.writeQueue,
     (err: unknown) => reportError(onError, err),
   );
@@ -346,10 +357,8 @@ export function createNexusSessionStore(
     degradationConfig,
     cache,
     inFlightDeletes,
-    getDegradation: () => degradation,
-    setDegradation: (next) => {
-      degradation = next;
-    },
+    getDegradation: getDeg,
+    setDegradation: setDeg,
     enqueueWrite: makeEnqueue(basePath, instanceId, queue),
     cancelWrite: (id: string) => queue.cancel(nexusPath(basePath, id)),
     drainWrite: (id: string) => queue.drainPath(nexusPath(basePath, id)),
