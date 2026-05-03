@@ -51,15 +51,31 @@ export interface VerifierStage<I = unknown> {
 }
 
 /**
+ * Envelope stored in the cache. The `key` field binds the payload to the
+ * exact `(namespace, artifactFingerprint, stages)` tuple it was computed
+ * from, so a buggy or stale backend that returns a value for the wrong key
+ * is detected at read time and treated as a miss.
+ */
+export interface CachedVerification {
+  readonly key: string;
+  readonly summary: ForgeVerificationSummary;
+}
+
+/**
  * Pluggable cache for successful verification summaries. Both methods return
  * `T | Promise<T>` so an in-memory `Map` and a remote KV expose the same
  * surface. Failed pipelines are intentionally not cached.
+ *
+ * The verifier wraps every value in a `CachedVerification` envelope. Backends
+ * MUST round-trip the envelope verbatim — they MUST NOT serve a value with a
+ * different `key` than was requested. The verifier verifies this on read and
+ * treats key mismatches as a miss.
  */
 export interface VerificationCache {
   readonly get: (
     key: string,
-  ) => ForgeVerificationSummary | undefined | Promise<ForgeVerificationSummary | undefined>;
-  readonly set: (key: string, summary: ForgeVerificationSummary) => void | Promise<void>;
+  ) => CachedVerification | undefined | Promise<CachedVerification | undefined>;
+  readonly set: (key: string, value: CachedVerification) => void | Promise<void>;
 }
 
 /**

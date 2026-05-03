@@ -247,18 +247,29 @@ export async function runPipeline<I>(
         error: stageError("TIMEOUT", "<cache>", "Pipeline aborted during cache lookup."),
       };
     }
-    if (hit !== undefined && isCachedSummaryConsistent(hit, stages)) {
+    // Bind the returned envelope to the key we asked for. A backend that
+    // ignores its key parameter, leaks across tenants, or replays a stale
+    // entry under a different key would otherwise be trusted as a hit. The
+    // envelope check + structural check together require the backend to
+    // round-trip the exact (key, summary) we wrote.
+    if (
+      hit !== undefined &&
+      typeof hit === "object" &&
+      hit !== null &&
+      hit.key === composedKey &&
+      isCachedSummaryConsistent(hit.summary, stages)
+    ) {
       return {
         ok: true,
         value: freezeSummary({
-          passed: hit.passed,
+          passed: hit.summary.passed,
           sandbox: declaredSandbox,
-          totalDurationMs: hit.totalDurationMs,
-          stageResults: hit.stageResults,
+          totalDurationMs: hit.summary.totalDurationMs,
+          stageResults: hit.summary.stageResults,
         }),
       };
     }
-    // Inconsistent or malformed hit — treat as a miss and re-verify.
+    // Inconsistent, malformed, or wrong-key hit — treat as a miss and re-verify.
   }
 
   // let justified: digests accumulates immutably-replaced array as stages run.
@@ -343,7 +354,7 @@ export async function runPipeline<I>(
 
   if (composedKey !== undefined && cache !== undefined) {
     try {
-      await cache.set(composedKey, summary);
+      await cache.set(composedKey, { key: composedKey, summary });
     } catch (e: unknown) {
       // Cache writes are best-effort. A backend outage must not flip a
       // successful verification into a rejection. Surface via console.debug

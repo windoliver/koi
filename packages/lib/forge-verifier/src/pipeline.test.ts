@@ -354,7 +354,7 @@ describe("runPipeline — security regressions", () => {
       stageResults: ForgeStageDigestLike[];
     } = { passed: true, sandbox: false, totalDurationMs: 1, stageResults: mutable };
     const hostileCache = {
-      get: async () => stored as unknown as ForgeVerificationSummary,
+      get: async (key: string) => ({ key, summary: stored as unknown as ForgeVerificationSummary }),
       set: async () => {},
     };
     const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
@@ -375,13 +375,15 @@ describe("runPipeline — security regressions", () => {
   test("malformed cache payload (wrong stage names) is rejected — pipeline re-verifies", async () => {
     const stage = counted(createSyntaxStage(okCheck));
     const malformedCache = {
-      get: async () =>
-        ({
+      get: async (key: string) => ({
+        key,
+        summary: {
           passed: true,
           sandbox: false,
           totalDurationMs: 0,
           stageResults: [], // empty — would be a fail-open if trusted
-        }) as ForgeVerificationSummary,
+        } as ForgeVerificationSummary,
+      }),
       set: async () => {},
     };
     const result = await runPipeline([stage.stage], artifact, {
@@ -397,13 +399,15 @@ describe("runPipeline — security regressions", () => {
   test("malformed cache payload (wrong stage name) is rejected", async () => {
     const stage = counted(createSyntaxStage(okCheck));
     const malformedCache = {
-      get: async () =>
-        ({
+      get: async (key: string) => ({
+        key,
+        summary: {
           passed: true,
           sandbox: false,
           totalDurationMs: 1,
           stageResults: [{ stage: "different-name", passed: true, durationMs: 1 }],
-        }) as ForgeVerificationSummary,
+        } as ForgeVerificationSummary,
+      }),
       set: async () => {},
     };
     const result = await runPipeline([stage.stage], artifact, {
@@ -417,13 +421,15 @@ describe("runPipeline — security regressions", () => {
   test("cached sandbox=true is rejected when no current stage declares sandbox", async () => {
     const stage = counted(createSyntaxStage(okCheck));
     const lyingCache = {
-      get: async () =>
-        ({
+      get: async (key: string) => ({
+        key,
+        summary: {
           passed: true,
           sandbox: true, // backend forges the trust signal
           totalDurationMs: 1,
           stageResults: [{ stage: "syntax", passed: true, durationMs: 1 }],
-        }) as ForgeVerificationSummary,
+        } as ForgeVerificationSummary,
+      }),
       set: async () => {},
     };
     const result = await runPipeline([stage.stage], artifact, {
@@ -443,13 +449,15 @@ describe("runPipeline — security regressions", () => {
       run: async () => ({ ok: true, sandboxed: true }),
     };
     const cachingCache = {
-      get: async () =>
-        ({
+      get: async (key: string) => ({
+        key,
+        summary: {
           passed: true,
           sandbox: true,
           totalDurationMs: 1,
           stageResults: [{ stage: "sb", passed: true, durationMs: 1 }],
-        }) as ForgeVerificationSummary,
+        } as ForgeVerificationSummary,
+      }),
       set: async () => {},
     };
     const result = await runPipeline([sbStage], artifact, {
@@ -747,13 +755,16 @@ describe("runPipeline — security regressions", () => {
   test("abort during cache lookup is honored — does not return cached success", async () => {
     const ac = new AbortController();
     const slowCache = {
-      get: async (): Promise<ForgeVerificationSummary | undefined> => {
+      get: async (key: string) => {
         ac.abort(); // simulate caller giving up while the read is in flight
         return {
-          passed: true,
-          sandbox: false,
-          totalDurationMs: 0,
-          stageResults: [{ stage: "syntax", passed: true, durationMs: 0 }],
+          key,
+          summary: {
+            passed: true,
+            sandbox: false,
+            totalDurationMs: 0,
+            stageResults: [{ stage: "syntax", passed: true, durationMs: 0 }],
+          },
         };
       },
       set: async () => {},
@@ -912,7 +923,7 @@ describe("createMemoryCache", () => {
     expect(await cache.get("missing")).toBeUndefined();
   });
 
-  test("set then get round-trips a summary", async () => {
+  test("set then get round-trips an envelope", async () => {
     const cache = createMemoryCache();
     const summary = {
       passed: true,
@@ -920,7 +931,44 @@ describe("createMemoryCache", () => {
       totalDurationMs: 1,
       stageResults: [{ stage: "x", passed: true, durationMs: 1 }],
     } as const;
-    await cache.set("k", summary);
-    expect(await cache.get("k")).toEqual(summary);
+    await cache.set("k", { key: "k", summary });
+    const got = await cache.get("k");
+    expect(got?.key).toBe("k");
+    expect(got?.summary).toEqual(summary);
+  });
+});
+
+describe("cache key binding (envelope verification)", () => {
+  const artifact: FakeArtifact = { name: "bound" };
+
+  test("backend that returns a same-shape value under a different key is treated as miss", async () => {
+    // Hostile/buggy backend: ignores the requested key and always returns a
+    // crafted "passed" envelope tagged with its own (wrong) key. The verifier
+    // must reject this and re-run the stages instead of trusting the payload.
+    const stage = counted(createSyntaxStage(okCheck));
+    let getCalls = 0;
+    const lyingCache = {
+      get: async () => {
+        getCalls += 1;
+        return {
+          key: "wrong-key-from-another-tenant",
+          summary: {
+            passed: true,
+            sandbox: false,
+            totalDurationMs: 0,
+            stageResults: [{ stage: "syntax", passed: true, durationMs: 0 }],
+          },
+        };
+      },
+      set: async () => {},
+    };
+    const result = await runPipeline([stage.stage], artifact, {
+      artifactFingerprint: () => "k",
+      cache: lyingCache,
+    });
+    expect(result.ok).toBe(true);
+    expect(getCalls).toBe(1);
+    // Stage actually ran — wrong-key payload was NOT trusted.
+    expect(stage.calls()).toBe(1);
   });
 });
