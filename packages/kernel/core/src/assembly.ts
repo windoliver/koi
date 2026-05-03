@@ -313,12 +313,20 @@ export interface AgentManifest {
 /**
  * Manifest fragment that selects and configures the active `ContextEngine`.
  *
- * - `engine` pins the engine identity name. The host's
- *   `contextEngineFactory` is the resolver; the runtime then strictly
- *   compares the returned engine's `identity.name` against this field
- *   and rejects assembly on drift. Use the engine's canonical package
- *   name (e.g. `"@koi/context-manager"`, `"@koi/context-manager/passthrough"`,
- *   `"@my-org/custom"`); aliases are not resolved by the runtime.
+ * Setting `manifest.context` requires the host to pass
+ * `contextEngineFactory` to `createKoi()` — the runtime needs the factory
+ * to own slot wiring, the swap controller, and the slot middleware that
+ * drives `prepare()`/`onAfterTurn`. A `ComponentProvider` may attach an
+ * engine to `CONTEXT_ENGINE` for ECS-only observability, but cannot
+ * satisfy a manifest pin (no slot middleware would run, so the pin would
+ * have no effect on real model calls).
+ *
+ * - `engine` pins the engine identity name. The factory is the resolver;
+ *   the runtime then strictly compares the returned engine's
+ *   `identity.name` against this field and rejects assembly on drift.
+ *   Use the engine's canonical package name (e.g. `"@koi/context-manager"`,
+ *   `"@koi/context-manager/passthrough"`, `"@my-org/custom"`); aliases
+ *   are not resolved by the runtime.
  * - `version` optionally pins the engine's reported `identity.version`.
  *   On drift, the runtime rejects assembly so manifest-pinned rollbacks
  *   and audit trails stay trustworthy.

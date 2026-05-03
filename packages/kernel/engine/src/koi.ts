@@ -116,13 +116,32 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // guarantee the manifest identity, ECS slot, and the engine driving
   // model requests all reference the same instance.
   //
-  // Manifest pin enforcement is deferred to AFTER assembly so that hosts
-  // can supply CONTEXT_ENGINE either via `contextEngineFactory` (auto-
-  // wired path with swap controller) or via a `ComponentProvider` that
-  // attaches the slot directly. The post-assembly check below throws
-  // when `manifest.context` is set but neither path has filled the slot,
-  // preserving the "no silent inert" invariant without blocking the
-  // provider-based integration path.
+  // `manifest.context` requires `contextEngineFactory`. The runtime owns
+  // slot wiring + swap controller + per-turn pin lifecycle through the
+  // factory path, so prepare()/onAfterTurn always run, swap-controller
+  // pin enforcement applies, and ECS reads stay consistent with the
+  // engine driving model calls. A ComponentProvider can still attach
+  // CONTEXT_ENGINE for ECS-only observability — that's just not how
+  // manifest pins are honored, because the runtime would have no way to
+  // wire prepare()/onAfterTurn without the controller and slot middleware.
+  if (manifest.context !== undefined && options.contextEngineFactory === undefined) {
+    throw KoiRuntimeError.from(
+      "VALIDATION",
+      "createKoi: manifest.context is set but no contextEngineFactory was supplied. The runtime needs the factory to own slot wiring, the swap controller, and the slot middleware that drives prepare()/onAfterTurn — without it, the manifest pin would have no effect on actual model calls. Pass `contextEngineFactory`, or remove `manifest.context`.",
+      {
+        retryable: false,
+        context: {
+          ...(manifest.context.engine !== undefined
+            ? { manifestEngine: manifest.context.engine }
+            : {}),
+          ...(manifest.context.version !== undefined
+            ? { manifestVersion: manifest.context.version }
+            : {}),
+          hasConfig: manifest.context.config !== undefined,
+        },
+      },
+    );
+  }
   let contextEngineSwapController: ContextEngineSwapController | undefined;
   let contextEngineProxy: ContextEngine | undefined;
   const contextEngineProviders: ComponentProvider[] = [];
@@ -260,58 +279,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       );
     }
   }
-  // Post-assembly manifest pin enforcement. By this point CONTEXT_ENGINE is
-  // either filled by the auto-wired proxy (when contextEngineFactory is set)
-  // or by a user-supplied ComponentProvider. If `manifest.context` declared
-  // a pin but neither path attached an engine, the slot stays empty and
-  // turns would run without compaction — exactly the "silent inert" hazard
-  // the manifest pin is meant to surface. Reject before any turn runs.
-  if (manifest.context !== undefined) {
-    const slotEngine = agent.component(CONTEXT_ENGINE);
-    if (slotEngine === undefined) {
-      throw KoiRuntimeError.from(
-        "VALIDATION",
-        "createKoi: manifest.context is set but no engine was attached to CONTEXT_ENGINE. Supply either `contextEngineFactory` to let createKoi own the slot, or a ComponentProvider that attaches CONTEXT_ENGINE.",
-        {
-          retryable: false,
-          context: {
-            ...(manifest.context.engine !== undefined
-              ? { manifestEngine: manifest.context.engine }
-              : {}),
-            ...(manifest.context.version !== undefined
-              ? { manifestVersion: manifest.context.version }
-              : {}),
-            hasConfig: manifest.context.config !== undefined,
-          },
-        },
-      );
-    }
-    // Provider-supplied engines also have to honor manifest pins. The
-    // factory path validated identity before assembly; here we validate
-    // whatever ended up in the slot (which may be the auto-wired proxy or
-    // a user-attached engine). Each pin field is enforced independently
-    // so a version-only manifest does not silently lock the engine name.
-    if (
-      manifest.context.engine !== undefined &&
-      slotEngine.identity.name !== manifest.context.engine
-    ) {
-      throw KoiRuntimeError.from(
-        "VALIDATION",
-        `createKoi: CONTEXT_ENGINE attached identity "${slotEngine.identity.name}" but manifest pins engine "${manifest.context.engine}".`,
-        { retryable: false, context: { attachedIdentity: slotEngine.identity } },
-      );
-    }
-    if (
-      manifest.context.version !== undefined &&
-      slotEngine.identity.version !== manifest.context.version
-    ) {
-      throw KoiRuntimeError.from(
-        "VALIDATION",
-        `createKoi: CONTEXT_ENGINE attached version "${slotEngine.identity.version}" but manifest pins version "${manifest.context.version}".`,
-        { retryable: false, context: { attachedIdentity: slotEngine.identity } },
-      );
-    }
-  }
+  // Pre-assembly identity drift validation handled the factory path; by
+  // this point CONTEXT_ENGINE is either filled by the auto-wired proxy or
+  // intentionally empty (manifest.context unset). A user-supplied
+  // ComponentProvider may attach an engine for ECS-only observability,
+  // but cannot satisfy a manifest pin — the runtime requires
+  // contextEngineFactory for that, enforced pre-assembly above.
 
   // --- 2. Compose kernel extensions (governance + default guards) ---
   const governanceExt = createGovernanceExtension();

@@ -174,13 +174,30 @@ export function createContextEngineSwapController(
   };
   const history: ContextEngineSwapEvent[] = [];
 
-  // Freeze the event (and its `pinnedTurnIds` array if present) so neither
-  // a buggy subscriber nor a downstream caller can rewrite history after
-  // the swap commits. Object.freeze is a runtime contract — TS `readonly`
-  // is compile-time only and would not stop a malicious mutation.
+  // Freeze every reachable field of an emitted event so that neither a
+  // buggy subscriber, a downstream caller, nor a later mutation of the
+  // engine's own identity object can rewrite swap history after commit.
+  // Identities are supplied by engine implementations and are otherwise
+  // live references — without cloning them into the event we'd freeze
+  // only the wrapper while leaving `event.from.name` etc. mutable.
+  const freezeIdentity = (id: ContextEngineIdentity): ContextEngineIdentity =>
+    Object.freeze({ name: id.name, version: id.version });
   const freezeEvent = (evt: ContextEngineSwapEvent): ContextEngineSwapEvent => {
-    if (evt.pinnedTurnIds !== undefined) Object.freeze(evt.pinnedTurnIds);
-    return Object.freeze(evt);
+    const cloned: ContextEngineSwapEvent = {
+      kind: evt.kind,
+      turnId: evt.turnId,
+      from: freezeIdentity(evt.from),
+      to: freezeIdentity(evt.to),
+      reason: evt.reason,
+      timestamp: evt.timestamp,
+      ...(evt.rollbackTarget !== undefined
+        ? { rollbackTarget: freezeIdentity(evt.rollbackTarget) }
+        : {}),
+      ...(evt.pinnedTurnIds !== undefined
+        ? { pinnedTurnIds: Object.freeze([...evt.pinnedTurnIds]) }
+        : {}),
+    };
+    return Object.freeze(cloned);
   };
   let active: ContextEngine = initial;
   // Each frame records the engine displaced by a swap plus the rollback
