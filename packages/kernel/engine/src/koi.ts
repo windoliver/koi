@@ -2353,15 +2353,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             try {
               // Prefer the real per-turn TurnContext so engines that key
               // post-turn bookkeeping off ctx.messages/metadata see the
-              // actual turn data. Fall back to a synthetic minimal ctx
-              // with stopBlocked=true if the runtime never built one
-              // (e.g. abort before first turn).
+              // actual turn data. Fall back to a neutral synthetic ctx if
+              // the runtime never built one (e.g. abort before first
+              // turn). Do NOT set stopBlocked here — this branch only
+              // fires for the turn that emitted `done` successfully, so
+              // marking the synth as blocked would tell engines to skip
+              // checkpoint/eviction on a successful turn.
               const realCtx = turnCtxByTurnId.get(pinnedTurnId as string);
-              // For unknown-turnId fallback (turn pinned but never built a
-              // real ctx, e.g. direct wrapModelStream without a cooperating
-              // adapter), override the synth ctx's turnId to match the
-              // pinned turn so engines see the right identifier even with
-              // empty messages.
               const fallbackTurnCtx: TurnContext = realCtx ?? {
                 ...createTurnContext({
                   session: sessionCtx,
@@ -2370,7 +2368,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   signal: runSignal,
                   approvalHandler: options.approvalHandler,
                   sendStatus: options.sendStatus,
-                  stopBlocked: true,
                 }),
                 turnId: pinnedTurnId,
               };

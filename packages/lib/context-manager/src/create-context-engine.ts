@@ -54,22 +54,66 @@ function isManifestConfig(
   return true;
 }
 
+/**
+ * Numeric budget knobs we accept from the JSON manifest bag. Strings or
+ * malformed values are rejected up-front so a drifted manifest cannot push
+ * `enforceBudget`'s arithmetic into NaN/noop and silently disable
+ * compaction.
+ */
+const NUMERIC_BUDGET_KEYS = [
+  "contextWindowSize",
+  "preserveRecent",
+  "prunePreserveLastK",
+  "softTriggerFraction",
+  "hardTriggerFraction",
+  "microTargetFraction",
+  "maxResultTokens",
+  "maxMessageTokens",
+  "previewChars",
+  "maxSummaryTokens",
+] as const satisfies readonly (keyof BudgetConfig)[];
+
+function coerceFiniteNumber(key: string, value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(
+      `createContextEngine: manifest.context.config.${key} must be a finite, non-negative number; got ${typeof value === "number" ? String(value) : JSON.stringify(value)}`,
+    );
+  }
+  return value;
+}
+
+function validateManifestBudget(cfg: Readonly<Record<string, unknown>>): BudgetConfig {
+  const out: Record<string, number | string> = {};
+  for (const key of NUMERIC_BUDGET_KEYS) {
+    const v = cfg[key];
+    if (v === undefined) continue;
+    out[key] = coerceFiniteNumber(key, v);
+  }
+  if (cfg.modelId !== undefined) {
+    if (typeof cfg.modelId !== "string") {
+      throw new Error(
+        `createContextEngine: manifest.context.config.modelId must be a string; got ${typeof cfg.modelId}`,
+      );
+    }
+    out.modelId = cfg.modelId;
+  }
+  return out as BudgetConfig;
+}
+
 function normalizeOptions(
   arg: ContextEngineOptions | ContextManifestConfig | undefined,
 ): ContextEngineOptions {
   if (arg === undefined) return {};
   if (!isManifestConfig(arg)) return arg;
-  // Manifest `config` is JsonObject — fields it carries are budget knobs by
-  // contract. Runtime-only fields (replacementStore, tokenEstimator) cannot
-  // appear in JSON, so the cast widens cleanly without losing type safety.
+  // Validate the JSON `config` bag before handing it to `enforceBudget`.
+  // Runtime-only fields (replacementStore, tokenEstimator instances)
+  // cannot appear in JSON; only numeric/string knobs are accepted.
   // Deliberately ignore arg.engine / arg.version: the bundled factory must
-  // NOT claim an arbitrary identity from manifest text, otherwise a host
-  // could pin manifest.context.engine to "@my-org/custom" and receive the
-  // default compactor behind that name. createKoi compares the returned
-  // identity against the manifest pin — keeping our identity fixed makes
-  // that comparison meaningful.
-  const cfg = arg.config ?? {};
-  return cfg as BudgetConfig;
+  // NOT claim an arbitrary identity from manifest text — createKoi compares
+  // the returned identity against the manifest pin, and a fixed identity
+  // makes that comparison meaningful.
+  if (arg.config === undefined) return {};
+  return validateManifestBudget(arg.config as Readonly<Record<string, unknown>>);
 }
 
 /**
@@ -108,7 +152,11 @@ export function createContextEngine(
     // after a successful drop/summarize. Recomputing on `result.messages`
     // gives a single, authoritative post-prepare count for every branch.
     lastEstimatedTokens = await estimator.estimateMessages(result.messages, options.modelId);
-    return result.messages;
+    // Always return a fresh array. enforceBudget's noop branch returns the
+    // caller's original `messages` reference; aliasing caller-owned history
+    // back as the prepared list lets downstream mutation leak into cached
+    // turn state. ContextEngine.prepare() docs require a fresh list.
+    return [...result.messages];
   };
 
   const describeOccupancy = async (): Promise<ContextOccupancy> => ({
