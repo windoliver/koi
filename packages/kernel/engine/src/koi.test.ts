@@ -413,6 +413,42 @@ describe("createKoi assembly", () => {
     ).rejects.toThrow(/CONTEXT_ENGINE|context-engine-double-wire/);
   });
 
+  test("releases the turn pin on `done`-only completion (no `turn_end`)", async () => {
+    // Round-10 regression: cooperating adapters that emit `done` directly
+    // bypass `onAfterTurn`. Without the streamEvents-finally cleanup, the
+    // controller would stay pinned to the pre-completion engine forever.
+    type ContextEngine = import("@koi/core").ContextEngine;
+    type TurnId = import("@koi/core").TurnId;
+    const engineA: ContextEngine = {
+      identity: { name: "a", version: "1.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const engineB: ContextEngine = {
+      identity: { name: "b", version: "2.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const modelTerminal: ModelHandler = async () =>
+      ({ content: "ok", model: "x" }) as import("@koi/core").ModelResponse;
+    const adapter = cooperatingAdapter(modelTerminal, [{ kind: "done", output: doneOutput() }]);
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      contextEngineFactory: () => engineA,
+      loopDetection: false,
+    });
+    // Drive a turn through the cooperating adapter so the slot middleware's
+    // wrapModelCall fires and pins the turn.
+    await collectEvents(runtime.run({ kind: "text", text: "hi" }));
+    // After the run ends, a fresh swap MUST be visible — proving the
+    // streamEvents-finally cleanup released the pin even though the
+    // cooperating adapter never went through `turn_end`/`onAfterTurn`.
+    runtime.contextEngineSwapController?.swap(engineB, {
+      turnId: "run-1:t1" as TurnId,
+      reason: "test",
+    });
+    expect(runtime.contextEngineSwapController?.current().identity.name).toBe("b");
+  });
+
   test("rejects user-supplied middleware named 'context-engine' when contextEngineFactory is set", async () => {
     type ContextEngine = import("@koi/core").ContextEngine;
     type KoiMiddleware = import("@koi/core").KoiMiddleware;

@@ -48,11 +48,15 @@ export interface ContextEngineSwapController {
    */
   readonly beginTurn: (turnId: TurnId) => void;
   /**
-   * Release the pin for `turnId`. Subsequent `current()` calls return the
-   * live `active` engine (which may have been changed by mid-turn swaps).
-   * Called by the slot middleware in `onAfterTurn`.
+   * Release the pin. With a `turnId` argument, the pin is released only if
+   * it matches (defensive against out-of-order calls under concurrent or
+   * interrupted turns). With no argument, any active pin is released
+   * unconditionally — used by the runtime's terminal-path cleanup so a
+   * `done` exit that bypasses `onAfterTurn` cannot strand the controller.
+   * Called by the slot middleware in `onAfterTurn` and by `createKoi`'s
+   * streamEvents finally / pre-`done` cleanup.
    */
-  readonly endTurn: (turnId: TurnId) => void;
+  readonly endTurn: (turnId?: TurnId) => void;
 }
 
 function sameIdentity(a: ContextEngineIdentity, b: ContextEngineIdentity): boolean {
@@ -105,7 +109,12 @@ export function createContextEngineSwapController(
     turnPin = { turnId, engine: active };
   };
 
-  const endTurn = (turnId: TurnId): void => {
+  const endTurn = (turnId?: TurnId): void => {
+    if (turnId === undefined) {
+      // Unconditional release — runtime terminal-path cleanup.
+      turnPin = undefined;
+      return;
+    }
     if (turnPin?.turnId === turnId) {
       turnPin = undefined;
     }

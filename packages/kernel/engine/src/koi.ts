@@ -913,6 +913,26 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       terminals: TerminalHandlers,
       consumeReset: boolean = false,
     ): Promise<void> {
+      // #1767 round 10: enforce the context-engine double-wire guard on
+      // every recomposition, not just at startup. Forged or hot-attached
+      // dynamic middleware named "context-engine" would either re-run
+      // prepare() or substitute a second engine in front of the
+      // controller-backed slot.
+      if (options.contextEngineFactory !== undefined) {
+        const dup =
+          (forgedMw ?? []).find((mw) => mw.name === "context-engine") ??
+          (dynamicMw ?? []).find((mw) => mw.name === "context-engine");
+        if (dup !== undefined) {
+          throw KoiRuntimeError.from(
+            "VALIDATION",
+            "createKoi: forged or dynamic middleware named 'context-engine' was added during recomposition while contextEngineFactory is set. Remove the duplicate (e.g. drop createContextEngineMiddleware(engine) from forge / dynamicMiddleware) or stop passing contextEngineFactory.",
+            {
+              retryable: false,
+              context: { conflictKind: "context-engine-middleware-double-wire" },
+            },
+          );
+        }
+      }
       const { sorted, provenanceHints } = resolveActiveMiddleware(
         allMiddleware,
         forgedMw ?? undefined,
@@ -2204,6 +2224,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       if (unsubRegistryWatch !== undefined) unsubRegistryWatch();
       cleanupForgeSubscription();
       runSignal.removeEventListener("abort", onAbort);
+      // #1767 round 9/10: guarantee turn-pin release even when the run
+      // exits via `done` without an `onAfterTurn` (cooperating adapters
+      // that yield `done` directly, error/abort paths, consumer break).
+      // Without this, controller.current() — and therefore ECS reads —
+      // could stay stuck on the pre-failure engine after the run ends.
+      contextEngineSwapController?.endTurn();
 
       // Clean up adapter iterator (important on early return / break)
       if (adapterIterator?.return !== undefined) {
