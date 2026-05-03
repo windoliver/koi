@@ -11,6 +11,7 @@
  */
 
 import type {
+  ComponentProvider,
   ComposedCallHandlers,
   EngineEvent,
   EngineInput,
@@ -36,6 +37,7 @@ import type {
   TurnContext,
 } from "@koi/core";
 import {
+  COMPONENT_PRIORITY,
   DEFAULT_MAX_STOP_RETRIES,
   GOVERNANCE,
   INBOX,
@@ -75,6 +77,11 @@ import { AgentEntity } from "./agent-entity.js";
 import { createBrickRequiresExtension } from "./brick-requires-extension.js";
 import { createTerminalHandlers } from "./compose-bridge.js";
 import { createContextEngineProvider } from "./context-engine-provider.js";
+import { createContextEngineSlotMiddleware } from "./context-engine-runtime.js";
+import {
+  type ContextEngineSwapController,
+  createContextEngineSwapController,
+} from "./context-engine-swap.js";
 import { createDedupedToolsAccessor } from "./deduped-tools-accessor.js";
 import { createTurnContext, generatePid, unrefTimer } from "./koi-helpers.js";
 import type { CreateKoiOptions, KoiRuntime, RunHandle } from "./types.js";
@@ -100,16 +107,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
   });
   const governanceProvider = createGovernanceProvider(options.governance);
-  // Pluggable context-engine slot (#1767). Host supplies a factory so each
-  // agent assembled via createKoi() gets a fresh engine instance — sharing one
-  // instance across agents would leak occupancy state between turns. User
-  // providers can still override via lower priority.
+  // Pluggable context-engine slot (#1767). createKoi owns the full wiring:
+  // factory → engine → swap controller → ComponentProvider → middleware,
+  // so the slot is never half-wired. Host supplies a factory; we forward the
+  // resolved manifest.context bag and validate the returned identity matches
+  // any pinned selector before assembly.
   if (manifest.context?.engine !== undefined && options.contextEngineFactory === undefined) {
-    // The manifest pins a context engine but no host-side resolver was
-    // supplied. Failing closed here is the only safe option: continuing
-    // would silently ignore the manifest selection and run with whatever
-    // (or no) engine is wired, which is exactly the misconfiguration the
-    // selector is supposed to prevent.
     throw KoiRuntimeError.from(
       "VALIDATION",
       `manifest.context.engine="${manifest.context.engine}" requires a host-supplied contextEngineFactory in CreateKoiOptions. Resolve the manifest selector to a ContextEngine factory before calling createKoi(), or remove manifest.context to fall back to the runtime's default behavior.`,
@@ -124,10 +127,45 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       },
     );
   }
-  const contextEngineProviders =
-    options.contextEngineFactory !== undefined
-      ? [createContextEngineProvider(options.contextEngineFactory())]
-      : [];
+  let contextEngineSwapController: ContextEngineSwapController | undefined;
+  const contextEngineProviders: ComponentProvider[] = [];
+  const contextEngineMiddleware: KoiMiddleware[] = [];
+  if (options.contextEngineFactory !== undefined) {
+    const initialEngine = options.contextEngineFactory(manifest.context);
+    // Identity drift check: when the manifest pins an engine name (and
+    // optionally a version), the returned engine MUST match. Silently
+    // running with a different identity than the manifest claims would
+    // make incident response misleading.
+    if (manifest.context?.engine !== undefined) {
+      if (initialEngine.identity.name !== manifest.context.engine) {
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          `contextEngineFactory returned identity "${initialEngine.identity.name}" but manifest pins "${manifest.context.engine}". Reject before assembly so operator tooling cannot misreport the active engine.`,
+          { retryable: false, context: { returnedIdentity: initialEngine.identity } },
+        );
+      }
+      if (
+        manifest.context.version !== undefined &&
+        manifest.context.version !== initialEngine.identity.version
+      ) {
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          `contextEngineFactory returned version "${initialEngine.identity.version}" but manifest pins "${manifest.context.version}".`,
+          { retryable: false, context: { returnedIdentity: initialEngine.identity } },
+        );
+      }
+    }
+    contextEngineSwapController = createContextEngineSwapController(initialEngine);
+    // Provider attaches the live engine instance under CONTEXT_ENGINE; we
+    // re-attach via a wrapping provider that resolves through the controller
+    // so a swap reflects in agent.component(CONTEXT_ENGINE) reads as well.
+    contextEngineProviders.push(
+      createContextEngineProvider(initialEngine, { priority: COMPONENT_PRIORITY.BUNDLED }),
+    );
+    contextEngineMiddleware.push(
+      createContextEngineSlotMiddleware(() => contextEngineSwapController?.current()),
+    );
+  }
   const allProviders = [governanceProvider, ...contextEngineProviders, ...providers];
   const { agent, conflicts } = await AgentEntity.assemble(pid, manifest, allProviders);
 
@@ -169,9 +207,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // --- 2c. Wire transition validator into agent entity ---
   agent.setTransitionValidator(composed.validateTransition);
 
-  // --- 3. Compose middleware chain: guard middleware + user middleware, phase-sorted ---
+  // --- 3. Compose middleware chain: guard + auto-injected slot + user, phase-sorted ---
+  // The context-engine slot middleware (#1767) is appended before user
+  // middleware so its onion layer sits inside permissions/audit; the resolve
+  // phase keeps it after intercept-phase guards.
   const { sorted: allMiddleware, provenanceHints: staticProvenanceHints } = resolveActiveMiddleware(
-    [...composed.guardMiddleware, ...middleware],
+    [...composed.guardMiddleware, ...contextEngineMiddleware, ...middleware],
   );
 
   // --- 3b. Create debug instrumentation if enabled ---
@@ -2169,6 +2210,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // --- 7. Build runtime ---
   const runtime: KoiRuntime = {
     agent,
+    ...(contextEngineSwapController !== undefined ? { contextEngineSwapController } : {}),
     // #1742: getter so callers always see the CURRENT factorySessionId,
     // including after `cycleSession()` rotates it for a fresh
     // conversation. Reading at construction time was correct when the

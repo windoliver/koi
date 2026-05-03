@@ -220,6 +220,89 @@ describe("createKoi assembly", () => {
     expect(runtime.agent.state).toBe("created");
   });
 
+  test("identity drift between manifest and factory is rejected", async () => {
+    type ContextEngine = import("@koi/core").ContextEngine;
+    const factory = (): ContextEngine => ({
+      identity: { name: "@koi/something-else", version: "1.0.0" },
+      prepare: (_ctx, m) => m,
+    });
+    await expect(
+      createKoi({
+        manifest: testManifest({
+          context: { engine: "@koi/context-manager", version: "1.0.0" },
+        }),
+        adapter: mockAdapter([]),
+        contextEngineFactory: factory,
+      }),
+    ).rejects.toThrow(/identity/);
+  });
+
+  test("version drift between manifest and factory is rejected", async () => {
+    type ContextEngine = import("@koi/core").ContextEngine;
+    const factory = (): ContextEngine => ({
+      identity: { name: "@koi/context-manager", version: "9.9.9" },
+      prepare: (_ctx, m) => m,
+    });
+    await expect(
+      createKoi({
+        manifest: testManifest({
+          context: { engine: "@koi/context-manager", version: "1.0.0" },
+        }),
+        adapter: mockAdapter([]),
+        contextEngineFactory: factory,
+      }),
+    ).rejects.toThrow(/version/);
+  });
+
+  test("contextEngineFactory receives the manifest.context config bag", async () => {
+    type ContextEngine = import("@koi/core").ContextEngine;
+    type ContextManifestConfig = import("@koi/core").ContextManifestConfig;
+    let received: ContextManifestConfig | undefined;
+    const factory = (cfg?: ContextManifestConfig): ContextEngine => {
+      received = cfg;
+      return {
+        identity: { name: "@koi/context-manager", version: "1.0.0" },
+        prepare: (_c, m) => m,
+      };
+    };
+    await createKoi({
+      manifest: testManifest({
+        context: {
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { preset: "balanced" },
+        },
+      }),
+      adapter: mockAdapter([]),
+      contextEngineFactory: factory,
+    });
+    expect(received?.engine).toBe("@koi/context-manager");
+    expect(received?.config).toEqual({ preset: "balanced" });
+  });
+
+  test("runtime exposes contextEngineSwapController when factory is supplied", async () => {
+    type ContextEngine = import("@koi/core").ContextEngine;
+    const factory = (): ContextEngine => ({
+      identity: { name: "x", version: "1.0.0" },
+      prepare: (_c, m) => m,
+    });
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+      contextEngineFactory: factory,
+    });
+    expect(runtime.contextEngineSwapController).toBeDefined();
+    expect(runtime.contextEngineSwapController?.current().identity.name).toBe("x");
+  });
+
+  test("no swap controller exposed when no factory supplied", async () => {
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+    });
+    expect(runtime.contextEngineSwapController).toBeUndefined();
+  });
+
   test("manifest lifecycle overrides default type", async () => {
     const runtime = await createKoi({
       manifest: testManifest({ lifecycle: "worker" }),

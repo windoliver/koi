@@ -17,6 +17,7 @@ import type {
   ChildHandle,
   ComponentProvider,
   ContextEngine,
+  ContextManifestConfig,
   DelegationId,
   DeliveryPolicy,
   EngineAdapter,
@@ -103,11 +104,22 @@ export interface CreateKoiOptions {
    * scoped to a single agent — a singleton instance shared across agents
    * would leak occupancy state between unrelated turns under load.
    *
+   * The factory receives the resolved `manifest.context` config bag so the
+   * engine can honor `version`/`config` selectors. The runtime then validates
+   * that the returned `engine.identity.name` matches `manifest.context.engine`
+   * and (when set) that `engine.identity.version === manifest.context.version`,
+   * rejecting any drift before assembly.
+   *
+   * When `createKoi` accepts a factory, it auto-injects a controller-backed
+   * middleware that calls `engine.prepare()` on every model call and bridges
+   * `engine.onAfterTurn` to the turn lifecycle — so the slot is never inert.
+   * Swap operations performed via the returned `swapController` take effect
+   * on the very next turn.
+   *
    * When absent, no engine is attached and the runtime falls back to its
-   * existing per-turn behavior. Hosts that read `manifest.context.engine`
-   * resolve the named engine to a factory and pass it here.
+   * existing per-turn behavior.
    */
-  readonly contextEngineFactory?: () => ContextEngine;
+  readonly contextEngineFactory?: (config?: ContextManifestConfig) => ContextEngine;
   /** Iteration guard limits. Defaults to DEFAULT_ITERATION_LIMITS. */
   readonly limits?: Partial<IterationLimits>;
   /** Loop detection configuration. Defaults to DEFAULT_LOOP_DETECTION. Set to false to disable. */
@@ -261,6 +273,12 @@ export interface RunHandle extends AsyncIterable<EngineEvent> {
 export interface KoiRuntime {
   /** The assembled agent entity. */
   readonly agent: Agent;
+  /**
+   * Swap controller for the active context engine (#1767). Defined only when
+   * `contextEngineFactory` was passed to `createKoi`. Auto-wired so swaps
+   * take effect on the very next model call without any host plumbing.
+   */
+  readonly contextEngineSwapController?: import("./context-engine-swap.js").ContextEngineSwapController;
   /** The session ID assigned to this runtime instance. */
   readonly sessionId: string;
   /** RunId of the active run, or `undefined` between runs. Callers can
