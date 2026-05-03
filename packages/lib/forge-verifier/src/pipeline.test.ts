@@ -580,7 +580,7 @@ describe("runPipeline — security regressions", () => {
     expect(result.error.message).toContain("non-plain");
   });
 
-  test("artifact with an accessor (getter): getter fires once during V8 clone, then snapshot is data", async () => {
+  test("artifact with an accessor (getter) is rejected pre-clone — getter never fires", async () => {
     let getterFireCount = 0;
     const obj = { name: "x" };
     Object.defineProperty(obj, "trapped", {
@@ -591,20 +591,15 @@ describe("runPipeline — security regressions", () => {
         return 42;
       },
     });
-    let stageSawTrapped: unknown;
-    const stage: VerifierStage<typeof obj> = {
-      name: "inspect",
-      run: async (a) => {
-        stageSawTrapped = (a as unknown as Record<string, unknown>).trapped;
-        return PASS;
-      },
-    };
+    const stage: VerifierStage<typeof obj> = { name: "inspect", run: async () => PASS };
     const result = await runPipeline([stage], obj as unknown as typeof obj);
-    expect(result.ok).toBe(true);
-    // Getter fires exactly once, during the V8-internal structuredClone.
-    // It does NOT fire again from any verifier reflection or from stage access.
-    expect(getterFireCount).toBe(1);
-    expect(stageSawTrapped).toBe(42); // resolved to data
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("accessor");
+    // Pre-clone descriptor walk reads the descriptor without invoking .get.
+    // Crucial: caller-controlled code does NOT execute on the verifier stack.
+    expect(getterFireCount).toBe(0);
   });
 
   test("top-level function artifact is rejected", async () => {
@@ -617,46 +612,37 @@ describe("runPipeline — security regressions", () => {
     expect(result.error.message).toContain("function");
   });
 
-  test("symbol-keyed own properties are dropped by structuredClone — snapshot is symbol-free", async () => {
+  test("symbol-keyed own properties are rejected pre-clone — no hidden state attestation", async () => {
+    // structuredClone silently drops symbol keys, which would let a caller
+    // submit hidden state and still get a successful verification for a
+    // different effective object. Reject before clone so the verifier can
+    // never attest to a strict subset of the caller's data.
     const sym = Symbol("hidden");
     const obj = { name: "x", [sym]: { secret: 1 } };
-    let stageSaw: object | undefined;
-    const stage: VerifierStage<typeof obj> = {
-      name: "inspect",
-      run: async (a) => {
-        stageSaw = a;
-        return PASS;
-      },
-    };
+    const stage: VerifierStage<typeof obj> = { name: "inspect", run: async () => PASS };
     const result = await runPipeline([stage], obj as unknown as typeof obj);
-    expect(result.ok).toBe(true);
-    // Symbol key is gone from what stages see (V8-internal clone behavior).
-    expect(stageSaw).toBeDefined();
-    if (stageSaw === undefined) return;
-    expect(Object.getOwnPropertySymbols(stageSaw)).toEqual([]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("symbol");
   });
 
-  test("non-enumerable own properties are dropped by structuredClone — snapshot is enumerable-only", async () => {
+  test("non-enumerable own properties are rejected pre-clone — no hidden state attestation", async () => {
     const obj = { name: "x" };
     Object.defineProperty(obj, "hidden", {
       enumerable: false,
       configurable: true,
       value: 99,
     });
-    let stageSawHidden: unknown;
-    const stage: VerifierStage<typeof obj> = {
-      name: "inspect",
-      run: async (a) => {
-        stageSawHidden = (a as unknown as Record<string, unknown>).hidden;
-        return PASS;
-      },
-    };
+    const stage: VerifierStage<typeof obj> = { name: "inspect", run: async () => PASS };
     const result = await runPipeline([stage], obj as unknown as typeof obj);
-    expect(result.ok).toBe(true);
-    expect(stageSawHidden).toBeUndefined();
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("non-enumerable");
   });
 
-  test("array with a numeric-index accessor: clone resolves it once, snapshot is data", async () => {
+  test("array with a numeric-index accessor is rejected pre-clone — getter never fires", async () => {
     let getterFireCount = 0;
     const arr: unknown[] = [];
     Object.defineProperty(arr, "0", {
@@ -669,10 +655,10 @@ describe("runPipeline — security regressions", () => {
     });
     Object.defineProperty(arr, "length", { value: 1 });
     const result = await runPipeline([createSyntaxStage(okCheck)], arr as unknown as FakeArtifact);
-    // Either accepted (getter fires once during clone) or rejected by clone;
-    // either way, no second fire.
-    expect(getterFireCount).toBeLessThanOrEqual(1);
-    expect(result.ok === true || result.error.code === "INVALID_CONFIG").toBe(true);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(getterFireCount).toBe(0);
   });
 
   test("snapshot phase honors abort signal — fails fast on already-aborted", async () => {
@@ -892,6 +878,28 @@ describe("runPipeline — security regressions", () => {
     // But re-verifying A should still hit the cache.
     await runPipeline([stage.stage], artifactA, { artifactFingerprint: key, cache });
     expect(stage.calls()).toBe(2);
+  });
+
+  test("cache.get failure stays inside Result envelope as INTERNAL", async () => {
+    // Reads (unlike writes) cannot be silently swallowed: a read failure
+    // means we cannot prove the cache is empty, and re-running stages may
+    // double-execute side effects. Surface as a typed Result error so the
+    // advertised exception-free contract holds for backend outages too.
+    const flakyCache = {
+      get: async () => {
+        throw new Error("read backend down");
+      },
+      set: async () => {},
+    };
+    const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
+      artifactFingerprint: () => "k",
+      cache: flakyCache,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INTERNAL");
+    expect(result.error.context?.stage).toBe("<cache>");
+    expect(result.error.message).toContain("read backend down");
   });
 
   test("cache.set failure does not turn success into rejection", async () => {

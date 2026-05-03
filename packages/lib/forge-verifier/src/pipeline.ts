@@ -162,22 +162,22 @@ export async function runPipeline<I>(
       }
       snapshot = artifact;
     } else {
-      // Pre-clone gate: cheap prototype check rejects class instances
-      // (structuredClone would silently strip the prototype, so the
-      // snapshot would not equal the input). One Proxy `getPrototypeOf`
-      // trap may fire here — accepted as the cost of detecting class
-      // instances.
-      const rootProto = Object.getPrototypeOf(artifact);
-      if (rootProto !== Object.prototype && rootProto !== null && !Array.isArray(artifact)) {
-        const ctor = (rootProto as { constructor?: { name?: string } } | null)?.constructor?.name;
-        throw new TypeError(
-          `Artifact root is a non-plain object${ctor ? ` (${ctor})` : ""}; verifier requires plain-data artifacts.`,
-        );
-      }
-      // Clone — runs in V8 internals; getters fire once and resolve to data,
-      // Proxy traps fire once and are stripped, symbol/non-enumerable keys
-      // are dropped. After this point reflection touches only the in-engine
-      // snapshot, not the caller's live object.
+      // Pre-clone validation walks the ORIGINAL artifact graph using only
+      // descriptor reads — no value-getter invocation, no Object.entries.
+      // Catches hidden state (symbol keys, non-enumerable, accessors) that
+      // structuredClone would silently drop, AND class instances whose
+      // prototype clone would strip. For Proxy-wrapped artifacts, the
+      // ownKeys/getOwnPropertyDescriptor traps may fire — bounded by the
+      // graph size and never deeper than data descriptors carry (data
+      // descriptors hold .value eagerly, so no caller getter is invoked
+      // by the walk). Same Proxy-trap exposure surface as structuredClone
+      // itself — we accept it once here in exchange for catching attacks
+      // that would otherwise be invisible to every stage.
+      rejectUnsupportedShape(artifact, "$", new WeakSet<object>());
+      // Clone — runs in V8 internals on a graph we already proved to be
+      // pure data. Symbol/non-enumerable rejection above means clone cannot
+      // silently elide caller state: the snapshot is bit-equivalent to
+      // every observable own data property of the original.
       let cloned: I;
       try {
         cloned = structuredClone(artifact);
@@ -185,11 +185,6 @@ export async function runPipeline<I>(
         const detail = e instanceof Error ? e.message : "non-cloneable artifact";
         throw new TypeError(`Artifact is not structured-cloneable: ${detail}`);
       }
-      // Validate the cloned snapshot. Reject Map/Set/typed-array (preserved
-      // by clone but unfreezable), arrays with extra named props (preserved
-      // but cannot honor the immutability claim), and any nested non-plain
-      // objects that slipped through.
-      rejectUnsupportedShape(cloned, "$", new WeakSet<object>());
       snapshot = cloned;
       deepFreeze(snapshot);
     }
@@ -237,7 +232,23 @@ export async function runPipeline<I>(
         error: stageError("TIMEOUT", "<cache>", "Pipeline aborted before cache lookup."),
       };
     }
-    const hit = await cache.get(composedKey);
+    let hit: Awaited<ReturnType<typeof cache.get>>;
+    try {
+      hit = await cache.get(composedKey);
+    } catch (e: unknown) {
+      // Cache READS map to a typed Result. The advertised contract is
+      // exception-free; a backend outage during read is a stage-attributable
+      // INTERNAL error, not an unhandled rejection that crashes the caller.
+      // Reads are NOT silently swallowed (unlike writes): a read failure
+      // means we cannot prove the cache is empty, so re-running stages
+      // could double-execute side effects. Surface and let the caller
+      // decide.
+      const detail = e instanceof Error ? e.message : "cache.get threw";
+      return {
+        ok: false,
+        error: stageError("INTERNAL", "<cache>", `Cache read failed: ${detail}`, e),
+      };
+    }
     // Re-check after the await — a remote cache.get can take real time and
     // a caller that aborted during the read must not receive a cached pass
     // they explicitly gave up on.
