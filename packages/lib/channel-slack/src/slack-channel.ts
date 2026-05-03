@@ -111,7 +111,16 @@ const SLACK_CAPABILITIES = {
   supportsA2ui: false,
 } as const satisfies ChannelCapabilities;
 
-export type SlackReplyToMode = "off" | "first" | "all";
+/**
+ * Outbound threading behavior:
+ *   - `"all"`: every threaded outbound message is posted in-thread (default).
+ *   - `"off"`: strip the thread, posting every reply at channel root.
+ * Note: `"first"` (in-thread only for the first reply) is intentionally
+ * NOT supported — implementing it requires server-side first-message
+ * lookup we don't have. Selecting it would silently degrade to `"all"`,
+ * so the constructor rejects it instead.
+ */
+export type SlackReplyToMode = "off" | "all";
 
 export type SlackDeployment =
   | { readonly mode: "socket"; readonly appToken: string }
@@ -132,6 +141,16 @@ interface ResolvedFeatures {
 }
 
 function resolveFeatures(f?: SlackFeatures): ResolvedFeatures {
+  // Reject the legacy `"first"` value at construction. Earlier code
+  // accepted it then silently fell through to `"all"`, so callers got
+  // behavior they did not select. The type now excludes it; this guard
+  // catches host code that bypasses the type (e.g. JSON config).
+  if ((f?.replyToMode as string) === "first") {
+    throw new Error(
+      '[channel-slack] replyToMode: "first" is not supported. Use "all" or "off". ' +
+        'Selecting "first" requires server-side first-message lookup that this adapter does not provide.',
+    );
+  }
   return {
     threads: f?.threads ?? true,
     slashCommands: f?.slashCommands ?? true,
@@ -209,12 +228,9 @@ function blocksToText(content: readonly ContentBlock[]): string {
 
 function applyReplyToMode(message: OutboundMessage, mode: SlackReplyToMode): OutboundMessage {
   if (mode === "all" || message.threadId === undefined) return message;
-  if (mode === "off") {
-    const i = message.threadId.indexOf(":");
-    return i === -1 ? message : { ...message, threadId: message.threadId.slice(0, i) };
-  }
-  // "first": v1 simplification — without server-side first-message lookup, fall through to "all"
-  return message;
+  // mode === "off": strip thread, post at channel root
+  const i = message.threadId.indexOf(":");
+  return i === -1 ? message : { ...message, threadId: message.threadId.slice(0, i) };
 }
 
 /**

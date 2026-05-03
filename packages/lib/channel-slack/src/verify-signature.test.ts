@@ -104,6 +104,32 @@ describe("verifySlackRequest", () => {
     expect(r.tooLarge).toBe(true);
   });
 
+  test("rejects oversized chunked bodies during streaming (no Content-Length)", async () => {
+    // Regression: omitted Content-Length used to bypass the up-front guard
+    // and force `await request.text()` to buffer the entire payload before
+    // the post-read check. Streaming reader must abort mid-stream.
+    const ts = nowTs();
+    const huge = new Uint8Array(150_000);
+    huge.fill(0x78); // 'x'
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(huge);
+        c.close();
+      },
+    });
+    const req = new Request("http://x", {
+      method: "POST",
+      headers: {
+        "X-Slack-Request-Timestamp": ts,
+        "X-Slack-Signature": "v0=00",
+      },
+      body: stream,
+    });
+    const r = await verifySlackRequest(SECRET, req);
+    expect(r.ok).toBe(false);
+    expect(r.tooLarge).toBe(true);
+  });
+
   test("ok=false when timestamp is non-numeric", async () => {
     const req = new Request("http://x", {
       method: "POST",

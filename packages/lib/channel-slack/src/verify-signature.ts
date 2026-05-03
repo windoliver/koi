@@ -66,18 +66,50 @@ export async function verifySlackRequest(
   if (Math.abs(nowEpoch - requestEpoch) > REPLAY_WINDOW_SECONDS) {
     return { ok: false, body: "" };
   }
-  // Size guard BEFORE buffering. Reject any request whose declared Content-Length
-  // exceeds the cap so we never call request.text() on an unbounded body.
+  // Size guard BEFORE buffering. Reject any request whose declared
+  // Content-Length exceeds the cap so we never read an unbounded body.
   const len = Number(request.headers.get("content-length") ?? 0);
   if (Number.isFinite(len) && len > MAX_BODY_BYTES) {
     return { ok: false, body: "", tooLarge: true };
   }
-  const rawBody = await request.text();
-  // Belt-and-suspenders: clients that omit/misreport Content-Length still get
-  // capped at the same limit after the body has been consumed.
-  if (rawBody.length > MAX_BODY_BYTES) {
+  // Authoritative byte cap via streaming read — defeats omitted/dishonest
+  // Content-Length and chunked transfer that would otherwise force the
+  // webhook to buffer the entire body before rejection.
+  const rawBody = await readBodyWithCap(request, MAX_BODY_BYTES);
+  if (rawBody === null) {
     return { ok: false, body: "", tooLarge: true };
   }
   const ok = verifySlackSignature(signingSecret, timestamp, rawBody, signature);
   return { ok, body: rawBody };
+}
+
+/**
+ * Read the request body as UTF-8, aborting once the byte cap is exceeded.
+ * Returns `null` on overflow. Stream-based so omitted Content-Length and
+ * chunked transfer can't force unbounded buffering.
+ */
+async function readBodyWithCap(req: Request, cap: number): Promise<string | null> {
+  const reader = req.body?.getReader();
+  if (reader === undefined) return "";
+  const decoder = new TextDecoder("utf-8");
+  // let requires justification: accumulator for streamed body chunks
+  let chunks = "";
+  // let requires justification: byte counter for the streaming cap
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > cap) {
+      try {
+        await reader.cancel();
+      } catch {
+        // already terminated — ignore
+      }
+      return null;
+    }
+    chunks += decoder.decode(value, { stream: true });
+  }
+  chunks += decoder.decode();
+  return chunks;
 }

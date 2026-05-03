@@ -534,6 +534,19 @@ describe("@koi/channel-slack — Socket Mode", () => {
   });
 });
 
+describe("@koi/channel-slack — replyToMode validation", () => {
+  test("createSlackChannel throws when legacy `first` value is passed", () => {
+    expect(() =>
+      createSlackChannel({
+        botToken: "xoxb-test",
+        deployment: { mode: "http", signingSecret: "s" },
+        // biome-ignore lint/suspicious/noExplicitAny: testing legacy type-bypass
+        features: { replyToMode: "first" as any },
+      }),
+    ).toThrow(/replyToMode: "first"/);
+  });
+});
+
 describe("@koi/channel-slack — HTTP Events mode", () => {
   const SECRET = "8f742231b10e8888abcd99yyyzz85a5";
 
