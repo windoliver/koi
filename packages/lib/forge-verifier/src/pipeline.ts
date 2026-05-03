@@ -143,17 +143,22 @@ export async function runPipeline<I>(
   // will throw — surface that as INVALID_CONFIG.
   let snapshot: I;
   try {
-    snapshot =
-      artifact !== null && typeof artifact === "object" ? structuredClone(artifact) : artifact;
-    if (snapshot !== null && typeof snapshot === "object") {
+    if (artifact !== null && typeof artifact === "object") {
+      // Validate shape FIRST — reject Map/Set/typed-array/class-instance
+      // before structuredClone has a chance to silently coerce or drop info.
+      rejectUnsupportedShape(artifact, "$");
+      snapshot = structuredClone(artifact);
       deepFreeze(snapshot);
+    } else {
+      snapshot = artifact;
     }
   } catch (e: unknown) {
+    const detail = e instanceof Error ? e.message : "non-cloneable artifact";
     return {
       ok: false,
       error: {
         code: "INVALID_CONFIG",
-        message: "Artifact is not structured-cloneable; verifier requires plain-data artifacts.",
+        message: detail,
         retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
         cause: e,
       },
@@ -279,26 +284,60 @@ export async function runPipeline<I>(
 }
 
 /**
- * Recursively freeze plain objects, arrays, Map and Set values produced by
- * `structuredClone`. Skips primitives, `null`, and already-frozen objects to
- * avoid redundant work on shared substructures.
+ * Reject artifacts that contain types whose mutability cannot be enforced by
+ * `Object.freeze`, or whose snapshot would silently differ from the original.
+ *
+ * - Typed arrays / DataView / ArrayBuffer: `Object.freeze` throws on populated
+ *   typed arrays in V8, and a frozen typed array's underlying buffer is still
+ *   mutable. We do not support binary blobs in the artifact graph yet.
+ * - `Map` / `Set`: `Object.freeze` does NOT block `.set` / `.add` / `.delete`,
+ *   so a frozen collection is still mutable at the API surface. Reject
+ *   instead of pretending it's immutable.
+ * - Class instances (non-plain objects): `structuredClone` silently strips the
+ *   prototype, so stages would receive a plain-object that is not equal to
+ *   what the caller passed in and the cached pass would attest to a different
+ *   shape than the input.
+ */
+function rejectUnsupportedShape(value: unknown, path: string): void {
+  if (value === null || typeof value !== "object") return;
+  if (
+    ArrayBuffer.isView(value) ||
+    value instanceof ArrayBuffer ||
+    value instanceof Map ||
+    value instanceof Set
+  ) {
+    throw new TypeError(
+      `Artifact at ${path} contains ${value.constructor.name}; verifier requires plain-data artifacts (Map/Set/typed-array unsupported).`,
+    );
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) rejectUnsupportedShape(value[i], `${path}[${i}]`);
+    return;
+  }
+  // Non-plain object (class instance, etc.): structuredClone strips the
+  // prototype. Reject so the cached pass cannot attest to a different shape
+  // than what the caller actually passed in.
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) {
+    throw new TypeError(
+      `Artifact at ${path} is a non-plain object (${proto.constructor.name}); verifier requires plain-data artifacts.`,
+    );
+  }
+  for (const [k, v] of Object.entries(value)) {
+    rejectUnsupportedShape(v, `${path}.${k}`);
+  }
+}
+
+/**
+ * Recursively freeze plain objects and arrays. Map/Set/typed arrays are
+ * rejected upstream by `rejectUnsupportedShape`, so we never reach them here.
+ * Already-frozen substructures are skipped to avoid redundant work.
  */
 function deepFreeze(value: unknown): void {
   if (value === null || typeof value !== "object") return;
   if (Object.isFrozen(value)) return;
   Object.freeze(value);
   if (Array.isArray(value)) {
-    for (const item of value) deepFreeze(item);
-    return;
-  }
-  if (value instanceof Map) {
-    for (const [k, v] of value) {
-      deepFreeze(k);
-      deepFreeze(v);
-    }
-    return;
-  }
-  if (value instanceof Set) {
     for (const item of value) deepFreeze(item);
     return;
   }

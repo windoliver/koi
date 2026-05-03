@@ -119,9 +119,24 @@ attests to. An early stage that tries to rewrite nested fields throws
 in strict mode (which all our code is in), so a later stage cannot
 verify content different from what was fingerprinted.
 
-Artifacts that contain functions, class instances, or other
-non-cloneable values are rejected with `INVALID_CONFIG` rather than
-silently bypassed — verifier inputs must be plain data.
+**Supported artifact shape**: plain objects (`Object.prototype` /
+null prototype), arrays, primitives, and other plain-data values
+that round-trip through `structuredClone`. Explicitly **rejected**
+with `INVALID_CONFIG` (anywhere in the artifact graph):
+
+- `Map` / `Set` — `Object.freeze` does not block `.set` / `.add` /
+  `.delete`, so the immutability claim cannot be honored.
+- Typed arrays / `ArrayBuffer` / `DataView` — `Object.freeze` throws
+  on populated typed arrays, and a frozen view's underlying buffer
+  remains mutable.
+- Class instances (non-plain prototypes) — `structuredClone` strips
+  the prototype, so stages would receive a plain-object that is not
+  the shape the caller passed in and the cached pass would attest
+  to a different value.
+- Functions and other non-cloneable values.
+
+This keeps the cache pass guarantee tight: every cached attestation
+is bound to the exact frozen snapshot that every stage saw.
 
 ## Error Mapping
 

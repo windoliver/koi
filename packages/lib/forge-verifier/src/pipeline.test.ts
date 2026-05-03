@@ -520,6 +520,59 @@ describe("runPipeline — security regressions", () => {
     expect(result.error.code).toBe("INVALID_CONFIG");
   });
 
+  test("Map artifact is rejected — frozen Maps are still mutable via .set", async () => {
+    const stages = [createSyntaxStage(okCheck)];
+    const result = await runPipeline(stages, new Map([["k", 1]]) as unknown as FakeArtifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("Map");
+  });
+
+  test("Set artifact is rejected — frozen Sets are still mutable via .add", async () => {
+    const stages = [createSyntaxStage(okCheck)];
+    const result = await runPipeline(stages, new Set([1, 2]) as unknown as FakeArtifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("Set");
+  });
+
+  test("typed-array artifact is rejected", async () => {
+    const stages = [createSyntaxStage(okCheck)];
+    const result = await runPipeline(stages, new Uint8Array([1, 2, 3]) as unknown as FakeArtifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+  });
+
+  test("class-instance artifact is rejected — structuredClone strips prototype", async () => {
+    class MyArtifact {
+      readonly name: string;
+      constructor(name: string) {
+        this.name = name;
+      }
+    }
+    const stages = [createSyntaxStage(okCheck)];
+    const result = await runPipeline(stages, new MyArtifact("x") as unknown as FakeArtifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("non-plain");
+  });
+
+  test("nested Map inside a plain object is also rejected", async () => {
+    const stages = [createSyntaxStage(okCheck)];
+    const result = await runPipeline(stages, {
+      name: "x",
+      inner: new Map([["k", 1]]),
+    } as unknown as FakeArtifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("$.inner");
+  });
+
   test("flipping a stage from non-sandboxed to sandboxed invalidates prior cache", async () => {
     const cache = createMemoryCache();
     const v1 = counted({ name: "checker", version: "1", run: async () => PASS });
