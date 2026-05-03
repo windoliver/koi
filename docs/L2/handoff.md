@@ -668,3 +668,36 @@ L2  @koi/handoff ◄────────────────────
 - [x] All interface properties are `readonly`
 - [x] All array parameters are `readonly T[]`
 - [x] All store methods return `Result<T, KoiError>` or `T | Promise<T>`
+
+---
+
+## Implementation notes (v2 rewrite, #1371)
+
+Semantics enforced by `packages/lib/handoff/src/*.test.ts` and integration
+corner-cases in `packages/meta/runtime/src/__tests__/golden-queries.test.ts`.
+
+### Middleware injection state machine
+
+`createHandoffMiddleware` reserves an envelope **before** the model call and
+moves it `pending → injected` exactly once. The reservation is one-way:
+
+- A second middleware instance racing the same envelope sees `status !== "pending"`
+  and short-circuits (no double injection, no duplicate `handoff:injected` event).
+- If the wrapped model call throws, the reservation is reverted (`injected → pending`)
+  so the next turn re-injects. The original error is re-thrown.
+- For the streaming variant, a `delivered` flag tracks whether any chunk reached
+  the consumer; the reservation is reverted only when delivery never happened.
+- TTL-expired envelopes are invisible to `findPendingForAgent` and never injected.
+
+### Nexus store CAS
+
+Without a server-side compare-and-swap, `transition()` writes the envelope with a
+top-level `__casToken` sidecar (UUID), then re-reads to verify our token survived.
+The token is stripped on every read so it never leaks into the public envelope or
+into `accept_handoff` output. A failed verify returns `TIMEOUT` (retryable) rather
+than `CONFLICT`, so a successful commit is not masked.
+
+### Accept semantics
+
+A second `accept_handoff` after a successful first call returns `ALREADY_ACCEPTED`
+— the envelope's status is already `"accepted"` and the CAS transition rejects.

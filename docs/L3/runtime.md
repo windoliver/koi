@@ -4,6 +4,17 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 ## Recent updates
 
+`@koi/handoff` + `@koi/task-spawn` wiring (#1371, PR #2117): both L2 packages
+are now `@koi/runtime` dependencies and ship golden-query coverage in
+`src/__tests__/golden-queries.test.ts`. Coverage includes the happy-path
+prepare→inject→accept pipeline plus integration corner cases: TTL-expired
+envelopes hidden from middleware, double-`accept_handoff` rejected with
+`ALREADY_ACCEPTED`, middleware reservation reverts on model throw, copilot
+routing via live idle agent, `maxDurationMs` aborts hung spawn, unknown
+`agent_type` returns enumerated error. See `docs/L2/handoff.md` and
+`docs/L2/task-spawn.md` for the per-package state-machine and precedence
+rules.
+
 `@koi/session` cancel-resume surface (#2105, issue #1683): no L2 dependency
 set changes — `@koi/runtime` already depends on `@koi/session`. Behavioral
 additions surfaced through the existing dep:
