@@ -225,6 +225,24 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         { retryable: false, context: { slotIdentity: slotEngine.identity } },
       );
     }
+    // Manifest pins an engine and a provider attached it, but there's no
+    // guarantee the host also wired middleware to actually call
+    // `prepare()`. Auto-inject a slot middleware that resolves the engine
+    // from the ECS component on each call. The host's own middleware (if
+    // any, named "context-engine") takes precedence and we skip auto-wiring
+    // to avoid the double-wire failure mode.
+    const userMw = (options.middleware ?? []).find((mw) => mw.name === "context-engine");
+    if (userMw === undefined) {
+      const componentBackedController: import("./context-engine-runtime.js").SlotController = {
+        current: () => agent.component(CONTEXT_ENGINE),
+        // No swap controller in the manual path — pinning is a no-op.
+        // Per-turn safety still works because the slot ContextEngine
+        // reference doesn't change without a host-driven re-attach.
+        beginTurn: () => undefined,
+        endTurn: () => undefined,
+      };
+      contextEngineMiddleware.push(createContextEngineSlotMiddleware(componentBackedController));
+    }
   }
 
   // --- 2. Compose kernel extensions (governance + default guards) ---

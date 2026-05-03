@@ -28,34 +28,26 @@ import type { ContextEngine, KoiMiddleware, ModelChunk } from "@koi/core";
  * Use only when you are NOT passing `contextEngineFactory` to `createKoi()`
  * — see the module-level docs.
  *
- * Accepts either:
- *   - a `ContextEngine` instance (fixed for the lifetime of the runtime), or
- *   - a `() => ContextEngine` getter (resolved on every model call), so
- *     manually wired hosts that own their own swap controller can plug
- *     `() => controller.current()` here and get swap-aware behavior
- *     without rebuilding the runtime.
+ * The engine is captured by reference, so the same instance handles every
+ * model call. **Runtime swaps are NOT supported through this helper** —
+ * use `contextEngineFactory` if you need swap/rollback. Implementing
+ * "getter-based" swap support here without per-turn pinning would let
+ * `prepare()` and `onAfterTurn()` run against different engines under a
+ * mid-turn swap, which corrupts engine state.
  *
  * Implements both `wrapModelCall` (non-streaming) and `wrapModelStream`
- * (native streaming adapters) so `prepare()` runs on every model path —
- * a manual middleware that only intercepted `wrapModelCall` would silently
- * skip context preparation under streaming adapters.
+ * (native streaming adapters) so `prepare()` runs on every model path.
  */
-export function createContextEngineMiddleware(
-  engineOrGetter: ContextEngine | (() => ContextEngine),
-): KoiMiddleware {
-  const resolve =
-    typeof engineOrGetter === "function" ? engineOrGetter : (): ContextEngine => engineOrGetter;
+export function createContextEngineMiddleware(engine: ContextEngine): KoiMiddleware {
   return {
     name: "context-engine",
     phase: "resolve",
     priority: 500,
     wrapModelCall: async (ctx, request, next) => {
-      const engine = resolve();
       const prepared = await engine.prepare(ctx, request.messages);
       return next({ ...request, messages: prepared });
     },
     wrapModelStream: (ctx, request, next) => {
-      const engine = resolve();
       return {
         async *[Symbol.asyncIterator](): AsyncIterator<ModelChunk, undefined, undefined> {
           const prepared = await engine.prepare(ctx, request.messages);
@@ -66,7 +58,6 @@ export function createContextEngineMiddleware(
       };
     },
     onAfterTurn: async (ctx) => {
-      const engine = resolve();
       if (engine.onAfterTurn !== undefined) {
         await engine.onAfterTurn(ctx);
       }
