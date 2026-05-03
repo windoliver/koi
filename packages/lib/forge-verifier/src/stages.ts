@@ -1,12 +1,19 @@
-import type { StageOutcome, VerifierStage } from "./types.js";
+import type { StageContext, StageOutcome, VerifierStage } from "./types.js";
 
-type Check<I> = (artifact: I) => StageOutcome | Promise<StageOutcome>;
+/**
+ * Built-in stage check signature. Receives the validated frozen artifact
+ * snapshot AND the stage context — the second argument carries the
+ * `AbortSignal` so the predicate can cooperatively cancel long-running
+ * work (compiler, type checker, test runner) instead of blocking until
+ * the pipeline notices `signal.aborted` after the fact.
+ */
+type Check<I> = (artifact: I, ctx: StageContext) => StageOutcome | Promise<StageOutcome>;
 
 function makeStage<I>(name: string, check: Check<I>, version?: string): VerifierStage<I> {
   return {
     name,
     ...(version !== undefined ? { version } : {}),
-    run: (artifact) => check(artifact),
+    run: (artifact, ctx) => check(artifact, ctx),
   };
 }
 

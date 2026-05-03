@@ -930,6 +930,32 @@ describe("createMemoryCache", () => {
   });
 });
 
+describe("built-in stage factories propagate StageContext", () => {
+  test("createSyntaxStage check receives the AbortSignal so it can cooperatively cancel", async () => {
+    const ac = new AbortController();
+    let observedSignal: AbortSignal | undefined;
+    let observedAbortedBefore: boolean | undefined;
+    const stage = createSyntaxStage<FakeArtifact>((_a, ctx) => {
+      observedSignal = ctx.signal;
+      observedAbortedBefore = ctx.signal?.aborted;
+      ac.abort();
+      // Cooperative cancellation: predicate inspects ctx.signal AFTER abort
+      // and short-circuits its own work instead of returning PASS.
+      if (ctx.signal?.aborted === true) {
+        return { ok: false, reason: "cancelled by caller" };
+      }
+      return PASS;
+    });
+    const result = await runPipeline([stage], { name: "x" }, { signal: ac.signal });
+    expect(observedSignal).toBe(ac.signal);
+    expect(observedAbortedBefore).toBe(false);
+    // Pipeline maps the check's `{ok:false}` to VALIDATION because no throw occurred.
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("cancelled by caller");
+  });
+});
+
 describe("plugin contract hardening (malformed inputs stay in Result envelope)", () => {
   const artifact: FakeArtifact = { name: "x" };
 
