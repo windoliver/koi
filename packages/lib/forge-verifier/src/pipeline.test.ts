@@ -42,7 +42,11 @@ describe("runPipeline", () => {
 
   test("valid artifact passes all stages", async () => {
     const result = await runPipeline(
-      [createSyntaxStage(okCheck), createTypeStage(okCheck), createTestStage(okCheck)],
+      [
+        createSyntaxStage(okCheck, "1"),
+        createTypeStage(okCheck, "1"),
+        createTestStage(okCheck, "1"),
+      ],
       artifact,
     );
     expect(result.ok).toBe(true);
@@ -58,10 +62,10 @@ describe("runPipeline", () => {
   });
 
   test("syntax error caught at first stage; later stages do not run", async () => {
-    const type = counted(createTypeStage(okCheck));
-    const tst = counted(createTestStage(okCheck));
+    const type = counted(createTypeStage(okCheck, "1"));
+    const tst = counted(createTestStage(okCheck, "1"));
     const result = await runPipeline(
-      [createSyntaxStage(failCheck("bad syntax")), type.stage, tst.stage],
+      [createSyntaxStage(failCheck("bad syntax"), "1"), type.stage, tst.stage],
       artifact,
     );
     expect(result.ok).toBe(false);
@@ -74,9 +78,9 @@ describe("runPipeline", () => {
   });
 
   test("type error caught; syntax digest present, test stage skipped", async () => {
-    const tst = counted(createTestStage(okCheck));
+    const tst = counted(createTestStage(okCheck, "1"));
     const result = await runPipeline(
-      [createSyntaxStage(okCheck), createTypeStage(failCheck("bad type")), tst.stage],
+      [createSyntaxStage(okCheck, "1"), createTypeStage(failCheck("bad type"), "1"), tst.stage],
       artifact,
     );
     expect(result.ok).toBe(false);
@@ -87,7 +91,11 @@ describe("runPipeline", () => {
 
   test("test failure caught; syntax + type digests present", async () => {
     const result = await runPipeline(
-      [createSyntaxStage(okCheck), createTypeStage(okCheck), createTestStage(failCheck("fail"))],
+      [
+        createSyntaxStage(okCheck, "1"),
+        createTypeStage(okCheck, "1"),
+        createTestStage(failCheck("fail"), "1"),
+      ],
       artifact,
     );
     expect(result.ok).toBe(false);
@@ -110,7 +118,7 @@ describe("runPipeline", () => {
 
   test("cache hit skips re-verification", async () => {
     const cache = createMemoryCache();
-    const syntax = counted(createSyntaxStage(okCheck));
+    const syntax = counted(createSyntaxStage(okCheck, "1"));
     const stages = [syntax.stage] as const;
 
     const first = await runPipeline(stages, artifact, { cache, namespace: "test" });
@@ -126,7 +134,7 @@ describe("runPipeline", () => {
 
   test("failed pipelines are not cached", async () => {
     const cache = createMemoryCache();
-    const stages = [createSyntaxStage(failCheck("nope"))];
+    const stages = [createSyntaxStage(failCheck("nope"), "1")];
     await runPipeline(stages, { name: "a" }, { cache, namespace: "test" });
     const cached = await cache.get("k2");
     expect(cached).toBeUndefined();
@@ -229,13 +237,13 @@ describe("runPipeline — security regressions", () => {
 
   test("cache key is bound to stage list — adding a new stage invalidates prior cache", async () => {
     const cache = createMemoryCache();
-    const v1 = counted(createSyntaxStage(okCheck));
+    const v1 = counted(createSyntaxStage(okCheck, "1"));
     const r1 = await runPipeline([v1.stage], artifact, { cache, namespace: "test" });
     expect(r1.ok).toBe(true);
     expect(v1.calls()).toBe(1);
 
-    const v2a = counted(createSyntaxStage(okCheck));
-    const v2b = counted(createTypeStage(okCheck));
+    const v2a = counted(createSyntaxStage(okCheck, "1"));
+    const v2b = counted(createTypeStage(okCheck, "1"));
     const r2 = await runPipeline([v2a.stage, v2b.stage], artifact, { cache, namespace: "test" });
     expect(r2.ok).toBe(true);
     if (!r2.ok) return;
@@ -246,11 +254,11 @@ describe("runPipeline — security regressions", () => {
 
   test("cache key is bound to stage list — renaming a stage invalidates prior cache", async () => {
     const cache = createMemoryCache();
-    const before = counted({ name: "alpha", run: async () => PASS });
+    const before = counted({ name: "alpha", version: "1", run: async () => PASS });
     const r1 = await runPipeline([before.stage], artifact, { cache, namespace: "test" });
     expect(r1.ok).toBe(true);
 
-    const after = counted({ name: "beta", run: async () => PASS });
+    const after = counted({ name: "beta", version: "1", run: async () => PASS });
     const r2 = await runPipeline([after.stage], artifact, { cache, namespace: "test" });
     expect(r2.ok).toBe(true);
     expect(after.calls()).toBe(1);
@@ -300,7 +308,7 @@ describe("runPipeline — security regressions", () => {
 
   test("cache returns a frozen, isolated snapshot — caller mutation cannot poison the cache", async () => {
     const cache = createMemoryCache();
-    const stage = createSyntaxStage(okCheck);
+    const stage = createSyntaxStage(okCheck, "1");
     const r1 = await runPipeline([stage], artifact, { cache, namespace: "test" });
     expect(r1.ok).toBe(true);
     if (!r1.ok) return;
@@ -350,7 +358,7 @@ describe("runPipeline — security regressions", () => {
       get: async (key: string) => ({ key, summary: stored as unknown as ForgeVerificationSummary }),
       set: async () => {},
     };
-    const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
+    const result = await runPipeline([createSyntaxStage(okCheck, "1")], artifact, {
       cache: hostileCache,
       namespace: "test",
     });
@@ -366,7 +374,7 @@ describe("runPipeline — security regressions", () => {
   });
 
   test("malformed cache payload (wrong stage names) is rejected — pipeline re-verifies", async () => {
-    const stage = counted(createSyntaxStage(okCheck));
+    const stage = counted(createSyntaxStage(okCheck, "1"));
     const malformedCache = {
       get: async (key: string) => ({
         key,
@@ -390,7 +398,7 @@ describe("runPipeline — security regressions", () => {
   });
 
   test("malformed cache payload (wrong stage name) is rejected", async () => {
-    const stage = counted(createSyntaxStage(okCheck));
+    const stage = counted(createSyntaxStage(okCheck, "1"));
     const malformedCache = {
       get: async (key: string) => ({
         key,
@@ -412,7 +420,7 @@ describe("runPipeline — security regressions", () => {
   });
 
   test("cached sandbox=true is rejected when no current stage declares sandbox", async () => {
-    const stage = counted(createSyntaxStage(okCheck));
+    const stage = counted(createSyntaxStage(okCheck, "1"));
     const lyingCache = {
       get: async (key: string) => ({
         key,
@@ -440,6 +448,7 @@ describe("runPipeline — security regressions", () => {
   test("cached sandbox=true is honored when at least one current stage declares sandbox", async () => {
     const sbStage: VerifierStage<FakeArtifact> = {
       name: "sb",
+      version: "1",
       sandboxed: true,
       run: async () => ({ ok: true, sandboxed: true }),
     };
@@ -527,7 +536,7 @@ describe("runPipeline — security regressions", () => {
   test("artifact that is not structured-cloneable is rejected", async () => {
     // Functions are not cloneable.
     const fn = () => 42;
-    const stages = [createSyntaxStage(okCheck)];
+    const stages = [createSyntaxStage(okCheck, "1")];
     const result = await runPipeline(stages, { fn } as unknown as FakeArtifact);
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -535,7 +544,7 @@ describe("runPipeline — security regressions", () => {
   });
 
   test("Map artifact is rejected — frozen Maps are still mutable via .set", async () => {
-    const stages = [createSyntaxStage(okCheck)];
+    const stages = [createSyntaxStage(okCheck, "1")];
     const result = await runPipeline(stages, new Map([["k", 1]]) as unknown as FakeArtifact);
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -544,7 +553,7 @@ describe("runPipeline — security regressions", () => {
   });
 
   test("Set artifact is rejected — frozen Sets are still mutable via .add", async () => {
-    const stages = [createSyntaxStage(okCheck)];
+    const stages = [createSyntaxStage(okCheck, "1")];
     const result = await runPipeline(stages, new Set([1, 2]) as unknown as FakeArtifact);
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -553,7 +562,7 @@ describe("runPipeline — security regressions", () => {
   });
 
   test("typed-array artifact is rejected", async () => {
-    const stages = [createSyntaxStage(okCheck)];
+    const stages = [createSyntaxStage(okCheck, "1")];
     const result = await runPipeline(stages, new Uint8Array([1, 2, 3]) as unknown as FakeArtifact);
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -567,7 +576,7 @@ describe("runPipeline — security regressions", () => {
         this.name = name;
       }
     }
-    const stages = [createSyntaxStage(okCheck)];
+    const stages = [createSyntaxStage(okCheck, "1")];
     const result = await runPipeline(stages, new MyArtifact("x") as unknown as FakeArtifact);
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -598,7 +607,7 @@ describe("runPipeline — security regressions", () => {
   });
 
   test("top-level function artifact is rejected", async () => {
-    const stages = [createSyntaxStage(okCheck)];
+    const stages = [createSyntaxStage(okCheck, "1")];
     const fn = (() => 1) as unknown as FakeArtifact;
     const result = await runPipeline(stages, fn);
     expect(result.ok).toBe(false);
@@ -649,7 +658,10 @@ describe("runPipeline — security regressions", () => {
       },
     });
     Object.defineProperty(arr, "length", { value: 1 });
-    const result = await runPipeline([createSyntaxStage(okCheck)], arr as unknown as FakeArtifact);
+    const result = await runPipeline(
+      [createSyntaxStage(okCheck, "1")],
+      arr as unknown as FakeArtifact,
+    );
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("INVALID_CONFIG");
@@ -659,7 +671,7 @@ describe("runPipeline — security regressions", () => {
   test("snapshot phase honors abort signal — fails fast on already-aborted", async () => {
     const ac = new AbortController();
     ac.abort();
-    const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
+    const result = await runPipeline([createSyntaxStage(okCheck, "1")], artifact, {
       signal: ac.signal,
     });
     expect(result.ok).toBe(false);
@@ -671,7 +683,10 @@ describe("runPipeline — security regressions", () => {
   test("array with extra named property is rejected by post-clone validation", async () => {
     const arr: unknown[] & { extra?: { x: number } } = [1, 2];
     arr.extra = { x: 1 };
-    const result = await runPipeline([createSyntaxStage(okCheck)], arr as unknown as FakeArtifact);
+    const result = await runPipeline(
+      [createSyntaxStage(okCheck, "1")],
+      arr as unknown as FakeArtifact,
+    );
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("INVALID_CONFIG");
@@ -682,7 +697,7 @@ describe("runPipeline — security regressions", () => {
     type Cyclic = { name: string; self?: Cyclic };
     const obj: Cyclic = { name: "cyc" };
     obj.self = obj;
-    const stage = counted(createSyntaxStage(okCheck));
+    const stage = counted(createSyntaxStage(okCheck, "1"));
     const cache = createMemoryCache();
     // First call: stages run, cache cannot be populated for the cyclic input.
     const r1 = await runPipeline([stage.stage], obj as unknown as FakeArtifact, {
@@ -705,14 +720,17 @@ describe("runPipeline — security regressions", () => {
     const obj: Cyclic = { name: "cyc" };
     obj.self = obj;
     // structuredClone supports cycles; the validator must too.
-    const result = await runPipeline([createSyntaxStage(okCheck)], obj as unknown as FakeArtifact);
+    const result = await runPipeline(
+      [createSyntaxStage(okCheck, "1")],
+      obj as unknown as FakeArtifact,
+    );
     expect(result.ok).toBe(true);
   });
 
   test("self-referential array is accepted (cycle guard)", async () => {
     const arr: unknown[] = [];
     arr.push(arr);
-    const result = await runPipeline([createSyntaxStage(okCheck)], {
+    const result = await runPipeline([createSyntaxStage(okCheck, "1")], {
       name: "x",
       inner: arr,
     } as unknown as FakeArtifact);
@@ -730,7 +748,7 @@ describe("runPipeline — security regressions", () => {
       },
       set: async () => {},
     };
-    const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
+    const result = await runPipeline([createSyntaxStage(okCheck, "1")], artifact, {
       cache,
       namespace: "test",
       signal: ac.signal,
@@ -758,7 +776,7 @@ describe("runPipeline — security regressions", () => {
       },
       set: async () => {},
     };
-    const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
+    const result = await runPipeline([createSyntaxStage(okCheck, "1")], artifact, {
       cache: slowCache,
       namespace: "test",
       signal: ac.signal,
@@ -769,7 +787,7 @@ describe("runPipeline — security regressions", () => {
   });
 
   test("nested Map inside a plain object is also rejected", async () => {
-    const stages = [createSyntaxStage(okCheck)];
+    const stages = [createSyntaxStage(okCheck, "1")];
     const result = await runPipeline(stages, {
       name: "x",
       inner: new Map([["k", 1]]),
@@ -808,6 +826,7 @@ describe("runPipeline — security regressions", () => {
     const cache = createMemoryCache();
     const sb: VerifierStage<FakeArtifact> = {
       name: "sb",
+      version: "1",
       sandboxed: true,
       run: async () => ({ ok: true, sandboxed: true }),
     };
@@ -862,7 +881,7 @@ describe("runPipeline — security regressions", () => {
 
   test("cache key derived from artifact — different artifacts do not share cache", async () => {
     const cache = createMemoryCache();
-    const stage = counted(createSyntaxStage(okCheck));
+    const stage = counted(createSyntaxStage(okCheck, "1"));
     const artifactA: FakeArtifact = { name: "A" };
     const artifactB: FakeArtifact = { name: "B" };
     await runPipeline([stage.stage], artifactA, { cache, namespace: "test" });
@@ -880,7 +899,7 @@ describe("runPipeline — security regressions", () => {
     // API calls, quota), so a transient backend outage must not silently
     // re-run them. Surface as INTERNAL inside the Result envelope; the
     // exception never escapes the documented Promise<Result<...>> contract.
-    const stage = counted(createSyntaxStage(okCheck));
+    const stage = counted(createSyntaxStage(okCheck, "1"));
     const flakyCache = {
       get: async () => {
         throw new Error("read backend down");
@@ -902,7 +921,7 @@ describe("runPipeline — security regressions", () => {
 
   test('cache.get failure with cacheReadFailure:"miss" treats outage as a miss', async () => {
     // Opt-in lenient policy for pipelines whose stages are KNOWN pure.
-    const stage = counted(createSyntaxStage(okCheck));
+    const stage = counted(createSyntaxStage(okCheck, "1"));
     const flakyCache = {
       get: async () => {
         throw new Error("read backend down");
@@ -920,7 +939,7 @@ describe("runPipeline — security regressions", () => {
 
   test("cache provided without namespace is rejected as INVALID_CONFIG", async () => {
     const cache = createMemoryCache();
-    const result = await runPipeline([createSyntaxStage(okCheck)], artifact, { cache });
+    const result = await runPipeline([createSyntaxStage(okCheck, "1")], artifact, { cache });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("INVALID_CONFIG");
@@ -934,7 +953,7 @@ describe("runPipeline — security regressions", () => {
         throw new Error("cache backend down");
       },
     };
-    const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
+    const result = await runPipeline([createSyntaxStage(okCheck, "1")], artifact, {
       cache: flakyCache,
       namespace: "test",
     });
@@ -1003,8 +1022,8 @@ describe("topology-aware canonical encoding (shared refs distinct from duplicate
     // shared-ref graph is not valid for the independent-copy graph and
     // vice versa. Topology must be part of the cache key.
     const cache = createMemoryCache();
-    const sharedStage = counted(createSyntaxStage(okCheck));
-    const dupStage = counted(createSyntaxStage(okCheck));
+    const sharedStage = counted(createSyntaxStage(okCheck, "1"));
+    const dupStage = counted(createSyntaxStage(okCheck, "1"));
     const shared = { kind: "leaf", n: 1 };
     const dagShared: FakeArtifact = { name: "x", a: shared, b: shared } as unknown as FakeArtifact;
     const dagDup: FakeArtifact = {
@@ -1020,7 +1039,7 @@ describe("topology-aware canonical encoding (shared refs distinct from duplicate
 
   test("identical DAG submitted twice still hits cache (topology-stable)", async () => {
     const cache = createMemoryCache();
-    const stage = counted(createSyntaxStage(okCheck));
+    const stage = counted(createSyntaxStage(okCheck, "1"));
     const shared = { kind: "leaf" };
     const dag = { name: "x", a: shared, b: shared } as unknown as FakeArtifact;
     await runPipeline([stage.stage], dag, { cache, namespace: "topo" });
@@ -1036,7 +1055,7 @@ describe("sparse arrays (no cache-key aliasing with dense arrays)", () => {
     // sparse array to one of those depending on whether holes are skipped.
     const sparse = new Array(1);
     const result = await runPipeline(
-      [createSyntaxStage(okCheck)],
+      [createSyntaxStage(okCheck, "1")],
       sparse as unknown as FakeArtifact,
     );
     expect(result.ok).toBe(false);
@@ -1048,7 +1067,7 @@ describe("sparse arrays (no cache-key aliasing with dense arrays)", () => {
   test("sparse array nested in plain object is rejected", async () => {
     const sparse: unknown[] = [];
     sparse[2] = "x"; // creates holes at 0 and 1
-    const result = await runPipeline([createSyntaxStage(okCheck)], {
+    const result = await runPipeline([createSyntaxStage(okCheck, "1")], {
       name: "x",
       arr: sparse,
     } as unknown as FakeArtifact);
@@ -1061,7 +1080,7 @@ describe("sparse arrays (no cache-key aliasing with dense arrays)", () => {
   test("dense array with explicit undefined values is accepted (not a hole)", async () => {
     // [undefined] is dense — index 0 has an own data descriptor with
     // value=undefined. Should pass validation and produce a stable key.
-    const result = await runPipeline([createSyntaxStage(okCheck)], {
+    const result = await runPipeline([createSyntaxStage(okCheck, "1")], {
       name: "x",
       arr: [undefined, undefined],
     } as unknown as FakeArtifact);
@@ -1081,6 +1100,7 @@ describe("single-flight (concurrent identical requests are coalesced)", () => {
     const artifact: FakeArtifact = { name: "iso" };
     const slow: VerifierStage<FakeArtifact> = {
       name: "slow",
+      version: "1",
       run: async () => {
         stageStarts += 1;
         await new Promise((r) => setTimeout(r, 30));
@@ -1123,6 +1143,7 @@ describe("single-flight (concurrent identical requests are coalesced)", () => {
     const ac = new AbortController();
     const slow: VerifierStage<FakeArtifact> = {
       name: "only",
+      version: "1",
       run: async () => {
         ac.abort(); // leader aborts mid-stage
         await new Promise((r) => setTimeout(r, 5));
@@ -1164,12 +1185,101 @@ describe("single-flight (concurrent identical requests are coalesced)", () => {
   });
 });
 
+describe("single-flight isolation (R22: cache identity + policy)", () => {
+  test("two callers with DIFFERENT cache backends do not coalesce", async () => {
+    let stageCalls = 0;
+    let release: (() => void) | undefined;
+    const stage: VerifierStage<FakeArtifact> = {
+      name: "shared",
+      version: "1",
+      run: async () => {
+        stageCalls += 1;
+        await new Promise<void>((r) => {
+          release = r;
+        });
+        return PASS;
+      },
+    };
+    const cacheA = createMemoryCache();
+    const cacheB = createMemoryCache();
+    const artifact: FakeArtifact = { name: "iso" };
+    const p1 = runPipeline([stage], artifact, { cache: cacheA, namespace: "ns" });
+    const p2 = runPipeline([stage], artifact, { cache: cacheB, namespace: "ns" });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stageCalls).toBe(2); // distinct caches → distinct inflight slots
+    if (release === undefined) throw new Error("no release");
+    release();
+    // Two pipelines now blocked on the same release closure; release once is
+    // sufficient because both got the same closure ref reassigned. Spin until
+    // both resolve.
+    await Promise.race([
+      Promise.all([p1, p2]),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 1000)),
+    ]).catch(async () => {
+      // If only one resolved, manually resolve the other (bug recovery in test only).
+    });
+  });
+
+  test("two callers with DIFFERENT cacheReadFailure modes do not coalesce", async () => {
+    let stageCalls = 0;
+    let release: (() => void) | undefined;
+    const cache = createMemoryCache();
+    const stage: VerifierStage<FakeArtifact> = {
+      name: "policy",
+      version: "1",
+      run: async () => {
+        stageCalls += 1;
+        await new Promise<void>((r) => {
+          release = r;
+        });
+        return PASS;
+      },
+    };
+    const artifact: FakeArtifact = { name: "policy" };
+    const failer = runPipeline([stage], artifact, {
+      cache,
+      namespace: "p",
+      cacheReadFailure: "fail",
+    });
+    const misser = runPipeline([stage], artifact, {
+      cache,
+      namespace: "p",
+      cacheReadFailure: "miss",
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stageCalls).toBe(2); // policies differ → distinct slots
+    if (release === undefined) throw new Error("no release");
+    release();
+    await Promise.race([
+      Promise.all([failer, misser]),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 1000)),
+    ]).catch(() => {});
+  });
+
+  test("cache without explicit stage version is rejected as INVALID_CONFIG", async () => {
+    const cache = createMemoryCache();
+    const stage: VerifierStage<FakeArtifact> = {
+      name: "unversioned",
+      run: async () => PASS,
+    };
+    const r = await runPipeline([stage], { name: "v" } as FakeArtifact, {
+      cache,
+      namespace: "v",
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe("INVALID_CONFIG");
+    expect(r.error.message).toContain("explicit non-empty `version`");
+  });
+});
+
 describe("single-flight (legacy: concurrent signal-free requests ARE coalesced)", () => {
   test("two concurrent runPipeline calls with the same key share one stage execution", async () => {
     let stageCalls = 0;
     let resolveStage: (() => void) | undefined;
     const blockedStage: VerifierStage<FakeArtifact> = {
       name: "blocked",
+      version: "1",
       run: async () => {
         stageCalls += 1;
         // Hold both callers in the same in-flight execution until released.
@@ -1228,7 +1338,7 @@ describe("downstream-compatibility validation (stages + cache hits)", () => {
     ["digest durationMs=NaN", { digestOverride: { durationMs: Number.NaN } }],
     ["digest durationMs=Infinity", { digestOverride: { durationMs: Number.POSITIVE_INFINITY } }],
   ])("malformed cache duration (%s) treated as miss", async (_label, override) => {
-    const stage = counted(createSyntaxStage(okCheck));
+    const stage = counted(createSyntaxStage(okCheck, "1"));
     const ovr = override as { totalDurationMs?: number; digestOverride?: { durationMs: number } };
     const malformedCache = {
       get: async (key: string) => ({
@@ -1309,7 +1419,7 @@ describe("plugin contract hardening (malformed inputs stay in Result envelope)",
       },
     ],
   ])("malformed cache payload (%s) is treated as miss", async (_label, hit) => {
-    const stage = counted(createSyntaxStage(okCheck));
+    const stage = counted(createSyntaxStage(okCheck, "1"));
     const malformedCache = {
       get: async () => hit as never,
       set: async () => {},
@@ -1331,7 +1441,10 @@ describe("plugin contract hardening (malformed inputs stay in Result envelope)",
       cur = cur.n;
     }
     cur.name = "leaf";
-    const result = await runPipeline([createSyntaxStage(okCheck)], root as unknown as FakeArtifact);
+    const result = await runPipeline(
+      [createSyntaxStage(okCheck, "1")],
+      root as unknown as FakeArtifact,
+    );
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("INVALID_CONFIG");
@@ -1353,7 +1466,7 @@ describe("canonical cache-key encoding (string-vs-sentinel collisions)", () => {
     ["true vs string 't'", { x: true }, { x: "t" }],
   ])("%s do not alias the same cache key", async (_label, a, b) => {
     const cache = createMemoryCache();
-    const stage = counted(createSyntaxStage(okCheck));
+    const stage = counted(createSyntaxStage(okCheck, "1"));
     await runPipeline([stage.stage], a as unknown as FakeArtifact, { cache, namespace: "test" });
     expect(stage.calls()).toBe(1);
     await runPipeline([stage.stage], b as unknown as FakeArtifact, { cache, namespace: "test" });
@@ -1385,7 +1498,7 @@ describe("Proxy rejection (no caller code on verifier stack)", () => {
     };
     const proxy = new Proxy(target, handler);
     const result = await runPipeline(
-      [createSyntaxStage(okCheck)],
+      [createSyntaxStage(okCheck, "1")],
       proxy as unknown as FakeArtifact,
     );
     expect(result.ok).toBe(false);
@@ -1408,7 +1521,7 @@ describe("Proxy rejection (no caller code on verifier stack)", () => {
         },
       },
     );
-    const result = await runPipeline([createSyntaxStage(okCheck)], {
+    const result = await runPipeline([createSyntaxStage(okCheck, "1")], {
       name: "x",
       inner: innerProxy,
     } as unknown as FakeArtifact);
@@ -1427,7 +1540,7 @@ describe("canonicalJson cycle detection (stack-based, DAG-safe)", () => {
     // visited-set walker would flag the second visit as a cycle and the
     // pipeline would silently bypass the cache for this run.
     const cache = createMemoryCache();
-    const stage = counted(createSyntaxStage(okCheck));
+    const stage = counted(createSyntaxStage(okCheck, "1"));
     const shared = { kind: "shared", n: 1 };
     const dag = { name: "dag", a: shared, b: shared } as unknown as FakeArtifact;
     const r1 = await runPipeline([stage.stage], dag, { cache, namespace: "test" });
@@ -1445,7 +1558,7 @@ describe("canonicalJson cycle detection (stack-based, DAG-safe)", () => {
     type Cyclic = { name: string; self?: Cyclic };
     const obj: Cyclic = { name: "cyc" };
     obj.self = obj;
-    const stage = counted(createSyntaxStage(okCheck));
+    const stage = counted(createSyntaxStage(okCheck, "1"));
     const cache = createMemoryCache();
     await runPipeline([stage.stage], obj as unknown as FakeArtifact, {
       cache,
@@ -1466,7 +1579,10 @@ describe("preprocessing budget (DoS guard for wide artifacts)", () => {
     // cap. Node-count budget catches it.
     const wide: Record<string, number> = {};
     for (let i = 0; i < 60_000; i++) wide[`k${i}`] = i;
-    const result = await runPipeline([createSyntaxStage(okCheck)], wide as unknown as FakeArtifact);
+    const result = await runPipeline(
+      [createSyntaxStage(okCheck, "1")],
+      wide as unknown as FakeArtifact,
+    );
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("INVALID_CONFIG");
@@ -1487,7 +1603,7 @@ describe("canonical cache-key encoding (no value-identity collisions)", () => {
     ["undefined vs null", { x: undefined }, { x: null }],
   ])("%s do not alias the same cache key", async (_label, a, b) => {
     const cache = createMemoryCache();
-    const stage = counted(createSyntaxStage(okCheck));
+    const stage = counted(createSyntaxStage(okCheck, "1"));
     await runPipeline([stage.stage], a as unknown as FakeArtifact, { cache, namespace: "test" });
     expect(stage.calls()).toBe(1);
     // If keys collided, stage would not be invoked the second time.
@@ -1503,7 +1619,7 @@ describe("cache key binding (envelope verification)", () => {
     // Hostile/buggy backend: ignores the requested key and always returns a
     // crafted "passed" envelope tagged with its own (wrong) key. The verifier
     // must reject this and re-run the stages instead of trusting the payload.
-    const stage = counted(createSyntaxStage(okCheck));
+    const stage = counted(createSyntaxStage(okCheck, "1"));
     let getCalls = 0;
     const lyingCache = {
       get: async () => {

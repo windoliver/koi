@@ -29,6 +29,27 @@ import type { StageContext, StageOutcome, VerifierStage, VerifyOptions } from ".
 const inflight = new Map<string, Promise<Result<ForgeVerificationSummary>>>();
 
 /**
+ * Per-cache-instance identity for the single-flight key. Two callers
+ * coalescing on the same composedKey but DIFFERENT cache backends or
+ * DIFFERENT cacheReadFailure policies must not share a leader: a caller
+ * with a trusted cache could otherwise inherit a forged pass from a
+ * caller with an untrusted cache, and a `"fail"` caller could be dragged
+ * into a `"miss"` leader's silent re-execution after a backend outage.
+ *
+ * Identity uses a `WeakMap` so cache instances that go out of scope do
+ * not retain memory; it is per-process and never crosses workers.
+ */
+const cacheIdentity = new WeakMap<object, string>();
+let cacheIdSeq = 0;
+function cacheId(cache: object): string {
+  const existing = cacheIdentity.get(cache);
+  if (existing !== undefined) return existing;
+  const id = `c${++cacheIdSeq}`;
+  cacheIdentity.set(cache, id);
+  return id;
+}
+
+/**
  * Race an in-flight leader promise against this caller's own AbortSignal.
  * If the signal fires first, return TIMEOUT to THIS caller — the leader
  * keeps running for other followers. If the leader resolves first, return
@@ -395,6 +416,30 @@ export async function runPipeline<I>(
   const cacheReadFailure = options?.cacheReadFailure ?? "fail";
   const signal = options?.signal;
 
+  // When caching is enabled, every stage MUST declare an explicit non-empty
+  // `version`. Two different plugin implementations sharing the same
+  // (name, sandboxed) tuple but defaulting `version` to `"0"` would alias
+  // each other in cache + single-flight slots — one plugin's pass could
+  // satisfy another plugin's stage without its logic ever running. Without
+  // a cache (solo runs) version is irrelevant: no result is persisted or
+  // shared, so the fingerprint never matters.
+  if (cache !== undefined) {
+    for (let i = 0; i < stages.length; i++) {
+      const s = stages[i];
+      if (s === undefined) continue;
+      if (typeof s.version !== "string" || s.version.length === 0) {
+        return {
+          ok: false,
+          error: {
+            code: "INVALID_CONFIG",
+            message: `Stage "${s.name}" at index ${i} requires an explicit non-empty \`version\` when cache is provided; stage identity must distinguish plugin implementations.`,
+            retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
+          },
+        };
+      }
+    }
+  }
+
   // Fail closed against silent cross-tenant replay: a shared cache backend
   // with two callers that both forget to set `namespace` would happily serve
   // each other's attestations whenever artifact content + stage metadata
@@ -544,8 +589,18 @@ export async function runPipeline<I>(
   //     freedom from leader-imposed cancellation. Acceptable because the
   //     non-idempotent stages this pipeline is designed for must not be
   //     interrupted mid-flight by an unrelated caller anyway.
-  if (composedKey !== undefined) {
-    const existing = inflight.get(composedKey);
+  // Single-flight key includes cache backend identity AND cacheReadFailure
+  // policy so two callers coalesce only when they would observe the same
+  // result. A trusted-cache caller MUST NOT inherit a forged pass from an
+  // untrusted-cache caller, and a `"fail"` caller MUST NOT be dragged into
+  // a `"miss"` leader's silent re-execution after a backend outage.
+  const inflightKey =
+    composedKey !== undefined && cache !== undefined
+      ? `${cacheId(cache)}|${cacheReadFailure}|${composedKey}`
+      : undefined;
+
+  if (inflightKey !== undefined) {
+    const existing = inflight.get(inflightKey);
     if (existing !== undefined) {
       if (signal === undefined) return existing;
       return waitWithSignal(existing, signal);
@@ -553,12 +608,12 @@ export async function runPipeline<I>(
   }
 
   // `pipelineSignal` is the signal the stage loop honors. For coalesced
-  // (composedKey-bearing) runs it is `undefined` so the shared pipeline
+  // (inflightKey-bearing) runs it is `undefined` so the shared pipeline
   // never aborts on one caller's behalf; the caller's own cancellation
-  // is enforced at the outer `waitWithSignal` race below. For solo
-  // (no-cache) runs it is the caller's own signal — no one else can be
-  // awaiting this pipeline.
-  const pipelineSignal: AbortSignal | undefined = composedKey !== undefined ? undefined : signal;
+  // is enforced at the outer `waitWithSignal` race below. For solo runs
+  // (no cache, or no eligible inflight key) it is the caller's own
+  // signal — no one else can be awaiting this pipeline.
+  const pipelineSignal: AbortSignal | undefined = inflightKey !== undefined ? undefined : signal;
 
   const work = async (): Promise<Result<ForgeVerificationSummary>> => {
     if (composedKey !== undefined && cache !== undefined) {
@@ -772,8 +827,8 @@ export async function runPipeline<I>(
     return { ok: true, value: summary };
   };
 
-  if (composedKey !== undefined) {
-    const key = composedKey;
+  if (inflightKey !== undefined) {
+    const key = inflightKey;
     // The shared pipeline runs without any caller's signal (see
     // pipelineSignal above). Register the promise so concurrent callers
     // coalesce — even when the leader has its own signal. The leader's
