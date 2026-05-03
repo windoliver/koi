@@ -2547,3 +2547,94 @@ describe("R27 followers do NOT attach to a leader whose pipeline signal has abor
     expect(followerResult.ok).toBe(true);
   });
 });
+
+describe("R28 cache.set NOT suppressed when a follower consumed the shared success", () => {
+  test("aborted leader + attached follower → success IS cached", async () => {
+    let stageCalls = 0;
+    let release: (() => void) | undefined;
+    const stage: VerifierStage<FakeArtifact> = {
+      name: "shared",
+      version: "1",
+      run: async () => {
+        stageCalls += 1;
+        await new Promise<void>((r) => {
+          release = r;
+        });
+        return PASS;
+      },
+    };
+    const cache = createMemoryCache();
+    const artifact: FakeArtifact = { name: "shared-success" };
+    const ac = new AbortController();
+    const baseOpts = {
+      cache,
+      namespace: "shared",
+      acknowledgeTrustedCache: true as const,
+      executionContextKey: "ctx",
+    };
+    const leader = runPipeline([stage], artifact, { ...baseOpts, signal: ac.signal });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stageCalls).toBe(1);
+    // Follower attaches BEFORE leader aborts → detach() fires → hasFollower = true.
+    const follower = runPipeline([stage], artifact, baseOpts);
+    await new Promise((r) => setTimeout(r, 10));
+    // Now leader aborts; shared work continues serving the follower.
+    ac.abort();
+    if (release === undefined) throw new Error("no release");
+    release();
+    const [leaderResult, followerResult] = await Promise.all([leader, follower]);
+    // Leader cancelled → its own promise resolves to abort/TIMEOUT or success
+    // depending on whether the abort raced ahead of the resolve. Either way,
+    // the follower must see success and the cache must be populated.
+    expect(followerResult.ok).toBe(true);
+    void leaderResult;
+    // A third caller arriving after the shared work completed must hit cache.
+    const third = await runPipeline([stage], artifact, baseOpts);
+    expect(third.ok).toBe(true);
+    expect(stageCalls).toBe(1); // cache hit, no re-execution
+  });
+
+  test("aborted SOLO leader (no follower) → success is NOT cached", async () => {
+    // Defensive boundary: when the initiating caller is the only consumer
+    // and they explicitly rejected the result, we still don't cache —
+    // R28 narrowed the suppression to (aborted AND no follower), not removed it.
+    let stageCalls = 0;
+    const resolvers: Array<() => void> = [];
+    const stage: VerifierStage<FakeArtifact> = {
+      name: "solo",
+      version: "1",
+      run: async () => {
+        stageCalls += 1;
+        await new Promise<void>((r) => {
+          resolvers.push(r);
+        });
+        return PASS;
+      },
+    };
+    const cache = createMemoryCache();
+    const artifact: FakeArtifact = { name: "solo-abort" };
+    const ac = new AbortController();
+    const baseOpts = {
+      cache,
+      namespace: "solo",
+      acknowledgeTrustedCache: true as const,
+      executionContextKey: "ctx",
+    };
+    const leader = runPipeline([stage], artifact, { ...baseOpts, signal: ac.signal });
+    await new Promise((r) => setTimeout(r, 10));
+    ac.abort();
+    // Release the leader's stage so work() can settle.
+    if (resolvers[0] === undefined) throw new Error("no resolver");
+    resolvers[0]();
+    const leaderResult = await leader;
+    expect(leaderResult.ok).toBe(false);
+    // Next caller: cache should NOT contain a populated pass — must re-run.
+    const nextPromise = runPipeline([stage], artifact, baseOpts);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stageCalls).toBe(2); // re-executed (solo-abort suppressed cache.set)
+    if (resolvers[1] === undefined) throw new Error("no resolver");
+    resolvers[1]();
+    const next = await nextPromise;
+    expect(next.ok).toBe(true);
+  });
+});

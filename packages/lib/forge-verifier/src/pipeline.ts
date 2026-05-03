@@ -854,6 +854,14 @@ export async function runPipeline<I>(
   //     mirror of the caller's signal so a SOLO caller still aborts the
   //     work. When a follower joins (above), `detach()` unwires the
   //     mirror so the leader's signal no longer aborts the shared work.
+  // `hasFollower` flips to true the first time a SECOND caller attaches
+  // to this run via the inflight registry. Used by the cache-write
+  // gate: if the leader caller aborted but a follower successfully
+  // consumed the shared result, we still cache the success — the
+  // shared verification did serve a live consumer, and suppressing the
+  // write would force every later caller to re-run the same expensive
+  // (potentially non-idempotent) work for no benefit.
+  let hasFollower = false;
   let detachCallerSignal: () => void = () => {};
   let pipelineSignal: AbortSignal | undefined;
   if (inflightKey === undefined) {
@@ -1086,16 +1094,19 @@ export async function runPipeline<I>(
     });
 
     if (composedKey !== undefined && cache !== undefined) {
-      // Suppress cache.set when the initiating caller has aborted. The
-      // shared pipeline runs without honoring the leader's signal so it
-      // can serve other followers (see pipelineSignal above), but caching
-      // a pass for a verification the initiating caller cancelled would
-      // let later callers receive a cached "passed" result that the
-      // original requester explicitly rejected. Cache writes are best
-      // effort anyway — the next live caller will repopulate. (`signal`
-      // here is the leader caller's signal closed over from runPipeline.)
-      if (signal?.aborted === true) {
-        console.debug("[forge-verifier] cache.set suppressed (leader aborted)");
+      // Suppress cache.set when the initiating caller has aborted AND
+      // no follower attached. If a follower DID attach, the shared
+      // verification successfully served at least one live consumer —
+      // caching the result avoids forcing every later caller to re-run
+      // the same expensive (and potentially non-idempotent) work just
+      // because the original initiator happened to cancel. We only
+      // suppress when the leader was the SOLE consumer and rejected
+      // the result, so we never cache a pass that no live caller
+      // accepted. (`signal` here is the leader caller's signal closed
+      // over from runPipeline; `hasFollower` is set in the inflight
+      // attach path.)
+      if (signal?.aborted === true && !hasFollower) {
+        console.debug("[forge-verifier] cache.set suppressed (leader aborted, no followers)");
       } else {
         try {
           await cache.set(composedKey, { key: composedKey, summary });
@@ -1139,9 +1150,13 @@ export async function runPipeline<I>(
       inflight.delete(key);
     });
     void releaseSlot;
+    const detachAndMark = (): void => {
+      hasFollower = true;
+      detachCallerSignal();
+    };
     inflight.set(key, {
       promise,
-      detach: detachCallerSignal,
+      detach: detachAndMark,
       leaderPipelineSignal: pipelineSignal,
     });
     return signal !== undefined ? waitWithSignal(promise, signal) : promise;
