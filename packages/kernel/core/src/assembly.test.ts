@@ -76,7 +76,13 @@ describe("AgentManifest.context (issue #1767)", () => {
     expect(manifest.context?.config).toEqual({ preset: "balanced" });
   });
 
-  test("accepts an empty selector — runtime applies its default", () => {
+  test("empty selector type-checks but L1 runtime requires a contextEngineFactory", () => {
+    // L0 contract: `context: {}` is structurally valid (all fields are
+    // optional). L1 (`createKoi`) rejects the bare form at boot when no
+    // `contextEngineFactory` is supplied — the runtime does not install
+    // a default engine, so accepting `{}` would silently boot without
+    // compaction. This test pins the L0 type surface; the runtime
+    // enforcement is covered by `koi.test.ts`.
     const manifest: AgentManifest = {
       name: "agent",
       version: "1.0.0",

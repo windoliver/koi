@@ -20,10 +20,15 @@ import { type BudgetConfig, enforceBudget } from "./enforce-budget.js";
 import { FALLBACK_ESTIMATOR } from "./fallback-estimator.js";
 import { COMPACTION_DEFAULTS } from "./types.js";
 
-/** Stable identity for the bundled default engine. */
+/**
+ * Stable identity for the bundled default engine. `version` mirrors the
+ * artifact's `package.json#version` so manifest pins, swap events, and
+ * audit trails report the actual shipped artifact rather than an
+ * aspirational semver.
+ */
 export const DEFAULT_CONTEXT_ENGINE_IDENTITY: ContextEngineIdentity = {
   name: "@koi/context-manager",
-  version: "1.0.0",
+  version: "0.0.0",
 } as const;
 
 /**

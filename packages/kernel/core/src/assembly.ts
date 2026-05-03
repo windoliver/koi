@@ -313,11 +313,18 @@ export interface AgentManifest {
 /**
  * Manifest fragment that selects and configures the active `ContextEngine`.
  *
- * - `engine` is a free-form identifier; resolution rules are runtime-defined
- *   (e.g. `"@koi/context-manager"`, `"passthrough"`, `"@my-org/custom"`).
- * - `version` optionally pins the engine's semver — the runtime SHOULD warn
- *   when a resolved engine's identity does not match.
- * - `config` is an opaque engine-specific bag forwarded to the engine factory.
+ * - `engine` pins the engine identity name. The host's
+ *   `contextEngineFactory` is the resolver; the runtime then strictly
+ *   compares the returned engine's `identity.name` against this field
+ *   and rejects assembly on drift. Use the engine's canonical package
+ *   name (e.g. `"@koi/context-manager"`, `"@koi/context-manager/passthrough"`,
+ *   `"@my-org/custom"`); aliases are not resolved by the runtime.
+ * - `version` optionally pins the engine's reported `identity.version`.
+ *   On drift, the runtime rejects assembly so manifest-pinned rollbacks
+ *   and audit trails stay trustworthy.
+ * - `config` is an opaque engine-specific bag forwarded to the factory.
+ *   The bundled `@koi/context-manager` factory validates numeric/string
+ *   keys against `BudgetConfig`; other engines define their own schema.
  */
 export interface ContextManifestConfig {
   readonly engine?: string;

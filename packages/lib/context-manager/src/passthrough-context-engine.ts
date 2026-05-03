@@ -12,9 +12,11 @@ import type { ContextEngine, ContextEngineIdentity } from "@koi/core/context-eng
 import type { InboundMessage } from "@koi/core/message";
 import type { TurnContext } from "@koi/core/middleware";
 
+// `version` mirrors the parent artifact (@koi/context-manager) so swap
+// notices and manifest pins describe the actual shipped passthrough.
 export const PASSTHROUGH_CONTEXT_ENGINE_IDENTITY: ContextEngineIdentity = {
   name: "@koi/context-manager/passthrough",
-  version: "1.0.0",
+  version: "0.0.0",
 } as const;
 
 export interface PassthroughContextEngineOptions {

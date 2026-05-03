@@ -220,6 +220,15 @@ describe("createKoi assembly", () => {
     expect(runtime.agent.has(CONTEXT_ENGINE)).toBe(false);
   });
 
+  test("bare manifest.context: {} without contextEngineFactory throws — no silent inert", async () => {
+    await expect(
+      createKoi({
+        manifest: testManifest({ context: {} }),
+        adapter: mockAdapter([]),
+      }),
+    ).rejects.toThrow(/contextEngineFactory/);
+  });
+
   test("manifest.context.engine without contextEngineFactory throws — no silent inert", async () => {
     await expect(
       createKoi({
