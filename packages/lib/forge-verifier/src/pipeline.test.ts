@@ -930,6 +930,85 @@ describe("createMemoryCache", () => {
   });
 });
 
+describe("plugin contract hardening (malformed inputs stay in Result envelope)", () => {
+  const artifact: FakeArtifact = { name: "x" };
+
+  test.each([
+    ["null outcome", null],
+    ["undefined outcome", undefined],
+    ["empty object outcome", {}],
+    ["non-boolean ok", { ok: "true" }],
+    ["number outcome", 42],
+  ])("malformed stage outcome (%s) maps to INTERNAL", async (_label, badOutcome) => {
+    const stage: VerifierStage<FakeArtifact> = {
+      name: "buggy",
+      run: async () => badOutcome as unknown as StageOutcome,
+    };
+    const result = await runPipeline([stage], artifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INTERNAL");
+    expect(result.error.context?.stage).toBe("buggy");
+    expect(result.error.message).toContain("malformed outcome");
+  });
+
+  test("non-boolean sandboxed outcome maps to INTERNAL", async () => {
+    const stage: VerifierStage<FakeArtifact> = {
+      name: "buggy-sb",
+      run: async () => ({ ok: true, sandboxed: "yes" }) as unknown as StageOutcome,
+    };
+    const result = await runPipeline([stage], artifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INTERNAL");
+    expect(result.error.message).toContain("non-boolean sandboxed");
+  });
+
+  test.each([
+    ["summary=null", { key: "k", summary: null }],
+    ["summary=number", { key: "k", summary: 42 }],
+    [
+      "stageResults contains null",
+      {
+        key: "k",
+        summary: { passed: true, sandbox: false, totalDurationMs: 0, stageResults: [null] },
+      },
+    ],
+    [
+      "stageResults=null",
+      {
+        key: "k",
+        summary: { passed: true, sandbox: false, totalDurationMs: 0, stageResults: null },
+      },
+    ],
+  ])("malformed cache payload (%s) is treated as miss", async (_label, hit) => {
+    const stage = counted(createSyntaxStage(okCheck));
+    const malformedCache = {
+      get: async () => hit as never,
+      set: async () => {},
+    };
+    const result = await runPipeline([stage.stage], artifact, { cache: malformedCache });
+    expect(result.ok).toBe(true);
+    expect(stage.calls()).toBe(1); // re-verified, no TypeError escaped
+  });
+
+  test("artifact deeper than MAX_ARTIFACT_DEPTH is rejected (DoS guard)", async () => {
+    type Nested = { name?: string; n?: Nested };
+    const root: Nested = {};
+    let cur = root;
+    for (let i = 0; i < 300; i++) {
+      cur.n = {};
+      cur = cur.n;
+    }
+    cur.name = "leaf";
+    const result = await runPipeline([createSyntaxStage(okCheck)], root as unknown as FakeArtifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("maximum depth");
+  });
+});
+
 describe("canonical cache-key encoding (no value-identity collisions)", () => {
   // JSON.stringify maps NaN, ±Infinity → "null" and -0 → "0", so a naive
   // serializer would let a successful pass for {x: NaN} replay as a hit

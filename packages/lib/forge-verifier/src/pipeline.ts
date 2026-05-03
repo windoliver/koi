@@ -61,20 +61,26 @@ function composeCacheKey<I>(
  * is replaying across keys it should never satisfy.
  */
 function isCachedSummaryConsistent<I>(
-  summary: ForgeVerificationSummary,
+  summary: unknown,
   stages: readonly VerifierStage<I>[],
   declaredSandbox: boolean,
-): boolean {
-  if (summary.passed !== true) return false;
-  if (summary.sandbox !== declaredSandbox) return false;
-  if (!Array.isArray(summary.stageResults)) return false;
-  if (summary.stageResults.length !== stages.length) return false;
+): summary is ForgeVerificationSummary {
+  // Cache backends are explicitly pluggable and may be remote — one
+  // corrupted row, buggy adapter, or cross-version payload must not throw
+  // a TypeError out of `runPipeline`. Validate every field before access.
+  if (summary === null || typeof summary !== "object") return false;
+  const s = summary as Record<string, unknown>;
+  if (s.passed !== true) return false;
+  if (s.sandbox !== declaredSandbox) return false;
+  if (!Array.isArray(s.stageResults)) return false;
+  if (s.stageResults.length !== stages.length) return false;
   for (let i = 0; i < stages.length; i++) {
     const expected = stages[i];
-    const got = summary.stageResults[i];
-    if (expected === undefined || got === undefined) return false;
-    if (got.stage !== expected.name) return false;
-    if (got.passed !== true) return false;
+    const got = s.stageResults[i];
+    if (expected === undefined || got === null || typeof got !== "object") return false;
+    const d = got as Record<string, unknown>;
+    if (d.stage !== expected.name) return false;
+    if (d.passed !== true) return false;
   }
   return true;
 }
@@ -108,18 +114,31 @@ function encodePrimitive(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function canonicalJson(value: unknown, seen: WeakSet<object>): string {
+/**
+ * Hard cap on artifact graph depth. Both `rejectUnsupportedShape` and
+ * `canonicalJson` recurse synchronously over an attacker-controlled graph;
+ * an abort signal cannot interrupt synchronous JS. Capping depth turns a
+ * potential DoS (deeply-nested artifact under cancellation pressure) into
+ * a fast `INVALID_CONFIG` rejection. 256 is well above any realistic
+ * verification artifact and safely below V8's default call-stack limit.
+ */
+const MAX_ARTIFACT_DEPTH = 256;
+
+function canonicalJson(value: unknown, seen: WeakSet<object>, depth = 0): string {
+  if (depth > MAX_ARTIFACT_DEPTH) {
+    throw new Error(`snapshot exceeds maximum depth (${MAX_ARTIFACT_DEPTH})`);
+  }
   if (value === null || typeof value !== "object") return encodePrimitive(value);
   if (seen.has(value)) {
     throw new Error("snapshot contains a cycle; cannot derive a deterministic cache key");
   }
   seen.add(value);
   if (Array.isArray(value)) {
-    return `[${value.map((v) => canonicalJson(v, seen)).join(",")}]`;
+    return `[${value.map((v) => canonicalJson(v, seen, depth + 1)).join(",")}]`;
   }
   const obj = value as Record<string, unknown>;
   const keys = Object.keys(obj).sort();
-  const parts = keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k], seen)}`);
+  const parts = keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k], seen, depth + 1)}`);
   return `{${parts.join(",")}}`;
 }
 
@@ -356,6 +375,25 @@ export async function runPipeline<I>(
     const { outcome, durationMs, thrown } = await runStage(stage, snapshot, ctx);
     totalDurationMs += durationMs;
 
+    // Validate the resolved outcome shape BEFORE any property destructure.
+    // `VerifierStage` is a plugin boundary; a buggy implementation that
+    // returns null/undefined/{} or a non-boolean `ok` must surface as a
+    // typed Result error inside the envelope, not a TypeError that escapes
+    // the documented `Promise<Result<...>>` contract.
+    if (
+      thrown === undefined &&
+      (outcome === null || typeof outcome !== "object" || typeof outcome.ok !== "boolean")
+    ) {
+      return {
+        ok: false,
+        error: stageError(
+          "INTERNAL",
+          stage.name,
+          `Stage "${stage.name}" returned a malformed outcome (expected { ok: boolean, ... }).`,
+        ),
+      };
+    }
+
     if (!outcome.ok) {
       const code: KoiErrorCode = thrown !== undefined ? "INTERNAL" : "VALIDATION";
       const message =
@@ -373,6 +411,16 @@ export async function runPipeline<I>(
     // declaration stands. This matches the API where `sandboxed` is
     // optional on `StageOutcome`. Only an explicit, conflicting value
     // (e.g. declared sandboxed:true but returned sandboxed:false) fails.
+    if (outcome.sandboxed !== undefined && typeof outcome.sandboxed !== "boolean") {
+      return {
+        ok: false,
+        error: stageError(
+          "INTERNAL",
+          stage.name,
+          `Stage "${stage.name}" returned a non-boolean sandboxed value.`,
+        ),
+      };
+    }
     if (outcome.sandboxed !== undefined && outcome.sandboxed !== (stage.sandboxed === true)) {
       return {
         ok: false,
@@ -442,7 +490,17 @@ export async function runPipeline<I>(
  *   what the caller passed in and the cached pass would attest to a different
  *   shape than the input.
  */
-function rejectUnsupportedShape(value: unknown, path: string, seen: WeakSet<object>): void {
+function rejectUnsupportedShape(
+  value: unknown,
+  path: string,
+  seen: WeakSet<object>,
+  depth = 0,
+): void {
+  if (depth > MAX_ARTIFACT_DEPTH) {
+    throw new TypeError(
+      `Artifact at ${path} exceeds maximum depth (${MAX_ARTIFACT_DEPTH}); deeply-nested artifacts are rejected to bound preprocessing CPU under cancellation.`,
+    );
+  }
   if (value === null || typeof value !== "object") {
     // Functions and symbols nested inside a graph are also rejected here
     // (typeof "object" excludes them). structuredClone would throw, but
@@ -500,7 +558,7 @@ function rejectUnsupportedShape(value: unknown, path: string, seen: WeakSet<obje
           `Artifact at ${path}.${k} (array property) is a non-index own property; verifier requires plain-data arrays (extra named properties are not preserved by structuredClone).`,
         );
       }
-      rejectUnsupportedShape(desc.value, `${path}[${k}]`, seen);
+      rejectUnsupportedShape(desc.value, `${path}[${k}]`, seen, depth + 1);
     }
     return;
   }
@@ -538,7 +596,7 @@ function rejectUnsupportedShape(value: unknown, path: string, seen: WeakSet<obje
         `Artifact at ${path}.${k} is non-enumerable; verifier requires plain-data artifacts (non-enumerable properties are not preserved by structuredClone).`,
       );
     }
-    rejectUnsupportedShape(desc.value, `${path}.${k}`, seen);
+    rejectUnsupportedShape(desc.value, `${path}.${k}`, seen, depth + 1);
   }
 }
 
