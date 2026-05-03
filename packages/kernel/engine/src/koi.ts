@@ -2476,20 +2476,20 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         // doneSyntheticTurnId undefined so no synth fires.
         for (const pinnedTurnId of contextEngineSwapController.pinnedTurnIds()) {
           const pinnedEngine = contextEngineSwapController.current(pinnedTurnId);
-          const shouldSynth =
+          // Run onAfterTurn for EVERY still-pinned turn so stateful
+          // engines (per-turn occupancy, eviction queues, checkpoints)
+          // can release per-turn allocations on every terminal path —
+          // not only on the `done`-shortcut success branch. Abort,
+          // consumer break, and adapter error paths previously skipped
+          // this and leaked engine state. Use stopBlocked=true on the
+          // non-success branches so engines that gate state advancement
+          // on the marker do not mistake interrupted turns for success.
+          const isSuccessfulDoneShortcut =
             doneSyntheticTurnId !== undefined && pinnedTurnId === doneSyntheticTurnId;
-          if (shouldSynth && pinnedEngine.onAfterTurn !== undefined) {
+          if (pinnedEngine.onAfterTurn !== undefined) {
             try {
-              // Prefer the real per-turn TurnContext so engines that key
-              // post-turn bookkeeping off ctx.messages/metadata see the
-              // actual turn data. Fall back to a neutral synthetic ctx if
-              // the runtime never built one (e.g. abort before first
-              // turn). Do NOT set stopBlocked here — this branch only
-              // fires for the turn that emitted `done` successfully, so
-              // marking the synth as blocked would tell engines to skip
-              // checkpoint/eviction on a successful turn.
               const realCtx = turnCtxByTurnId.get(pinnedTurnId as string);
-              const fallbackTurnCtx: TurnContext = realCtx ?? {
+              const baseCtx: TurnContext = realCtx ?? {
                 ...createTurnContext({
                   session: sessionCtx,
                   turnIndex: currentTurnIndex,
@@ -2500,7 +2500,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 }),
                 turnId: pinnedTurnId,
               };
-              await pinnedEngine.onAfterTurn(fallbackTurnCtx);
+              const finalCtx: TurnContext = isSuccessfulDoneShortcut
+                ? baseCtx
+                : { ...baseCtx, stopBlocked: true };
+              await pinnedEngine.onAfterTurn(finalCtx);
             } catch (hookErr: unknown) {
               // Bookkeeping hooks must not corrupt cleanup. Log and keep
               // releasing pins so the controller is not left wedged.
