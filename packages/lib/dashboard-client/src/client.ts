@@ -5,11 +5,15 @@ import type {
   MetricQuery,
   SessionSummary,
   TraceView,
-  WsEvent,
   WsTopic,
 } from "@koi/dashboard-types";
 import { type FetchLike, getJson } from "./http.js";
-import { openSubscription, type Unsubscribe, type WsFactory } from "./subscribe.js";
+import {
+  openSubscription,
+  type SubscriptionHandlers,
+  type Unsubscribe,
+  type WsFactory,
+} from "./subscribe.js";
 
 export interface DashboardClientConfig {
   /** Base URL of the dashboard API (e.g. `http://localhost:3100`). No trailing slash. */
@@ -26,7 +30,7 @@ export interface DashboardClient {
   listSessions(): Promise<Result<readonly SessionSummary[]>>;
   getMetrics(query: MetricQuery): Promise<Result<readonly MetricPoint[]>>;
   getTrace(turnId: string): Promise<Result<TraceView | undefined>>;
-  subscribe(topics: readonly WsTopic[], onEvent: (event: WsEvent) => void): Unsubscribe;
+  subscribe(topics: readonly WsTopic[], handlers: SubscriptionHandlers): Unsubscribe;
 }
 
 /**
@@ -45,6 +49,7 @@ export function createDashboardClient(config: DashboardClientConfig): DashboardC
       getJson<AgentStatus | undefined>(
         fetchImpl,
         `${baseUrl}/api/agents/${encodeURIComponent(id)}`,
+        { allowUndefinedValue: true },
       ),
 
     listSessions: (): Promise<Result<readonly SessionSummary[]>> =>
@@ -60,10 +65,11 @@ export function createDashboardClient(config: DashboardClientConfig): DashboardC
       getJson<TraceView | undefined>(
         fetchImpl,
         `${baseUrl}/api/traces/${encodeURIComponent(turnId)}`,
+        { allowUndefinedValue: true },
       ),
 
-    subscribe: (topics, onEvent): Unsubscribe =>
-      openSubscription(wsFactory, `${toWsUrl(baseUrl)}/api/ws`, topics, onEvent),
+    subscribe: (topics, handlers): Unsubscribe =>
+      openSubscription(wsFactory, `${toWsUrl(baseUrl)}/api/ws`, topics, handlers),
   };
 }
 

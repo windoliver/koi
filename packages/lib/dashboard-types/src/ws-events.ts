@@ -54,39 +54,134 @@ export type WsEvent = AgentStatusEvent | SessionEvent | MetricEvent | TraceEvent
 
 // ---------------------------------------------------------------------------
 // Type guards (the only runtime code in this package).
-// Pure inspectors over unknown JSON; safe at the trust boundary.
+// Pure inspectors over unknown JSON; validate required scalars per `kind`
+// so consumers can trust required field access after the guard returns true.
 // ---------------------------------------------------------------------------
-
-const KNOWN_KINDS: ReadonlySet<string> = new Set([
-  "agent-status",
-  "session-summary",
-  "metric",
-  "trace",
-]);
 
 function isObject(x: unknown): x is Readonly<Record<string, unknown>> {
   return typeof x === "object" && x !== null;
 }
 
-export function isWsEvent(x: unknown): x is WsEvent {
+function hasV1(x: Readonly<Record<string, unknown>>): boolean {
+  return x.v === 1;
+}
+
+function isAgentStatusPayload(x: unknown): boolean {
   if (!isObject(x)) return false;
-  if (x.v !== 1) return false;
-  const kind = x.kind;
-  return typeof kind === "string" && KNOWN_KINDS.has(kind);
+  return (
+    typeof x.agentId === "string" &&
+    typeof x.name === "string" &&
+    typeof x.state === "string" &&
+    // Accept any string for agentType so a v1 server can add new variants
+    // additively. The caller's narrow type gates which values it renders.
+    typeof x.agentType === "string" &&
+    Array.isArray(x.channels) &&
+    typeof x.turns === "number" &&
+    typeof x.tokenCount === "number" &&
+    typeof x.startedAt === "number" &&
+    typeof x.lastActivityAt === "number" &&
+    typeof x.childCount === "number"
+  );
+}
+
+function isSessionPayload(x: unknown): boolean {
+  if (!isObject(x)) return false;
+  return (
+    typeof x.sessionId === "string" &&
+    typeof x.agentId === "string" &&
+    typeof x.status === "string" &&
+    typeof x.turns === "number" &&
+    typeof x.inputTokens === "number" &&
+    typeof x.outputTokens === "number" &&
+    typeof x.costUsd === "number" &&
+    typeof x.startedAt === "number"
+  );
+}
+
+function isMetricPoint(x: unknown): boolean {
+  if (!isObject(x)) return false;
+  return (
+    typeof x.name === "string" && typeof x.value === "number" && typeof x.timestampMs === "number"
+  );
+}
+
+/** Validation cap — well-formed traces are tens of levels deep at most. */
+const MAX_SPAN_DEPTH = 256;
+/** Validation cap — total spans visited; prevents wide-and-shallow DoS too. */
+const MAX_SPAN_NODES = 100_000;
+
+/**
+ * Iterative validator — walks the span tree with an explicit stack so a
+ * remote-supplied deep trace cannot blow the JS call stack or burn unbounded
+ * CPU at the trust boundary.
+ */
+function isTraceSpanTree(root: unknown): boolean {
+  const stack: { readonly node: unknown; readonly depth: number }[] = [{ node: root, depth: 0 }];
+  let visited = 0;
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    if (frame === undefined) return false;
+    if (frame.depth > MAX_SPAN_DEPTH) return false;
+    if (++visited > MAX_SPAN_NODES) return false;
+    const node = frame.node;
+    if (!isObject(node)) return false;
+    if (
+      typeof node.spanId !== "string" ||
+      typeof node.name !== "string" ||
+      // Accept any string for category — v1 servers can add additional span
+      // kinds without breaking older clients. The narrow type gates rendering.
+      typeof node.category !== "string" ||
+      typeof node.startedAtMs !== "number" ||
+      typeof node.durationMs !== "number" ||
+      !Array.isArray(node.children)
+    ) {
+      return false;
+    }
+    for (const child of node.children) {
+      stack.push({ node: child, depth: frame.depth + 1 });
+    }
+  }
+  return true;
+}
+
+function isTracePayload(x: unknown): boolean {
+  if (!isObject(x)) return false;
+  return (
+    typeof x.turnId === "string" &&
+    typeof x.agentId === "string" &&
+    typeof x.turnIndex === "number" &&
+    typeof x.startedAtMs === "number" &&
+    typeof x.totalDurationMs === "number" &&
+    isTraceSpanTree(x.root)
+  );
 }
 
 export function isAgentStatusEvent(x: unknown): x is AgentStatusEvent {
-  return isWsEvent(x) && x.kind === "agent-status";
+  return isObject(x) && hasV1(x) && x.kind === "agent-status" && isAgentStatusPayload(x.status);
 }
 
 export function isSessionEvent(x: unknown): x is SessionEvent {
-  return isWsEvent(x) && x.kind === "session-summary";
+  return isObject(x) && hasV1(x) && x.kind === "session-summary" && isSessionPayload(x.session);
 }
 
 export function isMetricEvent(x: unknown): x is MetricEvent {
-  return isWsEvent(x) && x.kind === "metric";
+  return (
+    isObject(x) &&
+    hasV1(x) &&
+    x.kind === "metric" &&
+    Array.isArray(x.points) &&
+    x.points.every(isMetricPoint)
+  );
 }
 
 export function isTraceEvent(x: unknown): x is TraceEvent {
-  return isWsEvent(x) && x.kind === "trace";
+  return isObject(x) && hasV1(x) && x.kind === "trace" && isTracePayload(x.trace);
+}
+
+/**
+ * True iff `x` is a fully-formed `WsEvent` — every required scalar is present
+ * and well-typed, and trace span trees are fully validated recursively.
+ */
+export function isWsEvent(x: unknown): x is WsEvent {
+  return isAgentStatusEvent(x) || isSessionEvent(x) || isMetricEvent(x) || isTraceEvent(x);
 }

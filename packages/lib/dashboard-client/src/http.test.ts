@@ -34,14 +34,27 @@ describe("getJson", () => {
     if (!result.ok) expect(result.error.code).toBe("NOT_FOUND");
   });
 
-  test("maps 500 to EXTERNAL", async () => {
+  test("maps 500 to retryable EXTERNAL", async () => {
     const fetchImpl = async (): Promise<Response> => new Response("oops", { status: 500 });
     const result = await getJson(fetchImpl, "http://x/api/y");
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.code).toBe("EXTERNAL");
+    if (!result.ok) {
+      expect(result.error.code).toBe("EXTERNAL");
+      expect(result.error.retryable).toBe(true);
+    }
   });
 
-  test("maps fetch throw to EXTERNAL", async () => {
+  test("maps 429 to RATE_LIMIT (retryable)", async () => {
+    const fetchImpl = async (): Promise<Response> => new Response("", { status: 429 });
+    const result = await getJson(fetchImpl, "http://x/api/y");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("RATE_LIMIT");
+      expect(result.error.retryable).toBe(true);
+    }
+  });
+
+  test("maps fetch throw to retryable EXTERNAL (transient transport failures dominate)", async () => {
     const fetchImpl = async (): Promise<Response> => {
       throw new Error("dns failure");
     };
@@ -49,7 +62,73 @@ describe("getJson", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("EXTERNAL");
+      expect(result.error.retryable).toBe(true);
       expect(result.error.cause).toBeInstanceOf(Error);
+    }
+  });
+
+  test("treats AbortError as non-retryable EXTERNAL", async () => {
+    const fetchImpl = async (): Promise<Response> => {
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      throw err;
+    };
+    const result = await getJson(fetchImpl, "http://x/api/y");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("EXTERNAL");
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
+  test("rejects ok:true envelope without `value` by default (list endpoints fail fast)", async () => {
+    const fetchImpl = async (): Promise<Response> => jsonResponse({ ok: true });
+    const result = await getJson<readonly unknown[]>(fetchImpl, "http://x/api/y");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("treats ok:true envelope without `value` as undefined when opted in", async () => {
+    const fetchImpl = async (): Promise<Response> => jsonResponse({ ok: true });
+    const result = await getJson<unknown>(fetchImpl, "http://x/api/y", {
+      allowUndefinedValue: true,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value).toBeUndefined();
+  });
+
+  test("rejects ok:false envelope without a well-formed error", async () => {
+    const fetchImpl = async (): Promise<Response> =>
+      jsonResponse({ ok: false, error: { code: 1 } });
+    const result = await getJson(fetchImpl, "http://x/api/y");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("tolerates server error envelope missing retryable (defaults locally)", async () => {
+    const fetchImpl = async (): Promise<Response> =>
+      jsonResponse({ ok: false, error: { code: "TIMEOUT", message: "slow" } });
+    const result = await getJson(fetchImpl, "http://x/api/y");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("TIMEOUT");
+      expect(result.error.message).toBe("slow");
+      // RETRYABLE_DEFAULTS["TIMEOUT"] === true
+      expect(result.error.retryable).toBe(true);
+    }
+  });
+
+  test("maps unknown server error code to EXTERNAL while preserving message", async () => {
+    const fetchImpl = async (): Promise<Response> =>
+      jsonResponse({
+        ok: false,
+        error: { code: "FUTURE_CODE", message: "from a newer server" },
+      });
+    const result = await getJson(fetchImpl, "http://x/api/y");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("EXTERNAL");
+      expect(result.error.message).toBe("from a newer server");
     }
   });
 

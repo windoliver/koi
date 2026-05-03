@@ -7,7 +7,12 @@ import type { AgentId } from "@koi/core";
 export interface TraceSpan {
   readonly spanId: string;
   readonly name: string;
-  readonly category: "model" | "tool" | "mw" | "hook" | "channel" | "custom";
+  /**
+   * Known v1 categories are `model | tool | mw | hook | channel | custom`.
+   * Forward-compat: newer servers may emit additional kinds; the escape
+   * hatch keeps that string assignable while preserving IntelliSense.
+   */
+  readonly category: "model" | "tool" | "mw" | "hook" | "channel" | "custom" | (string & {});
   readonly startedAtMs: number;
   readonly durationMs: number;
   readonly error?: string | undefined;

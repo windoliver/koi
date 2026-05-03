@@ -10,7 +10,12 @@ export interface AgentStatus {
   readonly agentId: AgentId;
   readonly name: string;
   readonly state: ProcessState;
-  readonly agentType: "copilot" | "worker";
+  /**
+   * Known v1 values are `"copilot"` and `"worker"`. The string-escape hatch
+   * keeps callers IntelliSense-aware of the well-known values while staying
+   * forward-compatible with newer servers that may emit additional kinds.
+   */
+  readonly agentType: "copilot" | "worker" | (string & {});
   readonly model?: string | undefined;
   readonly channels: readonly string[];
   readonly turns: number;
