@@ -378,6 +378,22 @@ describe("@koi/channel-web", () => {
     ws.close();
   });
 
+  test("POST /messages does NOT accept ?token= query — header only", async () => {
+    // Regression: URL tokens leak via access logs/proxy logs/browser history.
+    // The `?token=` fallback exists solely for the WS upgrade path where
+    // browsers cannot set custom headers — POST /messages must require a
+    // real Authorization header.
+    h = await startHarness({
+      authenticate: (ctx) => (ctx.token === "secret-tok" ? { senderId: "alice" } : null),
+    });
+    const res = await fetch(`http://127.0.0.1:${h.port}/messages?token=secret-tok`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: [{ kind: "text", text: "hi" }] }),
+    });
+    expect(res.status).toBe(401);
+  });
+
   test("WS upgrade rejects when ?token= is wrong", async () => {
     h = await startHarness({
       authenticate: (ctx) => (ctx.token === "good" ? { senderId: "u" } : null),

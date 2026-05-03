@@ -146,12 +146,16 @@ function bearerOf(req: Request): string | null {
 }
 
 /**
- * Pick a token from the request — header first, then `?token=` query.
- * Browser `WebSocket` clients can't set arbitrary headers, so the query-string
- * fallback is the practical path for browser subscribers. Logs SHOULD redact
- * `?token=` in URLs (most reverse proxies do this by default).
+ * Pick a token for the WebSocket upgrade path only — header first, then
+ * `?token=` query. Browser `WebSocket` clients can't set arbitrary headers,
+ * so the query-string fallback is the practical path for browser subscribers.
+ *
+ * NEVER use this for `POST /messages`. Tokens in URLs leak through access
+ * logs, proxy logs, and browser history; widening the query-fallback to
+ * normal HTTP requests weakens the auth boundary for no functional gain
+ * (regular HTTP clients can always set `Authorization`).
  */
-function tokenOf(req: Request, url: URL): string | null {
+function upgradeTokenOf(req: Request, url: URL): string | null {
   return bearerOf(req) ?? url.searchParams.get("token");
 }
 
@@ -240,16 +244,16 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
    */
   async function authorize(
     req: Request,
-    url: URL,
+    token: string | null,
     threadId: string | undefined,
   ): Promise<WebAuthResult | null> {
     if (authenticate === undefined) {
       return { senderId: defaultSenderId };
     }
-    return authenticate({ token: tokenOf(req, url), threadId, request: req });
+    return authenticate({ token, threadId, request: req });
   }
 
-  async function handleMessages(req: Request, url: URL): Promise<Response> {
+  async function handleMessages(req: Request, _url: URL): Promise<Response> {
     if (originDenied(req)) return new Response("Forbidden", { status: 403 });
 
     // Body-size guard up-front so unauthenticated clients can't force the
@@ -276,7 +280,11 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
     const claimedThreadId = typeof raw.threadId === "string" ? raw.threadId : undefined;
 
     // Authorize WITH the thread context so the host can deny cross-tenant access.
-    const principal = await authorize(req, url, claimedThreadId);
+    // POST /messages takes the token from `Authorization: Bearer <t>` ONLY —
+    // never `?token=` query. URL tokens leak via logs/history; the query
+    // fallback exists solely for the WebSocket upgrade path where browsers
+    // cannot set custom headers.
+    const principal = await authorize(req, bearerOf(req), claimedThreadId);
     if (principal === null) return new Response("Unauthorized", { status: 401 });
 
     const message = parseInbound(parsed, principal.senderId);
@@ -341,7 +349,7 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
           if (route === "/ws") {
             if (originDenied(req)) return new Response("Forbidden", { status: 403 });
             const threadId = url.searchParams.get("thread") ?? undefined;
-            const principal = await authorize(req, url, threadId);
+            const principal = await authorize(req, upgradeTokenOf(req, url), threadId);
             if (principal === null) return new Response("Unauthorized", { status: 401 });
             if (srv.upgrade(req, { data: { threadId, senderId: principal.senderId } })) {
               return undefined as unknown as Response;

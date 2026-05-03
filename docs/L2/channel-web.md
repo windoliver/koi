@@ -3,8 +3,8 @@
 **Layer:** L2 · **Contract:** `ChannelAdapter` (L0)
 
 ChannelAdapter for browser/HTTP clients. Bun.serve-based: WebSocket push for
-outbound streaming, REST POST for inbound messages, SSE fallback when WS is
-unavailable. No external dependencies — uses Bun's native HTTP/WS server.
+outbound streaming, REST POST for inbound messages. No external dependencies
+— uses Bun's native HTTP/WS server.
 
 ## What it owns
 
@@ -16,7 +16,6 @@ unavailable. No external dependencies — uses Bun's native HTTP/WS server.
   no `?thread`) only receive outbound messages that themselves have no
   `threadId`. This prevents one authenticated client from observing another
   client's replies.
-- SSE fallback at `GET /events` for clients that can't open a WebSocket
 - Capability negotiation (text + images + files + buttons + threads)
 - Origin allow-list + principal-resolving auth (`authenticate(ctx)` returns
   the verified `senderId`; the transport never trusts a body-supplied one)
@@ -52,7 +51,6 @@ HTTP POST /messages ─▶ verifyToken ─▶ parse ─▶ onPlatformEvent
 OutboundMessage ──▶ renderBlocks() ──▶ platformSend
                                             │
                                   broadcast over WS clients
-                                  enqueue for SSE clients
 ```
 
 ## API

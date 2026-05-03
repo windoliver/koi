@@ -748,6 +748,41 @@ describe("@koi/channel-slack — HTTP Events mode", () => {
     await adapter.disconnect();
   });
 
+  test("handleHttpRequest does NOT dedupe two identical fresh slash commands (no Retry-Num)", async () => {
+    // Regression: a body-hash dedupe fallback would silently swallow the
+    // second of two legitimate identical user-initiated slash commands.
+    const web = makeWebClient();
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "http", signingSecret: SECRET },
+      clients: { webClient: web.client },
+    });
+    const received: InboundMessage[] = [];
+    adapter.onMessage(async (m) => {
+      received.push(m);
+    });
+    await adapter.connect();
+    const body = "command=%2Fkoi&text=help&user_id=U2&channel_id=C1&trigger_id=T1&response_url=";
+    const mkReq = (): Request => {
+      const ts = String(Math.floor(Date.now() / 1000));
+      return new Request("http://x", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "X-Slack-Request-Timestamp": ts,
+          "X-Slack-Signature": sign(ts, body),
+          // Note: no X-Slack-Retry-Num — fresh user invocations.
+        },
+        body,
+      });
+    };
+    await adapter.handleHttpRequest?.(mkReq());
+    await adapter.handleHttpRequest?.(mkReq());
+    await new Promise((r) => setTimeout(r, 10));
+    expect(received).toHaveLength(2);
+    await adapter.disconnect();
+  });
+
   test("handleHttpRequest returns 503 when no listener is registered (Slack retries)", async () => {
     const web = makeWebClient();
     const adapter = createSlackChannel({

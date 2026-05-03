@@ -55,23 +55,31 @@ function createIngressDedupe(): {
 }
 
 /**
- * Build a Slack ingress dedupe key. Prefers Slack's own `event_id` (Events
- * API), then falls back to a content hash so slash commands and interactive
- * payloads are still deduped under retries.
+ * Build a Slack ingress dedupe key, or return `null` when the delivery has
+ * no Slack-supplied retry identifier. Returning `null` means "skip dedupe"
+ * so that two legitimate identical slash commands or button clicks are
+ * never collapsed into one.
+ *
+ * Slack signals a true retry one of two ways:
+ *   - Events API: `event_id` is stable across all redeliveries of the event
+ *   - Any retried HTTP delivery: `X-Slack-Retry-Num` header is set
+ * Anything else (a fresh slash command, a fresh interactive payload) has no
+ * retry signal, so we MUST NOT dedupe by body hash — slash commands and
+ * button clicks can legitimately repeat with similar bodies.
  */
 function dedupeKeyFor(
   request: Request,
   body: string,
   parsed: Record<string, unknown> | undefined,
-): string {
+): string | null {
   const eventId = parsed?.event_id;
   if (typeof eventId === "string" && eventId.length > 0) return `event:${eventId}`;
   const retry = request.headers.get("X-Slack-Retry-Num");
-  const h = createHash("sha256").update(body).digest("hex").slice(0, 32);
-  if (retry !== null) return `retry:${retry}:${h}`;
-  // Last resort: hash the signed body. Signing already binds this to a
-  // timestamp, so within the replay window the same body == the same delivery.
-  return `body:${h}`;
+  if (retry !== null) {
+    const h = createHash("sha256").update(body).digest("hex").slice(0, 32);
+    return `retry:${retry}:${h}`;
+  }
+  return null;
 }
 
 /**
@@ -403,8 +411,11 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
       }
 
       // Dedupe BEFORE dispatch so retried payloads are ack'd as no-ops
-      // rather than processed twice.
-      if (dedupe.observe(dedupeKeyFor(request, result.body, parsed), Date.now())) {
+      // rather than processed twice. Only deliveries with a Slack-supplied
+      // retry identifier are deduped — fresh slash commands and interactive
+      // payloads have no retry signal and must always dispatch.
+      const key = dedupeKeyFor(request, result.body, parsed);
+      if (key !== null && dedupe.observe(key, Date.now())) {
         return new Response("OK", { status: 200 });
       }
 
