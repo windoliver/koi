@@ -44,6 +44,34 @@ export type StageOutcome =
  * make a deliberate version claim eliminates that class of false
  * positive at compile time.
  *
+ * CALLER TRUST CONTRACT — IMPORTANT
+ * ---------------------------------
+ * `(name, version, sandboxed)` IS the cache identity for this stage.
+ * The verifier CANNOT inspect closure contents; two `VerifierStage`
+ * values with identical descriptors are treated as equivalent for
+ * caching and single-flight purposes. This means:
+ *
+ *   - If two callers share a backend AND reuse the same `(name,
+ *     version, sandboxed)` tuple with DIFFERENT `run` closures (e.g.
+ *     a stricter compiler check vs. a weaker one), the second caller
+ *     CAN receive a cached `passed: true` from the first caller's
+ *     run without its own predicate executing. This is the same
+ *     trust contract as `VerificationCache` — the cache is a
+ *     trusted storage optimization, not a semantics-aware authority.
+ *
+ *   - Mitigations: (a) bump `version` whenever the closure's
+ *     decision boundary changes, even subtly; (b) namespace the
+ *     cache (`VerifyOptions.namespace`) per (tenant, environment,
+ *     verifier suite) so tenants with different stage suites cannot
+ *     alias; (c) fold any ambient context the closure observes
+ *     into `executionContextKey`. The verifier validates each of
+ *     these is present at every call site that uses caching.
+ *
+ *   - Outright untrusted callers should NOT share a cache backend.
+ *     Use process-local memory (`createMemoryCache`) per trust
+ *     domain, or layer authenticated-write guarantees above the
+ *     `VerificationCache` interface.
+ *
  * `sandboxed` declares (statically) whether the stage executes the artifact
  * inside an isolation boundary. The orchestrator uses this — NOT the cached
  * `sandbox` field — to compute the returned summary's `sandbox` bit on
