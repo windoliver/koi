@@ -7,6 +7,7 @@
  * events produced by Phase 5 carry traceable from/to fields.
  */
 
+import type { ContextManifestConfig } from "@koi/core/assembly";
 import type {
   ContextEngine,
   ContextEngineIdentity,
@@ -35,7 +36,50 @@ export interface ContextEngineOptions extends BudgetConfig {
 }
 
 /**
+ * Recognize a `ContextManifestConfig` arg shape so manifest-driven callers
+ * (`createKoi` forwards `manifest.context`) get their `config` bag applied
+ * instead of silently dropped. Manifest configs carry no runtime-only fields
+ * (replacementStore, tokenEstimator instances) — those still come via direct
+ * `ContextEngineOptions`.
+ */
+function isManifestConfig(
+  arg: ContextEngineOptions | ContextManifestConfig,
+): arg is ContextManifestConfig {
+  // `ContextManifestConfig` shape: only `engine`/`version`/`config`. Any
+  // other key (e.g. `contextWindowSize`, `replacementStore`) means the caller
+  // passed `ContextEngineOptions` directly.
+  for (const key of Object.keys(arg)) {
+    if (key !== "engine" && key !== "version" && key !== "config") return false;
+  }
+  return true;
+}
+
+function normalizeOptions(
+  arg: ContextEngineOptions | ContextManifestConfig | undefined,
+): ContextEngineOptions {
+  if (arg === undefined) return {};
+  if (!isManifestConfig(arg)) return arg;
+  // Manifest `config` is JsonObject — fields it carries are budget knobs by
+  // contract. Runtime-only fields (replacementStore, tokenEstimator) cannot
+  // appear in JSON, so the cast widens cleanly without losing type safety.
+  const cfg = arg.config ?? {};
+  const identity: ContextEngineIdentity | undefined =
+    arg.engine !== undefined
+      ? { name: arg.engine, version: arg.version ?? DEFAULT_CONTEXT_ENGINE_IDENTITY.version }
+      : undefined;
+  return {
+    ...(cfg as BudgetConfig),
+    ...(identity !== undefined ? { identity } : {}),
+  };
+}
+
+/**
  * Build the default `ContextEngine` backed by `enforceBudget`.
+ *
+ * Accepts either `ContextEngineOptions` (direct host wiring) or
+ * `ContextManifestConfig` (forwarded from `createKoi(manifest.context)`).
+ * For manifest input, the opaque `config` bag is unwrapped into budget knobs
+ * and `engine`/`version` populate engine identity.
  *
  * `prepare` runs the full enforcement cascade (replacement → policy →
  * microcompact) and returns the resulting message list.
@@ -43,7 +87,10 @@ export interface ContextEngineOptions extends BudgetConfig {
  * `describeOccupancy` estimates the post-prepare token total against the
  * configured context window.
  */
-export function createContextEngine(options: ContextEngineOptions = {}): ContextEngine {
+export function createContextEngine(
+  arg: ContextEngineOptions | ContextManifestConfig = {},
+): ContextEngine {
+  const options = normalizeOptions(arg);
   const identity = options.identity ?? DEFAULT_CONTEXT_ENGINE_IDENTITY;
   const maxTokens = options.contextWindowSize ?? COMPACTION_DEFAULTS.contextWindowSize;
   const estimator = options.tokenEstimator ?? FALLBACK_ESTIMATOR;

@@ -25,6 +25,14 @@ export interface SwapOptions {
   readonly reason: string;
   /** Optional explicit rollback target. Defaults to the previous engine identity. */
   readonly rollbackTarget?: ContextEngineIdentity;
+  /**
+   * Override a manifest pin. When the controller was constructed with
+   * `pinnedIdentity`, swap calls whose target identity does not match the
+   * pin are refused unless `force: true` is set. This keeps `manifest.context`
+   * a meaningful trust boundary — operators must opt in explicitly to swap
+   * away from the manifest-declared engine.
+   */
+  readonly force?: boolean;
 }
 
 export interface ContextEngineSwapController {
@@ -103,9 +111,21 @@ function findFrameMatching(
  * history of swap events. Both `swap()` and `rollback()` return the emitted
  * event so callers can forward it to the event bus / TUI / trace.
  */
+export interface SwapControllerOptions {
+  /**
+   * If set, swap targets whose identity does not match this pin are refused
+   * unless `SwapOptions.force` is true. Set by `createKoi` when the manifest
+   * declared `manifest.context.engine` so runtime swaps cannot silently
+   * subvert the manifest pin.
+   */
+  readonly pinnedIdentity?: ContextEngineIdentity;
+}
+
 export function createContextEngineSwapController(
   initial: ContextEngine,
+  options: SwapControllerOptions = {},
 ): ContextEngineSwapController {
+  const pinnedIdentity = options.pinnedIdentity;
   const history: ContextEngineSwapEvent[] = [];
   let active: ContextEngine = initial;
   // Each frame records the engine displaced by a swap plus the rollback
@@ -152,6 +172,15 @@ export function createContextEngineSwapController(
   const swap = (to: ContextEngine, options: SwapOptions): ContextEngineSwapEvent | undefined => {
     if (sameIdentity(active.identity, to.identity)) {
       return undefined;
+    }
+    if (
+      pinnedIdentity !== undefined &&
+      !sameIdentity(to.identity, pinnedIdentity) &&
+      options.force !== true
+    ) {
+      throw new Error(
+        `ContextEngineSwapController: refusing to swap to "${to.identity.name}@${to.identity.version}" — manifest pinned engine to "${pinnedIdentity.name}@${pinnedIdentity.version}". Pass { force: true } to override.`,
+      );
     }
     const evt: ContextEngineSwapEvent = {
       kind: "context-engine-swap",

@@ -164,7 +164,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         );
       }
     }
-    contextEngineSwapController = createContextEngineSwapController(initialEngine);
+    // Wire manifest pin into the swap controller so runtime `swap()` calls
+    // cannot replace the manifest-declared engine with a mismatched identity
+    // unless the operator passes `force: true`. Without this, manifest pin
+    // is enforced only at boot — defeating the trust boundary.
+    contextEngineSwapController = createContextEngineSwapController(
+      initialEngine,
+      manifest.context?.engine !== undefined ? { pinnedIdentity: initialEngine.identity } : {},
+    );
     const ctrlRef = contextEngineSwapController;
     // Attach a proxy under CONTEXT_ENGINE that delegates to the swap
     // controller's current engine on every read. AgentEntity freezes
