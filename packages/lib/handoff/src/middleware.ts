@@ -48,12 +48,40 @@ export function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMid
 
       if (injectedEnvelopeId === envelope.id) return next(request);
 
-      injectedEnvelopeId = envelope.id;
-      await config.store.transition(envelope.id, envelope.status, "injected");
-      config.onEvent?.({ kind: "handoff:injected", handoffId: envelope.id });
+      // Reserve the envelope BEFORE the model call so concurrent turns/
+      // processes don't pick the same pending envelope and inject it twice.
+      // Reservation is allowed ONLY from `pending` — envelopes already in
+      // `injected` are skipped here so a second process can't observe the
+      // same envelope after the first injector flipped it. The remaining
+      // recovery path is `accept_handoff`, which still works for both
+      // pending and injected envelopes. Fail-closed: any non-success result
+      // skips injection.
+      if (envelope.status !== "pending") {
+        return next(request);
+      }
+      const reserved = await config.store.transition(envelope.id, "pending", "injected");
+      if (!reserved.ok) {
+        return next(request);
+      }
 
+      injectedEnvelopeId = envelope.id;
       const summary = generateHandoffSummary(envelope);
-      return next(prependSystemMessage(request, summary));
+      try {
+        const response = await next(prependSystemMessage(request, summary));
+        config.onEvent?.({ kind: "handoff:injected", handoffId: envelope.id });
+        return response;
+      } catch (e: unknown) {
+        // Model call failed — release the reservation so the next turn
+        // re-injects. We swallow revert errors: the original failure is the
+        // signal the caller cares about.
+        injectedEnvelopeId = undefined;
+        try {
+          await config.store.transition(envelope.id, "injected", "pending");
+        } catch {
+          // best-effort revert
+        }
+        throw e;
+      }
     },
 
     wrapModelStream: async function* (
@@ -76,12 +104,57 @@ export function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMid
         return;
       }
 
-      injectedEnvelopeId = envelope.id;
-      await config.store.transition(envelope.id, envelope.status, "injected");
-      config.onEvent?.({ kind: "handoff:injected", handoffId: envelope.id });
+      // Same one-way pending → injected reservation as wrapModelCall.
+      if (envelope.status !== "pending") {
+        yield* next(request);
+        return;
+      }
+      const reserved = await config.store.transition(envelope.id, "pending", "injected");
+      if (!reserved.ok) {
+        yield* next(request);
+        return;
+      }
 
+      injectedEnvelopeId = envelope.id;
       const summary = generateHandoffSummary(envelope);
-      yield* next(prependSystemMessage(request, summary));
+      // let justified: tracks whether the upstream model started producing
+      // output. Once the first chunk is yielded the prompt is committed and
+      // we MUST keep the envelope reserved — even if the consumer abandons
+      // the iterator partway through, otherwise we'd re-inject the same
+      // handoff next turn after the model already saw it.
+      let delivered = false;
+      let producerThrew = false;
+      try {
+        for await (const chunk of next(prependSystemMessage(request, summary))) {
+          delivered = true;
+          yield chunk;
+        }
+      } catch (e: unknown) {
+        producerThrew = true;
+        throw e;
+      } finally {
+        if (delivered) {
+          // Stream produced data — treat as delivered regardless of how the
+          // iterator finished.
+          config.onEvent?.({ kind: "handoff:injected", handoffId: envelope.id });
+        } else if (producerThrew) {
+          // Producer never yielded and errored — release reservation.
+          injectedEnvelopeId = undefined;
+          try {
+            await config.store.transition(envelope.id, "injected", "pending");
+          } catch {
+            // best-effort revert
+          }
+        } else {
+          // Consumer cancelled before any chunk arrived. Same as no delivery.
+          injectedEnvelopeId = undefined;
+          try {
+            await config.store.transition(envelope.id, "injected", "pending");
+          } catch {
+            // best-effort revert
+          }
+        }
+      }
     },
 
     describeCapabilities: (_ctx: TurnContext): CapabilityFragment | undefined => {

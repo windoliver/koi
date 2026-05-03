@@ -17,7 +17,7 @@ function makeEntry(overrides: Partial<RegistryEntry> = {}): RegistryEntry {
       generation: 0,
       lastTransitionAt: 0,
     } as RegistryEntry["status"],
-    metadata: {},
+    metadata: { agentName: "researcher" },
     ...overrides,
   } as RegistryEntry;
 }
@@ -70,6 +70,53 @@ describe("createRegistryAgentResolver", () => {
     );
     const live = await r.findLive?.("researcher");
     expect(live?.state).toBe("busy");
+  });
+
+  test("findLive ignores entries whose metadata does not match the requested agent", async () => {
+    // Agent of the same coarse type but a different catalog key — must NOT
+    // be routed to (would otherwise hand researcher work to a deployer).
+    const unrelated = makeEntry({
+      status: { phase: "waiting", conditions: ["Ready"], generation: 0, lastTransitionAt: 0 },
+      metadata: { agentName: "deployer" },
+    });
+    const r = createRegistryAgentResolver(
+      new Map([["researcher", dummy]]),
+      fakeRegistry([unrelated]),
+    );
+    const live = await r.findLive?.("researcher");
+    expect(live).toBeUndefined();
+  });
+
+  test("findLive precedence: explicit agentName mismatch is NOT bypassed by metadata.name match", async () => {
+    // An entry advertising agentName: "deployer" but also carrying the
+    // manifest's name must NOT be returned for an agentType: "researcher"
+    // lookup, even if the manifest names happen to coincide.
+    const conflicting = makeEntry({
+      status: { phase: "waiting", conditions: ["Ready"], generation: 0, lastTransitionAt: 0 },
+      metadata: { agentName: "deployer", name: "researcher" },
+    });
+    const r = createRegistryAgentResolver(
+      new Map([["researcher", dummy]]),
+      fakeRegistry([conflicting]),
+    );
+    const live = await r.findLive?.("researcher");
+    expect(live).toBeUndefined();
+  });
+
+  test("findLive matches explicit taskAgentType even when local catalog cannot resolve the key", async () => {
+    // Version-skew tolerance: the live registry entry advertises an explicit
+    // catalog key the local catalog has never heard of. The match should
+    // still succeed because explicit keys don't depend on local resolution.
+    const skewed = makeEntry({
+      status: { phase: "waiting", conditions: ["Ready"], generation: 0, lastTransitionAt: 0 },
+      metadata: { taskAgentType: "future-role" },
+    });
+    const r = createRegistryAgentResolver(
+      new Map(), // empty catalog — no entry for "future-role"
+      fakeRegistry([skewed]),
+    );
+    const live = await r.findLive?.("future-role");
+    expect(live?.state).toBe("idle");
   });
 
   test("findLive returns undefined when no entries", async () => {

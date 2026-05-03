@@ -42,6 +42,17 @@ function rebrandEnvelope(raw: HandoffEnvelope): HandoffEnvelope {
   };
 }
 
+/**
+ * Strip the internal `__casToken` field used by transition() to verify
+ * concurrent writers. The token is a top-level sidecar on the wire format —
+ * never stored inside the public HandoffEnvelope.metadata.
+ */
+function stripCasToken(raw: HandoffEnvelope & { readonly __casToken?: string }): HandoffEnvelope {
+  if (raw.__casToken === undefined) return raw;
+  const { __casToken: _ignored, ...rest } = raw;
+  return rest;
+}
+
 export function createNexusHandoffStore(config: NexusHandoffStoreConfig): HandoffStore {
   const basePath = config.basePath ?? "/handoffs";
   const ttlMs = config.ttlMs ?? DEFAULT_HANDOFF_TTL_MS;
@@ -91,7 +102,9 @@ export function createNexusHandoffStore(config: NexusHandoffStoreConfig): Handof
     const readResult = await rpc<string>("read", { path: envelopePath(id) });
     if (!readResult.ok) return readResult;
     try {
-      const envelope = rebrandEnvelope(JSON.parse(readResult.value) as HandoffEnvelope);
+      const envelope = rebrandEnvelope(
+        stripCasToken(JSON.parse(readResult.value) as HandoffEnvelope & { __casToken?: string }),
+      );
       if (isExpired(envelope)) return { ok: false, error: expiredError(id) };
       return { ok: true, value: envelope };
     } catch {
@@ -104,30 +117,69 @@ export function createNexusHandoffStore(config: NexusHandoffStoreConfig): Handof
     from: HandoffStatus,
     to: HandoffStatus,
   ): Promise<Result<HandoffEnvelope, KoiError>> => {
+    // Without a server-side CAS primitive we approximate one: stamp a unique
+    // nonce at the JSON top level (NOT in user-visible metadata), write, then
+    // re-read and assert OUR nonce survives. The token is stripped before the
+    // envelope is returned to callers so it never leaks into accept_handoff
+    // output. If verification can't be completed (transient read error), we
+    // do NOT downgrade to CONFLICT — the write may have committed, so we
+    // return the optimistic value and let downstream operations re-check.
     const readResult = await rpc<string>("read", { path: envelopePath(id) });
     if (!readResult.ok) return { ok: false, error: notFoundError(id) };
 
     try {
-      const envelope = rebrandEnvelope(JSON.parse(readResult.value) as HandoffEnvelope);
+      const parsedRead = JSON.parse(readResult.value) as HandoffEnvelope;
+      const envelope = rebrandEnvelope(stripCasToken(parsedRead));
       if (envelope.status !== from) return { ok: false, error: notFoundError(id) };
 
+      const casToken = crypto.randomUUID();
       const updated: HandoffEnvelope = { ...envelope, status: to };
+      // Token lives at JSON top level alongside HandoffEnvelope fields.
+      // Stripped on read so it never appears in HandoffEnvelope.metadata.
+      const onWire: HandoffEnvelope & { readonly __casToken: string } = {
+        ...updated,
+        __casToken: casToken,
+      };
       const writeResult = await rpc<void>("write", {
         path: envelopePath(id),
-        content: JSON.stringify(updated),
+        content: JSON.stringify(onWire),
       });
       if (!writeResult.ok) return writeResult;
 
       const verifyResult = await rpc<string>("read", { path: envelopePath(id) });
-      if (verifyResult.ok) {
-        try {
-          const current = JSON.parse(verifyResult.value) as HandoffEnvelope;
-          if (current.status !== to) {
-            return { ok: false, error: conflictError(id) };
-          }
-        } catch {
-          // verify parse failure — accept our write
-        }
+      if (!verifyResult.ok) {
+        // Transport failure on verify — we cannot prove our nonce survived.
+        // Return a retryable TIMEOUT error rather than optimistic success
+        // (which would let middleware emit handoff:injected without proof)
+        // or CONFLICT (which would mask a successful commit). The caller
+        // should retry — if our write committed, retrying sees status
+        // already at `to` and returns NOT_FOUND.
+        return {
+          ok: false,
+          error: {
+            code: "TIMEOUT",
+            message: `Could not verify Nexus handoff transition for ${id}; retry`,
+            retryable: true,
+            cause: verifyResult.error,
+          },
+        };
+      }
+      let current: HandoffEnvelope & { readonly __casToken?: string };
+      try {
+        current = JSON.parse(verifyResult.value) as typeof current;
+      } catch (cause: unknown) {
+        return {
+          ok: false,
+          error: {
+            code: "TIMEOUT",
+            message: `Could not parse Nexus handoff verification for ${id}; retry`,
+            retryable: true,
+            cause,
+          },
+        };
+      }
+      if (current.status !== to || current.__casToken !== casToken) {
+        return { ok: false, error: conflictError(id) };
       }
       return { ok: true, value: updated };
     } catch {
@@ -148,7 +200,9 @@ export function createNexusHandoffStore(config: NexusHandoffStoreConfig): Handof
     for (const r of readResults) {
       if (!r.ok) continue;
       try {
-        const envelope = rebrandEnvelope(JSON.parse(r.value) as HandoffEnvelope);
+        const envelope = rebrandEnvelope(
+          stripCasToken(JSON.parse(r.value) as HandoffEnvelope & { __casToken?: string }),
+        );
         if (envelope.from === aid || envelope.to === aid) matched.push(envelope);
       } catch {
         // skip corrupt
@@ -170,7 +224,9 @@ export function createNexusHandoffStore(config: NexusHandoffStoreConfig): Handof
     for (const r of readResults) {
       if (!r.ok) continue;
       try {
-        const envelope = rebrandEnvelope(JSON.parse(r.value) as HandoffEnvelope);
+        const envelope = rebrandEnvelope(
+          stripCasToken(JSON.parse(r.value) as HandoffEnvelope & { __casToken?: string }),
+        );
         if (
           envelope.to === aid &&
           (envelope.status === "pending" || envelope.status === "injected") &&

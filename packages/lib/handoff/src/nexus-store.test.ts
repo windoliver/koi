@@ -136,6 +136,47 @@ describe("createNexusHandoffStore", () => {
     if (result.ok && result.value !== undefined) expect(result.value.id).toBe(older.id);
   });
 
+  test("transition reports CONFLICT when a concurrent writer overwrites the file", async () => {
+    // Simulate a racing writer that swaps the file content between our write
+    // and our verify-read. The CAS-token check must catch the divergence.
+    const fake = createFakeNexus();
+    const store = createNexusHandoffStore({
+      baseUrl: "http://nx",
+      apiKey: "k",
+      fetch: fake.fetch,
+    });
+    const env = makeEnvelope();
+    await store.put(env);
+
+    // Hijack the underlying file map after our write but before verify by
+    // wrapping fetch — replace the file with a different writer's payload.
+    const originalFetch = fake.fetch;
+    let writeCount = 0;
+    const racingFetch: typeof fake.fetch = async (input, init) => {
+      const body = init?.body !== undefined ? JSON.parse(init.body as string) : {};
+      const response = await originalFetch(input, init);
+      if (body.method === "write") {
+        writeCount += 1;
+        if (writeCount === 1) {
+          // After our first write completes, plant a competing write.
+          fake.files.set(
+            `/handoffs/${env.id}.json`,
+            JSON.stringify({ ...env, status: "injected", metadata: { __casToken: "other" } }),
+          );
+        }
+      }
+      return response;
+    };
+    const racingStore = createNexusHandoffStore({
+      baseUrl: "http://nx",
+      apiKey: "k",
+      fetch: racingFetch,
+    });
+    const result = await racingStore.transition(env.id, "pending", "injected");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("CONFLICT");
+  });
+
   test("removeByAgent deletes referenced envelopes", async () => {
     const fake = createFakeNexus();
     const store = createNexusHandoffStore({
