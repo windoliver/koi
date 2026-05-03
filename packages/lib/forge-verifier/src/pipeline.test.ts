@@ -1485,16 +1485,16 @@ describe("R25/r8 sync stage throws + always attach to in-flight slot", () => {
     expect(r.error.cause).toBeInstanceOf(Error);
   });
 
-  test("aborted leader keeps slot held — second caller does not start a duplicate stage", async () => {
+  test("retry after leader abort starts a fresh execution (R26+R27: availability over dedup)", async () => {
     let stageStarts = 0;
-    let stageResolve: (() => void) | undefined;
+    const resolvers: Array<() => void> = [];
     const slow: VerifierStage<FakeArtifact> = {
       name: "slow",
       version: "1",
       run: async () => {
         stageStarts += 1;
         await new Promise<void>((r) => {
-          stageResolve = r;
+          resolvers.push(r);
         });
         return PASS;
       },
@@ -1509,15 +1509,15 @@ describe("R25/r8 sync stage throws + always attach to in-flight slot", () => {
     };
     const ac = new AbortController();
     const leader = runPipeline([slow], artifact, { ...baseOpts, signal: ac.signal });
-    await new Promise((r) => setTimeout(r, 5)); // let stage start
+    await new Promise((r) => setTimeout(r, 5));
     ac.abort();
     const leaderResult = await leader;
-    expect(leaderResult.ok).toBe(false); // leader timed out via signal
-    // Retry while underlying stage is still running.
+    expect(leaderResult.ok).toBe(false); // leader aborted
+    // Retry: leader's slot already evicted on work() settlement → fresh.
     const retry = runPipeline([slow], artifact, baseOpts);
     await new Promise((r) => setTimeout(r, 5));
-    expect(stageStarts).toBe(1); // retry attached, no duplicate stage
-    if (stageResolve !== undefined) stageResolve();
+    expect(stageStarts).toBe(2); // fresh leader, key not bricked
+    for (const r of resolvers) r();
     await retry;
   });
 });
@@ -2496,5 +2496,54 @@ describe("R26 cache key partitions by stageTimeoutMs", () => {
     expect(r1.ok).toBe(true);
     expect(r2.ok).toBe(true);
     expect(stageCalls).toBe(1); // second call hit cache
+  });
+});
+
+describe("R27 followers do NOT attach to a leader whose pipeline signal has aborted", () => {
+  test("aborted leader is evicted on follower arrival; follower becomes fresh leader", async () => {
+    let stageStarts = 0;
+    const resolvers: Array<() => void> = [];
+    const stage: VerifierStage<FakeArtifact> = {
+      name: "slow",
+      version: "1",
+      run: async () => {
+        stageStarts += 1;
+        await new Promise<void>((r) => {
+          resolvers.push(r);
+        });
+        return PASS;
+      },
+    };
+    const cache = createMemoryCache();
+    const artifact: FakeArtifact = { name: "race" };
+    const ac = new AbortController();
+    const leader = runPipeline([stage], artifact, {
+      cache,
+      namespace: "race",
+      acknowledgeTrustedCache: true,
+      executionContextKey: "ctx",
+      signal: ac.signal,
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stageStarts).toBe(1);
+    // Leader caller aborts. The leader's pipelineSignal mirror fires;
+    // its stage loop will short-circuit to TIMEOUT, but its underlying
+    // stage promise is still pending in the background.
+    ac.abort();
+    await new Promise((r) => setTimeout(r, 10));
+    // Follower arrives — must NOT inherit the leader's TIMEOUT.
+    const follower = runPipeline([stage], artifact, {
+      cache,
+      namespace: "race",
+      acknowledgeTrustedCache: true,
+      executionContextKey: "ctx",
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stageStarts).toBe(2); // follower became fresh leader
+    for (const r of resolvers) r();
+    const [leaderResult, followerResult] = await Promise.all([leader, follower]);
+    expect(leaderResult.ok).toBe(false);
+    if (leaderResult.ok === false) expect(leaderResult.error.code).toBe("TIMEOUT");
+    expect(followerResult.ok).toBe(true);
   });
 });

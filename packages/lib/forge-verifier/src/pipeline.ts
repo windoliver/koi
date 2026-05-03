@@ -826,18 +826,25 @@ export async function runPipeline<I>(
 
   if (inflightKey !== undefined) {
     const existing = inflight.get(inflightKey);
-    // Always attach to the existing entry. The slot is held until the
-    // underlying stage promises actually settle (see registration
-    // below), so an entry being present means either the leader is
-    // still running OR the leader returned (TIMEOUT/abort/success) but
-    // its background stages are still in flight. In both cases starting
-    // a fresh pipeline would risk a SECOND background execution of the
-    // same non-idempotent stage. Followers inherit the leader's result
-    // (which may be TIMEOUT) and retry only after the slot drains.
+    // Attach to the existing entry ONLY if the leader's pipeline
+    // signal is not already aborted. A leader whose internal signal
+    // has fired is doomed: its stage loop will short-circuit with
+    // TIMEOUT on the next iteration. Letting an unaborted follower
+    // attach would convert one caller's cancellation into another
+    // caller's spurious failure — a particularly nasty under-load
+    // race because it only appears in the narrow window between the
+    // leader's abort and the stage loop noticing it. When the leader
+    // is already doomed, evict the entry and become a fresh leader.
+    // (The doomed leader's promise still settles to TIMEOUT for any
+    // followers that already attached before the abort.)
     if (existing !== undefined) {
-      existing.detach();
-      if (signal === undefined) return existing.promise;
-      return waitWithSignal(existing.promise, signal);
+      if (existing.leaderPipelineSignal?.aborted === true) {
+        inflight.delete(inflightKey);
+      } else {
+        existing.detach();
+        if (signal === undefined) return existing.promise;
+        return waitWithSignal(existing.promise, signal);
+      }
     }
   }
 
