@@ -413,6 +413,30 @@ describe("createKoi assembly", () => {
     ).rejects.toThrow(/CONTEXT_ENGINE|context-engine-double-wire/);
   });
 
+  test("rejects user-supplied middleware named 'context-engine' when contextEngineFactory is set", async () => {
+    type ContextEngine = import("@koi/core").ContextEngine;
+    type KoiMiddleware = import("@koi/core").KoiMiddleware;
+    const factoryEngine: ContextEngine = {
+      identity: { name: "factory", version: "1.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const dupMiddleware: KoiMiddleware = {
+      name: "context-engine",
+      phase: "resolve",
+      priority: 500,
+      describeCapabilities: () => undefined,
+      wrapModelCall: async (_c, req, next) => next(req),
+    };
+    await expect(
+      createKoi({
+        manifest: testManifest(),
+        adapter: mockAdapter([]),
+        contextEngineFactory: () => factoryEngine,
+        middleware: [dupMiddleware],
+      }),
+    ).rejects.toThrow(/context-engine/);
+  });
+
   test("manifest lifecycle overrides default type", async () => {
     const runtime = await createKoi({
       manifest: testManifest({ lifecycle: "worker" }),

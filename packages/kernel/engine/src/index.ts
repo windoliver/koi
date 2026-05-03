@@ -161,6 +161,7 @@ export {
   createContextEngineProxyProvider,
 } from "./context-engine-provider.js";
 // context-engine slot middleware — controller-backed, auto-injected by createKoi
+export type { SlotController } from "./context-engine-runtime.js";
 export { createContextEngineSlotMiddleware } from "./context-engine-runtime.js";
 // context-engine swap controller — runtime swap + rollback (issue #1767)
 export type { ContextEngineSwapController, SwapOptions } from "./context-engine-swap.js";

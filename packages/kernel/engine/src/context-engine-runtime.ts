@@ -11,52 +11,40 @@
  * model-call path can never diverge.
  */
 
-import type { ContextEngine, KoiMiddleware, TurnContext, TurnId } from "@koi/core";
+import type { ContextEngine, KoiMiddleware, TurnId } from "@koi/core";
 
 /**
- * Build a `KoiMiddleware` that resolves the active `ContextEngine` via the
- * provided getter on each call. Returning `undefined` from `getEngine` makes
- * the middleware a passthrough — useful when the slot is empty or the host
- * has not yet attached a controller.
- *
- * Per-turn binding: the first `prepare()` call of a turn pins the engine for
- * that turn. All subsequent model calls within the turn and the matching
- * `onAfterTurn` resolve to that same instance even if a swap occurs mid-turn.
- * This keeps prepare/onAfterTurn paired on stateful engines (occupancy,
- * eviction, rollback bookkeeping) — without it, a swap between `prepare()`
- * and turn-end would deliver `onAfterTurn` to a different engine than the
- * one that mutated state during prepare.
+ * Minimal controller surface the slot middleware needs. The full
+ * `ContextEngineSwapController` from this package satisfies it; tests can
+ * pass a leaner stub.
  */
-export function createContextEngineSlotMiddleware(
-  getEngine: () => ContextEngine | undefined,
-): KoiMiddleware {
-  // Key by `ctx.turnId` (a stable branded string) rather than by TurnContext
-  // object identity: the runtime constructs a fresh TurnContext for the
-  // turn-end hooks (see koi.ts createTurnContext/turnEndCtx), so a WeakMap
-  // keyed by the object would miss on `onAfterTurn` and silently fall back
-  // to the live engine, defeating per-turn pinning under mid-turn swaps.
-  // Eager `delete()` in onAfterTurn keeps the map bounded under long-lived
-  // hosts (no GC dependency since TurnId is a string).
-  const turnEngine = new Map<TurnId, ContextEngine>();
+export interface SlotController {
+  readonly current: () => ContextEngine | undefined;
+  readonly beginTurn: (turnId: TurnId) => void;
+  readonly endTurn: (turnId: TurnId) => void;
+}
 
-  const pinEngine = (ctx: TurnContext): ContextEngine | undefined => {
-    const existing = turnEngine.get(ctx.turnId);
-    if (existing !== undefined) return existing;
-    const engine = getEngine();
-    if (engine === undefined) return undefined;
-    turnEngine.set(ctx.turnId, engine);
-    return engine;
-  };
-
+/**
+ * Build a `KoiMiddleware` that resolves the active `ContextEngine` through
+ * a swap controller. The controller's `beginTurn`/`endTurn` keep
+ * `controller.current()` (and therefore the ECS proxy that reads it) pinned
+ * to a single engine for the duration of a turn, even if the host issues
+ * `controller.swap()` mid-turn. This guarantees prepare/onAfterTurn pair on
+ * the same engine and that ECS reads agree with what the middleware
+ * actually used.
+ *
+ * If `controller.current()` returns `undefined` the middleware is a
+ * passthrough (slot empty / not yet wired).
+ */
+export function createContextEngineSlotMiddleware(controller: SlotController): KoiMiddleware {
   return {
     name: "context-engine",
     phase: "resolve",
     priority: 500,
     wrapModelCall: async (ctx, request, next) => {
-      const engine = pinEngine(ctx);
-      if (engine === undefined) {
-        return next(request);
-      }
+      controller.beginTurn(ctx.turnId);
+      const engine = controller.current();
+      if (engine === undefined) return next(request);
       const prepared = await engine.prepare(ctx, request.messages);
       return next({ ...request, messages: prepared });
     },
@@ -64,13 +52,9 @@ export function createContextEngineSlotMiddleware(
     // Both must drive engine.prepare() or compaction silently disappears
     // under streaming.
     wrapModelStream: (ctx, request, next) => {
-      const engine = pinEngine(ctx);
-      if (engine === undefined) {
-        return next(request);
-      }
-      // The chunk source is async but `wrapModelStream` returns a synchronous
-      // AsyncIterable. We resolve `prepare()` lazily in the iterator so the
-      // surrounding chain composition still works without an outer await.
+      controller.beginTurn(ctx.turnId);
+      const engine = controller.current();
+      if (engine === undefined) return next(request);
       return {
         async *[Symbol.asyncIterator](): AsyncIterator<
           import("@koi/core").ModelChunk,
@@ -85,13 +69,15 @@ export function createContextEngineSlotMiddleware(
       };
     },
     onAfterTurn: async (ctx) => {
-      // Resolve to the engine pinned at first prepare(); fall back to the
-      // current engine for turns where prepare() never ran (no model call).
-      const pinned = turnEngine.get(ctx.turnId);
-      const engine = pinned ?? getEngine();
-      turnEngine.delete(ctx.turnId);
-      if (engine?.onAfterTurn !== undefined) {
-        await engine.onAfterTurn(ctx);
+      // Resolve through the controller so we hit the same engine pinned
+      // since beginTurn — even if a host issued a swap mid-turn.
+      const engine = controller.current();
+      try {
+        if (engine?.onAfterTurn !== undefined) {
+          await engine.onAfterTurn(ctx);
+        }
+      } finally {
+        controller.endTurn(ctx.turnId);
       }
     },
     describeCapabilities: () => undefined,

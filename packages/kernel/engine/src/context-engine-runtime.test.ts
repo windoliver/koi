@@ -33,7 +33,7 @@ describe("createContextEngineSlotMiddleware", () => {
       ],
     };
     const ctrl = createContextEngineSwapController(engineA);
-    const mw = createContextEngineSlotMiddleware(() => ctrl.current());
+    const mw = createContextEngineSlotMiddleware(ctrl);
 
     const captured: ModelRequest[] = [];
     const handler: ModelHandler = async (req) => {
@@ -85,7 +85,7 @@ describe("createContextEngineSlotMiddleware", () => {
       },
     };
     const ctrl = createContextEngineSwapController(engineA);
-    const mw = createContextEngineSlotMiddleware(() => ctrl.current());
+    const mw = createContextEngineSlotMiddleware(ctrl);
 
     const handler: ModelHandler = async () =>
       ({ content: "ok", model: "x" }) satisfies ModelResponse;
@@ -117,8 +117,47 @@ describe("createContextEngineSlotMiddleware", () => {
     expect(bAfterCalls).toBe(1);
   });
 
+  test("controller.current() stays pinned mid-turn so ECS reads agree with middleware", async () => {
+    // Round-8 regression: ECS reads (controller.current()) and middleware
+    // execution must reference the same engine throughout a turn, even when
+    // a host swaps mid-turn. Swaps only become visible after onAfterTurn
+    // releases the pin.
+    const engineA: ContextEngine = {
+      identity: { name: "a", version: "1.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const engineB: ContextEngine = {
+      identity: { name: "b", version: "2.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const ctrl = createContextEngineSwapController(engineA);
+    const mw = createContextEngineSlotMiddleware(ctrl);
+    const handler: ModelHandler = async () =>
+      ({ content: "ok", model: "x" }) satisfies ModelResponse;
+
+    const turnCtx = { metadata: {}, turnId: "t-mid" } as unknown as TurnContext;
+    await mw.wrapModelCall?.(turnCtx, { messages: [] }, handler);
+    expect(ctrl.current().identity.name).toBe("a");
+
+    ctrl.swap(engineB, {
+      turnId: "run-1:t1" as Parameters<typeof ctrl.swap>[1]["turnId"],
+      reason: "mid-turn",
+    });
+    // Mid-turn: ECS-equivalent read MUST still return engine A, matching what
+    // wrapModelCall is using.
+    expect(ctrl.current().identity.name).toBe("a");
+
+    await mw.onAfterTurn?.(turnCtx);
+    // After the turn ends, the swap becomes visible to the next caller.
+    expect(ctrl.current().identity.name).toBe("b");
+  });
+
   test("noop when the controller returns no engine (slot empty)", async () => {
-    const mw = createContextEngineSlotMiddleware(() => undefined);
+    const mw = createContextEngineSlotMiddleware({
+      current: () => undefined,
+      beginTurn: () => undefined,
+      endTurn: () => undefined,
+    });
     const captured: ModelRequest[] = [];
     const handler: ModelHandler = async (req) => {
       captured.push(req);
@@ -142,7 +181,7 @@ describe("createContextEngineSlotMiddleware", () => {
       ],
     };
     const ctrl = createContextEngineSwapController(engine);
-    const mw = createContextEngineSlotMiddleware(() => ctrl.current());
+    const mw = createContextEngineSlotMiddleware(ctrl);
 
     const next = (req: ModelRequest): AsyncIterable<ModelChunk> => {
       captured.push(req);
@@ -177,7 +216,11 @@ describe("createContextEngineSlotMiddleware", () => {
         },
       };
     };
-    const mw = createContextEngineSlotMiddleware(() => undefined);
+    const mw = createContextEngineSlotMiddleware({
+      current: () => undefined,
+      beginTurn: () => undefined,
+      endTurn: () => undefined,
+    });
     if (mw.wrapModelStream === undefined) throw new Error("wrapModelStream missing");
     const stream = mw.wrapModelStream(ctx, { messages: original }, next);
     for await (const _ of stream) {
@@ -195,7 +238,11 @@ describe("createContextEngineSlotMiddleware", () => {
         calls++;
       },
     };
-    const mw = createContextEngineSlotMiddleware(() => engine);
+    const mw = createContextEngineSlotMiddleware({
+      current: () => engine,
+      beginTurn: () => undefined,
+      endTurn: () => undefined,
+    });
     await mw.onAfterTurn?.(ctx);
     expect(calls).toBe(1);
   });

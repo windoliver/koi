@@ -170,7 +170,24 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     });
     contextEngineProxy = proxyResult.proxy;
     contextEngineProviders.push(proxyResult.provider);
-    contextEngineMiddleware.push(createContextEngineSlotMiddleware(() => ctrlRef.current()));
+    contextEngineMiddleware.push(createContextEngineSlotMiddleware(ctrlRef));
+  }
+  // Middleware-level double-wire guard (#1767, round 7). Reject any
+  // user-supplied middleware that also names itself "context-engine" — it
+  // would either run prepare() twice (double compaction) or substitute a
+  // second engine in front of the controller, breaking the swap-aware
+  // wiring. The `@koi/context-manager#createContextEngineMiddleware(engine)`
+  // helper is the most likely offender; hosts using `contextEngineFactory`
+  // must drop it.
+  if (options.contextEngineFactory !== undefined) {
+    const dup = (options.middleware ?? []).find((mw) => mw.name === "context-engine");
+    if (dup !== undefined) {
+      throw KoiRuntimeError.from(
+        "VALIDATION",
+        "createKoi: contextEngineFactory is set, but middleware also includes a context-engine entry. createKoi already injects the slot middleware; remove the duplicate (e.g. drop createContextEngineMiddleware(engine) from your middleware array) or stop passing contextEngineFactory.",
+        { retryable: false, context: { conflictKind: "context-engine-middleware-double-wire" } },
+      );
+    }
   }
   const allProviders = [governanceProvider, ...contextEngineProviders, ...providers];
   const { agent, conflicts } = await AgentEntity.assemble(pid, manifest, allProviders);

@@ -28,10 +28,31 @@ export interface SwapOptions {
 }
 
 export interface ContextEngineSwapController {
+  /**
+   * Returns the engine currently serving requests. While a turn is pinned
+   * (see `beginTurn`/`endTurn`), this returns the engine snapshotted at the
+   * start of that turn — so swaps issued mid-turn do NOT change `current()`
+   * until the turn ends. This keeps ECS reads (`agent.component(
+   * CONTEXT_ENGINE)`) and slot-middleware execution paired on the same
+   * engine across `prepare()` → `onAfterTurn`.
+   */
   readonly current: () => ContextEngine;
   readonly history: () => readonly ContextEngineSwapEvent[];
   readonly swap: (to: ContextEngine, options: SwapOptions) => ContextEngineSwapEvent | undefined;
   readonly rollback: (options: SwapOptions) => ContextEngineSwapEvent | undefined;
+  /**
+   * Pin the engine currently in `active` to `turnId` for the duration of a
+   * turn. While pinned, `current()` returns the pinned engine even after a
+   * `swap()`. Idempotent on the same `turnId`. Called by the slot middleware
+   * at the first `prepare()` of a turn.
+   */
+  readonly beginTurn: (turnId: TurnId) => void;
+  /**
+   * Release the pin for `turnId`. Subsequent `current()` calls return the
+   * live `active` engine (which may have been changed by mid-turn swaps).
+   * Called by the slot middleware in `onAfterTurn`.
+   */
+  readonly endTurn: (turnId: TurnId) => void;
 }
 
 function sameIdentity(a: ContextEngineIdentity, b: ContextEngineIdentity): boolean {
@@ -70,9 +91,25 @@ export function createContextEngineSwapController(
   // target the caller declared at swap time (if any). Rollback resolves to
   // the declared target when set, otherwise to the immediately prior engine.
   const priorStack: SwapStackFrame[] = [];
+  // Per-turn pin: while set, `current()` returns the pinned engine even
+  // after swaps. Cleared in `endTurn`. We store turnId alongside the engine
+  // so endTurn can no-op for stale releases (defensive against out-of-order
+  // calls under concurrent or interrupted turns).
+  let turnPin: { readonly turnId: TurnId; readonly engine: ContextEngine } | undefined;
 
-  const current = (): ContextEngine => active;
+  const current = (): ContextEngine => turnPin?.engine ?? active;
   const historyView = (): readonly ContextEngineSwapEvent[] => history;
+
+  const beginTurn = (turnId: TurnId): void => {
+    if (turnPin?.turnId === turnId) return;
+    turnPin = { turnId, engine: active };
+  };
+
+  const endTurn = (turnId: TurnId): void => {
+    if (turnPin?.turnId === turnId) {
+      turnPin = undefined;
+    }
+  };
 
   const swap = (to: ContextEngine, options: SwapOptions): ContextEngineSwapEvent | undefined => {
     if (sameIdentity(active.identity, to.identity)) {
@@ -136,5 +173,7 @@ export function createContextEngineSwapController(
     history: historyView,
     swap,
     rollback,
+    beginTurn,
+    endTurn,
   };
 }
