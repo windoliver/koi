@@ -1,3 +1,4 @@
+import { types } from "node:util";
 import type {
   ForgeStageDigest,
   ForgeVerificationSummary,
@@ -552,6 +553,15 @@ function rejectUnsupportedShape(
       );
     }
     return;
+  }
+  // Proxy detection BEFORE any reflective op. `types.isProxy` is a privileged
+  // V8 introspection (Bun + Node both expose it via node:util) that does NOT
+  // invoke any handler. A Proxy artifact is rejected here without ever firing
+  // a trap, closing the only remaining caller-code-on-verifier-stack path.
+  if (types.isProxy(value)) {
+    throw new TypeError(
+      `Artifact at ${path} is a Proxy; verifier requires plain-data artifacts (Proxy traps would execute caller code on the verifier stack).`,
+    );
   }
   // Cycle guard: a self-referential plain object is legal for
   // `structuredClone`, but unbounded recursion here would let a crafted

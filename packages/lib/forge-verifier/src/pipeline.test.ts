@@ -1057,6 +1057,65 @@ describe("canonical cache-key encoding (string-vs-sentinel collisions)", () => {
   });
 });
 
+describe("Proxy rejection (no caller code on verifier stack)", () => {
+  test("Proxy artifact is rejected before any trap fires", async () => {
+    let trapsFired = 0;
+    const target = { name: "p" };
+    const handler: ProxyHandler<typeof target> = {
+      get: () => {
+        trapsFired += 1;
+        return undefined;
+      },
+      ownKeys: () => {
+        trapsFired += 1;
+        return [];
+      },
+      getOwnPropertyDescriptor: () => {
+        trapsFired += 1;
+        return undefined;
+      },
+      getPrototypeOf: () => {
+        trapsFired += 1;
+        return null;
+      },
+    };
+    const proxy = new Proxy(target, handler);
+    const result = await runPipeline(
+      [createSyntaxStage(okCheck)],
+      proxy as unknown as FakeArtifact,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("Proxy");
+    // util.types.isProxy is a privileged V8 introspection — it does not
+    // invoke any handler, so zero traps fire.
+    expect(trapsFired).toBe(0);
+  });
+
+  test("nested Proxy inside a plain object is also rejected without firing traps", async () => {
+    let trapsFired = 0;
+    const innerProxy = new Proxy(
+      { secret: 1 },
+      {
+        get: () => {
+          trapsFired += 1;
+          return undefined;
+        },
+      },
+    );
+    const result = await runPipeline([createSyntaxStage(okCheck)], {
+      name: "x",
+      inner: innerProxy,
+    } as unknown as FakeArtifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("Proxy");
+    expect(trapsFired).toBe(0);
+  });
+});
+
 describe("preprocessing budget (DoS guard for wide artifacts)", () => {
   test("artifact wider than MAX_ARTIFACT_NODES is rejected", async () => {
     // Shallow but huge: a single object with 60_000 keys defeats the depth
