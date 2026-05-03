@@ -781,6 +781,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // depend on those fields.
     // let justified: mutable cache shared across cooperating-adapter calls
     let lastBuiltTurnCtx: TurnContext | undefined;
+    // Per-turn TurnContext snapshots keyed by turnId. Populated whenever
+    // getTurnContext() builds a fresh ctx for a turn — the terminal
+    // cleanup path uses this to replay the EXACT context (matching turnId
+    // and messages) for any turn whose pin needs releasing, even when
+    // multiple overlapping turns are pinned. Without this map, only the
+    // most recent turn would have a real ctx and older pinned turns
+    // would receive a synthetic ctx with the wrong turnId.
+    const turnCtxByTurnId = new Map<string, TurnContext>();
     // Sync the outer mutable ref so defaultToolTerminal can read it
     outerCurrentTurnIndex = 0;
 
@@ -1328,7 +1336,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             return lastBuiltTurnCtx;
           }
           cachedTurnIndex = currentTurnIndex;
-          lastBuiltTurnCtx = createTurnContext({
+          const built = createTurnContext({
             session: sessionCtx,
             turnIndex: currentTurnIndex,
             messages: activeTurnMessages,
@@ -1338,7 +1346,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             dispatchPermissionDecision: (query, decision) =>
               runPermissionDecisionHooks(allMiddleware, getTurnContext(), query, decision),
           });
-          return lastBuiltTurnCtx;
+          lastBuiltTurnCtx = built;
+          turnCtxByTurnId.set(built.turnId as string, built);
+          return built;
         };
         const rawModelTerminal = adapter.terminals.modelCall;
         const baseToolTerminal = adapter.terminals.toolCall ?? defaultToolTerminal;
@@ -2287,11 +2297,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               // actual turn data. Fall back to a synthetic minimal ctx
               // with stopBlocked=true if the runtime never built one
               // (e.g. abort before first turn).
-              const realCtx =
-                lastBuiltTurnCtx?.turnId === pinnedTurnId ? lastBuiltTurnCtx : undefined;
-              const fallbackTurnCtx =
-                realCtx ??
-                createTurnContext({
+              const realCtx = turnCtxByTurnId.get(pinnedTurnId as string);
+              // For unknown-turnId fallback (turn pinned but never built a
+              // real ctx, e.g. direct wrapModelStream without a cooperating
+              // adapter), override the synth ctx's turnId to match the
+              // pinned turn so engines see the right identifier even with
+              // empty messages.
+              const fallbackTurnCtx: TurnContext = realCtx ?? {
+                ...createTurnContext({
                   session: sessionCtx,
                   turnIndex: currentTurnIndex,
                   messages: [],
@@ -2299,7 +2312,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   approvalHandler: options.approvalHandler,
                   sendStatus: options.sendStatus,
                   stopBlocked: true,
-                });
+                }),
+                turnId: pinnedTurnId,
+              };
               await pinnedEngine.onAfterTurn(fallbackTurnCtx);
             } catch (hookErr: unknown) {
               // Bookkeeping hooks must not corrupt cleanup. Log and keep
@@ -2311,6 +2326,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             }
           }
           contextEngineSwapController.endTurn(pinnedTurnId);
+          turnCtxByTurnId.delete(pinnedTurnId as string);
         }
       }
 
