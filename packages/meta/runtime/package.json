@@ -39,6 +39,8 @@
     "@koi/forge-tools": "workspace:*",
     "@koi/gateway-canvas": "workspace:*",
     "@koi/gateway-http": "workspace:*",
+    "@koi/gateway-nexus": "workspace:*",
+    "@koi/gateway-stack": "workspace:*",
     "@koi/gateway-types": "workspace:*",
     "@koi/gateway-webhook": "workspace:*",
     "@koi/fs-local": "workspace:*",

@@ -72,6 +72,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/forge-tools",
   "@koi/gateway",
   "@koi/gateway-canvas",
+  "@koi/gateway-nexus",
   "@koi/gateway-webhook",
   "@koi/audit-sink-ndjson",
   "@koi/audit-sink-nexus",
@@ -128,6 +129,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
 export const L3_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/cli",
   "@koi-agent/cli",
+  "@koi/gateway-stack",
   "@koi/runtime",
 ]);
 

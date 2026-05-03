@@ -40,6 +40,7 @@ export {
 export { createInMemorySessionStore, type SessionStore } from "./session-store.js";
 export type {
   BunTransport,
+  BunTransportOptions,
   Transport,
   TransportConnection,
   TransportHandler,

@@ -239,6 +239,58 @@ export function createGateway(
     return true;
   }
 
+  /**
+   * Persist final session state (final outbound seq + disconnectedAt) for
+   * a session this gateway was actively serving at stop() time.
+   * cleanupConn's own persist branch cannot run during stop() because
+   * sessionByConn is cleared before onClose fires; without this helper
+   * the store record would keep stale seq + missing disconnectedAt
+   * across rolling restarts.
+   *
+   * Fences against destroySession() races by:
+   *   - Chaining through `pendingSeqPersists` so destroySession()'s
+   *     `await pendingSeqPersists.get(id)` covers this writer.
+   *   - Treating `store.get` returning NOT_FOUND as the destruction
+   *     signal (works for both gateway-created sessions AND HA-resumed
+   *     sessions that this process didn't originally own).
+   */
+  function persistFinalSessionState(id: string, seqToSave: number): Promise<void> {
+    const chainedAfter = pendingSeqPersists.get(id) ?? Promise.resolve();
+    const persist: Promise<void> = chainedAfter
+      .then(async (): Promise<void> => {
+        const r = await Promise.resolve(store.get(id));
+        // Session truly gone (destroySession or TTL evicted) → don't
+        // resurrect. NOT_FOUND from a degraded store would also fall here;
+        // skipping is safe because the next gateway will re-derive state.
+        if (!r.ok) return;
+        const updated: Session = {
+          ...r.value,
+          seq: r.value.seq < seqToSave ? seqToSave : r.value.seq,
+          disconnectedAt: Date.now(),
+        };
+        const setResult = await Promise.resolve(store.set(updated));
+        if (!setResult.ok) {
+          swallowError(new Error(setResult.error.message), {
+            package: "gateway",
+            operation: "stop.persist-final-state",
+          });
+        }
+      })
+      .catch((err: unknown) => {
+        swallowError(err, {
+          package: "gateway",
+          operation: "stop.persist-final-state",
+        });
+      })
+      .finally(() => {
+        // Identity-checked delete — a concurrent successor may have
+        // replaced the entry; deleting it would lose the chain.
+        if (pendingSeqPersists.get(id) === persist) pendingSeqPersists.delete(id);
+      });
+    pendingSeqPersists.set(id, persist);
+    return persist;
+  }
+
   function cleanupConn(conn: TransportConnection, reason: string): void {
     const sessionId = sessionByConn.get(conn.id);
     // Capture before deleting: the current server outbound counter for this connection.
@@ -319,7 +371,12 @@ export function createGateway(
           });
         })
         .finally(() => {
-          pendingSeqPersists.delete(id);
+          // Identity check — a chained successor (handler-failure progress
+          // persist or stop's final-state persist) may have replaced the
+          // entry. Unconditionally deleting would lose that chain and let
+          // destroySession proceed to delete while the successor is mid
+          // get→set, resurrecting the session.
+          if (pendingSeqPersists.get(id) === persist) pendingSeqPersists.delete(id);
         });
       pendingSeqPersists.set(id, persist);
 
@@ -736,10 +793,6 @@ export function createGateway(
           // reconnect rather than silently downgrading to seq 0 and risking duplicate dispatch.
           let startSeq = 0;
           let prevOutboundSeq = 0;
-          // True only when the store returns NOT_FOUND: this gateway instance created
-          // the record and is the rightful owner. For resumed sessions the record already
-          // existed (in this process or another), so this gateway should not delete it.
-          let isNewSession = true;
           try {
             const prev = await Promise.resolve(store.get(result.session.id));
             if (prev.ok) {
@@ -765,9 +818,16 @@ export function createGateway(
                 }
                 startSeq = prev.value.remoteSeq;
                 prevOutboundSeq = prev.value.seq;
-                isNewSession = false; // session already existed in the store
               }
-              // isExpired → treat as new session (start at 0, isNewSession stays true)
+              // isExpired → treat as new session (start at 0)
+            } else if (prev.error.code !== "NOT_FOUND") {
+              // Non-NOT_FOUND store error (e.g. EXTERNAL when Nexus is degraded
+              // and shouldProbe is cooling down): we cannot safely tell whether
+              // the session truly exists. Reject rather than downgrade to a
+              // fresh seq=0 session — that would risk duplicate dispatch and
+              // outbound seq reuse if the record actually exists at Nexus.
+              abortReconnect(CLOSE_CODES.SESSION_STORE_FAILURE, "session store unavailable");
+              return;
             } else if (hadPriorPersist) {
               // NOT_FOUND after a prior seq-persist completed: the persist likely failed and
               // deleted the session. Abort rather than resetting to seq 0, which would mask
@@ -775,7 +835,7 @@ export function createGateway(
               abortReconnect(CLOSE_CODES.SESSION_STORE_FAILURE, "session lost during persist");
               return;
             }
-            // !prev.ok + !hadPriorPersist → genuinely new session, start at 0
+            // NOT_FOUND + !hadPriorPersist → genuinely new session, start at 0
           } catch {
             abortReconnect(CLOSE_CODES.SESSION_STORE_FAILURE, "session store failure on resume");
             return;
@@ -815,7 +875,16 @@ export function createGateway(
             abortReconnect(CLOSE_CODES.SESSION_STORE_FAILURE, "session store failure");
             return;
           }
-          if (isNewSession) ownedSessionIds.add(result.session.id);
+          // Track every session this gateway is actively serving — both
+          // newly created AND HA-resumed ones — so the TTL sweep evicts
+          // stale records of resumed sessions too. Without this, an HA
+          // session that resumed onto this gateway and then disconnected
+          // forever would never be TTL-deleted because the original
+          // creator may not exist anymore. Phase 2 of stop is gated on
+          // preserveSessionsOnStop independently, so adding resumed
+          // sessions here is safe — non-HA stop deletes everything it was
+          // serving, HA stop deletes nothing.
+          ownedSessionIds.add(result.session.id);
           // Clear stale disconnectedAt so TTL sweep does not evict this session now
           // that it is live again. Not clearing would race the sweep: a brief disconnect
           // followed by reconnect before TTL expiry would silently delete the live session.
@@ -992,10 +1061,21 @@ export function createGateway(
               // Sequential get→check→delete→check to reduce (not eliminate; atomic CAS
               // would be needed for that) the window where a reconnecting session's record
               // is clobbered by a concurrent TTL eviction.
+              const localTs = ts;
               void (async () => {
                 try {
                   const snapshot = await Promise.resolve(store.get(sessionId));
                   if (!snapshot.ok) return; // already gone
+                  // HA cross-gateway safety: another gateway may have resumed
+                  // this session and set/cleared the stored disconnectedAt
+                  // since we recorded our local ts. If the stored record has
+                  // no disconnectedAt OR a more recent one than what we saw,
+                  // the session has been picked up elsewhere — skip the
+                  // delete or we'd kill another gateway's live record.
+                  const storedDisconnectedAt = snapshot.value.disconnectedAt;
+                  if (storedDisconnectedAt === undefined) return;
+                  if (storedDisconnectedAt > localTs) return;
+                  if (now - storedDisconnectedAt <= ttl) return;
                   // Re-check liveness after get: reconnect may have started during the read.
                   if (connBySession.has(sessionId)) return;
                   const r = await Promise.resolve(store.delete(sessionId));
@@ -1065,12 +1145,29 @@ export function createGateway(
       // Phase 1: Sever session↔conn mappings BEFORE closing sockets so that when the
       // transport delivers onClose → cleanupConn(), sessionByConn is already cleared and
       // no duplicate 'disconnected' events are emitted.
+      //
+      // When preserveSessionsOnStop is true, capture the final outbound seq
+      // for each owned session so the post-drain persist step can stamp
+      // `disconnectedAt` on the Nexus record. The persist itself runs LATER
+      // (after msgQueues + pendingSeqPersists drain) so an in-flight
+      // processMessage/send.seq.persist cannot land after our final write
+      // and erase `disconnectedAt`.
+      const finalStateCaptures = new Map<string, number>();
       for (const [connId, conn] of connMap) {
         const sessionId = sessionByConn.get(connId);
+        if (sessionId !== undefined && config.preserveSessionsOnStop === true) {
+          const seqToSave = connOutboundSeq.get(connId) ?? 0;
+          finalStateCaptures.set(sessionId, seqToSave);
+        }
         sessionByConn.delete(connId);
         if (sessionId !== undefined) {
           connBySession.delete(sessionId);
-          emitSessionEvent({ kind: "destroyed", sessionId, reason: "server shutdown" });
+          // When the session record is preserved for HA reconnect emit
+          // 'disconnected' (the contract for retained sessions); reserve
+          // 'destroyed' for shutdowns that actually delete the record.
+          const eventKind: "disconnected" | "destroyed" =
+            config.preserveSessionsOnStop === true ? "disconnected" : "destroyed";
+          emitSessionEvent({ kind: eventKind, sessionId, reason: "server shutdown" });
         }
         conn.close(CLOSE_CODES.SERVER_SHUTTING_DOWN, "Server shutting down");
       }
@@ -1092,29 +1189,45 @@ export function createGateway(
       await Promise.allSettled([...pendingSeqPersists.values()]);
       pendingSeqPersists.clear();
 
+      // Now — AFTER every concurrent writer has settled — stamp the final
+      // disconnectedAt on every preserved session. Doing this LAST is what
+      // makes the persist durable: an in-flight processMessage that landed
+      // earlier could otherwise overwrite the record and drop `disconnectedAt`.
+      if (finalStateCaptures.size > 0) {
+        const finalStatePersists: Promise<void>[] = [];
+        for (const [sessionId, seqToSave] of finalStateCaptures) {
+          finalStatePersists.push(persistFinalSessionState(sessionId, seqToSave));
+        }
+        await Promise.allSettled(finalStatePersists);
+      }
+
       // Phase 2: Delete only sessions owned by this gateway instance. A shared/persistent
       // store may hold sessions from other gateway processes; we must not clobber them.
       // Sessions retained for reconnect (cleanupConn keeps them) are included because
       // ownedSessionIds is populated at handshake persist time and cleared in destroySession.
-      const deletePromises: Promise<Result<boolean, KoiError>>[] = [];
-      for (const sessionId of ownedSessionIds) {
-        deletePromises.push(Promise.resolve(store.delete(sessionId)));
-      }
-      ownedSessionIds.clear();
-      const settled = await Promise.allSettled(deletePromises);
+      // When preserveSessionsOnStop is true (e.g. Nexus-backed HA), skip deletion entirely
+      // so peers can reconnect after a rolling restart.
       let cleanupFailed = false;
-      for (const r of settled) {
-        if (r.status === "rejected") {
-          swallowError(r.reason as unknown, { package: "gateway", operation: "stop.delete" });
-          cleanupFailed = true;
-        } else if (!r.value.ok) {
-          swallowError(new Error(r.value.error.message), {
-            package: "gateway",
-            operation: "stop.delete",
-          });
-          cleanupFailed = true;
+      if (config.preserveSessionsOnStop !== true) {
+        const deletePromises: Promise<Result<boolean, KoiError>>[] = [];
+        for (const sessionId of ownedSessionIds) {
+          deletePromises.push(Promise.resolve(store.delete(sessionId)));
+        }
+        const settled = await Promise.allSettled(deletePromises);
+        for (const r of settled) {
+          if (r.status === "rejected") {
+            swallowError(r.reason as unknown, { package: "gateway", operation: "stop.delete" });
+            cleanupFailed = true;
+          } else if (!r.value.ok) {
+            swallowError(new Error(r.value.error.message), {
+              package: "gateway",
+              operation: "stop.delete",
+            });
+            cleanupFailed = true;
+          }
         }
       }
+      ownedSessionIds.clear();
 
       connMap.clear();
       sessionByConn.clear();
