@@ -2885,3 +2885,48 @@ describe("R32 already-aborted follower does NOT detach the leader", () => {
     expect(stageCalls).toBe(1);
   });
 });
+
+describe("R33 shared AbortSignal across leader and follower decrements correctly", () => {
+  test("leader+follower sharing one signal both decrement when it aborts; cache.set suppressed", async () => {
+    let stageCalls = 0;
+    let release: (() => void) | undefined;
+    const stage: VerifierStage<FakeArtifact> = {
+      name: "shared-sig",
+      version: "1",
+      run: async () => {
+        stageCalls += 1;
+        await new Promise<void>((r) => {
+          release = r;
+        });
+        return PASS;
+      },
+    };
+    const cache = createMemoryCache();
+    const artifact: FakeArtifact = { name: "shared-signal" };
+    const baseOpts = {
+      cache,
+      namespace: "shared-sig",
+      acknowledgeTrustedCache: true as const,
+      executionContextKey: "ctx",
+    };
+    const sharedAc = new AbortController();
+    const leader = runPipeline([stage], artifact, { ...baseOpts, signal: sharedAc.signal });
+    await new Promise((r) => setTimeout(r, 10));
+    const follower = runPipeline([stage], artifact, { ...baseOpts, signal: sharedAc.signal });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stageCalls).toBe(1); // coalesced
+    sharedAc.abort();
+    await new Promise((r) => setTimeout(r, 10));
+    if (release === undefined) throw new Error("no release");
+    release();
+    await Promise.all([leader, follower]);
+    await new Promise((r) => setTimeout(r, 30));
+    // Both consumers decremented (fresh closures per install) →
+    // liveConsumers reached 0 → cache.set suppressed → next caller re-runs.
+    const nextPromise = runPipeline([stage], artifact, baseOpts);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stageCalls).toBe(2); // re-executed (cache was empty)
+    if (release !== undefined) release();
+    await nextPromise;
+  });
+});

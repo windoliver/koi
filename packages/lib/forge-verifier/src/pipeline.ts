@@ -898,8 +898,15 @@ export async function runPipeline<I>(
   // leak.
   const installedListeners: Array<{ signal: AbortSignal; listener: () => void }> = [];
   const installListener = (sig: AbortSignal): void => {
-    sig.addEventListener("abort", decrementConsumer, { once: true });
-    installedListeners.push({ signal: sig, listener: decrementConsumer });
+    // Use a FRESH closure per registration. EventTarget dedupes
+    // (listener, options) pairs by reference, so installing the same
+    // `decrementConsumer` reference twice on a single AbortSignal
+    // would decrement only once on abort — bypassing the
+    // `liveConsumers === 0` cache-write gate when a leader and
+    // follower happen to share an AbortSignal.
+    const listener = (): void => decrementConsumer();
+    sig.addEventListener("abort", listener, { once: true });
+    installedListeners.push({ signal: sig, listener });
   };
   const releaseConsumerListeners = (): void => {
     for (const { signal: s, listener } of installedListeners) {
