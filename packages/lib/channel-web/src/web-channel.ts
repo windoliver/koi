@@ -313,6 +313,11 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
   // 503 no-handler) does NOT poison the key — a retry once a handler is
   // attached must still dispatch. Lazy TTL eviction with high-water OOM
   // backstop.
+  // Idempotency cache: composite key prevents one principal from suppressing
+  // another's traffic. Single-step `reserve()` is atomic — concurrent
+  // requests with the same key see at most one "fresh" return so parallel
+  // retries cannot both dispatch. JS is single-threaded so reservation-
+  // before-await is sufficient atomicity for an in-process map.
   const idempotency = new Map<string, number>();
   function sweepIdempotency(nowMs: number): void {
     for (const [k, exp] of idempotency) {
@@ -320,18 +325,37 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
       idempotency.delete(k);
     }
   }
-  function hasIdempotencyKey(key: string, nowMs: number): boolean {
-    sweepIdempotency(nowMs);
-    return idempotency.has(key);
+  /**
+   * Build the composite cache key. Includes the verified principal +
+   * target thread + endpoint so a client-supplied `Idempotency-Key`
+   * cannot leak across tenants. Threadless requests use a sentinel.
+   */
+  function idempotencyCacheKey(
+    rawKey: string,
+    senderId: string,
+    threadId: string | undefined,
+  ): string {
+    return `m:${senderId}:${threadId ?? "_"}:${rawKey}`;
   }
-  function commitIdempotencyKey(key: string, nowMs: number): void {
+  /**
+   * Atomically reserve the key. Returns "fresh" if newly inserted (caller
+   * proceeds to dispatch and either keeps the reservation on success or
+   * calls `releaseIdempotency` on failure to allow retry); "duplicate"
+   * if the key was already reserved within the live window.
+   */
+  function reserveIdempotency(key: string, nowMs: number): "fresh" | "duplicate" {
     sweepIdempotency(nowMs);
+    if (idempotency.has(key)) return "duplicate";
     while (idempotency.size >= IDEMPOTENCY_HIGH_WATER) {
       const oldest = idempotency.keys().next().value;
       if (oldest === undefined) break;
       idempotency.delete(oldest);
     }
     idempotency.set(key, nowMs + IDEMPOTENCY_TTL_MS);
+    return "fresh";
+  }
+  function releaseIdempotency(key: string): void {
+    idempotency.delete(key);
   }
   // let requires justification: live WS subscribers tagged with the principal
   // and thread they were authorized for. Routing uses `threadId` exclusively.
@@ -440,26 +464,29 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
     if (message === null) return new Response("Invalid payload", { status: 400 });
 
     // Optional client-supplied idempotency key — caller opts in by sending
-    // `Idempotency-Key: <unique>`. Already-committed retry → 202 with no
-    // re-dispatch. Without the header, every POST dispatches.
-    const idemKey = req.headers.get("idempotency-key");
+    // `Idempotency-Key: <unique>`. Composite cache key (principal + thread
+    // + endpoint) prevents cross-tenant suppression. Atomic reserve
+    // collapses concurrent retries to a single dispatch.
+    const idemHeader = req.headers.get("idempotency-key");
     const now = Date.now();
-    if (idemKey !== null && idemKey.length > 0 && hasIdempotencyKey(idemKey, now)) {
-      return new Response(null, { status: 202 });
+    // let requires justification: lazily computed once we have the principal
+    let composedIdemKey: string | null = null;
+    if (idemHeader !== null && idemHeader.length > 0) {
+      composedIdemKey = idempotencyCacheKey(idemHeader, principal.senderId, claimedThreadId);
+      if (reserveIdempotency(composedIdemKey, now) === "duplicate") {
+        return new Response(null, { status: 202 });
+      }
     }
 
     // Refuse to silently drop: if no listener is attached we have nobody
-    // to deliver to. Returning 503 BEFORE committing the idempotency key
-    // means a retry once a handler is attached will still dispatch.
+    // to deliver to. Release the reservation so a retry once a handler is
+    // attached can still dispatch.
     if (emit === undefined || handlerCount === 0) {
+      if (composedIdemKey !== null) releaseIdempotency(composedIdemKey);
       return new Response("No handler registered", { status: 503 });
     }
     emit(message);
-    // Commit idempotency key AFTER successful dispatch so failed
-    // attempts (503/etc) do not poison future retries.
-    if (idemKey !== null && idemKey.length > 0) {
-      commitIdempotencyKey(idemKey, now);
-    }
+    // Reservation made at the start stays committed on success.
     return new Response(null, { status: 202 });
   }
 

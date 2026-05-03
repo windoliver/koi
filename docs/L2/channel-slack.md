@@ -12,8 +12,9 @@ webhook) for serverless. Both ride on `@slack/web-api` for outbound calls.
 - Socket Mode start/stop + event listener registration
 - HTTP Events: signature verification (`x-slack-signature` HMAC) +
   `url_verification` challenge
-- Slash command interception, `app_mention`, plain `message`, `block_action`,
-  `reaction_added/removed` events
+- Slash command interception, `app_mention`, plain `message`,
+  `block_action` events. (Reaction events are NOT supported — subscribing
+  to `reaction_added/removed` in Slack will result in unhandled deliveries.)
 - Thread routing — `threadId` convention `channelId[:thread_ts]`
 - `replyToMode`: `"all" | "off"` — controls whether the bot replies in-thread
   or in the channel root. (`"first"` is intentionally unsupported — it
@@ -55,7 +56,7 @@ Returns the standard `ChannelAdapter` plus one of:
 |-------|------|---------|-------------|
 | `botToken` | `string` (`xoxb-…`) | required | Bot user token |
 | `deployment` | `SlackDeployment` | required | Socket Mode or HTTP |
-| `features` | `Partial<SlackFeatures>` | all on | Toggle slash, threads, reactions, files |
+| `features` | `Partial<SlackFeatures>` | all on | Toggle slash, threads, files |
 | `replyToMode` | `"all" \| "off"` | `"all"` | Thread routing. `"first"` removed — throws at construction. |
 | `defaultChannel` | `string` | undefined | Slack channel ID used for outbound messages with no `threadId`. Required for proactive sends; without it, `send()` throws rather than calling Slack with `channel: ""` |
 | `mediaMaxMb` | `number` | `8` | Max attachment size before fallback |

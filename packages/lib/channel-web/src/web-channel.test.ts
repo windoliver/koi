@@ -504,6 +504,54 @@ describe("@koi/channel-web", () => {
     expect(h.received).toHaveLength(1); // duplicate dispatch suppressed
   });
 
+  test("Idempotency-Key is scoped to principal — one tenant cannot suppress another's", async () => {
+    h = await startHarness({
+      authenticate: (ctx) => ({ senderId: ctx.token ?? "anon" }),
+    });
+    // Alice sends with key "shared". Composite cache key includes alice.
+    const r1 = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer alice",
+        "idempotency-key": "shared-key",
+      },
+      body: JSON.stringify({ content: [{ kind: "text", text: "from-alice" }] }),
+    });
+    expect(r1.status).toBe(202);
+    // Bob sends the SAME raw header value. Must dispatch — different
+    // composite key.
+    const r2 = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer bob",
+        "idempotency-key": "shared-key",
+      },
+      body: JSON.stringify({ content: [{ kind: "text", text: "from-bob" }] }),
+    });
+    expect(r2.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.received).toHaveLength(2);
+  });
+
+  test("Idempotency-Key reservation collapses concurrent retries to one dispatch", async () => {
+    h = await startHarness();
+    const send = (): Promise<Response> =>
+      fetch(`http://127.0.0.1:${h.port}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": "race-key" },
+        body: JSON.stringify({ content: [{ kind: "text", text: "x" }] }),
+      });
+    // Fire concurrently — atomic reserve must collapse to one dispatch.
+    const [r1, r2, r3] = await Promise.all([send(), send(), send()]);
+    expect(r1.status).toBe(202);
+    expect(r2.status).toBe(202);
+    expect(r3.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.received).toHaveLength(1);
+  });
+
   test("Idempotency-Key NOT committed when first attempt fails (503), retry dispatches", async () => {
     // Regression: poisoning the idempotency cache on 503 turned transient
     // handler-absence into permanent loss for retrying clients. Failed
