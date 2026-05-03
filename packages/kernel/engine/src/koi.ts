@@ -2168,7 +2168,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 stopReason: event.output.stopReason,
                 metrics: normalizedMetrics,
               });
-              doneSyntheticTurnId = lastBuiltTurnCtx?.turnId;
+              // Same reasoning as the reusable branch above: derive from
+              // the actually-completed turn index, not the global
+              // lastBuiltTurnCtx (overlapping pinned turns can clobber it).
+              doneSyntheticTurnId = turnId(sessionCtx.runId, currentTurnIndex);
               yield normalizedDone;
               return;
             }

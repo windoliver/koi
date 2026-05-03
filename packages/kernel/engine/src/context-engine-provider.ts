@@ -99,8 +99,13 @@ export function createContextEngineProxyProvider(
     },
     get(target, prop, receiver): unknown {
       if (prop === "describeOccupancy") {
-        const fn = getEngine().describeOccupancy;
-        return fn === undefined ? undefined : fn.bind(getEngine());
+        // Snapshot the engine ONCE so a swap landing between method
+        // resolution and `this`-binding cannot return engine A's method
+        // bound to engine B. Custom engines are allowed to implement
+        // describeOccupancy as a `this`-using instance method.
+        const engine = getEngine();
+        const fn = engine.describeOccupancy;
+        return fn === undefined ? undefined : fn.bind(engine);
       }
       return Reflect.get(target, prop, receiver);
     },
