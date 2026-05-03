@@ -1,6 +1,6 @@
 {
   "name": "@koi/forge-verifier",
-  "description": "Multi-stage verification pipeline for forge artifacts. Sequential, short-circuiting, with pluggable stages and result caching. L2.",
+  "description": "Sequential short-circuiting verification pipeline for forge artifacts with pluggable stages and caching.",
   "version": "0.0.0",
   "private": true,
   "type": "module",
