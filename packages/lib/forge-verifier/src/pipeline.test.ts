@@ -113,11 +113,11 @@ describe("runPipeline", () => {
     const syntax = counted(createSyntaxStage(okCheck));
     const stages = [syntax.stage] as const;
 
-    const first = await runPipeline(stages, artifact, { artifactFingerprint: () => "k1", cache });
+    const first = await runPipeline(stages, artifact, { cache });
     expect(first.ok).toBe(true);
     expect(syntax.calls()).toBe(1);
 
-    const second = await runPipeline(stages, artifact, { artifactFingerprint: () => "k1", cache });
+    const second = await runPipeline(stages, artifact, { cache });
     expect(second.ok).toBe(true);
     expect(syntax.calls()).toBe(1); // not incremented
     if (!second.ok || !first.ok) return;
@@ -127,7 +127,7 @@ describe("runPipeline", () => {
   test("failed pipelines are not cached", async () => {
     const cache = createMemoryCache();
     const stages = [createSyntaxStage(failCheck("nope"))];
-    await runPipeline(stages, { name: "a" }, { artifactFingerprint: () => "k2", cache });
+    await runPipeline(stages, { name: "a" }, { cache });
     const cached = await cache.get("k2");
     expect(cached).toBeUndefined();
   });
@@ -226,7 +226,6 @@ describe("runPipeline — security regressions", () => {
     const cache = createMemoryCache();
     const v1 = counted(createSyntaxStage(okCheck));
     const r1 = await runPipeline([v1.stage], artifact, {
-      artifactFingerprint: () => "user-key",
       cache,
     });
     expect(r1.ok).toBe(true);
@@ -235,7 +234,6 @@ describe("runPipeline — security regressions", () => {
     const v2a = counted(createSyntaxStage(okCheck));
     const v2b = counted(createTypeStage(okCheck));
     const r2 = await runPipeline([v2a.stage, v2b.stage], artifact, {
-      artifactFingerprint: () => "user-key",
       cache,
     });
     expect(r2.ok).toBe(true);
@@ -249,14 +247,12 @@ describe("runPipeline — security regressions", () => {
     const cache = createMemoryCache();
     const before = counted({ name: "alpha", run: async () => PASS });
     const r1 = await runPipeline([before.stage], artifact, {
-      artifactFingerprint: () => "k",
       cache,
     });
     expect(r1.ok).toBe(true);
 
     const after = counted({ name: "beta", run: async () => PASS });
     const r2 = await runPipeline([after.stage], artifact, {
-      artifactFingerprint: () => "k",
       cache,
     });
     expect(r2.ok).toBe(true);
@@ -294,13 +290,13 @@ describe("runPipeline — security regressions", () => {
   test("cache fingerprint includes stage version — bumping version invalidates prior cache", async () => {
     const cache = createMemoryCache();
     const v1 = counted({ name: "checker", version: "1", run: async () => PASS });
-    const r1 = await runPipeline([v1.stage], artifact, { artifactFingerprint: () => "k", cache });
+    const r1 = await runPipeline([v1.stage], artifact, { cache });
     expect(r1.ok).toBe(true);
     expect(v1.calls()).toBe(1);
 
     // Same name, bumped version — must re-run.
     const v2 = counted({ name: "checker", version: "2", run: async () => PASS });
-    const r2 = await runPipeline([v2.stage], artifact, { artifactFingerprint: () => "k", cache });
+    const r2 = await runPipeline([v2.stage], artifact, { cache });
     expect(r2.ok).toBe(true);
     expect(v2.calls()).toBe(1);
   });
@@ -308,7 +304,7 @@ describe("runPipeline — security regressions", () => {
   test("cache returns a frozen, isolated snapshot — caller mutation cannot poison the cache", async () => {
     const cache = createMemoryCache();
     const stage = createSyntaxStage(okCheck);
-    const r1 = await runPipeline([stage], artifact, { artifactFingerprint: () => "k", cache });
+    const r1 = await runPipeline([stage], artifact, { cache });
     expect(r1.ok).toBe(true);
     if (!r1.ok) return;
 
@@ -324,7 +320,7 @@ describe("runPipeline — security regressions", () => {
     }
 
     // Cache must still serve a clean summary.
-    const r2 = await runPipeline([stage], artifact, { artifactFingerprint: () => "k", cache });
+    const r2 = await runPipeline([stage], artifact, { cache });
     expect(r2.ok).toBe(true);
     if (!r2.ok) return;
     expect(r2.value.passed).toBe(true);
@@ -337,8 +333,8 @@ describe("runPipeline — security regressions", () => {
     // would collide. JSON-encoding must keep them apart.
     const a = counted({ name: "a|b", version: "1", run: async () => PASS });
     const b = counted({ name: "a", version: "1|b@1", run: async () => PASS });
-    await runPipeline([a.stage], artifact, { artifactFingerprint: () => "k", cache });
-    await runPipeline([b.stage], artifact, { artifactFingerprint: () => "k", cache });
+    await runPipeline([a.stage], artifact, { cache });
+    await runPipeline([b.stage], artifact, { cache });
     expect(a.calls()).toBe(1);
     expect(b.calls()).toBe(1);
   });
@@ -358,7 +354,6 @@ describe("runPipeline — security regressions", () => {
       set: async () => {},
     };
     const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
-      artifactFingerprint: () => "k",
       cache: hostileCache,
     });
     expect(result.ok).toBe(true);
@@ -387,7 +382,6 @@ describe("runPipeline — security regressions", () => {
       set: async () => {},
     };
     const result = await runPipeline([stage.stage], artifact, {
-      artifactFingerprint: () => "k",
       cache: malformedCache,
     });
     expect(result.ok).toBe(true);
@@ -411,7 +405,6 @@ describe("runPipeline — security regressions", () => {
       set: async () => {},
     };
     const result = await runPipeline([stage.stage], artifact, {
-      artifactFingerprint: () => "k",
       cache: malformedCache,
     });
     expect(result.ok).toBe(true);
@@ -432,13 +425,12 @@ describe("runPipeline — security regressions", () => {
       }),
       set: async () => {},
     };
-    const result = await runPipeline([stage.stage], artifact, {
-      artifactFingerprint: () => "k",
-      cache: lyingCache,
-    });
+    const result = await runPipeline([stage.stage], artifact, { cache: lyingCache });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // Recomputed from stage declarations, not the cached payload.
+    // Hit fails consistency (sandbox=true vs declared sandbox=false), so
+    // stages re-run and the recomputed summary reports declared sandbox.
+    expect(stage.calls()).toBe(1);
     expect(result.value.sandbox).toBe(false);
   });
 
@@ -461,7 +453,6 @@ describe("runPipeline — security regressions", () => {
       set: async () => {},
     };
     const result = await runPipeline([sbStage], artifact, {
-      artifactFingerprint: () => "k",
       cache: cachingCache,
     });
     expect(result.ok).toBe(true);
@@ -683,18 +674,20 @@ describe("runPipeline — security regressions", () => {
     expect(result.error.message).toContain("array property");
   });
 
-  test("throwing artifactFingerprint stays inside Result envelope", async () => {
-    const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
-      artifactFingerprint: () => {
-        throw new Error("boom");
-      },
-      cache: createMemoryCache(),
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.code).toBe("INVALID_CONFIG");
-    expect(result.error.message).toContain("artifactFingerprint threw");
-    expect(result.error.message).toContain("boom");
+  test("cyclic artifact bypasses cache (deterministic key impossible) but still verifies", async () => {
+    type Cyclic = { name: string; self?: Cyclic };
+    const obj: Cyclic = { name: "cyc" };
+    obj.self = obj;
+    const stage = counted(createSyntaxStage(okCheck));
+    const cache = createMemoryCache();
+    // First call: stages run, cache cannot be populated for the cyclic input.
+    const r1 = await runPipeline([stage.stage], obj as unknown as FakeArtifact, { cache });
+    expect(r1.ok).toBe(true);
+    expect(stage.calls()).toBe(1);
+    // Second call: cache still bypassed (no key was ever stored), stages re-run.
+    const r2 = await runPipeline([stage.stage], obj as unknown as FakeArtifact, { cache });
+    expect(r2.ok).toBe(true);
+    expect(stage.calls()).toBe(2);
   });
 
   test("self-referential plain object is accepted (cycle guard)", async () => {
@@ -728,7 +721,6 @@ describe("runPipeline — security regressions", () => {
       set: async () => {},
     };
     const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
-      artifactFingerprint: () => "k",
       cache,
       signal: ac.signal,
     });
@@ -756,7 +748,6 @@ describe("runPipeline — security regressions", () => {
       set: async () => {},
     };
     const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
-      artifactFingerprint: () => "k",
       cache: slowCache,
       signal: ac.signal,
     });
@@ -781,7 +772,6 @@ describe("runPipeline — security regressions", () => {
     const cache = createMemoryCache();
     const v1 = counted({ name: "checker", version: "1", run: async () => PASS });
     const r1 = await runPipeline([v1.stage], artifact, {
-      artifactFingerprint: () => "k",
       cache,
     });
     expect(r1.ok).toBe(true);
@@ -798,7 +788,6 @@ describe("runPipeline — security regressions", () => {
       run: async () => ({ ok: true, sandboxed: true }),
     });
     const r2 = await runPipeline([v2.stage], artifact, {
-      artifactFingerprint: () => "k",
       cache,
     });
     expect(r2.ok).toBe(true);
@@ -815,11 +804,9 @@ describe("runPipeline — security regressions", () => {
       run: async () => ({ ok: true, sandboxed: true }),
     };
     const fresh = await runPipeline([sb], artifact, {
-      artifactFingerprint: () => "k",
       cache,
     });
     const cached = await runPipeline([sb], artifact, {
-      artifactFingerprint: () => "k",
       cache,
     });
     expect(fresh.ok).toBe(true);
@@ -840,8 +827,8 @@ describe("runPipeline — security regressions", () => {
     const cache = createMemoryCache();
     const v1 = counted(createSyntaxStage(okCheck, "1"));
     const v2 = counted(createSyntaxStage(okCheck, "2"));
-    await runPipeline([v1.stage], artifact, { artifactFingerprint: () => "k", cache });
-    await runPipeline([v2.stage], artifact, { artifactFingerprint: () => "k", cache });
+    await runPipeline([v1.stage], artifact, { cache });
+    await runPipeline([v2.stage], artifact, { cache });
     expect(v1.calls()).toBe(1);
     expect(v2.calls()).toBe(1);
   });
@@ -869,14 +856,13 @@ describe("runPipeline — security regressions", () => {
     const stage = counted(createSyntaxStage(okCheck));
     const artifactA: FakeArtifact = { name: "A" };
     const artifactB: FakeArtifact = { name: "B" };
-    const key: (a: FakeArtifact) => string = (a) => a.name;
-    await runPipeline([stage.stage], artifactA, { artifactFingerprint: key, cache });
+    await runPipeline([stage.stage], artifactA, { cache });
     expect(stage.calls()).toBe(1);
     // A different artifact under the same key fn must not see the prior pass.
-    await runPipeline([stage.stage], artifactB, { artifactFingerprint: key, cache });
+    await runPipeline([stage.stage], artifactB, { cache });
     expect(stage.calls()).toBe(2);
     // But re-verifying A should still hit the cache.
-    await runPipeline([stage.stage], artifactA, { artifactFingerprint: key, cache });
+    await runPipeline([stage.stage], artifactA, { cache });
     expect(stage.calls()).toBe(2);
   });
 
@@ -892,7 +878,6 @@ describe("runPipeline — security regressions", () => {
       set: async () => {},
     };
     const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
-      artifactFingerprint: () => "k",
       cache: flakyCache,
     });
     expect(result.ok).toBe(false);
@@ -910,7 +895,6 @@ describe("runPipeline — security regressions", () => {
       },
     };
     const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
-      artifactFingerprint: () => "k",
       cache: flakyCache,
     });
     expect(result.ok).toBe(true);
@@ -971,7 +955,6 @@ describe("cache key binding (envelope verification)", () => {
       set: async () => {},
     };
     const result = await runPipeline([stage.stage], artifact, {
-      artifactFingerprint: () => "k",
       cache: lyingCache,
     });
     expect(result.ok).toBe(true);

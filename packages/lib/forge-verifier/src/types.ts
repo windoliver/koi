@@ -78,31 +78,20 @@ export interface VerificationCache {
   readonly set: (key: string, value: CachedVerification) => void | Promise<void>;
 }
 
-/**
- * Caller-supplied function that derives a content fingerprint from the
- * artifact under verification. The library composes this with the stage
- * fingerprint AND an optional namespace to form the actual cache key, so
- * the cache can never serve one artifact's pass to a different artifact
- * (assuming a content-derived fingerprint — the runtime cannot prove
- * function purity, so callers MUST return a value that varies with
- * artifact content; a constant or external label is a contract violation).
- */
-export type ArtifactFingerprintFn<I> = (artifact: I) => string;
-
-export interface VerifyOptions<I = unknown> {
-  /**
-   * Derive a content fingerprint from the artifact. Required for any
-   * caching to occur. A library-side composeKey wraps this with the
-   * stage list and namespace so callers can return just the artifact
-   * digest.
-   */
-  readonly artifactFingerprint?: ArtifactFingerprintFn<I> | undefined;
+export interface VerifyOptions {
   /**
    * Optional caller namespace folded into the cache key. Use this to
    * partition the cache by tenant, environment, or verifier suite. Defaults
    * to the empty string.
    */
   readonly namespace?: string | undefined;
+  /**
+   * Pluggable cache. The library derives the artifact's contribution to
+   * the cache key INTERNALLY from the validated frozen snapshot — no caller
+   * callback runs on the verifier stack. If the snapshot cannot be
+   * deterministically serialized (e.g., contains cycles), the cache is
+   * silently bypassed for that run rather than served a non-bound key.
+   */
   readonly cache?: VerificationCache | undefined;
   readonly signal?: AbortSignal | undefined;
 }

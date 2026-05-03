@@ -10,7 +10,6 @@ export { createMemoryCache } from "./cache.js";
 export { runPipeline } from "./pipeline.js";
 export { createSyntaxStage, createTestStage, createTypeStage } from "./stages.js";
 export type {
-  ArtifactFingerprintFn,
   CachedVerification,
   StageContext,
   StageOutcome,

@@ -52,15 +52,21 @@ function composeCacheKey<I>(
 
 /**
  * Validate that a cached summary actually corresponds to the current stage
- * list. A corrupted, malicious, or stale cache backend can otherwise return
- * an empty `stageResults` array (or one with the wrong stage names) and the
- * pipeline would skip every check while reporting `passed: true`.
+ * list AND trust posture. A corrupted, malicious, or stale cache backend
+ * can otherwise return an empty `stageResults` array (or one with the wrong
+ * stage names) and the pipeline would skip every check while reporting
+ * `passed: true`. Also rejects entries whose stored `sandbox` claim differs
+ * from the current static declaration — defense in depth: stage `sandboxed`
+ * is already part of the cache key, so a divergence here means the backend
+ * is replaying across keys it should never satisfy.
  */
 function isCachedSummaryConsistent<I>(
   summary: ForgeVerificationSummary,
   stages: readonly VerifierStage<I>[],
+  declaredSandbox: boolean,
 ): boolean {
   if (summary.passed !== true) return false;
+  if (summary.sandbox !== declaredSandbox) return false;
   if (!Array.isArray(summary.stageResults)) return false;
   if (summary.stageResults.length !== stages.length) return false;
   for (let i = 0; i < stages.length; i++) {
@@ -71,6 +77,29 @@ function isCachedSummaryConsistent<I>(
     if (got.passed !== true) return false;
   }
   return true;
+}
+
+/**
+ * Deterministic JSON of a frozen, validated snapshot. Sorted keys at every
+ * level so two structurally-equal artifacts always produce the same string.
+ * Throws on cycles — used as the artifact-side cache key, callers without a
+ * cycle-tolerant artifact get cache bypass (a correctness-preserving miss),
+ * not a false hit. NEVER invokes caller code: by the time we reach here,
+ * the snapshot is plain data that was already cloned and frozen.
+ */
+function canonicalJson(value: unknown, seen: WeakSet<object>): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (seen.has(value)) {
+    throw new Error("snapshot contains a cycle; cannot derive a deterministic cache key");
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => canonicalJson(v, seen)).join(",")}]`;
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  const parts = keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k], seen)}`);
+  return `{${parts.join(",")}}`;
 }
 
 async function runStage<I>(
@@ -113,7 +142,7 @@ async function runStage<I>(
 export async function runPipeline<I>(
   stages: readonly VerifierStage<I>[],
   artifact: I,
-  options?: VerifyOptions<I>,
+  options?: VerifyOptions,
 ): Promise<Result<ForgeVerificationSummary>> {
   // Fail closed: a misconfigured caller, feature flag, or assembly bug
   // must NOT silently turn "no verifier configured" into "artifact passed".
@@ -128,7 +157,6 @@ export async function runPipeline<I>(
     };
   }
 
-  const fingerprint = options?.artifactFingerprint;
   const namespace = options?.namespace ?? "";
   const cache = options?.cache;
   const signal = options?.signal;
@@ -206,22 +234,23 @@ export async function runPipeline<I>(
   const declaredSandbox = stages.some((s) => s.sandboxed === true);
 
   let composedKey: string | undefined;
-  if (fingerprint !== undefined && cache !== undefined) {
+  if (cache !== undefined) {
     try {
-      composedKey = composeCacheKey(namespace, fingerprint(snapshot), stages);
+      // Derive the artifact-side digest INTERNALLY from the validated frozen
+      // snapshot. No caller callback runs on the verifier stack — earlier
+      // designs accepted an `artifactFingerprint` function, but invoking
+      // caller code in the trusted verification path negates the point of
+      // the snapshot boundary. canonicalJson is sorted-keys + cycle-rejecting,
+      // so two structurally-equal artifacts always produce the same key and
+      // a cyclic snapshot bypasses caching rather than aliasing.
+      const digest = canonicalJson(snapshot, new WeakSet<object>());
+      composedKey = composeCacheKey(namespace, digest, stages);
     } catch (e: unknown) {
-      // A throwing fingerprint function is a caller bug, but it must stay
-      // inside the Result envelope — the public contract is exception-free.
-      const detail = e instanceof Error ? e.message : "fingerprint threw";
-      return {
-        ok: false,
-        error: {
-          code: "INVALID_CONFIG",
-          message: `artifactFingerprint threw: ${detail}`,
-          retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
-          cause: e,
-        },
-      };
+      // Cyclic snapshot (or other digest failure) — bypass caching for this
+      // run. A correctness-preserving miss is strictly better than a hit
+      // bound to a non-deterministic key. Operators can correlate via debug.
+      console.debug("[forge-verifier] cache bypassed (snapshot not cacheable):", e);
+      composedKey = undefined;
     }
   }
 
@@ -268,7 +297,7 @@ export async function runPipeline<I>(
       typeof hit === "object" &&
       hit !== null &&
       hit.key === composedKey &&
-      isCachedSummaryConsistent(hit.summary, stages)
+      isCachedSummaryConsistent(hit.summary, stages, declaredSandbox)
     ) {
       return {
         ok: true,
