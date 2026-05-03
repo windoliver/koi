@@ -49,6 +49,27 @@ describe("formatContextEngineSwapNotice", () => {
     expect(Object.keys(notice).sort()).toEqual(["id", "message"]);
   });
 
+  test("distinct same-turn swaps to the same target produce distinct ids", () => {
+    // #1767 round 11 regression: an A→B→A→B sequence inside one turn must
+    // not collapse to one notice id (which would hide repeated recovery).
+    const aToB = formatContextEngineSwapNotice(baseEvent);
+    const bToA: ContextEngineSwapEvent = {
+      ...baseEvent,
+      from: baseEvent.to,
+      to: baseEvent.from,
+      reason: "rollback",
+      timestamp: "2026-05-02T12:00:01.000Z",
+    };
+    const aToBAgain: ContextEngineSwapEvent = {
+      ...baseEvent,
+      timestamp: "2026-05-02T12:00:02.000Z",
+      reason: "second attempt",
+    };
+    const r1 = formatContextEngineSwapNotice(bToA);
+    const r2 = formatContextEngineSwapNotice(aToBAgain);
+    expect(new Set([aToB.id, r1.id, r2.id]).size).toBe(3);
+  });
+
   test("two swaps in one run produce distinct ids per turn", () => {
     const evt2: ContextEngineSwapEvent = {
       ...baseEvent,

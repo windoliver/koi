@@ -2224,11 +2224,34 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       if (unsubRegistryWatch !== undefined) unsubRegistryWatch();
       cleanupForgeSubscription();
       runSignal.removeEventListener("abort", onAbort);
-      // #1767 round 9/10: guarantee turn-pin release even when the run
-      // exits via `done` without an `onAfterTurn` (cooperating adapters
-      // that yield `done` directly, error/abort paths, consumer break).
-      // Without this, controller.current() — and therefore ECS reads —
-      // could stay stuck on the pre-failure engine after the run ends.
+      // #1767 round 9/10/11: guarantee turn-pin release AND post-turn
+      // bookkeeping even when the run exits via `done` without
+      // `onAfterTurn` (cooperating adapters that yield `done` directly,
+      // error/abort paths, consumer break). If a pin is still active, the
+      // adapter completed a turn that never received a runtime-level
+      // `onAfterTurn`. Synthesize one so stateful engines (eviction,
+      // backoff, checkpoint) still see post-turn bookkeeping; then release
+      // the pin so subsequent swaps are visible to the next run.
+      if (contextEngineSwapController?.hasActivePin() === true) {
+        try {
+          const fallbackTurnCtx = createTurnContext({
+            session: sessionCtx,
+            turnIndex: currentTurnIndex,
+            messages: [],
+            signal: runSignal,
+            approvalHandler: options.approvalHandler,
+            sendStatus: options.sendStatus,
+          });
+          await runTurnHooks(allMiddleware, "onAfterTurn", fallbackTurnCtx);
+        } catch (hookErr: unknown) {
+          // Bookkeeping hooks must not corrupt cleanup. Log and continue
+          // to endTurn so the controller is not left wedged.
+          console.warn(
+            "[koi] context-engine onAfterTurn synth failed during terminal cleanup",
+            hookErr,
+          );
+        }
+      }
       contextEngineSwapController?.endTurn();
 
       // Clean up adapter iterator (important on early return / break)

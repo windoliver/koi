@@ -57,6 +57,13 @@ export interface ContextEngineSwapController {
    * streamEvents finally / pre-`done` cleanup.
    */
   readonly endTurn: (turnId?: TurnId) => void;
+  /**
+   * True if a turn pin is currently active. Used by the runtime's terminal
+   * cleanup to detect adapters that exited via `done` without emitting
+   * `turn_end`, so it can synthesize an `onAfterTurn` before releasing the
+   * pin (otherwise stateful engines lose post-turn bookkeeping).
+   */
+  readonly hasActivePin: () => boolean;
 }
 
 function sameIdentity(a: ContextEngineIdentity, b: ContextEngineIdentity): boolean {
@@ -177,6 +184,8 @@ export function createContextEngineSwapController(
     return evt;
   };
 
+  const hasActivePin = (): boolean => turnPin !== undefined;
+
   return {
     current,
     history: historyView,
@@ -184,5 +193,6 @@ export function createContextEngineSwapController(
     rollback,
     beginTurn,
     endTurn,
+    hasActivePin,
   };
 }

@@ -449,6 +449,49 @@ describe("createKoi assembly", () => {
     expect(runtime.contextEngineSwapController?.current().identity.name).toBe("b");
   });
 
+  test("synthesizes onAfterTurn on `done`-only completion (terminal-path bookkeeping)", async () => {
+    // Round-11 regression: cooperating adapters that emit `done` directly
+    // would otherwise drop the engine's onAfterTurn entirely, silently
+    // losing post-turn bookkeeping (eviction/backoff/checkpoint).
+    type ContextEngine = import("@koi/core").ContextEngine;
+    let afterCalls = 0;
+    const engine: ContextEngine = {
+      identity: { name: "bookkeeping", version: "1.0.0" },
+      prepare: (_c, m) => m,
+      onAfterTurn: () => {
+        afterCalls++;
+      },
+    };
+    // Adapter must actually call callHandlers.modelCall so the slot
+    // middleware's wrapModelCall fires and pins the turn — only THEN does
+    // the terminal-path synth have something to clean up.
+    const adapter: EngineAdapter = {
+      engineId: "done-only",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: async () => ({ content: "ok", model: "x" }),
+      },
+      stream: (input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          if (input.callHandlers) {
+            await input.callHandlers.modelCall({ messages: [] });
+          }
+          // Yield `done` directly (no `turn_end`) — exact path that round 11
+          // identified as dropping onAfterTurn entirely.
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      contextEngineFactory: () => engine,
+      loopDetection: false,
+    });
+    await collectEvents(runtime.run({ kind: "text", text: "hi" }));
+    expect(afterCalls).toBe(1);
+  });
+
   test("rejects user-supplied middleware named 'context-engine' when contextEngineFactory is set", async () => {
     type ContextEngine = import("@koi/core").ContextEngine;
     type KoiMiddleware = import("@koi/core").KoiMiddleware;

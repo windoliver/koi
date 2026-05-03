@@ -19,16 +19,22 @@ export interface ContextEngineSwapNotice {
 }
 
 /**
- * Build a stable info-notice payload for a context-engine swap. The `id` is
- * deterministic per `turnId + to-identity` so repeated dispatches dedupe
- * (TUI reducer drops duplicates by id).
+ * Build a unique info-notice payload for a context-engine swap. The `id`
+ * captures the full identity transition (`turnId`, from, to, timestamp)
+ * because hosts may issue multiple distinct swaps in the same turn (e.g.
+ * `A→B`, `B→A`, then `A→B` again during repeated recovery). Earlier
+ * versions deduped on `turnId + to`, which silently dropped exactly the
+ * churn operators need to see.
+ *
+ * Idempotent re-dispatch of the SAME event still dedupes because every
+ * field in the id is taken from the event itself.
  */
 export function formatContextEngineSwapNotice(
   event: ContextEngineSwapEvent,
 ): ContextEngineSwapNotice {
-  const id = `info-context-engine-swap-${event.turnId}-${event.to.name}@${event.to.version}`;
   const fromTag = `${event.from.name}@${event.from.version}`;
   const toTag = `${event.to.name}@${event.to.version}`;
+  const id = `info-context-engine-swap-${event.turnId}-${fromTag}-${toTag}-${event.timestamp}`;
   const message = `Context engine swapped: ${fromTag} → ${toTag} — ${event.reason}`;
   return { id, message };
 }

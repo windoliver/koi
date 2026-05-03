@@ -1,18 +1,20 @@
 /**
  * Middleware adapter that drives a `ContextEngine` during the model-call
- * onion, ensuring the slot is actually exercised on every turn.
+ * onion. Used by hosts that wire the engine slot manually — i.e. hosts
+ * that do NOT pass `contextEngineFactory` to `createKoi()`.
  *
- * Phase 5/6 of issue #1767 (round 3 follow-up). Hosts that pass
- * `contextEngineFactory` to `createKoi()` should also include this middleware
- * via `middleware: [createContextEngineMiddleware(engine), ...]` so the
- * engine's `prepare()` rewrites `request.messages` before the model adapter
- * sees them. Without this, `CONTEXT_ENGINE` would be attached but never
- * invoked.
+ * **Important compatibility note (#1767 round 7+):** if you use
+ * `contextEngineFactory`, do NOT also install this middleware.
+ * `createKoi()` rejects it at startup and at every recomposition because
+ * pairing the two wiring paths runs `prepare()` twice (or with two
+ * different engines) and breaks swap-controller invariants.
  *
- * The middleware uses the engine instance directly (rather than reading
- * `agent.component(CONTEXT_ENGINE)`) so the same instance handles `prepare()`
- * here and is observable through the slot for swap controllers and operator
- * tooling. Pair it with `createContextEngineProvider(engine)`.
+ * Pick one path:
+ *   1. (recommended) Pass `contextEngineFactory` and let `createKoi`
+ *      own slot wiring + swap controller. Do not add this middleware.
+ *   2. Manage the engine yourself: pair this middleware with
+ *      `createContextEngineProvider(engine)` and skip
+ *      `contextEngineFactory`. You then own swap orchestration too.
  */
 
 import type { ContextEngine, KoiMiddleware } from "@koi/core";
@@ -22,6 +24,9 @@ import type { ContextEngine, KoiMiddleware } from "@koi/core";
  * request and forwards the returned message list as `request.messages`.
  * `engine.onAfterTurn` is bridged to `KoiMiddleware.onAfterTurn` so engines
  * that need post-turn bookkeeping (backoff decay, eviction) get triggered.
+ *
+ * Use only when you are NOT passing `contextEngineFactory` to `createKoi()`
+ * — see the module-level docs.
  */
 export function createContextEngineMiddleware(engine: ContextEngine): KoiMiddleware {
   return {
