@@ -89,7 +89,7 @@ via the same `VerifierStage` interface.
 | Order | `stages` are run in array order, sequentially. No parallelism. |
 | Short-circuit | First `{ ok: false }` stops the pipeline. Remaining stages do not run and do not appear in `stageResults`. |
 | Timing | Each stage's `durationMs` is measured with `performance.now()`. `totalDurationMs` is the sum of measured stage spans, not wall-clock end-to-end (so cache hits report 0). |
-| Cache key | The user-supplied `cacheKey` is composed with a JSON-encoded fingerprint of the stage list (`[[name, version], ...]`) before any cache call. JSON-encoding (vs. naive string joins) ensures that names or versions containing reserved characters cannot collide. Adding, removing, renaming, or version-bumping a stage invalidates prior cache entries automatically. Bump `VerifierStage.version` whenever the stage's check semantics change in a way callers should re-verify. |
+| Cache key | Composed from `[namespace, artifactFingerprint, stagesFingerprint]` via `JSON.stringify`. The stage fingerprint is `[[name, version, sandboxed], ...]` — `sandboxed` is included so that flipping a stage from non-sandboxed to sandboxed (without bumping `version`) cannot reuse old non-sandbox cache entries and have them returned as `sandbox: true`. Adding, removing, renaming, version-bumping, or sandbox-flipping a stage invalidates prior cache entries automatically. |
 | Built-in factories | `createSyntaxStage` / `createTypeStage` / `createTestStage` accept an optional second `version` argument that flows into the fingerprint. Bump it on a compiler/runner upgrade to invalidate prior cached pass results. |
 | Result immutability | Every returned `ForgeVerificationSummary` — both fresh and from a cache hit — is normalized through a deep-freeze so neither callers nor any cache backend implementation can hand back mutable state. The in-memory cache also deep-copies on `set`. A hostile or buggy backend cannot poison shared verification state. |
 | Cache hit | When the composed key resolves, no stages run and the cached summary is returned verbatim. The pipeline does not re-validate cached summaries. |
@@ -110,13 +110,14 @@ trust signal cannot diverge across cache state. Stages that report
 
 ### Artifact snapshotting
 
-`runPipeline` calls `structuredClone(artifact)` before computing the
-cache fingerprint AND before running any stage. The snapshot — not
-the caller's object — is what gets fingerprinted, what stages
-receive, and what the cached pass attests to. A stage that tries to
-mutate the snapshot does NOT alter the caller's artifact, and no
-stage can mutate nested content between fingerprint computation and
-verification.
+`runPipeline` calls `structuredClone(artifact)` and then deep-freezes
+the result (recursively, including arrays, Maps, and Sets) before
+computing the cache fingerprint AND before running any stage. The
+deep-frozen snapshot — not the caller's object — is what gets
+fingerprinted, what every stage receives, and what the cached pass
+attests to. An early stage that tries to rewrite nested fields throws
+in strict mode (which all our code is in), so a later stage cannot
+verify content different from what was fingerprinted.
 
 Artifacts that contain functions, class instances, or other
 non-cloneable values are rejected with `INVALID_CONFIG` rather than

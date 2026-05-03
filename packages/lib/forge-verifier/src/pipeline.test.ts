@@ -27,6 +27,7 @@ function counted<I>(stage: VerifierStage<I>): {
     stage: {
       name: stage.name,
       ...(stage.version !== undefined ? { version: stage.version } : {}),
+      ...(stage.sandboxed !== undefined ? { sandboxed: stage.sandboxed } : {}),
       run: async (artifact, ctx) => {
         n += 1;
         return stage.run(artifact, ctx);
@@ -449,7 +450,7 @@ describe("runPipeline — security regressions", () => {
     expect(result.value.sandbox).toBe(true);
   });
 
-  test("stages receive a deep snapshot — caller object cannot be mutated", async () => {
+  test("stages receive a deep-frozen snapshot — caller is isolated AND nested mutation throws", async () => {
     const obj: { name: string; nested: { count: number }; mutated?: boolean } = {
       name: "snapshot-test",
       nested: { count: 1 },
@@ -459,19 +460,54 @@ describe("runPipeline — security regressions", () => {
       name: "mutator",
       run: async (a) => {
         receivedNested = a.nested;
-        // Mutating the snapshot is allowed (it's the cloned copy), but the
-        // caller's object MUST be untouched.
-        a.mutated = true;
-        a.nested.count = 999;
+        // Top-level AND nested mutation must throw — otherwise an early stage
+        // could rewrite content between fingerprint computation and a later
+        // stage's verification, attaching a cached pass to bytes never seen.
+        expect(() => {
+          a.mutated = true;
+        }).toThrow();
+        expect(() => {
+          a.nested.count = 999;
+        }).toThrow();
         return PASS;
       },
     };
     const result = await runPipeline([stage], obj);
     expect(result.ok).toBe(true);
-    // Deep clone — nested object is a different reference.
     expect(receivedNested).not.toBe(obj.nested);
     expect(obj.mutated).toBeUndefined();
     expect(obj.nested.count).toBe(1);
+  });
+
+  test("early stage cannot rewrite snapshot content seen by later stages", async () => {
+    const obj: { payload: { v: number } } = { payload: { v: 1 } };
+    const seenByLater: number[] = [];
+    const stages: readonly VerifierStage<typeof obj>[] = [
+      {
+        name: "first",
+        run: async (a) => {
+          // Hostile cast — even after dropping readonly, the deep freeze blocks
+          // the write. The `try` swallows the throw so we still return PASS and
+          // the next stage gets to run and assert what it sees.
+          try {
+            (a.payload as { v: number }).v = 999;
+          } catch {
+            /* expected: frozen */
+          }
+          return PASS;
+        },
+      },
+      {
+        name: "second",
+        run: async (a) => {
+          seenByLater.push(a.payload.v);
+          return PASS;
+        },
+      },
+    ];
+    const result = await runPipeline(stages, obj);
+    expect(result.ok).toBe(true);
+    expect(seenByLater).toEqual([1]);
   });
 
   test("artifact that is not structured-cloneable is rejected", async () => {
@@ -482,6 +518,36 @@ describe("runPipeline — security regressions", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("INVALID_CONFIG");
+  });
+
+  test("flipping a stage from non-sandboxed to sandboxed invalidates prior cache", async () => {
+    const cache = createMemoryCache();
+    const v1 = counted({ name: "checker", version: "1", run: async () => PASS });
+    const r1 = await runPipeline([v1.stage], artifact, {
+      artifactFingerprint: () => "k",
+      cache,
+    });
+    expect(r1.ok).toBe(true);
+    if (!r1.ok) return;
+    expect(r1.value.sandbox).toBe(false);
+
+    // Same name AND version, but now declares sandboxed=true. Without
+    // sandboxed-in-fingerprint, the stale cache hit would be returned as
+    // sandbox: true and the actual sandbox check would never run.
+    const v2 = counted({
+      name: "checker",
+      version: "1",
+      sandboxed: true,
+      run: async () => ({ ok: true, sandboxed: true }),
+    });
+    const r2 = await runPipeline([v2.stage], artifact, {
+      artifactFingerprint: () => "k",
+      cache,
+    });
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    expect(v2.calls()).toBe(1); // re-verified, did not reuse the stale entry
+    expect(r2.value.sandbox).toBe(true);
   });
 
   test("fresh and cached runs produce the same sandbox value", async () => {

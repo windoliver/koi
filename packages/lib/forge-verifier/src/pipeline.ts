@@ -34,7 +34,10 @@ function freezeSummary(summary: ForgeVerificationSummary): ForgeVerificationSumm
 
 function fingerprintStages<I>(stages: readonly VerifierStage<I>[]): string {
   // JSON-encode so reserved characters in `name` or `version` cannot collide.
-  return JSON.stringify(stages.map((s) => [s.name, s.version ?? "0"]));
+  // `sandboxed` is part of the identity so flipping a stage from non-sandbox
+  // to sandbox (without bumping `version`) cannot reuse old non-sandbox
+  // cache entries and have them returned as `sandbox: true`.
+  return JSON.stringify(stages.map((s) => [s.name, s.version ?? "0", s.sandboxed === true]));
 }
 
 function composeCacheKey<I>(
@@ -142,6 +145,9 @@ export async function runPipeline<I>(
   try {
     snapshot =
       artifact !== null && typeof artifact === "object" ? structuredClone(artifact) : artifact;
+    if (snapshot !== null && typeof snapshot === "object") {
+      deepFreeze(snapshot);
+    }
   } catch (e: unknown) {
     return {
       ok: false,
@@ -270,6 +276,33 @@ export async function runPipeline<I>(
   }
 
   return { ok: true, value: summary };
+}
+
+/**
+ * Recursively freeze plain objects, arrays, Map and Set values produced by
+ * `structuredClone`. Skips primitives, `null`, and already-frozen objects to
+ * avoid redundant work on shared substructures.
+ */
+function deepFreeze(value: unknown): void {
+  if (value === null || typeof value !== "object") return;
+  if (Object.isFrozen(value)) return;
+  Object.freeze(value);
+  if (Array.isArray(value)) {
+    for (const item of value) deepFreeze(item);
+    return;
+  }
+  if (value instanceof Map) {
+    for (const [k, v] of value) {
+      deepFreeze(k);
+      deepFreeze(v);
+    }
+    return;
+  }
+  if (value instanceof Set) {
+    for (const item of value) deepFreeze(item);
+    return;
+  }
+  for (const v of Object.values(value)) deepFreeze(v);
 }
 
 function describeThrown(thrown: unknown): string {
