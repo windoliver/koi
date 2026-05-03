@@ -9,6 +9,25 @@ import type {
 import { RETRYABLE_DEFAULTS } from "@koi/core";
 import type { StageContext, StageOutcome, VerifierStage, VerifyOptions } from "./types.js";
 
+/**
+ * Process-local single-flight registry. Two `runPipeline` callers that
+ * compute the same `composedKey` concurrently both miss in cache.get,
+ * both run the full stage pipeline, then race to write the same key.
+ * For pure stages this is wasted CPU; for the explicitly-supported
+ * non-idempotent stages (sandbox jobs, external APIs, quota-bearing
+ * checks), it is duplicated irreversible work.
+ *
+ * Coalescing here means the FIRST caller's pipeline runs, and any
+ * concurrent caller with the same key awaits its result. Followers
+ * inherit the leader's success/failure verbatim — including any
+ * leader-side abort. A follower's own AbortSignal cannot interrupt
+ * the leader (cooperative cancellation is per-pipeline, not per-key).
+ *
+ * Process-local only: cross-process deduplication requires backend
+ * cooperation (e.g. a Redis SET NX), out of scope here.
+ */
+const inflight = new Map<string, Promise<Result<ForgeVerificationSummary>>>();
+
 function stageError(code: KoiErrorCode, stage: string, message: string, cause?: unknown): KoiError {
   return {
     code,
@@ -403,188 +422,195 @@ export async function runPipeline<I>(
     }
   }
 
-  if (composedKey !== undefined && cache !== undefined) {
-    if (signal?.aborted) {
-      return {
-        ok: false,
-        error: stageError("TIMEOUT", "<cache>", "Pipeline aborted before cache lookup."),
-      };
-    }
-    let hit: Awaited<ReturnType<typeof cache.get>>;
-    try {
-      hit = await cache.get(composedKey);
-    } catch (e: unknown) {
-      // Cache read failure handling is policy: "miss" (default) treats the
-      // outage as a cache miss and re-runs stages, so a degraded backend
-      // cannot block all verification. "fail" returns INTERNAL inside the
-      // Result envelope — appropriate when stages have non-idempotent side
-      // effects and silent re-execution must be avoided. Either way, the
-      // exception never escapes the documented Promise<Result<...>> contract.
-      const detail = e instanceof Error ? e.message : "cache.get threw";
-      if (cacheReadFailure === "fail") {
+  // Single-flight coalescing: if another caller is already verifying the
+  // same composedKey in this process, await its result instead of running
+  // a duplicate pipeline. Registered BEFORE cache.get + stages so concurrent
+  // callers cannot all miss + all run.
+  if (composedKey !== undefined) {
+    const existing = inflight.get(composedKey);
+    if (existing !== undefined) return existing;
+  }
+
+  const work = async (): Promise<Result<ForgeVerificationSummary>> => {
+    if (composedKey !== undefined && cache !== undefined) {
+      if (signal?.aborted) {
         return {
           ok: false,
-          error: stageError("INTERNAL", "<cache>", `Cache read failed: ${detail}`, e),
+          error: stageError("TIMEOUT", "<cache>", "Pipeline aborted before cache lookup."),
         };
       }
-      console.debug("[forge-verifier] cache.get failed, treating as miss:", e);
-      hit = undefined;
+      let hit: Awaited<ReturnType<typeof cache.get>>;
+      try {
+        hit = await cache.get(composedKey);
+      } catch (e: unknown) {
+        // Cache read failure handling is policy: "miss" (default) treats the
+        // outage as a cache miss and re-runs stages, so a degraded backend
+        // cannot block all verification. "fail" returns INTERNAL inside the
+        // Result envelope — appropriate when stages have non-idempotent side
+        // effects and silent re-execution must be avoided. Either way, the
+        // exception never escapes the documented Promise<Result<...>> contract.
+        const detail = e instanceof Error ? e.message : "cache.get threw";
+        if (cacheReadFailure === "fail") {
+          return {
+            ok: false,
+            error: stageError("INTERNAL", "<cache>", `Cache read failed: ${detail}`, e),
+          };
+        }
+        console.debug("[forge-verifier] cache.get failed, treating as miss:", e);
+        hit = undefined;
+      }
+      if (signal?.aborted) {
+        return {
+          ok: false,
+          error: stageError("TIMEOUT", "<cache>", "Pipeline aborted during cache lookup."),
+        };
+      }
+      if (
+        hit !== undefined &&
+        typeof hit === "object" &&
+        hit !== null &&
+        hit.key === composedKey &&
+        isCachedSummaryConsistent(hit.summary, stages, declaredSandbox)
+      ) {
+        return {
+          ok: true,
+          value: freezeSummary({
+            passed: hit.summary.passed,
+            sandbox: declaredSandbox,
+            totalDurationMs: hit.summary.totalDurationMs,
+            stageResults: hit.summary.stageResults,
+          }),
+        };
+      }
     }
-    // Re-check after the await — a remote cache.get can take real time and
-    // a caller that aborted during the read must not receive a cached pass
-    // they explicitly gave up on.
-    if (signal?.aborted) {
-      return {
-        ok: false,
-        error: stageError("TIMEOUT", "<cache>", "Pipeline aborted during cache lookup."),
+
+    // let justified: digests accumulates immutably-replaced array as stages run.
+    let digests: readonly ForgeStageDigest[] = [];
+    let totalDurationMs = 0;
+
+    for (const stage of stages) {
+      if (signal?.aborted === true) {
+        return {
+          ok: false,
+          error: stageError("TIMEOUT", stage.name, `Pipeline aborted before stage "${stage.name}"`),
+        };
+      }
+
+      // `previous` is documented as read-only, but the readonly modifier is a
+      // compile-time fiction. A buggy or hostile stage could otherwise cast
+      // it away and rewrite the recorded verification trail. Expose a frozen
+      // shallow copy whose elements are themselves frozen.
+      const ctx: StageContext = {
+        previous: Object.freeze(digests.map((d) => Object.freeze({ ...d }))),
+        ...(signal !== undefined ? { signal } : {}),
       };
+      const { outcome, durationMs, thrown } = await runStage(stage, snapshot, ctx);
+      totalDurationMs += durationMs;
+
+      // Validate the resolved outcome shape BEFORE any property destructure.
+      // `VerifierStage` is a plugin boundary; a buggy implementation that
+      // returns null/undefined/{} or a non-boolean `ok` must surface as a
+      // typed Result error inside the envelope, not a TypeError that escapes
+      // the documented `Promise<Result<...>>` contract.
+      if (
+        thrown === undefined &&
+        (outcome === null || typeof outcome !== "object" || typeof outcome.ok !== "boolean")
+      ) {
+        return {
+          ok: false,
+          error: stageError(
+            "INTERNAL",
+            stage.name,
+            `Stage "${stage.name}" returned a malformed outcome (expected { ok: boolean, ... }).`,
+          ),
+        };
+      }
+
+      if (!outcome.ok) {
+        const code: KoiErrorCode = thrown !== undefined ? "INTERNAL" : "VALIDATION";
+        const message =
+          thrown !== undefined
+            ? `Stage "${stage.name}" threw: ${describeThrown(thrown)}`
+            : `Stage "${stage.name}" failed: ${outcome.reason}`;
+        return {
+          ok: false,
+          error: stageError(code, stage.name, message, outcome.cause),
+        };
+      }
+
+      // Validate that an EXPLICIT runtime self-report agrees with the static
+      // declaration. Omitted `outcome.sandboxed` means "no override" — the
+      // declaration stands. This matches the API where `sandboxed` is
+      // optional on `StageOutcome`. Only an explicit, conflicting value
+      // (e.g. declared sandboxed:true but returned sandboxed:false) fails.
+      if (outcome.sandboxed !== undefined && typeof outcome.sandboxed !== "boolean") {
+        return {
+          ok: false,
+          error: stageError(
+            "INTERNAL",
+            stage.name,
+            `Stage "${stage.name}" returned a non-boolean sandboxed value.`,
+          ),
+        };
+      }
+      if (outcome.sandboxed !== undefined && outcome.sandboxed !== (stage.sandboxed === true)) {
+        return {
+          ok: false,
+          error: stageError(
+            "INVALID_CONFIG",
+            stage.name,
+            `Stage "${stage.name}" runtime sandboxed=${outcome.sandboxed} explicitly disagrees with static sandboxed=${stage.sandboxed === true}.`,
+          ),
+        };
+      }
+
+      digests = [...digests, { stage: stage.name, passed: true, durationMs }];
+
+      // No post-stage abort check on purpose: if a stage already produced a
+      // side effect (sandbox job, external API call, quota burn) and then
+      // aborted, discarding the success and returning TIMEOUT would force
+      // the caller to retry the same irreversible work. The pre-check at the
+      // top of the next iteration still catches signals fired between
+      // stages — pipeline ABORTS BEFORE starting un-run work, but COMMITS
+      // work that already happened. For the last stage this means the
+      // pipeline always either commits or rejects atomically.
     }
-    // Bind the returned envelope to the key we asked for. A backend that
-    // ignores its key parameter, leaks across tenants, or replays a stale
-    // entry under a different key would otherwise be trusted as a hit. The
-    // envelope check + structural check together require the backend to
-    // round-trip the exact (key, summary) we wrote.
-    if (
-      hit !== undefined &&
-      typeof hit === "object" &&
-      hit !== null &&
-      hit.key === composedKey &&
-      isCachedSummaryConsistent(hit.summary, stages, declaredSandbox)
-    ) {
-      return {
-        ok: true,
-        value: freezeSummary({
-          passed: hit.summary.passed,
-          sandbox: declaredSandbox,
-          totalDurationMs: hit.summary.totalDurationMs,
-          stageResults: hit.summary.stageResults,
-        }),
-      };
+
+    // Freeze before either returning or caching so a caller-mutated summary
+    // cannot poison the cache and a stage cannot rewrite the trail through a
+    // retained reference.
+    const summary = freezeSummary({
+      passed: true,
+      sandbox: declaredSandbox,
+      totalDurationMs,
+      stageResults: digests,
+    });
+
+    if (composedKey !== undefined && cache !== undefined) {
+      try {
+        await cache.set(composedKey, { key: composedKey, summary });
+      } catch (e: unknown) {
+        // Cache writes are best-effort. A backend outage must not flip a
+        // successful verification into a rejection. Surface via console.debug
+        // so operators can correlate; the next run will simply repopulate.
+        console.debug("[forge-verifier] cache.set failed (ignored):", e);
+      }
     }
-    // Inconsistent, malformed, or wrong-key hit — treat as a miss and re-verify.
+
+    return { ok: true, value: summary };
+  };
+
+  if (composedKey !== undefined) {
+    const promise = work().finally(() => {
+      // Use composedKey snapshot — the closure captures the value at
+      // registration time. A late deletion of the WRONG key (e.g. if
+      // composedKey were re-assigned later) would orphan in-flight entries.
+      inflight.delete(composedKey);
+    });
+    inflight.set(composedKey, promise);
+    return promise;
   }
-
-  // let justified: digests accumulates immutably-replaced array as stages run.
-  let digests: readonly ForgeStageDigest[] = [];
-  let totalDurationMs = 0;
-
-  for (const stage of stages) {
-    if (signal?.aborted === true) {
-      return {
-        ok: false,
-        error: stageError("TIMEOUT", stage.name, `Pipeline aborted before stage "${stage.name}"`),
-      };
-    }
-
-    // `previous` is documented as read-only, but the readonly modifier is a
-    // compile-time fiction. A buggy or hostile stage could otherwise cast
-    // it away and rewrite the recorded verification trail. Expose a frozen
-    // shallow copy whose elements are themselves frozen.
-    const ctx: StageContext = {
-      previous: Object.freeze(digests.map((d) => Object.freeze({ ...d }))),
-      ...(signal !== undefined ? { signal } : {}),
-    };
-    const { outcome, durationMs, thrown } = await runStage(stage, snapshot, ctx);
-    totalDurationMs += durationMs;
-
-    // Validate the resolved outcome shape BEFORE any property destructure.
-    // `VerifierStage` is a plugin boundary; a buggy implementation that
-    // returns null/undefined/{} or a non-boolean `ok` must surface as a
-    // typed Result error inside the envelope, not a TypeError that escapes
-    // the documented `Promise<Result<...>>` contract.
-    if (
-      thrown === undefined &&
-      (outcome === null || typeof outcome !== "object" || typeof outcome.ok !== "boolean")
-    ) {
-      return {
-        ok: false,
-        error: stageError(
-          "INTERNAL",
-          stage.name,
-          `Stage "${stage.name}" returned a malformed outcome (expected { ok: boolean, ... }).`,
-        ),
-      };
-    }
-
-    if (!outcome.ok) {
-      const code: KoiErrorCode = thrown !== undefined ? "INTERNAL" : "VALIDATION";
-      const message =
-        thrown !== undefined
-          ? `Stage "${stage.name}" threw: ${describeThrown(thrown)}`
-          : `Stage "${stage.name}" failed: ${outcome.reason}`;
-      return {
-        ok: false,
-        error: stageError(code, stage.name, message, outcome.cause),
-      };
-    }
-
-    // Validate that an EXPLICIT runtime self-report agrees with the static
-    // declaration. Omitted `outcome.sandboxed` means "no override" — the
-    // declaration stands. This matches the API where `sandboxed` is
-    // optional on `StageOutcome`. Only an explicit, conflicting value
-    // (e.g. declared sandboxed:true but returned sandboxed:false) fails.
-    if (outcome.sandboxed !== undefined && typeof outcome.sandboxed !== "boolean") {
-      return {
-        ok: false,
-        error: stageError(
-          "INTERNAL",
-          stage.name,
-          `Stage "${stage.name}" returned a non-boolean sandboxed value.`,
-        ),
-      };
-    }
-    if (outcome.sandboxed !== undefined && outcome.sandboxed !== (stage.sandboxed === true)) {
-      return {
-        ok: false,
-        error: stageError(
-          "INVALID_CONFIG",
-          stage.name,
-          `Stage "${stage.name}" runtime sandboxed=${outcome.sandboxed} explicitly disagrees with static sandboxed=${stage.sandboxed === true}.`,
-        ),
-      };
-    }
-
-    digests = [...digests, { stage: stage.name, passed: true, durationMs }];
-
-    // Re-check abort *after* every stage (including the last) and *before*
-    // returning success. A long-running stage that finishes after the signal
-    // fires must not be allowed to commit a pass result the caller has
-    // already given up on. (`signal.aborted` is mutable; TS narrows on the
-    // entry check above so we read it through the maybe-undefined wrapper.)
-    if (signal?.aborted) {
-      return {
-        ok: false,
-        error: stageError(
-          "TIMEOUT",
-          stage.name,
-          `Pipeline aborted during or after stage "${stage.name}"`,
-        ),
-      };
-    }
-  }
-
-  // Freeze before either returning or caching so a caller-mutated summary
-  // cannot poison the cache and a stage cannot rewrite the trail through a
-  // retained reference.
-  const summary = freezeSummary({
-    passed: true,
-    sandbox: declaredSandbox,
-    totalDurationMs,
-    stageResults: digests,
-  });
-
-  if (composedKey !== undefined && cache !== undefined) {
-    try {
-      await cache.set(composedKey, { key: composedKey, summary });
-    } catch (e: unknown) {
-      // Cache writes are best-effort. A backend outage must not flip a
-      // successful verification into a rejection. Surface via console.debug
-      // so operators can correlate; the next run will simply repopulate.
-      console.debug("[forge-verifier] cache.set failed (ignored):", e);
-    }
-  }
-
-  return { ok: true, value: summary };
+  return work();
 }
 
 /**

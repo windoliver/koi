@@ -147,7 +147,7 @@ describe("runPipeline", () => {
     expect(result.error.cause).toBeInstanceOf(Error);
   });
 
-  test("aborted signal between stages maps to TIMEOUT", async () => {
+  test("aborted signal between stages maps to TIMEOUT (attributed to un-run stage)", async () => {
     const ac = new AbortController();
     const stages: readonly VerifierStage<FakeArtifact>[] = [
       {
@@ -163,9 +163,10 @@ describe("runPipeline", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("TIMEOUT");
-    // Post-stage abort check fires before the next iteration entry check,
-    // so the abort is attributed to the stage that aborted, not the next.
-    expect(result.error.context?.stage).toBe("first");
+    // Pre-stage abort check at the top of the next iteration catches the
+    // abort. "first" already completed (and committed its work in the digest
+    // history), so the rejection is attributed to the un-run "never" stage.
+    expect(result.error.context?.stage).toBe("never");
   });
 
   test("StageContext.previous reflects prior digests", async () => {
@@ -832,22 +833,25 @@ describe("runPipeline — security regressions", () => {
     expect(v2.calls()).toBe(1);
   });
 
-  test("abort during the final stage still maps to TIMEOUT", async () => {
+  test("abort during the final stage commits the success — does not duplicate non-idempotent work on retry", async () => {
+    // Side-effectful stage already produced its effect; discarding the
+    // success and returning TIMEOUT would force a retry and duplicate the
+    // irreversible work. Instead, we commit and return success — caller's
+    // explicit abort cannot un-do work that already completed.
     const ac = new AbortController();
     const stages: readonly VerifierStage<FakeArtifact>[] = [
       {
         name: "only",
         run: async () => {
           ac.abort();
-          return PASS; // Stage ignored the signal and returned success.
+          return PASS;
         },
       },
     ];
     const result = await runPipeline(stages, artifact, { signal: ac.signal });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.code).toBe("TIMEOUT");
-    expect(result.error.context?.stage).toBe("only");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.stageResults.map((s) => s.stage)).toEqual(["only"]);
   });
 
   test("cache key derived from artifact — different artifacts do not share cache", async () => {
@@ -984,6 +988,37 @@ describe("built-in stage factories propagate StageContext", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.message).toContain("cancelled by caller");
+  });
+});
+
+describe("single-flight (concurrent identical requests are coalesced)", () => {
+  test("two concurrent runPipeline calls with the same key share one stage execution", async () => {
+    let stageCalls = 0;
+    let resolveStage: (() => void) | undefined;
+    const blockedStage: VerifierStage<FakeArtifact> = {
+      name: "blocked",
+      run: async () => {
+        stageCalls += 1;
+        // Hold both callers in the same in-flight execution until released.
+        await new Promise<void>((resolve) => {
+          resolveStage = resolve;
+        });
+        return PASS;
+      },
+    };
+    const cache = createMemoryCache();
+    const artifact: FakeArtifact = { name: "concurrent" };
+    const r1Promise = runPipeline([blockedStage], artifact, { cache, namespace: "test" });
+    const r2Promise = runPipeline([blockedStage], artifact, { cache, namespace: "test" });
+    // Yield so both promises register before we release the stage.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(stageCalls).toBe(1); // second caller deduped, not yet started
+    if (resolveStage === undefined) throw new Error("stage did not start");
+    resolveStage();
+    const [r1, r2] = await Promise.all([r1Promise, r2Promise]);
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+    expect(stageCalls).toBe(1); // STILL 1 — the work was shared, not duplicated
   });
 });
 
