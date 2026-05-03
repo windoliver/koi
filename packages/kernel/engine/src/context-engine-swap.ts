@@ -272,15 +272,20 @@ export function createContextEngineSwapController(
     };
   };
   const emit = (event: ContextEngineSwapEvent): void => {
-    let firstError: unknown;
+    // Listeners are best-effort observers (audit log, TUI, event bus).
+    // Re-throwing their errors would turn swap()/rollback() into partial
+    // commits — `active`/`history`/`priorStack` have already been mutated
+    // before emit() runs, so a thrown listener error would make the
+    // caller think the swap failed even though it has, in fact, applied.
+    // Swallow + console.error so observability gaps stay visible without
+    // corrupting the swap transaction.
     for (const listener of listeners) {
       try {
         listener(event);
       } catch (err: unknown) {
-        if (firstError === undefined) firstError = err;
+        console.error("[context-engine-swap] subscribe listener threw", err);
       }
     }
-    if (firstError !== undefined) throw firstError;
   };
 
   return {

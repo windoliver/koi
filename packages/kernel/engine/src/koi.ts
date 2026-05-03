@@ -2124,7 +2124,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 priorBlockMessages.length = 0;
                 bannerCached = false;
                 cachedCapabilityBanner = undefined;
-                doneSyntheticTurnId = lastBuiltTurnCtx?.turnId;
+                // Tag the *actually completed* turn so terminal cleanup
+                // can synthesize its onAfterTurn against the right pin.
+                // Reading the global `lastBuiltTurnCtx` was unsafe under
+                // overlapping pinned turns — a sibling turn's later
+                // getTurnContext() would clobber it and silently misroute
+                // the synthetic onAfterTurn. `currentTurnIndex` is the
+                // index of the turn that just produced this `done`
+                // (turn_end hasn't fired on the cooperating-adapter path,
+                // so it has not yet been advanced).
+                doneSyntheticTurnId = turnId(sessionCtx.runId, currentTurnIndex);
                 yield normalizedDone;
                 break turnLoop;
               }

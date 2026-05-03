@@ -62,15 +62,14 @@ function normalizeOptions(
   // Manifest `config` is JsonObject — fields it carries are budget knobs by
   // contract. Runtime-only fields (replacementStore, tokenEstimator) cannot
   // appear in JSON, so the cast widens cleanly without losing type safety.
+  // Deliberately ignore arg.engine / arg.version: the bundled factory must
+  // NOT claim an arbitrary identity from manifest text, otherwise a host
+  // could pin manifest.context.engine to "@my-org/custom" and receive the
+  // default compactor behind that name. createKoi compares the returned
+  // identity against the manifest pin — keeping our identity fixed makes
+  // that comparison meaningful.
   const cfg = arg.config ?? {};
-  const identity: ContextEngineIdentity | undefined =
-    arg.engine !== undefined
-      ? { name: arg.engine, version: arg.version ?? DEFAULT_CONTEXT_ENGINE_IDENTITY.version }
-      : undefined;
-  return {
-    ...(cfg as BudgetConfig),
-    ...(identity !== undefined ? { identity } : {}),
-  };
+  return cfg as BudgetConfig;
 }
 
 /**
