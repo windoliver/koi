@@ -68,6 +68,8 @@
     { "path": "../../net/gateway" },
     { "path": "../../net/gateway-canvas" },
     { "path": "../../net/gateway-http" },
+    { "path": "../../net/gateway-nexus" },
+    { "path": "../../net/gateway-stack" },
     { "path": "../../lib/gateway-types" },
     { "path": "../../net/gateway-webhook" },
     { "path": "../../net/mcp" },

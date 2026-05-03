@@ -1,6 +1,16 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
-import type { AgentId, CronSchedule, EngineInput, SchedulerEvent } from "@koi/core";
+import type {
+  AgentId,
+  CronSchedule,
+  EngineInput,
+  ScheduledTask,
+  ScheduledTaskStatus,
+  SchedulerEvent,
+  TaskFilter,
+  TaskId,
+  TaskStore,
+} from "@koi/core";
 import { agentId, DEFAULT_SCHEDULER_CONFIG } from "@koi/core";
 import { createFakeClock } from "./clock.js";
 import { createScheduler } from "./scheduler.js";
@@ -12,6 +22,67 @@ const input: EngineInput = { kind: "text", text: "run me" };
 
 function makeDb(): Database {
   return new Database(":memory:");
+}
+
+function taskMatchesFilter(task: ScheduledTask, filter: TaskFilter): boolean {
+  if (filter.status !== undefined && task.status !== filter.status) return false;
+  if (filter.agentId !== undefined && task.agentId !== filter.agentId) return false;
+  if (filter.priority !== undefined && task.priority !== filter.priority) return false;
+  return true;
+}
+
+function createDeferredRunningStore(
+  events: string[],
+  onRunningUpdate: (release: () => void) => void,
+): TaskStore {
+  const tasks = new Map<TaskId, ScheduledTask>();
+
+  function applyStatus(
+    id: TaskId,
+    status: ScheduledTaskStatus,
+    patch?: Partial<Pick<ScheduledTask, "startedAt" | "completedAt" | "lastError" | "retries">>,
+  ): void {
+    const task = tasks.get(id);
+    if (task !== undefined) {
+      tasks.set(id, { ...task, status, ...patch });
+    }
+  }
+
+  return {
+    save: (task: ScheduledTask): void => {
+      tasks.set(task.id, task);
+    },
+    load: (id: TaskId): ScheduledTask | undefined => tasks.get(id),
+    remove: (id: TaskId): void => {
+      tasks.delete(id);
+    },
+    updateStatus: (
+      id: TaskId,
+      status: ScheduledTaskStatus,
+      patch?: Partial<Pick<ScheduledTask, "startedAt" | "completedAt" | "lastError" | "retries">>,
+    ): void | Promise<void> => {
+      if (status !== "running") {
+        applyStatus(id, status, patch);
+        return;
+      }
+
+      events.push("update:running:start");
+      return new Promise<void>((resolve) => {
+        onRunningUpdate(() => {
+          applyStatus(id, status, patch);
+          events.push("update:running:done");
+          resolve();
+        });
+      });
+    },
+    query: (filter: TaskFilter): readonly ScheduledTask[] =>
+      [...tasks.values()].filter((task) => taskMatchesFilter(task, filter)),
+    loadPending: (): readonly ScheduledTask[] =>
+      [...tasks.values()].filter((task) => task.status === "pending" || task.status === "running"),
+    async [Symbol.asyncDispose](): Promise<void> {
+      tasks.clear();
+    },
+  };
 }
 
 describe("createScheduler", () => {
@@ -156,6 +227,45 @@ describe("createScheduler", () => {
     await scheduler.submit(aid, input, "spawn");
     expect(events.some((e) => e.kind === "task:submitted")).toBe(true);
     await scheduler[Symbol.asyncDispose]();
+  });
+
+  it("awaits persisted running status before starting dispatch", async () => {
+    const events: string[] = [];
+    let releaseRunningUpdate: (() => void) | undefined;
+    const store = createDeferredRunningStore(events, (release) => {
+      releaseRunningUpdate = release;
+    });
+    const scheduler = createScheduler(
+      { ...DEFAULT_SCHEDULER_CONFIG, pollIntervalMs: 60_000 },
+      store,
+      async () => {
+        events.push("dispatch");
+      },
+      createFakeClock(0),
+    );
+    scheduler.watch((event) => {
+      if (event.kind === "task:started") events.push("event:started");
+    });
+
+    await scheduler.submit(aid, input, "spawn");
+    await Promise.resolve();
+
+    expect(events).toEqual(["update:running:start"]);
+    if (releaseRunningUpdate === undefined) throw new Error("running status update not started");
+
+    releaseRunningUpdate();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(events.slice(0, 4)).toEqual([
+      "update:running:start",
+      "update:running:done",
+      "event:started",
+      "dispatch",
+    ]);
+
+    await scheduler[Symbol.asyncDispose]();
+    await store[Symbol.asyncDispose]();
   });
 
   it("query returns tasks filtered by agentId", async () => {

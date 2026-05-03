@@ -46,6 +46,34 @@ export interface Session {
   readonly remoteSeq: number;
   readonly metadata: Readonly<Record<string, unknown>>;
   readonly routing?: RoutingContext | undefined;
+  /** Ms-since-epoch when the session was last disconnected. Persisted so TTL
+   *  eviction survives process restarts; the reconnect path rejects sessions
+   *  whose `disconnectedAt` is past TTL. */
+  readonly disconnectedAt?: number | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Session store contract
+// ---------------------------------------------------------------------------
+
+import type { KoiError, Result } from "@koi/core";
+
+/**
+ * Pluggable session persistence shared across L2 gateway packages.
+ *
+ * Read/write operations may be sync (in-memory) or async (Nexus/HA backend) —
+ * callers must always `await` the result. Sync `entries()` and `size()` are
+ * intentionally local-only because the gateway's heartbeat sweep iterates
+ * them on a hot path; async-only iteration would require materializing every
+ * remote session per tick.
+ */
+export interface SessionStore {
+  readonly get: (id: string) => Result<Session, KoiError> | Promise<Result<Session, KoiError>>;
+  readonly set: (session: Session) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+  readonly delete: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+  readonly has: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+  readonly size: () => number;
+  readonly entries: () => IterableIterator<readonly [string, Session]>;
 }
 
 // ---------------------------------------------------------------------------

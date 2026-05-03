@@ -6,6 +6,13 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **Review-finding wiring sync**: no CLI command, flag, or dependency changes.
+  The existing runtime/TUI wiring inherits two L2 behavior fixes: scheduled task
+  dispatch now waits for async stores to persist `running` before the dispatcher
+  runs, and sandbox preset stacks no longer create missing host `denyRead` paths
+  before launching bubblewrap. Existing deny paths are still masked; absent
+  credential-like entries such as `.netrc`, `.npmrc`, `.pypirc`, and
+  `.git-credentials` are skipped instead of being created on disk.
 - **TUI cancel-resume integration (#2105, issue #1683)**: opt-in via
   `KOI_SESSION_STATE_DB` env var pointing at a writable SQLite path.
   When set, the TUI opens a `createSqliteSessionPersistence` store,
