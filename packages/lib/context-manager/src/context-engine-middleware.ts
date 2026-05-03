@@ -48,6 +48,14 @@ import type { ContextEngine, KoiMiddleware, ModelChunk } from "@koi/core";
  *
  * Implements both `wrapModelCall` (non-streaming) and `wrapModelStream`
  * (native streaming adapters) so `prepare()` runs on every model path.
+ *
+ * @deprecated Prefer `contextEngineFactory` on `createKoi()`. This helper
+ *   has a known lifecycle gap on adapters that yield `done` without
+ *   `turn_end` (the cooperating-adapter shortcut): `engine.onAfterTurn`
+ *   does not fire on that successful-turn path, leaving stateful engines
+ *   with stale per-turn state. The auto-wired path closes the gap with
+ *   kernel-level terminal-path synthesis. This export will be removed
+ *   once all in-tree hosts migrate to `contextEngineFactory`.
  */
 export function createContextEngineMiddleware(engine: ContextEngine): KoiMiddleware {
   return {
