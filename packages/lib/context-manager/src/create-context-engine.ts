@@ -103,6 +103,22 @@ function checkBudgetInvariants(out: Readonly<Record<string, number | string>>): 
       `createContextEngine: manifest.context.config.contextWindowSize=${out.contextWindowSize} must be > 0`,
     );
   }
+  // Mirror the resolveConfig() positive/integer rules so a manifest cannot
+  // ship malformed compaction knobs (e.g. previewChars: 0,
+  // prunePreserveLastK: 1.5) and silently change pruning/replacement
+  // behavior instead of failing at boot.
+  const positiveKeys = ["maxResultTokens", "maxMessageTokens", "previewChars"] as const;
+  for (const key of positiveKeys) {
+    const v = out[key];
+    if (typeof v === "number" && v <= 0) {
+      throw new Error(`createContextEngine: manifest.context.config.${key}=${v} must be > 0`);
+    }
+  }
+  if (typeof out.prunePreserveLastK === "number" && !Number.isInteger(out.prunePreserveLastK)) {
+    throw new Error(
+      `createContextEngine: manifest.context.config.prunePreserveLastK=${out.prunePreserveLastK} must be an integer`,
+    );
+  }
   const micro = out.microTargetFraction;
   const soft = out.softTriggerFraction;
   const hard = out.hardTriggerFraction;

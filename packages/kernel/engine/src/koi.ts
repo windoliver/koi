@@ -119,38 +119,22 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // Manifest pins require `contextEngineFactory` so the runtime can own
   // slot wiring + swap controller. There is no longer a supported manual
   // wiring path through @koi/context-manager.
-  if (manifest.context?.engine !== undefined && options.contextEngineFactory === undefined) {
+  // Reject ANY `manifest.context` (including `{}`) without a factory.
+  // Without this, a host can declare `context: {}` expecting the new
+  // manifest surface to install a default engine and instead ship a
+  // full-passthrough runtime — silently shipping without compaction
+  // until prompts overflow. The runtime does not install a default;
+  // hosts must pass contextEngineFactory.
+  if (manifest.context !== undefined && options.contextEngineFactory === undefined) {
     throw KoiRuntimeError.from(
       "VALIDATION",
-      `createKoi: manifest.context.engine="${manifest.context.engine}" requires contextEngineFactory. The runtime owns slot wiring whenever the manifest pins an engine so manifest identity, ECS slot, and the middleware actually calling prepare() cannot diverge. Pass contextEngineFactory, or remove manifest.context.engine.`,
+      `createKoi: manifest.context is set but no contextEngineFactory was supplied. The runtime does not install a default context engine, so the slot would silently stay empty and turns would run without compaction. Either pass contextEngineFactory, or remove manifest.context.`,
       {
         retryable: false,
         context: {
-          manifestEngine: manifest.context.engine,
-          ...(manifest.context.version !== undefined
-            ? { manifestVersion: manifest.context.version }
+          ...(manifest.context.engine !== undefined
+            ? { manifestEngine: manifest.context.engine }
             : {}),
-        },
-      },
-    );
-  }
-  // Reject manifest.context that carries `version`/`config` without
-  // `engine` AND without a factory. Without this, a host can declare
-  // compaction thresholds or pin a version in the manifest, the runtime
-  // silently drops them, and behavior diverges from the manifest with no
-  // error signal until prompts overflow in production.
-  if (
-    manifest.context !== undefined &&
-    manifest.context.engine === undefined &&
-    (manifest.context.version !== undefined || manifest.context.config !== undefined) &&
-    options.contextEngineFactory === undefined
-  ) {
-    throw KoiRuntimeError.from(
-      "VALIDATION",
-      `createKoi: manifest.context carries version/config but no engine and no contextEngineFactory was supplied — these fields would be silently ignored. Either declare manifest.context.engine + pass contextEngineFactory, or remove the orphan version/config.`,
-      {
-        retryable: false,
-        context: {
           ...(manifest.context.version !== undefined
             ? { manifestVersion: manifest.context.version }
             : {}),
