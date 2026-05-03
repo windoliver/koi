@@ -16,6 +16,7 @@ import type {
   ChannelStatus,
   ChildHandle,
   ComponentProvider,
+  ContextEngine,
   DelegationId,
   DeliveryPolicy,
   EngineAdapter,
@@ -94,6 +95,16 @@ export interface CreateKoiOptions {
   readonly middleware?: readonly KoiMiddleware[];
   /** Component providers to attach during assembly. */
   readonly providers?: readonly ComponentProvider[];
+  /**
+   * Optional pluggable context-management pipeline (issue #1767). When
+   * provided, the runtime attaches it under the `CONTEXT_ENGINE` subsystem
+   * token via `createContextEngineProvider`. When absent, no engine is
+   * attached and the runtime falls back to its existing per-turn behavior.
+   *
+   * Hosts that read `manifest.context.engine` are responsible for resolving
+   * the named engine to a `ContextEngine` instance and passing it here.
+   */
+  readonly contextEngine?: ContextEngine;
   /** Iteration guard limits. Defaults to DEFAULT_ITERATION_LIMITS. */
   readonly limits?: Partial<IterationLimits>;
   /** Loop detection configuration. Defaults to DEFAULT_LOOP_DETECTION. Set to false to disable. */

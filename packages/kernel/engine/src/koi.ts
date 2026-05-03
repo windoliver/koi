@@ -74,6 +74,7 @@ import {
 import { AgentEntity } from "./agent-entity.js";
 import { createBrickRequiresExtension } from "./brick-requires-extension.js";
 import { createTerminalHandlers } from "./compose-bridge.js";
+import { createContextEngineProvider } from "./context-engine-provider.js";
 import { createDedupedToolsAccessor } from "./deduped-tools-accessor.js";
 import { createTurnContext, generatePid, unrefTimer } from "./koi-helpers.js";
 import type { CreateKoiOptions, KoiRuntime, RunHandle } from "./types.js";
@@ -99,7 +100,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
   });
   const governanceProvider = createGovernanceProvider(options.governance);
-  const allProviders = [governanceProvider, ...providers];
+  // Pluggable context-engine slot (#1767). When the host supplies a ContextEngine,
+  // attach it under the CONTEXT_ENGINE singleton token. User-supplied providers
+  // can still override via lower priority.
+  const contextEngineProviders =
+    options.contextEngine !== undefined ? [createContextEngineProvider(options.contextEngine)] : [];
+  const allProviders = [governanceProvider, ...contextEngineProviders, ...providers];
   const { agent, conflicts } = await AgentEntity.assemble(pid, manifest, allProviders);
 
   // --- 2. Compose kernel extensions (governance + default guards) ---

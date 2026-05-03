@@ -154,6 +154,31 @@ describe("createKoi assembly", () => {
     expect(runtime.agent.pid.type).toBe("copilot");
   });
 
+  test("contextEngine option attaches engine onto CONTEXT_ENGINE slot (#1767)", async () => {
+    const { CONTEXT_ENGINE } = await import("@koi/core");
+    type ContextEngine = import("@koi/core").ContextEngine;
+    const stub: ContextEngine = {
+      identity: { name: "@test/stub", version: "1.0.0" },
+      prepare: (_ctx, msgs) => msgs,
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+      contextEngine: stub,
+    });
+    expect(runtime.agent.has(CONTEXT_ENGINE)).toBe(true);
+    expect(runtime.agent.component(CONTEXT_ENGINE)).toBe(stub);
+  });
+
+  test("omitting contextEngine leaves the CONTEXT_ENGINE slot empty (no default)", async () => {
+    const { CONTEXT_ENGINE } = await import("@koi/core");
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+    });
+    expect(runtime.agent.has(CONTEXT_ENGINE)).toBe(false);
+  });
+
   test("manifest lifecycle overrides default type", async () => {
     const runtime = await createKoi({
       manifest: testManifest({ lifecycle: "worker" }),
