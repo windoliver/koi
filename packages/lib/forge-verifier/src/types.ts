@@ -149,14 +149,51 @@ export interface VerifyOptions {
    */
   readonly acknowledgeTrustedCache?: true | undefined;
   /**
-   * Per-stage hard timeout in milliseconds. When a stage's `run` does not
-   * resolve within this window, the pipeline returns TIMEOUT to the caller
-   * even if the stage's promise has not settled — the underlying work
-   * may continue (we cannot kill a JS Promise), but the caller is no
-   * longer blocked by an uncooperative plugin that ignores `ctx.signal`.
+   * Per-stage hard timeout in milliseconds for COOPERATIVE ASYNC stages.
+   * When an awaitable stage's `run` does not resolve within this window,
+   * the pipeline returns TIMEOUT to the caller even if the stage's
+   * promise has not settled — the underlying work may continue (we
+   * cannot kill a JS Promise), but the caller is no longer blocked by
+   * an uncooperative plugin that ignores `ctx.signal`.
+   *
+   * **DOES NOT preempt synchronous or CPU-bound stage code.** Stages
+   * that block the event loop (busy loops, heavy synchronous parsing,
+   * etc.) cannot be interrupted from the same thread; the timeout
+   * timer never gets a chance to fire. To enforce a hard wall-clock
+   * cap on untrusted stages, run them in a worker / isolate / process
+   * that can be preempted at the OS level — outside this library's
+   * scope.
+   *
    * Defaults to `undefined` (no per-stage cap; rely only on `signal`).
-   * Recommended in production where stage authors are not fully trusted.
    */
   readonly stageTimeoutMs?: number | undefined;
+  /**
+   * Caller-supplied fingerprint of any AMBIENT context the stage `run`
+   * closures depend on but the artifact does NOT carry — request-scoped
+   * auth, tenant policy, feature flags, external credentials, etc.
+   * Folded into BOTH the cache key and the single-flight key so two
+   * callers with different effective contexts cannot inherit each
+   * other's results.
+   *
+   * REQUIRED when the stage closures observe such context. Omit only
+   * when stages are pure functions of the artifact (no ambient
+   * dependencies). Opaque to the verifier; callers should treat it as
+   * a stable hash of their execution context and rotate it whenever
+   * the underlying context would produce a different verification
+   * outcome for the same artifact + stage list.
+   */
+  readonly executionContextKey?: string | undefined;
+  /**
+   * Opt into single-flight coalescing of concurrent UNCACHED runs that
+   * share the same `(artifact, stages, executionContextKey,
+   * cacheReadFailure, stageTimeoutMs)`. Off by default — uncached
+   * stage closures may differ even with the same descriptors, so
+   * coalescing without an explicit caller acknowledgment risks
+   * cross-context result reuse. Set this only when the caller knows
+   * the closures are equivalent (e.g. all callers are in the same
+   * trust domain and pass an `executionContextKey` that captures any
+   * ambient state).
+   */
+  readonly coalesceUncached?: true | undefined;
   readonly signal?: AbortSignal | undefined;
 }

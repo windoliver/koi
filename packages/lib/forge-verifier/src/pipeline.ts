@@ -168,10 +168,26 @@ function composeCacheKey<I>(
   namespace: string,
   artifactDigest: string,
   stages: readonly VerifierStage<I>[],
+  executionContextKey: string | undefined,
+  stageTimeoutMs: number | undefined,
 ): string {
-  // JSON-encode each component so neither namespace nor digest can contain a
-  // separator that aliases a different (namespace, digest, stages) tuple.
-  return JSON.stringify([namespace, artifactDigest, fingerprintStages(stages)]);
+  // JSON-encode each component so reserved characters in any single
+  // component cannot alias a different tuple. The execution-context
+  // key is also folded in so two callers with the same artifact +
+  // stages but different ambient context (auth, tenant policy, etc.)
+  // do not share a cached pass. `stageTimeoutMs` is folded in too:
+  // a permissive caller's success (stage took 500ms under a 1000ms
+  // budget) must NOT satisfy a stricter caller (50ms budget) on a
+  // cache hit — the stage would have timed out under the stricter
+  // policy. Partitioning the key by normalized timeout prevents
+  // policy drift across tenants/environments that share a backend.
+  return JSON.stringify([
+    namespace,
+    artifactDigest,
+    fingerprintStages(stages),
+    executionContextKey ?? "",
+    stageTimeoutMs !== undefined ? String(stageTimeoutMs) : "",
+  ]);
 }
 
 /**
@@ -376,6 +392,15 @@ async function runStage<I>(
   readonly durationMs: number;
   readonly thrown?: unknown;
   readonly aborted?: true;
+  /**
+   * The underlying stage promise. The caller's `runPipeline` retains
+   * this so the in-flight slot can be held until the underlying work
+   * settles, even if the caller-visible Promise.race already resolved
+   * with TIMEOUT — otherwise a retry could start a second stage while
+   * the first one is still running, double-submitting irreversible
+   * work for non-idempotent stages.
+   */
+  readonly underlying: Promise<unknown>;
 }> {
   const started = performance.now();
   // Capture handles so they can be cleaned up after the race settles —
@@ -385,13 +410,31 @@ async function runStage<I>(
   // a memory leak and `MaxListenersExceededWarning`.
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   let abortListener: (() => void) | undefined;
+  // Capture the underlying stage promise BEFORE racing — Promise.race
+  // can't kill it, but we can keep a reference so callers can wait on
+  // its settlement (silently) before releasing the in-flight slot.
+  // Defer the `stage.run` invocation through a microtask so a SYNC
+  // throw from a buggy plugin is normalized into a rejected promise
+  // rather than escaping `runPipeline` and breaking the documented
+  // `Promise<Result<...>>` contract.
+  // Re-check the signal INSIDE the microtask too — a caller can abort
+  // in the gap between the outer loop's pre-stage gate and this
+  // microtask firing; without this re-check, the stage would still
+  // start and could produce a side effect after the caller already
+  // gave up.
+  const underlying = Promise.resolve().then(() => {
+    if (signal?.aborted === true) {
+      throw new PipelineAbort("aborted before stage start (microtask race)");
+    }
+    return stage.run(artifact, ctx);
+  });
   try {
     // Race stage execution against the caller signal AND the optional
     // per-stage watchdog. A buggy or hostile plugin that ignores
     // ctx.signal cannot wedge the pipeline beyond stageTimeoutMs (or
     // beyond the caller's signal). The underlying Promise may keep
     // running — JS gives no way to kill it — but the caller is unblocked.
-    const racers: Promise<StageOutcome>[] = [Promise.resolve(stage.run(artifact, ctx))];
+    const racers: Promise<StageOutcome>[] = [underlying];
     if (signal !== undefined) {
       racers.push(
         new Promise<StageOutcome>((_, reject) => {
@@ -420,19 +463,21 @@ async function runStage<I>(
       );
     }
     const outcome = await Promise.race(racers);
-    return { outcome, durationMs: performance.now() - started };
+    return { outcome, durationMs: performance.now() - started, underlying };
   } catch (e: unknown) {
     if (isPipelineAbort(e)) {
       return {
         outcome: { ok: false, reason: e.message },
         durationMs: performance.now() - started,
         aborted: true,
+        underlying,
       };
     }
     return {
       outcome: { ok: false, reason: "stage threw", cause: e },
       durationMs: performance.now() - started,
       thrown: e,
+      underlying,
     };
   } finally {
     if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
@@ -511,6 +556,24 @@ export async function runPipeline<I>(
   const cache = options?.cache;
   const cacheReadFailure = options?.cacheReadFailure ?? "fail";
   const signal = options?.signal;
+  const stageTimeoutMs = options?.stageTimeoutMs;
+
+  // Validate stageTimeoutMs eagerly — silently coercing 0/negative/NaN
+  // into "no timeout" turns a misconfiguration into the unbounded hang
+  // this option exists to prevent. Fail closed.
+  if (
+    stageTimeoutMs !== undefined &&
+    !(typeof stageTimeoutMs === "number" && Number.isFinite(stageTimeoutMs) && stageTimeoutMs > 0)
+  ) {
+    return {
+      ok: false,
+      error: {
+        code: "INVALID_CONFIG",
+        message: `VerifyOptions.stageTimeoutMs must be a finite positive number when set; got ${String(stageTimeoutMs)}.`,
+        retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
+      },
+    };
+  }
 
   // When caching is enabled, every stage MUST declare an explicit non-empty
   // `version`. Two different plugin implementations sharing the same
@@ -566,6 +629,27 @@ export async function runPipeline<I>(
         code: "INVALID_CONFIG",
         message:
           "VerifyOptions.cache requires acknowledgeTrustedCache: true. The cache is a TRUSTED storage optimization, not a security boundary — a backend that can write envelopes can forge passing attestations. Pass this flag only when the backend's write path is restricted to trusted producers.",
+        retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
+      },
+    };
+  }
+
+  // Require executionContextKey whenever results may be SHARED across
+  // callers (cache + coalesceUncached). Stages may close over ambient
+  // state (auth, tenant policy, feature flags); silently substituting
+  // "" lets one caller's pass satisfy another caller's request that
+  // would have evaluated different ambient context. Force callers to
+  // either declare a stable context fingerprint or accept that they
+  // cannot share results.
+  const sharesResults = cache !== undefined || options?.coalesceUncached === true;
+  const ctxRaw = options?.executionContextKey;
+  if (sharesResults && (typeof ctxRaw !== "string" || ctxRaw.length === 0)) {
+    return {
+      ok: false,
+      error: {
+        code: "INVALID_CONFIG",
+        message:
+          "VerifyOptions.executionContextKey is required (non-empty string) when results may be shared across callers (cache or coalesceUncached). It partitions cache + single-flight by ambient stage context (auth, tenant policy, feature flags). Use a stable hash of any context the stage closures observe.",
         retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
       },
     };
@@ -643,47 +727,55 @@ export async function runPipeline<I>(
   // cache hits, so the trust signal cannot diverge across cache state.
   const declaredSandbox = stages.some((s) => s.sandboxed === true);
 
-  let composedKey: string | undefined;
-  if (cache !== undefined) {
-    try {
-      // Derive the artifact-side digest INTERNALLY from the validated frozen
-      // snapshot. No caller callback runs on the verifier stack — earlier
-      // designs accepted an `artifactFingerprint` function, but invoking
-      // caller code in the trusted verification path negates the point of
-      // the snapshot boundary. canonicalJson is sorted-keys + cycle-rejecting,
-      // so two structurally-equal artifacts always produce the same key and
-      // a cyclic snapshot bypasses caching rather than aliasing.
-      const digest = canonicalJson(snapshot, {
-        onStack: new WeakSet<object>(),
-        seen: new WeakMap<object, number>(),
-        budget: { count: 0 },
-        refCounter: 0,
-      });
-      if (typeof namespace !== "string") {
-        // Unreachable: validated above when cache !== undefined. Defensive
-        // guard for the type narrow rather than an `as` cast.
-        throw new Error("namespace must be a string when cache is provided");
-      }
-      composedKey = composeCacheKey(namespace, digest, stages);
-    } catch (e: unknown) {
-      // Only the EXPECTED cycle case bypasses caching (cyclic artifacts
-      // have no deterministic linearization, so a miss + re-verify is the
-      // correctness-preserving outcome). Any other digest/key-derivation
-      // error indicates a serializer bug or future regression — surface as
-      // INTERNAL so callers don't unknowingly re-execute side-effectful
-      // stages on a cache disabled by an opaque encoder failure.
-      const code = (e as { code?: string } | undefined)?.code;
-      if (code === "FORGE_VERIFIER_CYCLE") {
-        console.debug("[forge-verifier] cache bypassed (cyclic snapshot):", e);
-        composedKey = undefined;
-      } else {
-        const detail = e instanceof Error ? e.message : "cache key derivation failed";
-        return {
-          ok: false,
-          error: stageError("INTERNAL", "<cache>", `Cache key derivation failed: ${detail}`, e),
-        };
-      }
+  // Always derive the snapshot digest — used for both cache key (when a
+  // cache is provided) and single-flight coalescing (always). Without
+  // this, two concurrent uncached callers would each run every stage,
+  // duplicating non-idempotent side effects (sandbox jobs, external
+  // APIs, quota burns). Cyclic snapshots produce no deterministic key
+  // and are rejected upfront for side-effecting pipelines below.
+  let snapshotDigest: string | undefined;
+  let cyclic = false;
+  try {
+    snapshotDigest = canonicalJson(snapshot, {
+      onStack: new WeakSet<object>(),
+      seen: new WeakMap<object, number>(),
+      budget: { count: 0 },
+      refCounter: 0,
+    });
+  } catch (e: unknown) {
+    const code = (e as { code?: string } | undefined)?.code;
+    if (code === "FORGE_VERIFIER_CYCLE") {
+      cyclic = true;
+    } else {
+      const detail = e instanceof Error ? e.message : "snapshot digest failed";
+      return {
+        ok: false,
+        error: stageError("INTERNAL", "<snapshot>", `Snapshot digest failed: ${detail}`, e),
+      };
     }
+  }
+
+  // Cyclic snapshots cannot be deterministically fingerprinted; cache
+  // is bypassed for them. Single-flight is intentionally NOT applied to
+  // uncached runs (see inflightKey below for rationale), so cyclic
+  // artifacts simply run un-coalesced like any other uncached call.
+  let composedKey: string | undefined;
+  if (cache !== undefined && snapshotDigest !== undefined) {
+    if (typeof namespace !== "string") {
+      // Unreachable: validated above when cache !== undefined.
+      throw new Error("namespace must be a string when cache is provided");
+    }
+    composedKey = composeCacheKey(
+      namespace,
+      snapshotDigest,
+      stages,
+      options?.executionContextKey,
+      stageTimeoutMs,
+    );
+  } else if (cache !== undefined && cyclic) {
+    // Cache write/read still bypassed for cyclic snapshots even on
+    // non-sandboxed pipelines — no deterministic key to bind by.
+    console.debug("[forge-verifier] cache bypassed (cyclic snapshot)");
   }
 
   // Single-flight coalescing: if another caller is already verifying the
@@ -710,25 +802,39 @@ export async function runPipeline<I>(
   // caller MUST NOT be dragged into a `"miss"` leader's silent
   // re-execution after a backend outage, and a strict-timeout caller
   // MUST NOT inherit a looser-timeout leader's safeguards.
-  const stageTimeoutKey =
-    options?.stageTimeoutMs !== undefined ? String(options.stageTimeoutMs) : "none";
-  const inflightKey =
-    composedKey !== undefined && cache !== undefined
-      ? `${cacheId(cache)}|${cacheReadFailure}|${stageTimeoutKey}|${composedKey}`
-      : undefined;
+  const stageTimeoutKey = stageTimeoutMs !== undefined ? String(stageTimeoutMs) : "none";
+  const ctxKey = options?.executionContextKey ?? "";
+  // Single-flight scope:
+  //   - Cached runs (cache + ack provided): always coalesce. Key
+  //     includes cache identity, policy, timeout, executionContextKey,
+  //     and composed key.
+  //   - Uncached runs: only coalesce when the caller explicitly opts
+  //     in via `coalesceUncached: true`. Stage identity from
+  //     descriptors alone is too weak to alias closures safely; the
+  //     opt-in is the caller's acknowledgment that closures + ambient
+  //     context are equivalent across coalesced peers. Cyclic
+  //     snapshots have no digest → cannot coalesce regardless.
+  const stagesFp = fingerprintStages(stages);
+  let inflightKey: string | undefined;
+  if (snapshotDigest !== undefined) {
+    if (composedKey !== undefined && cache !== undefined) {
+      inflightKey = `cached|${cacheId(cache)}|${cacheReadFailure}|${stageTimeoutKey}|${ctxKey}|${composedKey}`;
+    } else if (options?.coalesceUncached === true) {
+      inflightKey = `uncached|${cacheReadFailure}|${stageTimeoutKey}|${ctxKey}|${stagesFp}|${snapshotDigest}`;
+    }
+  }
 
   if (inflightKey !== undefined) {
     const existing = inflight.get(inflightKey);
-    // Reject reuse of an in-flight entry whose leader pipeline has
-    // already been aborted — a follower attaching to a doomed leader
-    // would inherit TIMEOUT despite never having aborted itself. The
-    // entry stays registered (so `delete()` in finally still works) but
-    // we treat it as a miss for new callers and run a fresh pipeline.
-    if (existing !== undefined && !existing.leaderPipelineSignal?.aborted) {
-      // A follower joined — the leader must stop honoring its own signal
-      // because someone else is now depending on the shared result. From
-      // here the shared pipeline runs to completion regardless of the
-      // leader caller's abort.
+    // Always attach to the existing entry. The slot is held until the
+    // underlying stage promises actually settle (see registration
+    // below), so an entry being present means either the leader is
+    // still running OR the leader returned (TIMEOUT/abort/success) but
+    // its background stages are still in flight. In both cases starting
+    // a fresh pipeline would risk a SECOND background execution of the
+    // same non-idempotent stage. Followers inherit the leader's result
+    // (which may be TIMEOUT) and retry only after the slot drains.
+    if (existing !== undefined) {
       existing.detach();
       if (signal === undefined) return existing.promise;
       return waitWithSignal(existing.promise, signal);
@@ -760,6 +866,13 @@ export async function runPipeline<I>(
     }
     pipelineSignal = internal.signal;
   }
+
+  // Track the actual stage promises (NOT the Promise.race winners).
+  // The in-flight slot is held until ALL of these settle so a retry
+  // for the same key cannot start a second background stage execution
+  // while the first is still running — which would double-submit
+  // irreversible work for non-idempotent stages.
+  const stageUnderlyings: Promise<unknown>[] = [];
 
   const work = async (): Promise<Result<ForgeVerificationSummary>> => {
     if (composedKey !== undefined && cache !== undefined) {
@@ -834,13 +947,17 @@ export async function runPipeline<I>(
         previous: Object.freeze(digests.map((d) => Object.freeze({ ...d }))),
         ...(pipelineSignal !== undefined ? { signal: pipelineSignal } : {}),
       };
-      const { outcome, durationMs, thrown, aborted } = await runStage(
+      const { outcome, durationMs, thrown, aborted, underlying } = await runStage(
         stage,
         snapshot,
         ctx,
         pipelineSignal,
-        options?.stageTimeoutMs,
+        stageTimeoutMs,
       );
+      // Suppress unhandled rejection on the underlying promise; we hold
+      // the reference for in-flight slot timing only, not for its
+      // result (the race already returned what the caller sees).
+      stageUnderlyings.push(underlying.catch(() => undefined));
       totalDurationMs += durationMs;
 
       // Pipeline-initiated abort (caller signal OR per-stage watchdog)
@@ -1001,9 +1118,26 @@ export async function runPipeline<I>(
     // (see lookup branch above) and unwires the leader caller's signal
     // so the shared work is not killed by the leader's abort once
     // someone else depends on it.
-    const promise = work().finally(() => {
-      inflight.delete(key);
-    });
+    //
+    // Hold the in-flight slot until BOTH the work loop AND every
+    // underlying stage promise have settled. A timed-out/aborted stage
+    // continues running in the background; releasing the slot before
+    // it settles would let a retry for the same key start a SECOND
+    // execution of the same non-idempotent stage. By holding the slot,
+    // late callers attach to the leader (inheriting its TIMEOUT result)
+    // rather than re-running irreversible work.
+    const promise = work();
+    const releaseWhenStagesSettle = promise
+      .then(
+        () => Promise.allSettled(stageUnderlyings),
+        () => Promise.allSettled(stageUnderlyings),
+      )
+      .finally(() => {
+        inflight.delete(key);
+      });
+    // Suppress unhandled rejection on the lifecycle promise — we only
+    // care about its side effect (delete).
+    void releaseWhenStagesSettle;
     inflight.set(key, {
       promise,
       detach: detachCallerSignal,
@@ -1157,12 +1291,25 @@ function rejectUnsupportedShape(
       `Artifact at ${path} has symbol-keyed own properties; verifier requires plain-data artifacts (symbol keys are not preserved by structuredClone).`,
     );
   }
-  // Use descriptor walk (NOT Object.entries) so getters are NOT invoked
-  // during validation. Reject accessors and non-enumerable own properties
-  // outright — both would either execute caller code on the verifier's
-  // call stack or be silently dropped from the snapshot.
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  for (const [k, desc] of Object.entries(descriptors)) {
+  // Preflight key count BEFORE materializing every descriptor — a
+  // wide attacker-controlled object would otherwise force a full
+  // O(n) descriptor allocation prior to the budget check. Use
+  // Object.getOwnPropertyNames so non-enumerable keys are also counted
+  // and inspected (the non-enumerable rejection runs in the loop below).
+  const keys = Object.getOwnPropertyNames(value);
+  budget.count += keys.length;
+  if (budget.count > MAX_ARTIFACT_NODES) {
+    throw new TypeError(
+      `Artifact at ${path} has ${keys.length} own keys which alone exceeds the maximum node count (${MAX_ARTIFACT_NODES}); wide objects are bounded before descriptor materialization to prevent CPU exhaustion.`,
+    );
+  }
+  // Per-key descriptor walk (one at a time, NOT a bulk
+  // getOwnPropertyDescriptors call) so getters are NOT invoked AND a
+  // wide object cannot force bulk allocation. Reject accessors and
+  // non-enumerable own properties outright.
+  for (const k of keys) {
+    const desc = Object.getOwnPropertyDescriptor(value, k);
+    if (desc === undefined) continue;
     if (typeof desc.get === "function" || typeof desc.set === "function") {
       throw new TypeError(
         `Artifact at ${path}.${k} is an accessor (getter/setter); verifier rejects accessors so caller code never executes during validation.`,
