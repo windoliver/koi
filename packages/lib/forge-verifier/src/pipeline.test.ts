@@ -561,6 +561,71 @@ describe("runPipeline — security regressions", () => {
     expect(result.error.message).toContain("non-plain");
   });
 
+  test("self-referential plain object is accepted (cycle guard)", async () => {
+    type Cyclic = { name: string; self?: Cyclic };
+    const obj: Cyclic = { name: "cyc" };
+    obj.self = obj;
+    // structuredClone supports cycles; the validator must too.
+    const result = await runPipeline([createSyntaxStage(okCheck)], obj as unknown as FakeArtifact);
+    expect(result.ok).toBe(true);
+  });
+
+  test("self-referential array is accepted (cycle guard)", async () => {
+    const arr: unknown[] = [];
+    arr.push(arr);
+    const result = await runPipeline([createSyntaxStage(okCheck)], {
+      name: "x",
+      inner: arr,
+    } as unknown as FakeArtifact);
+    expect(result.ok).toBe(true);
+  });
+
+  test("abort before cache lookup maps to TIMEOUT — does not consult cache", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    let cacheHit = 0;
+    const cache = {
+      get: async () => {
+        cacheHit += 1;
+        return undefined;
+      },
+      set: async () => {},
+    };
+    const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
+      artifactFingerprint: () => "k",
+      cache,
+      signal: ac.signal,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("TIMEOUT");
+    expect(cacheHit).toBe(0);
+  });
+
+  test("abort during cache lookup is honored — does not return cached success", async () => {
+    const ac = new AbortController();
+    const slowCache = {
+      get: async (): Promise<ForgeVerificationSummary | undefined> => {
+        ac.abort(); // simulate caller giving up while the read is in flight
+        return {
+          passed: true,
+          sandbox: false,
+          totalDurationMs: 0,
+          stageResults: [{ stage: "syntax", passed: true, durationMs: 0 }],
+        };
+      },
+      set: async () => {},
+    };
+    const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
+      artifactFingerprint: () => "k",
+      cache: slowCache,
+      signal: ac.signal,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("TIMEOUT");
+  });
+
   test("nested Map inside a plain object is also rejected", async () => {
     const stages = [createSyntaxStage(okCheck)];
     const result = await runPipeline(stages, {

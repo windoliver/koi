@@ -95,7 +95,8 @@ via the same `VerifierStage` interface.
 | Cache hit | When the composed key resolves, no stages run and the cached summary is returned verbatim. The pipeline does not re-validate cached summaries. |
 | Cache miss | Pipeline runs normally. On `passed: true`, the summary is stored via `cache.set`. **Cache writes are best-effort**: a `cache.set` throw is caught, logged via `console.debug`, and the successful verification is still returned. Verifier availability does not depend on cache availability. |
 | `sandbox` field | Always `false` — this package does not run a sandbox. Sandbox-bearing stages must be added by a downstream package and the orchestrator forwards their `sandbox` claim through (see "Sandbox flag" below). |
-| Cancellation | `signal.aborted` is checked **before each stage starts AND after each stage completes (including the final stage)** before any success summary is returned. A stage that ignores the signal and returns a late `ok: true` cannot commit a pass that the caller has already given up on. The error is attributed to the stage that aborted. |
+| Cancellation | `signal.aborted` is checked at every observable point: before the cache lookup, after the awaited `cache.get`, before each stage starts, AND after each stage completes (including the final stage) before any success summary is returned. A late stage success or a slow cache read cannot commit a pass that the caller has already given up on. |
+| Cyclic artifacts | Self-referential plain objects and arrays are accepted (a `WeakSet`-based visited tracker prevents stack overflow during shape validation). `structuredClone` handles the actual snapshot. |
 
 ### Sandbox flag
 

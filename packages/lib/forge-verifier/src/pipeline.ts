@@ -146,7 +146,7 @@ export async function runPipeline<I>(
     if (artifact !== null && typeof artifact === "object") {
       // Validate shape FIRST — reject Map/Set/typed-array/class-instance
       // before structuredClone has a chance to silently coerce or drop info.
-      rejectUnsupportedShape(artifact, "$");
+      rejectUnsupportedShape(artifact, "$", new WeakSet<object>());
       snapshot = structuredClone(artifact);
       deepFreeze(snapshot);
     } else {
@@ -175,7 +175,22 @@ export async function runPipeline<I>(
       : undefined;
 
   if (composedKey !== undefined && cache !== undefined) {
+    if (signal?.aborted) {
+      return {
+        ok: false,
+        error: stageError("TIMEOUT", "<cache>", "Pipeline aborted before cache lookup."),
+      };
+    }
     const hit = await cache.get(composedKey);
+    // Re-check after the await — a remote cache.get can take real time and
+    // a caller that aborted during the read must not receive a cached pass
+    // they explicitly gave up on.
+    if (signal?.aborted) {
+      return {
+        ok: false,
+        error: stageError("TIMEOUT", "<cache>", "Pipeline aborted during cache lookup."),
+      };
+    }
     if (hit !== undefined && isCachedSummaryConsistent(hit, stages)) {
       return {
         ok: true,
@@ -298,8 +313,13 @@ export async function runPipeline<I>(
  *   what the caller passed in and the cached pass would attest to a different
  *   shape than the input.
  */
-function rejectUnsupportedShape(value: unknown, path: string): void {
+function rejectUnsupportedShape(value: unknown, path: string, seen: WeakSet<object>): void {
   if (value === null || typeof value !== "object") return;
+  // Cycle guard: a self-referential plain object is legal for
+  // `structuredClone`, but unbounded recursion here would let a crafted
+  // artifact knock the verifier over. Validate each object exactly once.
+  if (seen.has(value)) return;
+  seen.add(value);
   if (
     ArrayBuffer.isView(value) ||
     value instanceof ArrayBuffer ||
@@ -311,7 +331,9 @@ function rejectUnsupportedShape(value: unknown, path: string): void {
     );
   }
   if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i++) rejectUnsupportedShape(value[i], `${path}[${i}]`);
+    for (let i = 0; i < value.length; i++) {
+      rejectUnsupportedShape(value[i], `${path}[${i}]`, seen);
+    }
     return;
   }
   // Non-plain object (class instance, etc.): structuredClone strips the
@@ -324,7 +346,7 @@ function rejectUnsupportedShape(value: unknown, path: string): void {
     );
   }
   for (const [k, v] of Object.entries(value)) {
-    rejectUnsupportedShape(v, `${path}.${k}`);
+    rejectUnsupportedShape(v, `${path}.${k}`, seen);
   }
 }
 
