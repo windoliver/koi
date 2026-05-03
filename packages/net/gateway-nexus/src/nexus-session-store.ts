@@ -98,8 +98,30 @@ function unavailable(id: string): KoiError {
   return external(`Session store unavailable for ${id} (Nexus degraded)`);
 }
 
+/**
+ * Single-path read via `read_bulk` — bare `read` was removed from the HTTP
+ * RPC surface (nexi-lab/nexus#4000) in favor of batch variants. Returns
+ * the inner bytes envelope (or undefined when Nexus reports `null` for the
+ * path, which is its in-band NOT_FOUND signal).
+ */
+async function readPath(
+  transport: NexusTransport,
+  path: string,
+): Promise<Result<unknown | undefined, KoiError>> {
+  const r = await transport.call<Record<string, unknown> | null>("read_bulk", { paths: [path] });
+  if (!r.ok) return { ok: false, error: r.error };
+  if (r.value === null || typeof r.value !== "object") return { ok: true, value: undefined };
+  // Single-element batch: result key may be the literal request path OR a
+  // leading-slash normalized form. Take the first entry rather than literal
+  // key lookup.
+  const entries = Object.values(r.value);
+  const value = entries[0];
+  return { ok: true, value: value === null ? undefined : value };
+}
+
 async function fetchRemote(s: StoreInternals, id: string): Promise<Result<Session, KoiError>> {
-  const r = await s.transport.call<unknown>("read", { path: nexusPath(s.basePath, id) });
+  const path = nexusPath(s.basePath, id);
+  const r = await readPath(s.transport, path);
   if (!r.ok) {
     if (r.error.code === "NOT_FOUND") {
       // Don't penalize health for legitimate misses.
@@ -107,6 +129,10 @@ async function fetchRemote(s: StoreInternals, id: string): Promise<Result<Sessio
     }
     s.setDegradation(recordFailure(s.getDegradation(), s.degradationConfig));
     return { ok: false, error: r.error };
+  }
+  if (r.value === undefined) {
+    s.setDegradation(recordSuccess(s.getDegradation()));
+    return { ok: false, error: notFound(id, `Session not found: ${id}`) };
   }
   s.setDegradation(recordSuccess(s.getDegradation()));
   const text = extractReadContent(r.value);
@@ -121,6 +147,43 @@ async function fetchRemote(s: StoreInternals, id: string): Promise<Result<Sessio
   return { ok: true, value: record.session };
 }
 
+/**
+ * `delete_batch` returns a per-path object `{path: {success: bool, error?: string}}`
+ * rather than a JSON-RPC -32000 NOT_FOUND error. Two response-shape quirks
+ * to handle:
+ *   1. The result key may be the literal request path OR a leading-slash
+ *      normalized form (Nexus stores under `/p` even when written as `p`).
+ *      Pick the first entry rather than literal-key lookup.
+ *   2. Translate the in-band "File not found" string back to NOT_FOUND so
+ *      callers (and the degradation state machine) keep the same semantics
+ *      they had under the bare `delete`.
+ */
+async function deletePath(
+  transport: NexusTransport,
+  path: string,
+): Promise<Result<boolean, KoiError>> {
+  const r = await transport.call<Record<string, { success?: boolean; error?: string }>>(
+    "delete_batch",
+    { paths: [path] },
+  );
+  if (!r.ok) return { ok: false, error: r.error };
+  const obj = r.value !== null && typeof r.value === "object" ? r.value : undefined;
+  if (obj === undefined) {
+    return { ok: false, error: external(`delete_batch returned no entry for ${path}`) };
+  }
+  const entries = Object.values(obj);
+  const entry = entries[0];
+  if (entry === undefined) {
+    return { ok: false, error: external(`delete_batch returned empty result for ${path}`) };
+  }
+  if (entry.success === true) return { ok: true, value: true };
+  const msg = entry.error ?? "delete_batch failed";
+  if (msg.toLowerCase().includes("not found")) {
+    return { ok: false, error: notFound(path, msg) };
+  }
+  return { ok: false, error: external(msg) };
+}
+
 async function deleteRemote(s: StoreInternals, id: string): Promise<Result<boolean, KoiError>> {
   // Cancel queued writes BEFORE draining so an in-flight failed write
   // cannot requeue under the stale value after we tombstone the path
@@ -132,9 +195,9 @@ async function deleteRemote(s: StoreInternals, id: string): Promise<Result<boole
   // before delete() but lands at Nexus AFTER the delete would resurrect
   // the record (write succeeds → delete succeeds → write-late wins).
   await s.drainWrite(id);
-  let r: Result<unknown, KoiError>;
+  let r: Result<boolean, KoiError>;
   try {
-    r = await s.transport.call<unknown>("delete", { path: nexusPath(s.basePath, id) });
+    r = await deletePath(s.transport, nexusPath(s.basePath, id));
   } catch (e: unknown) {
     s.setDegradation(recordFailure(s.getDegradation(), s.degradationConfig));
     return { ok: false, error: external(`delete failed for ${id}`, e) };
@@ -258,7 +321,13 @@ export function createNexusSessionStore(
 
   const queue: WriteQueue = createWriteQueue(
     async (path, data) => {
-      const r = await transport.call<unknown>("write", { path, content: data });
+      // Single-path write via `write_batch` — bare `write` was removed from
+      // the HTTP RPC surface (nexi-lab/nexus#4000). The wire shape is a
+      // tuple list `[[path, content]]`; the server returns one entry per
+      // file with `{content_id, version, modified_at}`.
+      const r = await transport.call<unknown>("write_batch", {
+        files: [[path, { __type__: "bytes", data: Buffer.from(data, "utf-8").toString("base64") }]],
+      });
       if (r.ok) {
         degradation = recordSuccess(degradation);
         return;

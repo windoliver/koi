@@ -44,6 +44,28 @@ function makeTransport(handler: Handler): {
   };
 }
 
+/**
+ * Wrap a per-path read_bulk response — the helper unwraps `value[path]`,
+ * so the mock has to key its payload off the path the caller asked for.
+ */
+function readBulkResponse(
+  params: Record<string, unknown>,
+  envelope: unknown,
+): Result<unknown, KoiError> {
+  const paths = (params as { paths: readonly string[] }).paths;
+  return { ok: true, value: { [paths[0] ?? ""]: envelope } };
+}
+
+function deleteBatchOk(params: Record<string, unknown>): Result<unknown, KoiError> {
+  const paths = (params as { paths: readonly string[] }).paths;
+  return { ok: true, value: { [paths[0] ?? ""]: { success: true } } };
+}
+
+function writePath(params: Record<string, unknown>): string {
+  const files = (params as { files: ReadonlyArray<readonly [string, unknown]> }).files;
+  return files[0]?.[0] ?? "";
+}
+
 describe("nexus session store", () => {
   test("set caches locally and queues immediate write for new session", async () => {
     const { transport, calls } = makeTransport(async () => ({ ok: true, value: undefined }));
@@ -52,7 +74,7 @@ describe("nexus session store", () => {
     expect(r.ok).toBe(true);
     // immediate write fires without flush
     await new Promise<void>((res) => setTimeout(res, 10));
-    expect(calls.find((c) => c.method === "write")).toBeDefined();
+    expect(calls.find((c) => c.method === "write_batch")).toBeDefined();
     await handle.dispose();
   });
 
@@ -74,8 +96,9 @@ describe("nexus session store", () => {
       ownedSince: 1,
       version: 1,
     };
-    const { transport } = makeTransport(async (method) => {
-      if (method === "read") return { ok: true, value: { content: JSON.stringify(record) } };
+    const { transport } = makeTransport(async (method, params) => {
+      if (method === "read_bulk")
+        return readBulkResponse(params, { content: JSON.stringify(record) });
       return { ok: true, value: undefined };
     });
     const handle = createNexusSessionStore({ transport });
@@ -88,10 +111,11 @@ describe("nexus session store", () => {
   });
 
   test("get on nexus NOT_FOUND returns notFound error", async () => {
-    const { transport } = makeTransport(async () => ({
-      ok: false,
-      error: { code: "NOT_FOUND", message: "missing", retryable: RETRYABLE_DEFAULTS.NOT_FOUND },
-    }));
+    // read_bulk's NOT_FOUND signal is in-band: result[path] === null.
+    const { transport } = makeTransport(async (_method, params) => {
+      const paths = (params as { paths: readonly string[] }).paths;
+      return { ok: true, value: { [paths[0] ?? ""]: null } };
+    });
     const handle = createNexusSessionStore({ transport });
     const r = await handle.store.get("ghost");
     expect(r.ok).toBe(false);
@@ -101,7 +125,7 @@ describe("nexus session store", () => {
   test("degraded reads short-circuit (no nexus call, EXTERNAL not NOT_FOUND)", async () => {
     let readCount = 0;
     const { transport } = makeTransport(async (method) => {
-      if (method === "read") {
+      if (method === "read_bulk") {
         readCount++;
         return {
           ok: false,
@@ -127,14 +151,17 @@ describe("nexus session store", () => {
   });
 
   test("delete removes from cache and fires async nexus delete", async () => {
-    const { transport, calls } = makeTransport(async () => ({ ok: true, value: undefined }));
+    const { transport, calls } = makeTransport(async (method, params) => {
+      if (method === "delete_batch") return deleteBatchOk(params);
+      return { ok: true, value: undefined };
+    });
     const handle = createNexusSessionStore({ transport });
     await handle.store.set(session({ id: "s-del" }));
     const r = await handle.store.delete("s-del");
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value).toBe(true);
     await new Promise<void>((res) => setTimeout(res, 10));
-    expect(calls.some((c) => c.method === "delete")).toBe(true);
+    expect(calls.some((c) => c.method === "delete_batch")).toBe(true);
     await handle.dispose();
   });
 
@@ -149,8 +176,8 @@ describe("nexus session store", () => {
   });
 
   test("get returns VALIDATION error when nexus payload shape is bad", async () => {
-    const { transport } = makeTransport(async (method) => {
-      if (method === "read") return { ok: true, value: { unexpected: "shape" } };
+    const { transport } = makeTransport(async (method, params) => {
+      if (method === "read_bulk") return readBulkResponse(params, { unexpected: "shape" });
       return { ok: true, value: undefined };
     });
     const handle = createNexusSessionStore({ transport });
@@ -173,7 +200,7 @@ describe("nexus session store", () => {
 
   test("write failure flips degradation", async () => {
     const { transport } = makeTransport(async (method) => {
-      if (method === "write") {
+      if (method === "write_batch") {
         return {
           ok: false,
           error: { code: "EXTERNAL", message: "down", retryable: RETRYABLE_DEFAULTS.EXTERNAL },
@@ -193,7 +220,7 @@ describe("nexus session store", () => {
 
   test("delete failure flips degradation", async () => {
     const { transport } = makeTransport(async (method) => {
-      if (method === "delete") {
+      if (method === "delete_batch") {
         return {
           ok: false,
           error: { code: "EXTERNAL", message: "down", retryable: RETRYABLE_DEFAULTS.EXTERNAL },
@@ -215,7 +242,7 @@ describe("nexus session store", () => {
 
   test("delete throws → catch path flips degradation", async () => {
     const { transport } = makeTransport(async (method) => {
-      if (method === "delete") throw new Error("network down");
+      if (method === "delete_batch") throw new Error("network down");
       return { ok: true, value: undefined };
     });
     const handle = createNexusSessionStore({
@@ -237,9 +264,9 @@ describe("nexus session store", () => {
     });
     await handle.store.set(session({ id: "weird/id with..stuff" }));
     await new Promise<void>((res) => setTimeout(res, 10));
-    const writeCall = calls.find((c) => c.method === "write");
+    const writeCall = calls.find((c) => c.method === "write_batch");
     expect(writeCall).toBeDefined();
-    const path = (writeCall?.params as { path: string }).path;
+    const path = writePath(writeCall?.params ?? {});
     expect(path.startsWith("x/y/")).toBe(true);
     expect(path).not.toContain("..");
     await handle.dispose();
@@ -254,8 +281,8 @@ describe("nexus session store", () => {
     for (const id of ids) await handle.store.set(session({ id }));
     await new Promise<void>((res) => setTimeout(res, 10));
     const writePaths = calls
-      .filter((c) => c.method === "write")
-      .map((c) => (c.params as { path: string }).path);
+      .filter((c) => c.method === "write_batch")
+      .map((c) => writePath(c.params));
     const unique = new Set(writePaths);
     expect(unique.size).toBe(ids.length);
     await handle.dispose();
@@ -263,7 +290,7 @@ describe("nexus session store", () => {
 
   test("delete returns awaited Result (not a fire-and-forget undefined)", async () => {
     const { transport } = makeTransport(async (method) => {
-      if (method === "delete") {
+      if (method === "delete_batch") {
         return {
           ok: false,
           error: { code: "EXTERNAL", message: "boom", retryable: RETRYABLE_DEFAULTS.EXTERNAL },
@@ -286,10 +313,11 @@ describe("nexus session store", () => {
       releaseDelete = res;
     });
     let deleteCompleted = false;
-    const { transport } = makeTransport(async (method) => {
-      if (method === "delete") {
+    const { transport } = makeTransport(async (method, params) => {
+      if (method === "delete_batch") {
         await deleteGate;
         deleteCompleted = true;
+        return deleteBatchOk(params);
       }
       return { ok: true, value: undefined };
     });
@@ -312,15 +340,15 @@ describe("nexus session store", () => {
       ownedSince: 1,
       version: 1,
     };
-    const { transport } = makeTransport(async (method) => {
-      if (method !== "read") return { ok: true, value: undefined };
+    const { transport } = makeTransport(async (method, params) => {
+      if (method !== "read_bulk") return { ok: true, value: undefined };
       if (phase === "fail") {
         return {
           ok: false,
           error: { code: "EXTERNAL", message: "boom", retryable: RETRYABLE_DEFAULTS.EXTERNAL },
         };
       }
-      return { ok: true, value: { content: JSON.stringify(record) } };
+      return readBulkResponse(params, { content: JSON.stringify(record) });
     });
     const handle = createNexusSessionStore({
       transport,
@@ -370,15 +398,15 @@ describe("nexus session store", () => {
       releaseWrite = res;
     });
     const events: string[] = [];
-    const { transport } = makeTransport(async (method) => {
-      if (method === "write") {
+    const { transport } = makeTransport(async (method, params) => {
+      if (method === "write_batch") {
         await writeGate;
         events.push("write-succeeded");
         return { ok: true, value: undefined };
       }
-      if (method === "delete") {
+      if (method === "delete_batch") {
         events.push("delete-issued");
-        return { ok: true, value: undefined };
+        return deleteBatchOk(params);
       }
       return { ok: true, value: undefined };
     });
@@ -406,9 +434,9 @@ describe("nexus session store", () => {
     const writes: string[] = [];
     let writeAttempt = 0;
     const { transport } = makeTransport(async (method, params) => {
-      if (method === "write") {
+      if (method === "write_batch") {
         writeAttempt++;
-        const path = (params as { path: string }).path;
+        const path = writePath(params);
         if (writeAttempt === 1) {
           await firstWriteGate;
           // First write fails so it would normally requeue.
@@ -420,6 +448,7 @@ describe("nexus session store", () => {
         writes.push(path);
         return { ok: true, value: undefined };
       }
+      if (method === "delete_batch") return deleteBatchOk(params);
       return { ok: true, value: undefined };
     });
     const handle = createNexusSessionStore({
@@ -440,7 +469,7 @@ describe("nexus session store", () => {
 
   test("degraded probe still cooling down returns EXTERNAL (not NOT_FOUND)", async () => {
     const { transport } = makeTransport(async (method) => {
-      if (method !== "read") return { ok: true, value: undefined };
+      if (method !== "read_bulk") return { ok: true, value: undefined };
       return {
         ok: false,
         error: { code: "EXTERNAL", message: "boom", retryable: RETRYABLE_DEFAULTS.EXTERNAL },
