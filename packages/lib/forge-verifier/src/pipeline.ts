@@ -370,6 +370,13 @@ async function runStage<I>(
   readonly aborted?: true;
 }> {
   const started = performance.now();
+  // Capture handles so they can be cleaned up after the race settles —
+  // otherwise every successful stage leaves a live setTimeout AND an
+  // abort listener attached to the caller signal until the timeout
+  // expires or the signal eventually fires. Under load that grows into
+  // a memory leak and `MaxListenersExceededWarning`.
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let abortListener: (() => void) | undefined;
   try {
     // Race stage execution against the caller signal AND the optional
     // per-stage watchdog. A buggy or hostile plugin that ignores
@@ -384,16 +391,15 @@ async function runStage<I>(
             reject(new PipelineAbort("aborted via signal"));
             return;
           }
-          signal.addEventListener("abort", () => reject(new PipelineAbort("aborted via signal")), {
-            once: true,
-          });
+          abortListener = (): void => reject(new PipelineAbort("aborted via signal"));
+          signal.addEventListener("abort", abortListener, { once: true });
         }),
       );
     }
     if (stageTimeoutMs !== undefined && Number.isFinite(stageTimeoutMs) && stageTimeoutMs > 0) {
       racers.push(
         new Promise<StageOutcome>((_, reject) => {
-          setTimeout(
+          timeoutHandle = setTimeout(
             () =>
               reject(
                 new PipelineAbort(
@@ -420,6 +426,11 @@ async function runStage<I>(
       durationMs: performance.now() - started,
       thrown: e,
     };
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    if (abortListener !== undefined && signal !== undefined) {
+      signal.removeEventListener("abort", abortListener);
+    }
   }
 }
 
@@ -1061,10 +1072,22 @@ function rejectUnsupportedShape(
         `Artifact at ${path} (array) has symbol-keyed own properties; verifier requires plain-data artifacts.`,
       );
     }
+    // Charge the array's declared length toward the budget BEFORE any
+    // hole scan. Without this, `new Array(1_000_000_000)` forces an
+    // O(length) synchronous scan even though the budget should reject
+    // it instantly.
+    budget.count += value.length;
+    if (budget.count > MAX_ARTIFACT_NODES) {
+      throw new TypeError(
+        `Artifact at ${path} declares length=${value.length} which alone exceeds the maximum node count (${MAX_ARTIFACT_NODES}); arrays are bounded by their declared length to prevent CPU exhaustion before any hole scan.`,
+      );
+    }
     const arrDescs = Object.getOwnPropertyDescriptors(value);
     // Reject sparse arrays: every index in [0, length) MUST have an own
     // data descriptor. A hole would be skipped by Array.prototype.map and
     // alias to a denser array's cache key — different content, same key.
+    // Bounded by the budget charge above so a hostile huge `length` is
+    // already rejected before we get here.
     for (let i = 0; i < value.length; i++) {
       if (!Object.hasOwn(arrDescs, String(i))) {
         throw new TypeError(
