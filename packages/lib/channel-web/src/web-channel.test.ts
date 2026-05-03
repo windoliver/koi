@@ -451,6 +451,20 @@ describe("@koi/channel-web", () => {
     expect(aliceMessages).toHaveLength(0);
   });
 
+  test("WS upgrade requires ?thread= in authenticated mode (no shared unscoped broadcast)", async () => {
+    h = await startHarness({
+      authenticate: () => ({ senderId: "alice" }),
+    });
+    // No ?thread= → reject. Authenticated unscoped subscribers would form a
+    // shared cross-tenant broadcast bucket for any unthreaded outbound send.
+    const ws = new WebSocket(`ws://127.0.0.1:${h.port}/ws`);
+    const result = await new Promise<"open" | "error">((r) => {
+      ws.addEventListener("open", () => r("open"), { once: true });
+      ws.addEventListener("error", () => r("error"), { once: true });
+    });
+    expect(result).toBe("error");
+  });
+
   test("WS upgrade accepts ?token= query (browsers can't set Authorization header)", async () => {
     h = await startHarness({
       authenticate: (ctx) => (ctx.token === "secret-tok" ? { senderId: "alice" } : null),

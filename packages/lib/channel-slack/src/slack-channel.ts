@@ -18,19 +18,26 @@ import { verifySlackRequest } from "./verify-signature.js";
 
 /** Replay window in `verify-signature.ts` is 5 minutes — match it here. */
 const DEDUPE_TTL_MS = 5 * 60 * 1000;
+/**
+ * High-water cap to prevent OOM if traffic somehow exceeds 50k unique
+ * deliveries inside a single 5-minute replay window. At that point we evict
+ * oldest-first; correctness degrades gracefully (a duplicate dispatch becomes
+ * possible) rather than crashing the process. 50k unique deliveries / 5min =
+ * ~167 events/sec sustained, far above realistic Slack workspace throughput.
+ */
+const DEDUPE_HIGH_WATER = 50_000;
 
 /**
- * In-memory dedupe with TTL-only eviction. Slack retries unacked deliveries
- * via `Retry-Num`, and replay attacks within the verification window are
- * still possible after signature checking, so every accepted signed request
- * must pass through this gate before dispatch.
+ * In-memory dedupe with TTL eviction and a high-water backstop. Slack retries
+ * unacked deliveries via `Retry-Num`, and replay attacks within the
+ * verification window are still possible after signature checking, so every
+ * accepted signed request must pass through this gate before dispatch.
  *
- * Eviction is strictly TTL-based: entries are removed only when their replay
- * window has expired, never to make room. A size-based FIFO cap would let an
- * older still-live `event_id` be evicted right before its retry arrives,
- * defeating the dedupe under sustained traffic. Map insertion order matches
- * expiry order (TTL is fixed), so each `observe` amortizes O(1) sweep of
- * already-expired keys from the front.
+ * Eviction order:
+ *   1. Sweep expired entries on every `observe()`. Map insertion order matches
+ *      expiry order (TTL is fixed), so this amortizes O(1).
+ *   2. If the live set still exceeds DEDUPE_HIGH_WATER, evict the oldest
+ *      entry. This is the safety valve against OOM under abnormal bursts.
  */
 function createIngressDedupe(): {
   readonly observe: (key: string, nowMs: number) => boolean;
@@ -47,6 +54,11 @@ function createIngressDedupe(): {
     observe: (key: string, nowMs: number): boolean => {
       sweepExpired(nowMs);
       if (seen.has(key)) return true;
+      while (seen.size >= DEDUPE_HIGH_WATER) {
+        const oldest = seen.keys().next().value;
+        if (oldest === undefined) break;
+        seen.delete(oldest);
+      }
       seen.set(key, nowMs + DEDUPE_TTL_MS);
       return false;
     },

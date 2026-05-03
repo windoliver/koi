@@ -415,6 +415,14 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
           if (route === "/ws") {
             if (originDenied(req)) return new Response("Forbidden", { status: 403 });
             const threadId = url.searchParams.get("thread") ?? undefined;
+            // Fail closed against shared unscoped broadcast: in authenticated
+            // mode, a `?thread=` is REQUIRED. Without it, every unscoped
+            // subscriber would land in the same global bucket and an
+            // unthreaded outbound message would broadcast across tenants.
+            // Open mode keeps the unscoped path for local dev convenience.
+            if (threadId === undefined && authenticate !== undefined) {
+              return new Response("Bad Request: thread parameter required", { status: 400 });
+            }
             const principal = await authorize(req, upgradeTokenOf(req, url), threadId);
             if (principal === null) return new Response("Unauthorized", { status: 401 });
             if (srv.upgrade(req, { data: { threadId, senderId: principal.senderId } })) {
