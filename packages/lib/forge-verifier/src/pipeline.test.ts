@@ -2834,3 +2834,54 @@ describe("R31 abort listeners are cleaned up after work() settles", () => {
     expect(removes).toBeGreaterThanOrEqual(adds);
   });
 });
+
+describe("R32 already-aborted follower does NOT detach the leader", () => {
+  test("leader abort still stops shared pipeline when follower was dead on arrival", async () => {
+    let stageCalls = 0;
+    let release: (() => void) | undefined;
+    const stage: VerifierStage<FakeArtifact> = {
+      name: "shared",
+      version: "1",
+      run: async (_a, ctx) => {
+        stageCalls += 1;
+        await new Promise<void>((resolve, reject) => {
+          release = resolve;
+          ctx.signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+            once: true,
+          });
+        });
+        return PASS;
+      },
+    };
+    const cache = createMemoryCache();
+    const artifact: FakeArtifact = { name: "doa" };
+    const baseOpts = {
+      cache,
+      namespace: "doa",
+      acknowledgeTrustedCache: true as const,
+      executionContextKey: "ctx",
+    };
+    const leaderAc = new AbortController();
+    const leader = runPipeline([stage], artifact, { ...baseOpts, signal: leaderAc.signal });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stageCalls).toBe(1);
+    // Pre-aborted follower arrives.
+    const deadAc = new AbortController();
+    deadAc.abort();
+    const deadFollower = runPipeline([stage], artifact, { ...baseOpts, signal: deadAc.signal });
+    const deadResult = await deadFollower;
+    expect(deadResult.ok).toBe(false); // immediate TIMEOUT, no coalescing
+    // Leader aborts. Because the dead follower did NOT detach the
+    // leader, the leader's signal still propagates into the
+    // pipelineSignal mirror and the stage observes the abort.
+    leaderAc.abort();
+    const leaderResult = await leader;
+    expect(leaderResult.ok).toBe(false); // leader saw its own abort
+    if (release !== undefined) release(); // cleanup
+    // Stage was started exactly once for the leader; dead follower did
+    // not trigger a second start either (it returned without coalescing
+    // OR starting a fresh leader, which is fine — pre-aborted callers
+    // get TIMEOUT immediately).
+    expect(stageCalls).toBe(1);
+  });
+});

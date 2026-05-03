@@ -849,6 +849,13 @@ export async function runPipeline<I>(
     if (existing !== undefined) {
       if (existing.leaderPipelineSignal?.aborted === true) {
         inflight.delete(inflightKey);
+      } else if (signal?.aborted === true) {
+        // Follower is dead on arrival: do NOT detach the leader from
+        // its own cancellation path (detach is irreversible and would
+        // prevent the leader's abort from short-circuiting the shared
+        // work even though no live consumer ever joined). Just return
+        // a TIMEOUT directly without coalescing.
+        return waitWithSignal(existing.promise, signal);
       } else {
         existing.detach();
         existing.registerConsumer(signal);
