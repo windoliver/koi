@@ -31,11 +31,18 @@ export type StageOutcome =
  * Extension point. To add a new stage, write a `VerifierStage` value and
  * pass it into the `stages` array — no edits to `runPipeline`.
  *
- * `version` participates in the cache fingerprint. Two stages with the same
- * `name` but different `version` produce different cache keys, so tightening
- * a stage's logic without renaming it invalidates prior cached pass results.
- * Defaults to `"0"` when omitted; bump it whenever the stage's check
- * semantics change in a way callers should re-verify.
+ * `version` is REQUIRED and participates in the cache fingerprint. Two
+ * stages with the same `name` but different `version` produce different
+ * cache keys, so tightening a stage's logic without renaming it
+ * invalidates prior cached pass results. Bump it whenever the stage's
+ * check semantics change in a way callers should re-verify. Required
+ * (rather than optional with a default) because two different plugin
+ * implementations sharing the same `(name, sandboxed)` tuple but each
+ * defaulting `version` would alias each other in the cache and the
+ * single-flight slot — one plugin's pass could satisfy another plugin's
+ * stage without its logic ever running. Forcing each stage author to
+ * make a deliberate version claim eliminates that class of false
+ * positive at compile time.
  *
  * `sandboxed` declares (statically) whether the stage executes the artifact
  * inside an isolation boundary. The orchestrator uses this — NOT the cached
@@ -47,7 +54,7 @@ export type StageOutcome =
  */
 export interface VerifierStage<I = unknown> {
   readonly name: string;
-  readonly version?: string | undefined;
+  readonly version: string;
   readonly sandboxed?: boolean | undefined;
   readonly run: (artifact: I, ctx: StageContext) => StageOutcome | Promise<StageOutcome>;
 }

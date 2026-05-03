@@ -26,7 +26,10 @@ via the same `VerifierStage` interface.
   and `context.stage` identifying the failing stage.
 - `VerifierStage<I>` — the extension point. Fields:
   - `name: string`
-  - `version?: string` — bump to invalidate prior cache entries.
+  - `version: string` — REQUIRED. Bump to invalidate prior cache entries.
+    Required (not optional) so two different plugin implementations
+    sharing the same `(name, sandboxed)` tuple cannot alias each other
+    in the cache or single-flight slot.
   - `sandboxed?: boolean` — declares (statically) whether this stage
     runs the artifact inside an isolation boundary. The orchestrator
     uses this declaration — not any cached value — to compute the
@@ -49,9 +52,9 @@ via the same `VerifierStage` interface.
   (digests are owned by the orchestrator). Failure carries `reason:
   string` and optional `cause: unknown`. The orchestrator converts
   failure into a `KoiError` and stops the pipeline.
-- `createSyntaxStage(check, version?): VerifierStage<I>`,
-  `createTypeStage(check, version?): VerifierStage<I>`,
-  `createTestStage(check, version?): VerifierStage<I>` — built-in stage
+- `createSyntaxStage(check, version): VerifierStage<I>`,
+  `createTypeStage(check, version): VerifierStage<I>`,
+  `createTestStage(check, version): VerifierStage<I>` — built-in stage
   factories. Each accepts a caller-supplied
   `check: (artifact: I, ctx: StageContext) => StageOutcome | Promise<StageOutcome>`
   and wraps it with the canonical stage name (`"syntax"`, `"type"`,

@@ -26,7 +26,7 @@ function counted<I>(stage: VerifierStage<I>): {
   return {
     stage: {
       name: stage.name,
-      ...(stage.version !== undefined ? { version: stage.version } : {}),
+      version: stage.version,
       ...(stage.sandboxed !== undefined ? { sandboxed: stage.sandboxed } : {}),
       run: async (artifact, ctx) => {
         n += 1;
@@ -104,10 +104,14 @@ describe("runPipeline", () => {
   });
 
   test("short-circuits on first failure (counter assertion)", async () => {
-    const a = counted({ name: "a", run: async () => PASS });
-    const b = counted({ name: "b", run: async () => ({ ok: false as const, reason: "stop" }) });
-    const c = counted({ name: "c", run: async () => PASS });
-    const d = counted({ name: "d", run: async () => PASS });
+    const a = counted({ name: "a", version: "1", run: async () => PASS });
+    const b = counted({
+      name: "b",
+      version: "1",
+      run: async () => ({ ok: false as const, reason: "stop" }),
+    });
+    const c = counted({ name: "c", version: "1", run: async () => PASS });
+    const d = counted({ name: "d", version: "1", run: async () => PASS });
     const result = await runPipeline([a.stage, b.stage, c.stage, d.stage], artifact);
     expect(result.ok).toBe(false);
     expect(a.calls()).toBe(1);
@@ -143,6 +147,7 @@ describe("runPipeline", () => {
   test("stage that throws maps to INTERNAL with cause", async () => {
     const boom: VerifierStage<FakeArtifact> = {
       name: "boom",
+      version: "1",
       run: async () => {
         throw new Error("kaboom");
       },
@@ -160,12 +165,13 @@ describe("runPipeline", () => {
     const stages: readonly VerifierStage<FakeArtifact>[] = [
       {
         name: "first",
+        version: "1",
         run: async () => {
           ac.abort();
           return PASS;
         },
       },
-      { name: "never", run: async () => PASS },
+      { name: "never", version: "1", run: async () => PASS },
     ];
     const result = await runPipeline(stages, artifact, { signal: ac.signal });
     expect(result.ok).toBe(false);
@@ -184,9 +190,9 @@ describe("runPipeline", () => {
       return PASS;
     };
     const stages: readonly VerifierStage<FakeArtifact>[] = [
-      { name: "s1", run: async (_a, ctx) => record(ctx) },
-      { name: "s2", run: async (_a, ctx) => record(ctx) },
-      { name: "s3", run: async (_a, ctx) => record(ctx) },
+      { name: "s1", version: "1", run: async (_a, ctx) => record(ctx) },
+      { name: "s2", version: "1", run: async (_a, ctx) => record(ctx) },
+      { name: "s3", version: "1", run: async (_a, ctx) => record(ctx) },
     ];
     const result = await runPipeline(stages, artifact);
     expect(result.ok).toBe(true);
@@ -195,8 +201,13 @@ describe("runPipeline", () => {
 
   test("sandboxed declaration flows into summary.sandbox", async () => {
     const stages: readonly VerifierStage<FakeArtifact>[] = [
-      { name: "plain", run: async () => PASS },
-      { name: "sb", sandboxed: true, run: async () => ({ ok: true, sandboxed: true }) },
+      { name: "plain", version: "1", run: async () => PASS },
+      {
+        name: "sb",
+        version: "1",
+        sandboxed: true,
+        run: async () => ({ ok: true, sandboxed: true }),
+      },
     ];
     const result = await runPipeline(stages, artifact);
     expect(result.ok).toBe(true);
@@ -210,7 +221,7 @@ describe("runPipeline", () => {
     // returning `outcome.sandboxed === true` would let a stage advertise
     // isolation it never actually entered.
     const stages: readonly VerifierStage<FakeArtifact>[] = [
-      { name: "sb", sandboxed: true, run: async () => ({ ok: true }) }, // no sandboxed field
+      { name: "sb", version: "1", sandboxed: true, run: async () => ({ ok: true }) }, // no sandboxed field
     ];
     const result = await runPipeline(stages, artifact);
     expect(result.ok).toBe(false);
@@ -222,7 +233,7 @@ describe("runPipeline", () => {
   test("stage runtime sandboxed flag must agree with static declaration", async () => {
     const stages: readonly VerifierStage<FakeArtifact>[] = [
       // Declared not-sandboxed but reports sandboxed=true at runtime — mismatch.
-      { name: "lying", run: async () => ({ ok: true, sandboxed: true }) },
+      { name: "lying", version: "1", run: async () => ({ ok: true, sandboxed: true }) },
     ];
     const result = await runPipeline(stages, artifact);
     expect(result.ok).toBe(false);
@@ -267,9 +278,10 @@ describe("runPipeline — security regressions", () => {
   test("StageContext.previous is frozen — stages cannot mutate prior digests", async () => {
     const captured: { previous: readonly ForgeStageDigestLike[] }[] = [];
     const stages: readonly VerifierStage<FakeArtifact>[] = [
-      { name: "s1", run: async () => PASS },
+      { name: "s1", version: "1", run: async () => PASS },
       {
         name: "s2",
+        version: "1",
         run: async (_a, ctx) => {
           captured.push({ previous: ctx.previous });
           // Hostile stage casts away readonly and tries to corrupt the trail.
@@ -481,6 +493,7 @@ describe("runPipeline — security regressions", () => {
     let receivedNested: { count: number } | undefined;
     const stage: VerifierStage<typeof obj> = {
       name: "mutator",
+      version: "1",
       run: async (a) => {
         receivedNested = a.nested;
         // Top-level AND nested mutation must throw — otherwise an early stage
@@ -508,6 +521,7 @@ describe("runPipeline — security regressions", () => {
     const stages: readonly VerifierStage<typeof obj>[] = [
       {
         name: "first",
+        version: "1",
         run: async (a) => {
           // Hostile cast — even after dropping readonly, the deep freeze blocks
           // the write. The `try` swallows the throw so we still return PASS and
@@ -522,6 +536,7 @@ describe("runPipeline — security regressions", () => {
       },
       {
         name: "second",
+        version: "1",
         run: async (a) => {
           seenByLater.push(a.payload.v);
           return PASS;
@@ -595,7 +610,11 @@ describe("runPipeline — security regressions", () => {
         return 42;
       },
     });
-    const stage: VerifierStage<typeof obj> = { name: "inspect", run: async () => PASS };
+    const stage: VerifierStage<typeof obj> = {
+      name: "inspect",
+      version: "1",
+      run: async () => PASS,
+    };
     const result = await runPipeline([stage], obj as unknown as typeof obj);
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -623,7 +642,11 @@ describe("runPipeline — security regressions", () => {
     // never attest to a strict subset of the caller's data.
     const sym = Symbol("hidden");
     const obj = { name: "x", [sym]: { secret: 1 } };
-    const stage: VerifierStage<typeof obj> = { name: "inspect", run: async () => PASS };
+    const stage: VerifierStage<typeof obj> = {
+      name: "inspect",
+      version: "1",
+      run: async () => PASS,
+    };
     const result = await runPipeline([stage], obj as unknown as typeof obj);
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -638,7 +661,11 @@ describe("runPipeline — security regressions", () => {
       configurable: true,
       value: 99,
     });
-    const stage: VerifierStage<typeof obj> = { name: "inspect", run: async () => PASS };
+    const stage: VerifierStage<typeof obj> = {
+      name: "inspect",
+      version: "1",
+      run: async () => PASS,
+    };
     const result = await runPipeline([stage], obj as unknown as typeof obj);
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -866,6 +893,7 @@ describe("runPipeline — security regressions", () => {
     const stages: readonly VerifierStage<FakeArtifact>[] = [
       {
         name: "only",
+        version: "1",
         run: async () => {
           ac.abort();
           return PASS;
@@ -1005,7 +1033,7 @@ describe("built-in stage factories propagate StageContext", () => {
         return { ok: false, reason: "cancelled by caller" };
       }
       return PASS;
-    });
+    }, "1");
     const result = await runPipeline([stage], { name: "x" }, { signal: ac.signal });
     expect(observedSignal).toBe(ac.signal);
     expect(observedAbortedBefore).toBe(false);
@@ -1161,6 +1189,51 @@ describe("single-flight (concurrent identical requests are coalesced)", () => {
     expect(setCalls.length).toBe(0); // cache write suppressed — no false attestation persisted
   });
 
+  test("R23: solo cache-backed caller still honors signal inside the stage loop", async () => {
+    // Without the leader-detach-on-follower-join scheme, a cache-backed
+    // run with no follower would silently drop the caller's signal —
+    // expensive uncancellable work could continue burning quota after
+    // the caller had already given up.
+    const cache = createMemoryCache();
+    const ac = new AbortController();
+    let observed: AbortSignal | undefined;
+    let stage1Started = false;
+    let stage2Ran = false;
+    const stages: readonly VerifierStage<FakeArtifact>[] = [
+      {
+        name: "first",
+        version: "1",
+        run: async (_a, ctx) => {
+          observed = ctx.signal;
+          stage1Started = true;
+          ac.abort(); // caller aborts during stage 1
+          return PASS;
+        },
+      },
+      {
+        name: "second",
+        version: "1",
+        run: async () => {
+          stage2Ran = true;
+          return PASS;
+        },
+      },
+    ];
+    const r = await runPipeline(stages, { name: "solo" } as FakeArtifact, {
+      cache,
+      namespace: "solo",
+      signal: ac.signal,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe("TIMEOUT");
+    expect(stage1Started).toBe(true); // stage 1 ran
+    expect(stage2Ran).toBe(false); // pre-stage abort gate caught it
+    expect(observed).toBeDefined(); // ctx.signal was wired through
+    // Mirror signal must abort when caller signal aborts.
+    expect(observed?.aborted).toBe(true);
+  });
+
   test("solo caller aborting during final stage gets TIMEOUT, not passed=true", async () => {
     // Solo no-cache run: pipelineSignal === caller signal. Stage ignores
     // abort and returns PASS, then the post-stage abort gate discards the
@@ -1169,6 +1242,7 @@ describe("single-flight (concurrent identical requests are coalesced)", () => {
     const ac = new AbortController();
     const slow: VerifierStage<FakeArtifact> = {
       name: "only",
+      version: "1",
       run: async () => {
         ac.abort(); // caller aborts mid-stage
         await new Promise((r) => setTimeout(r, 5));
@@ -1256,12 +1330,15 @@ describe("single-flight isolation (R22: cache identity + policy)", () => {
     ]).catch(() => {});
   });
 
-  test("cache without explicit stage version is rejected as INVALID_CONFIG", async () => {
+  test("cache + missing stage version (cast bypass) is rejected as INVALID_CONFIG", async () => {
+    // `version` is required at the type level, but a caller that casts to
+    // bypass typing would otherwise alias plugin slots in the cache. The
+    // runtime check stays as defense in depth.
     const cache = createMemoryCache();
-    const stage: VerifierStage<FakeArtifact> = {
+    const stage = {
       name: "unversioned",
       run: async () => PASS,
-    };
+    } as unknown as VerifierStage<FakeArtifact>;
     const r = await runPipeline([stage], { name: "v" } as FakeArtifact, {
       cache,
       namespace: "v",
@@ -1312,7 +1389,10 @@ describe("downstream-compatibility validation (stages + cache hits)", () => {
     ["empty name", { name: "", run: async () => PASS }],
     ["non-string name", { name: 42 as unknown as string, run: async () => PASS }],
   ])("stage with %s rejected as INVALID_CONFIG up front", async (_label, badStage) => {
-    const result = await runPipeline([badStage as VerifierStage<FakeArtifact>], artifact);
+    const result = await runPipeline(
+      [badStage as unknown as VerifierStage<FakeArtifact>],
+      artifact,
+    );
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("INVALID_CONFIG");
@@ -1321,8 +1401,8 @@ describe("downstream-compatibility validation (stages + cache hits)", () => {
 
   test("duplicate stage names rejected as INVALID_CONFIG", async () => {
     const stages: readonly VerifierStage<FakeArtifact>[] = [
-      { name: "dup", run: async () => PASS },
-      { name: "dup", run: async () => PASS },
+      { name: "dup", version: "1", run: async () => PASS },
+      { name: "dup", version: "1", run: async () => PASS },
     ];
     const result = await runPipeline(stages, artifact);
     expect(result.ok).toBe(false);
@@ -1379,6 +1459,7 @@ describe("plugin contract hardening (malformed inputs stay in Result envelope)",
   ])("malformed stage outcome (%s) maps to INTERNAL", async (_label, badOutcome) => {
     const stage: VerifierStage<FakeArtifact> = {
       name: "buggy",
+      version: "1",
       run: async () => badOutcome as unknown as StageOutcome,
     };
     const result = await runPipeline([stage], artifact);
@@ -1392,6 +1473,7 @@ describe("plugin contract hardening (malformed inputs stay in Result envelope)",
   test("non-boolean sandboxed outcome maps to INTERNAL", async () => {
     const stage: VerifierStage<FakeArtifact> = {
       name: "buggy-sb",
+      version: "1",
       run: async () => ({ ok: true, sandboxed: "yes" }) as unknown as StageOutcome,
     };
     const result = await runPipeline([stage], artifact);

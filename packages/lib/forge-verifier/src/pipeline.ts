@@ -26,7 +26,22 @@ import type { StageContext, StageOutcome, VerifierStage, VerifyOptions } from ".
  * Process-local only: cross-process deduplication requires backend
  * cooperation (e.g. a Redis SET NX), out of scope here.
  */
-const inflight = new Map<string, Promise<Result<ForgeVerificationSummary>>>();
+/**
+ * `InflightEntry` carries the shared leader promise AND a `detach` callback
+ * the orchestrator invokes the moment a SECOND caller joins. The leader's
+ * pipeline starts wired to the leader's own `AbortSignal` (so a solo
+ * cache-backed run with no follower still aborts on caller cancellation).
+ * As soon as a follower attaches, `detach()` unwires the leader's caller
+ * signal — from that point the shared work runs to completion regardless
+ * of the leader caller's abort, because some other caller is now relying
+ * on it. The leader caller continues to see its own TIMEOUT via the outer
+ * `waitWithSignal` race; it simply no longer cancels the underlying work.
+ */
+interface InflightEntry {
+  readonly promise: Promise<Result<ForgeVerificationSummary>>;
+  readonly detach: () => void;
+}
+const inflight = new Map<string, InflightEntry>();
 
 /**
  * Per-cache-instance identity for the single-flight key. Two callers
@@ -602,18 +617,41 @@ export async function runPipeline<I>(
   if (inflightKey !== undefined) {
     const existing = inflight.get(inflightKey);
     if (existing !== undefined) {
-      if (signal === undefined) return existing;
-      return waitWithSignal(existing, signal);
+      // A follower joined — the leader must stop honoring its own signal
+      // because someone else is now depending on the shared result. From
+      // here the shared pipeline runs to completion regardless of the
+      // leader caller's abort.
+      existing.detach();
+      if (signal === undefined) return existing.promise;
+      return waitWithSignal(existing.promise, signal);
     }
   }
 
-  // `pipelineSignal` is the signal the stage loop honors. For coalesced
-  // (inflightKey-bearing) runs it is `undefined` so the shared pipeline
-  // never aborts on one caller's behalf; the caller's own cancellation
-  // is enforced at the outer `waitWithSignal` race below. For solo runs
-  // (no cache, or no eligible inflight key) it is the caller's own
-  // signal — no one else can be awaiting this pipeline.
-  const pipelineSignal: AbortSignal | undefined = inflightKey !== undefined ? undefined : signal;
+  // `pipelineSignal` is the signal the stage loop honors.
+  //   - Solo run (no inflightKey): caller's own signal — straightforward.
+  //   - Cache-backed run with possible coalescing: start with an internal
+  //     mirror of the caller's signal so a SOLO caller still aborts the
+  //     work. When a follower joins (above), `detach()` unwires the
+  //     mirror so the leader's signal no longer aborts the shared work.
+  let detachCallerSignal: () => void = () => {};
+  let pipelineSignal: AbortSignal | undefined;
+  if (inflightKey === undefined) {
+    pipelineSignal = signal;
+  } else if (signal === undefined) {
+    pipelineSignal = undefined;
+  } else {
+    const internal = new AbortController();
+    if (signal.aborted) {
+      internal.abort();
+    } else {
+      const onAbort = (): void => internal.abort();
+      signal.addEventListener("abort", onAbort, { once: true });
+      detachCallerSignal = (): void => {
+        signal.removeEventListener("abort", onAbort);
+      };
+    }
+    pipelineSignal = internal.signal;
+  }
 
   const work = async (): Promise<Result<ForgeVerificationSummary>> => {
     if (composedKey !== undefined && cache !== undefined) {
@@ -829,16 +867,15 @@ export async function runPipeline<I>(
 
   if (inflightKey !== undefined) {
     const key = inflightKey;
-    // The shared pipeline runs without any caller's signal (see
-    // pipelineSignal above). Register the promise so concurrent callers
-    // coalesce — even when the leader has its own signal. The leader's
-    // own cancellation is enforced at the same waitWithSignal boundary
-    // as every follower, so leader and follower cancellations are
-    // symmetric and never cross-contaminate.
+    // Register the leader entry BEFORE awaiting work so concurrent
+    // followers coalesce. `detach` is invoked on first follower join
+    // (see lookup branch above) and unwires the leader caller's signal
+    // so the shared work is not killed by the leader's abort once
+    // someone else depends on it.
     const promise = work().finally(() => {
       inflight.delete(key);
     });
-    inflight.set(key, promise);
+    inflight.set(key, { promise, detach: detachCallerSignal });
     return signal !== undefined ? waitWithSignal(promise, signal) : promise;
   }
   return work();
