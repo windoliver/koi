@@ -96,15 +96,18 @@ export interface CreateKoiOptions {
   /** Component providers to attach during assembly. */
   readonly providers?: readonly ComponentProvider[];
   /**
-   * Optional pluggable context-management pipeline (issue #1767). When
-   * provided, the runtime attaches it under the `CONTEXT_ENGINE` subsystem
-   * token via `createContextEngineProvider`. When absent, no engine is
-   * attached and the runtime falls back to its existing per-turn behavior.
+   * Optional pluggable context-management pipeline (issue #1767).
    *
-   * Hosts that read `manifest.context.engine` are responsible for resolving
-   * the named engine to a `ContextEngine` instance and passing it here.
+   * Hosts pass a **factory**, not an instance. The factory is invoked once
+   * per agent assembly so per-agent occupancy / per-run accumulators stay
+   * scoped to a single agent — a singleton instance shared across agents
+   * would leak occupancy state between unrelated turns under load.
+   *
+   * When absent, no engine is attached and the runtime falls back to its
+   * existing per-turn behavior. Hosts that read `manifest.context.engine`
+   * resolve the named engine to a factory and pass it here.
    */
-  readonly contextEngine?: ContextEngine;
+  readonly contextEngineFactory?: () => ContextEngine;
   /** Iteration guard limits. Defaults to DEFAULT_ITERATION_LIMITS. */
   readonly limits?: Partial<IterationLimits>;
   /** Loop detection configuration. Defaults to DEFAULT_LOOP_DETECTION. Set to false to disable. */

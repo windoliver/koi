@@ -27,11 +27,9 @@ describe("createPassthroughContextEngine", () => {
     expect(out).toEqual(messages);
   });
 
-  test("describeOccupancy reports zero pressure (passthrough has no budget)", async () => {
+  test("describeOccupancy is intentionally absent — passthrough has no budget signal", () => {
     const engine = createPassthroughContextEngine();
-    const occ = await engine.describeOccupancy?.();
-    expect(occ?.pressure).toBe(0);
-    expect(occ?.estimatedTokens).toBe(0);
+    expect(engine.describeOccupancy).toBeUndefined();
   });
 
   test("custom identity overrides the default", () => {

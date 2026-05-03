@@ -8,11 +8,7 @@
  * neutralized.
  */
 
-import type {
-  ContextEngine,
-  ContextEngineIdentity,
-  ContextOccupancy,
-} from "@koi/core/context-engine";
+import type { ContextEngine, ContextEngineIdentity } from "@koi/core/context-engine";
 import type { InboundMessage } from "@koi/core/message";
 import type { TurnContext } from "@koi/core/middleware";
 
@@ -26,8 +22,12 @@ export interface PassthroughContextEngineOptions {
 }
 
 /**
- * Build a passthrough `ContextEngine`. `prepare` returns its input unchanged;
- * `describeOccupancy` reports zero pressure since no budget is enforced.
+ * Build a passthrough `ContextEngine`. `prepare` returns its input unchanged.
+ *
+ * `describeOccupancy` is intentionally omitted: this engine performs no budget
+ * accounting, so reporting `pressure: 0` would mislead any policy that uses
+ * occupancy to detect overflow. Callers must inspect the absence of the
+ * reporter and apply their own pressure model when running passthrough.
  */
 export function createPassthroughContextEngine(
   options: PassthroughContextEngineOptions = {},
@@ -39,15 +39,8 @@ export function createPassthroughContextEngine(
     messages: readonly InboundMessage[],
   ): Promise<readonly InboundMessage[]> => messages;
 
-  const describeOccupancy = async (): Promise<ContextOccupancy> => ({
-    estimatedTokens: 0,
-    maxTokens: Number.POSITIVE_INFINITY,
-    pressure: 0,
-  });
-
   return {
     identity,
     prepare,
-    describeOccupancy,
   };
 }

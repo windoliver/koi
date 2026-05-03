@@ -100,11 +100,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
   });
   const governanceProvider = createGovernanceProvider(options.governance);
-  // Pluggable context-engine slot (#1767). When the host supplies a ContextEngine,
-  // attach it under the CONTEXT_ENGINE singleton token. User-supplied providers
-  // can still override via lower priority.
+  // Pluggable context-engine slot (#1767). Host supplies a factory so each
+  // agent assembled via createKoi() gets a fresh engine instance — sharing one
+  // instance across agents would leak occupancy state between turns. User
+  // providers can still override via lower priority.
   const contextEngineProviders =
-    options.contextEngine !== undefined ? [createContextEngineProvider(options.contextEngine)] : [];
+    options.contextEngineFactory !== undefined
+      ? [createContextEngineProvider(options.contextEngineFactory())]
+      : [];
   const allProviders = [governanceProvider, ...contextEngineProviders, ...providers];
   const { agent, conflicts } = await AgentEntity.assemble(pid, manifest, allProviders);
 

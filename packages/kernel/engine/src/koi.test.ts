@@ -154,23 +154,37 @@ describe("createKoi assembly", () => {
     expect(runtime.agent.pid.type).toBe("copilot");
   });
 
-  test("contextEngine option attaches engine onto CONTEXT_ENGINE slot (#1767)", async () => {
+  test("contextEngineFactory attaches a fresh engine onto CONTEXT_ENGINE slot (#1767)", async () => {
     const { CONTEXT_ENGINE } = await import("@koi/core");
     type ContextEngine = import("@koi/core").ContextEngine;
-    const stub: ContextEngine = {
-      identity: { name: "@test/stub", version: "1.0.0" },
-      prepare: (_ctx, msgs) => msgs,
+    let factoryCalls = 0;
+    const factory = (): ContextEngine => {
+      factoryCalls++;
+      return {
+        identity: { name: "@test/stub", version: `1.0.${factoryCalls}` },
+        prepare: (_ctx, msgs) => msgs,
+      };
     };
-    const runtime = await createKoi({
+    const runtimeA = await createKoi({
       manifest: testManifest(),
       adapter: mockAdapter([]),
-      contextEngine: stub,
+      contextEngineFactory: factory,
     });
-    expect(runtime.agent.has(CONTEXT_ENGINE)).toBe(true);
-    expect(runtime.agent.component(CONTEXT_ENGINE)).toBe(stub);
+    const runtimeB = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+      contextEngineFactory: factory,
+    });
+    expect(factoryCalls).toBe(2);
+    expect(runtimeA.agent.has(CONTEXT_ENGINE)).toBe(true);
+    expect(runtimeB.agent.has(CONTEXT_ENGINE)).toBe(true);
+    // Each agent gets its OWN engine instance — no shared mutable state.
+    expect(runtimeA.agent.component(CONTEXT_ENGINE)).not.toBe(
+      runtimeB.agent.component(CONTEXT_ENGINE),
+    );
   });
 
-  test("omitting contextEngine leaves the CONTEXT_ENGINE slot empty (no default)", async () => {
+  test("omitting contextEngineFactory leaves the CONTEXT_ENGINE slot empty", async () => {
     const { CONTEXT_ENGINE } = await import("@koi/core");
     const runtime = await createKoi({
       manifest: testManifest(),

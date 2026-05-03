@@ -823,7 +823,7 @@ describe("Golden: @koi/context-manager", () => {
     expect(map.get(CONTEXT_ENGINE as string)).toBe(engine);
   });
 
-  test("passthrough ContextEngine returns input verbatim with zero pressure", async () => {
+  test("passthrough ContextEngine returns input verbatim and omits occupancy", async () => {
     const engine = createPassthroughContextEngine();
     expect(engine.identity).toEqual(PASSTHROUGH_CONTEXT_ENGINE_IDENTITY);
 
@@ -838,10 +838,9 @@ describe("Golden: @koi/context-manager", () => {
     const out = await engine.prepare(ctx, msgs);
     expect(out).toEqual(msgs);
 
-    const occ = await engine.describeOccupancy?.();
-    expect(occ?.pressure).toBe(0);
-    expect(occ?.estimatedTokens).toBe(0);
-    expect(occ?.maxTokens).toBe(Number.POSITIVE_INFINITY);
+    // Passthrough deliberately omits describeOccupancy so callers cannot
+    // mistake it for a zero-pressure budget signal under overflow.
+    expect(engine.describeOccupancy).toBeUndefined();
   });
 
   test("swap controller swaps default → passthrough, then rolls back at boundary", () => {

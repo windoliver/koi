@@ -84,6 +84,38 @@ describe("createContextEngineSwapController", () => {
     expect(ctrl.current()).toBe(engineC);
   });
 
+  test("rollback honors declared rollbackTarget across multiple swaps", () => {
+    // A → B (rollbackTarget=A), then B → C (rollbackTarget=A).
+    // Regression in C must roll back to A, not B.
+    const ctrl = createContextEngineSwapController(engineA);
+    ctrl.swap(engineB, { turnId: t(1), reason: "first", rollbackTarget: engineA.identity });
+    ctrl.swap(engineC, { turnId: t(2), reason: "second", rollbackTarget: engineA.identity });
+    const rb = ctrl.rollback({ turnId: t(3), reason: "regression in C" });
+    expect(rb).toBeDefined();
+    expect(rb?.from.name).toBe("engine-c");
+    expect(rb?.to.name).toBe("engine-a");
+    expect(ctrl.current()).toBe(engineA);
+    // Stack collapsed past the intervening B frame.
+    const next = ctrl.rollback({ turnId: t(4), reason: "extra" });
+    expect(next).toBeUndefined();
+  });
+
+  test("rollback returns undefined when declared target no longer on stack", () => {
+    const ctrl = createContextEngineSwapController(engineA);
+    const engineMissing: ContextEngine = {
+      identity: { name: "missing", version: "0.0.0" },
+      prepare: (_c, m) => m,
+    };
+    ctrl.swap(engineB, {
+      turnId: t(1),
+      reason: "experiment",
+      rollbackTarget: engineMissing.identity,
+    });
+    expect(ctrl.rollback({ turnId: t(2), reason: "want missing" })).toBeUndefined();
+    // Active engine unchanged when rollback refuses to satisfy the target.
+    expect(ctrl.current()).toBe(engineB);
+  });
+
   test("swap may carry an explicit rollbackTarget identity", () => {
     const ctrl = createContextEngineSwapController(engineA);
     const evt = ctrl.swap(engineB, {
