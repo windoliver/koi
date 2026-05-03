@@ -634,6 +634,37 @@ describe("runPipeline — security regressions", () => {
     expect(getterFired).toBe(false);
   });
 
+  test("array with a numeric-index accessor is rejected without firing the getter", async () => {
+    let getterFired = false;
+    const arr: unknown[] = [];
+    Object.defineProperty(arr, "0", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        getterFired = true;
+        return "INJECTED";
+      },
+    });
+    Object.defineProperty(arr, "length", { value: 1 });
+    const result = await runPipeline([createSyntaxStage(okCheck)], arr as unknown as FakeArtifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(getterFired).toBe(false);
+  });
+
+  test("snapshot phase honors abort signal — fails fast on already-aborted", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
+      signal: ac.signal,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("TIMEOUT");
+    expect(result.error.context?.stage).toBe("<snapshot>");
+  });
+
   test("array with extra named property is rejected", async () => {
     const arr: unknown[] & { extra?: { x: number } } = [];
     arr.extra = { x: 1 };

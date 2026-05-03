@@ -141,11 +141,18 @@ export async function runPipeline<I>(
   // it never verified. structuredClone handles Date, Map, Set, typed
   // arrays, etc.; functions and class instances are out of scope and
   // will throw — surface that as INVALID_CONFIG.
+  // Bound the pre-stage work by an aborted signal too — validation +
+  // structuredClone of a large or malicious artifact must not consume CPU
+  // after the caller has given up.
+  if (signal?.aborted) {
+    return {
+      ok: false,
+      error: stageError("TIMEOUT", "<snapshot>", "Pipeline aborted before snapshot."),
+    };
+  }
   let snapshot: I;
   try {
     // Reject anything that is not a primitive or a plain-data object root.
-    // Functions, symbols at the root, etc. cannot be `structuredClone`d
-    // safely and would otherwise sneak past validation as an `else` case.
     if (artifact === null || typeof artifact !== "object") {
       const t = typeof artifact;
       if (t !== "string" && t !== "number" && t !== "boolean" && t !== "undefined") {
@@ -155,9 +162,13 @@ export async function runPipeline<I>(
       }
       snapshot = artifact;
     } else {
-      // Validate shape FIRST — reject Map/Set/typed-array/class-instance,
-      // accessor properties, symbol/non-enumerable own keys before
-      // structuredClone has a chance to silently coerce or drop info.
+      // Descriptor-based validation runs FIRST: it never invokes accessors,
+      // never reads array indices via `[i]`, and never traps a Proxy via
+      // value access. (Reflective ops like Object.getOwnPropertyDescriptors
+      // and getPrototypeOf still pass through Proxy traps, but they cannot
+      // run arbitrary computation on declared-data fields without being
+      // detected as accessors and rejected.) Then structuredClone produces
+      // the trusted snapshot, and the snapshot is deep-frozen.
       rejectUnsupportedShape(artifact, "$", new WeakSet<object>());
       snapshot = structuredClone(artifact);
       deepFreeze(snapshot);
@@ -366,13 +377,10 @@ function rejectUnsupportedShape(value: unknown, path: string, seen: WeakSet<obje
     );
   }
   if (Array.isArray(value)) {
-    // Validate elements first (recurses through descriptor walk for nested
-    // objects). Then validate the array's OWN properties — arrays can carry
-    // accessors, symbol keys, non-enumerable, and extra named props that
-    // would otherwise execute during structuredClone or be silently dropped.
-    for (let i = 0; i < value.length; i++) {
-      rejectUnsupportedShape(value[i], `${path}[${i}]`, seen);
-    }
+    // Use descriptor walk for ALL own keys, including numeric indices, so a
+    // hostile array with `Object.defineProperty(arr, "0", { get() { ... } })`
+    // is rejected without firing the getter. Also rejects symbol keys,
+    // accessors, non-enumerable, and extra named props.
     const arrSymbols = Object.getOwnPropertySymbols(value);
     if (arrSymbols.length > 0) {
       throw new TypeError(
@@ -381,10 +389,10 @@ function rejectUnsupportedShape(value: unknown, path: string, seen: WeakSet<obje
     }
     const arrDescs = Object.getOwnPropertyDescriptors(value);
     for (const [k, desc] of Object.entries(arrDescs)) {
-      if (k === "length" || /^\d+$/.test(k)) continue; // numeric indices already walked
+      if (k === "length") continue;
       if (typeof desc.get === "function" || typeof desc.set === "function") {
         throw new TypeError(
-          `Artifact at ${path}.${k} (array property) is an accessor (getter/setter); verifier rejects accessors.`,
+          `Artifact at ${path}.${k} (array property) is an accessor (getter/setter); verifier rejects accessors so caller code never executes during validation.`,
         );
       }
       if (desc.enumerable !== true) {
@@ -392,11 +400,14 @@ function rejectUnsupportedShape(value: unknown, path: string, seen: WeakSet<obje
           `Artifact at ${path}.${k} (array property) is non-enumerable; verifier requires plain-data artifacts.`,
         );
       }
-      // Extra named properties on arrays are not preserved by structuredClone,
-      // so reject rather than silently drop them from the snapshot.
-      throw new TypeError(
-        `Artifact at ${path}.${k} (array property) is a non-index own property; verifier requires plain-data arrays (extra named properties are not preserved by structuredClone).`,
-      );
+      if (!/^\d+$/.test(k)) {
+        // Extra named properties on arrays are not preserved by
+        // structuredClone, so reject rather than silently drop.
+        throw new TypeError(
+          `Artifact at ${path}.${k} (array property) is a non-index own property; verifier requires plain-data arrays (extra named properties are not preserved by structuredClone).`,
+        );
+      }
+      rejectUnsupportedShape(desc.value, `${path}[${k}]`, seen);
     }
     return;
   }
