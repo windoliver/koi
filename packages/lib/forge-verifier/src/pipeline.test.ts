@@ -196,15 +196,19 @@ describe("runPipeline", () => {
     expect(result.value.sandbox).toBe(true);
   });
 
-  test("statically sandboxed stage with omitted runtime sandboxed flag is accepted", async () => {
-    // outcome.sandboxed is OPTIONAL — omission means "no override".
+  test("statically sandboxed stage that omits runtime sandboxed=true is REJECTED", async () => {
+    // Sandbox attestation requires both the static declaration AND a
+    // runtime confirmation — declaring `sandboxed: true` without
+    // returning `outcome.sandboxed === true` would let a stage advertise
+    // isolation it never actually entered.
     const stages: readonly VerifierStage<FakeArtifact>[] = [
       { name: "sb", sandboxed: true, run: async () => ({ ok: true }) }, // no sandboxed field
     ];
     const result = await runPipeline(stages, artifact);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.sandbox).toBe(true);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.context?.stage).toBe("sb");
   });
 
   test("stage runtime sandboxed flag must agree with static declaration", async () => {
@@ -833,11 +837,12 @@ describe("runPipeline — security regressions", () => {
     expect(v2.calls()).toBe(1);
   });
 
-  test("abort during the final stage commits the success — does not duplicate non-idempotent work on retry", async () => {
-    // Side-effectful stage already produced its effect; discarding the
-    // success and returning TIMEOUT would force a retry and duplicate the
-    // irreversible work. Instead, we commit and return success — caller's
-    // explicit abort cannot un-do work that already completed.
+  test("abort during final stage discards the success — caller's intent overrides the in-flight result", async () => {
+    // R20: a caller that explicitly aborted while the last stage was
+    // running must NOT receive a passing summary. The stage's side
+    // effect (if any) has already happened, but returning passed=true
+    // to the cancelling caller would let them act on a verification
+    // they themselves rejected. The post-stage abort gate discards.
     const ac = new AbortController();
     const stages: readonly VerifierStage<FakeArtifact>[] = [
       {
@@ -849,9 +854,10 @@ describe("runPipeline — security regressions", () => {
       },
     ];
     const result = await runPipeline(stages, artifact, { signal: ac.signal });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.stageResults.map((s) => s.stage)).toEqual(["only"]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("TIMEOUT");
+    expect(result.error.context?.stage).toBe("only");
   });
 
   test("cache key derived from artifact — different artifacts do not share cache", async () => {
@@ -1064,10 +1070,12 @@ describe("sparse arrays (no cache-key aliasing with dense arrays)", () => {
 });
 
 describe("single-flight (concurrent identical requests are coalesced)", () => {
-  test("signal-bearing callers do NOT coalesce — leader abort cannot poison follower", async () => {
-    // Leader's signal aborts mid-stage; follower has its own signal that
-    // never fires. Without isolation, follower would inherit leader's
-    // TIMEOUT. With it, follower runs its own pipeline and succeeds.
+  test("signal-bearing callers DO coalesce — shared pipeline survives any one caller's abort", async () => {
+    // Two callers with their own signals concurrently verify the same key.
+    // The shared pipeline runs without either signal, so leader's abort
+    // cannot cancel the work follower is awaiting AND duplicate work is
+    // not performed. Leader's own caller still gets TIMEOUT via the outer
+    // waitWithSignal race; follower (signal never fires) gets the success.
     let stageStarts = 0;
     const cache = createMemoryCache();
     const artifact: FakeArtifact = { name: "iso" };
@@ -1094,9 +1102,32 @@ describe("single-flight (concurrent identical requests are coalesced)", () => {
     // Leader aborts immediately; follower never aborts.
     leaderAc.abort();
     const [leader, follower] = await Promise.all([leaderPromise, followerPromise]);
-    expect(leader.ok).toBe(false); // leader honored its own abort
-    expect(follower.ok).toBe(true); // follower ran independently — NOT poisoned by leader's TIMEOUT
-    expect(stageStarts).toBeGreaterThanOrEqual(1); // follower ran its stage
+    expect(leader.ok).toBe(false); // leader's own caller honored its abort
+    expect(follower.ok).toBe(true); // follower ran on shared pipeline
+    expect(stageStarts).toBe(1); // the shared pipeline ran exactly once
+  });
+
+  test("solo caller aborting during final stage gets TIMEOUT, not passed=true", async () => {
+    // Solo no-cache run: pipelineSignal === caller signal. Stage ignores
+    // abort and returns PASS, then the post-stage abort gate discards the
+    // summary so caller never sees a passing result for verification they
+    // explicitly cancelled.
+    const ac = new AbortController();
+    const slow: VerifierStage<FakeArtifact> = {
+      name: "only",
+      run: async () => {
+        ac.abort(); // caller aborts mid-stage
+        await new Promise((r) => setTimeout(r, 5));
+        return PASS; // stage ignores cancellation and returns success
+      },
+    };
+    const r = await runPipeline([slow], { name: "abort" } as FakeArtifact, {
+      signal: ac.signal,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe("TIMEOUT");
+    expect(r.error.context?.stage).toBe("only");
   });
 });
 

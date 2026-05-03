@@ -533,13 +533,17 @@ export async function runPipeline<I>(
   // so concurrent callers cannot all miss + all run.
   //
   // Cancellation is per-WAITER, not per-key:
-  //   - Leader runs work() with its own signal (captured by `signal` below).
-  //   - Followers attach to the leader's promise, but RACE it against
-  //     their own signal so a follower's abort short-circuits its wait
-  //     without affecting the leader or other followers.
-  //   - Only signal-free callers may BECOME the leader (signal-bearing
-  //     leaders would impose their cancellation on every follower). A
-  //     signal-bearing caller arriving with no leader runs alone.
+  //   - The shared leader pipeline runs WITHOUT any caller's signal, so
+  //     no single caller can abort the side effects another caller is
+  //     awaiting. Stages run to completion (or in-stage failure).
+  //   - Every caller — leader and follower alike — races the shared
+  //     promise against its OWN signal via `waitWithSignal`. A caller's
+  //     abort returns TIMEOUT to that caller without affecting any other
+  //     caller or the leader pipeline itself.
+  //   - This trades per-caller cooperative cancellation of stages for
+  //     freedom from leader-imposed cancellation. Acceptable because the
+  //     non-idempotent stages this pipeline is designed for must not be
+  //     interrupted mid-flight by an unrelated caller anyway.
   if (composedKey !== undefined) {
     const existing = inflight.get(composedKey);
     if (existing !== undefined) {
@@ -548,9 +552,17 @@ export async function runPipeline<I>(
     }
   }
 
+  // `pipelineSignal` is the signal the stage loop honors. For coalesced
+  // (composedKey-bearing) runs it is `undefined` so the shared pipeline
+  // never aborts on one caller's behalf; the caller's own cancellation
+  // is enforced at the outer `waitWithSignal` race below. For solo
+  // (no-cache) runs it is the caller's own signal — no one else can be
+  // awaiting this pipeline.
+  const pipelineSignal: AbortSignal | undefined = composedKey !== undefined ? undefined : signal;
+
   const work = async (): Promise<Result<ForgeVerificationSummary>> => {
     if (composedKey !== undefined && cache !== undefined) {
-      if (signal?.aborted) {
+      if (pipelineSignal?.aborted) {
         return {
           ok: false,
           error: stageError("TIMEOUT", "<cache>", "Pipeline aborted before cache lookup."),
@@ -576,7 +588,7 @@ export async function runPipeline<I>(
         console.debug("[forge-verifier] cache.get failed, treating as miss:", e);
         hit = undefined;
       }
-      if (signal?.aborted) {
+      if (pipelineSignal?.aborted) {
         return {
           ok: false,
           error: stageError("TIMEOUT", "<cache>", "Pipeline aborted during cache lookup."),
@@ -606,7 +618,7 @@ export async function runPipeline<I>(
     let totalDurationMs = 0;
 
     for (const stage of stages) {
-      if (signal?.aborted === true) {
+      if (pipelineSignal?.aborted === true) {
         return {
           ok: false,
           error: stageError("TIMEOUT", stage.name, `Pipeline aborted before stage "${stage.name}"`),
@@ -619,7 +631,7 @@ export async function runPipeline<I>(
       // shallow copy whose elements are themselves frozen.
       const ctx: StageContext = {
         previous: Object.freeze(digests.map((d) => Object.freeze({ ...d }))),
-        ...(signal !== undefined ? { signal } : {}),
+        ...(pipelineSignal !== undefined ? { signal: pipelineSignal } : {}),
       };
       const { outcome, durationMs, thrown } = await runStage(stage, snapshot, ctx);
       totalDurationMs += durationMs;
@@ -655,11 +667,6 @@ export async function runPipeline<I>(
         };
       }
 
-      // Validate that an EXPLICIT runtime self-report agrees with the static
-      // declaration. Omitted `outcome.sandboxed` means "no override" — the
-      // declaration stands. This matches the API where `sandboxed` is
-      // optional on `StageOutcome`. Only an explicit, conflicting value
-      // (e.g. declared sandboxed:true but returned sandboxed:false) fails.
       if (outcome.sandboxed !== undefined && typeof outcome.sandboxed !== "boolean") {
         return {
           ok: false,
@@ -670,13 +677,32 @@ export async function runPipeline<I>(
           ),
         };
       }
-      if (outcome.sandboxed !== undefined && outcome.sandboxed !== (stage.sandboxed === true)) {
+      // `sandboxed: true` is an attestation contract: a stage that declares
+      // it MUST runtime-confirm by returning `outcome.sandboxed === true`.
+      // Omission or `false` means the run did NOT enter the sandbox — the
+      // trust bit cannot be set on metadata alone, otherwise a buggy or
+      // malicious stage could silently skip isolation while downstream code
+      // sees a sandbox-attested verification.
+      if (stage.sandboxed === true && outcome.sandboxed !== true) {
         return {
           ok: false,
           error: stageError(
             "INVALID_CONFIG",
             stage.name,
-            `Stage "${stage.name}" runtime sandboxed=${outcome.sandboxed} explicitly disagrees with static sandboxed=${stage.sandboxed === true}.`,
+            `Stage "${stage.name}" declares sandboxed=true but did not return outcome.sandboxed=true; runtime confirmation is required for sandbox attestation.`,
+          ),
+        };
+      }
+      // Inverse: a stage NOT statically sandboxed must not claim it ran
+      // sandboxed — the cache key did not include the sandbox bit, so a
+      // later identical stage list would alias to this run's pass.
+      if (stage.sandboxed !== true && outcome.sandboxed === true) {
+        return {
+          ok: false,
+          error: stageError(
+            "INVALID_CONFIG",
+            stage.name,
+            `Stage "${stage.name}" returned sandboxed=true but is not statically declared sandboxed.`,
           ),
         };
       }
@@ -689,8 +715,25 @@ export async function runPipeline<I>(
       // the caller to retry the same irreversible work. The pre-check at the
       // top of the next iteration still catches signals fired between
       // stages — pipeline ABORTS BEFORE starting un-run work, but COMMITS
-      // work that already happened. For the last stage this means the
-      // pipeline always either commits or rejects atomically.
+      // work that already happened.
+    }
+
+    // Final abort gate: if the caller aborted while the LAST stage was in
+    // flight, do not commit a passing summary or write it to cache. The
+    // stage's side effect (if any) has already happened; discarding the
+    // attestation is the safe asymmetry — a future run can re-attest, but
+    // a cached "passed" we never returned to the caller cannot be undone.
+    if (pipelineSignal?.aborted === true) {
+      const lastStage = stages[stages.length - 1];
+      const lastName = lastStage !== undefined ? lastStage.name : "<final>";
+      return {
+        ok: false,
+        error: stageError(
+          "TIMEOUT",
+          lastName,
+          "Pipeline aborted after final stage; result discarded and not cached.",
+        ),
+      };
     }
 
     // Freeze before either returning or caching so a caller-mutated summary
@@ -717,13 +760,19 @@ export async function runPipeline<I>(
     return { ok: true, value: summary };
   };
 
-  if (composedKey !== undefined && signal === undefined) {
+  if (composedKey !== undefined) {
     const key = composedKey;
+    // The shared pipeline runs without any caller's signal (see
+    // pipelineSignal above). Register the promise so concurrent callers
+    // coalesce — even when the leader has its own signal. The leader's
+    // own cancellation is enforced at the same waitWithSignal boundary
+    // as every follower, so leader and follower cancellations are
+    // symmetric and never cross-contaminate.
     const promise = work().finally(() => {
       inflight.delete(key);
     });
     inflight.set(key, promise);
-    return promise;
+    return signal !== undefined ? waitWithSignal(promise, signal) : promise;
   }
   return work();
 }
