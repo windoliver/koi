@@ -186,16 +186,23 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           { retryable: false, context: { returnedIdentity: initialEngine.identity } },
         );
       }
-      if (
-        manifest.context.version !== undefined &&
-        manifest.context.version !== initialEngine.identity.version
-      ) {
-        throw KoiRuntimeError.from(
-          "VALIDATION",
-          `contextEngineFactory returned version "${initialEngine.identity.version}" but manifest pins "${manifest.context.version}".`,
-          { retryable: false, context: { returnedIdentity: initialEngine.identity } },
-        );
-      }
+    }
+    // Validate `manifest.context.version` whenever set, even when the
+    // manifest does not also pin `engine`. Previously a manifest like
+    // `context: { version: "9.9.9" }` with a factory was accepted even
+    // when the factory returned a different version — manifest stopped
+    // being a trustworthy rollback/audit boundary because operators
+    // could believe a tested version was pinned while a different
+    // implementation was actually serving turns.
+    if (
+      manifest.context?.version !== undefined &&
+      manifest.context.version !== initialEngine.identity.version
+    ) {
+      throw KoiRuntimeError.from(
+        "VALIDATION",
+        `contextEngineFactory returned version "${initialEngine.identity.version}" but manifest pins "${manifest.context.version}".`,
+        { retryable: false, context: { returnedIdentity: initialEngine.identity } },
+      );
     }
     // Wire manifest pin into the swap controller so runtime `swap()` calls
     // cannot replace the manifest-declared engine with a mismatched identity
