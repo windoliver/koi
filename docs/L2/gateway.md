@@ -280,6 +280,16 @@ Pass partial overrides to `createGateway`: `createGateway({ maxConnections: 100 
 
 ---
 
+## HA additions (#1368, gateway-4)
+
+The core gateway is unchanged for single-node deployments. Three additions support cross-instance HA when paired with `@koi/gateway-stack` + `@koi/gateway-nexus`:
+
+- `GatewayConfig.preserveSessionsOnStop?: boolean` — when `true`, `stop()` skips deleting persisted session records so a sibling gateway instance can resume them via the shared `SessionStore`. Disconnect emits `"disconnected"` (not `"destroyed"`) and the final session snapshot — including `disconnectedAt` for cross-instance TTL safety — is persisted as the LAST writer through `pendingSeqPersists` so a late seq update cannot clobber it.
+- `BunTransportOptions.hostname?: string` — restricts the WebSocket listener to a specific bind (e.g. `"127.0.0.1"` for loopback-only HA test rigs). Defaults to all interfaces.
+- HA-resumed sessions are added to `ownedSessionIds` (no `isNewSession` gate) so the TTL sweep evicts stale records of resumed sessions even if the original creator is gone. The sweep checks the stored `disconnectedAt` (not just the in-memory map), so a different gateway instance reading a stale record cannot misjudge expiry across a process restart.
+
+These hooks are inert when `preserveSessionsOnStop` is unset — single-node behavior is unchanged.
+
 ## What's Not Included (Future Issues)
 
 | Feature | Issue |
@@ -289,3 +299,4 @@ Pass partial overrides to `createGateway`: `createGateway({ maxConnections: 100 
 | Heartbeat re-validation sweep | gateway-3 |
 | Channel runtime binding | gateway-4 |
 | Scheduler (periodic frame dispatch) | gateway-5 |
+| TUI as remote gateway-stack client | #2122 |
