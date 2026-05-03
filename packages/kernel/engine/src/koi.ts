@@ -46,6 +46,7 @@ import {
   runId,
   sessionId,
   toolToken,
+  turnId,
 } from "@koi/core";
 import type {
   DebugInstrumentation,
@@ -1897,15 +1898,30 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               // turn_end. Without this copy, a timed-out partial turn would
               // still invoke onAfterTurn as if the turn had completed
               // successfully and middleware could persist partial state.
-              const turnEndCtx = createTurnContext({
-                session: sessionCtx,
-                turnIndex: event.turnIndex,
-                messages: [],
-                signal: runSignal,
-                approvalHandler: options.approvalHandler,
-                sendStatus: options.sendStatus,
-                ...(event.stopBlocked === true ? { stopBlocked: true as const } : {}),
-              });
+              // Reuse the cached real per-turn ctx so onAfterTurn observers
+              // (notably stateful context engines) see the actual messages
+              // and metadata processed during the turn — not an empty stub.
+              // Synthesizing afresh dropped the payload that engines need to
+              // checkpoint/evict against. Falls back to a synth ctx only if
+              // the cache miss happens (no model call ran this turn).
+              // Build the same turnId createTurnContext would produce so
+              // we hit the per-turn cache populated when getTurnContext()
+              // ran for this turn.
+              const turnIdForLookup = turnId(sessionCtx.runId, event.turnIndex) as string;
+              const cachedTurnCtx = turnCtxByTurnId.get(turnIdForLookup);
+              const turnEndCtx: TurnContext =
+                cachedTurnCtx !== undefined && event.stopBlocked === true
+                  ? { ...cachedTurnCtx, stopBlocked: true as const }
+                  : (cachedTurnCtx ??
+                    createTurnContext({
+                      session: sessionCtx,
+                      turnIndex: event.turnIndex,
+                      messages: [],
+                      signal: runSignal,
+                      approvalHandler: options.approvalHandler,
+                      sendStatus: options.sendStatus,
+                      ...(event.stopBlocked === true ? { stopBlocked: true as const } : {}),
+                    }));
               await runTurnHooks(allMiddleware, "onAfterTurn", turnEndCtx);
               debugInstrumentation?.onTurnEnd(event.turnIndex);
               // Release the per-turn ctx cache entry (if any) — the
@@ -2039,19 +2055,35 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   pendingForgeRefresh = true;
                   agent.transition({ kind: "advance_turn", turnIndex: currentTurnIndex });
 
-                  const blockedTurnCtx = createTurnContext({
-                    session: sessionCtx,
-                    turnIndex: blockedTurnIndex,
-                    messages: [],
-                    signal: runSignal,
-                    approvalHandler: options.approvalHandler,
-                    sendStatus: options.sendStatus,
-                    stopBlocked: true,
-                    stopGateReason: gateResult.reason,
-                    ...(gateResult.blockedBy !== undefined
-                      ? { stopGateBlockedBy: gateResult.blockedBy }
-                      : {}),
-                  });
+                  // Reuse cached real ctx if available (so onAfterTurn
+                  // observers see actual messages), then layer the
+                  // stop-gate fields over it.
+                  const cachedBlockedCtx = turnCtxByTurnId.get(
+                    turnId(sessionCtx.runId, blockedTurnIndex) as string,
+                  );
+                  const blockedTurnCtx: TurnContext =
+                    cachedBlockedCtx !== undefined
+                      ? {
+                          ...cachedBlockedCtx,
+                          stopBlocked: true as const,
+                          stopGateReason: gateResult.reason,
+                          ...(gateResult.blockedBy !== undefined
+                            ? { stopGateBlockedBy: gateResult.blockedBy }
+                            : {}),
+                        }
+                      : createTurnContext({
+                          session: sessionCtx,
+                          turnIndex: blockedTurnIndex,
+                          messages: [],
+                          signal: runSignal,
+                          approvalHandler: options.approvalHandler,
+                          sendStatus: options.sendStatus,
+                          stopBlocked: true,
+                          stopGateReason: gateResult.reason,
+                          ...(gateResult.blockedBy !== undefined
+                            ? { stopGateBlockedBy: gateResult.blockedBy }
+                            : {}),
+                        });
                   await runTurnHooks(allMiddleware, "onAfterTurn", blockedTurnCtx);
                   debugInstrumentation?.onTurnEnd(blockedTurnIndex);
                   // Blocked-turn path also released onAfterTurn; drop the

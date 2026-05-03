@@ -82,6 +82,17 @@ export interface ContextEngineSwapController {
    * cleanup, which would corrupt unrelated overlapping turns.
    */
   readonly pinnedTurnIds: () => readonly TurnId[];
+  /**
+   * Subscribe to swap/rollback events as they are applied. Invoked
+   * synchronously after `active` has been updated. Returns an unsubscribe
+   * function. Listener errors are caught and rethrown after all listeners
+   * fire so one buggy observer cannot starve the others.
+   *
+   * Hosts wire this to their event bus / TUI / audit log so forced swaps
+   * and rollbacks become observable instead of being silently consumed by
+   * whoever called `swap()` and ignored the return value.
+   */
+  readonly subscribe: (listener: (event: ContextEngineSwapEvent) => void) => () => void;
 }
 
 function sameIdentity(a: ContextEngineIdentity, b: ContextEngineIdentity): boolean {
@@ -197,6 +208,7 @@ export function createContextEngineSwapController(
     });
     history.push(evt);
     active = to;
+    emit(evt);
     return evt;
   };
 
@@ -222,6 +234,19 @@ export function createContextEngineSwapController(
       target = top.prior;
       priorStack.pop();
     }
+    // Apply the same manifest-pin enforcement to the rollback destination
+    // as `swap()`. Without this, a forced swap chain followed by an
+    // automatic rollback could land on a non-pinned engine — re-opening
+    // the trust hole that `pinnedIdentity` was meant to close.
+    if (
+      pinnedIdentity !== undefined &&
+      !sameIdentity(target.identity, pinnedIdentity) &&
+      options.force !== true
+    ) {
+      throw new Error(
+        `ContextEngineSwapController: refusing to rollback to "${target.identity.name}@${target.identity.version}" — manifest pinned engine to "${pinnedIdentity.name}@${pinnedIdentity.version}". Pass { force: true } to override.`,
+      );
+    }
     const evt: ContextEngineSwapEvent = {
       kind: "context-engine-swap",
       turnId: options.turnId,
@@ -232,11 +257,31 @@ export function createContextEngineSwapController(
     };
     history.push(evt);
     active = target;
+    emit(evt);
     return evt;
   };
 
   const hasActivePin = (): boolean => turnPins.size > 0;
   const pinnedTurnIds = (): readonly TurnId[] => Array.from(turnPins.keys());
+
+  const listeners = new Set<(event: ContextEngineSwapEvent) => void>();
+  const subscribe = (listener: (event: ContextEngineSwapEvent) => void): (() => void) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  };
+  const emit = (event: ContextEngineSwapEvent): void => {
+    let firstError: unknown;
+    for (const listener of listeners) {
+      try {
+        listener(event);
+      } catch (err: unknown) {
+        if (firstError === undefined) firstError = err;
+      }
+    }
+    if (firstError !== undefined) throw firstError;
+  };
 
   return {
     current,
@@ -247,5 +292,6 @@ export function createContextEngineSwapController(
     endTurn,
     hasActivePin,
     pinnedTurnIds,
+    subscribe,
   };
 }
