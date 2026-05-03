@@ -44,15 +44,43 @@ export function createContextEngineMiddleware(engine: ContextEngine): KoiMiddlew
     phase: "resolve",
     priority: 500,
     wrapModelCall: async (ctx, request, next) => {
-      const prepared = await engine.prepare(ctx, request.messages);
-      return next({ ...request, messages: prepared });
+      try {
+        const prepared = await engine.prepare(ctx, request.messages);
+        return await next({ ...request, messages: prepared });
+      } catch (err) {
+        // Mirror createContextEngineSlotMiddleware: stateful engines
+        // (per-turn occupancy, eviction queues) must release per-turn
+        // state on the failure path too. Without this hook, a thrown
+        // prepare()/downstream call leaves stale per-turn state
+        // accumulating on the error/abort paths the manual path is
+        // most likely to hit.
+        if (engine.onAfterTurn !== undefined) {
+          try {
+            await engine.onAfterTurn(ctx);
+          } catch (hookErr: unknown) {
+            console.warn("[context-engine] onAfterTurn after failed turn threw", hookErr);
+          }
+        }
+        throw err;
+      }
     },
     wrapModelStream: (ctx, request, next) => {
       return {
         async *[Symbol.asyncIterator](): AsyncIterator<ModelChunk, undefined, undefined> {
-          const prepared = await engine.prepare(ctx, request.messages);
-          for await (const chunk of next({ ...request, messages: prepared })) {
-            yield chunk;
+          try {
+            const prepared = await engine.prepare(ctx, request.messages);
+            for await (const chunk of next({ ...request, messages: prepared })) {
+              yield chunk;
+            }
+          } catch (err) {
+            if (engine.onAfterTurn !== undefined) {
+              try {
+                await engine.onAfterTurn(ctx);
+              } catch (hookErr: unknown) {
+                console.warn("[context-engine] onAfterTurn after failed stream threw", hookErr);
+              }
+            }
+            throw err;
           }
         },
       };

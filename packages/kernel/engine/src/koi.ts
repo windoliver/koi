@@ -819,6 +819,46 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // no turn is finalized as successful.
     // let justified: mutable success-turn marker set in the done branch
     let doneSyntheticTurnId: import("@koi/core").TurnId | undefined;
+
+    // Run synthetic onAfterTurn for a single completed turn that emitted
+    // `done` without `turn_end` (cooperating-adapter shortcut), then
+    // release its pin. Shared between the reusable-done path (must run
+    // before idle) and terminal cleanup (runs at generator finally).
+    // Captures references that must already be in scope: the swap
+    // controller, the per-turn ctx cache, sessionCtx, runSignal, and
+    // request options.
+    const synthCompletedTurnCleanup = async (
+      completedTurnId: import("@koi/core").TurnId,
+    ): Promise<void> => {
+      if (contextEngineSwapController === undefined) return;
+      const pinnedEngine = contextEngineSwapController.current(completedTurnId);
+      if (pinnedEngine.onAfterTurn !== undefined) {
+        try {
+          const realCtx = turnCtxByTurnId.get(completedTurnId as string);
+          const fallbackTurnCtx: TurnContext = realCtx ?? {
+            ...createTurnContext({
+              session: sessionCtx,
+              turnIndex: currentTurnIndex,
+              messages: [],
+              signal: runSignal,
+              approvalHandler: options.approvalHandler,
+              sendStatus: options.sendStatus,
+            }),
+            turnId: completedTurnId,
+          };
+          await pinnedEngine.onAfterTurn(fallbackTurnCtx);
+        } catch (hookErr: unknown) {
+          // Bookkeeping must not corrupt cleanup; release the pin even
+          // if the engine throws.
+          console.warn(
+            "[koi] context-engine onAfterTurn synth failed during reusable-done cleanup",
+            hookErr,
+          );
+        }
+      }
+      contextEngineSwapController.endTurn(completedTurnId);
+      turnCtxByTurnId.delete(completedTurnId as string);
+    };
     // Sync the outer mutable ref so defaultToolTerminal can read it
     outerCurrentTurnIndex = 0;
 
@@ -2167,6 +2207,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 // (turn_end hasn't fired on the cooperating-adapter path,
                 // so it has not yet been advanced).
                 doneSyntheticTurnId = turnId(sessionCtx.runId, currentTurnIndex);
+                // Reusable runtimes idle here and serve more turns. The
+                // generator's `finally` block does not run between
+                // turns, so deferring the synthetic onAfterTurn/endTurn
+                // until then would leave the just-completed turn pinned
+                // across idle and into the next turn — corrupting
+                // per-turn occupancy and ECS context-engine reads.
+                // Drain the synth now so turn boundary is enforced.
+                if (contextEngineSwapController !== undefined) {
+                  await synthCompletedTurnCleanup(doneSyntheticTurnId);
+                  doneSyntheticTurnId = undefined;
+                }
                 yield normalizedDone;
                 break turnLoop;
               }
