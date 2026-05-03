@@ -125,11 +125,19 @@ describe("runPipeline", () => {
     const syntax = counted(createSyntaxStage(okCheck, "1"));
     const stages = [syntax.stage] as const;
 
-    const first = await runPipeline(stages, artifact, { cache, namespace: "test" });
+    const first = await runPipeline(stages, artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(first.ok).toBe(true);
     expect(syntax.calls()).toBe(1);
 
-    const second = await runPipeline(stages, artifact, { cache, namespace: "test" });
+    const second = await runPipeline(stages, artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(second.ok).toBe(true);
     expect(syntax.calls()).toBe(1); // not incremented
     if (!second.ok || !first.ok) return;
@@ -139,7 +147,11 @@ describe("runPipeline", () => {
   test("failed pipelines are not cached", async () => {
     const cache = createMemoryCache();
     const stages = [createSyntaxStage(failCheck("nope"), "1")];
-    await runPipeline(stages, { name: "a" }, { cache, namespace: "test" });
+    await runPipeline(
+      stages,
+      { name: "a" },
+      { cache, namespace: "test", acknowledgeTrustedCache: true },
+    );
     const cached = await cache.get("k2");
     expect(cached).toBeUndefined();
   });
@@ -249,13 +261,21 @@ describe("runPipeline — security regressions", () => {
   test("cache key is bound to stage list — adding a new stage invalidates prior cache", async () => {
     const cache = createMemoryCache();
     const v1 = counted(createSyntaxStage(okCheck, "1"));
-    const r1 = await runPipeline([v1.stage], artifact, { cache, namespace: "test" });
+    const r1 = await runPipeline([v1.stage], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(r1.ok).toBe(true);
     expect(v1.calls()).toBe(1);
 
     const v2a = counted(createSyntaxStage(okCheck, "1"));
     const v2b = counted(createTypeStage(okCheck, "1"));
-    const r2 = await runPipeline([v2a.stage, v2b.stage], artifact, { cache, namespace: "test" });
+    const r2 = await runPipeline([v2a.stage, v2b.stage], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(r2.ok).toBe(true);
     if (!r2.ok) return;
     expect(v2a.calls()).toBe(1);
@@ -266,11 +286,19 @@ describe("runPipeline — security regressions", () => {
   test("cache key is bound to stage list — renaming a stage invalidates prior cache", async () => {
     const cache = createMemoryCache();
     const before = counted({ name: "alpha", version: "1", run: async () => PASS });
-    const r1 = await runPipeline([before.stage], artifact, { cache, namespace: "test" });
+    const r1 = await runPipeline([before.stage], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(r1.ok).toBe(true);
 
     const after = counted({ name: "beta", version: "1", run: async () => PASS });
-    const r2 = await runPipeline([after.stage], artifact, { cache, namespace: "test" });
+    const r2 = await runPipeline([after.stage], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(r2.ok).toBe(true);
     expect(after.calls()).toBe(1);
   });
@@ -307,13 +335,21 @@ describe("runPipeline — security regressions", () => {
   test("cache fingerprint includes stage version — bumping version invalidates prior cache", async () => {
     const cache = createMemoryCache();
     const v1 = counted({ name: "checker", version: "1", run: async () => PASS });
-    const r1 = await runPipeline([v1.stage], artifact, { cache, namespace: "test" });
+    const r1 = await runPipeline([v1.stage], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(r1.ok).toBe(true);
     expect(v1.calls()).toBe(1);
 
     // Same name, bumped version — must re-run.
     const v2 = counted({ name: "checker", version: "2", run: async () => PASS });
-    const r2 = await runPipeline([v2.stage], artifact, { cache, namespace: "test" });
+    const r2 = await runPipeline([v2.stage], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(r2.ok).toBe(true);
     expect(v2.calls()).toBe(1);
   });
@@ -321,7 +357,11 @@ describe("runPipeline — security regressions", () => {
   test("cache returns a frozen, isolated snapshot — caller mutation cannot poison the cache", async () => {
     const cache = createMemoryCache();
     const stage = createSyntaxStage(okCheck, "1");
-    const r1 = await runPipeline([stage], artifact, { cache, namespace: "test" });
+    const r1 = await runPipeline([stage], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(r1.ok).toBe(true);
     if (!r1.ok) return;
 
@@ -337,7 +377,11 @@ describe("runPipeline — security regressions", () => {
     }
 
     // Cache must still serve a clean summary.
-    const r2 = await runPipeline([stage], artifact, { cache, namespace: "test" });
+    const r2 = await runPipeline([stage], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(r2.ok).toBe(true);
     if (!r2.ok) return;
     expect(r2.value.passed).toBe(true);
@@ -350,8 +394,16 @@ describe("runPipeline — security regressions", () => {
     // would collide. JSON-encoding must keep them apart.
     const a = counted({ name: "a|b", version: "1", run: async () => PASS });
     const b = counted({ name: "a", version: "1|b@1", run: async () => PASS });
-    await runPipeline([a.stage], artifact, { cache, namespace: "test" });
-    await runPipeline([b.stage], artifact, { cache, namespace: "test" });
+    await runPipeline([a.stage], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
+    await runPipeline([b.stage], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(a.calls()).toBe(1);
     expect(b.calls()).toBe(1);
   });
@@ -373,6 +425,7 @@ describe("runPipeline — security regressions", () => {
     const result = await runPipeline([createSyntaxStage(okCheck, "1")], artifact, {
       cache: hostileCache,
       namespace: "test",
+      acknowledgeTrustedCache: true,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -402,6 +455,7 @@ describe("runPipeline — security regressions", () => {
     const result = await runPipeline([stage.stage], artifact, {
       cache: malformedCache,
       namespace: "test",
+      acknowledgeTrustedCache: true,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -426,6 +480,7 @@ describe("runPipeline — security regressions", () => {
     const result = await runPipeline([stage.stage], artifact, {
       cache: malformedCache,
       namespace: "test",
+      acknowledgeTrustedCache: true,
     });
     expect(result.ok).toBe(true);
     expect(stage.calls()).toBe(1);
@@ -448,6 +503,7 @@ describe("runPipeline — security regressions", () => {
     const result = await runPipeline([stage.stage], artifact, {
       cache: lyingCache,
       namespace: "test",
+      acknowledgeTrustedCache: true,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -479,6 +535,7 @@ describe("runPipeline — security regressions", () => {
     const result = await runPipeline([sbStage], artifact, {
       cache: cachingCache,
       namespace: "test",
+      acknowledgeTrustedCache: true,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -730,6 +787,7 @@ describe("runPipeline — security regressions", () => {
     const r1 = await runPipeline([stage.stage], obj as unknown as FakeArtifact, {
       cache,
       namespace: "test",
+      acknowledgeTrustedCache: true,
     });
     expect(r1.ok).toBe(true);
     expect(stage.calls()).toBe(1);
@@ -737,6 +795,7 @@ describe("runPipeline — security regressions", () => {
     const r2 = await runPipeline([stage.stage], obj as unknown as FakeArtifact, {
       cache,
       namespace: "test",
+      acknowledgeTrustedCache: true,
     });
     expect(r2.ok).toBe(true);
     expect(stage.calls()).toBe(2);
@@ -778,6 +837,7 @@ describe("runPipeline — security regressions", () => {
     const result = await runPipeline([createSyntaxStage(okCheck, "1")], artifact, {
       cache,
       namespace: "test",
+      acknowledgeTrustedCache: true,
       signal: ac.signal,
     });
     expect(result.ok).toBe(false);
@@ -806,6 +866,7 @@ describe("runPipeline — security regressions", () => {
     const result = await runPipeline([createSyntaxStage(okCheck, "1")], artifact, {
       cache: slowCache,
       namespace: "test",
+      acknowledgeTrustedCache: true,
       signal: ac.signal,
     });
     expect(result.ok).toBe(false);
@@ -828,7 +889,11 @@ describe("runPipeline — security regressions", () => {
   test("flipping a stage from non-sandboxed to sandboxed invalidates prior cache", async () => {
     const cache = createMemoryCache();
     const v1 = counted({ name: "checker", version: "1", run: async () => PASS });
-    const r1 = await runPipeline([v1.stage], artifact, { cache, namespace: "test" });
+    const r1 = await runPipeline([v1.stage], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(r1.ok).toBe(true);
     if (!r1.ok) return;
     expect(r1.value.sandbox).toBe(false);
@@ -842,7 +907,11 @@ describe("runPipeline — security regressions", () => {
       sandboxed: true,
       run: async () => ({ ok: true, sandboxed: true }),
     });
-    const r2 = await runPipeline([v2.stage], artifact, { cache, namespace: "test" });
+    const r2 = await runPipeline([v2.stage], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(r2.ok).toBe(true);
     if (!r2.ok) return;
     expect(v2.calls()).toBe(1); // re-verified, did not reuse the stale entry
@@ -857,8 +926,16 @@ describe("runPipeline — security regressions", () => {
       sandboxed: true,
       run: async () => ({ ok: true, sandboxed: true }),
     };
-    const fresh = await runPipeline([sb], artifact, { cache, namespace: "test" });
-    const cached = await runPipeline([sb], artifact, { cache, namespace: "test" });
+    const fresh = await runPipeline([sb], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
+    const cached = await runPipeline([sb], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(fresh.ok).toBe(true);
     expect(cached.ok).toBe(true);
     if (!fresh.ok || !cached.ok) return;
@@ -877,8 +954,16 @@ describe("runPipeline — security regressions", () => {
     const cache = createMemoryCache();
     const v1 = counted(createSyntaxStage(okCheck, "1"));
     const v2 = counted(createSyntaxStage(okCheck, "2"));
-    await runPipeline([v1.stage], artifact, { cache, namespace: "test" });
-    await runPipeline([v2.stage], artifact, { cache, namespace: "test" });
+    await runPipeline([v1.stage], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
+    await runPipeline([v2.stage], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(v1.calls()).toBe(1);
     expect(v2.calls()).toBe(1);
   });
@@ -912,13 +997,25 @@ describe("runPipeline — security regressions", () => {
     const stage = counted(createSyntaxStage(okCheck, "1"));
     const artifactA: FakeArtifact = { name: "A" };
     const artifactB: FakeArtifact = { name: "B" };
-    await runPipeline([stage.stage], artifactA, { cache, namespace: "test" });
+    await runPipeline([stage.stage], artifactA, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(stage.calls()).toBe(1);
     // A different artifact under the same key fn must not see the prior pass.
-    await runPipeline([stage.stage], artifactB, { cache, namespace: "test" });
+    await runPipeline([stage.stage], artifactB, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(stage.calls()).toBe(2);
     // But re-verifying A should still hit the cache.
-    await runPipeline([stage.stage], artifactA, { cache, namespace: "test" });
+    await runPipeline([stage.stage], artifactA, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(stage.calls()).toBe(2);
   });
 
@@ -937,6 +1034,7 @@ describe("runPipeline — security regressions", () => {
     const result = await runPipeline([stage.stage], artifact, {
       cache: flakyCache,
       namespace: "test",
+      acknowledgeTrustedCache: true,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -959,6 +1057,7 @@ describe("runPipeline — security regressions", () => {
     const result = await runPipeline([stage.stage], artifact, {
       cache: flakyCache,
       namespace: "test",
+      acknowledgeTrustedCache: true,
       cacheReadFailure: "miss",
     });
     expect(result.ok).toBe(true);
@@ -984,6 +1083,7 @@ describe("runPipeline — security regressions", () => {
     const result = await runPipeline([createSyntaxStage(okCheck, "1")], artifact, {
       cache: flakyCache,
       namespace: "test",
+      acknowledgeTrustedCache: true,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -1059,8 +1159,16 @@ describe("topology-aware canonical encoding (shared refs distinct from duplicate
       a: { kind: "leaf", n: 1 },
       b: { kind: "leaf", n: 1 },
     } as unknown as FakeArtifact;
-    await runPipeline([sharedStage.stage], dagShared, { cache, namespace: "topo" });
-    await runPipeline([dupStage.stage], dagDup, { cache, namespace: "topo" });
+    await runPipeline([sharedStage.stage], dagShared, {
+      cache,
+      namespace: "topo",
+      acknowledgeTrustedCache: true,
+    });
+    await runPipeline([dupStage.stage], dagDup, {
+      cache,
+      namespace: "topo",
+      acknowledgeTrustedCache: true,
+    });
     expect(sharedStage.calls()).toBe(1);
     expect(dupStage.calls()).toBe(1); // would be 0 if topologies aliased
   });
@@ -1070,8 +1178,16 @@ describe("topology-aware canonical encoding (shared refs distinct from duplicate
     const stage = counted(createSyntaxStage(okCheck, "1"));
     const shared = { kind: "leaf" };
     const dag = { name: "x", a: shared, b: shared } as unknown as FakeArtifact;
-    await runPipeline([stage.stage], dag, { cache, namespace: "topo" });
-    await runPipeline([stage.stage], dag, { cache, namespace: "topo" });
+    await runPipeline([stage.stage], dag, {
+      cache,
+      namespace: "topo",
+      acknowledgeTrustedCache: true,
+    });
+    await runPipeline([stage.stage], dag, {
+      cache,
+      namespace: "topo",
+      acknowledgeTrustedCache: true,
+    });
     expect(stage.calls()).toBe(1); // same DAG → same key → cache hit
   });
 });
@@ -1140,11 +1256,13 @@ describe("single-flight (concurrent identical requests are coalesced)", () => {
     const leaderPromise = runPipeline([slow], artifact, {
       cache,
       namespace: "iso",
+      acknowledgeTrustedCache: true,
       signal: leaderAc.signal,
     });
     const followerPromise = runPipeline([slow], artifact, {
       cache,
       namespace: "iso",
+      acknowledgeTrustedCache: true,
       signal: followerAc.signal,
     });
     // Leader aborts immediately; follower never aborts.
@@ -1181,6 +1299,7 @@ describe("single-flight (concurrent identical requests are coalesced)", () => {
     const r = await runPipeline([slow], { name: "leader-abort" } as FakeArtifact, {
       cache: trackingCache,
       namespace: "abort",
+      acknowledgeTrustedCache: true,
       signal: ac.signal,
     });
     expect(r.ok).toBe(false); // leader gets TIMEOUT via outer waitWithSignal
@@ -1222,6 +1341,7 @@ describe("single-flight (concurrent identical requests are coalesced)", () => {
     const r = await runPipeline(stages, { name: "solo" } as FakeArtifact, {
       cache,
       namespace: "solo",
+      acknowledgeTrustedCache: true,
       signal: ac.signal,
     });
     expect(r.ok).toBe(false);
@@ -1277,8 +1397,16 @@ describe("single-flight isolation (R22: cache identity + policy)", () => {
     const cacheA = createMemoryCache();
     const cacheB = createMemoryCache();
     const artifact: FakeArtifact = { name: "iso" };
-    const p1 = runPipeline([stage], artifact, { cache: cacheA, namespace: "ns" });
-    const p2 = runPipeline([stage], artifact, { cache: cacheB, namespace: "ns" });
+    const p1 = runPipeline([stage], artifact, {
+      cache: cacheA,
+      namespace: "ns",
+      acknowledgeTrustedCache: true,
+    });
+    const p2 = runPipeline([stage], artifact, {
+      cache: cacheB,
+      namespace: "ns",
+      acknowledgeTrustedCache: true,
+    });
     await new Promise((r) => setTimeout(r, 10));
     expect(stageCalls).toBe(2); // distinct caches → distinct inflight slots
     if (release === undefined) throw new Error("no release");
@@ -1313,11 +1441,13 @@ describe("single-flight isolation (R22: cache identity + policy)", () => {
     const failer = runPipeline([stage], artifact, {
       cache,
       namespace: "p",
+      acknowledgeTrustedCache: true,
       cacheReadFailure: "fail",
     });
     const misser = runPipeline([stage], artifact, {
       cache,
       namespace: "p",
+      acknowledgeTrustedCache: true,
       cacheReadFailure: "miss",
     });
     await new Promise((r) => setTimeout(r, 10));
@@ -1328,6 +1458,68 @@ describe("single-flight isolation (R22: cache identity + policy)", () => {
       Promise.all([failer, misser]),
       new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 1000)),
     ]).catch(() => {});
+  });
+
+  test("R24: cache without acknowledgeTrustedCache is rejected as INVALID_CONFIG", async () => {
+    const cache = createMemoryCache();
+    const stage: VerifierStage<FakeArtifact> = {
+      name: "v",
+      version: "1",
+      run: async () => PASS,
+    };
+    const r = await runPipeline([stage], { name: "no-ack" } as FakeArtifact, {
+      cache,
+      namespace: "no-ack",
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe("INVALID_CONFIG");
+    expect(r.error.message).toContain("acknowledgeTrustedCache: true");
+  });
+
+  test("R24: stageTimeoutMs preempts an uncooperative plugin", async () => {
+    let stageResolve: (() => void) | undefined;
+    const hanging: VerifierStage<FakeArtifact> = {
+      name: "hangs",
+      version: "1",
+      run: async () => {
+        await new Promise<void>((r) => {
+          stageResolve = r;
+        });
+        return PASS;
+      },
+    };
+    const r = await runPipeline([hanging], { name: "x" } as FakeArtifact, {
+      stageTimeoutMs: 50,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe("TIMEOUT");
+    expect(r.error.context?.stage).toBe("hangs");
+    if (stageResolve !== undefined) stageResolve();
+  });
+
+  test("R24: caller signal preempts an uncooperative plugin via stage race", async () => {
+    let stageResolve: (() => void) | undefined;
+    const hanging: VerifierStage<FakeArtifact> = {
+      name: "hangs",
+      version: "1",
+      run: async () => {
+        await new Promise<void>((r) => {
+          stageResolve = r;
+        });
+        return PASS;
+      },
+    };
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 30);
+    const r = await runPipeline([hanging], { name: "x" } as FakeArtifact, {
+      signal: ac.signal,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe("TIMEOUT");
+    if (stageResolve !== undefined) stageResolve();
   });
 
   test("cache + missing stage version (cast bypass) is rejected as INVALID_CONFIG", async () => {
@@ -1342,6 +1534,7 @@ describe("single-flight isolation (R22: cache identity + policy)", () => {
     const r = await runPipeline([stage], { name: "v" } as FakeArtifact, {
       cache,
       namespace: "v",
+      acknowledgeTrustedCache: true,
     });
     expect(r.ok).toBe(false);
     if (r.ok) return;
@@ -1368,8 +1561,16 @@ describe("single-flight (legacy: concurrent signal-free requests ARE coalesced)"
     };
     const cache = createMemoryCache();
     const artifact: FakeArtifact = { name: "concurrent" };
-    const r1Promise = runPipeline([blockedStage], artifact, { cache, namespace: "test" });
-    const r2Promise = runPipeline([blockedStage], artifact, { cache, namespace: "test" });
+    const r1Promise = runPipeline([blockedStage], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
+    const r2Promise = runPipeline([blockedStage], artifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     // Yield so both promises register before we release the stage.
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(stageCalls).toBe(1); // second caller deduped, not yet started
@@ -1441,6 +1642,7 @@ describe("downstream-compatibility validation (stages + cache hits)", () => {
     const result = await runPipeline([stage.stage], artifact, {
       cache: malformedCache,
       namespace: "test",
+      acknowledgeTrustedCache: true,
     });
     expect(result.ok).toBe(true);
     expect(stage.calls()).toBe(1); // re-verified, malformed durations not trusted
@@ -1509,6 +1711,7 @@ describe("plugin contract hardening (malformed inputs stay in Result envelope)",
     const result = await runPipeline([stage.stage], artifact, {
       cache: malformedCache,
       namespace: "test",
+      acknowledgeTrustedCache: true,
     });
     expect(result.ok).toBe(true);
     expect(stage.calls()).toBe(1); // re-verified, no TypeError escaped
@@ -1549,9 +1752,17 @@ describe("canonical cache-key encoding (string-vs-sentinel collisions)", () => {
   ])("%s do not alias the same cache key", async (_label, a, b) => {
     const cache = createMemoryCache();
     const stage = counted(createSyntaxStage(okCheck, "1"));
-    await runPipeline([stage.stage], a as unknown as FakeArtifact, { cache, namespace: "test" });
+    await runPipeline([stage.stage], a as unknown as FakeArtifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(stage.calls()).toBe(1);
-    await runPipeline([stage.stage], b as unknown as FakeArtifact, { cache, namespace: "test" });
+    await runPipeline([stage.stage], b as unknown as FakeArtifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(stage.calls()).toBe(2);
   });
 });
@@ -1625,12 +1836,20 @@ describe("canonicalJson cycle detection (stack-based, DAG-safe)", () => {
     const stage = counted(createSyntaxStage(okCheck, "1"));
     const shared = { kind: "shared", n: 1 };
     const dag = { name: "dag", a: shared, b: shared } as unknown as FakeArtifact;
-    const r1 = await runPipeline([stage.stage], dag, { cache, namespace: "test" });
+    const r1 = await runPipeline([stage.stage], dag, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(r1.ok).toBe(true);
     expect(stage.calls()).toBe(1);
     // Second call MUST hit the cache — the DAG produces a stable, deterministic
     // canonical key, not a "not cacheable" bypass.
-    const r2 = await runPipeline([stage.stage], dag, { cache, namespace: "test" });
+    const r2 = await runPipeline([stage.stage], dag, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(r2.ok).toBe(true);
     expect(stage.calls()).toBe(1); // not re-executed
   });
@@ -1645,11 +1864,13 @@ describe("canonicalJson cycle detection (stack-based, DAG-safe)", () => {
     await runPipeline([stage.stage], obj as unknown as FakeArtifact, {
       cache,
       namespace: "test",
+      acknowledgeTrustedCache: true,
     });
     expect(stage.calls()).toBe(1);
     await runPipeline([stage.stage], obj as unknown as FakeArtifact, {
       cache,
       namespace: "test",
+      acknowledgeTrustedCache: true,
     });
     expect(stage.calls()).toBe(2); // cache bypassed both times → re-runs
   });
@@ -1686,10 +1907,18 @@ describe("canonical cache-key encoding (no value-identity collisions)", () => {
   ])("%s do not alias the same cache key", async (_label, a, b) => {
     const cache = createMemoryCache();
     const stage = counted(createSyntaxStage(okCheck, "1"));
-    await runPipeline([stage.stage], a as unknown as FakeArtifact, { cache, namespace: "test" });
+    await runPipeline([stage.stage], a as unknown as FakeArtifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(stage.calls()).toBe(1);
     // If keys collided, stage would not be invoked the second time.
-    await runPipeline([stage.stage], b as unknown as FakeArtifact, { cache, namespace: "test" });
+    await runPipeline([stage.stage], b as unknown as FakeArtifact, {
+      cache,
+      namespace: "test",
+      acknowledgeTrustedCache: true,
+    });
     expect(stage.calls()).toBe(2);
   });
 });
@@ -1721,6 +1950,7 @@ describe("cache key binding (envelope verification)", () => {
     const result = await runPipeline([stage.stage], artifact, {
       cache: lyingCache,
       namespace: "test",
+      acknowledgeTrustedCache: true,
     });
     expect(result.ok).toBe(true);
     expect(getCalls).toBe(1);

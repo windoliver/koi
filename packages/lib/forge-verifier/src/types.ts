@@ -133,5 +133,30 @@ export interface VerifyOptions {
    *     degrades gracefully instead of blocking verification.
    */
   readonly cacheReadFailure?: "miss" | "fail" | undefined;
+  /**
+   * Explicit acknowledgment that the supplied `cache` backend is trusted.
+   * REQUIRED when `cache` is provided — without it the verifier refuses
+   * to ship cached pass results.
+   *
+   * The cache is NOT a security boundary (see `VerificationCache` for the
+   * full trust model). A backend that can write structurally-correct
+   * envelopes can mint passing attestations without any stage running.
+   * Forcing every call site to pass `acknowledgeTrustedCache: true`
+   * makes the trust decision visible in code review and grep, instead of
+   * hiding it behind a default. Set this only when the cache backend's
+   * write path is restricted to trusted producers (process-local memory,
+   * a tenant-isolated KV with authenticated writes, etc.).
+   */
+  readonly acknowledgeTrustedCache?: true | undefined;
+  /**
+   * Per-stage hard timeout in milliseconds. When a stage's `run` does not
+   * resolve within this window, the pipeline returns TIMEOUT to the caller
+   * even if the stage's promise has not settled — the underlying work
+   * may continue (we cannot kill a JS Promise), but the caller is no
+   * longer blocked by an uncooperative plugin that ignores `ctx.signal`.
+   * Defaults to `undefined` (no per-stage cap; rely only on `signal`).
+   * Recommended in production where stage authors are not fully trusted.
+   */
+  readonly stageTimeoutMs?: number | undefined;
   readonly signal?: AbortSignal | undefined;
 }

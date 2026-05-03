@@ -339,20 +339,82 @@ function canonicalJson(value: unknown, state: CanonicalState, depth = 0): string
   }
 }
 
+/**
+ * Sentinel raised when the caller signal aborts mid-stage OR a per-stage
+ * watchdog elapses. Distinguished from real stage throws so the caller
+ * gets a TIMEOUT outcome rather than INTERNAL.
+ */
+const ABORT_BY_PIPELINE = Symbol("forge-verifier:abort");
+class PipelineAbort extends Error {
+  readonly [ABORT_BY_PIPELINE] = true;
+  constructor(reason: string) {
+    super(reason);
+  }
+}
+function isPipelineAbort(e: unknown): e is PipelineAbort {
+  return (
+    e instanceof Error && (e as Error & { [ABORT_BY_PIPELINE]?: true })[ABORT_BY_PIPELINE] === true
+  );
+}
+
 async function runStage<I>(
   stage: VerifierStage<I>,
   artifact: I,
   ctx: StageContext,
+  signal: AbortSignal | undefined,
+  stageTimeoutMs: number | undefined,
 ): Promise<{
   readonly outcome: StageOutcome;
   readonly durationMs: number;
   readonly thrown?: unknown;
+  readonly aborted?: true;
 }> {
   const started = performance.now();
   try {
-    const outcome = await stage.run(artifact, ctx);
+    // Race stage execution against the caller signal AND the optional
+    // per-stage watchdog. A buggy or hostile plugin that ignores
+    // ctx.signal cannot wedge the pipeline beyond stageTimeoutMs (or
+    // beyond the caller's signal). The underlying Promise may keep
+    // running — JS gives no way to kill it — but the caller is unblocked.
+    const racers: Promise<StageOutcome>[] = [Promise.resolve(stage.run(artifact, ctx))];
+    if (signal !== undefined) {
+      racers.push(
+        new Promise<StageOutcome>((_, reject) => {
+          if (signal.aborted) {
+            reject(new PipelineAbort("aborted via signal"));
+            return;
+          }
+          signal.addEventListener("abort", () => reject(new PipelineAbort("aborted via signal")), {
+            once: true,
+          });
+        }),
+      );
+    }
+    if (stageTimeoutMs !== undefined && Number.isFinite(stageTimeoutMs) && stageTimeoutMs > 0) {
+      racers.push(
+        new Promise<StageOutcome>((_, reject) => {
+          setTimeout(
+            () =>
+              reject(
+                new PipelineAbort(
+                  `stage exceeded stageTimeoutMs=${stageTimeoutMs}ms (uncooperative plugin?)`,
+                ),
+              ),
+            stageTimeoutMs,
+          );
+        }),
+      );
+    }
+    const outcome = await Promise.race(racers);
     return { outcome, durationMs: performance.now() - started };
   } catch (e: unknown) {
+    if (isPipelineAbort(e)) {
+      return {
+        outcome: { ok: false, reason: e.message },
+        durationMs: performance.now() - started,
+        aborted: true,
+      };
+    }
     return {
       outcome: { ok: false, reason: "stage threw", cause: e },
       durationMs: performance.now() - started,
@@ -467,6 +529,24 @@ export async function runPipeline<I>(
         code: "INVALID_CONFIG",
         message:
           "VerifyOptions.namespace is required (non-empty string) when cache is provided; defaulting to '' would replay attestations across callers sharing the backend.",
+        retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
+      },
+    };
+  }
+
+  // Cache is NOT a security boundary — a backend that can write
+  // structurally-correct envelopes can mint forged passes without any
+  // stage running. Require every call site to explicitly acknowledge
+  // that the supplied backend's write path is restricted to trusted
+  // producers. Without this acknowledgment the cache is rejected — the
+  // trust decision must live at the call site, not behind a default.
+  if (cache !== undefined && options?.acknowledgeTrustedCache !== true) {
+    return {
+      ok: false,
+      error: {
+        code: "INVALID_CONFIG",
+        message:
+          "VerifyOptions.cache requires acknowledgeTrustedCache: true. The cache is a TRUSTED storage optimization, not a security boundary — a backend that can write envelopes can forge passing attestations. Pass this flag only when the backend's write path is restricted to trusted producers.",
         retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
       },
     };
@@ -726,8 +806,29 @@ export async function runPipeline<I>(
         previous: Object.freeze(digests.map((d) => Object.freeze({ ...d }))),
         ...(pipelineSignal !== undefined ? { signal: pipelineSignal } : {}),
       };
-      const { outcome, durationMs, thrown } = await runStage(stage, snapshot, ctx);
+      const { outcome, durationMs, thrown, aborted } = await runStage(
+        stage,
+        snapshot,
+        ctx,
+        pipelineSignal,
+        options?.stageTimeoutMs,
+      );
       totalDurationMs += durationMs;
+
+      // Pipeline-initiated abort (caller signal OR per-stage watchdog)
+      // short-circuits with TIMEOUT regardless of whether the underlying
+      // stage promise has settled. The stage may continue running — we
+      // cannot kill a Promise — but the caller is unblocked.
+      if (aborted === true) {
+        return {
+          ok: false,
+          error: stageError(
+            "TIMEOUT",
+            stage.name,
+            `Stage "${stage.name}" ${outcome.ok ? "" : outcome.reason}`.trim(),
+          ),
+        };
+      }
 
       // Validate the resolved outcome shape BEFORE any property destructure.
       // `VerifierStage` is a plugin boundary; a buggy implementation that

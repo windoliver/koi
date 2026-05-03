@@ -69,7 +69,17 @@ via the same `VerifierStage` interface.
     `namespace` returns `INVALID_CONFIG`.
   - `cache?: VerificationCache` — storage backend. The library derives
     the artifact-side digest INTERNALLY from the validated frozen
-    snapshot — no caller callback runs on the verifier stack.
+    snapshot — no caller callback runs on the verifier stack. **Requires
+    `acknowledgeTrustedCache: true` on the same options object.**
+  - `acknowledgeTrustedCache?: true` — REQUIRED whenever `cache` is
+    provided. The cache is not authenticated; this flag forces every
+    call site to surface the trust decision in code-review-visible form.
+  - `stageTimeoutMs?: number` — optional per-stage hard timeout. When a
+    stage's `run` does not resolve within the window, the pipeline
+    returns TIMEOUT to the caller even if the stage's promise has not
+    settled. The underlying work may continue (we cannot kill a Promise),
+    but uncooperative plugins that ignore `ctx.signal` cannot wedge the
+    pipeline. Defaults to `undefined` (no cap; rely only on `signal`).
   - `cacheReadFailure?: "fail" | "miss"` — behavior when `cache.get`
     throws. Defaults to `"fail"` (returns INTERNAL inside the Result
     envelope) — safe for pluggable stages that may have side effects.
