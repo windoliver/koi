@@ -34,10 +34,13 @@ export function createPassthroughContextEngine(
 ): ContextEngine {
   const identity = options.identity ?? PASSTHROUGH_CONTEXT_ENGINE_IDENTITY;
 
+  // Per the ContextEngine contract: never alias the input array. Callers may
+  // mutate the returned list in place (or freeze it), so the engine MUST
+  // hand back an independent copy even when no transformation is applied.
   const prepare = async (
     _ctx: TurnContext,
     messages: readonly InboundMessage[],
-  ): Promise<readonly InboundMessage[]> => messages;
+  ): Promise<readonly InboundMessage[]> => messages.slice();
 
   return {
     identity,

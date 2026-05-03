@@ -76,4 +76,34 @@ describe("createContextEngine", () => {
     expect(engine.identity.name).toBe("@my-org/my-engine");
     expect(engine.identity.version).toBe("9.9.9");
   });
+
+  test("describeOccupancy reflects the messages prepare() actually emitted", async () => {
+    // Regression: prior implementation read enforceBudget.totalTokens on the
+    // "full" path, which is the PRE-compaction count. The engine MUST instead
+    // report tokens of the list it actually returned — otherwise occupancy
+    // lies whenever compaction trims the emitted list.
+    const block = "lorem ipsum dolor sit amet ".repeat(20);
+    const engine = createContextEngine({
+      contextWindowSize: 5000,
+      softTriggerFraction: 0.4,
+    });
+    const messages = Array.from({ length: 8 }, (_, i) => ({
+      senderId: i % 2 === 0 ? "user" : "assistant",
+      timestamp: i,
+      content: [{ kind: "text" as const, text: `m${i}: ${block}` }],
+    }));
+
+    const out = await engine.prepare(ctx, messages);
+    const occ = await engine.describeOccupancy?.();
+    expect(occ).toBeDefined();
+    // The reported estimate must be a function of the emitted list — not the
+    // pre-prepare input. With FALLBACK_ESTIMATOR (chars/4), the count is
+    // strictly proportional to the joined text length of `out`.
+    const emittedChars = out.reduce(
+      (n, m) => n + m.content.reduce((cn, c) => cn + (c.kind === "text" ? c.text.length : 0), 0),
+      0,
+    );
+    expect(occ?.estimatedTokens ?? 0).toBeLessThanOrEqual(Math.ceil(emittedChars / 3));
+    expect(occ?.estimatedTokens ?? 0).toBeGreaterThanOrEqual(Math.floor(emittedChars / 5));
+  });
 });

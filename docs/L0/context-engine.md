@@ -64,9 +64,15 @@ Two engines are considered the same iff `name + version` matches.
 const CONTEXT_ENGINE: SubsystemToken<ContextEngine> = token<ContextEngine>("context-engine");
 ```
 
-Single-instance per agent (singleton component). When no provider attaches a
-`ContextEngine`, the runtime applies its default (Phase 2 lands the default
-factory in `@koi/context-manager`).
+Single-instance per agent (singleton component). The slot is **opt-in**: when
+no host passes `contextEngineFactory` to `createKoi` and no provider attaches
+under `CONTEXT_ENGINE`, the slot is empty and the runtime falls back to its
+existing per-turn behavior (no slot-driven preparation, no occupancy report).
+Hosts that want the bundled tiered-compaction default explicitly pass
+`createContextEngine` from `@koi/context-manager` as the factory. Wiring a
+runtime-level default would force `@koi/engine` (L1) to depend on
+`@koi/context-manager` (L0u), which the layer rules explicitly forbid for the
+kernel runtime — see `CLAUDE.md → Anti-Leak Rules`.
 
 ## Swap & rollback (AGP learnings adaptation, 2026-04-19)
 

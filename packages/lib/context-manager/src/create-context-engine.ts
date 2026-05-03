@@ -16,6 +16,7 @@ import type { InboundMessage } from "@koi/core/message";
 import type { TurnContext } from "@koi/core/middleware";
 import type { ReplacementStore } from "@koi/core/replacement";
 import { type BudgetConfig, enforceBudget } from "./enforce-budget.js";
+import { FALLBACK_ESTIMATOR } from "./fallback-estimator.js";
 import { COMPACTION_DEFAULTS } from "./types.js";
 
 /** Stable identity for the bundled default engine. */
@@ -45,6 +46,7 @@ export interface ContextEngineOptions extends BudgetConfig {
 export function createContextEngine(options: ContextEngineOptions = {}): ContextEngine {
   const identity = options.identity ?? DEFAULT_CONTEXT_ENGINE_IDENTITY;
   const maxTokens = options.contextWindowSize ?? COMPACTION_DEFAULTS.contextWindowSize;
+  const estimator = options.tokenEstimator ?? FALLBACK_ESTIMATOR;
 
   // Per-engine accumulator: last-known token total feeds describeOccupancy().
   let lastEstimatedTokens = 0;
@@ -54,8 +56,12 @@ export function createContextEngine(options: ContextEngineOptions = {}): Context
     messages: readonly InboundMessage[],
   ): Promise<readonly InboundMessage[]> => {
     const result = await enforceBudget(messages, options.replacementStore, options);
-    lastEstimatedTokens =
-      result.compaction === "noop" ? result.totalTokens : computeOutputTokens(result);
+    // Always derive occupancy from the actual emitted message list.
+    // BudgetEnforcementResult exposes pre-compaction `totalTokens` on the
+    // "full" path, so reading it would keep pressure pinned at ~100% even
+    // after a successful drop/summarize. Recomputing on `result.messages`
+    // gives a single, authoritative post-prepare count for every branch.
+    lastEstimatedTokens = await estimator.estimateMessages(result.messages, options.modelId);
     return result.messages;
   };
 
@@ -70,14 +76,4 @@ export function createContextEngine(options: ContextEngineOptions = {}): Context
     prepare,
     describeOccupancy,
   };
-
-  function computeOutputTokens(result: Awaited<ReturnType<typeof enforceBudget>>): number {
-    if (result.compaction === "micro") {
-      return result.compactedTokens;
-    }
-    if (result.compaction === "full") {
-      return result.totalTokens;
-    }
-    return result.totalTokens;
-  }
 }

@@ -68,7 +68,15 @@ export interface ContextEngineSwapEvent {
 }
 
 /**
- * Singleton SubsystemToken for the active context engine. Resolved by L1 in
- * `createKoi`; defaults to `@koi/context-manager` when no provider attaches one.
+ * Singleton SubsystemToken for the active context engine.
+ *
+ * The slot is opt-in: hosts pass `contextEngineFactory` to `createKoi` (or
+ * attach a `ContextEngine` under this token via a `ComponentProvider`). When
+ * neither is present, the slot is empty and the runtime falls back to its
+ * existing per-turn behavior. The kernel does NOT install a default engine
+ * implicitly — that would force `@koi/engine` (L1) to depend on a specific
+ * L2/L0u package, violating the layer rules. Hosts that want the bundled
+ * tiered-compaction default pass `createContextEngine` from
+ * `@koi/context-manager` explicitly.
  */
 export const CONTEXT_ENGINE: SubsystemToken<ContextEngine> = token<ContextEngine>("context-engine");

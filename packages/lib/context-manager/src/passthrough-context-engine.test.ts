@@ -17,7 +17,7 @@ describe("createPassthroughContextEngine", () => {
     expect(engine.identity.version).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
-  test("prepare returns the input list verbatim", async () => {
+  test("prepare returns a fresh array with the same contents (no aliasing)", async () => {
     const engine = createPassthroughContextEngine();
     const messages: readonly InboundMessage[] = [
       { senderId: "user", timestamp: 1, content: [{ kind: "text", text: "a" }] },
@@ -25,6 +25,8 @@ describe("createPassthroughContextEngine", () => {
     ];
     const out = await engine.prepare(ctx, messages);
     expect(out).toEqual(messages);
+    // Engine MUST NOT alias its input — callers may mutate the returned list.
+    expect(out).not.toBe(messages);
   });
 
   test("describeOccupancy is intentionally absent — passthrough has no budget signal", () => {
