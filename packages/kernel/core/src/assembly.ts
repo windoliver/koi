@@ -302,7 +302,10 @@ export interface AgentManifest {
   /**
    * Context-engine slot configuration (issue #1767). Selects which
    * `ContextEngine` implementation fills the `CONTEXT_ENGINE` subsystem
-   * token. When absent, the runtime applies its default (tiered compaction).
+   * token. The runtime does NOT install a default — hosts must pass
+   * `contextEngineFactory` to `createKoi()` to wire an engine. When this
+   * field is absent and no factory is provided, the slot stays empty
+   * and turns run without a compaction layer.
    */
   readonly context?: ContextManifestConfig | undefined;
 }

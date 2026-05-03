@@ -116,15 +116,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // guarantee the manifest identity, ECS slot, and the engine driving
   // model requests all reference the same instance.
   //
-  // Hosts that want to manage the engine entirely manually (without
-  // manifest pinning) can still attach their own CONTEXT_ENGINE provider
-  // and `createContextEngineMiddleware(engine)`, but they cannot also set
-  // `manifest.context.engine` — that combination would let manifest /
-  // slot / request-path engines silently diverge.
+  // Manifest pins require `contextEngineFactory` so the runtime can own
+  // slot wiring + swap controller. There is no longer a supported manual
+  // wiring path through @koi/context-manager.
   if (manifest.context?.engine !== undefined && options.contextEngineFactory === undefined) {
     throw KoiRuntimeError.from(
       "VALIDATION",
-      `createKoi: manifest.context.engine="${manifest.context.engine}" requires contextEngineFactory. The runtime owns slot wiring whenever the manifest pins an engine so manifest identity, ECS slot, and the middleware actually calling prepare() cannot diverge. Either pass contextEngineFactory, or remove manifest.context.engine and wire the slot manually with createContextEngineProvider(engine) + createContextEngineMiddleware(engine).`,
+      `createKoi: manifest.context.engine="${manifest.context.engine}" requires contextEngineFactory. The runtime owns slot wiring whenever the manifest pins an engine so manifest identity, ECS slot, and the middleware actually calling prepare() cannot diverge. Pass contextEngineFactory, or remove manifest.context.engine.`,
       {
         retryable: false,
         context: {
