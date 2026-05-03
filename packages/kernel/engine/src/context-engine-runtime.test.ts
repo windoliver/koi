@@ -117,6 +117,35 @@ describe("createContextEngineSlotMiddleware", () => {
     expect(bAfterCalls).toBe(1);
   });
 
+  test("releases the pin when prepare() throws so swaps are visible after a failed turn", async () => {
+    // Round-9 regression: a thrown prepare() (or downstream model call) must
+    // not leave the controller permanently pinned to the pre-failure engine.
+    const failing: ContextEngine = {
+      identity: { name: "fail", version: "1.0.0" },
+      prepare: () => {
+        throw new Error("boom");
+      },
+    };
+    const recovery: ContextEngine = {
+      identity: { name: "recovery", version: "2.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const ctrl = createContextEngineSwapController(failing);
+    const mw = createContextEngineSlotMiddleware(ctrl);
+    const handler: ModelHandler = async () =>
+      ({ content: "ok", model: "x" }) satisfies ModelResponse;
+
+    const turnCtx = { metadata: {}, turnId: "t-fail" } as unknown as TurnContext;
+    await expect(mw.wrapModelCall?.(turnCtx, { messages: [] }, handler)).rejects.toThrow("boom");
+    // After the failed turn, the controller MUST honor a fresh swap. If the
+    // pin had leaked, current() would still report "fail".
+    ctrl.swap(recovery, {
+      turnId: "run-1:t1" as Parameters<typeof ctrl.swap>[1]["turnId"],
+      reason: "recover",
+    });
+    expect(ctrl.current().identity.name).toBe("recovery");
+  });
+
   test("controller.current() stays pinned mid-turn so ECS reads agree with middleware", async () => {
     // Round-8 regression: ECS reads (controller.current()) and middleware
     // execution must reference the same engine throughout a turn, even when

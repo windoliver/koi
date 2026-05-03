@@ -43,10 +43,20 @@ export function createContextEngineSlotMiddleware(controller: SlotController): K
     priority: 500,
     wrapModelCall: async (ctx, request, next) => {
       controller.beginTurn(ctx.turnId);
-      const engine = controller.current();
-      if (engine === undefined) return next(request);
-      const prepared = await engine.prepare(ctx, request.messages);
-      return next({ ...request, messages: prepared });
+      try {
+        const engine = controller.current();
+        if (engine === undefined) return await next(request);
+        const prepared = await engine.prepare(ctx, request.messages);
+        return await next({ ...request, messages: prepared });
+      } catch (err) {
+        // Release the pin on any pre-onAfterTurn failure (prepare(),
+        // downstream call, or sync throw). Without this, an aborted turn
+        // would leave `controller.current()` stuck on the pre-failure
+        // engine forever, defeating turn-aware swap reads on the very
+        // recovery path that needs them.
+        controller.endTurn(ctx.turnId);
+        throw err;
+      }
     },
     // Native streaming adapters take this path instead of wrapModelCall.
     // Both must drive engine.prepare() or compaction silently disappears
@@ -54,16 +64,24 @@ export function createContextEngineSlotMiddleware(controller: SlotController): K
     wrapModelStream: (ctx, request, next) => {
       controller.beginTurn(ctx.turnId);
       const engine = controller.current();
-      if (engine === undefined) return next(request);
       return {
         async *[Symbol.asyncIterator](): AsyncIterator<
           import("@koi/core").ModelChunk,
           undefined,
           undefined
         > {
-          const prepared = await engine.prepare(ctx, request.messages);
-          for await (const chunk of next({ ...request, messages: prepared })) {
-            yield chunk;
+          try {
+            if (engine === undefined) {
+              for await (const chunk of next(request)) yield chunk;
+              return;
+            }
+            const prepared = await engine.prepare(ctx, request.messages);
+            for await (const chunk of next({ ...request, messages: prepared })) {
+              yield chunk;
+            }
+          } catch (err) {
+            controller.endTurn(ctx.turnId);
+            throw err;
           }
         },
       };
