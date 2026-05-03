@@ -789,6 +789,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // most recent turn would have a real ctx and older pinned turns
     // would receive a synthetic ctx with the wrong turnId.
     const turnCtxByTurnId = new Map<string, TurnContext>();
+    // True once the run has emitted a `done` event without first emitting
+    // `turn_end` (the cooperating-adapter shortcut). Only this confirmed
+    // success path triggers synthetic `onAfterTurn` in terminal cleanup.
+    // Abort / consumer break / adapter error paths release pins without
+    // running bookkeeping so engines can't commit "successful turn" state
+    // for a turn that never finished.
+    // let justified: mutable success flag set in the done-emission branch
+    let runReachedDone = false;
     // Sync the outer mutable ref so defaultToolTerminal can read it
     outerCurrentTurnIndex = 0;
 
@@ -1912,6 +1920,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               });
               await runTurnHooks(allMiddleware, "onAfterTurn", turnEndCtx);
               debugInstrumentation?.onTurnEnd(event.turnIndex);
+              // Release the per-turn ctx cache entry (if any) — the
+              // normal turn_end path has now run onAfterTurn, so terminal
+              // cleanup will not need it. Without this, the cache would
+              // retain every completed turn's messages for the life of
+              // a long-running cooperating run (memory pressure on
+              // exactly the workload context-engines target).
+              turnCtxByTurnId.delete(turnEndCtx.turnId as string);
               yield event;
               break; // → next turn in outer loop
             }
@@ -2051,6 +2066,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   });
                   await runTurnHooks(allMiddleware, "onAfterTurn", blockedTurnCtx);
                   debugInstrumentation?.onTurnEnd(blockedTurnIndex);
+                  // Blocked-turn path also released onAfterTurn; drop the
+                  // cached ctx (if any) so it doesn't accumulate.
+                  turnCtxByTurnId.delete(blockedTurnCtx.turnId as string);
 
                   yield {
                     kind: "turn_end",
@@ -2086,6 +2104,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 priorBlockMessages.length = 0;
                 bannerCached = false;
                 cachedCapabilityBanner = undefined;
+                runReachedDone = true;
                 yield normalizedDone;
                 break turnLoop;
               }
@@ -2095,6 +2114,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 stopReason: event.output.stopReason,
                 metrics: normalizedMetrics,
               });
+              runReachedDone = true;
               yield normalizedDone;
               return;
             }
@@ -2288,9 +2308,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         // versions used no-arg `current()`/`endTurn()`, which under
         // overlapping turns would collapse unrelated pins and run
         // bookkeeping on the wrong engine.
+        //
+        // Only synthesize `onAfterTurn` when the run reached a `done`
+        // event without first emitting `turn_end` — i.e. the cooperating-
+        // adapter shortcut. Abort, consumer break, and adapter error
+        // paths must NOT commit "successful turn" state because the turn
+        // never actually completed; in those cases we just release the
+        // pins so the next run sees an unblocked controller.
+        const shouldSynthOnAfterTurn = runReachedDone;
         for (const pinnedTurnId of contextEngineSwapController.pinnedTurnIds()) {
           const pinnedEngine = contextEngineSwapController.current(pinnedTurnId);
-          if (pinnedEngine.onAfterTurn !== undefined) {
+          if (shouldSynthOnAfterTurn && pinnedEngine.onAfterTurn !== undefined) {
             try {
               // Prefer the real per-turn TurnContext so engines that key
               // post-turn bookkeeping off ctx.messages/metadata see the
