@@ -1379,6 +1379,83 @@ describe("single-flight (concurrent identical requests are coalesced)", () => {
   });
 });
 
+describe("single-flight isolation (R25/r2: doomed-leader + stageTimeoutMs)", () => {
+  test("late follower does NOT inherit a leader's already-aborted pipeline", async () => {
+    let stageStarts = 0;
+    let release: (() => void) | undefined;
+    const cache = createMemoryCache();
+    const stage: VerifierStage<FakeArtifact> = {
+      name: "rerun",
+      version: "1",
+      run: async () => {
+        stageStarts += 1;
+        await new Promise<void>((r) => {
+          release = r;
+        });
+        return PASS;
+      },
+    };
+    const artifact: FakeArtifact = { name: "doomed" };
+    const leaderAc = new AbortController();
+    leaderAc.abort(); // pre-abort
+    const leaderPromise = runPipeline([stage], artifact, {
+      cache,
+      namespace: "doomed",
+      acknowledgeTrustedCache: true,
+      signal: leaderAc.signal,
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    const followerPromise = runPipeline([stage], artifact, {
+      cache,
+      namespace: "doomed",
+      acknowledgeTrustedCache: true,
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(stageStarts).toBeGreaterThanOrEqual(1); // follower ran fresh
+    if (release !== undefined) release();
+    const [leader, follower] = await Promise.all([leaderPromise, followerPromise]);
+    expect(leader.ok).toBe(false);
+    expect(follower.ok).toBe(true);
+  });
+
+  test("two callers with DIFFERENT stageTimeoutMs do not coalesce", async () => {
+    let stageCalls = 0;
+    let release: (() => void) | undefined;
+    const cache = createMemoryCache();
+    const stage: VerifierStage<FakeArtifact> = {
+      name: "tt",
+      version: "1",
+      run: async () => {
+        stageCalls += 1;
+        await new Promise<void>((r) => {
+          release = r;
+        });
+        return PASS;
+      },
+    };
+    const artifact: FakeArtifact = { name: "tt" };
+    const loose = runPipeline([stage], artifact, {
+      cache,
+      namespace: "tt",
+      acknowledgeTrustedCache: true,
+      stageTimeoutMs: 1000,
+    });
+    const strict = runPipeline([stage], artifact, {
+      cache,
+      namespace: "tt",
+      acknowledgeTrustedCache: true,
+      stageTimeoutMs: 50,
+    });
+    await new Promise((r) => setTimeout(r, 80));
+    expect(stageCalls).toBe(2); // distinct slots
+    const strictResult = await strict;
+    expect(strictResult.ok).toBe(false);
+    if (!strictResult.ok) expect(strictResult.error.code).toBe("TIMEOUT");
+    if (release !== undefined) release();
+    await loose.catch(() => {});
+  });
+});
+
 describe("single-flight isolation (R22: cache identity + policy)", () => {
   test("two callers with DIFFERENT cache backends do not coalesce", async () => {
     let stageCalls = 0;

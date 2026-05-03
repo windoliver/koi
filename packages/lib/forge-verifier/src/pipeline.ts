@@ -40,6 +40,14 @@ import type { StageContext, StageOutcome, VerifierStage, VerifyOptions } from ".
 interface InflightEntry {
   readonly promise: Promise<Result<ForgeVerificationSummary>>;
   readonly detach: () => void;
+  /**
+   * The leader pipeline's internal signal (the one the stage loop
+   * honors). Followers consult it before attaching — if it is already
+   * aborted the leader pipeline is doomed, so a follower that joined
+   * here would receive TIMEOUT despite never having aborted. Late
+   * arrivals run a fresh pipeline instead.
+   */
+  readonly leaderPipelineSignal: AbortSignal | undefined;
 }
 const inflight = new Map<string, InflightEntry>();
 
@@ -695,19 +703,28 @@ export async function runPipeline<I>(
   //     freedom from leader-imposed cancellation. Acceptable because the
   //     non-idempotent stages this pipeline is designed for must not be
   //     interrupted mid-flight by an unrelated caller anyway.
-  // Single-flight key includes cache backend identity AND cacheReadFailure
-  // policy so two callers coalesce only when they would observe the same
-  // result. A trusted-cache caller MUST NOT inherit a forged pass from an
-  // untrusted-cache caller, and a `"fail"` caller MUST NOT be dragged into
-  // a `"miss"` leader's silent re-execution after a backend outage.
+  // Single-flight key includes cache backend identity, cacheReadFailure
+  // policy, AND stageTimeoutMs so two callers coalesce only when they
+  // would observe the same result. A trusted-cache caller MUST NOT
+  // inherit a forged pass from an untrusted-cache caller, a `"fail"`
+  // caller MUST NOT be dragged into a `"miss"` leader's silent
+  // re-execution after a backend outage, and a strict-timeout caller
+  // MUST NOT inherit a looser-timeout leader's safeguards.
+  const stageTimeoutKey =
+    options?.stageTimeoutMs !== undefined ? String(options.stageTimeoutMs) : "none";
   const inflightKey =
     composedKey !== undefined && cache !== undefined
-      ? `${cacheId(cache)}|${cacheReadFailure}|${composedKey}`
+      ? `${cacheId(cache)}|${cacheReadFailure}|${stageTimeoutKey}|${composedKey}`
       : undefined;
 
   if (inflightKey !== undefined) {
     const existing = inflight.get(inflightKey);
-    if (existing !== undefined) {
+    // Reject reuse of an in-flight entry whose leader pipeline has
+    // already been aborted — a follower attaching to a doomed leader
+    // would inherit TIMEOUT despite never having aborted itself. The
+    // entry stays registered (so `delete()` in finally still works) but
+    // we treat it as a miss for new callers and run a fresh pipeline.
+    if (existing !== undefined && !existing.leaderPipelineSignal?.aborted) {
       // A follower joined — the leader must stop honoring its own signal
       // because someone else is now depending on the shared result. From
       // here the shared pipeline runs to completion regardless of the
@@ -987,7 +1004,11 @@ export async function runPipeline<I>(
     const promise = work().finally(() => {
       inflight.delete(key);
     });
-    inflight.set(key, { promise, detach: detachCallerSignal });
+    inflight.set(key, {
+      promise,
+      detach: detachCallerSignal,
+      leaderPipelineSignal: pipelineSignal,
+    });
     return signal !== undefined ? waitWithSignal(promise, signal) : promise;
   }
   return work();
