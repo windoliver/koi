@@ -372,6 +372,22 @@ describe("createServiceProvider — detach", () => {
     await provider.detach?.(createMockAgent());
     expect(completed).toBe(true);
   });
+
+  test("detach clears cached components before a later attach", async () => {
+    const provider = createServiceProvider(
+      createTestConfig({
+        detach: async () => {},
+      }),
+    );
+    const agent = createMockAgent();
+
+    const first = await provider.attach(agent);
+    await provider.detach?.(agent);
+    const second = await provider.attach(agent);
+
+    expect(second).not.toBe(first);
+    expect(extractMap(second).size).toBe(extractMap(first).size);
+  });
 });
 
 // ---------------------------------------------------------------------------

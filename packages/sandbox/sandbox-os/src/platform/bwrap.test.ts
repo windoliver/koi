@@ -1,9 +1,16 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { SandboxProfile } from "@koi/core";
 
-import { buildBwrapPrefix, buildBwrapSuffix, buildSystemdRunArgs } from "./bwrap.js";
+import {
+  buildBwrapPrefix,
+  buildBwrapSuffix,
+  buildSystemdRunArgs,
+  ensureDenyReadPaths,
+} from "./bwrap.js";
 
 const BASE_PROFILE: SandboxProfile = {
   filesystem: {
@@ -215,5 +222,28 @@ describe("buildSystemdRunArgs", () => {
     const args = buildSystemdRunArgs({ ...BASE_PROFILE, resources: { maxMemoryMb: 256 } });
     const hasUnit = args?.some((a) => a.startsWith("--unit=")) ?? false;
     expect(hasUnit).toBe(false);
+  });
+});
+
+describe("ensureDenyReadPaths", () => {
+  test("does not create absent denyRead paths on the host", () => {
+    const root = mkdtempSync(join(tmpdir(), "koi-bwrap-ensure-"));
+    const absentDirectoryPath = join(root, "home", "user", ".ssh");
+    const absentFileLikePath = join(root, "home", "user", ".netrc");
+
+    try {
+      ensureDenyReadPaths({
+        ...BASE_PROFILE,
+        filesystem: {
+          defaultReadAccess: "open",
+          denyRead: [absentDirectoryPath, absentFileLikePath],
+        },
+      });
+
+      expect(existsSync(absentDirectoryPath)).toBe(false);
+      expect(existsSync(absentFileLikePath)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

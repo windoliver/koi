@@ -16,12 +16,7 @@ import {
   type SandboxErrorCode,
   type SandboxPlatform,
 } from "./detect.js";
-import {
-  buildBwrapPrefix,
-  buildBwrapSuffix,
-  buildSystemdRunArgs,
-  ensureDenyReadPaths,
-} from "./platform/bwrap.js";
+import { buildBwrapPrefix, buildBwrapSuffix, buildSystemdRunArgs } from "./platform/bwrap.js";
 import { buildSeatbeltPrefix, generateSeatbeltProfile } from "./platform/seatbelt.js";
 import { validateProfile } from "./validate.js";
 
@@ -202,12 +197,6 @@ function createInstance(
   profile: SandboxProfile,
   systemdRunAvailable: boolean,
 ): SandboxInstance {
-  // Ensure denyRead mount points exist before bwrap tries to overlay them.
-  // bwrap cannot create missing directories on a ro-bound root.
-  if (platform === "bwrap") {
-    ensureDenyReadPaths(profile);
-  }
-
   // Pre-compute profile-constant prefix once at create() time
   const commandPrefix =
     platform === "seatbelt"

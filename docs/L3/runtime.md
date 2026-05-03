@@ -4,6 +4,15 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 ## Recent updates
 
+Review-finding wiring sync: no runtime dependency set changes. The existing
+`@koi/scheduler` integration now persists a task's `running` status before
+dispatch starts, so async stores cannot observe an executing task as still
+`pending`; a failed status write prevents dispatch. The existing
+`@koi/sandbox-os` integration no longer pre-creates missing `denyRead` paths on
+the host before sandbox launch. Existing denied files/directories are still
+masked, while absent paths are skipped so credential-like deny entries such as
+`.netrc`, `.npmrc`, `.pypirc`, and `.git-credentials` are not materialized.
+
 `@koi/session` cancel-resume surface (#2105, issue #1683): no L2 dependency
 set changes — `@koi/runtime` already depends on `@koi/session`. Behavioral
 additions surfaced through the existing dep:
