@@ -987,6 +987,68 @@ describe("built-in stage factories propagate StageContext", () => {
   });
 });
 
+describe("downstream-compatibility validation (stages + cache hits)", () => {
+  const artifact: FakeArtifact = { name: "x" };
+
+  test.each([
+    ["empty name", { name: "", run: async () => PASS }],
+    ["non-string name", { name: 42 as unknown as string, run: async () => PASS }],
+  ])("stage with %s rejected as INVALID_CONFIG up front", async (_label, badStage) => {
+    const result = await runPipeline([badStage as VerifierStage<FakeArtifact>], artifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("invalid name");
+  });
+
+  test("duplicate stage names rejected as INVALID_CONFIG", async () => {
+    const stages: readonly VerifierStage<FakeArtifact>[] = [
+      { name: "dup", run: async () => PASS },
+      { name: "dup", run: async () => PASS },
+    ];
+    const result = await runPipeline(stages, artifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain('Duplicate stage name "dup"');
+  });
+
+  test.each([
+    ["totalDurationMs=NaN", { totalDurationMs: Number.NaN }],
+    ["totalDurationMs=Infinity", { totalDurationMs: Number.POSITIVE_INFINITY }],
+    ["totalDurationMs=-1", { totalDurationMs: -1 }],
+    ["digest durationMs=NaN", { digestOverride: { durationMs: Number.NaN } }],
+    ["digest durationMs=Infinity", { digestOverride: { durationMs: Number.POSITIVE_INFINITY } }],
+  ])("malformed cache duration (%s) treated as miss", async (_label, override) => {
+    const stage = counted(createSyntaxStage(okCheck));
+    const ovr = override as { totalDurationMs?: number; digestOverride?: { durationMs: number } };
+    const malformedCache = {
+      get: async (key: string) => ({
+        key,
+        summary: {
+          passed: true,
+          sandbox: false,
+          totalDurationMs: ovr.totalDurationMs ?? 1,
+          stageResults: [
+            {
+              stage: "syntax",
+              passed: true,
+              durationMs: ovr.digestOverride?.durationMs ?? 1,
+            },
+          ],
+        } as ForgeVerificationSummary,
+      }),
+      set: async () => {},
+    };
+    const result = await runPipeline([stage.stage], artifact, {
+      cache: malformedCache,
+      namespace: "test",
+    });
+    expect(result.ok).toBe(true);
+    expect(stage.calls()).toBe(1); // re-verified, malformed durations not trusted
+  });
+});
+
 describe("plugin contract hardening (malformed inputs stay in Result envelope)", () => {
   const artifact: FakeArtifact = { name: "x" };
 

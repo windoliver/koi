@@ -61,6 +61,10 @@ function composeCacheKey<I>(
  * is already part of the cache key, so a divergence here means the backend
  * is replaying across keys it should never satisfy.
  */
+function isFiniteNonNegative(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0;
+}
+
 function isCachedSummaryConsistent<I>(
   summary: unknown,
   stages: readonly VerifierStage<I>[],
@@ -68,11 +72,15 @@ function isCachedSummaryConsistent<I>(
 ): summary is ForgeVerificationSummary {
   // Cache backends are explicitly pluggable and may be remote — one
   // corrupted row, buggy adapter, or cross-version payload must not throw
-  // a TypeError out of `runPipeline`. Validate every field before access.
+  // a TypeError out of `runPipeline` or pass through values that downstream
+  // consumers (e.g. `createForgeProvenance`) reject. Validate every field
+  // including duration shape — NaN/Infinity in a cached row would surface
+  // as a persistence failure later, far from this boundary.
   if (summary === null || typeof summary !== "object") return false;
   const s = summary as Record<string, unknown>;
   if (s.passed !== true) return false;
   if (s.sandbox !== declaredSandbox) return false;
+  if (!isFiniteNonNegative(s.totalDurationMs)) return false;
   if (!Array.isArray(s.stageResults)) return false;
   if (s.stageResults.length !== stages.length) return false;
   for (let i = 0; i < stages.length; i++) {
@@ -82,6 +90,7 @@ function isCachedSummaryConsistent<I>(
     const d = got as Record<string, unknown>;
     if (d.stage !== expected.name) return false;
     if (d.passed !== true) return false;
+    if (!isFiniteNonNegative(d.durationMs)) return false;
   }
   return true;
 }
@@ -240,6 +249,38 @@ export async function runPipeline<I>(
         retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
       },
     };
+  }
+
+  // Validate stage descriptors up front: name must be a non-empty string,
+  // and names must be unique. Without this, an empty-name stage would
+  // produce a summary that downstream consumers (e.g. `createForgeProvenance`)
+  // refuse to persist — surfacing the misconfiguration far from its source.
+  // Duplicate names break cache-key uniqueness AND make stageResults
+  // ambiguous for callers correlating digests by name.
+  const seenNames = new Set<string>();
+  for (let i = 0; i < stages.length; i++) {
+    const s = stages[i];
+    if (s === undefined || typeof s.name !== "string" || s.name.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: "INVALID_CONFIG",
+          message: `Stage at index ${i} has invalid name (must be a non-empty string).`,
+          retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
+        },
+      };
+    }
+    if (seenNames.has(s.name)) {
+      return {
+        ok: false,
+        error: {
+          code: "INVALID_CONFIG",
+          message: `Duplicate stage name "${s.name}" at index ${i}; stage names must be unique.`,
+          retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
+        },
+      };
+    }
+    seenNames.add(s.name);
   }
 
   const namespace = options?.namespace;
