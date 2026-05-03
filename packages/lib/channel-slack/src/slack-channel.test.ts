@@ -1030,6 +1030,182 @@ describe("@koi/channel-slack — HTTP Events mode", () => {
     expect(res?.status).toBe(503);
   });
 
+  test("handleHttpRequest returns 400 for slash command when slashCommands feature is disabled", async () => {
+    const web = makeWebClient();
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "http", signingSecret: SECRET },
+      clients: { webClient: web.client },
+      features: { slashCommands: false },
+    });
+    adapter.onMessage(async () => {});
+    await adapter.connect();
+    const ts = String(Math.floor(Date.now() / 1000));
+    const body =
+      "command=%2Fkoi&user_id=U1&channel_id=C1&trigger_id=T&response_url=https%3A%2F%2Fx";
+    const req = new Request("http://x", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "X-Slack-Request-Timestamp": ts,
+        "X-Slack-Signature": sign(ts, body),
+      },
+      body,
+    });
+    const res = await adapter.handleHttpRequest?.(req);
+    expect(res?.status).toBe(400);
+    await adapter.disconnect();
+  });
+
+  test("handleHttpRequest 200-acks unsupported interactive types AND fires onUnsupportedEvent", async () => {
+    const web = makeWebClient();
+    const unsupported: Array<{ kind: string; type: string }> = [];
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "http", signingSecret: SECRET },
+      clients: { webClient: web.client },
+      onUnsupportedEvent: (info) => {
+        unsupported.push({ kind: info.kind, type: info.type });
+      },
+    });
+    const received: InboundMessage[] = [];
+    adapter.onMessage(async (m) => {
+      received.push(m);
+    });
+    await adapter.connect();
+    const ts = String(Math.floor(Date.now() / 1000));
+    const body = "payload=" + encodeURIComponent('{"type":"view_submission","user":{"id":"U1"}}');
+    const req = new Request("http://x", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "X-Slack-Request-Timestamp": ts,
+        "X-Slack-Signature": sign(ts, body),
+      },
+      body,
+    });
+    const res = await adapter.handleHttpRequest?.(req);
+    // Slack expects 2xx within 3s for interactive callbacks or the user
+    // sees an error modal. We ack but don't dispatch — and surface to
+    // the operator hook so the dropped action is observable.
+    expect(res?.status).toBe(200);
+    expect(received).toHaveLength(0);
+    expect(unsupported).toEqual([{ kind: "interactive", type: "view_submission" }]);
+    await adapter.disconnect();
+  });
+
+  test("unsupported interactive callbacks 200-ack BEFORE readiness gate (handlerless startup window)", async () => {
+    const web = makeWebClient();
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "http", signingSecret: SECRET },
+      clients: { webClient: web.client },
+    });
+    // No onMessage() registered. handlerCount === 0. A view_submission
+    // in this state previously hit the 503 gate; must now bypass it
+    // and 200-ack to keep Slack's 3s modal contract.
+    await adapter.connect();
+    const ts = String(Math.floor(Date.now() / 1000));
+    const body = "payload=" + encodeURIComponent('{"type":"view_submission","user":{"id":"U1"}}');
+    const req = new Request("http://x", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "X-Slack-Request-Timestamp": ts,
+        "X-Slack-Signature": sign(ts, body),
+      },
+      body,
+    });
+    const res = await adapter.handleHttpRequest?.(req);
+    expect(res?.status).toBe(200);
+    await adapter.disconnect();
+  });
+
+  test("onUnsupportedEvent throwing does NOT break Slack ack (still returns 200)", async () => {
+    const web = makeWebClient();
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "http", signingSecret: SECRET },
+      clients: { webClient: web.client },
+      onUnsupportedEvent: () => {
+        throw new Error("logger blew up");
+      },
+    });
+    adapter.onMessage(async () => {});
+    await adapter.connect();
+    const ts = String(Math.floor(Date.now() / 1000));
+    const body = "payload=" + encodeURIComponent('{"type":"view_submission","user":{"id":"U1"}}');
+    const req = new Request("http://x", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "X-Slack-Request-Timestamp": ts,
+        "X-Slack-Signature": sign(ts, body),
+      },
+      body,
+    });
+    const res = await adapter.handleHttpRequest?.(req);
+    // Hook errors must not break Slack's 3s ack contract — interactive
+    // callback still 200s even though host observability threw.
+    expect(res?.status).toBe(200);
+    await adapter.disconnect();
+  });
+
+  test("onUnsupportedEvent async rejection does NOT break Slack ack (async containment)", async () => {
+    const web = makeWebClient();
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "http", signingSecret: SECRET },
+      clients: { webClient: web.client },
+      onUnsupportedEvent: async () => {
+        throw new Error("async logger reject");
+      },
+    });
+    adapter.onMessage(async () => {});
+    await adapter.connect();
+    const ts = String(Math.floor(Date.now() / 1000));
+    const body = "payload=" + encodeURIComponent('{"type":"view_submission","user":{"id":"U1"}}');
+    const req = new Request("http://x", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "X-Slack-Request-Timestamp": ts,
+        "X-Slack-Signature": sign(ts, body),
+      },
+      body,
+    });
+    const res = await adapter.handleHttpRequest?.(req);
+    expect(res?.status).toBe(200);
+    // Give the rejected promise a tick to settle without escaping.
+    await new Promise((r) => setTimeout(r, 5));
+    await adapter.disconnect();
+  });
+
+  test("handleHttpRequest returns 400 for malformed interactive payload (bad JSON)", async () => {
+    const web = makeWebClient();
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "http", signingSecret: SECRET },
+      clients: { webClient: web.client },
+    });
+    adapter.onMessage(async () => {});
+    await adapter.connect();
+    const ts = String(Math.floor(Date.now() / 1000));
+    const body = "payload=" + encodeURIComponent("{not json");
+    const req = new Request("http://x", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "X-Slack-Request-Timestamp": ts,
+        "X-Slack-Signature": sign(ts, body),
+      },
+      body,
+    });
+    const res = await adapter.handleHttpRequest?.(req);
+    expect(res?.status).toBe(400);
+    await adapter.disconnect();
+  });
+
   test("handleHttpRequest returns 400 for unsupported event_callback subtype (no silent 200+commit)", async () => {
     const web = makeWebClient();
     const adapter = createSlackChannel({

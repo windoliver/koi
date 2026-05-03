@@ -141,6 +141,16 @@ export interface WebChannelConfig {
    * `InboundMessage` to their own DLQ / durable storage.
    */
   readonly onHandlerError?: (err: unknown, message: InboundMessage) => void;
+  /**
+   * Opt-in: allow authenticated `POST /messages` without `threadId`.
+   * Default `false` — fail-closed at the boundary because in
+   * authenticated mode the WS upgrade requires `?thread=` and
+   * outbound `send` throws without `threadId`, so a threadless
+   * inbound has no reachable reply surface. Setting `true` declares
+   * an explicit fire-and-forget contract (telemetry, webhook
+   * ingestion, no replies expected).
+   */
+  readonly allowThreadlessAuthenticatedPost?: boolean;
 }
 
 export interface WebChannelAdapter extends ChannelAdapter {
@@ -459,6 +469,19 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
     // cannot set custom headers.
     const principal = await authorize(req, bearerOf(req), claimedThreadId);
     if (principal === null) return new Response("Unauthorized", { status: 401 });
+
+    // Fail closed by default: in authenticated mode threadless inbound
+    // has no reachable reply surface (WS upgrade requires `?thread=`,
+    // outbound send throws without `threadId`). Hosts that genuinely
+    // want fire-and-forget ingestion must opt in explicitly with
+    // `allowThreadlessAuthenticatedPost: true`.
+    if (
+      authenticate !== undefined &&
+      claimedThreadId === undefined &&
+      config.allowThreadlessAuthenticatedPost !== true
+    ) {
+      return new Response("threadId required", { status: 400 });
+    }
 
     const message = parseInbound(parsed, principal.senderId);
     if (message === null) return new Response("Invalid payload", { status: 400 });

@@ -227,7 +227,7 @@ describe("@koi/channel-web", () => {
         "content-type": "application/json",
         authorization: "Bearer secret",
       },
-      body: JSON.stringify({ content: [{ kind: "text", text: "x" }] }),
+      body: JSON.stringify({ content: [{ kind: "text", text: "x" }], threadId: "t1" }),
     });
     expect(r2.status).toBe(202);
   });
@@ -242,6 +242,7 @@ describe("@koi/channel-web", () => {
       body: JSON.stringify({
         senderId: "spoofed-bob", // ← attacker tries to impersonate
         content: [{ kind: "text", text: "hello" }],
+        threadId: "t1",
       }),
     });
     expect(res.status).toBe(202);
@@ -504,6 +505,33 @@ describe("@koi/channel-web", () => {
     expect(h.received).toHaveLength(1); // duplicate dispatch suppressed
   });
 
+  test("authenticated POST without threadId is rejected by default (fail-closed at boundary)", async () => {
+    h = await startHarness({
+      authenticate: () => ({ senderId: "alice" }),
+    });
+    const res = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: [{ kind: "text", text: "no-thread" }] }),
+    });
+    expect(res.status).toBe(400);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(h.received).toHaveLength(0);
+  });
+
+  test("allowThreadlessAuthenticatedPost: true accepts threadless POSTs (explicit fire-and-forget)", async () => {
+    h = await startHarness({
+      authenticate: () => ({ senderId: "alice" }),
+      allowThreadlessAuthenticatedPost: true,
+    });
+    const res = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: [{ kind: "text", text: "fnf" }] }),
+    });
+    expect(res.status).toBe(202);
+  });
+
   test("Idempotency-Key is scoped to principal — one tenant cannot suppress another's", async () => {
     h = await startHarness({
       authenticate: (ctx) => ({ senderId: ctx.token ?? "anon" }),
@@ -516,7 +544,7 @@ describe("@koi/channel-web", () => {
         authorization: "Bearer alice",
         "idempotency-key": "shared-key",
       },
-      body: JSON.stringify({ content: [{ kind: "text", text: "from-alice" }] }),
+      body: JSON.stringify({ content: [{ kind: "text", text: "from-alice" }], threadId: "t1" }),
     });
     expect(r1.status).toBe(202);
     // Bob sends the SAME raw header value. Must dispatch — different
@@ -528,7 +556,7 @@ describe("@koi/channel-web", () => {
         authorization: "Bearer bob",
         "idempotency-key": "shared-key",
       },
-      body: JSON.stringify({ content: [{ kind: "text", text: "from-bob" }] }),
+      body: JSON.stringify({ content: [{ kind: "text", text: "from-bob" }], threadId: "t1" }),
     });
     expect(r2.status).toBe(202);
     await new Promise((r) => setTimeout(r, 20));
@@ -744,7 +772,7 @@ describe("@koi/channel-web", () => {
         "content-type": "application/json",
         origin: "https://app.example",
       },
-      body: JSON.stringify({ content: [{ kind: "text", text: "hi" }] }),
+      body: JSON.stringify({ content: [{ kind: "text", text: "hi" }], threadId: "t1" }),
     });
     expect(res.status).toBe(202);
     expect(res.headers.get("access-control-allow-origin")).toBe("https://app.example");

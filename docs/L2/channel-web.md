@@ -81,6 +81,7 @@ Returns a fully wired `ChannelAdapter`. `connect()` starts the server,
 | `allowAnyOrigin` | `boolean` | `false` | Opt out of the CSRF fail-closed default. Only safe when the auth scheme is not browser-ambient (e.g. tokens issued and managed entirely by your own JS — not cookies). |
 | `senderId` | `string` | `"web-user"` | Default `senderId` for open mode (no `authenticate`). Production deployments MUST configure `authenticate` instead. |
 | `onHandlerError` | `(err, message) => void` | undefined | Visibility hook for handler failures during async dispatch. Without this, post-202 failures are silent. Hosts needing durability MUST forward to a DLQ here. |
+| `allowThreadlessAuthenticatedPost` | `boolean` | `false` | Authenticated `POST /messages` without `threadId` is rejected with `400` by default. Rationale: in authenticated mode the WS upgrade requires `?thread=`, and `send()` throws without `threadId` — so a threadless inbound has no reachable reply surface. Set `true` for explicit fire-and-forget ingestion (telemetry, webhook receivers, audit pipelines that never reply). |
 
 ### Capabilities
 

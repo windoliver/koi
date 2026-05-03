@@ -211,6 +211,29 @@ export interface SlackChannelConfig {
    * downstream failures are silent.
    */
   readonly onHandlerError?: (err: unknown, message: InboundMessage) => void;
+  /**
+   * Observability hook for valid-but-unsupported Slack callbacks
+   * (interactive `payload.type` values this adapter doesn't surface
+   * — view_submission, view_closed, shortcut, etc. — and unknown
+   * `event_callback` subtypes). The HTTP path 200-acks them to keep
+   * Slack's user-facing modal contract intact, but without this hook
+   * the operator has no way to see that user actions are being
+   * dropped. Hosts MUST wire this to logs/metrics in production.
+   *
+   * Deliberately includes ONLY the kind+type discriminator. Raw
+   * payload bodies are intentionally NOT exposed — they routinely
+   * contain user message text, identifiers, and callback URLs which
+   * should not be funneled into general logging surfaces. Hosts that
+   * need raw payloads for diagnostics should use a dedicated
+   * middleware that handles them with appropriate redaction.
+   *
+   * Errors thrown from this hook are caught and ignored to protect
+   * Slack's ack-timing contract.
+   */
+  readonly onUnsupportedEvent?: (info: {
+    readonly kind: "interactive" | "event_callback";
+    readonly type: string;
+  }) => void | Promise<void>;
 }
 
 export interface SlackChannelAdapter extends ChannelAdapter {
@@ -229,6 +252,60 @@ function blocksToText(content: readonly ContentBlock[]): string {
     else if (b.kind === "button") parts.push(`[${b.label}]`);
   }
   return parts.join("\n");
+}
+
+type UnsupportedEventInfo = {
+  readonly kind: "interactive" | "event_callback";
+  readonly type: string;
+};
+
+// Containment wrapper: hosts must not be able to break Slack's ack
+// timing through this hook. Catches sync throws AND async rejections —
+// `Promise.resolve(...)` normalizes both `void` and `Promise<void>`
+// returns, and the `.catch()` swallows rejections so an `async` hook
+// that throws cannot produce an unhandled promise rejection on the ack
+// path.
+function fireUnsupportedEvent(
+  hook: (info: UnsupportedEventInfo) => void | Promise<void>,
+  info: UnsupportedEventInfo,
+): void {
+  try {
+    Promise.resolve(hook(info)).catch(() => {
+      // best-effort observability; async rejections never escape
+    });
+  } catch {
+    // sync throw also swallowed
+  }
+}
+
+// Pure classifier — runs BEFORE the handler-readiness gate so we can
+// 200-ack unsupported interactive callbacks during startup churn
+// without breaking Slack's 3s modal contract. Mirrors the parsing in
+// dispatchInteractive but emits no events.
+function dispatchInteractiveClassify(body: string): "dispatchable" | "ack-only" | "malformed" {
+  const raw = new URLSearchParams(body).get("payload");
+  if (raw === null) return "malformed";
+  let payload: { type?: unknown; actions?: unknown };
+  try {
+    payload = JSON.parse(raw) as { type?: unknown; actions?: unknown };
+  } catch {
+    return "malformed";
+  }
+  if (payload.type !== "block_actions") return "ack-only";
+  const actions = Array.isArray(payload.actions) ? payload.actions : [];
+  if (actions.length === 0) return "ack-only";
+  return "dispatchable";
+}
+
+function extractInteractiveType(body: string): string {
+  const raw = new URLSearchParams(body).get("payload");
+  if (raw === null) return "unknown";
+  try {
+    const p = JSON.parse(raw) as { type?: unknown };
+    return typeof p.type === "string" ? p.type : "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 
 function applyReplyToMode(message: OutboundMessage, mode: SlackReplyToMode): OutboundMessage {
@@ -387,11 +464,11 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
    * Parse a form-encoded slash-command body and route to the slash dispatcher.
    * Slack POSTs slash commands as `application/x-www-form-urlencoded`, NOT JSON.
    */
-  function dispatchSlashCommand(body: string): void {
-    if (dispatch === undefined || !features.slashCommands) return;
+  function dispatchSlashCommand(body: string): boolean {
+    if (dispatch === undefined || !features.slashCommands) return false;
     const params = new URLSearchParams(body);
     const command = params.get("command");
-    if (command === null) return;
+    if (command === null) return false;
     dispatch({
       kind: "slash_command",
       command: {
@@ -403,6 +480,7 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
         response_url: params.get("response_url") ?? "",
       },
     });
+    return true;
   }
 
   /**
@@ -410,19 +488,25 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
    * each block_action to the dispatcher. Slack POSTs button clicks, modal
    * submissions, etc. via this single endpoint.
    */
-  function dispatchInteractive(body: string): void {
-    if (dispatch === undefined || !features.slashCommands) return;
+  type InteractiveResult = "dispatched" | "ack-only" | "malformed";
+
+  function dispatchInteractive(body: string): InteractiveResult {
     const raw = new URLSearchParams(body).get("payload");
-    if (raw === null) return;
+    if (raw === null) return "malformed";
     // let requires justification: payload JSON shape narrowed by `type` field below
     let payload: Record<string, unknown>;
     try {
       payload = JSON.parse(raw) as Record<string, unknown>;
     } catch {
-      return;
+      return "malformed";
     }
-    if (payload.type !== "block_actions") return;
+    // Valid Slack interactive callback whose type we don't surface (e.g.
+    // view_submission, view_closed, shortcut). Slack expects a 200 within
+    // 3s or the user sees an error modal; ack without dispatching.
+    if (payload.type !== "block_actions") return "ack-only";
+    if (dispatch === undefined || !features.slashCommands) return "ack-only";
     const actions = (payload.actions ?? []) as readonly Record<string, unknown>[];
+    if (actions.length === 0) return "ack-only";
     for (const action of actions) {
       dispatch({
         kind: "block_action",
@@ -436,6 +520,7 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
         } as never,
       });
     }
+    return "dispatched";
   }
 
   if (config.deployment.mode === "http") {
@@ -483,6 +568,28 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
         return new Response("OK", { status: 200 });
       }
 
+      // Interactive ack-only classification runs BEFORE the readiness
+      // gate. Valid-but-unsupported interactive callbacks
+      // (view_submission, shortcut, etc) MUST get a 2xx within 3s
+      // regardless of handler/dispatch state — otherwise Slack shows
+      // the end-user an error modal during startup or reconnect
+      // churn. The hook still fires so operators see the drop.
+      if (isForm && result.body.startsWith("payload=")) {
+        const r = dispatchInteractiveClassify(result.body);
+        if (r === "malformed") return new Response("Malformed payload", { status: 400 });
+        if (r === "ack-only") {
+          if (config.onUnsupportedEvent !== undefined) {
+            fireUnsupportedEvent(config.onUnsupportedEvent, {
+              kind: "interactive",
+              type: extractInteractiveType(result.body),
+            });
+          }
+          return new Response("", { status: 200 });
+        }
+        // r === "dispatchable" — fall through to the readiness gate
+        // and dispatch path below.
+      }
+
       // Fresh delivery + not ready → 503, do NOT commit dedupe. "Ready"
       // means BOTH a handler is registered AND the platform dispatch
       // path is installed. handlerCount can rise via onMessage() before
@@ -496,23 +603,31 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
 
       if (isForm) {
         if (result.body.startsWith("payload=")) {
+          // Already classified as dispatchable above; emit it.
           dispatchInteractive(result.body);
-        } else {
-          dispatchSlashCommand(result.body);
+          dedupe.commit(dedupeKey, now);
+          return new Response("", { status: 200 });
         }
-        // Commit AFTER dispatch — the delivery is now considered handled.
+        if (!dispatchSlashCommand(result.body)) {
+          return new Response("Unsupported slash command", { status: 400 });
+        }
         dedupe.commit(dedupeKey, now);
         return new Response("", { status: 200 });
       }
 
       const dispatched = dispatchHttpEvent(parsed);
       if (!dispatched) {
-        // Unsupported event_callback subtype (e.g. operator subscribed to
-        // reaction_added). Fail loud rather than silently 200+commit:
-        // Slack surfaces 4xx responses in the app's event-delivery
-        // dashboard so the misconfiguration is visible. Do NOT commit
-        // dedupe — if support is added later, queued deliveries can be
-        // replayed without dedupe collisions.
+        // Unsupported event_callback subtype (e.g. operator subscribed
+        // to reaction_added). Fail loud — Slack's app dashboard
+        // surfaces 4xx delivery failures — and ALSO fire the
+        // observability hook so the host learns about it directly.
+        if (config.onUnsupportedEvent !== undefined) {
+          const inner = (parsed as { event?: { type?: string } }).event;
+          fireUnsupportedEvent(config.onUnsupportedEvent, {
+            kind: "event_callback",
+            type: inner?.type ?? "unknown",
+          });
+        }
         return new Response("Unsupported event type", { status: 400 });
       }
       // Commit AFTER dispatch — the delivery is now considered handled.
