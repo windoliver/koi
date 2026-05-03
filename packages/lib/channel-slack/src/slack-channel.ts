@@ -64,7 +64,7 @@ function dedupeKeyFor(
   body: string,
   parsed: Record<string, unknown> | undefined,
 ): string {
-  const eventId = parsed?.["event_id"];
+  const eventId = parsed?.event_id;
   if (typeof eventId === "string" && eventId.length > 0) return `event:${eventId}`;
   const retry = request.headers.get("X-Slack-Retry-Num");
   const h = createHash("sha256").update(body).digest("hex").slice(0, 32);
@@ -213,7 +213,7 @@ function postArgsFor(
   const channel = colon === -1 ? threadId : threadId.slice(0, colon);
   const thread_ts = colon === -1 ? undefined : threadId.slice(colon + 1);
   const args: Record<string, unknown> = { channel, text: blocksToText(message.content) };
-  if (thread_ts !== undefined) args["thread_ts"] = thread_ts;
+  if (thread_ts !== undefined) args.thread_ts = thread_ts;
   return args;
 }
 
@@ -298,9 +298,9 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
   function dispatchHttpEvent(payload: unknown): void {
     if (dispatch === undefined || typeof payload !== "object" || payload === null) return;
     const p = payload as Record<string, unknown>;
-    if (p["type"] === "event_callback") {
-      const inner = p["event"] as Record<string, unknown> | undefined;
-      const innerType = inner?.["type"];
+    if (p.type === "event_callback") {
+      const inner = p.event as Record<string, unknown> | undefined;
+      const innerType = inner?.type;
       if (innerType === "app_mention") {
         dispatch({ kind: "app_mention", event: inner as never });
       } else if (innerType === "message") {
@@ -347,16 +347,16 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
     } catch {
       return;
     }
-    if (payload["type"] !== "block_actions") return;
-    const actions = (payload["actions"] ?? []) as readonly Record<string, unknown>[];
+    if (payload.type !== "block_actions") return;
+    const actions = (payload.actions ?? []) as readonly Record<string, unknown>[];
     for (const action of actions) {
       dispatch({
         kind: "block_action",
         action: {
           ...action,
-          user: payload["user"] as { readonly id: string },
-          channel: payload["channel"] as { readonly id: string } | undefined,
-          message: payload["message"] as
+          user: payload.user as { readonly id: string },
+          channel: payload.channel as { readonly id: string } | undefined,
+          message: payload.message as
             | { readonly ts: string; readonly thread_ts?: string }
             | undefined,
         } as never,
@@ -388,8 +388,8 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
         } catch {
           return new Response("Bad Request", { status: 400 });
         }
-        if (parsed["type"] === "url_verification" && typeof parsed["challenge"] === "string") {
-          return new Response(parsed["challenge"], {
+        if (parsed.type === "url_verification" && typeof parsed.challenge === "string") {
+          return new Response(parsed.challenge, {
             status: 200,
             headers: { "Content-Type": "text/plain" },
           });
@@ -487,7 +487,7 @@ function wireSocketModeEvents(
    * or non-standard test doubles still get a stable key.
    */
   function deliveryKey(wrapper: Record<string, unknown>): string {
-    const envelopeId = wrapper["envelope_id"];
+    const envelopeId = wrapper.envelope_id;
     if (typeof envelopeId === "string" && envelopeId.length > 0) return `sm-env:${envelopeId}`;
     // strip the SDK-supplied `ack` callback so the hash is reproducible
     const { ack: _ack, ...rest } = wrapper;
@@ -521,14 +521,14 @@ function wireSocketModeEvents(
   client.on(
     "message",
     guarded((wrapper) => {
-      const inner = (wrapper["event"] ?? wrapper) as Record<string, unknown>;
+      const inner = (wrapper.event ?? wrapper) as Record<string, unknown>;
       handler({ kind: "message", event: inner as never });
     }),
   );
   client.on(
     "app_mention",
     guarded((wrapper) => {
-      const inner = (wrapper["event"] ?? wrapper) as Record<string, unknown>;
+      const inner = (wrapper.event ?? wrapper) as Record<string, unknown>;
       handler({ kind: "app_mention", event: inner as never });
     }),
   );
@@ -551,17 +551,17 @@ function wireSocketModeEvents(
       ack(wrapper);
       // Retried button click → already deduped from a previous delivery.
       if (observeDelivery(deliveryKey(wrapper))) return;
-      const payload = (wrapper["payload"] ?? wrapper) as Record<string, unknown>;
-      if (payload["type"] !== "block_actions") return;
-      const actions = (payload["actions"] ?? []) as readonly Record<string, unknown>[];
+      const payload = (wrapper.payload ?? wrapper) as Record<string, unknown>;
+      if (payload.type !== "block_actions") return;
+      const actions = (payload.actions ?? []) as readonly Record<string, unknown>[];
       for (const action of actions) {
         handler({
           kind: "block_action",
           action: {
             ...action,
-            user: payload["user"] as { readonly id: string },
-            channel: payload["channel"] as { readonly id: string } | undefined,
-            message: payload["message"] as
+            user: payload.user as { readonly id: string },
+            channel: payload.channel as { readonly id: string } | undefined,
+            message: payload.message as
               | { readonly ts: string; readonly thread_ts?: string }
               | undefined,
           } as never,
@@ -572,7 +572,7 @@ function wireSocketModeEvents(
 }
 
 function ack(wrapper: Record<string, unknown>): void {
-  const fn = wrapper["ack"];
+  const fn = wrapper.ack;
   if (typeof fn === "function") {
     (fn as () => void)();
   }
