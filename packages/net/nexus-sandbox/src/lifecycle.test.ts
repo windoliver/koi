@@ -55,13 +55,11 @@ function spawnReturning(proc: SpawnedProcess): SpawnFn {
 }
 
 describe("startSandbox", () => {
-  test("happy path: spawns nexus, polls /health, returns handle", async () => {
+  test("happy path: spawns nexusd with sandbox flags, polls /health, returns handle", async () => {
     let argv: readonly string[] | undefined;
-    let env: Record<string, string | undefined> | undefined;
     const proc = mockProcess({ pid: 123 });
-    const spawn: SpawnFn = (cmd, opts) => {
+    const spawn: SpawnFn = (cmd, _opts) => {
       argv = cmd;
-      env = opts?.env;
       return proc;
     };
     const result = await startSandbox({
@@ -76,17 +74,26 @@ describe("startSandbox", () => {
       expect(result.value.pid).toBe(123);
       expect(result.value.dataDir).toBe("/tmp/nexus-test");
     }
-    expect(argv).toEqual(["uvx", "--from", "nexus-ai-fs", "nexus", "serve"]);
-    expect(env).toMatchObject({
-      NEXUS_PROFILE: "sandbox",
-      NEXUS_DATA_DIR: "/tmp/nexus-test",
-    });
+    expect(argv).toEqual([
+      "uvx",
+      "--from",
+      "nexus-ai-fs",
+      "nexusd",
+      "--profile",
+      "sandbox",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "2026",
+      "--data-dir",
+      "/tmp/nexus-test",
+    ]);
   });
 
-  test("custom port + host reflected in baseUrl and env", async () => {
-    let env: Record<string, string | undefined> | undefined;
-    const spawn: SpawnFn = (_cmd, opts) => {
-      env = opts?.env;
+  test("custom port + host reflected in baseUrl and argv", async () => {
+    let argv: readonly string[] | undefined;
+    const spawn: SpawnFn = (cmd, _opts) => {
+      argv = cmd;
       return mockProcess();
     };
     const result = await startSandbox({
@@ -97,8 +104,8 @@ describe("startSandbox", () => {
     });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.baseUrl).toBe("http://0.0.0.0:9999");
-    expect(env?.NEXUS_HOST).toBe("0.0.0.0");
-    expect(env?.NEXUS_PORT).toBe("9999");
+    expect(argv).toContain("0.0.0.0");
+    expect(argv).toContain("9999");
   });
 
   test("enableVectorSearch sets NEXUS_ENABLE_VECTOR_SEARCH=true", async () => {

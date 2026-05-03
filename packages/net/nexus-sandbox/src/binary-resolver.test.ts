@@ -18,7 +18,7 @@ describe("resolveCommand", () => {
   });
 
   test("returns uvx default argv (no PATH conflicts)", () => {
-    expect(resolveCommand()).toEqual(["uvx", "--from", "nexus-ai-fs", "nexus"]);
+    expect(resolveCommand()).toEqual(["uvx", "--from", "nexus-ai-fs", "nexusd"]);
   });
 
   test("explicit override beats env and default", () => {
@@ -33,12 +33,12 @@ describe("resolveCommand", () => {
 
   test("empty NEXUS_COMMAND falls through to default", () => {
     process.env.NEXUS_COMMAND = "";
-    expect(resolveCommand()).toEqual(["uvx", "--from", "nexus-ai-fs", "nexus"]);
+    expect(resolveCommand()).toEqual(["uvx", "--from", "nexus-ai-fs", "nexusd"]);
   });
 
   test("whitespace-only NEXUS_COMMAND falls through to default", () => {
     process.env.NEXUS_COMMAND = "   ";
-    expect(resolveCommand()).toEqual(["uvx", "--from", "nexus-ai-fs", "nexus"]);
+    expect(resolveCommand()).toEqual(["uvx", "--from", "nexus-ai-fs", "nexusd"]);
   });
 
   test("trims surrounding whitespace from NEXUS_COMMAND", () => {
@@ -52,7 +52,7 @@ describe("resolveCommand", () => {
       "run",
       "--directory",
       "/home/dev/nexus",
-      "nexus",
+      "nexusd",
     ]);
   });
 

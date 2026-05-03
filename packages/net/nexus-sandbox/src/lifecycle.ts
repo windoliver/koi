@@ -36,12 +36,16 @@ export async function startSandbox(
   const baseUrl = `http://${host}:${String(port)}`;
   const argv = [
     ...resolveCommand({ command: config.command, sourceDir: config.sourceDir }),
-    "serve",
+    "--profile",
+    "sandbox",
+    "--host",
+    host,
+    "--port",
+    String(port),
+    "--data-dir",
+    dataDir,
   ];
   const env = buildEnv({
-    port,
-    host,
-    dataDir,
     enableVectorSearch: config.enableVectorSearch === true,
     embeddingModel: config.embeddingModel,
   });
@@ -114,21 +118,12 @@ function trySpawn(
 }
 
 interface BuildEnvInput {
-  readonly port: number;
-  readonly host: string;
-  readonly dataDir: string;
   readonly enableVectorSearch: boolean;
   readonly embeddingModel: string | undefined;
 }
 
 function buildEnv(input: BuildEnvInput): Record<string, string | undefined> {
-  const base: Record<string, string | undefined> = {
-    ...process.env,
-    NEXUS_PROFILE: "sandbox",
-    NEXUS_DATA_DIR: input.dataDir,
-    NEXUS_HOST: input.host,
-    NEXUS_PORT: String(input.port),
-  };
+  const base: Record<string, string | undefined> = { ...process.env };
   if (input.enableVectorSearch) base.NEXUS_ENABLE_VECTOR_SEARCH = "true";
   if (input.embeddingModel !== undefined) base.NEXUS_EMBEDDING_MODEL = input.embeddingModel;
   return base;
