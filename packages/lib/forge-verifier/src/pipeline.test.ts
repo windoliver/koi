@@ -2637,4 +2637,59 @@ describe("R28 cache.set NOT suppressed when a follower consumed the shared succe
     const next = await nextPromise;
     expect(next.ok).toBe(true);
   });
+
+  test("R29 cache.set NOT issued when leader AND every follower aborted before completion", async () => {
+    // Subtle case: a follower attaches, then aborts. Leader also aborts.
+    // Shared work continues and completes successfully — but no live
+    // caller ever observed the result. Must NOT cache.
+    let stageCalls = 0;
+    const resolvers: Array<() => void> = [];
+    const stage: VerifierStage<FakeArtifact> = {
+      name: "ghost",
+      version: "1",
+      run: async () => {
+        stageCalls += 1;
+        await new Promise<void>((r) => {
+          resolvers.push(r);
+        });
+        return PASS;
+      },
+    };
+    const cache = createMemoryCache();
+    const artifact: FakeArtifact = { name: "ghost" };
+    const baseOpts = {
+      cache,
+      namespace: "ghost",
+      acknowledgeTrustedCache: true as const,
+      executionContextKey: "ctx",
+    };
+    const leaderAc = new AbortController();
+    const followerAc = new AbortController();
+    const leader = runPipeline([stage], artifact, { ...baseOpts, signal: leaderAc.signal });
+    await new Promise((r) => setTimeout(r, 10));
+    const follower = runPipeline([stage], artifact, { ...baseOpts, signal: followerAc.signal });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stageCalls).toBe(1); // follower attached, no second stage start
+    // Both abort BEFORE work completes.
+    leaderAc.abort();
+    followerAc.abort();
+    await new Promise((r) => setTimeout(r, 10));
+    // Now allow shared work to complete in the background.
+    if (resolvers[0] === undefined) throw new Error("no resolver");
+    resolvers[0]();
+    const [lr, fr] = await Promise.all([leader, follower]);
+    expect(lr.ok).toBe(false); // leader aborted
+    expect(fr.ok).toBe(false); // follower aborted
+    // Drain microtasks so work() finishes its cache-write check and the
+    // inflight slot evicts before the next caller arrives.
+    await new Promise((r) => setTimeout(r, 30));
+    // Next caller arriving fresh: cache must be empty → re-runs stage.
+    const nextPromise = runPipeline([stage], artifact, baseOpts);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stageCalls).toBe(2); // cache was NOT populated by the ghost run
+    if (resolvers[1] === undefined) throw new Error("no resolver");
+    resolvers[1]();
+    const next = await nextPromise;
+    expect(next.ok).toBe(true);
+  });
 });

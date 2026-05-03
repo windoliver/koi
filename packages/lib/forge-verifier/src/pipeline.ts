@@ -48,6 +48,15 @@ interface InflightEntry {
    * arrivals run a fresh pipeline instead.
    */
   readonly leaderPipelineSignal: AbortSignal | undefined;
+  /**
+   * Registers a follower as a live consumer of the shared result.
+   * Increments the leader's `liveConsumers` counter and (when
+   * `followerSignal` is provided) wires an abort listener that
+   * decrements when the follower itself aborts. Used by the
+   * cache-write gate so a result no live caller actually accepted is
+   * not persisted.
+   */
+  readonly registerConsumer: (followerSignal: AbortSignal | undefined) => void;
 }
 const inflight = new Map<string, InflightEntry>();
 
@@ -842,6 +851,7 @@ export async function runPipeline<I>(
         inflight.delete(inflightKey);
       } else {
         existing.detach();
+        existing.registerConsumer(signal);
         if (signal === undefined) return existing.promise;
         return waitWithSignal(existing.promise, signal);
       }
@@ -854,14 +864,46 @@ export async function runPipeline<I>(
   //     mirror of the caller's signal so a SOLO caller still aborts the
   //     work. When a follower joins (above), `detach()` unwires the
   //     mirror so the leader's signal no longer aborts the shared work.
-  // `hasFollower` flips to true the first time a SECOND caller attaches
-  // to this run via the inflight registry. Used by the cache-write
-  // gate: if the leader caller aborted but a follower successfully
-  // consumed the shared result, we still cache the success — the
-  // shared verification did serve a live consumer, and suppressing the
-  // write would force every later caller to re-run the same expensive
-  // (potentially non-idempotent) work for no benefit.
-  let hasFollower = false;
+  // `liveConsumers` tracks callers still awaiting the shared result at
+  // cache-write time. Mere attachment is NOT enough — a follower that
+  // attaches and then aborts before consumption never accepted the
+  // result, and if every participating caller (leader + followers)
+  // aborts before completion, we must NOT cache a `passed: true`
+  // entry that no live caller actually received. Increments on
+  // attachment; decrements when a caller's own signal aborts (which
+  // is what causes their `waitWithSignal` to resolve to TIMEOUT
+  // instead of the shared result).
+  //
+  // Starts at 1 for the leader (or 0 if `work()` is invoked directly
+  // without inflight registration — see solo-run paths).
+  // The leader is the first live consumer. If their own signal aborts
+  // before `work()` resolves, decrement so the cache-write gate can
+  // see "leader gone".
+  let liveConsumers = 1;
+  const decrementConsumer = (): void => {
+    if (liveConsumers > 0) liveConsumers -= 1;
+  };
+  if (signal !== undefined) {
+    if (signal.aborted) {
+      decrementConsumer();
+    } else {
+      signal.addEventListener("abort", decrementConsumer, { once: true });
+    }
+  }
+  // Register a follower (called from the inflight attach path of a
+  // SECOND runPipeline frame). Increments now, decrements if the
+  // follower's signal aborts before the shared work resolves.
+  const registerConsumer = (followerSignal: AbortSignal | undefined): void => {
+    if (followerSignal?.aborted === true) {
+      // Already aborted on arrival — they will never observe the
+      // result; do not count them.
+      return;
+    }
+    liveConsumers += 1;
+    if (followerSignal !== undefined) {
+      followerSignal.addEventListener("abort", decrementConsumer, { once: true });
+    }
+  };
   let detachCallerSignal: () => void = () => {};
   let pipelineSignal: AbortSignal | undefined;
   if (inflightKey === undefined) {
@@ -1094,19 +1136,17 @@ export async function runPipeline<I>(
     });
 
     if (composedKey !== undefined && cache !== undefined) {
-      // Suppress cache.set when the initiating caller has aborted AND
-      // no follower attached. If a follower DID attach, the shared
-      // verification successfully served at least one live consumer —
-      // caching the result avoids forcing every later caller to re-run
-      // the same expensive (and potentially non-idempotent) work just
-      // because the original initiator happened to cancel. We only
-      // suppress when the leader was the SOLE consumer and rejected
-      // the result, so we never cache a pass that no live caller
-      // accepted. (`signal` here is the leader caller's signal closed
-      // over from runPipeline; `hasFollower` is set in the inflight
-      // attach path.)
-      if (signal?.aborted === true && !hasFollower) {
-        console.debug("[forge-verifier] cache.set suppressed (leader aborted, no followers)");
+      // Suppress cache.set when no live consumer remains at the moment
+      // the shared verification completes. `liveConsumers` starts at 1
+      // for the leader and is incremented for each follower that
+      // attaches; it decrements whenever a participating caller's
+      // signal aborts. If every caller aborted before completion, no
+      // live consumer ever accepted this result — caching it would
+      // serve a "passed: true" entry that no participant actually
+      // received. R29's coarse `signal.aborted && !hasFollower` gate
+      // missed the case where a follower attached and then aborted.
+      if (liveConsumers === 0) {
+        console.debug("[forge-verifier] cache.set suppressed (no live consumer)");
       } else {
         try {
           await cache.set(composedKey, { key: composedKey, summary });
@@ -1150,14 +1190,11 @@ export async function runPipeline<I>(
       inflight.delete(key);
     });
     void releaseSlot;
-    const detachAndMark = (): void => {
-      hasFollower = true;
-      detachCallerSignal();
-    };
     inflight.set(key, {
       promise,
-      detach: detachAndMark,
+      detach: detachCallerSignal,
       leaderPipelineSignal: pipelineSignal,
+      registerConsumer,
     });
     return signal !== undefined ? waitWithSignal(promise, signal) : promise;
   }
