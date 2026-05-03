@@ -616,6 +616,59 @@ describe("runPipeline — security regressions", () => {
     expect(result.error.message).toContain("non-enumerable");
   });
 
+  test("array with an accessor (getter) is rejected without firing the getter", async () => {
+    let getterFired = false;
+    const arr: unknown[] = [];
+    Object.defineProperty(arr, "trapped", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        getterFired = true;
+        return 1;
+      },
+    });
+    const result = await runPipeline([createSyntaxStage(okCheck)], arr as unknown as FakeArtifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(getterFired).toBe(false);
+  });
+
+  test("array with extra named property is rejected", async () => {
+    const arr: unknown[] & { extra?: { x: number } } = [];
+    arr.extra = { x: 1 };
+    const result = await runPipeline([createSyntaxStage(okCheck)], arr as unknown as FakeArtifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("array property");
+  });
+
+  test("array with symbol-keyed property is rejected", async () => {
+    const sym = Symbol("hidden");
+    const arr: unknown[] = [];
+    (arr as unknown as Record<symbol, unknown>)[sym] = { secret: 1 };
+    const result = await runPipeline([createSyntaxStage(okCheck)], arr as unknown as FakeArtifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("symbol");
+  });
+
+  test("throwing artifactFingerprint stays inside Result envelope", async () => {
+    const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
+      artifactFingerprint: () => {
+        throw new Error("boom");
+      },
+      cache: createMemoryCache(),
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("artifactFingerprint threw");
+    expect(result.error.message).toContain("boom");
+  });
+
   test("self-referential plain object is accepted (cycle guard)", async () => {
     type Cyclic = { name: string; self?: Cyclic };
     const obj: Cyclic = { name: "cyc" };

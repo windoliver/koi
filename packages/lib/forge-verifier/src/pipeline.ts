@@ -179,10 +179,25 @@ export async function runPipeline<I>(
   // cache hits, so the trust signal cannot diverge across cache state.
   const declaredSandbox = stages.some((s) => s.sandboxed === true);
 
-  const composedKey =
-    fingerprint !== undefined && cache !== undefined
-      ? composeCacheKey(namespace, fingerprint(snapshot), stages)
-      : undefined;
+  let composedKey: string | undefined;
+  if (fingerprint !== undefined && cache !== undefined) {
+    try {
+      composedKey = composeCacheKey(namespace, fingerprint(snapshot), stages);
+    } catch (e: unknown) {
+      // A throwing fingerprint function is a caller bug, but it must stay
+      // inside the Result envelope — the public contract is exception-free.
+      const detail = e instanceof Error ? e.message : "fingerprint threw";
+      return {
+        ok: false,
+        error: {
+          code: "INVALID_CONFIG",
+          message: `artifactFingerprint threw: ${detail}`,
+          retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
+          cause: e,
+        },
+      };
+    }
+  }
 
   if (composedKey !== undefined && cache !== undefined) {
     if (signal?.aborted) {
@@ -351,8 +366,37 @@ function rejectUnsupportedShape(value: unknown, path: string, seen: WeakSet<obje
     );
   }
   if (Array.isArray(value)) {
+    // Validate elements first (recurses through descriptor walk for nested
+    // objects). Then validate the array's OWN properties — arrays can carry
+    // accessors, symbol keys, non-enumerable, and extra named props that
+    // would otherwise execute during structuredClone or be silently dropped.
     for (let i = 0; i < value.length; i++) {
       rejectUnsupportedShape(value[i], `${path}[${i}]`, seen);
+    }
+    const arrSymbols = Object.getOwnPropertySymbols(value);
+    if (arrSymbols.length > 0) {
+      throw new TypeError(
+        `Artifact at ${path} (array) has symbol-keyed own properties; verifier requires plain-data artifacts.`,
+      );
+    }
+    const arrDescs = Object.getOwnPropertyDescriptors(value);
+    for (const [k, desc] of Object.entries(arrDescs)) {
+      if (k === "length" || /^\d+$/.test(k)) continue; // numeric indices already walked
+      if (typeof desc.get === "function" || typeof desc.set === "function") {
+        throw new TypeError(
+          `Artifact at ${path}.${k} (array property) is an accessor (getter/setter); verifier rejects accessors.`,
+        );
+      }
+      if (desc.enumerable !== true) {
+        throw new TypeError(
+          `Artifact at ${path}.${k} (array property) is non-enumerable; verifier requires plain-data artifacts.`,
+        );
+      }
+      // Extra named properties on arrays are not preserved by structuredClone,
+      // so reject rather than silently drop them from the snapshot.
+      throw new TypeError(
+        `Artifact at ${path}.${k} (array property) is a non-index own property; verifier requires plain-data arrays (extra named properties are not preserved by structuredClone).`,
+      );
     }
     return;
   }
