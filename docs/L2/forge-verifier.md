@@ -47,37 +47,50 @@ via the same `VerifierStage` interface.
   (digests are owned by the orchestrator). Failure carries `reason:
   string` and optional `cause: unknown`. The orchestrator converts
   failure into a `KoiError` and stops the pipeline.
-- `createSyntaxStage(check): VerifierStage<I>`,
-  `createTypeStage(check): VerifierStage<I>`,
-  `createTestStage(check): VerifierStage<I>` — built-in stage factories.
-  Each accepts a caller-supplied `check: (artifact: I) =>
-  StageOutcome | Promise<StageOutcome>` and wraps it with the canonical
-  stage name (`"syntax"`, `"type"`, `"test"`). Sync and async checks are
-  both supported (the orchestrator awaits unconditionally).
-- `VerifyOptions<I>` —
-  - `artifactFingerprint?: (artifact: I) => string` — required for any
-    caching. Caller MUST return a value derived from artifact content
-    (a constant, candidate id, or external label is a contract violation
-    and silently aliases unrelated artifacts in the cache). The library
-    composes this with the stage list so callers do not encode verifier
-    config themselves.
-  - `namespace?: string` — optional caller partition (tenant, env,
-    suite). Folded into the cache key. Defaults to `""`.
-  - `cache?: VerificationCache` — storage backend.
-  - `signal?: AbortSignal` — forwarded to every stage.
-- `ArtifactFingerprintFn<I>` — exported alias for `(artifact: I) => string`.
-- **Cache-hit validation**: every cache hit is checked against the current
-  stage list (length, name and `passed: true` per index). A backend that
-  returns `stageResults: []` (or wrong stage names, or `passed: false`)
-  is rejected and the pipeline re-verifies — the cache cannot fail-open
-  on a corrupted or hostile payload.
-- `VerificationCache` — two methods: `get(key): ForgeVerificationSummary
-  | undefined | Promise<...>`, `set(key, summary): void | Promise<void>`.
+- `createSyntaxStage(check, version?): VerifierStage<I>`,
+  `createTypeStage(check, version?): VerifierStage<I>`,
+  `createTestStage(check, version?): VerifierStage<I>` — built-in stage
+  factories. Each accepts a caller-supplied
+  `check: (artifact: I, ctx: StageContext) => StageOutcome | Promise<StageOutcome>`
+  and wraps it with the canonical stage name (`"syntax"`, `"type"`,
+  `"test"`). The `ctx` argument carries `signal` so checks can
+  cooperatively cancel long-running work. Sync and async checks are
+  both supported.
+- `VerifyOptions` —
+  - `namespace?: string` — REQUIRED non-empty string when `cache` is
+    provided; partitions the cache by tenant/environment/suite so two
+    callers sharing a backend cannot replay each other's attestations.
+    Use any opaque constant per partition. Passing `cache` without
+    `namespace` returns `INVALID_CONFIG`.
+  - `cache?: VerificationCache` — storage backend. The library derives
+    the artifact-side digest INTERNALLY from the validated frozen
+    snapshot — no caller callback runs on the verifier stack.
+  - `cacheReadFailure?: "fail" | "miss"` — behavior when `cache.get`
+    throws. Defaults to `"fail"` (returns INTERNAL inside the Result
+    envelope) — safe for pluggable stages that may have side effects.
+    Opt into `"miss"` only when stages are KNOWN side-effect-free.
+  - `signal?: AbortSignal` — forwarded to every stage. Signal-bearing
+    callers participate in single-flight only as FOLLOWERS (their abort
+    short-circuits their own wait without affecting the leader or other
+    waiters); signal-free callers may BECOME the leader.
+- **Cache-hit validation**: every cache hit is bound to its composed key
+  AND checked against the current stage list (length, name and
+  `passed: true` per index), the declared `sandbox` flag, and finite
+  non-negative durations. A backend returning the wrong key, wrong
+  stage names, mismatched sandbox, or NaN/Infinity durations is rejected
+  and the pipeline re-verifies — the cache cannot fail-open on a
+  corrupted or hostile payload.
+- `VerificationCache` — wraps stored values in a `CachedVerification`
+  envelope `{ key, summary }` so the verifier can detect a backend that
+  returns the wrong key. Two methods: `get(key): CachedVerification
+  | undefined | Promise<...>`, `set(key, value): void | Promise<void>`.
   Both `T | Promise<T>` so an in-memory `Map` and a remote KV present
   the same surface. **Only successful (`passed: true`) summaries are
   cached** — failures are intentionally re-run, since a failure may be
   due to a transient resource issue and a future caller might supply
   different inputs that succeed.
+- `CachedVerification` — exported envelope type binding a summary to
+  its composed key.
 - `createMemoryCache(): VerificationCache` — trivial in-process backing
   for tests and single-process workflows. Unbounded — production callers
   should plug in an LRU or external store.

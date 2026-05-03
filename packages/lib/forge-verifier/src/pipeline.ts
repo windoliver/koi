@@ -264,7 +264,11 @@ function canonicalJson(value: unknown, state: CanonicalState, depth = 0): string
   }
   if (value === null || typeof value !== "object") return encodePrimitive(value);
   if (state.onStack.has(value)) {
-    throw new Error("snapshot contains a cycle; cannot derive a deterministic cache key");
+    // Tagged so callers can distinguish "expected: cyclic snapshot" from
+    // serializer bugs / future regressions and decide bypass-vs-fail.
+    const err = new Error("snapshot contains a cycle; cannot derive a deterministic cache key");
+    (err as Error & { code?: string }).code = "FORGE_VERIFIER_CYCLE";
+    throw err;
   }
   // Topology-aware aliasing: a node reached via a non-back-edge that we've
   // already serialized once gets a stable reference ID. Different DAG
@@ -503,11 +507,23 @@ export async function runPipeline<I>(
       }
       composedKey = composeCacheKey(namespace, digest, stages);
     } catch (e: unknown) {
-      // Cyclic snapshot (or other digest failure) — bypass caching for this
-      // run. A correctness-preserving miss is strictly better than a hit
-      // bound to a non-deterministic key. Operators can correlate via debug.
-      console.debug("[forge-verifier] cache bypassed (snapshot not cacheable):", e);
-      composedKey = undefined;
+      // Only the EXPECTED cycle case bypasses caching (cyclic artifacts
+      // have no deterministic linearization, so a miss + re-verify is the
+      // correctness-preserving outcome). Any other digest/key-derivation
+      // error indicates a serializer bug or future regression — surface as
+      // INTERNAL so callers don't unknowingly re-execute side-effectful
+      // stages on a cache disabled by an opaque encoder failure.
+      const code = (e as { code?: string } | undefined)?.code;
+      if (code === "FORGE_VERIFIER_CYCLE") {
+        console.debug("[forge-verifier] cache bypassed (cyclic snapshot):", e);
+        composedKey = undefined;
+      } else {
+        const detail = e instanceof Error ? e.message : "cache key derivation failed";
+        return {
+          ok: false,
+          error: stageError("INTERNAL", "<cache>", `Cache key derivation failed: ${detail}`, e),
+        };
+      }
     }
   }
 
