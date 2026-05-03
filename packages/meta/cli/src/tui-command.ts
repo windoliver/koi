@@ -1106,6 +1106,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestSupervision: import("@koi/core").SupervisionConfig | undefined;
   let manifestAudit: import("./manifest.js").ManifestAuditConfig | undefined;
   let manifestDelegation: import("./manifest.js").ManifestDelegationConfig | undefined;
+  let manifestNexus: import("./manifest.js").ManifestNexusConfig | undefined;
   let manifestNetwork: import("./manifest.js").ManifestNetworkConfig | undefined;
   let manifestCredentials: import("./manifest.js").ManifestCredentialsConfig | undefined;
   let manifestAceConfig: import("./manifest.js").ManifestAceConfig | undefined;
@@ -1172,6 +1173,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestSupervision = manifestResult.value.supervision;
     manifestAudit = manifestResult.value.audit;
     manifestDelegation = manifestResult.value.delegation;
+    manifestNexus = manifestResult.value.nexus;
     manifestNetwork = manifestResult.value.network;
     manifestCredentials = manifestResult.value.credentials;
     manifestLoadPath = resolvedManifestPath;
@@ -2323,26 +2325,40 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   }
 
   // ---------------------------------------------------------------------------
-  // Nexus delegation provider — wired when manifest declares `delegation:
-  // backend: nexus` AND NEXUS_URL env var is set. Spawned children get a
-  // per-child Nexus API key that is revoked on termination. When omitted, the
-  // built-in in-memory delegation backend (HMAC/Ed25519 grants) is used.
+  // Nexus endpoint resolution (Issue #1403). Determines whether to connect to
+  // an external URL or auto-spawn a local @koi/nexus-sandbox subprocess based
+  // on `manifest.nexus.mode`, `--nexus-url`, and NEXUS_URL env. We trigger
+  // resolution when something downstream needs Nexus (delegation backend,
+  // explicit `manifest.nexus` block) — `mode: auto` with no consumer is a no-op
+  // so the sandbox doesn't spawn for agents that don't talk to Nexus.
   // ---------------------------------------------------------------------------
+  const { resolveNexusForHost } = await import("./resolve-nexus-for-host.js");
+  const nexusEndpointResult = await resolveNexusForHost({
+    manifestNexus,
+    manifestDelegation,
+    manifestFilesystem: manifestFilesystemConfig,
+    cliNexusUrl: flags.nexusUrl,
+  });
+  if (!nexusEndpointResult.ok) {
+    process.stderr.write(`koi tui: ${nexusEndpointResult.error.message}\n`);
+    process.exit(1);
+  }
+  const nexusEndpoint = nexusEndpointResult.value;
+  if (nexusEndpoint !== undefined) {
+    process.env.NEXUS_URL = nexusEndpoint.url;
+    const shutdown = nexusEndpoint.shutdown;
+    process.on("exit", () => {
+      void shutdown();
+    });
+  }
+
   let nexusDelegationProvider: import("@koi/core").ComponentProvider | undefined;
   if (manifestDelegation?.backend === "nexus") {
-    const nexusUrl = process.env.NEXUS_URL;
-    if (nexusUrl === undefined || nexusUrl.trim() === "") {
-      process.stderr.write(
-        "koi tui: manifest declares delegation.backend: nexus but NEXUS_URL env var is not set. " +
-          "Set NEXUS_URL=http://host:port (e.g. http://localhost:2026) or change the manifest to backend: memory.\n",
-      );
-      process.exit(1);
-    }
     const { createNexusDelegationApi, createNexusDelegationProvider } = await import(
       "@koi/nexus-delegation"
     );
     const nexusDelegationApi = createNexusDelegationApi({
-      url: nexusUrl,
+      url: process.env.NEXUS_URL ?? "",
       ...(process.env.NEXUS_API_KEY !== undefined ? { apiKey: process.env.NEXUS_API_KEY } : {}),
     });
     nexusDelegationProvider = createNexusDelegationProvider({ api: nexusDelegationApi });

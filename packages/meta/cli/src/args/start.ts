@@ -121,6 +121,12 @@ export interface StartFlags extends BaseFlags {
    * share one surface.
    */
   readonly governance: GovernanceFlags;
+  /**
+   * Optional Nexus URL override (Issue #1403). Wins over manifest.nexus.url
+   * and NEXUS_URL env. When omitted, manifest + env determine the endpoint;
+   * `mode: sandbox` (or `auto` with no URL) auto-spawns @koi/nexus-sandbox.
+   */
+  readonly nexusUrl: string | undefined;
 }
 
 export function parseStartFlags(rest: readonly string[]): StartFlags {
@@ -151,6 +157,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     readonly settings: string | undefined;
     readonly "alert-threshold": string[] | undefined;
     readonly "no-governance": boolean | undefined;
+    readonly "nexus-url": string | undefined;
     readonly help: boolean | undefined;
     readonly version: boolean | undefined;
   };
@@ -184,6 +191,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
         settings: { type: "string" },
         "alert-threshold": { type: "string", multiple: true },
         "no-governance": { type: "boolean", default: false },
+        "nexus-url": { type: "string" },
         help: { type: "boolean", short: "h", default: false },
         version: { type: "boolean", short: "V", default: false },
       },
@@ -385,6 +393,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     maxDurationMs,
     resultSchema: values["result-schema"],
     governance,
+    nexusUrl: values["nexus-url"],
   };
 }
 

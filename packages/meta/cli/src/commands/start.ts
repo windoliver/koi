@@ -387,6 +387,11 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   let manifestFilesystemBackend: FileSystemBackend | undefined;
   let manifestMiddleware: import("../manifest.js").ManifestMiddlewareEntry[] | undefined;
   let manifestGovernance: import("../manifest.js").ManifestGovernanceConfig | undefined;
+  // #1403: hoisted so the nexus-endpoint resolution block (below the manifest
+  // load) can read them outside the resolvedManifestPath branch.
+  let manifestNexusConfig: import("../manifest.js").ManifestNexusConfig | undefined;
+  let manifestDelegationConfig: import("../manifest.js").ManifestDelegationConfig | undefined;
+  let manifestFilesystemConfigForNexus: import("@koi/core").FileSystemConfig | undefined;
   // When resuming without an explicit --manifest, bypass auto-discovery
   // entirely so the cwd's manifest cannot silently override the model, stacks,
   // plugins, filesystem scope, or governance that produced the original session.
@@ -456,6 +461,9 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         ? [...manifestResult.value.middleware]
         : undefined;
     manifestGovernance = manifestResult.value.governance;
+    manifestNexusConfig = manifestResult.value.nexus;
+    manifestDelegationConfig = manifestResult.value.delegation;
+    manifestFilesystemConfigForNexus = manifestResult.value.filesystem;
 
     // Fail fast on settings that `koi start` cannot honor, rather
     // than silently discarding them. A shared manifest that targets
@@ -630,6 +638,38 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       return bail(
         'manifest.stacks including "spawn" is not supported on this host. Spawn enables coordinator workflows that poll task_output, which hard-fails under koi start\'s default loop detector. Remove "spawn" from manifest.stacks, or use `koi tui` for coordinator workflows.',
       );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Nexus endpoint resolution (Issue #1403). Determines whether to connect
+  // to an external URL or auto-spawn a local @koi/nexus-sandbox subprocess.
+  // Trigger rule lives in resolve-nexus-for-host.ts: resolves only when
+  // something downstream needs Nexus (delegation, fs-nexus, explicit
+  // manifest.nexus block, or --nexus-url). Otherwise no-op.
+  //
+  // koi start is non-interactive; we use a synchronous best-effort exit
+  // hook so the sandbox subprocess gets SIGTERM on normal exit. Crashes /
+  // SIGKILL leave the OS to reap the orphan (matches existing daemon
+  // patterns elsewhere in this command).
+  // ---------------------------------------------------------------------------
+  {
+    const { resolveNexusForHost } = await import("../resolve-nexus-for-host.js");
+    const endpointResult = await resolveNexusForHost({
+      manifestNexus: manifestNexusConfig,
+      manifestDelegation: manifestDelegationConfig,
+      manifestFilesystem: manifestFilesystemConfigForNexus,
+      cliNexusUrl: flags.nexusUrl,
+    });
+    if (!endpointResult.ok) {
+      return bail(`nexus endpoint: ${endpointResult.error.message}`);
+    }
+    if (endpointResult.value !== undefined) {
+      process.env.NEXUS_URL = endpointResult.value.url;
+      const shutdown = endpointResult.value.shutdown;
+      process.on("exit", () => {
+        void shutdown();
+      });
     }
   }
 
