@@ -1522,17 +1522,25 @@ describe("R25/r8 sync stage throws + always attach to in-flight slot", () => {
   });
 });
 
-describe("R25/r7 timeout-then-retry holds slot + executionContextKey required", () => {
-  test("retry after stageTimeoutMs does NOT start a second background stage execution", async () => {
+describe("R26 timeout-then-retry releases slot for a fresh attempt", () => {
+  test("retry after stageTimeoutMs starts a fresh execution rather than inheriting stale TIMEOUT", async () => {
+    // R26 reverses R25/r7's "hold slot until stages settle" semantics.
+    // An uncooperative plugin's underlying promise may never settle —
+    // holding the slot would brick the key for the lifetime of the
+    // process. The library's stageTimeoutMs contract already warns
+    // that work may continue in the background; we honor availability
+    // over deduplication. (The leader's abandoned underlying still
+    // runs; the new attempt may also time out, but each caller gets a
+    // fresh chance.)
     let stageStarts = 0;
-    let stageResolve: (() => void) | undefined;
+    const resolvers: Array<() => void> = [];
     const slow: VerifierStage<FakeArtifact> = {
       name: "slow",
       version: "1",
       run: async () => {
         stageStarts += 1;
         await new Promise<void>((r) => {
-          stageResolve = r;
+          resolvers.push(r);
         });
         return PASS;
       },
@@ -1549,14 +1557,16 @@ describe("R25/r7 timeout-then-retry holds slot + executionContextKey required", 
     const first = await runPipeline([slow], artifact, opts);
     expect(first.ok).toBe(false);
     if (!first.ok) expect(first.error.code).toBe("TIMEOUT");
-    // Immediate retry: must NOT start a second stage execution while
-    // the first one is still pending.
+    expect(stageStarts).toBe(1);
+    // Retry: leader has resolved → slot evicted → fresh execution.
     const retryPromise = runPipeline([slow], artifact, opts);
     await new Promise((r) => setTimeout(r, 10));
-    expect(stageStarts).toBe(1); // slot held — retry attached, no new stage
-    if (stageResolve !== undefined) stageResolve();
+    expect(stageStarts).toBe(2); // fresh leader, key not bricked
+    // Drain background work so the test exits cleanly.
+    for (const r of resolvers) r();
     const retry = await retryPromise;
-    expect(retry.ok).toBe(false); // retry inherits the leader's TIMEOUT
+    // Retry also times out (stage still slow), but it was its own attempt.
+    expect(retry.ok === true || (retry.ok === false && retry.error.code === "TIMEOUT")).toBe(true);
   });
 
   test("cache without executionContextKey is rejected as INVALID_CONFIG", async () => {

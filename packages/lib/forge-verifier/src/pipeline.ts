@@ -867,13 +867,6 @@ export async function runPipeline<I>(
     pipelineSignal = internal.signal;
   }
 
-  // Track the actual stage promises (NOT the Promise.race winners).
-  // The in-flight slot is held until ALL of these settle so a retry
-  // for the same key cannot start a second background stage execution
-  // while the first is still running — which would double-submit
-  // irreversible work for non-idempotent stages.
-  const stageUnderlyings: Promise<unknown>[] = [];
-
   const work = async (): Promise<Result<ForgeVerificationSummary>> => {
     if (composedKey !== undefined && cache !== undefined) {
       if (pipelineSignal?.aborted) {
@@ -954,10 +947,10 @@ export async function runPipeline<I>(
         pipelineSignal,
         stageTimeoutMs,
       );
-      // Suppress unhandled rejection on the underlying promise; we hold
-      // the reference for in-flight slot timing only, not for its
-      // result (the race already returned what the caller sees).
-      stageUnderlyings.push(underlying.catch(() => undefined));
+      // Suppress unhandled rejection on the underlying promise; the
+      // race already returned what the caller sees, and we don't keep
+      // a reference (the slot lifecycle no longer waits on it).
+      void underlying.catch(() => undefined);
       totalDurationMs += durationMs;
 
       // Pipeline-initiated abort (caller signal OR per-stage watchdog)
@@ -1119,25 +1112,26 @@ export async function runPipeline<I>(
     // so the shared work is not killed by the leader's abort once
     // someone else depends on it.
     //
-    // Hold the in-flight slot until BOTH the work loop AND every
-    // underlying stage promise have settled. A timed-out/aborted stage
-    // continues running in the background; releasing the slot before
-    // it settles would let a retry for the same key start a SECOND
-    // execution of the same non-idempotent stage. By holding the slot,
-    // late callers attach to the leader (inheriting its TIMEOUT result)
-    // rather than re-running irreversible work.
+    // Release the in-flight slot as soon as `work()` settles. Earlier
+    // revisions held the slot until every underlying stage promise also
+    // settled, intending to deduplicate background work for an
+    // uncooperative plugin. That choice bricked the key: once the
+    // leader returned TIMEOUT, the wedged underlying could never settle
+    // (by definition of "uncooperative"), and every subsequent caller
+    // for the same artifact/context inherited the stale TIMEOUT for the
+    // lifetime of the process — a soft DoS far worse than the
+    // duplicated background work it prevented. The library's stated
+    // contract for stageTimeoutMs already warns that the underlying
+    // work may continue; honoring that contract by allowing fresh
+    // verification attempts is the correct tradeoff. Followers that
+    // joined while `work()` was running still share the leader's
+    // result via the registered entry; only callers arriving AFTER
+    // resolution become fresh leaders.
     const promise = work();
-    const releaseWhenStagesSettle = promise
-      .then(
-        () => Promise.allSettled(stageUnderlyings),
-        () => Promise.allSettled(stageUnderlyings),
-      )
-      .finally(() => {
-        inflight.delete(key);
-      });
-    // Suppress unhandled rejection on the lifecycle promise — we only
-    // care about its side effect (delete).
-    void releaseWhenStagesSettle;
+    const releaseSlot = promise.finally(() => {
+      inflight.delete(key);
+    });
+    void releaseSlot;
     inflight.set(key, {
       promise,
       detach: detachCallerSignal,
