@@ -883,11 +883,28 @@ export async function runPipeline<I>(
   const decrementConsumer = (): void => {
     if (liveConsumers > 0) liveConsumers -= 1;
   };
+  // Track every (signal, listener) pair we install so they can be
+  // removed in a finally-style sweep after `work()` settles. Without
+  // this, the listeners outlive the verification and accumulate on
+  // long-lived caller signals (e.g. request-scoped controllers reused
+  // across many verifications), turning the hot path into a memory
+  // leak.
+  const installedListeners: Array<{ signal: AbortSignal; listener: () => void }> = [];
+  const installListener = (sig: AbortSignal): void => {
+    sig.addEventListener("abort", decrementConsumer, { once: true });
+    installedListeners.push({ signal: sig, listener: decrementConsumer });
+  };
+  const releaseConsumerListeners = (): void => {
+    for (const { signal: s, listener } of installedListeners) {
+      s.removeEventListener("abort", listener);
+    }
+    installedListeners.length = 0;
+  };
   if (signal !== undefined) {
     if (signal.aborted) {
       decrementConsumer();
     } else {
-      signal.addEventListener("abort", decrementConsumer, { once: true });
+      installListener(signal);
     }
   }
   // Register a follower (called from the inflight attach path of a
@@ -901,7 +918,7 @@ export async function runPipeline<I>(
     }
     liveConsumers += 1;
     if (followerSignal !== undefined) {
-      followerSignal.addEventListener("abort", decrementConsumer, { once: true });
+      installListener(followerSignal);
     }
   };
   let detachCallerSignal: () => void = () => {};
@@ -1208,6 +1225,11 @@ export async function runPipeline<I>(
     const promise = work();
     const releaseSlot = promise.finally(() => {
       inflight.delete(key);
+      releaseConsumerListeners();
+      // Also unwire the leader's caller-signal mirror listener if no
+      // follower ever attached (detachCallerSignal was never invoked
+      // by a follower). Idempotent — safe to call again.
+      detachCallerSignal();
     });
     void releaseSlot;
     inflight.set(key, {
@@ -1218,7 +1240,9 @@ export async function runPipeline<I>(
     });
     return signal !== undefined ? waitWithSignal(promise, signal) : promise;
   }
-  return work();
+  // Solo path: still clean up listeners after work() settles so the
+  // leader signal is not retained beyond the verification.
+  return work().finally(releaseConsumerListeners);
 }
 
 /**

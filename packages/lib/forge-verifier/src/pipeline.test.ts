@@ -2751,3 +2751,86 @@ describe("R28 cache.set NOT suppressed when a follower consumed the shared succe
     expect(next.ok).toBe(true);
   });
 });
+
+describe("R31 abort listeners are cleaned up after work() settles", () => {
+  test("leader signal has no remaining listeners after successful verification", async () => {
+    const stage: VerifierStage<FakeArtifact> = {
+      name: "ok",
+      version: "1",
+      run: async () => PASS,
+    };
+    const ac = new AbortController();
+    let listenerAdds = 0;
+    let listenerRemoves = 0;
+    const origAdd = ac.signal.addEventListener.bind(ac.signal);
+    const origRemove = ac.signal.removeEventListener.bind(ac.signal);
+    ac.signal.addEventListener = ((type: string, ...rest: unknown[]) => {
+      if (type === "abort") listenerAdds += 1;
+      // biome-ignore lint/suspicious/noExplicitAny: spy spread
+      return origAdd(type as any, ...(rest as any));
+    }) as typeof ac.signal.addEventListener;
+    ac.signal.removeEventListener = ((type: string, ...rest: unknown[]) => {
+      if (type === "abort") listenerRemoves += 1;
+      // biome-ignore lint/suspicious/noExplicitAny: spy spread
+      return origRemove(type as any, ...(rest as any));
+    }) as typeof ac.signal.removeEventListener;
+    const r = await runPipeline([stage], { name: "leak" } as FakeArtifact, {
+      cache: createMemoryCache(),
+      namespace: "leak",
+      acknowledgeTrustedCache: true,
+      executionContextKey: "ctx",
+      signal: ac.signal,
+    });
+    expect(r.ok).toBe(true);
+    // Drain microtasks so finally() handlers fire.
+    await new Promise((r2) => setTimeout(r2, 10));
+    // Every install must have a matching remove.
+    expect(listenerRemoves).toBeGreaterThanOrEqual(listenerAdds);
+  });
+
+  test("follower signal listeners are also removed after success", async () => {
+    let release: (() => void) | undefined;
+    const stage: VerifierStage<FakeArtifact> = {
+      name: "shared",
+      version: "1",
+      run: async () => {
+        await new Promise<void>((r) => {
+          release = r;
+        });
+        return PASS;
+      },
+    };
+    const cache = createMemoryCache();
+    const artifact: FakeArtifact = { name: "leak2" };
+    const baseOpts = {
+      cache,
+      namespace: "leak2",
+      acknowledgeTrustedCache: true as const,
+      executionContextKey: "ctx",
+    };
+    const followerAc = new AbortController();
+    let adds = 0;
+    let removes = 0;
+    const origAdd = followerAc.signal.addEventListener.bind(followerAc.signal);
+    const origRemove = followerAc.signal.removeEventListener.bind(followerAc.signal);
+    followerAc.signal.addEventListener = ((t: string, ...rest: unknown[]) => {
+      if (t === "abort") adds += 1;
+      // biome-ignore lint/suspicious/noExplicitAny: spread
+      return origAdd(t as any, ...(rest as any));
+    }) as typeof followerAc.signal.addEventListener;
+    followerAc.signal.removeEventListener = ((t: string, ...rest: unknown[]) => {
+      if (t === "abort") removes += 1;
+      // biome-ignore lint/suspicious/noExplicitAny: spread
+      return origRemove(t as any, ...(rest as any));
+    }) as typeof followerAc.signal.removeEventListener;
+    const leader = runPipeline([stage], artifact, baseOpts);
+    await new Promise((r) => setTimeout(r, 10));
+    const follower = runPipeline([stage], artifact, { ...baseOpts, signal: followerAc.signal });
+    await new Promise((r) => setTimeout(r, 10));
+    if (release === undefined) throw new Error("no release");
+    release();
+    await Promise.all([leader, follower]);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(removes).toBeGreaterThanOrEqual(adds);
+  });
+});
