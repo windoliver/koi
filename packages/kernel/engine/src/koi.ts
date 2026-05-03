@@ -212,7 +212,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // assembled components, so attaching the boot-time instance directly
     // would leave `agent.component(CONTEXT_ENGINE)` pointing at the old
     // engine forever after a swap.
-    const proxyResult = createContextEngineProxyProvider(() => ctrlRef.current(), {
+    const proxyResult = createContextEngineProxyProvider((tid) => ctrlRef.current(tid), {
       priority: COMPONENT_PRIORITY.BUNDLED,
     });
     contextEngineProxy = proxyResult.proxy;

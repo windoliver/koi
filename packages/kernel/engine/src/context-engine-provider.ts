@@ -63,7 +63,7 @@ export interface ContextEngineProxyProvider {
 }
 
 export function createContextEngineProxyProvider(
-  getEngine: () => ContextEngine,
+  getEngine: (turnId?: import("@koi/core").TurnId) => ContextEngine,
   options: ContextEngineProviderOptions = {},
 ): ContextEngineProxyProvider {
   const priority = options.priority ?? COMPONENT_PRIORITY.BUNDLED;
@@ -82,13 +82,17 @@ export function createContextEngineProxyProvider(
     get identity() {
       return getEngine().identity;
     },
+    // Resolve through the caller's ctx.turnId so prepare()/onAfterTurn()
+    // hit the engine pinned for THIS turn — not the most-recently-pinned
+    // engine globally, which under overlapping turns would route an
+    // earlier in-flight turn onto a later turn's pinned engine.
     prepare: (
       ctx: TurnContext,
       messages: readonly InboundMessage[],
     ): readonly InboundMessage[] | Promise<readonly InboundMessage[]> =>
-      getEngine().prepare(ctx, messages),
+      getEngine(ctx.turnId).prepare(ctx, messages),
     onAfterTurn: (ctx: TurnContext): void | Promise<void> => {
-      const e = getEngine();
+      const e = getEngine(ctx.turnId);
       return e.onAfterTurn?.(ctx);
     },
   };

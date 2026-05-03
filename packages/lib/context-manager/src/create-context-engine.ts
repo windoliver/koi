@@ -82,6 +82,42 @@ function coerceFiniteNumber(key: string, value: unknown): number {
   return value;
 }
 
+/** Cross-field invariants the bundled compactor relies on. Mirrors the
+ *  semantic checks in resolve-config.ts so a manifest config bag cannot
+ *  bypass them and produce a permanently-noop or inverted compactor.
+ */
+function checkBudgetInvariants(out: Readonly<Record<string, number | string>>): void {
+  const fractionKeys = [
+    "softTriggerFraction",
+    "hardTriggerFraction",
+    "microTargetFraction",
+  ] as const;
+  for (const key of fractionKeys) {
+    const v = out[key];
+    if (typeof v === "number" && !(v > 0 && v <= 1)) {
+      throw new Error(`createContextEngine: manifest.context.config.${key}=${v} must be in (0, 1]`);
+    }
+  }
+  if (typeof out.contextWindowSize === "number" && out.contextWindowSize <= 0) {
+    throw new Error(
+      `createContextEngine: manifest.context.config.contextWindowSize=${out.contextWindowSize} must be > 0`,
+    );
+  }
+  const micro = out.microTargetFraction;
+  const soft = out.softTriggerFraction;
+  const hard = out.hardTriggerFraction;
+  if (typeof micro === "number" && typeof soft === "number" && micro >= soft) {
+    throw new Error(
+      `createContextEngine: microTargetFraction (${micro}) must be < softTriggerFraction (${soft})`,
+    );
+  }
+  if (typeof soft === "number" && typeof hard === "number" && soft > hard) {
+    throw new Error(
+      `createContextEngine: softTriggerFraction (${soft}) must be <= hardTriggerFraction (${hard})`,
+    );
+  }
+}
+
 function validateManifestBudget(cfg: Readonly<Record<string, unknown>>): BudgetConfig {
   const out: Record<string, number | string> = {};
   for (const key of NUMERIC_BUDGET_KEYS) {
@@ -97,6 +133,7 @@ function validateManifestBudget(cfg: Readonly<Record<string, unknown>>): BudgetC
     }
     out.modelId = cfg.modelId;
   }
+  checkBudgetInvariants(out);
   return out as BudgetConfig;
 }
 
