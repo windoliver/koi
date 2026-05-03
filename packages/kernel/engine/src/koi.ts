@@ -248,15 +248,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // user-supplied middleware that also names itself "context-engine" — it
   // would either run prepare() twice (double compaction) or substitute a
   // second engine in front of the controller, breaking the swap-aware
-  // wiring. The `@koi/context-manager#createContextEngineMiddleware(engine)`
-  // helper is the most likely offender; hosts using `contextEngineFactory`
-  // must drop it.
+  // wiring. `contextEngineFactory` is the only supported integration
+  // route; any in-tree manual middleware helper has been removed.
   if (options.contextEngineFactory !== undefined) {
     const dup = (options.middleware ?? []).find((mw) => mw.name === "context-engine");
     if (dup !== undefined) {
       throw KoiRuntimeError.from(
         "VALIDATION",
-        "createKoi: contextEngineFactory is set, but middleware also includes a context-engine entry. createKoi already injects the slot middleware; remove the duplicate (e.g. drop createContextEngineMiddleware(engine) from your middleware array) or stop passing contextEngineFactory.",
+        "createKoi: contextEngineFactory is set, but middleware also includes a context-engine entry. createKoi already injects the slot middleware; remove the duplicate or stop passing contextEngineFactory.",
         { retryable: false, context: { conflictKind: "context-engine-middleware-double-wire" } },
       );
     }
@@ -281,12 +280,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       );
     }
   }
-  // Note: manifest.context.engine without contextEngineFactory is rejected
-  // earlier (pre-assembly), so by this point either the runtime owns the
-  // wiring (contextEngineProxy !== undefined) or the manifest does not
-  // pin an engine. Manual wiring (provider + middleware) is allowed only
-  // when manifest.context.engine is unset — it is then the host's
-  // responsibility to keep slot and middleware consistent.
+  // Note: any `manifest.context` is rejected earlier (pre-assembly) when no
+  // `contextEngineFactory` is supplied. By this point either the runtime
+  // owns the wiring (contextEngineProxy !== undefined) or the manifest
+  // does not pin a context engine and the slot stays empty.
 
   // --- 2. Compose kernel extensions (governance + default guards) ---
   const governanceExt = createGovernanceExtension();
@@ -1070,7 +1067,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         if (dup !== undefined) {
           throw KoiRuntimeError.from(
             "VALIDATION",
-            "createKoi: forged or dynamic middleware named 'context-engine' was added during recomposition while contextEngineFactory is set. Remove the duplicate (e.g. drop createContextEngineMiddleware(engine) from forge / dynamicMiddleware) or stop passing contextEngineFactory.",
+            "createKoi: forged or dynamic middleware named 'context-engine' was added during recomposition while contextEngineFactory is set. Remove the duplicate from forge / dynamicMiddleware, or stop passing contextEngineFactory.",
             {
               retryable: false,
               context: { conflictKind: "context-engine-middleware-double-wire" },

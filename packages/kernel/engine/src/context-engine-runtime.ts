@@ -4,11 +4,11 @@
  * a getter on every model call so swaps/rollbacks performed via
  * `ContextEngineSwapController` are observable on the very next turn.
  *
- * Phase 5/6 of issue #1767 (round 4). The earlier
- * `@koi/context-manager#createContextEngineMiddleware(engine)` helper is
- * still exported for hosts that want to opt out of `createKoi` auto-wiring,
- * but production wiring must use this getter form so swap controller and
- * model-call path can never diverge.
+ * Phase 5/6 of issue #1767. `contextEngineFactory` is the only supported
+ * integration route — the legacy manual-middleware helper has been removed
+ * because its done-shortcut path could leak per-turn state on cooperating
+ * adapters and there was no way to keep manual wiring consistent with the
+ * swap controller.
  */
 
 import type { ContextEngine, KoiMiddleware, TurnId } from "@koi/core";

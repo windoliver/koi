@@ -64,6 +64,19 @@ export interface ContextEngineSwapEvent {
   readonly to: ContextEngineIdentity;
   readonly reason: string;
   readonly rollbackTarget?: ContextEngineIdentity;
+  /**
+   * Per-turn pin contract: turns already in flight when `swap()` runs keep
+   * using the pre-swap engine until they reach their reset boundary —
+   * mid-turn engine substitution would split `prepare()` ↔ `onAfterTurn()`
+   * across two engines and corrupt stateful bookkeeping. This list lets
+   * observers (audit logs, TUI notices, evaluators) attribute in-flight
+   * turns to `from` rather than `to`, so a bad reply is not blamed on the
+   * engine that has not actually served it yet.
+   *
+   * Empty array (or omitted) means no in-flight pins existed at swap time
+   * — every subsequent turn uses `to`.
+   */
+  readonly pinnedTurnIds?: readonly TurnId[];
   readonly timestamp: string;
 }
 

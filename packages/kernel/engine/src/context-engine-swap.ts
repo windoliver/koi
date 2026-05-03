@@ -193,6 +193,11 @@ export function createContextEngineSwapController(
         `ContextEngineSwapController: refusing to swap to "${to.identity.name}@${to.identity.version}" — manifest pinned engine to "${pinnedIdentity.name}@${pinnedIdentity.version}". Pass { force: true } to override.`,
       );
     }
+    // Snapshot pinned turns BEFORE flipping `active` so observers see
+    // exactly which in-flight turns are still serving on the pre-swap
+    // engine. `swap()` only repoints new-turn lookups; per-turn pins
+    // stay anchored to the engine they began with.
+    const pinnedSnapshot: readonly TurnId[] = turnPins.size > 0 ? Array.from(turnPins.keys()) : [];
     const evt: ContextEngineSwapEvent = {
       kind: "context-engine-swap",
       turnId: options.turnId,
@@ -200,6 +205,7 @@ export function createContextEngineSwapController(
       to: to.identity,
       reason: options.reason,
       ...(options.rollbackTarget !== undefined ? { rollbackTarget: options.rollbackTarget } : {}),
+      ...(pinnedSnapshot.length > 0 ? { pinnedTurnIds: pinnedSnapshot } : {}),
       timestamp: new Date().toISOString(),
     };
     priorStack.push({
@@ -252,12 +258,16 @@ export function createContextEngineSwapController(
     }
     // Commit only after every refusal check has passed.
     priorStack.length = truncateLength;
+    // Snapshot in-flight pins so observers can attribute turns still
+    // running on `from` instead of mistakenly crediting `target`.
+    const pinnedSnapshot: readonly TurnId[] = turnPins.size > 0 ? Array.from(turnPins.keys()) : [];
     const evt: ContextEngineSwapEvent = {
       kind: "context-engine-swap",
       turnId: options.turnId,
       from: active.identity,
       to: target.identity,
       reason: options.reason,
+      ...(pinnedSnapshot.length > 0 ? { pinnedTurnIds: pinnedSnapshot } : {}),
       timestamp: new Date().toISOString(),
     };
     history.push(evt);
