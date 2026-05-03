@@ -87,8 +87,29 @@ function isCachedSummaryConsistent<I>(
  * not a false hit. NEVER invokes caller code: by the time we reach here,
  * the snapshot is plain data that was already cloned and frozen.
  */
+/**
+ * Encode a primitive leaf for the canonical key. JSON.stringify is not
+ * injective for JS values: NaN/±Infinity all serialize to "null", -0
+ * serializes to "0", and `undefined` yields the literal undefined (which
+ * breaks string concatenation). Each ambiguous case gets a sentinel token
+ * so two distinct artifacts cannot collide to the same cache key.
+ */
+function encodePrimitive(value: unknown): string {
+  if (typeof value === "number") {
+    if (Number.isNaN(value)) return '"#NaN"';
+    if (value === Number.POSITIVE_INFINITY) return '"#+Infinity"';
+    if (value === Number.NEGATIVE_INFINITY) return '"#-Infinity"';
+    if (Object.is(value, -0)) return '"#-0"';
+    return String(value);
+  }
+  if (value === undefined) return '"#undefined"';
+  if (typeof value === "bigint") return `"#bigint:${value.toString()}"`;
+  // string, boolean, null all serialize unambiguously
+  return JSON.stringify(value);
+}
+
 function canonicalJson(value: unknown, seen: WeakSet<object>): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (value === null || typeof value !== "object") return encodePrimitive(value);
   if (seen.has(value)) {
     throw new Error("snapshot contains a cycle; cannot derive a deterministic cache key");
   }

@@ -930,6 +930,28 @@ describe("createMemoryCache", () => {
   });
 });
 
+describe("canonical cache-key encoding (no value-identity collisions)", () => {
+  // JSON.stringify maps NaN, ±Infinity → "null" and -0 → "0", so a naive
+  // serializer would let a successful pass for {x: NaN} replay as a hit
+  // for {x: null}. Each pair below MUST verify independently — different
+  // cache keys → distinct cache entries → distinct stage runs.
+  test.each([
+    ["NaN vs null", { x: Number.NaN }, { x: null }],
+    ["+Infinity vs null", { x: Number.POSITIVE_INFINITY }, { x: null }],
+    ["-Infinity vs null", { x: Number.NEGATIVE_INFINITY }, { x: null }],
+    ["-0 vs 0", { x: -0 }, { x: 0 }],
+    ["undefined vs null", { x: undefined }, { x: null }],
+  ])("%s do not alias the same cache key", async (_label, a, b) => {
+    const cache = createMemoryCache();
+    const stage = counted(createSyntaxStage(okCheck));
+    await runPipeline([stage.stage], a as unknown as FakeArtifact, { cache });
+    expect(stage.calls()).toBe(1);
+    // If keys collided, stage would not be invoked the second time.
+    await runPipeline([stage.stage], b as unknown as FakeArtifact, { cache });
+    expect(stage.calls()).toBe(2);
+  });
+});
+
 describe("cache key binding (envelope verification)", () => {
   const artifact: FakeArtifact = { name: "bound" };
 
