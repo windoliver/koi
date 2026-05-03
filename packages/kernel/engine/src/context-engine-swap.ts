@@ -26,11 +26,12 @@ export interface SwapOptions {
   /** Optional explicit rollback target. Defaults to the previous engine identity. */
   readonly rollbackTarget?: ContextEngineIdentity;
   /**
-   * Override a manifest pin. When the controller was constructed with
-   * `pinnedIdentity`, swap calls whose target identity does not match the
-   * pin are refused unless `force: true` is set. This keeps `manifest.context`
-   * a meaningful trust boundary — operators must opt in explicitly to swap
-   * away from the manifest-declared engine.
+   * Override the manifest pin. When the controller was constructed with
+   * `pinnedName` and/or `pinnedVersion`, swap targets that violate either
+   * pin are refused unless `force: true` is set. Each pin is enforced
+   * independently — a `pinnedVersion` alone allows swaps between engines
+   * whose reported version matches the pin, mirroring the documented
+   * `manifest.context.version` semantics.
    */
   readonly force?: boolean;
 }
@@ -124,12 +125,21 @@ function findFrameMatching(
  */
 export interface SwapControllerOptions {
   /**
-   * If set, swap targets whose identity does not match this pin are refused
-   * unless `SwapOptions.force` is true. Set by `createKoi` when the manifest
-   * declared `manifest.context.engine` so runtime swaps cannot silently
-   * subvert the manifest pin.
+   * If set, swap targets whose `identity.name` does not match this string
+   * are refused unless `SwapOptions.force` is true. Set by `createKoi`
+   * from `manifest.context.engine` so runtime swaps cannot silently move
+   * off the manifest-declared engine name.
    */
-  readonly pinnedIdentity?: ContextEngineIdentity;
+  readonly pinnedName?: string;
+  /**
+   * If set, swap targets whose `identity.version` does not match this
+   * string are refused unless `SwapOptions.force` is true. Set by
+   * `createKoi` from `manifest.context.version`. Enforced independently
+   * of `pinnedName` so a manifest with version-only pin still allows
+   * cross-engine swaps within that version (matching the documented
+   * manifest contract).
+   */
+  readonly pinnedVersion?: string;
   /**
    * Hook for structured handling of subscriber delivery failures. The
    * controller treats subscribers as best-effort observers and never lets a
@@ -146,8 +156,22 @@ export function createContextEngineSwapController(
   initial: ContextEngine,
   options: SwapControllerOptions = {},
 ): ContextEngineSwapController {
-  const pinnedIdentity = options.pinnedIdentity;
+  const pinnedName = options.pinnedName;
+  const pinnedVersion = options.pinnedVersion;
   const onListenerError = options.onListenerError;
+
+  const pinDescription = (): string => {
+    const parts: string[] = [];
+    if (pinnedName !== undefined) parts.push(`name="${pinnedName}"`);
+    if (pinnedVersion !== undefined) parts.push(`version="${pinnedVersion}"`);
+    return parts.join(", ");
+  };
+
+  const violatesPin = (id: ContextEngineIdentity): boolean => {
+    if (pinnedName !== undefined && id.name !== pinnedName) return true;
+    if (pinnedVersion !== undefined && id.version !== pinnedVersion) return true;
+    return false;
+  };
   const history: ContextEngineSwapEvent[] = [];
 
   // Freeze the event (and its `pinnedTurnIds` array if present) so neither
@@ -207,13 +231,9 @@ export function createContextEngineSwapController(
     if (sameIdentity(active.identity, to.identity)) {
       return undefined;
     }
-    if (
-      pinnedIdentity !== undefined &&
-      !sameIdentity(to.identity, pinnedIdentity) &&
-      options.force !== true
-    ) {
+    if (violatesPin(to.identity) && options.force !== true) {
       throw new Error(
-        `ContextEngineSwapController: refusing to swap to "${to.identity.name}@${to.identity.version}" — manifest pinned engine to "${pinnedIdentity.name}@${pinnedIdentity.version}". Pass { force: true } to override.`,
+        `ContextEngineSwapController: refusing to swap to "${to.identity.name}@${to.identity.version}" — manifest pinned ${pinDescription()}. Pass { force: true } to override.`,
       );
     }
     // Snapshot pinned turns BEFORE flipping `active` so observers see
@@ -270,14 +290,10 @@ export function createContextEngineSwapController(
     // Apply the same manifest-pin enforcement to the rollback destination
     // as `swap()`. Without this, a forced swap chain followed by an
     // automatic rollback could land on a non-pinned engine — re-opening
-    // the trust hole that `pinnedIdentity` was meant to close.
-    if (
-      pinnedIdentity !== undefined &&
-      !sameIdentity(target.identity, pinnedIdentity) &&
-      options.force !== true
-    ) {
+    // the trust hole that the manifest pin was meant to close.
+    if (violatesPin(target.identity) && options.force !== true) {
       throw new Error(
-        `ContextEngineSwapController: refusing to rollback to "${target.identity.name}@${target.identity.version}" — manifest pinned engine to "${pinnedIdentity.name}@${pinnedIdentity.version}". Pass { force: true } to override.`,
+        `ContextEngineSwapController: refusing to rollback to "${target.identity.name}@${target.identity.version}" — manifest pinned ${pinDescription()}. Pass { force: true } to override.`,
       );
     }
     // Commit only after every refusal check has passed.

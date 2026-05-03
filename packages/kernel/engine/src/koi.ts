@@ -116,33 +116,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // guarantee the manifest identity, ECS slot, and the engine driving
   // model requests all reference the same instance.
   //
-  // Manifest pins require `contextEngineFactory` so the runtime can own
-  // slot wiring + swap controller. There is no longer a supported manual
-  // wiring path through @koi/context-manager.
-  // Reject ANY `manifest.context` (including `{}`) without a factory.
-  // Without this, a host can declare `context: {}` expecting the new
-  // manifest surface to install a default engine and instead ship a
-  // full-passthrough runtime — silently shipping without compaction
-  // until prompts overflow. The runtime does not install a default;
-  // hosts must pass contextEngineFactory.
-  if (manifest.context !== undefined && options.contextEngineFactory === undefined) {
-    throw KoiRuntimeError.from(
-      "VALIDATION",
-      `createKoi: manifest.context is set but no contextEngineFactory was supplied. The runtime does not install a default context engine, so the slot would silently stay empty and turns would run without compaction. Either pass contextEngineFactory, or remove manifest.context.`,
-      {
-        retryable: false,
-        context: {
-          ...(manifest.context.engine !== undefined
-            ? { manifestEngine: manifest.context.engine }
-            : {}),
-          ...(manifest.context.version !== undefined
-            ? { manifestVersion: manifest.context.version }
-            : {}),
-          hasConfig: manifest.context.config !== undefined,
-        },
-      },
-    );
-  }
+  // Manifest pin enforcement is deferred to AFTER assembly so that hosts
+  // can supply CONTEXT_ENGINE either via `contextEngineFactory` (auto-
+  // wired path with swap controller) or via a `ComponentProvider` that
+  // attaches the slot directly. The post-assembly check below throws
+  // when `manifest.context` is set but neither path has filled the slot,
+  // preserving the "no silent inert" invariant without blocking the
+  // provider-based integration path.
   let contextEngineSwapController: ContextEngineSwapController | undefined;
   let contextEngineProxy: ContextEngine | undefined;
   const contextEngineProviders: ComponentProvider[] = [];
@@ -195,12 +175,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // enforced at boot, so a later runtime swap/rollback could move the
     // runtime onto a different version while the manifest still claimed
     // the pinned version was in force — defeating the trust boundary.
-    const hasManifestPin =
-      manifest.context?.engine !== undefined || manifest.context?.version !== undefined;
-    contextEngineSwapController = createContextEngineSwapController(
-      initialEngine,
-      hasManifestPin ? { pinnedIdentity: initialEngine.identity } : {},
-    );
+    contextEngineSwapController = createContextEngineSwapController(initialEngine, {
+      ...(manifest.context?.engine !== undefined ? { pinnedName: manifest.context.engine } : {}),
+      ...(manifest.context?.version !== undefined
+        ? { pinnedVersion: manifest.context.version }
+        : {}),
+    });
     const ctrlRef = contextEngineSwapController;
     // Auto-subscribe the host's `onContextEngineSwap` observer (if any).
     // Without an in-runtime subscription, every host would have to wire
@@ -280,10 +260,58 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       );
     }
   }
-  // Note: any `manifest.context` is rejected earlier (pre-assembly) when no
-  // `contextEngineFactory` is supplied. By this point either the runtime
-  // owns the wiring (contextEngineProxy !== undefined) or the manifest
-  // does not pin a context engine and the slot stays empty.
+  // Post-assembly manifest pin enforcement. By this point CONTEXT_ENGINE is
+  // either filled by the auto-wired proxy (when contextEngineFactory is set)
+  // or by a user-supplied ComponentProvider. If `manifest.context` declared
+  // a pin but neither path attached an engine, the slot stays empty and
+  // turns would run without compaction — exactly the "silent inert" hazard
+  // the manifest pin is meant to surface. Reject before any turn runs.
+  if (manifest.context !== undefined) {
+    const slotEngine = agent.component(CONTEXT_ENGINE);
+    if (slotEngine === undefined) {
+      throw KoiRuntimeError.from(
+        "VALIDATION",
+        "createKoi: manifest.context is set but no engine was attached to CONTEXT_ENGINE. Supply either `contextEngineFactory` to let createKoi own the slot, or a ComponentProvider that attaches CONTEXT_ENGINE.",
+        {
+          retryable: false,
+          context: {
+            ...(manifest.context.engine !== undefined
+              ? { manifestEngine: manifest.context.engine }
+              : {}),
+            ...(manifest.context.version !== undefined
+              ? { manifestVersion: manifest.context.version }
+              : {}),
+            hasConfig: manifest.context.config !== undefined,
+          },
+        },
+      );
+    }
+    // Provider-supplied engines also have to honor manifest pins. The
+    // factory path validated identity before assembly; here we validate
+    // whatever ended up in the slot (which may be the auto-wired proxy or
+    // a user-attached engine). Each pin field is enforced independently
+    // so a version-only manifest does not silently lock the engine name.
+    if (
+      manifest.context.engine !== undefined &&
+      slotEngine.identity.name !== manifest.context.engine
+    ) {
+      throw KoiRuntimeError.from(
+        "VALIDATION",
+        `createKoi: CONTEXT_ENGINE attached identity "${slotEngine.identity.name}" but manifest pins engine "${manifest.context.engine}".`,
+        { retryable: false, context: { attachedIdentity: slotEngine.identity } },
+      );
+    }
+    if (
+      manifest.context.version !== undefined &&
+      slotEngine.identity.version !== manifest.context.version
+    ) {
+      throw KoiRuntimeError.from(
+        "VALIDATION",
+        `createKoi: CONTEXT_ENGINE attached version "${slotEngine.identity.version}" but manifest pins version "${manifest.context.version}".`,
+        { retryable: false, context: { attachedIdentity: slotEngine.identity } },
+      );
+    }
+  }
 
   // --- 2. Compose kernel extensions (governance + default guards) ---
   const governanceExt = createGovernanceExtension();
