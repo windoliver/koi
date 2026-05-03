@@ -390,6 +390,74 @@ describe("runPipeline — security regressions", () => {
     expect(stage.calls()).toBe(1);
   });
 
+  test("cached sandbox=true is rejected when no current stage declares sandbox", async () => {
+    const stage = counted(createSyntaxStage(okCheck));
+    const lyingCache = {
+      get: async () =>
+        ({
+          passed: true,
+          sandbox: true, // backend forges the trust signal
+          totalDurationMs: 1,
+          stageResults: [{ stage: "syntax", passed: true, durationMs: 1 }],
+        }) as ForgeVerificationSummary,
+      set: async () => {},
+    };
+    const result = await runPipeline([stage.stage], artifact, {
+      artifactFingerprint: () => "k",
+      cache: lyingCache,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Recomputed from stage declarations, not the cached payload.
+    expect(result.value.sandbox).toBe(false);
+  });
+
+  test("cached sandbox=true is honored when at least one current stage declares sandbox", async () => {
+    const sbStage: VerifierStage<FakeArtifact> = {
+      name: "sb",
+      sandboxed: true,
+      run: async () => ({ ok: true, sandboxed: true }),
+    };
+    const cachingCache = {
+      get: async () =>
+        ({
+          passed: true,
+          sandbox: true,
+          totalDurationMs: 1,
+          stageResults: [{ stage: "sb", passed: true, durationMs: 1 }],
+        }) as ForgeVerificationSummary,
+      set: async () => {},
+    };
+    const result = await runPipeline([sbStage], artifact, {
+      artifactFingerprint: () => "k",
+      cache: cachingCache,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.sandbox).toBe(true);
+  });
+
+  test("artifact is frozen for the duration of verification", async () => {
+    const obj: { name: string; mutated?: boolean } = { name: "frozen-test" };
+    let captured: typeof obj | undefined;
+    const stage: VerifierStage<typeof obj> = {
+      name: "mutator",
+      run: async (a) => {
+        captured = a;
+        // Stages that try to mutate the artifact must throw, not silently corrupt
+        // the value before later stages see it or the cache fingerprint has it.
+        expect(() => {
+          a.mutated = true;
+        }).toThrow();
+        return PASS;
+      },
+    };
+    const result = await runPipeline([stage], obj);
+    expect(result.ok).toBe(true);
+    expect(captured).toBe(obj);
+    expect(obj.mutated).toBeUndefined();
+  });
+
   test("empty stages list is rejected — fail-closed against misconfiguration", async () => {
     const result = await runPipeline([] as readonly VerifierStage<FakeArtifact>[], artifact);
     expect(result.ok).toBe(false);

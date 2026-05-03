@@ -137,12 +137,30 @@ export async function runPipeline<I>(
   if (composedKey !== undefined && cache !== undefined) {
     const hit = await cache.get(composedKey);
     if (hit !== undefined && isCachedSummaryConsistent(hit, stages)) {
-      // Normalize through freezeSummary so any cache backend (not just the
-      // in-memory one) is held to the same immutability contract.
-      return { ok: true, value: freezeSummary(hit) };
+      // Recompute `sandbox` from declared stage capabilities — never trust
+      // a cached `sandbox: true` from a hostile or buggy backend, since the
+      // current stage list may not actually exercise a sandbox.
+      const sandboxFromStages = stages.some((s) => s.sandboxed === true);
+      return {
+        ok: true,
+        value: freezeSummary({
+          passed: hit.passed,
+          sandbox: sandboxFromStages,
+          totalDurationMs: hit.totalDurationMs,
+          stageResults: hit.stageResults,
+        }),
+      };
     }
     // Inconsistent or malformed hit — treat as a miss and re-verify.
-    // (We do not write through here; the post-pipeline cache.set will.)
+  }
+
+  // Treat the artifact as immutable for the duration of verification so a
+  // stage cannot mutate it after the cache fingerprint has been computed.
+  // Shallow `Object.freeze` is what's portable across arbitrary `I`; deep
+  // freezing arbitrary user data is unsafe (Date, Map, class instances).
+  // Stages that need to normalize an artifact must produce a new value.
+  if (artifact !== null && typeof artifact === "object") {
+    Object.freeze(artifact);
   }
 
   // let justified: digests accumulates immutably-replaced array as stages run;

@@ -24,8 +24,16 @@ via the same `VerifierStage` interface.
   the stages that ran. On failure the returned `KoiError` carries
   `code: "VALIDATION"` (or `"INTERNAL"` / `"TIMEOUT"` / `"INVALID_CONFIG"`)
   and `context.stage` identifying the failing stage.
-- `VerifierStage<I>` — the extension point. Two fields: `name: string`
-  and `run: (artifact: I, ctx: StageContext) => Promise<StageOutcome>`.
+- `VerifierStage<I>` — the extension point. Fields:
+  - `name: string`
+  - `version?: string` — bump to invalidate prior cache entries.
+  - `sandboxed?: boolean` — declares (statically) whether this stage
+    runs the artifact inside an isolation boundary. The orchestrator
+    uses this declaration — not any cached value — to compute the
+    summary's `sandbox` bit on cache hits, so a hostile cache backend
+    cannot forge `sandbox: true`.
+  - `run: (artifact: I, ctx: StageContext) => Promise<StageOutcome>`.
+
   Adding a new stage means writing a new `VerifierStage` value and
   passing it into the `stages` array — no edits to `runPipeline`.
 - `StageContext` — read-only context passed to each stage. Exposes
@@ -91,12 +99,31 @@ via the same `VerifierStage` interface.
 
 ### Sandbox flag
 
-`ForgeVerificationSummary.sandbox: boolean` is an L0 contract field
-asserting that at least one stage executed the artifact in a sandbox.
-Since the built-in stages don't sandbox, this package leaves the field
-`false` by default. A downstream stage that does sandbox MAY set
-`StageOutcome.sandboxed: true` (an optional success-side field) and the
-orchestrator OR-folds those flags into the summary's `sandbox` value.
+`ForgeVerificationSummary.sandbox: boolean` asserts at least one stage
+executed the artifact in an isolation boundary. Computation depends on
+the path:
+
+- **Fresh runs**: OR-fold of `StageOutcome.sandboxed` returned by each
+  stage that ran successfully (the producer's self-report).
+- **Cache hits**: recomputed from the current stage list as
+  `stages.some(s => s.sandboxed === true)`. The cached `sandbox` bit
+  is **never trusted** — a hostile cache backend cannot forge the
+  trust signal because the orchestrator overrides it on every read.
+
+Stages that sandbox should declare `sandboxed: true` on their
+`VerifierStage` value AND return `sandboxed: true` from `run` so both
+paths agree.
+
+### Artifact immutability during verification
+
+`runPipeline` `Object.freeze`s the artifact (when it is a non-null
+object) before any stage executes. A stage that mutates the artifact
+between fingerprint computation and verification would otherwise let
+a cached pass attach to the wrong content. Deep freezing arbitrary
+generics is unsafe (Date, Map, class instances, etc.), so the freeze
+is shallow — stages that need to normalize an artifact must produce
+and return a new value via separate channels rather than in-place
+mutation.
 
 ## Error Mapping
 

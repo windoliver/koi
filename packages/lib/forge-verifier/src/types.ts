@@ -36,10 +36,17 @@ export type StageOutcome =
  * a stage's logic without renaming it invalidates prior cached pass results.
  * Defaults to `"0"` when omitted; bump it whenever the stage's check
  * semantics change in a way callers should re-verify.
+ *
+ * `sandboxed` declares (statically) whether the stage executes the artifact
+ * inside an isolation boundary. The orchestrator uses this — NOT the cached
+ * `sandbox` field — to compute the returned summary's `sandbox` bit on
+ * cache hits. A hostile cache backend cannot forge `sandbox: true` because
+ * the value is recomputed from declared stage capabilities on every return.
  */
 export interface VerifierStage<I = unknown> {
   readonly name: string;
   readonly version?: string | undefined;
+  readonly sandboxed?: boolean | undefined;
   readonly run: (artifact: I, ctx: StageContext) => StageOutcome | Promise<StageOutcome>;
 }
 
