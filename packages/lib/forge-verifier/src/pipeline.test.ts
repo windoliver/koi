@@ -1107,6 +1107,39 @@ describe("single-flight (concurrent identical requests are coalesced)", () => {
     expect(stageStarts).toBe(1); // the shared pipeline ran exactly once
   });
 
+  test("cache.set is suppressed when leader caller aborts before pipeline completes", async () => {
+    // R21 regression: leader's pipeline detached from leader's signal so
+    // it can serve followers, but caching a pass for a verification the
+    // leader explicitly cancelled would let later callers receive a
+    // cached "passed" the original requester rejected. Verify cache.set
+    // is suppressed in that case.
+    const setCalls: string[] = [];
+    const trackingCache = {
+      get: async () => undefined,
+      set: async (key: string) => {
+        setCalls.push(key);
+      },
+    };
+    const ac = new AbortController();
+    const slow: VerifierStage<FakeArtifact> = {
+      name: "only",
+      run: async () => {
+        ac.abort(); // leader aborts mid-stage
+        await new Promise((r) => setTimeout(r, 5));
+        return PASS;
+      },
+    };
+    const r = await runPipeline([slow], { name: "leader-abort" } as FakeArtifact, {
+      cache: trackingCache,
+      namespace: "abort",
+      signal: ac.signal,
+    });
+    expect(r.ok).toBe(false); // leader gets TIMEOUT via outer waitWithSignal
+    if (r.ok) return;
+    expect(r.error.code).toBe("TIMEOUT");
+    expect(setCalls.length).toBe(0); // cache write suppressed — no false attestation persisted
+  });
+
   test("solo caller aborting during final stage gets TIMEOUT, not passed=true", async () => {
     // Solo no-cache run: pipelineSignal === caller signal. Stage ignores
     // abort and returns PASS, then the post-stage abort gate discards the

@@ -30,8 +30,10 @@ via the same `VerifierStage` interface.
   - `sandboxed?: boolean` — declares (statically) whether this stage
     runs the artifact inside an isolation boundary. The orchestrator
     uses this declaration — not any cached value — to compute the
-    summary's `sandbox` bit on cache hits, so a hostile cache backend
-    cannot forge `sandbox: true`.
+    summary's `sandbox` bit on cache hits, so a divergent cached
+    `sandbox` value cannot bypass the current stage list. (See "Cache
+    Trust Model" below — the cache is a trusted storage optimization,
+    not a security boundary.)
   - `run: (artifact: I, ctx: StageContext) => Promise<StageOutcome>`.
 
   Adding a new stage means writing a new `VerifierStage` value and
@@ -78,8 +80,23 @@ via the same `VerifierStage` interface.
   `passed: true` per index), the declared `sandbox` flag, and finite
   non-negative durations. A backend returning the wrong key, wrong
   stage names, mismatched sandbox, or NaN/Infinity durations is rejected
-  and the pipeline re-verifies — the cache cannot fail-open on a
-  corrupted or hostile payload.
+  and the pipeline re-verifies. This is **structural** defense — it
+  catches corrupt or stale rows but **does not authenticate the
+  payload**. See "Cache Trust Model" below.
+
+### Cache Trust Model
+
+The cache is a TRUSTED storage optimization, NOT a security boundary.
+The verifier validates structural shape on read so a buggy or stale
+backend cannot pass through obvious garbage, but it does NOT cryptographically
+authenticate cached entries. A hostile backend that mints a
+structurally-correct `CachedVerification` envelope CAN cause the
+verifier to report `passed: true` for an artifact that was never run.
+Callers MUST use a backend whose write path is restricted to trusted
+producers (process-local memory, a tenant-isolated KV with
+authenticated writes, etc.). For untrusted-storage scenarios, layer a
+signed/HMAC'd envelope above this interface — the library does not
+provide that out of the box.
 - `VerificationCache` — wraps stored values in a `CachedVerification`
   envelope `{ key, summary }` so the verifier can detect a backend that
   returns the wrong key. Two methods: `get(key): CachedVerification

@@ -747,13 +747,25 @@ export async function runPipeline<I>(
     });
 
     if (composedKey !== undefined && cache !== undefined) {
-      try {
-        await cache.set(composedKey, { key: composedKey, summary });
-      } catch (e: unknown) {
-        // Cache writes are best-effort. A backend outage must not flip a
-        // successful verification into a rejection. Surface via console.debug
-        // so operators can correlate; the next run will simply repopulate.
-        console.debug("[forge-verifier] cache.set failed (ignored):", e);
+      // Suppress cache.set when the initiating caller has aborted. The
+      // shared pipeline runs without honoring the leader's signal so it
+      // can serve other followers (see pipelineSignal above), but caching
+      // a pass for a verification the initiating caller cancelled would
+      // let later callers receive a cached "passed" result that the
+      // original requester explicitly rejected. Cache writes are best
+      // effort anyway — the next live caller will repopulate. (`signal`
+      // here is the leader caller's signal closed over from runPipeline.)
+      if (signal?.aborted === true) {
+        console.debug("[forge-verifier] cache.set suppressed (leader aborted)");
+      } else {
+        try {
+          await cache.set(composedKey, { key: composedKey, summary });
+        } catch (e: unknown) {
+          // Cache writes are best-effort. A backend outage must not flip a
+          // successful verification into a rejection. Surface via console.debug
+          // so operators can correlate; the next run will simply repopulate.
+          console.debug("[forge-verifier] cache.set failed (ignored):", e);
+        }
       }
     }
 

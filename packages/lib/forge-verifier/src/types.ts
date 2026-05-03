@@ -40,8 +40,10 @@ export type StageOutcome =
  * `sandboxed` declares (statically) whether the stage executes the artifact
  * inside an isolation boundary. The orchestrator uses this — NOT the cached
  * `sandbox` field — to compute the returned summary's `sandbox` bit on
- * cache hits. A hostile cache backend cannot forge `sandbox: true` because
- * the value is recomputed from declared stage capabilities on every return.
+ * cache hits, so a divergent cached `sandbox` value cannot bypass the
+ * current stage list's declarations. (The cache is a trusted storage
+ * optimization, not a security boundary — see `VerificationCache` for the
+ * full trust contract.)
  */
 export interface VerifierStage<I = unknown> {
   readonly name: string;
@@ -66,10 +68,25 @@ export interface CachedVerification {
  * `T | Promise<T>` so an in-memory `Map` and a remote KV expose the same
  * surface. Failed pipelines are intentionally not cached.
  *
+ * TRUST MODEL — IMPORTANT
+ * -----------------------
+ * The cache is a TRUSTED storage optimization, NOT a security boundary. The
+ * verifier validates structural shape (key binding, stage names, finite
+ * durations, sandbox-vs-declaration agreement) on read so a buggy or stale
+ * backend cannot pass through obvious garbage. It does NOT authenticate the
+ * payload — a hostile backend that mints a structurally-correct
+ * `CachedVerification` envelope CAN cause the verifier to report `passed:
+ * true` for an artifact that was never run. Callers that need
+ * tamper-resistance MUST use a backend whose write path is restricted to
+ * trusted producers (process-local memory, a tenant-isolated KV with
+ * authenticated writes, etc.). For untrusted-storage scenarios, layer a
+ * signed/HMAC'd envelope above this interface — the library does not
+ * provide that out of the box.
+ *
  * The verifier wraps every value in a `CachedVerification` envelope. Backends
  * MUST round-trip the envelope verbatim — they MUST NOT serve a value with a
  * different `key` than was requested. The verifier verifies this on read and
- * treats key mismatches as a miss.
+ * treats key mismatches as a miss; this is correctness defense, not auth.
  */
 export interface VerificationCache {
   readonly get: (
