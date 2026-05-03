@@ -451,6 +451,43 @@ describe("@koi/channel-web", () => {
     expect(aliceMessages).toHaveLength(0);
   });
 
+  test("send() rejects unthreaded outbound in authenticated mode (loud, not silent)", async () => {
+    h = await startHarness({
+      authenticate: () => ({ senderId: "alice" }),
+    });
+    await expect(h.adapter.send({ content: [{ kind: "text", text: "rootless" }] })).rejects.toThrow(
+      /threadId/,
+    );
+  });
+
+  test("onHandlerError forwards async dispatch failures so hosts can DLQ", async () => {
+    const errors: Array<{ readonly err: unknown; readonly senderId: string }> = [];
+    const adapter = createWebChannel({
+      port: 0,
+      hostname: "127.0.0.1",
+      allowUnauthenticated: true,
+      allowAnyOrigin: true,
+      onHandlerError: (err, msg) => {
+        errors.push({ err, senderId: msg.senderId });
+      },
+    });
+    await adapter.connect();
+    const port = (adapter as unknown as { readonly port: number }).port;
+    adapter.onMessage(async () => {
+      throw new Error("downstream-fail");
+    });
+    const res = await fetch(`http://127.0.0.1:${port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: [{ kind: "text", text: "x" }] }),
+    });
+    expect(res.status).toBe(202); // ack synchronous
+    await new Promise((r) => setTimeout(r, 20));
+    expect(errors).toHaveLength(1);
+    expect((errors[0]?.err as Error).message).toBe("downstream-fail");
+    await adapter.disconnect();
+  });
+
   test("WS upgrade requires ?thread= in authenticated mode (no shared unscoped broadcast)", async () => {
     h = await startHarness({
       authenticate: () => ({ senderId: "alice" }),

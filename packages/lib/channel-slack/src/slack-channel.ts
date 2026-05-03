@@ -12,7 +12,13 @@
 
 import { createHash } from "node:crypto";
 import { createChannelAdapter } from "@koi/channel-base";
-import type { ChannelAdapter, ChannelCapabilities, ContentBlock, OutboundMessage } from "@koi/core";
+import type {
+  ChannelAdapter,
+  ChannelCapabilities,
+  ContentBlock,
+  InboundMessage,
+  OutboundMessage,
+} from "@koi/core";
 import { createNormalizer, type SlackEvent } from "./normalize.js";
 import { verifySlackRequest } from "./verify-signature.js";
 
@@ -171,6 +177,16 @@ export interface SlackChannelConfig {
   readonly defaultChannel?: string;
   /** Test-only: inject Slack client doubles to avoid real network/SDK. */
   readonly clients?: SlackClients;
+  /**
+   * Visibility hook for handler failures during async dispatch. Slack must
+   * be ack'd within seconds, so handlers run asynchronously after ack —
+   * this means a handler that throws AFTER ack is a permanent message
+   * loss as far as Slack is concerned (no platform-level retry). Hosts
+   * that need durability MUST use this hook to enqueue the failed
+   * `InboundMessage` to their own DLQ / durable storage. Without it,
+   * downstream failures are silent.
+   */
+  readonly onHandlerError?: (err: unknown, message: InboundMessage) => void;
 }
 
 export interface SlackChannelAdapter extends ChannelAdapter {
@@ -315,6 +331,17 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
     // Normalizer reads botUserId live so messages received after auth.test
     // resolution use the real ID and self-authored events are dropped.
     normalize: createNormalizer(() => botUserId ?? "unknown"),
+
+    // Forward handler failures so hosts can DLQ. Slack will not retry once
+    // we've ack'd, so this hook is the ONLY visibility into post-ack
+    // handler failures — silent loss otherwise.
+    ...(config.onHandlerError !== undefined
+      ? {
+          onHandlerError: (err: unknown, message: InboundMessage) => {
+            config.onHandlerError?.(err, message);
+          },
+        }
+      : {}),
   });
 
   function dispatchHttpEvent(payload: unknown): void {

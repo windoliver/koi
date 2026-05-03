@@ -71,6 +71,7 @@ Returns a fully wired `ChannelAdapter`. `connect()` starts the server,
 | `originAllowList` | `readonly string[] \| undefined` | undefined | CORS origin allow-list. **Required** when `authenticate` is set, unless `allowAnyOrigin: true` is also set (CSRF fail-closed default). |
 | `allowAnyOrigin` | `boolean` | `false` | Opt out of the CSRF fail-closed default. Only safe when the auth scheme is not browser-ambient (e.g. tokens issued and managed entirely by your own JS — not cookies). |
 | `senderId` | `string` | `"web-user"` | Default `senderId` for open mode (no `authenticate`). Production deployments MUST configure `authenticate` instead. |
+| `onHandlerError` | `(err, message) => void` | undefined | Visibility hook for handler failures during async dispatch. Without this, post-202 failures are silent. Hosts needing durability MUST forward to a DLQ here. |
 
 ### Capabilities
 

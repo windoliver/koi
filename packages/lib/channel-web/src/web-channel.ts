@@ -93,6 +93,15 @@ export interface WebChannelConfig {
    * browser-ambient (e.g. tokens issued and managed entirely by your own JS).
    */
   readonly allowAnyOrigin?: boolean;
+  /**
+   * Visibility hook for handler failures during async dispatch. The HTTP
+   * response is sent BEFORE handlers complete (per channel-base's
+   * fire-and-forget Promise.allSettled), so a handler that throws after
+   * the 202 is silent loss as far as the HTTP client is concerned. Hosts
+   * needing durability MUST use this hook to enqueue the failed
+   * `InboundMessage` to their own DLQ / durable storage.
+   */
+  readonly onHandlerError?: (err: unknown, message: InboundMessage) => void;
 }
 
 export interface WebChannelAdapter extends ChannelAdapter {
@@ -470,6 +479,18 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
     },
 
     platformSend: async (message: OutboundMessage) => {
+      // Authenticated deployments reject unscoped subscribers (`/ws` requires
+      // `?thread=`), so an unthreaded outbound message has no valid recipient
+      // class. Silently broadcasting to zero clients masks bugs in caller
+      // code that forgot to pass `threadId`. Fail closed so the missing
+      // routing decision is loud, not silent.
+      if (message.threadId === undefined && authenticate !== undefined) {
+        throw new Error(
+          "[channel-web] cannot send: outbound message has no threadId, but " +
+            "authenticated mode disallows unscoped subscribers. Pass `threadId` " +
+            "to scope the send to a specific subscriber.",
+        );
+      }
       route(message, JSON.stringify(message));
     },
 
@@ -482,6 +503,17 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
 
     // The HTTP layer already produced a finished InboundMessage; pass through.
     normalize: (m: InboundMessage) => m,
+
+    // Forward handler failures so hosts can DLQ. We've already returned 202
+    // before handlers run, so this hook is the ONLY visibility into post-ack
+    // handler failures — silent loss otherwise.
+    ...(config.onHandlerError !== undefined
+      ? {
+          onHandlerError: (err: unknown, message: InboundMessage) => {
+            config.onHandlerError?.(err, message);
+          },
+        }
+      : {}),
   });
 
   /**
