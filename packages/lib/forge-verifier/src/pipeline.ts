@@ -162,15 +162,35 @@ export async function runPipeline<I>(
       }
       snapshot = artifact;
     } else {
-      // Descriptor-based validation runs FIRST: it never invokes accessors,
-      // never reads array indices via `[i]`, and never traps a Proxy via
-      // value access. (Reflective ops like Object.getOwnPropertyDescriptors
-      // and getPrototypeOf still pass through Proxy traps, but they cannot
-      // run arbitrary computation on declared-data fields without being
-      // detected as accessors and rejected.) Then structuredClone produces
-      // the trusted snapshot, and the snapshot is deep-frozen.
-      rejectUnsupportedShape(artifact, "$", new WeakSet<object>());
-      snapshot = structuredClone(artifact);
+      // Pre-clone gate: cheap prototype check rejects class instances
+      // (structuredClone would silently strip the prototype, so the
+      // snapshot would not equal the input). One Proxy `getPrototypeOf`
+      // trap may fire here — accepted as the cost of detecting class
+      // instances.
+      const rootProto = Object.getPrototypeOf(artifact);
+      if (rootProto !== Object.prototype && rootProto !== null && !Array.isArray(artifact)) {
+        const ctor = (rootProto as { constructor?: { name?: string } } | null)?.constructor?.name;
+        throw new TypeError(
+          `Artifact root is a non-plain object${ctor ? ` (${ctor})` : ""}; verifier requires plain-data artifacts.`,
+        );
+      }
+      // Clone — runs in V8 internals; getters fire once and resolve to data,
+      // Proxy traps fire once and are stripped, symbol/non-enumerable keys
+      // are dropped. After this point reflection touches only the in-engine
+      // snapshot, not the caller's live object.
+      let cloned: I;
+      try {
+        cloned = structuredClone(artifact);
+      } catch (e: unknown) {
+        const detail = e instanceof Error ? e.message : "non-cloneable artifact";
+        throw new TypeError(`Artifact is not structured-cloneable: ${detail}`);
+      }
+      // Validate the cloned snapshot. Reject Map/Set/typed-array (preserved
+      // by clone but unfreezable), arrays with extra named props (preserved
+      // but cannot honor the immutability claim), and any nested non-plain
+      // objects that slipped through.
+      rejectUnsupportedShape(cloned, "$", new WeakSet<object>());
+      snapshot = cloned;
       deepFreeze(snapshot);
     }
   } catch (e: unknown) {
@@ -276,17 +296,18 @@ export async function runPipeline<I>(
       };
     }
 
-    // Validate that the stage's runtime self-report agrees with its static
-    // declaration. A stage that returns sandboxed:true without declaring
-    // sandboxed:true (or vice versa) makes the cached/fresh sandbox values
-    // diverge — fail closed at config boundary instead.
-    if ((outcome.sandboxed ?? false) !== (stage.sandboxed ?? false)) {
+    // Validate that an EXPLICIT runtime self-report agrees with the static
+    // declaration. Omitted `outcome.sandboxed` means "no override" — the
+    // declaration stands. This matches the API where `sandboxed` is
+    // optional on `StageOutcome`. Only an explicit, conflicting value
+    // (e.g. declared sandboxed:true but returned sandboxed:false) fails.
+    if (outcome.sandboxed !== undefined && outcome.sandboxed !== (stage.sandboxed === true)) {
       return {
         ok: false,
         error: stageError(
           "INVALID_CONFIG",
           stage.name,
-          `Stage "${stage.name}" runtime sandboxed=${outcome.sandboxed === true} disagrees with static sandboxed=${stage.sandboxed === true}.`,
+          `Stage "${stage.name}" runtime sandboxed=${outcome.sandboxed} explicitly disagrees with static sandboxed=${stage.sandboxed === true}.`,
         ),
       };
     }
