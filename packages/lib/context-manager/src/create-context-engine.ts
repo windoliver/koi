@@ -138,11 +138,16 @@ export function createContextEngine(
   const maxTokens = options.contextWindowSize ?? COMPACTION_DEFAULTS.contextWindowSize;
   const estimator = options.tokenEstimator ?? FALLBACK_ESTIMATOR;
 
-  // Per-engine accumulator: last-known token total feeds describeOccupancy().
-  let lastEstimatedTokens = 0;
+  // Per-turn occupancy snapshots. Overlapping turns each track their own
+  // most-recent estimate so a late-completing prior turn cannot stomp a
+  // newer turn's pressure with stale data. describeOccupancy reports the
+  // peak across active turns, which is the load-relevant signal for
+  // pressure-driven policy and operator tooling. Entries are released by
+  // onAfterTurn so the map cannot grow without bound on long-running runs.
+  const perTurnTokens = new Map<string, number>();
 
   const prepare = async (
-    _ctx: TurnContext,
+    ctx: TurnContext,
     messages: readonly InboundMessage[],
   ): Promise<readonly InboundMessage[]> => {
     const result = await enforceBudget(messages, options.replacementStore, options);
@@ -151,7 +156,8 @@ export function createContextEngine(
     // "full" path, so reading it would keep pressure pinned at ~100% even
     // after a successful drop/summarize. Recomputing on `result.messages`
     // gives a single, authoritative post-prepare count for every branch.
-    lastEstimatedTokens = await estimator.estimateMessages(result.messages, options.modelId);
+    const estimated = await estimator.estimateMessages(result.messages, options.modelId);
+    perTurnTokens.set(ctx.turnId as string, estimated);
     // Always return a fresh array. enforceBudget's noop branch returns the
     // caller's original `messages` reference; aliasing caller-owned history
     // back as the prepared list lets downstream mutation leak into cached
@@ -159,15 +165,26 @@ export function createContextEngine(
     return [...result.messages];
   };
 
-  const describeOccupancy = async (): Promise<ContextOccupancy> => ({
-    estimatedTokens: lastEstimatedTokens,
-    maxTokens,
-    pressure: maxTokens > 0 ? Math.min(lastEstimatedTokens / maxTokens, 1) : 0,
-  });
+  const onAfterTurn = (ctx: TurnContext): void => {
+    perTurnTokens.delete(ctx.turnId as string);
+  };
+
+  const describeOccupancy = async (): Promise<ContextOccupancy> => {
+    let peak = 0;
+    for (const v of perTurnTokens.values()) {
+      if (v > peak) peak = v;
+    }
+    return {
+      estimatedTokens: peak,
+      maxTokens,
+      pressure: maxTokens > 0 ? Math.min(peak / maxTokens, 1) : 0,
+    };
+  };
 
   return {
     identity,
     prepare,
+    onAfterTurn,
     describeOccupancy,
   };
 }

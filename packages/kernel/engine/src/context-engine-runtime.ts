@@ -52,11 +52,24 @@ export function createContextEngineSlotMiddleware(controller: SlotController): K
         const prepared = await engine.prepare(ctx, request.messages);
         return await next({ ...request, messages: prepared });
       } catch (err) {
-        // Release the pin on any pre-onAfterTurn failure (prepare(),
-        // downstream call, or sync throw). Without this, an aborted turn
-        // would leave `controller.current()` stuck on the pre-failure
-        // engine forever, defeating turn-aware swap reads on the very
-        // recovery path that needs them.
+        // Run onAfterTurn even on the error path so stateful engines can
+        // release per-turn state (eviction queues, occupancy snapshots,
+        // backoff timers). Without this, an aborted turn permanently
+        // skips post-turn cleanup — exactly the path engines need most.
+        // Errors from onAfterTurn are logged so they cannot mask the
+        // original failure.
+        const failingEngine = controller.current(ctx.turnId);
+        if (failingEngine?.onAfterTurn !== undefined) {
+          try {
+            await failingEngine.onAfterTurn(ctx);
+          } catch (hookErr: unknown) {
+            console.warn("[context-engine] onAfterTurn after failed turn threw", hookErr);
+          }
+        }
+        // Release the pin on any pre-onAfterTurn failure. Without this,
+        // an aborted turn would leave `controller.current()` stuck on the
+        // pre-failure engine forever, defeating turn-aware swap reads on
+        // the very recovery path that needs them.
         controller.endTurn(ctx.turnId);
         throw err;
       }
@@ -83,6 +96,17 @@ export function createContextEngineSlotMiddleware(controller: SlotController): K
               yield chunk;
             }
           } catch (err) {
+            // Mirror wrapModelCall: invoke onAfterTurn on error so
+            // stateful engines can release per-turn state on the
+            // streaming failure path too.
+            const failingEngine = controller.current(ctx.turnId);
+            if (failingEngine?.onAfterTurn !== undefined) {
+              try {
+                await failingEngine.onAfterTurn(ctx);
+              } catch (hookErr: unknown) {
+                console.warn("[context-engine] onAfterTurn after failed stream threw", hookErr);
+              }
+            }
             controller.endTurn(ctx.turnId);
             throw err;
           }
