@@ -56,7 +56,7 @@ export function createContextEngineMiddleware(engine: ContextEngine): KoiMiddlew
         // most likely to hit.
         if (engine.onAfterTurn !== undefined) {
           try {
-            await engine.onAfterTurn(ctx);
+            await engine.onAfterTurn({ ...ctx, stopBlocked: true });
           } catch (hookErr: unknown) {
             console.warn("[context-engine] onAfterTurn after failed turn threw", hookErr);
           }
@@ -75,7 +75,7 @@ export function createContextEngineMiddleware(engine: ContextEngine): KoiMiddlew
           } catch (err) {
             if (engine.onAfterTurn !== undefined) {
               try {
-                await engine.onAfterTurn(ctx);
+                await engine.onAfterTurn({ ...ctx, stopBlocked: true });
               } catch (hookErr: unknown) {
                 console.warn("[context-engine] onAfterTurn after failed stream threw", hookErr);
               }

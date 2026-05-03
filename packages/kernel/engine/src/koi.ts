@@ -2218,6 +2218,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   await synthCompletedTurnCleanup(doneSyntheticTurnId);
                   doneSyntheticTurnId = undefined;
                 }
+                // Advance currentTurnIndex BEFORE idling so the next
+                // wake gets a fresh turnId. Without this, two reusable
+                // done-only turns in the same run would reuse
+                // turnId(runId, currentTurnIndex), aliasing distinct
+                // turns and breaking the turn-keyed controller pins,
+                // per-turn ctx cache, and per-turn occupancy. Mirrors
+                // the turn_end path which advances the FSM/index there.
+                currentTurnIndex = currentTurnIndex + 1;
+                outerCurrentTurnIndex = currentTurnIndex;
+                agent.transition({ kind: "advance_turn", turnIndex: currentTurnIndex });
                 yield normalizedDone;
                 break turnLoop;
               }

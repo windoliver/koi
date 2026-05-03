@@ -52,16 +52,18 @@ export function createContextEngineSlotMiddleware(controller: SlotController): K
         const prepared = await engine.prepare(ctx, request.messages);
         return await next({ ...request, messages: prepared });
       } catch (err) {
-        // Run onAfterTurn even on the error path so stateful engines can
-        // release per-turn state (eviction queues, occupancy snapshots,
-        // backoff timers). Without this, an aborted turn permanently
-        // skips post-turn cleanup — exactly the path engines need most.
-        // Errors from onAfterTurn are logged so they cannot mask the
-        // original failure.
+        // Run onAfterTurn on the error path so stateful engines can
+        // release per-turn state (eviction queues, occupancy snapshots),
+        // BUT mark the ctx as stopBlocked so engines treating that flag
+        // as "skip state commits" do not advance backoff/eviction/
+        // checkpoint on a turn that never actually completed. Without
+        // this marker, error-path cleanup looks indistinguishable from
+        // a successful turn and engines could persist summaries or drop
+        // memories for requests that failed mid-flight.
         const failingEngine = controller.current(ctx.turnId);
         if (failingEngine?.onAfterTurn !== undefined) {
           try {
-            await failingEngine.onAfterTurn(ctx);
+            await failingEngine.onAfterTurn({ ...ctx, stopBlocked: true });
           } catch (hookErr: unknown) {
             console.warn("[context-engine] onAfterTurn after failed turn threw", hookErr);
           }
@@ -96,13 +98,14 @@ export function createContextEngineSlotMiddleware(controller: SlotController): K
               yield chunk;
             }
           } catch (err) {
-            // Mirror wrapModelCall: invoke onAfterTurn on error so
-            // stateful engines can release per-turn state on the
-            // streaming failure path too.
+            // Mirror wrapModelCall: invoke onAfterTurn on error with
+            // stopBlocked=true so stateful engines release per-turn
+            // state but do NOT advance backoff/eviction/checkpoint on
+            // a stream that never completed.
             const failingEngine = controller.current(ctx.turnId);
             if (failingEngine?.onAfterTurn !== undefined) {
               try {
-                await failingEngine.onAfterTurn(ctx);
+                await failingEngine.onAfterTurn({ ...ctx, stopBlocked: true });
               } catch (hookErr: unknown) {
                 console.warn("[context-engine] onAfterTurn after failed stream threw", hookErr);
               }
