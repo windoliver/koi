@@ -130,6 +130,16 @@ export interface SwapControllerOptions {
    * subvert the manifest pin.
    */
   readonly pinnedIdentity?: ContextEngineIdentity;
+  /**
+   * Hook for structured handling of subscriber delivery failures. The
+   * controller treats subscribers as best-effort observers and never lets a
+   * thrown listener corrupt the swap transaction (`active`, `history`, and
+   * `priorStack` are already mutated by the time `emit()` runs). When this
+   * hook is supplied, host audit/event-bus code can route the failure to a
+   * durable sink instead of relying on `console.error`. The hook itself
+   * MUST NOT throw — exceptions from it are caught and logged.
+   */
+  readonly onListenerError?: (err: unknown, event: ContextEngineSwapEvent) => void;
 }
 
 export function createContextEngineSwapController(
@@ -137,7 +147,17 @@ export function createContextEngineSwapController(
   options: SwapControllerOptions = {},
 ): ContextEngineSwapController {
   const pinnedIdentity = options.pinnedIdentity;
+  const onListenerError = options.onListenerError;
   const history: ContextEngineSwapEvent[] = [];
+
+  // Freeze the event (and its `pinnedTurnIds` array if present) so neither
+  // a buggy subscriber nor a downstream caller can rewrite history after
+  // the swap commits. Object.freeze is a runtime contract — TS `readonly`
+  // is compile-time only and would not stop a malicious mutation.
+  const freezeEvent = (evt: ContextEngineSwapEvent): ContextEngineSwapEvent => {
+    if (evt.pinnedTurnIds !== undefined) Object.freeze(evt.pinnedTurnIds);
+    return Object.freeze(evt);
+  };
   let active: ContextEngine = initial;
   // Each frame records the engine displaced by a swap plus the rollback
   // target the caller declared at swap time (if any). Rollback resolves to
@@ -164,7 +184,10 @@ export function createContextEngineSwapController(
     }
     return lastPinnedEngine() ?? active;
   };
-  const historyView = (): readonly ContextEngineSwapEvent[] => history;
+  // Defensive copy of the backing array so callers cannot rewrite history
+  // by mutating the returned slice. Each event is already frozen at push
+  // time, so a shallow copy is sufficient.
+  const historyView = (): readonly ContextEngineSwapEvent[] => history.slice();
 
   const beginTurn = (turnId: TurnId): void => {
     if (turnPins.has(turnId)) return;
@@ -212,10 +235,11 @@ export function createContextEngineSwapController(
       prior: active,
       ...(options.rollbackTarget !== undefined ? { rollbackTarget: options.rollbackTarget } : {}),
     });
-    history.push(evt);
+    const frozen = freezeEvent(evt);
+    history.push(frozen);
     active = to;
-    emit(evt);
-    return evt;
+    emit(frozen);
+    return frozen;
   };
 
   const rollback = (options: SwapOptions): ContextEngineSwapEvent | undefined => {
@@ -270,10 +294,11 @@ export function createContextEngineSwapController(
       ...(pinnedSnapshot.length > 0 ? { pinnedTurnIds: pinnedSnapshot } : {}),
       timestamp: new Date().toISOString(),
     };
-    history.push(evt);
+    const frozen = freezeEvent(evt);
+    history.push(frozen);
     active = target;
-    emit(evt);
-    return evt;
+    emit(frozen);
+    return frozen;
   };
 
   const hasActivePin = (): boolean => turnPins.size > 0;
@@ -298,7 +323,18 @@ export function createContextEngineSwapController(
       try {
         listener(event);
       } catch (err: unknown) {
-        console.error("[context-engine-swap] subscribe listener threw", err);
+        if (onListenerError !== undefined) {
+          // Route through the host-supplied hook so audit/event-bus code
+          // can persist the failure. Guard against the hook itself
+          // throwing — observability code must never break the swap.
+          try {
+            onListenerError(err, event);
+          } catch (hookErr: unknown) {
+            console.error("[context-engine-swap] onListenerError hook threw", hookErr);
+          }
+        } else {
+          console.error("[context-engine-swap] subscribe listener threw", err);
+        }
       }
     }
   };
