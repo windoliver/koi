@@ -148,9 +148,15 @@ interface NodeBudget {
   count: number;
 }
 
+/**
+ * Stack-tracking serializer. `onStack` contains only ancestors of the
+ * current node, so a DAG with shared subobjects reached via different
+ * paths is NOT misclassified as a cycle — only true back-edges (a node
+ * reached while it is still being processed) throw.
+ */
 function canonicalJson(
   value: unknown,
-  seen: WeakSet<object>,
+  onStack: WeakSet<object>,
   budget: NodeBudget,
   depth = 0,
 ): string {
@@ -162,19 +168,23 @@ function canonicalJson(
     throw new Error(`snapshot exceeds maximum node count (${MAX_ARTIFACT_NODES})`);
   }
   if (value === null || typeof value !== "object") return encodePrimitive(value);
-  if (seen.has(value)) {
+  if (onStack.has(value)) {
     throw new Error("snapshot contains a cycle; cannot derive a deterministic cache key");
   }
-  seen.add(value);
-  if (Array.isArray(value)) {
-    return `[${value.map((v) => canonicalJson(v, seen, budget, depth + 1)).join(",")}]`;
+  onStack.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return `[${value.map((v) => canonicalJson(v, onStack, budget, depth + 1)).join(",")}]`;
+    }
+    const obj = value as Record<string, unknown>;
+    const keys = Object.keys(obj).sort();
+    const parts = keys.map(
+      (k) => `${JSON.stringify(k)}:${canonicalJson(obj[k], onStack, budget, depth + 1)}`,
+    );
+    return `{${parts.join(",")}}`;
+  } finally {
+    onStack.delete(value);
   }
-  const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
-  const parts = keys.map(
-    (k) => `${JSON.stringify(k)}:${canonicalJson(obj[k], seen, budget, depth + 1)}`,
-  );
-  return `{${parts.join(",")}}`;
 }
 
 async function runStage<I>(
@@ -234,7 +244,7 @@ export async function runPipeline<I>(
 
   const namespace = options?.namespace;
   const cache = options?.cache;
-  const cacheReadFailure = options?.cacheReadFailure ?? "miss";
+  const cacheReadFailure = options?.cacheReadFailure ?? "fail";
   const signal = options?.signal;
 
   // Fail closed against silent cross-tenant replay: a shared cache backend

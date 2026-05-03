@@ -865,10 +865,11 @@ describe("runPipeline — security regressions", () => {
     expect(stage.calls()).toBe(2);
   });
 
-  test("cache.get failure defaults to miss — backend outage does not block verification", async () => {
-    // Default policy: a transient read failure must not turn an otherwise-
-    // working pipeline into INTERNAL. Treat as miss and re-verify so a
-    // degraded cache cannot block verification globally.
+  test("cache.get failure defaults to fail — does NOT silently re-execute non-idempotent stages", async () => {
+    // Default policy: stages may have side effects (sandbox jobs, external
+    // API calls, quota), so a transient backend outage must not silently
+    // re-run them. Surface as INTERNAL inside the Result envelope; the
+    // exception never escapes the documented Promise<Result<...>> contract.
     const stage = counted(createSyntaxStage(okCheck));
     const flakyCache = {
       get: async () => {
@@ -880,28 +881,31 @@ describe("runPipeline — security regressions", () => {
       cache: flakyCache,
       namespace: "test",
     });
-    expect(result.ok).toBe(true);
-    expect(stage.calls()).toBe(1);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INTERNAL");
+    expect(result.error.context?.stage).toBe("<cache>");
+    expect(result.error.message).toContain("read backend down");
+    // Crucially, the stage was NOT re-executed under cache failure.
+    expect(stage.calls()).toBe(0);
   });
 
-  test('cache.get failure with cacheReadFailure:"fail" returns INTERNAL inside Result', async () => {
-    // Opt-in strict policy for stages with non-idempotent side effects.
+  test('cache.get failure with cacheReadFailure:"miss" treats outage as a miss', async () => {
+    // Opt-in lenient policy for pipelines whose stages are KNOWN pure.
+    const stage = counted(createSyntaxStage(okCheck));
     const flakyCache = {
       get: async () => {
         throw new Error("read backend down");
       },
       set: async () => {},
     };
-    const result = await runPipeline([createSyntaxStage(okCheck)], artifact, {
+    const result = await runPipeline([stage.stage], artifact, {
       cache: flakyCache,
       namespace: "test",
-      cacheReadFailure: "fail",
+      cacheReadFailure: "miss",
     });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.code).toBe("INTERNAL");
-    expect(result.error.context?.stage).toBe("<cache>");
-    expect(result.error.message).toContain("read backend down");
+    expect(result.ok).toBe(true);
+    expect(stage.calls()).toBe(1);
   });
 
   test("cache provided without namespace is rejected as INVALID_CONFIG", async () => {
@@ -1143,6 +1147,46 @@ describe("Proxy rejection (no caller code on verifier stack)", () => {
     expect(result.error.code).toBe("INVALID_CONFIG");
     expect(result.error.message).toContain("Proxy");
     expect(trapsFired).toBe(0);
+  });
+});
+
+describe("canonicalJson cycle detection (stack-based, DAG-safe)", () => {
+  test("DAG with shared subobject does NOT bypass cache as a false cycle", async () => {
+    // Two edges to the same plain-data object — legal and common (e.g.
+    // a config that references the same defaults block twice). A naive
+    // visited-set walker would flag the second visit as a cycle and the
+    // pipeline would silently bypass the cache for this run.
+    const cache = createMemoryCache();
+    const stage = counted(createSyntaxStage(okCheck));
+    const shared = { kind: "shared", n: 1 };
+    const dag = { name: "dag", a: shared, b: shared } as unknown as FakeArtifact;
+    const r1 = await runPipeline([stage.stage], dag, { cache, namespace: "test" });
+    expect(r1.ok).toBe(true);
+    expect(stage.calls()).toBe(1);
+    // Second call MUST hit the cache — the DAG produces a stable, deterministic
+    // canonical key, not a "not cacheable" bypass.
+    const r2 = await runPipeline([stage.stage], dag, { cache, namespace: "test" });
+    expect(r2.ok).toBe(true);
+    expect(stage.calls()).toBe(1); // not re-executed
+  });
+
+  test("true cycle still bypasses cache (cycle != shared reference)", async () => {
+    // Cycle remains uncacheable: no deterministic linearization exists.
+    type Cyclic = { name: string; self?: Cyclic };
+    const obj: Cyclic = { name: "cyc" };
+    obj.self = obj;
+    const stage = counted(createSyntaxStage(okCheck));
+    const cache = createMemoryCache();
+    await runPipeline([stage.stage], obj as unknown as FakeArtifact, {
+      cache,
+      namespace: "test",
+    });
+    expect(stage.calls()).toBe(1);
+    await runPipeline([stage.stage], obj as unknown as FakeArtifact, {
+      cache,
+      namespace: "test",
+    });
+    expect(stage.calls()).toBe(2); // cache bypassed both times → re-runs
   });
 });
 

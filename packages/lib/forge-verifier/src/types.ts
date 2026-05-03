@@ -98,11 +98,15 @@ export interface VerifyOptions {
   /**
    * Behavior when `cache.get` throws (transient backend outage, etc.).
    *
-   *   - `"miss"` (default): treat as a cache miss and re-run stages. Safest
-   *     for read-only verifiers — degraded backend cannot block verification.
-   *   - `"fail"`: return INTERNAL inside the Result envelope. Use when stages
-   *     have non-idempotent side effects and re-execution must not silently
-   *     happen because the cache became unreachable.
+   *   - `"fail"` (default): return INTERNAL inside the Result envelope.
+   *     Safe at this boundary — `VerifierStage.run` is pluggable and the
+   *     library cannot know whether stages are idempotent. Silently
+   *     re-executing them on a backend outage could double-charge external
+   *     APIs, re-run sandbox jobs, or burn quota.
+   *   - `"miss"`: treat as a cache miss and re-run stages. Opt-in for
+   *     pipelines whose stages are KNOWN to be pure / side-effect free
+   *     (e.g. read-only schema validation); a degraded cache then
+   *     degrades gracefully instead of blocking verification.
    */
   readonly cacheReadFailure?: "miss" | "fail" | undefined;
   readonly signal?: AbortSignal | undefined;
