@@ -19,9 +19,15 @@ outbound streaming, REST POST for inbound messages. No external dependencies
 - Capability negotiation (text + images + files + buttons + threads)
 - Origin allow-list + principal-resolving auth (`authenticate(ctx)` returns
   the verified `senderId`; the transport never trusts a body-supplied one)
-- Browser-friendly auth: `Authorization: Bearer <t>` for `fetch`, plus a
-  `?token=<t>` query-string fallback for WebSocket upgrades (browsers cannot
-  set arbitrary headers on `new WebSocket()`)
+- WebSocket auth (in priority order):
+  1. `Authorization: Bearer <t>` header — preferred for non-browser clients
+  2. `koi_ws` cookie — preferred for browsers (cookies are sent on the
+     upgrade, never enter the URL, never appear in logs)
+  3. `?token=<t>` query string — last resort. URLs leak through access logs,
+     proxy logs, browser history, and crash reports. Hosts SHOULD treat any
+     `?token=` value as a single-use, short-lived ticket and revoke it on
+     first consumption inside `authenticate()`.
+- POST `/messages` requires `Authorization: Bearer <t>` ONLY (no URL fallback)
 - CORS preflight (`OPTIONS`) handled with `Access-Control-Allow-{Origin,
   Methods, Headers}` echoed back for allow-listed origins
 - Graceful disconnect drains in-flight sends before tearing the server down

@@ -19,6 +19,41 @@ import type { ServerWebSocket } from "bun";
 
 const MAX_BODY_BYTES = 1_000_000;
 
+/**
+ * Read the request body as a UTF-8 string, aborting once the byte cap is
+ * exceeded. Returns `null` if the request would have exceeded `cap` bytes
+ * (caller responds 413). Streaming counter rather than `await req.text()`
+ * defeats: (1) clients that omit/understate Content-Length, (2) chunked
+ * bodies, (3) multibyte payloads that pass a character-count check but
+ * exceed the byte budget.
+ */
+async function readBodyWithCap(req: Request, cap: number): Promise<string | null> {
+  const reader = req.body?.getReader();
+  if (reader === undefined) return "";
+  const decoder = new TextDecoder("utf-8");
+  // let requires justification: accumulator for streamed body chunks
+  let chunks = "";
+  // let requires justification: byte counter for the streaming cap
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > cap) {
+      // best-effort cancel so we don't continue receiving bytes we'll discard
+      try {
+        await reader.cancel();
+      } catch {
+        // already terminated — ignore
+      }
+      return null;
+    }
+    chunks += decoder.decode(value, { stream: true });
+  }
+  chunks += decoder.decode();
+  return chunks;
+}
+
 const WEB_CAPABILITIES = {
   text: true,
   images: true,
@@ -191,17 +226,38 @@ function bearerOf(req: Request): string | null {
 }
 
 /**
- * Pick a token for the WebSocket upgrade path only — header first, then
- * `?token=` query. Browser `WebSocket` clients can't set arbitrary headers,
- * so the query-string fallback is the practical path for browser subscribers.
- *
- * NEVER use this for `POST /messages`. Tokens in URLs leak through access
- * logs, proxy logs, and browser history; widening the query-fallback to
- * normal HTTP requests weakens the auth boundary for no functional gain
- * (regular HTTP clients can always set `Authorization`).
+ * Extract a single named cookie from the `Cookie` header, or `null`.
+ * Strict semantics: the cookie name must match exactly; values are not
+ * URL-decoded (the host validates the token format).
  */
-function upgradeTokenOf(req: Request, url: URL): string | null {
-  return bearerOf(req) ?? url.searchParams.get("token");
+function cookieOf(req: Request, name: string): string | null {
+  const h = req.headers.get("cookie");
+  if (h === null) return null;
+  for (const part of h.split(/;\s*/)) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    if (part.slice(0, eq) === name) return part.slice(eq + 1);
+  }
+  return null;
+}
+
+/**
+ * Resolve a credential for the WebSocket upgrade path. Sources in priority
+ * order:
+ *   1. `Authorization: Bearer <t>` header (preferred for non-browser clients)
+ *   2. `koi_ws` cookie — browsers DO send cookies on WebSocket upgrades, so
+ *      this is the safest browser path: credentials never enter the URL.
+ *   3. `?token=<t>` query string — accepted ONLY as a last resort. URL
+ *      tokens leak through access logs, proxy logs, browser history, and
+ *      crash reports; hosts SHOULD treat any `?token=` as a single-use,
+ *      short-lived ticket and revoke it on first consumption (the
+ *      `authenticate` callback owns this policy).
+ *
+ * NEVER call this for `POST /messages` — that path requires
+ * `Authorization: Bearer` only, no URL fallback.
+ */
+function upgradeCredentialOf(req: Request, url: URL): string | null {
+  return bearerOf(req) ?? cookieOf(req, "koi_ws") ?? url.searchParams.get("token");
 }
 
 /**
@@ -316,14 +372,18 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
   async function handleMessages(req: Request, _url: URL): Promise<Response> {
     if (originDenied(req)) return new Response("Forbidden", { status: 403 });
 
-    // Body-size guard up-front so unauthenticated clients can't force the
-    // server to buffer arbitrarily large payloads before being rejected.
+    // Body-size guard: streaming byte cap so unauthenticated clients cannot
+    // force the server to buffer arbitrarily large payloads. We trust
+    // Content-Length only as a fast-path rejection — the authoritative limit
+    // is enforced by counting bytes off the body stream and aborting once
+    // the cap is exceeded. This also defeats character-vs-byte mismatches
+    // (multibyte UTF-8 strings exceeding the cap when measured in bytes).
     const len = Number(req.headers.get("content-length") ?? 0);
     if (Number.isFinite(len) && len > MAX_BODY_BYTES) {
       return new Response("Payload Too Large", { status: 413 });
     }
-    const text = await req.text();
-    if (text.length > MAX_BODY_BYTES) {
+    const text = await readBodyWithCap(req, MAX_BODY_BYTES);
+    if (text === null) {
       return new Response("Payload Too Large", { status: 413 });
     }
     // let requires justification: parsed JSON typed via try/catch
@@ -432,7 +492,7 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
             if (threadId === undefined && authenticate !== undefined) {
               return new Response("Bad Request: thread parameter required", { status: 400 });
             }
-            const principal = await authorize(req, upgradeTokenOf(req, url), threadId);
+            const principal = await authorize(req, upgradeCredentialOf(req, url), threadId);
             if (principal === null) return new Response("Unauthorized", { status: 401 });
             if (srv.upgrade(req, { data: { threadId, senderId: principal.senderId } })) {
               return undefined as unknown as Response;

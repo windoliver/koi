@@ -488,6 +488,39 @@ describe("@koi/channel-web", () => {
     await adapter.disconnect();
   });
 
+  test("WS upgrade accepts `koi_ws` cookie (preferred over URL token)", async () => {
+    h = await startHarness({
+      authenticate: (ctx) => (ctx.token === "cookie-tok" ? { senderId: "alice" } : null),
+    });
+    const ws = new WebSocket(`ws://127.0.0.1:${h.port}/ws?thread=room-A`, {
+      headers: { cookie: "other=ignored; koi_ws=cookie-tok; trailing=junk" },
+    } as unknown as undefined);
+    await new Promise<void>((r) => ws.addEventListener("open", () => r(), { once: true }));
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
+  });
+
+  test("POST /messages enforces byte cap when Content-Length is missing/dishonest", async () => {
+    // Regression: omitting Content-Length used to bypass the up-front check
+    // and only fail after full buffering. Streaming reader must reject.
+    h = await startHarness();
+    // Use a ReadableStream so Bun's fetch sends chunked w/o Content-Length.
+    const huge = new Uint8Array(1_100_000);
+    huge.fill(0x78); // 'x'
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(huge);
+        controller.close();
+      },
+    });
+    const res = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: stream,
+    });
+    expect(res.status).toBe(413);
+  });
+
   test("WS upgrade requires ?thread= in authenticated mode (no shared unscoped broadcast)", async () => {
     h = await startHarness({
       authenticate: () => ({ senderId: "alice" }),
