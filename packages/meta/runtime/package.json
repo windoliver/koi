@@ -22,6 +22,8 @@
     "@koi/browser-playwright": "workspace:*",
     "@koi/harness": "workspace:*",
     "@koi/channel-cli": "workspace:*",
+    "@koi/channel-slack": "workspace:*",
+    "@koi/channel-web": "workspace:*",
     "@koi/checkpoint": "workspace:*",
     "@koi/context-manager": "workspace:*",
     "@koi/core": "workspace:*",
