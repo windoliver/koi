@@ -147,6 +147,24 @@ describe("createWebFetchTool", () => {
   });
 
   describe("noCache flag", () => {
+    test("forwards caller abort signal to the executor", async () => {
+      const controller = new AbortController();
+      let capturedSignal: AbortSignal | undefined;
+      const executor: WebExecutor = {
+        fetch: async (_url, options) => {
+          capturedSignal = options?.signal;
+          return successResponse("ok", "text/plain");
+        },
+        search: async () => ({
+          ok: false,
+          error: { code: "VALIDATION", message: "n/a", retryable: false },
+        }),
+      };
+      const tool = createWebFetchTool(executor, "web", POLICY);
+      await tool.execute({ url: "https://example.com" }, { signal: controller.signal });
+      expect(capturedSignal).toBe(controller.signal);
+    });
+
     test("forwards noCache=true to the executor", async () => {
       let captured: { readonly noCache: boolean | undefined } | undefined;
       const executor: WebExecutor = {
