@@ -724,20 +724,7 @@ jobs:
         # state colocated; splitting would scatter related state across
         # files. Five additions: 1 hard-limit on slack-channel.ts +
         # 4 soft-limit/function violations across the two factories.
-        # → 729 (#1347: @koi/forge-verifier — runPipeline orchestrator
-        # heavily refactored across multiple adversarial-review rounds.
-        # Pre-extraction: pipeline.ts at 1459 lines, 3+ violations
-        # (file > 800 hard + file > 400 soft + runPipeline > 50 lines).
-        # Post-extraction (R37): split into 5 sibling files (canonical.ts,
-        # cache-key.ts, snapshot.ts, inflight.ts, run-stage.ts) leaving
-        # only runPipeline + its closure-coupled helpers in pipeline.ts
-        # at 779 lines. Net +1 violation (just the soft-limit on
-        # pipeline.ts). Further extraction would require a context object
-        # to pass closure state across functions, scattering the
-        # cancellation/cache/single-flight invariants that runPipeline
-        # currently maintains as locals — worse for review than the
-        # remaining 779-line file.
-        run: bun run check:complexity --max-violations 729
+        run: bun run check:complexity --max-violations 728
 
       - name: Check TUI single-writer output policy
         run: bun run check:tui-single-writer

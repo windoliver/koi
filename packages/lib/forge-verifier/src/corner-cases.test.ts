@@ -303,15 +303,15 @@ describe("platform AbortSignal.timeout listener cleanup", () => {
     let removes = 0;
     const origAdd = sig.addEventListener.bind(sig);
     const origRemove = sig.removeEventListener.bind(sig);
-    sig.addEventListener = ((t: string, ...rest: unknown[]) => {
+    // biome-ignore lint/suspicious/noExplicitAny: test spy
+    sig.addEventListener = ((t: any, l: any, o?: any) => {
       if (t === "abort") adds += 1;
-      // biome-ignore lint/suspicious/noExplicitAny: spread
-      return origAdd(t as any, ...(rest as any));
+      return origAdd(t, l, o);
     }) as typeof sig.addEventListener;
-    sig.removeEventListener = ((t: string, ...rest: unknown[]) => {
+    // biome-ignore lint/suspicious/noExplicitAny: test spy
+    sig.removeEventListener = ((t: any, l: any, o?: any) => {
       if (t === "abort") removes += 1;
-      // biome-ignore lint/suspicious/noExplicitAny: spread
-      return origRemove(t as any, ...(rest as any));
+      return origRemove(t, l, o);
     }) as typeof sig.removeEventListener;
     const stage: VerifierStage<FakeArtifact> = {
       name: "ok",

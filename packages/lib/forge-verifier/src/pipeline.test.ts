@@ -2764,15 +2764,15 @@ describe("R31 abort listeners are cleaned up after work() settles", () => {
     let listenerRemoves = 0;
     const origAdd = ac.signal.addEventListener.bind(ac.signal);
     const origRemove = ac.signal.removeEventListener.bind(ac.signal);
-    ac.signal.addEventListener = ((type: string, ...rest: unknown[]) => {
-      if (type === "abort") listenerAdds += 1;
-      // biome-ignore lint/suspicious/noExplicitAny: spy spread
-      return origAdd(type as any, ...(rest as any));
+    // biome-ignore lint/suspicious/noExplicitAny: test spy
+    ac.signal.addEventListener = ((t: any, l: any, o?: any) => {
+      if (t === "abort") listenerAdds += 1;
+      return origAdd(t, l, o);
     }) as typeof ac.signal.addEventListener;
-    ac.signal.removeEventListener = ((type: string, ...rest: unknown[]) => {
-      if (type === "abort") listenerRemoves += 1;
-      // biome-ignore lint/suspicious/noExplicitAny: spy spread
-      return origRemove(type as any, ...(rest as any));
+    // biome-ignore lint/suspicious/noExplicitAny: test spy
+    ac.signal.removeEventListener = ((t: any, l: any, o?: any) => {
+      if (t === "abort") listenerRemoves += 1;
+      return origRemove(t, l, o);
     }) as typeof ac.signal.removeEventListener;
     const r = await runPipeline([stage], { name: "leak" } as FakeArtifact, {
       cache: createMemoryCache(),
@@ -2813,15 +2813,15 @@ describe("R31 abort listeners are cleaned up after work() settles", () => {
     let removes = 0;
     const origAdd = followerAc.signal.addEventListener.bind(followerAc.signal);
     const origRemove = followerAc.signal.removeEventListener.bind(followerAc.signal);
-    followerAc.signal.addEventListener = ((t: string, ...rest: unknown[]) => {
+    // biome-ignore lint/suspicious/noExplicitAny: test spy
+    followerAc.signal.addEventListener = ((t: any, l: any, o?: any) => {
       if (t === "abort") adds += 1;
-      // biome-ignore lint/suspicious/noExplicitAny: spread
-      return origAdd(t as any, ...(rest as any));
+      return origAdd(t, l, o);
     }) as typeof followerAc.signal.addEventListener;
-    followerAc.signal.removeEventListener = ((t: string, ...rest: unknown[]) => {
+    // biome-ignore lint/suspicious/noExplicitAny: test spy
+    followerAc.signal.removeEventListener = ((t: any, l: any, o?: any) => {
       if (t === "abort") removes += 1;
-      // biome-ignore lint/suspicious/noExplicitAny: spread
-      return origRemove(t as any, ...(rest as any));
+      return origRemove(t, l, o);
     }) as typeof followerAc.signal.removeEventListener;
     const leader = runPipeline([stage], artifact, baseOpts);
     await new Promise((r) => setTimeout(r, 10));

@@ -1,17 +1,12 @@
 import type { ForgeStageDigest, ForgeVerificationSummary, KoiErrorCode, Result } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core";
-import {
-  composeCacheKey,
-  fingerprintStages,
-  freezeSummary,
-  isCachedSummaryConsistent,
-  stageError,
-} from "./cache-key.js";
-import { canonicalJson } from "./canonical.js";
-import { cacheId, inflight, waitWithSignal } from "./inflight.js";
+import { freezeSummary, isCachedSummaryConsistent, stageError } from "./cache-key.js";
+import { createConsumerTracker } from "./consumer-tracker.js";
+import { inflight, waitWithSignal } from "./inflight.js";
+import { deriveInflightKey, setupPipelineSignal } from "./inflight-setup.js";
+import { prepareSnapshot } from "./prepare-snapshot.js";
 import { describeThrown, runStage } from "./run-stage.js";
-import { deepFreeze, rejectUnsupportedShape } from "./snapshot.js";
 import type { StageContext, VerifierStage, VerifyOptions } from "./types.js";
+import { validateOptions } from "./validate-options.js";
 
 /**
  * Sequential verification orchestrator.
@@ -33,322 +28,29 @@ export async function runPipeline<I>(
   artifact: I,
   options?: VerifyOptions,
 ): Promise<Result<ForgeVerificationSummary>> {
-  // Fail closed: a misconfigured caller, feature flag, or assembly bug
-  // must NOT silently turn "no verifier configured" into "artifact passed".
-  if (stages.length === 0) {
-    return {
-      ok: false,
-      error: {
-        code: "INVALID_CONFIG",
-        message: "runPipeline requires at least one stage; refusing to fail-open.",
-        retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
-      },
-    };
-  }
+  const validated = validateOptions(stages, options);
+  if (!validated.ok) return validated;
+  const { cache, cacheReadFailure, signal, stageTimeoutMs } = validated.value;
 
-  // Validate stage descriptors up front: name must be a non-empty string,
-  // and names must be unique. Without this, an empty-name stage would
-  // produce a summary that downstream consumers (e.g. `createForgeProvenance`)
-  // refuse to persist — surfacing the misconfiguration far from its source.
-  // Duplicate names break cache-key uniqueness AND make stageResults
-  // ambiguous for callers correlating digests by name.
-  const seenNames = new Set<string>();
-  for (let i = 0; i < stages.length; i++) {
-    const s = stages[i];
-    if (s === undefined || typeof s.name !== "string" || s.name.length === 0) {
-      return {
-        ok: false,
-        error: {
-          code: "INVALID_CONFIG",
-          message: `Stage at index ${i} has invalid name (must be a non-empty string).`,
-          retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
-        },
-      };
-    }
-    if (seenNames.has(s.name)) {
-      return {
-        ok: false,
-        error: {
-          code: "INVALID_CONFIG",
-          message: `Duplicate stage name "${s.name}" at index ${i}; stage names must be unique.`,
-          retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
-        },
-      };
-    }
-    seenNames.add(s.name);
-  }
+  const prepared = prepareSnapshot(artifact, stages, validated.value, options);
+  if (!prepared.ok) return prepared;
+  const { snapshot, snapshotDigest, composedKey, declaredSandbox } = prepared.value;
 
-  const namespace = options?.namespace;
-  const cache = options?.cache;
-  const cacheReadFailure = options?.cacheReadFailure ?? "fail";
-  const signal = options?.signal;
-  const stageTimeoutMs = options?.stageTimeoutMs;
-
-  // Validate stageTimeoutMs eagerly — silently coercing 0/negative/NaN
-  // into "no timeout" turns a misconfiguration into the unbounded hang
-  // this option exists to prevent. Fail closed.
-  if (
-    stageTimeoutMs !== undefined &&
-    !(typeof stageTimeoutMs === "number" && Number.isFinite(stageTimeoutMs) && stageTimeoutMs > 0)
-  ) {
-    return {
-      ok: false,
-      error: {
-        code: "INVALID_CONFIG",
-        message: `VerifyOptions.stageTimeoutMs must be a finite positive number when set; got ${String(stageTimeoutMs)}.`,
-        retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
-      },
-    };
-  }
-
-  // When caching is enabled, every stage MUST declare an explicit non-empty
-  // `version`. Two different plugin implementations sharing the same
-  // (name, sandboxed) tuple but defaulting `version` to `"0"` would alias
-  // each other in cache + single-flight slots — one plugin's pass could
-  // satisfy another plugin's stage without its logic ever running. Without
-  // a cache (solo runs) version is irrelevant: no result is persisted or
-  // shared, so the fingerprint never matters.
-  if (cache !== undefined) {
-    for (let i = 0; i < stages.length; i++) {
-      const s = stages[i];
-      if (s === undefined) continue;
-      if (typeof s.version !== "string" || s.version.length === 0) {
-        return {
-          ok: false,
-          error: {
-            code: "INVALID_CONFIG",
-            message: `Stage "${s.name}" at index ${i} requires an explicit non-empty \`version\` when cache is provided; stage identity must distinguish plugin implementations.`,
-            retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
-          },
-        };
-      }
-    }
-  }
-
-  // Fail closed against silent cross-tenant replay: a shared cache backend
-  // with two callers that both forget to set `namespace` would happily serve
-  // each other's attestations whenever artifact content + stage metadata
-  // match. Require an explicit non-empty namespace whenever a cache is
-  // provided. Callers that do not need partitioning can pass any constant.
-  if (cache !== undefined && (typeof namespace !== "string" || namespace.length === 0)) {
-    return {
-      ok: false,
-      error: {
-        code: "INVALID_CONFIG",
-        message:
-          "VerifyOptions.namespace is required (non-empty string) when cache is provided; defaulting to '' would replay attestations across callers sharing the backend.",
-        retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
-      },
-    };
-  }
-
-  // Cache is NOT a security boundary — a backend that can write
-  // structurally-correct envelopes can mint forged passes without any
-  // stage running. Require every call site to explicitly acknowledge
-  // that the supplied backend's write path is restricted to trusted
-  // producers. Without this acknowledgment the cache is rejected — the
-  // trust decision must live at the call site, not behind a default.
-  if (cache !== undefined && options?.acknowledgeTrustedCache !== true) {
-    return {
-      ok: false,
-      error: {
-        code: "INVALID_CONFIG",
-        message:
-          "VerifyOptions.cache requires acknowledgeTrustedCache: true. The cache is a TRUSTED storage optimization, not a security boundary — a backend that can write envelopes can forge passing attestations. Pass this flag only when the backend's write path is restricted to trusted producers.",
-        retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
-      },
-    };
-  }
-
-  // Require executionContextKey whenever results may be SHARED across
-  // callers (cache + coalesceUncached). Stages may close over ambient
-  // state (auth, tenant policy, feature flags); silently substituting
-  // "" lets one caller's pass satisfy another caller's request that
-  // would have evaluated different ambient context. Force callers to
-  // either declare a stable context fingerprint or accept that they
-  // cannot share results.
-  const sharesResults = cache !== undefined || options?.coalesceUncached === true;
-  const ctxRaw = options?.executionContextKey;
-  if (sharesResults && (typeof ctxRaw !== "string" || ctxRaw.length === 0)) {
-    return {
-      ok: false,
-      error: {
-        code: "INVALID_CONFIG",
-        message:
-          "VerifyOptions.executionContextKey is required (non-empty string) when results may be shared across callers (cache or coalesceUncached). It partitions cache + single-flight by ambient stage context (auth, tenant policy, feature flags). Use a stable hash of any context the stage closures observe.",
-        retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
-      },
-    };
-  }
-
-  // Snapshot the artifact via structuredClone before BOTH fingerprinting
-  // AND running stages. This binds the cache key, the verification work,
-  // and the cached pass result to the same immutable bytes — a stage
-  // cannot mutate nested artifact content after the fingerprint is
-  // computed and cause a later run to receive a cached pass for content
-  // it never verified. structuredClone handles Date, Map, Set, typed
-  // arrays, etc.; functions and class instances are out of scope and
-  // will throw — surface that as INVALID_CONFIG.
-  // Bound the pre-stage work by an aborted signal too — validation +
-  // structuredClone of a large or malicious artifact must not consume CPU
-  // after the caller has given up.
-  if (signal?.aborted) {
-    return {
-      ok: false,
-      error: stageError("TIMEOUT", "<snapshot>", "Pipeline aborted before snapshot."),
-    };
-  }
-  let snapshot: I;
-  try {
-    // Reject anything that is not a primitive or a plain-data object root.
-    if (artifact === null || typeof artifact !== "object") {
-      const t = typeof artifact;
-      if (t !== "string" && t !== "number" && t !== "boolean" && t !== "undefined") {
-        throw new TypeError(
-          `Artifact root has unsupported type "${t}"; verifier requires plain-data artifacts.`,
-        );
-      }
-      snapshot = artifact;
-    } else {
-      // Pre-clone validation walks the ORIGINAL artifact graph using only
-      // descriptor reads — no value-getter invocation, no Object.entries.
-      // Catches hidden state (symbol keys, non-enumerable, accessors) that
-      // structuredClone would silently drop, AND class instances whose
-      // prototype clone would strip. For Proxy-wrapped artifacts, the
-      // ownKeys/getOwnPropertyDescriptor traps may fire — bounded by the
-      // graph size and never deeper than data descriptors carry (data
-      // descriptors hold .value eagerly, so no caller getter is invoked
-      // by the walk). Same Proxy-trap exposure surface as structuredClone
-      // itself — we accept it once here in exchange for catching attacks
-      // that would otherwise be invisible to every stage.
-      rejectUnsupportedShape(artifact, "$", new WeakSet<object>(), { count: 0 });
-      // Clone — runs in V8 internals on a graph we already proved to be
-      // pure data. Symbol/non-enumerable rejection above means clone cannot
-      // silently elide caller state: the snapshot is bit-equivalent to
-      // every observable own data property of the original.
-      let cloned: I;
-      try {
-        cloned = structuredClone(artifact);
-      } catch (e: unknown) {
-        const detail = e instanceof Error ? e.message : "non-cloneable artifact";
-        throw new TypeError(`Artifact is not structured-cloneable: ${detail}`);
-      }
-      snapshot = cloned;
-      deepFreeze(snapshot);
-    }
-  } catch (e: unknown) {
-    const detail = e instanceof Error ? e.message : "non-cloneable artifact";
-    return {
-      ok: false,
-      error: {
-        code: "INVALID_CONFIG",
-        message: detail,
-        retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
-        cause: e,
-      },
-    };
-  }
-  // Sandbox is derived from the static stage declarations, never from
-  // arbitrary stage runtime self-reports — same source on fresh runs and
-  // cache hits, so the trust signal cannot diverge across cache state.
-  const declaredSandbox = stages.some((s) => s.sandboxed === true);
-
-  // Always derive the snapshot digest — used for both cache key (when a
-  // cache is provided) and single-flight coalescing (always). Without
-  // this, two concurrent uncached callers would each run every stage,
-  // duplicating non-idempotent side effects (sandbox jobs, external
-  // APIs, quota burns). Cyclic snapshots produce no deterministic key
-  // and are rejected upfront for side-effecting pipelines below.
-  let snapshotDigest: string | undefined;
-  let cyclic = false;
-  try {
-    snapshotDigest = canonicalJson(snapshot, {
-      onStack: new WeakSet<object>(),
-      seen: new WeakMap<object, number>(),
-      budget: { count: 0 },
-      refCounter: 0,
-    });
-  } catch (e: unknown) {
-    const code = (e as { code?: string } | undefined)?.code;
-    if (code === "FORGE_VERIFIER_CYCLE") {
-      cyclic = true;
-    } else {
-      const detail = e instanceof Error ? e.message : "snapshot digest failed";
-      return {
-        ok: false,
-        error: stageError("INTERNAL", "<snapshot>", `Snapshot digest failed: ${detail}`, e),
-      };
-    }
-  }
-
-  // Cyclic snapshots cannot be deterministically fingerprinted; cache
-  // is bypassed for them. Single-flight is intentionally NOT applied to
-  // uncached runs (see inflightKey below for rationale), so cyclic
-  // artifacts simply run un-coalesced like any other uncached call.
-  let composedKey: string | undefined;
-  if (cache !== undefined && snapshotDigest !== undefined) {
-    if (typeof namespace !== "string") {
-      // Unreachable: validated above when cache !== undefined.
-      throw new Error("namespace must be a string when cache is provided");
-    }
-    composedKey = composeCacheKey(
-      namespace,
-      snapshotDigest,
-      stages,
-      options?.executionContextKey,
-      stageTimeoutMs,
-    );
-  } else if (cache !== undefined && cyclic) {
-    // Cache write/read still bypassed for cyclic snapshots even on
-    // non-sandboxed pipelines — no deterministic key to bind by.
-    console.debug("[forge-verifier] cache bypassed (cyclic snapshot)");
-  }
-
-  // Single-flight coalescing: if another caller is already verifying the
-  // same composedKey in this process, share its work instead of running
-  // a duplicate pipeline. Crucially registered BEFORE cache.get + stages
-  // so concurrent callers cannot all miss + all run.
-  //
-  // Cancellation is per-WAITER, not per-key:
-  //   - The shared leader pipeline runs WITHOUT any caller's signal, so
-  //     no single caller can abort the side effects another caller is
-  //     awaiting. Stages run to completion (or in-stage failure).
-  //   - Every caller — leader and follower alike — races the shared
-  //     promise against its OWN signal via `waitWithSignal`. A caller's
-  //     abort returns TIMEOUT to that caller without affecting any other
-  //     caller or the leader pipeline itself.
-  //   - This trades per-caller cooperative cancellation of stages for
-  //     freedom from leader-imposed cancellation. Acceptable because the
-  //     non-idempotent stages this pipeline is designed for must not be
-  //     interrupted mid-flight by an unrelated caller anyway.
-  // Single-flight key includes cache backend identity, cacheReadFailure
-  // policy, AND stageTimeoutMs so two callers coalesce only when they
-  // would observe the same result. A trusted-cache caller MUST NOT
-  // inherit a forged pass from an untrusted-cache caller, a `"fail"`
-  // caller MUST NOT be dragged into a `"miss"` leader's silent
-  // re-execution after a backend outage, and a strict-timeout caller
-  // MUST NOT inherit a looser-timeout leader's safeguards.
-  const stageTimeoutKey = stageTimeoutMs !== undefined ? String(stageTimeoutMs) : "none";
-  const ctxKey = options?.executionContextKey ?? "";
-  // Single-flight scope:
-  //   - Cached runs (cache + ack provided): always coalesce. Key
-  //     includes cache identity, policy, timeout, executionContextKey,
-  //     and composed key.
-  //   - Uncached runs: only coalesce when the caller explicitly opts
-  //     in via `coalesceUncached: true`. Stage identity from
-  //     descriptors alone is too weak to alias closures safely; the
-  //     opt-in is the caller's acknowledgment that closures + ambient
-  //     context are equivalent across coalesced peers. Cyclic
-  //     snapshots have no digest → cannot coalesce regardless.
-  const stagesFp = fingerprintStages(stages);
-  let inflightKey: string | undefined;
-  if (snapshotDigest !== undefined) {
-    if (composedKey !== undefined && cache !== undefined) {
-      inflightKey = `cached|${cacheId(cache)}|${cacheReadFailure}|${stageTimeoutKey}|${ctxKey}|${composedKey}`;
-    } else if (options?.coalesceUncached === true) {
-      inflightKey = `uncached|${cacheReadFailure}|${stageTimeoutKey}|${ctxKey}|${stagesFp}|${snapshotDigest}`;
-    }
-  }
+  // Single-flight coalescing: if another caller is already verifying
+  // the same key in this process, share its work. Cancellation is
+  // per-WAITER (each caller races the shared promise against its own
+  // signal); the leader pipeline runs independent of any caller's
+  // signal so a single caller cannot abort side effects another caller
+  // is awaiting. See inflight-setup.ts for key derivation rationale.
+  const inflightKey = deriveInflightKey({
+    stages,
+    cache,
+    cacheReadFailure,
+    stageTimeoutMs,
+    composedKey,
+    snapshotDigest,
+    options,
+  });
 
   if (inflightKey !== undefined) {
     const existing = inflight.get(inflightKey);
@@ -382,95 +84,11 @@ export async function runPipeline<I>(
     }
   }
 
-  // `pipelineSignal` is the signal the stage loop honors.
-  //   - Solo run (no inflightKey): caller's own signal — straightforward.
-  //   - Cache-backed run with possible coalescing: start with an internal
-  //     mirror of the caller's signal so a SOLO caller still aborts the
-  //     work. When a follower joins (above), `detach()` unwires the
-  //     mirror so the leader's signal no longer aborts the shared work.
-  // `liveConsumers` tracks callers still awaiting the shared result at
-  // cache-write time. Mere attachment is NOT enough — a follower that
-  // attaches and then aborts before consumption never accepted the
-  // result, and if every participating caller (leader + followers)
-  // aborts before completion, we must NOT cache a `passed: true`
-  // entry that no live caller actually received. Increments on
-  // attachment; decrements when a caller's own signal aborts (which
-  // is what causes their `waitWithSignal` to resolve to TIMEOUT
-  // instead of the shared result).
-  //
-  // Starts at 1 for the leader (or 0 if `work()` is invoked directly
-  // without inflight registration — see solo-run paths).
-  // The leader is the first live consumer. If their own signal aborts
-  // before `work()` resolves, decrement so the cache-write gate can
-  // see "leader gone".
-  let liveConsumers = 1;
-  const decrementConsumer = (): void => {
-    if (liveConsumers > 0) liveConsumers -= 1;
-  };
-  // Track every (signal, listener) pair we install so they can be
-  // removed in a finally-style sweep after `work()` settles. Without
-  // this, the listeners outlive the verification and accumulate on
-  // long-lived caller signals (e.g. request-scoped controllers reused
-  // across many verifications), turning the hot path into a memory
-  // leak.
-  const installedListeners: Array<{ signal: AbortSignal; listener: () => void }> = [];
-  const installListener = (sig: AbortSignal): void => {
-    // Use a FRESH closure per registration. EventTarget dedupes
-    // (listener, options) pairs by reference, so installing the same
-    // `decrementConsumer` reference twice on a single AbortSignal
-    // would decrement only once on abort — bypassing the
-    // `liveConsumers === 0` cache-write gate when a leader and
-    // follower happen to share an AbortSignal.
-    const listener = (): void => decrementConsumer();
-    sig.addEventListener("abort", listener, { once: true });
-    installedListeners.push({ signal: sig, listener });
-  };
-  const releaseConsumerListeners = (): void => {
-    for (const { signal: s, listener } of installedListeners) {
-      s.removeEventListener("abort", listener);
-    }
-    installedListeners.length = 0;
-  };
-  if (signal !== undefined) {
-    if (signal.aborted) {
-      decrementConsumer();
-    } else {
-      installListener(signal);
-    }
-  }
-  // Register a follower (called from the inflight attach path of a
-  // SECOND runPipeline frame). Increments now, decrements if the
-  // follower's signal aborts before the shared work resolves.
-  const registerConsumer = (followerSignal: AbortSignal | undefined): void => {
-    if (followerSignal?.aborted === true) {
-      // Already aborted on arrival — they will never observe the
-      // result; do not count them.
-      return;
-    }
-    liveConsumers += 1;
-    if (followerSignal !== undefined) {
-      installListener(followerSignal);
-    }
-  };
-  let detachCallerSignal: () => void = () => {};
-  let pipelineSignal: AbortSignal | undefined;
-  if (inflightKey === undefined) {
-    pipelineSignal = signal;
-  } else if (signal === undefined) {
-    pipelineSignal = undefined;
-  } else {
-    const internal = new AbortController();
-    if (signal.aborted) {
-      internal.abort();
-    } else {
-      const onAbort = (): void => internal.abort();
-      signal.addEventListener("abort", onAbort, { once: true });
-      detachCallerSignal = (): void => {
-        signal.removeEventListener("abort", onAbort);
-      };
-    }
-    pipelineSignal = internal.signal;
-  }
+  // Consumer tracker + pipeline-signal mirror: see consumer-tracker.ts
+  // and inflight-setup.ts for the full rationale.
+  const tracker = createConsumerTracker(signal);
+  const { registerConsumer, releaseConsumerListeners } = tracker;
+  const { pipelineSignal, detachCallerSignal } = setupPipelineSignal(signal, inflightKey);
 
   const work = async (): Promise<Result<ForgeVerificationSummary>> => {
     if (composedKey !== undefined && cache !== undefined) {
@@ -699,7 +317,7 @@ export async function runPipeline<I>(
       // suppression decision. (Without this yield, an abort that
       // raced the final stage's resolve could be missed.)
       await Promise.resolve();
-      if (liveConsumers === 0) {
+      if (tracker.liveConsumers() === 0) {
         console.debug("[forge-verifier] cache.set suppressed (no live consumer)");
       } else {
         try {
@@ -713,7 +331,7 @@ export async function runPipeline<I>(
           // pre-write microtask drain above eliminates the common
           // synchronous-abort race; this only catches the in-flight
           // network case.
-          if (liveConsumers === 0) {
+          if (tracker.liveConsumers() === 0) {
             console.debug(
               "[forge-verifier] cache.set committed but all consumers aborted during write (best-effort race)",
             );
