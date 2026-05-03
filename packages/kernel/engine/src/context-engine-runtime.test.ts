@@ -17,7 +17,7 @@ import { createContextEngineSwapController } from "./context-engine-swap.js";
 const ctx = { metadata: {} } as unknown as TurnContext;
 
 describe("createContextEngineSlotMiddleware", () => {
-  test("calls the engine returned by the controller on every model call", async () => {
+  test("follows controller swaps across turns (one ctx per turn)", async () => {
     const engineA: ContextEngine = {
       identity: { name: "a", version: "1.0.0" },
       prepare: (_c, msgs) => [
@@ -41,17 +41,77 @@ describe("createContextEngineSlotMiddleware", () => {
       return { content: "ok", model: "x" } satisfies ModelResponse;
     };
 
-    await mw.wrapModelCall?.(ctx, { messages: [] }, handler);
+    const ctx1 = { metadata: {} } as unknown as TurnContext;
+    await mw.wrapModelCall?.(ctx1, { messages: [] }, handler);
     expect(captured.at(-1)?.messages.at(-1)?.senderId).toBe("a-tag");
 
-    // Swap engines: middleware MUST follow the controller, not stay bound
-    // to the engine at construction time.
     ctrl.swap(engineB, {
       turnId: "run-1:t1" as Parameters<typeof ctrl.swap>[1]["turnId"],
       reason: "test",
     });
-    await mw.wrapModelCall?.(ctx, { messages: [] }, handler);
+    // Fresh ctx represents the next turn — pinning binds per-turn, so swaps
+    // are observable on the very next turn's first prepare().
+    const ctx2 = { metadata: {} } as unknown as TurnContext;
+    await mw.wrapModelCall?.(ctx2, { messages: [] }, handler);
     expect(captured.at(-1)?.messages.at(-1)?.senderId).toBe("b-tag");
+  });
+
+  test("pins the engine for the duration of a turn (prepare + onAfterTurn paired)", async () => {
+    // Per-turn binding regression: a swap mid-turn must not split prepare()
+    // and onAfterTurn() across two engines, even though future turns will
+    // see the swap.
+    let aPrepareCalls = 0;
+    let aAfterCalls = 0;
+    let bPrepareCalls = 0;
+    let bAfterCalls = 0;
+    const engineA: ContextEngine = {
+      identity: { name: "a", version: "1.0.0" },
+      prepare: (_c, m) => {
+        aPrepareCalls++;
+        return m;
+      },
+      onAfterTurn: () => {
+        aAfterCalls++;
+      },
+    };
+    const engineB: ContextEngine = {
+      identity: { name: "b", version: "1.0.0" },
+      prepare: (_c, m) => {
+        bPrepareCalls++;
+        return m;
+      },
+      onAfterTurn: () => {
+        bAfterCalls++;
+      },
+    };
+    const ctrl = createContextEngineSwapController(engineA);
+    const mw = createContextEngineSlotMiddleware(() => ctrl.current());
+
+    const handler: ModelHandler = async () =>
+      ({ content: "ok", model: "x" }) satisfies ModelResponse;
+    const turnCtx = { metadata: {} } as unknown as TurnContext;
+
+    await mw.wrapModelCall?.(turnCtx, { messages: [] }, handler);
+    // Mid-turn swap (host calls controller.swap(); intentionally permitted by API)
+    ctrl.swap(engineB, {
+      turnId: "run-1:t1" as Parameters<typeof ctrl.swap>[1]["turnId"],
+      reason: "mid-turn",
+    });
+    // Subsequent model calls within the same turn must still hit engine A.
+    await mw.wrapModelCall?.(turnCtx, { messages: [] }, handler);
+    await mw.onAfterTurn?.(turnCtx);
+
+    expect(aPrepareCalls).toBe(2);
+    expect(aAfterCalls).toBe(1);
+    expect(bPrepareCalls).toBe(0);
+    expect(bAfterCalls).toBe(0);
+
+    // Fresh turn picks up engine B.
+    const turn2 = { metadata: {} } as unknown as TurnContext;
+    await mw.wrapModelCall?.(turn2, { messages: [] }, handler);
+    await mw.onAfterTurn?.(turn2);
+    expect(bPrepareCalls).toBe(1);
+    expect(bAfterCalls).toBe(1);
   });
 
   test("noop when the controller returns no engine (slot empty)", async () => {

@@ -330,6 +330,34 @@ describe("createKoi assembly", () => {
     expect(runtime.contextEngineSwapController).toBeUndefined();
   });
 
+  test("rejects external CONTEXT_ENGINE provider when contextEngineFactory is set (no silent ECS/middleware split)", async () => {
+    type ContextEngine = import("@koi/core").ContextEngine;
+    const { CONTEXT_ENGINE: CE_TOKEN, COMPONENT_PRIORITY } = await import("@koi/core");
+    const factoryEngine: ContextEngine = {
+      identity: { name: "factory", version: "1.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const externalEngine: ContextEngine = {
+      identity: { name: "external", version: "1.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const externalProvider: import("@koi/core").ComponentProvider = {
+      name: "external-context-engine",
+      // AGENT_FORGED beats BUNDLED, so without the guard the factory's proxy
+      // would lose ECS first-write while middleware still uses the factory.
+      priority: COMPONENT_PRIORITY.AGENT_FORGED,
+      attach: async () => new Map<string, unknown>([[CE_TOKEN as string, externalEngine]]),
+    };
+    await expect(
+      createKoi({
+        manifest: testManifest(),
+        adapter: mockAdapter([]),
+        contextEngineFactory: () => factoryEngine,
+        providers: [externalProvider],
+      }),
+    ).rejects.toThrow(/CONTEXT_ENGINE|context-engine-double-wire/);
+  });
+
   test("manifest lifecycle overrides default type", async () => {
     const runtime = await createKoi({
       manifest: testManifest({ lifecycle: "worker" }),

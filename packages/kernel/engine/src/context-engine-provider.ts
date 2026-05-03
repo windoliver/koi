@@ -51,10 +51,21 @@ export function createContextEngineProvider(
  * external callers attaching their own engine should use
  * `createContextEngineProvider` and manage swapping themselves.
  */
+export interface ContextEngineProxyProvider {
+  readonly provider: ComponentProvider;
+  /**
+   * The proxy instance the provider attaches under `CONTEXT_ENGINE`. Exposed
+   * so `createKoi` can compare it against the post-assembly slot occupant
+   * and reject silent collisions (an external provider with lower priority
+   * shadowing the controller-backed proxy).
+   */
+  readonly proxy: ContextEngine;
+}
+
 export function createContextEngineProxyProvider(
   getEngine: () => ContextEngine,
   options: ContextEngineProviderOptions = {},
-): ComponentProvider {
+): ContextEngineProxyProvider {
   const priority = options.priority ?? COMPONENT_PRIORITY.BUNDLED;
   // describeOccupancy is intentionally omitted: it is optional in the
   // contract, the underlying engine may flip between providing/omitting it
@@ -74,11 +85,12 @@ export function createContextEngineProxyProvider(
       return e.onAfterTurn?.(ctx);
     },
   };
-  return {
+  const provider: ComponentProvider = {
     name: "context-engine",
     priority,
     attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
       return new Map<string, unknown>([[CONTEXT_ENGINE as string, proxy]]);
     },
   };
+  return { provider, proxy };
 }

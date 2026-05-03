@@ -13,6 +13,7 @@
 import type {
   ComponentProvider,
   ComposedCallHandlers,
+  ContextEngine,
   EngineEvent,
   EngineInput,
   EngineStopReason,
@@ -38,6 +39,7 @@ import type {
 } from "@koi/core";
 import {
   COMPONENT_PRIORITY,
+  CONTEXT_ENGINE,
   DEFAULT_MAX_STOP_RETRIES,
   GOVERNANCE,
   INBOX,
@@ -128,6 +130,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     );
   }
   let contextEngineSwapController: ContextEngineSwapController | undefined;
+  let contextEngineProxy: ContextEngine | undefined;
   const contextEngineProviders: ComponentProvider[] = [];
   const contextEngineMiddleware: KoiMiddleware[] = [];
   if (options.contextEngineFactory !== undefined) {
@@ -162,15 +165,33 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // assembled components, so attaching the boot-time instance directly
     // would leave `agent.component(CONTEXT_ENGINE)` pointing at the old
     // engine forever after a swap.
-    contextEngineProviders.push(
-      createContextEngineProxyProvider(() => ctrlRef.current(), {
-        priority: COMPONENT_PRIORITY.BUNDLED,
-      }),
-    );
+    const proxyResult = createContextEngineProxyProvider(() => ctrlRef.current(), {
+      priority: COMPONENT_PRIORITY.BUNDLED,
+    });
+    contextEngineProxy = proxyResult.proxy;
+    contextEngineProviders.push(proxyResult.provider);
     contextEngineMiddleware.push(createContextEngineSlotMiddleware(() => ctrlRef.current()));
   }
   const allProviders = [governanceProvider, ...contextEngineProviders, ...providers];
   const { agent, conflicts } = await AgentEntity.assemble(pid, manifest, allProviders);
+
+  // ECS slot/middleware divergence guard (#1767, round 6). When the host wires
+  // a contextEngineFactory we attach a controller-backed proxy under
+  // CONTEXT_ENGINE so post-swap reads track the active engine. If a
+  // user-supplied ComponentProvider declares a lower priority and shadows the
+  // proxy, ECS reads silently diverge from the engine actually driving model
+  // requests through middleware. Reject before any turn runs so the host must
+  // pick one wiring path explicitly.
+  if (contextEngineProxy !== undefined) {
+    const slotEngine = agent.component(CONTEXT_ENGINE);
+    if (slotEngine !== undefined && slotEngine !== contextEngineProxy) {
+      throw KoiRuntimeError.from(
+        "VALIDATION",
+        "createKoi: a user-supplied ComponentProvider attached CONTEXT_ENGINE while contextEngineFactory is also set. The runtime cannot guarantee that ECS reads (`agent.component(CONTEXT_ENGINE)`) and the engine driving model requests reference the same instance. Choose one wiring path: drop contextEngineFactory and manage swaps manually, or remove the external CONTEXT_ENGINE provider and let createKoi own the slot.",
+        { retryable: false, context: { conflictKind: "context-engine-double-wire" } },
+      );
+    }
+  }
 
   // --- 2. Compose kernel extensions (governance + default guards) ---
   const governanceExt = createGovernanceExtension();

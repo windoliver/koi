@@ -152,7 +152,10 @@ export { createChildHandle } from "./child-handle.js";
 // compose bridge (lifecycle-aware terminals)
 export { createComposedCallHandlers, createTerminalHandlers } from "./compose-bridge.js";
 // context-engine provider — pluggable ECS slot wiring (issue #1767)
-export type { ContextEngineProviderOptions } from "./context-engine-provider.js";
+export type {
+  ContextEngineProviderOptions,
+  ContextEngineProxyProvider,
+} from "./context-engine-provider.js";
 export {
   createContextEngineProvider,
   createContextEngineProxyProvider,

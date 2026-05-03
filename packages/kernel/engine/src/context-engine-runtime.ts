@@ -11,23 +11,45 @@
  * model-call path can never diverge.
  */
 
-import type { ContextEngine, KoiMiddleware } from "@koi/core";
+import type { ContextEngine, KoiMiddleware, TurnContext } from "@koi/core";
 
 /**
  * Build a `KoiMiddleware` that resolves the active `ContextEngine` via the
  * provided getter on each call. Returning `undefined` from `getEngine` makes
  * the middleware a passthrough — useful when the slot is empty or the host
  * has not yet attached a controller.
+ *
+ * Per-turn binding: the first `prepare()` call of a turn pins the engine for
+ * that turn. All subsequent model calls within the turn and the matching
+ * `onAfterTurn` resolve to that same instance even if a swap occurs mid-turn.
+ * This keeps prepare/onAfterTurn paired on stateful engines (occupancy,
+ * eviction, rollback bookkeeping) — without it, a swap between `prepare()`
+ * and turn-end would deliver `onAfterTurn` to a different engine than the
+ * one that mutated state during prepare.
  */
 export function createContextEngineSlotMiddleware(
   getEngine: () => ContextEngine | undefined,
 ): KoiMiddleware {
+  // WeakMap keyed by TurnContext — each turn has its own context object, so
+  // entries fall out of scope automatically when the turn is GC'd. We still
+  // delete eagerly in onAfterTurn for predictability under long-lived hosts.
+  const turnEngine = new WeakMap<TurnContext, ContextEngine>();
+
+  const pinEngine = (ctx: TurnContext): ContextEngine | undefined => {
+    const existing = turnEngine.get(ctx);
+    if (existing !== undefined) return existing;
+    const engine = getEngine();
+    if (engine === undefined) return undefined;
+    turnEngine.set(ctx, engine);
+    return engine;
+  };
+
   return {
     name: "context-engine",
     phase: "resolve",
     priority: 500,
     wrapModelCall: async (ctx, request, next) => {
-      const engine = getEngine();
+      const engine = pinEngine(ctx);
       if (engine === undefined) {
         return next(request);
       }
@@ -38,7 +60,7 @@ export function createContextEngineSlotMiddleware(
     // Both must drive engine.prepare() or compaction silently disappears
     // under streaming.
     wrapModelStream: (ctx, request, next) => {
-      const engine = getEngine();
+      const engine = pinEngine(ctx);
       if (engine === undefined) {
         return next(request);
       }
@@ -59,7 +81,11 @@ export function createContextEngineSlotMiddleware(
       };
     },
     onAfterTurn: async (ctx) => {
-      const engine = getEngine();
+      // Resolve to the engine pinned at first prepare(); fall back to the
+      // current engine for turns where prepare() never ran (no model call).
+      const pinned = turnEngine.get(ctx);
+      const engine = pinned ?? getEngine();
+      turnEngine.delete(ctx);
       if (engine?.onAfterTurn !== undefined) {
         await engine.onAfterTurn(ctx);
       }
