@@ -120,6 +120,17 @@ export interface CreateKoiOptions {
    * existing per-turn behavior.
    */
   readonly contextEngineFactory?: (config?: ContextManifestConfig) => ContextEngine;
+  /**
+   * Observer for swap/rollback events emitted by the runtime's swap
+   * controller. When a `contextEngineFactory` is supplied, `createKoi`
+   * subscribes this listener for the runtime's lifetime so hosts can
+   * forward swaps onto their event bus / TUI / audit log without having
+   * to remember to call `runtime.contextEngineSwapController.subscribe`.
+   *
+   * Listener errors are caught and logged by the controller; they do
+   * not affect the active engine or history.
+   */
+  readonly onContextEngineSwap?: (event: import("@koi/core").ContextEngineSwapEvent) => void;
   /** Iteration guard limits. Defaults to DEFAULT_ITERATION_LIMITS. */
   readonly limits?: Partial<IterationLimits>;
   /** Loop detection configuration. Defaults to DEFAULT_LOOP_DETECTION. Set to false to disable. */

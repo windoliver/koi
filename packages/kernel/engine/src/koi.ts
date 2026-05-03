@@ -199,6 +199,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       manifest.context?.engine !== undefined ? { pinnedIdentity: initialEngine.identity } : {},
     );
     const ctrlRef = contextEngineSwapController;
+    // Auto-subscribe the host's `onContextEngineSwap` observer (if any).
+    // Without an in-runtime subscription, every host would have to wire
+    // `runtime.contextEngineSwapController.subscribe(...)` themselves, and
+    // forced swaps/rollbacks become silent in production whenever a host
+    // forgets to do so.
+    if (options.onContextEngineSwap !== undefined) {
+      ctrlRef.subscribe(options.onContextEngineSwap);
+    }
     // Attach a proxy under CONTEXT_ENGINE that delegates to the swap
     // controller's current engine on every read. AgentEntity freezes
     // assembled components, so attaching the boot-time instance directly
