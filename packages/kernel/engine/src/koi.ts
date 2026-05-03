@@ -109,11 +109,32 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
   });
   const governanceProvider = createGovernanceProvider(options.governance);
-  // Pluggable context-engine slot (#1767). createKoi owns the full wiring
-  // when a `contextEngineFactory` is supplied. When the host wires the slot
-  // manually (own ComponentProvider + middleware), `manifest.context.engine`
-  // is still allowed; we validate the resulting slot identity post-assembly
-  // instead of rejecting at the factory boundary.
+  // Pluggable context-engine slot (#1767). When `manifest.context.engine`
+  // is set, `contextEngineFactory` is required so the runtime can own the
+  // full wiring (slot provider + middleware + swap controller) and
+  // guarantee the manifest identity, ECS slot, and the engine driving
+  // model requests all reference the same instance.
+  //
+  // Hosts that want to manage the engine entirely manually (without
+  // manifest pinning) can still attach their own CONTEXT_ENGINE provider
+  // and `createContextEngineMiddleware(engine)`, but they cannot also set
+  // `manifest.context.engine` — that combination would let manifest /
+  // slot / request-path engines silently diverge.
+  if (manifest.context?.engine !== undefined && options.contextEngineFactory === undefined) {
+    throw KoiRuntimeError.from(
+      "VALIDATION",
+      `createKoi: manifest.context.engine="${manifest.context.engine}" requires contextEngineFactory. The runtime owns slot wiring whenever the manifest pins an engine so manifest identity, ECS slot, and the middleware actually calling prepare() cannot diverge. Either pass contextEngineFactory, or remove manifest.context.engine and wire the slot manually with createContextEngineProvider(engine) + createContextEngineMiddleware(engine).`,
+      {
+        retryable: false,
+        context: {
+          manifestEngine: manifest.context.engine,
+          ...(manifest.context.version !== undefined
+            ? { manifestVersion: manifest.context.version }
+            : {}),
+        },
+      },
+    );
+  }
   let contextEngineSwapController: ContextEngineSwapController | undefined;
   let contextEngineProxy: ContextEngine | undefined;
   const contextEngineProviders: ComponentProvider[] = [];
@@ -193,54 +214,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         { retryable: false, context: { conflictKind: "context-engine-double-wire" } },
       );
     }
-  } else if (manifest.context?.engine !== undefined) {
-    // Manual wiring path: host installs its own CONTEXT_ENGINE provider
-    // (and presumably its own middleware) without a contextEngineFactory.
-    // The slot must still match `manifest.context.engine` (and version, if
-    // pinned) so operator tooling can trust the manifest. If the slot is
-    // empty entirely, the manifest pins an engine that nothing wired —
-    // fail loud so the host doesn't silently skip context preparation.
-    const slotEngine = agent.component(CONTEXT_ENGINE);
-    if (slotEngine === undefined) {
-      throw KoiRuntimeError.from(
-        "VALIDATION",
-        `createKoi: manifest.context.engine="${manifest.context.engine}" but no CONTEXT_ENGINE component was attached. Either pass contextEngineFactory or include a ComponentProvider that attaches CONTEXT_ENGINE.`,
-        { retryable: false, context: { manifestEngine: manifest.context.engine } },
-      );
-    }
-    if (slotEngine.identity.name !== manifest.context.engine) {
-      throw KoiRuntimeError.from(
-        "VALIDATION",
-        `createKoi: CONTEXT_ENGINE slot identity "${slotEngine.identity.name}" disagrees with manifest.context.engine "${manifest.context.engine}".`,
-        { retryable: false, context: { slotIdentity: slotEngine.identity } },
-      );
-    }
-    if (
-      manifest.context.version !== undefined &&
-      manifest.context.version !== slotEngine.identity.version
-    ) {
-      throw KoiRuntimeError.from(
-        "VALIDATION",
-        `createKoi: CONTEXT_ENGINE slot version "${slotEngine.identity.version}" disagrees with manifest.context.version "${manifest.context.version}".`,
-        { retryable: false, context: { slotIdentity: slotEngine.identity } },
-      );
-    }
-    // Manifest pins an engine and a provider attached it, but the host
-    // must also supply a "context-engine" middleware so `prepare()`
-    // actually runs. Auto-injecting a getter-based middleware here would
-    // be unsafe because the manual path has no swap controller / per-turn
-    // pinning, so a host-managed mid-turn swap could split prepare/
-    // onAfterTurn across two engines (round-5 finding). Require explicit
-    // wiring instead so the host owns the safety contract.
-    const userMw = (options.middleware ?? []).find((mw) => mw.name === "context-engine");
-    if (userMw === undefined) {
-      throw KoiRuntimeError.from(
-        "VALIDATION",
-        `createKoi: manifest.context.engine="${manifest.context.engine}" is set without contextEngineFactory, and no "context-engine" middleware was provided. Either pass contextEngineFactory (recommended) for auto-wiring with a swap-aware controller, or add createContextEngineMiddleware(engine) from @koi/context-manager to options.middleware.`,
-        { retryable: false, context: { manifestEngine: manifest.context.engine } },
-      );
-    }
   }
+  // Note: manifest.context.engine without contextEngineFactory is rejected
+  // earlier (pre-assembly), so by this point either the runtime owns the
+  // wiring (contextEngineProxy !== undefined) or the manifest does not
+  // pin an engine. Manual wiring (provider + middleware) is allowed only
+  // when manifest.context.engine is unset — it is then the host's
+  // responsibility to keep slot and middleware consistent.
 
   // --- 2. Compose kernel extensions (governance + default guards) ---
   const governanceExt = createGovernanceExtension();
@@ -789,14 +769,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // most recent turn would have a real ctx and older pinned turns
     // would receive a synthetic ctx with the wrong turnId.
     const turnCtxByTurnId = new Map<string, TurnContext>();
-    // True once the run has emitted a `done` event without first emitting
-    // `turn_end` (the cooperating-adapter shortcut). Only this confirmed
-    // success path triggers synthetic `onAfterTurn` in terminal cleanup.
-    // Abort / consumer break / adapter error paths release pins without
-    // running bookkeeping so engines can't commit "successful turn" state
-    // for a turn that never finished.
-    // let justified: mutable success flag set in the done-emission branch
-    let runReachedDone = false;
+    // The specific turnId that reached a `done` event without first
+    // emitting `turn_end` (the cooperating-adapter shortcut). Only this
+    // turn's pinned engine receives a synthetic `onAfterTurn` during
+    // terminal cleanup — other still-pinned turns (e.g. overlapping or
+    // incomplete sibling turns) just have their pins released. Abort,
+    // consumer break, and adapter error paths leave this undefined so
+    // no turn is finalized as successful.
+    // let justified: mutable success-turn marker set in the done branch
+    let doneSyntheticTurnId: import("@koi/core").TurnId | undefined;
     // Sync the outer mutable ref so defaultToolTerminal can read it
     outerCurrentTurnIndex = 0;
 
@@ -2104,7 +2085,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 priorBlockMessages.length = 0;
                 bannerCached = false;
                 cachedCapabilityBanner = undefined;
-                runReachedDone = true;
+                doneSyntheticTurnId = lastBuiltTurnCtx?.turnId;
                 yield normalizedDone;
                 break turnLoop;
               }
@@ -2114,7 +2095,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 stopReason: event.output.stopReason,
                 metrics: normalizedMetrics,
               });
-              runReachedDone = true;
+              doneSyntheticTurnId = lastBuiltTurnCtx?.turnId;
               yield normalizedDone;
               return;
             }
@@ -2309,16 +2290,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         // overlapping turns would collapse unrelated pins and run
         // bookkeeping on the wrong engine.
         //
-        // Only synthesize `onAfterTurn` when the run reached a `done`
-        // event without first emitting `turn_end` — i.e. the cooperating-
-        // adapter shortcut. Abort, consumer break, and adapter error
-        // paths must NOT commit "successful turn" state because the turn
-        // never actually completed; in those cases we just release the
-        // pins so the next run sees an unblocked controller.
-        const shouldSynthOnAfterTurn = runReachedDone;
+        // Synthesize `onAfterTurn` ONLY for the specific turn that
+        // reached `done` without first emitting `turn_end` (cooperating-
+        // adapter shortcut). Other still-pinned turns (e.g. overlapping
+        // sibling turns or incomplete prior turns) must NOT be marked
+        // successful — they just have their pins released. Abort,
+        // consumer break, and adapter error paths leave
+        // doneSyntheticTurnId undefined so no synth fires.
         for (const pinnedTurnId of contextEngineSwapController.pinnedTurnIds()) {
           const pinnedEngine = contextEngineSwapController.current(pinnedTurnId);
-          if (shouldSynthOnAfterTurn && pinnedEngine.onAfterTurn !== undefined) {
+          const shouldSynth =
+            doneSyntheticTurnId !== undefined && pinnedTurnId === doneSyntheticTurnId;
+          if (shouldSynth && pinnedEngine.onAfterTurn !== undefined) {
             try {
               // Prefer the real per-turn TurnContext so engines that key
               // post-turn bookkeeping off ctx.messages/metadata see the
