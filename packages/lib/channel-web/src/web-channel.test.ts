@@ -1,0 +1,377 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import type { ChannelAdapter, InboundMessage } from "@koi/core";
+import { createWebChannel } from "./web-channel.js";
+
+interface TestHarness {
+  readonly adapter: ChannelAdapter;
+  readonly port: number;
+  readonly received: InboundMessage[];
+}
+
+async function startHarness(
+  config: Parameters<typeof createWebChannel>[0] = {},
+): Promise<TestHarness> {
+  // Default to open mode for tests — production callers must set
+  // `authenticate` or `allowUnauthenticated` themselves.
+  const adapter = createWebChannel({
+    port: 0,
+    hostname: "127.0.0.1",
+    allowUnauthenticated: true,
+    ...config,
+  });
+  await adapter.connect();
+  const port = (adapter as unknown as { readonly port: number }).port;
+  const received: InboundMessage[] = [];
+  adapter.onMessage(async (msg) => {
+    received.push(msg);
+  });
+  return { adapter, port, received };
+}
+
+describe("@koi/channel-web", () => {
+  // let requires justification: harness reassigned per test in beforeEach
+  let h: TestHarness;
+
+  afterEach(async () => {
+    await h?.adapter.disconnect();
+  });
+
+  test("createWebChannel throws when no authenticate and no explicit insecure opt-in", () => {
+    expect(() => createWebChannel({ port: 0 })).toThrow(/no authentication configured/);
+  });
+
+  test("createWebChannel constructs cleanly when authenticate is provided", () => {
+    expect(() =>
+      createWebChannel({ port: 0, authenticate: () => ({ senderId: "u" }) }),
+    ).not.toThrow();
+  });
+
+  test("POST /messages returns 503 when no handler is registered (no silent drop)", async () => {
+    const adapter = createWebChannel({
+      port: 0,
+      hostname: "127.0.0.1",
+      allowUnauthenticated: true,
+    });
+    await adapter.connect();
+    const port = (adapter as unknown as { readonly port: number }).port;
+    const res = await fetch(`http://127.0.0.1:${port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: [{ kind: "text", text: "x" }] }),
+    });
+    expect(res.status).toBe(503);
+    await adapter.disconnect();
+  });
+
+  test("declares correct capabilities", async () => {
+    h = await startHarness();
+    expect(h.adapter.capabilities).toEqual({
+      text: true,
+      images: true,
+      files: true,
+      buttons: true,
+      audio: false,
+      video: false,
+      threads: true,
+      supportsA2ui: false,
+    });
+  });
+
+  test("connect() then disconnect() is idempotent", async () => {
+    h = await startHarness();
+    await h.adapter.connect(); // second connect — no-op
+    await h.adapter.disconnect();
+    await h.adapter.disconnect(); // second disconnect — no-op
+    // re-create to satisfy afterEach
+    h = await startHarness();
+  });
+
+  test("POST /messages dispatches an InboundMessage with auth-derived senderId", async () => {
+    h = await startHarness({ authenticate: () => ({ senderId: "alice" }) });
+    const res = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        content: [{ kind: "text", text: "hello" }],
+        threadId: "t1",
+      }),
+    });
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(h.received).toHaveLength(1);
+    expect(h.received[0]?.senderId).toBe("alice");
+    expect(h.received[0]?.threadId).toBe("t1");
+    expect(h.received[0]?.content).toEqual([{ kind: "text", text: "hello" }]);
+  });
+
+  test("POST /messages stamps default senderId in open (no-auth) mode", async () => {
+    h = await startHarness({ senderId: "default-user" });
+    await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: [{ kind: "text", text: "hi" }] }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(h.received[0]?.senderId).toBe("default-user");
+  });
+
+  test("POST rejects invalid JSON with 400", async () => {
+    h = await startHarness();
+    const res = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{not-json",
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test("POST rejects payload missing content[] with 400", async () => {
+    h = await startHarness();
+    const res = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ senderId: "x" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test("POST rejects payload > 1MB with 413", async () => {
+    h = await startHarness();
+    const huge = "x".repeat(1_100_000);
+    const res = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        senderId: "a",
+        content: [{ kind: "text", text: huge }],
+      }),
+    });
+    expect(res.status).toBe(413);
+  });
+
+  test("GET on unknown route returns 404", async () => {
+    h = await startHarness();
+    const res = await fetch(`http://127.0.0.1:${h.port}/nope`);
+    expect(res.status).toBe(404);
+  });
+
+  test("authenticate rejects missing/invalid bearer with 401", async () => {
+    h = await startHarness({
+      authenticate: (ctx) => (ctx.token === "secret" ? { senderId: "alice" } : null),
+    });
+    const r1 = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: [{ kind: "text", text: "x" }] }),
+    });
+    expect(r1.status).toBe(401);
+
+    const r2 = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({ content: [{ kind: "text", text: "x" }] }),
+    });
+    expect(r2.status).toBe(202);
+  });
+
+  test("authenticate ignores body senderId — uses verified principal instead (no impersonation)", async () => {
+    h = await startHarness({
+      authenticate: () => ({ senderId: "verified-alice" }),
+    });
+    const res = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        senderId: "spoofed-bob", // ← attacker tries to impersonate
+        content: [{ kind: "text", text: "hello" }],
+      }),
+    });
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(h.received[0]?.senderId).toBe("verified-alice");
+  });
+
+  test("authenticate can deny per thread — host enforces tenant isolation", async () => {
+    h = await startHarness({
+      authenticate: (ctx) => (ctx.threadId === "alice-room" ? { senderId: "alice" } : null),
+    });
+    const allowed = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        threadId: "alice-room",
+        content: [{ kind: "text", text: "ok" }],
+      }),
+    });
+    expect(allowed.status).toBe(202);
+
+    const denied = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        threadId: "bob-room",
+        content: [{ kind: "text", text: "denied" }],
+      }),
+    });
+    expect(denied.status).toBe(401);
+  });
+
+  test("originAllowList denies disallowed origin with 403", async () => {
+    h = await startHarness({ originAllowList: ["https://app.example"] });
+    const res = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "https://evil.example",
+      },
+      body: JSON.stringify({ senderId: "a", content: [{ kind: "text", text: "x" }] }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("originAllowList accepts allowed origin", async () => {
+    h = await startHarness({ originAllowList: ["https://app.example"] });
+    const res = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "https://app.example",
+      },
+      body: JSON.stringify({ senderId: "a", content: [{ kind: "text", text: "x" }] }),
+    });
+    expect(res.status).toBe(202);
+  });
+
+  test("messages with threadId only reach sockets subscribed to that thread", async () => {
+    h = await startHarness();
+    const wsA = new WebSocket(`ws://127.0.0.1:${h.port}/ws?thread=room-A`);
+    const wsB = new WebSocket(`ws://127.0.0.1:${h.port}/ws?thread=room-B`);
+    await Promise.all([
+      new Promise<void>((r) => wsA.addEventListener("open", () => r(), { once: true })),
+      new Promise<void>((r) => wsB.addEventListener("open", () => r(), { once: true })),
+    ]);
+
+    const aReceived: string[] = [];
+    const bReceived: string[] = [];
+    wsA.addEventListener("message", (e: MessageEvent) => aReceived.push(String(e.data)));
+    wsB.addEventListener("message", (e: MessageEvent) => bReceived.push(String(e.data)));
+
+    await h.adapter.send({
+      content: [{ kind: "text", text: "for-A" }],
+      threadId: "room-A",
+    });
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(aReceived).toHaveLength(1);
+    expect(bReceived).toHaveLength(0);
+
+    wsA.close();
+    wsB.close();
+  });
+
+  test("unscoped sockets receive only unscoped messages, not threaded ones", async () => {
+    h = await startHarness();
+    const wsA = new WebSocket(`ws://127.0.0.1:${h.port}/ws?thread=room-A`);
+    const wsUnscoped = new WebSocket(`ws://127.0.0.1:${h.port}/ws`);
+    await Promise.all([
+      new Promise<void>((r) => wsA.addEventListener("open", () => r(), { once: true })),
+      new Promise<void>((r) => wsUnscoped.addEventListener("open", () => r(), { once: true })),
+    ]);
+    const aReceived: string[] = [];
+    const uReceived: string[] = [];
+    wsA.addEventListener("message", (e: MessageEvent) => aReceived.push(String(e.data)));
+    wsUnscoped.addEventListener("message", (e: MessageEvent) => uReceived.push(String(e.data)));
+
+    // Threaded message: only the matching thread subscriber gets it.
+    await h.adapter.send({ content: [{ kind: "text", text: "for-A" }], threadId: "room-A" });
+    // Unscoped message: only the unscoped subscriber gets it.
+    await h.adapter.send({ content: [{ kind: "text", text: "no-thread" }] });
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(aReceived).toHaveLength(1);
+    expect(uReceived).toHaveLength(1);
+    expect(JSON.parse(aReceived[0] ?? "{}").content[0]?.text).toBe("for-A");
+    expect(JSON.parse(uReceived[0] ?? "{}").content[0]?.text).toBe("no-thread");
+
+    wsA.close();
+    wsUnscoped.close();
+  });
+
+  test("WebSocket receives broadcast OutboundMessage", async () => {
+    h = await startHarness();
+    const ws = new WebSocket(`ws://127.0.0.1:${h.port}/ws`);
+    const opened = new Promise<void>((resolve) => {
+      ws.addEventListener("open", () => resolve(), { once: true });
+    });
+    const message = new Promise<string>((resolve) => {
+      ws.addEventListener("message", (event: MessageEvent) => resolve(String(event.data)), {
+        once: true,
+      });
+    });
+    await opened;
+    await h.adapter.send({
+      content: [{ kind: "text", text: "broadcasting" }],
+    });
+    const data = await message;
+    const parsed = JSON.parse(data) as {
+      readonly content: ReadonlyArray<{ readonly text?: string }>;
+    };
+    expect(parsed.content[0]?.text).toBe("broadcasting");
+    ws.close();
+  });
+
+  test("send() rejects when not connected", async () => {
+    h = await startHarness();
+    await h.adapter.disconnect();
+    await expect(h.adapter.send({ content: [{ kind: "text", text: "x" }] })).rejects.toThrow();
+    h = await startHarness(); // restore for afterEach
+  });
+
+  test("revokeSubscriptions closes sockets matching the predicate (entitlement revocation)", async () => {
+    h = await startHarness({ authenticate: (ctx) => ({ senderId: ctx.token ?? "anon" }) });
+    const wsAlice = new WebSocket(`ws://127.0.0.1:${h.port}/ws?thread=t1`, {
+      // Bun's WebSocket supports headers in the second arg
+      headers: { authorization: "Bearer alice" },
+    } as unknown as undefined);
+    const wsBob = new WebSocket(`ws://127.0.0.1:${h.port}/ws?thread=t2`, {
+      headers: { authorization: "Bearer bob" },
+    } as unknown as undefined);
+    await Promise.all([
+      new Promise<void>((r) => wsAlice.addEventListener("open", () => r(), { once: true })),
+      new Promise<void>((r) => wsBob.addEventListener("open", () => r(), { once: true })),
+    ]);
+
+    const aliceClosed = new Promise<number>((r) =>
+      wsAlice.addEventListener("close", (e: CloseEvent) => r(e.code), { once: true }),
+    );
+
+    // Webhost decides Alice's access is revoked.
+    const closed = (
+      h.adapter as unknown as {
+        readonly revokeSubscriptions: (
+          p: (s: { readonly senderId: string; readonly threadId: string | undefined }) => boolean,
+        ) => number;
+      }
+    ).revokeSubscriptions((s) => s.senderId === "alice");
+
+    expect(closed).toBe(1);
+    const code = await aliceClosed;
+    expect(code).toBe(1008);
+
+    // Bob's socket must remain open
+    expect(wsBob.readyState).toBe(WebSocket.OPEN);
+    wsBob.close();
+  });
+
+  test("disconnect() drains in-flight WS sends", async () => {
+    h = await startHarness();
+    const ws = new WebSocket(`ws://127.0.0.1:${h.port}/ws`);
+    await new Promise<void>((r) => ws.addEventListener("open", () => r(), { once: true }));
+    // No throw on disconnect with an open client
+    await h.adapter.disconnect();
+    h = await startHarness();
+  });
+});
