@@ -330,6 +330,61 @@ describe("createKoi assembly", () => {
     expect(runtime.contextEngineSwapController).toBeUndefined();
   });
 
+  test("ECS proxy forwards describeOccupancy to the active engine (and reflects swaps)", async () => {
+    const { CONTEXT_ENGINE } = await import("@koi/core");
+    type ContextEngine = import("@koi/core").ContextEngine;
+    type ContextOccupancy = import("@koi/core").ContextOccupancy;
+    type TurnId = import("@koi/core").TurnId;
+    const occA: ContextOccupancy = {
+      estimatedTokens: 100,
+      maxTokens: 1000,
+      pressure: 0.1,
+    };
+    const occB: ContextOccupancy = {
+      estimatedTokens: 800,
+      maxTokens: 1000,
+      pressure: 0.8,
+    };
+    const engineA: ContextEngine = {
+      identity: { name: "a", version: "1.0.0" },
+      prepare: (_c, m) => m,
+      describeOccupancy: () => occA,
+    };
+    const engineB: ContextEngine = {
+      identity: { name: "b", version: "2.0.0" },
+      prepare: (_c, m) => m,
+      describeOccupancy: () => occB,
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+      contextEngineFactory: () => engineA,
+    });
+    const slot = runtime.agent.component(CONTEXT_ENGINE);
+    expect(slot?.describeOccupancy?.()).toEqual(occA);
+    runtime.contextEngineSwapController?.swap(engineB, {
+      turnId: "run-1:t1" as TurnId,
+      reason: "test",
+    });
+    expect(slot?.describeOccupancy?.()).toEqual(occB);
+  });
+
+  test("ECS proxy hides describeOccupancy when active engine omits it", async () => {
+    const { CONTEXT_ENGINE } = await import("@koi/core");
+    type ContextEngine = import("@koi/core").ContextEngine;
+    const engine: ContextEngine = {
+      identity: { name: "passthrough", version: "1.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+      contextEngineFactory: () => engine,
+    });
+    const slot = runtime.agent.component(CONTEXT_ENGINE);
+    expect(slot?.describeOccupancy).toBeUndefined();
+  });
+
   test("rejects external CONTEXT_ENGINE provider when contextEngineFactory is set (no silent ECS/middleware split)", async () => {
     type ContextEngine = import("@koi/core").ContextEngine;
     const { CONTEXT_ENGINE: CE_TOKEN, COMPONENT_PRIORITY } = await import("@koi/core");

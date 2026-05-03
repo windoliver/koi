@@ -67,11 +67,18 @@ export function createContextEngineProxyProvider(
   options: ContextEngineProviderOptions = {},
 ): ContextEngineProxyProvider {
   const priority = options.priority ?? COMPONENT_PRIORITY.BUNDLED;
-  // describeOccupancy is intentionally omitted: it is optional in the
-  // contract, the underlying engine may flip between providing/omitting it
-  // across swaps, and callers wanting authoritative occupancy should resolve
-  // it through the swap controller (`controller.current().describeOccupancy`).
-  const proxy: ContextEngine = {
+  // The proxy forwards every method the underlying engine implements,
+  // including the optional `describeOccupancy` — slot consumers reading
+  // through `agent.component(CONTEXT_ENGINE)` must not lose pressure
+  // visibility just because `createKoi` owns the slot. `describeOccupancy`
+  // checks the live engine on each call so engines that flip between
+  // providing/omitting it across swaps stay accurate.
+  // Base proxy exposes always-present methods. `describeOccupancy` is the
+  // only optional method on the contract; we expose it through a Proxy `has`
+  // trap so `'describeOccupancy' in engine` reflects the current engine and
+  // so `engine.describeOccupancy?.()` correctly observes absence under
+  // exactOptionalPropertyTypes (no `describeOccupancy: undefined` property).
+  const baseProxy: Omit<ContextEngine, "describeOccupancy"> = {
     get identity() {
       return getEngine().identity;
     },
@@ -85,6 +92,19 @@ export function createContextEngineProxyProvider(
       return e.onAfterTurn?.(ctx);
     },
   };
+  const proxy = new Proxy(baseProxy, {
+    has(target, prop): boolean {
+      if (prop === "describeOccupancy") return getEngine().describeOccupancy !== undefined;
+      return prop in target;
+    },
+    get(target, prop, receiver): unknown {
+      if (prop === "describeOccupancy") {
+        const fn = getEngine().describeOccupancy;
+        return fn === undefined ? undefined : fn.bind(getEngine());
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  }) as ContextEngine;
   const provider: ComponentProvider = {
     name: "context-engine",
     priority,

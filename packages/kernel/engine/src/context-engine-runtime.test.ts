@@ -14,7 +14,7 @@ import type {
 import { createContextEngineSlotMiddleware } from "./context-engine-runtime.js";
 import { createContextEngineSwapController } from "./context-engine-swap.js";
 
-const ctx = { metadata: {} } as unknown as TurnContext;
+const ctx = { metadata: {}, turnId: "t-default" } as unknown as TurnContext;
 
 describe("createContextEngineSlotMiddleware", () => {
   test("follows controller swaps across turns (one ctx per turn)", async () => {
@@ -41,7 +41,7 @@ describe("createContextEngineSlotMiddleware", () => {
       return { content: "ok", model: "x" } satisfies ModelResponse;
     };
 
-    const ctx1 = { metadata: {} } as unknown as TurnContext;
+    const ctx1 = { metadata: {}, turnId: "t-1" } as unknown as TurnContext;
     await mw.wrapModelCall?.(ctx1, { messages: [] }, handler);
     expect(captured.at(-1)?.messages.at(-1)?.senderId).toBe("a-tag");
 
@@ -51,7 +51,7 @@ describe("createContextEngineSlotMiddleware", () => {
     });
     // Fresh ctx represents the next turn — pinning binds per-turn, so swaps
     // are observable on the very next turn's first prepare().
-    const ctx2 = { metadata: {} } as unknown as TurnContext;
+    const ctx2 = { metadata: {}, turnId: "t-2" } as unknown as TurnContext;
     await mw.wrapModelCall?.(ctx2, { messages: [] }, handler);
     expect(captured.at(-1)?.messages.at(-1)?.senderId).toBe("b-tag");
   });
@@ -89,17 +89,20 @@ describe("createContextEngineSlotMiddleware", () => {
 
     const handler: ModelHandler = async () =>
       ({ content: "ok", model: "x" }) satisfies ModelResponse;
-    const turnCtx = { metadata: {} } as unknown as TurnContext;
 
-    await mw.wrapModelCall?.(turnCtx, { messages: [] }, handler);
+    // Distinct ctx objects sharing the same turnId — mirrors the runtime's
+    // separate TurnContext instances for prepare and onAfterTurn.
+    const prepCtx = { metadata: {}, turnId: "t-pin" } as unknown as TurnContext;
+    const endCtx = { metadata: {}, turnId: "t-pin" } as unknown as TurnContext;
+    await mw.wrapModelCall?.(prepCtx, { messages: [] }, handler);
     // Mid-turn swap (host calls controller.swap(); intentionally permitted by API)
     ctrl.swap(engineB, {
       turnId: "run-1:t1" as Parameters<typeof ctrl.swap>[1]["turnId"],
       reason: "mid-turn",
     });
     // Subsequent model calls within the same turn must still hit engine A.
-    await mw.wrapModelCall?.(turnCtx, { messages: [] }, handler);
-    await mw.onAfterTurn?.(turnCtx);
+    await mw.wrapModelCall?.(prepCtx, { messages: [] }, handler);
+    await mw.onAfterTurn?.(endCtx);
 
     expect(aPrepareCalls).toBe(2);
     expect(aAfterCalls).toBe(1);
@@ -107,7 +110,7 @@ describe("createContextEngineSlotMiddleware", () => {
     expect(bAfterCalls).toBe(0);
 
     // Fresh turn picks up engine B.
-    const turn2 = { metadata: {} } as unknown as TurnContext;
+    const turn2 = { metadata: {}, turnId: "t-pin-2" } as unknown as TurnContext;
     await mw.wrapModelCall?.(turn2, { messages: [] }, handler);
     await mw.onAfterTurn?.(turn2);
     expect(bPrepareCalls).toBe(1);

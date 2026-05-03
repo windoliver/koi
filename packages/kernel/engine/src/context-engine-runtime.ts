@@ -11,7 +11,7 @@
  * model-call path can never diverge.
  */
 
-import type { ContextEngine, KoiMiddleware, TurnContext } from "@koi/core";
+import type { ContextEngine, KoiMiddleware, TurnContext, TurnId } from "@koi/core";
 
 /**
  * Build a `KoiMiddleware` that resolves the active `ContextEngine` via the
@@ -30,17 +30,21 @@ import type { ContextEngine, KoiMiddleware, TurnContext } from "@koi/core";
 export function createContextEngineSlotMiddleware(
   getEngine: () => ContextEngine | undefined,
 ): KoiMiddleware {
-  // WeakMap keyed by TurnContext — each turn has its own context object, so
-  // entries fall out of scope automatically when the turn is GC'd. We still
-  // delete eagerly in onAfterTurn for predictability under long-lived hosts.
-  const turnEngine = new WeakMap<TurnContext, ContextEngine>();
+  // Key by `ctx.turnId` (a stable branded string) rather than by TurnContext
+  // object identity: the runtime constructs a fresh TurnContext for the
+  // turn-end hooks (see koi.ts createTurnContext/turnEndCtx), so a WeakMap
+  // keyed by the object would miss on `onAfterTurn` and silently fall back
+  // to the live engine, defeating per-turn pinning under mid-turn swaps.
+  // Eager `delete()` in onAfterTurn keeps the map bounded under long-lived
+  // hosts (no GC dependency since TurnId is a string).
+  const turnEngine = new Map<TurnId, ContextEngine>();
 
   const pinEngine = (ctx: TurnContext): ContextEngine | undefined => {
-    const existing = turnEngine.get(ctx);
+    const existing = turnEngine.get(ctx.turnId);
     if (existing !== undefined) return existing;
     const engine = getEngine();
     if (engine === undefined) return undefined;
-    turnEngine.set(ctx, engine);
+    turnEngine.set(ctx.turnId, engine);
     return engine;
   };
 
@@ -83,9 +87,9 @@ export function createContextEngineSlotMiddleware(
     onAfterTurn: async (ctx) => {
       // Resolve to the engine pinned at first prepare(); fall back to the
       // current engine for turns where prepare() never ran (no model call).
-      const pinned = turnEngine.get(ctx);
+      const pinned = turnEngine.get(ctx.turnId);
       const engine = pinned ?? getEngine();
-      turnEngine.delete(ctx);
+      turnEngine.delete(ctx.turnId);
       if (engine?.onAfterTurn !== undefined) {
         await engine.onAfterTurn(ctx);
       }
