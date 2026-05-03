@@ -336,7 +336,22 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
         hostname,
         fetch: async (req, srv) => {
           const url = new URL(req.url);
-          const route = url.pathname.replace(path, "") || "/";
+          // Strict leading-prefix match — `url.pathname.replace(path, "")`
+          // matches anywhere, so a request to `/messages` would be routed
+          // even when `config.path` is `/api`, exposing a second ingress
+          // outside the configured namespace. Require the prefix at the
+          // start, then take what follows; reject anything else with 404.
+          // let requires justification: route resolved through prefix check
+          let route: string;
+          if (path === "" || path === "/") {
+            route = url.pathname || "/";
+          } else if (url.pathname === path) {
+            route = "/";
+          } else if (url.pathname.startsWith(`${path}/`)) {
+            route = url.pathname.slice(path.length);
+          } else {
+            return new Response("Not Found", { status: 404 });
+          }
 
           // CORS preflight — must answer for every cross-origin browser POST.
           // Without this, browsers block the request before /messages is even

@@ -378,6 +378,24 @@ describe("@koi/channel-web", () => {
     ws.close();
   });
 
+  test("non-root config.path scopes routing — root /messages returns 404", async () => {
+    h = await startHarness({ path: "/api", allowUnauthenticated: true });
+    // Root path must not bypass the configured prefix.
+    const root = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: [{ kind: "text", text: "x" }] }),
+    });
+    expect(root.status).toBe(404);
+    // Prefixed path resolves normally.
+    const scoped = await fetch(`http://127.0.0.1:${h.port}/api/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: [{ kind: "text", text: "x" }] }),
+    });
+    expect(scoped.status).toBe(202);
+  });
+
   test("POST /messages does NOT accept ?token= query — header only", async () => {
     // Regression: URL tokens leak via access logs/proxy logs/browser history.
     // The `?token=` fallback exists solely for the WS upgrade path where

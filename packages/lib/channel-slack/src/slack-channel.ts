@@ -55,31 +55,23 @@ function createIngressDedupe(): {
 }
 
 /**
- * Build a Slack ingress dedupe key, or return `null` when the delivery has
- * no Slack-supplied retry identifier. Returning `null` means "skip dedupe"
- * so that two legitimate identical slash commands or button clicks are
- * never collapsed into one.
+ * Build a Slack ingress dedupe key. The key MUST be stable across the
+ * original delivery and all of its retries — otherwise the original is
+ * processed once, then the first retry (`X-Slack-Retry-Num: 1`) collides
+ * with nothing in the cache and side-effecting handlers run twice.
  *
- * Slack signals a true retry one of two ways:
- *   - Events API: `event_id` is stable across all redeliveries of the event
- *   - Any retried HTTP delivery: `X-Slack-Retry-Num` header is set
- * Anything else (a fresh slash command, a fresh interactive payload) has no
- * retry signal, so we MUST NOT dedupe by body hash — slash commands and
- * button clicks can legitimately repeat with similar bodies.
+ *   - Events API: `event_id` is Slack's own stable retry identifier.
+ *   - Slash commands / interactive payloads: there is no per-event ID, so
+ *     we hash the SIGNED body. Slack signs the original timestamp and body
+ *     verbatim on every retry, so the hash is identical across retries.
+ *     Legitimate fresh invocations carry unique nonces (`trigger_id`,
+ *     `action_ts`) inside the signed body, so two real user clicks produce
+ *     different hashes and are never collapsed.
  */
-function dedupeKeyFor(
-  request: Request,
-  body: string,
-  parsed: Record<string, unknown> | undefined,
-): string | null {
+function dedupeKeyFor(body: string, parsed: Record<string, unknown> | undefined): string {
   const eventId = parsed?.event_id;
   if (typeof eventId === "string" && eventId.length > 0) return `event:${eventId}`;
-  const retry = request.headers.get("X-Slack-Retry-Num");
-  if (retry !== null) {
-    const h = createHash("sha256").update(body).digest("hex").slice(0, 32);
-    return `retry:${retry}:${h}`;
-  }
-  return null;
+  return `body:${createHash("sha256").update(body).digest("hex").slice(0, 32)}`;
 }
 
 /**
@@ -264,12 +256,19 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
       // Wire Socket Mode listeners BEFORE start() so we don't miss the first
       // event. Listeners dispatch through a closure-captured `dispatch` so they
       // remain wired even if onPlatformEvent() registers later in the lifecycle.
+      //
+      // channel-base orders `platformConnect()` BEFORE `onPlatformEvent()`, so
+      // `dispatch` is undefined while the Socket Mode client starts. We fail
+      // closed during that window: if dispatch isn't installed yet, the guard
+      // reports "no handler", which refuses to ack and lets Slack redeliver
+      // once we're ready. Without this, a startup event would pass through
+      // `dispatch?.(event)` as a no-op AND get acked — silent loss.
       if (socketClient !== undefined) {
         wireSocketModeEvents(
           socketClient,
           (event) => dispatch?.(event),
           features,
-          () => handlerCount,
+          () => (dispatch === undefined ? 0 : handlerCount),
           (key) => dedupe.observe(key, Date.now()),
         );
         await socketClient.start();
@@ -411,11 +410,11 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
       }
 
       // Dedupe BEFORE dispatch so retried payloads are ack'd as no-ops
-      // rather than processed twice. Only deliveries with a Slack-supplied
-      // retry identifier are deduped — fresh slash commands and interactive
-      // payloads have no retry signal and must always dispatch.
-      const key = dedupeKeyFor(request, result.body, parsed);
-      if (key !== null && dedupe.observe(key, Date.now())) {
+      // rather than processed twice. The key is stable across the original
+      // delivery and all of its retries (event_id, or signed-body hash for
+      // slash/interactive); legitimate fresh invocations carry unique
+      // nonces in the signed body so they never collide.
+      if (dedupe.observe(dedupeKeyFor(result.body, parsed), Date.now())) {
         return new Response("OK", { status: 200 });
       }
 

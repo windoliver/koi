@@ -716,7 +716,10 @@ describe("@koi/channel-slack — HTTP Events mode", () => {
     await adapter.disconnect();
   });
 
-  test("handleHttpRequest dedupes retried slash command by Retry-Num + body hash", async () => {
+  test("handleHttpRequest dedupes retried slash command by signed-body hash (stable across retries)", async () => {
+    // Regression: original delivery (no Retry-Num) must collide with its
+    // first retry (Retry-Num=1). A retry-counter-keyed dedupe stored
+    // nothing on the original, so the first retry was dispatched twice.
     const web = makeWebClient();
     const adapter = createSlackChannel({
       botToken: "xoxb-test",
@@ -730,27 +733,29 @@ describe("@koi/channel-slack — HTTP Events mode", () => {
     await adapter.connect();
     const ts = String(Math.floor(Date.now() / 1000));
     const body = "command=%2Fkoi&text=help&user_id=U2&channel_id=C1&trigger_id=T1&response_url=";
-    const mkReq = (): Request =>
+    const mkReq = (retry?: string): Request =>
       new Request("http://x", {
         method: "POST",
         headers: {
           "content-type": "application/x-www-form-urlencoded",
           "X-Slack-Request-Timestamp": ts,
           "X-Slack-Signature": sign(ts, body),
-          "X-Slack-Retry-Num": "1",
+          ...(retry !== undefined ? { "X-Slack-Retry-Num": retry } : {}),
         },
         body,
       });
-    await adapter.handleHttpRequest?.(mkReq());
-    await adapter.handleHttpRequest?.(mkReq());
+    await adapter.handleHttpRequest?.(mkReq()); // original
+    await adapter.handleHttpRequest?.(mkReq("1")); // first retry
+    await adapter.handleHttpRequest?.(mkReq("2")); // second retry
     await new Promise((r) => setTimeout(r, 10));
     expect(received).toHaveLength(1);
     await adapter.disconnect();
   });
 
-  test("handleHttpRequest does NOT dedupe two identical fresh slash commands (no Retry-Num)", async () => {
-    // Regression: a body-hash dedupe fallback would silently swallow the
-    // second of two legitimate identical user-initiated slash commands.
+  test("handleHttpRequest does NOT dedupe two fresh slash commands with distinct trigger_ids", async () => {
+    // Real Slack semantics: every invocation carries a unique trigger_id
+    // inside the signed body, so legitimate fresh invocations always
+    // produce different body hashes and are never collapsed.
     const web = makeWebClient();
     const adapter = createSlackChannel({
       botToken: "xoxb-test",
@@ -762,22 +767,21 @@ describe("@koi/channel-slack — HTTP Events mode", () => {
       received.push(m);
     });
     await adapter.connect();
-    const body = "command=%2Fkoi&text=help&user_id=U2&channel_id=C1&trigger_id=T1&response_url=";
-    const mkReq = (): Request => {
+    const mkReq = (triggerId: string): Request => {
       const ts = String(Math.floor(Date.now() / 1000));
+      const body = `command=%2Fkoi&text=help&user_id=U2&channel_id=C1&trigger_id=${triggerId}&response_url=`;
       return new Request("http://x", {
         method: "POST",
         headers: {
           "content-type": "application/x-www-form-urlencoded",
           "X-Slack-Request-Timestamp": ts,
           "X-Slack-Signature": sign(ts, body),
-          // Note: no X-Slack-Retry-Num — fresh user invocations.
         },
         body,
       });
     };
-    await adapter.handleHttpRequest?.(mkReq());
-    await adapter.handleHttpRequest?.(mkReq());
+    await adapter.handleHttpRequest?.(mkReq("T-aaa"));
+    await adapter.handleHttpRequest?.(mkReq("T-bbb"));
     await new Promise((r) => setTimeout(r, 10));
     expect(received).toHaveLength(2);
     await adapter.disconnect();
