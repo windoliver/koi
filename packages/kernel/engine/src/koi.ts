@@ -1408,8 +1408,25 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       let effectiveInput: EngineInput = { ...input, signal: runSignal };
       // let justified: mutable per-turn messages — updated on stop-gate retries
       // so cooperating-adapter middleware sees the same messages as onBeforeTurn
+      // Seed from `kind:"text"` input as well so the per-turn TurnContext
+      // cache sees the actual user payload that drove the turn. Without
+      // this, ContextEngine.onAfterTurn observes `messages: []` on the
+      // common text-entry path and stateful engines checkpoint/evict
+      // against an empty turn even though the model request carried real
+      // user content. The cooperating-adapter middleware updates this on
+      // each turn boundary; this is just the initial value.
       let activeTurnMessages: readonly InboundMessage[] =
-        input.kind === "messages" ? input.messages : [];
+        input.kind === "messages"
+          ? input.messages
+          : input.kind === "text" && input.text.length > 0
+            ? [
+                {
+                  senderId: "user",
+                  timestamp: Date.now(),
+                  content: [{ kind: "text" as const, text: input.text }],
+                },
+              ]
+            : [];
 
       // Snapshot the original user prompt for stop-gate retries: when the
       // initial input is `kind: "text"`, activeTurnMessages is empty (the
