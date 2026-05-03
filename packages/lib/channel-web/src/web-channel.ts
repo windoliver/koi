@@ -135,12 +135,24 @@ function parseInbound(raw: unknown, principalSenderId: string): InboundMessage |
   };
 }
 
-/** Extract bearer token from Authorization header, or null. */
+/**
+ * Extract bearer token from `Authorization: Bearer <t>`, or `null`.
+ */
 function bearerOf(req: Request): string | null {
   const h = req.headers.get("authorization");
   if (h === null) return null;
   const match = /^Bearer\s+(.+)$/i.exec(h);
   return match?.[1] ?? null;
+}
+
+/**
+ * Pick a token from the request — header first, then `?token=` query.
+ * Browser `WebSocket` clients can't set arbitrary headers, so the query-string
+ * fallback is the practical path for browser subscribers. Logs SHOULD redact
+ * `?token=` in URLs (most reverse proxies do this by default).
+ */
+function tokenOf(req: Request, url: URL): string | null {
+  return bearerOf(req) ?? url.searchParams.get("token");
 }
 
 /**
@@ -189,21 +201,55 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
   }
 
   /**
+   * Build CORS headers for an allowed cross-origin request. When no allow-list
+   * is configured, every origin is reflected (open mode); when the request's
+   * origin is in the list, that exact origin is echoed back. Without these
+   * headers, browsers block any non-same-origin POST that includes auth.
+   */
+  function corsHeaders(req: Request): Record<string, string> {
+    const origin = req.headers.get("origin");
+    if (origin === null) return {};
+    if (allowList !== undefined && !allowList.includes(origin)) return {};
+    const reqHeaders = req.headers.get("access-control-request-headers");
+    return {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": reqHeaders ?? "authorization, content-type",
+      "Access-Control-Max-Age": "600",
+      Vary: "Origin",
+    };
+  }
+
+  /** Apply CORS headers to a response (no-op when origin isn't allowed). */
+  function withCors(req: Request, response: Response): Response {
+    const headers = corsHeaders(req);
+    if (Object.keys(headers).length === 0) return response;
+    const merged = new Headers(response.headers);
+    for (const [k, v] of Object.entries(headers)) merged.set(k, v);
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: merged,
+    });
+  }
+
+  /**
    * Run the configured authenticator. Returns the resolved principal on
    * success, or null to deny. In open mode (no `authenticate` configured),
    * stamps every request with `config.senderId` — local dev only.
    */
   async function authorize(
     req: Request,
+    url: URL,
     threadId: string | undefined,
   ): Promise<WebAuthResult | null> {
     if (authenticate === undefined) {
       return { senderId: defaultSenderId };
     }
-    return authenticate({ token: bearerOf(req), threadId, request: req });
+    return authenticate({ token: tokenOf(req, url), threadId, request: req });
   }
 
-  async function handleMessages(req: Request): Promise<Response> {
+  async function handleMessages(req: Request, url: URL): Promise<Response> {
     if (originDenied(req)) return new Response("Forbidden", { status: 403 });
 
     // Body-size guard up-front so unauthenticated clients can't force the
@@ -230,7 +276,7 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
     const claimedThreadId = typeof raw.threadId === "string" ? raw.threadId : undefined;
 
     // Authorize WITH the thread context so the host can deny cross-tenant access.
-    const principal = await authorize(req, claimedThreadId);
+    const principal = await authorize(req, url, claimedThreadId);
     if (principal === null) return new Response("Unauthorized", { status: 401 });
 
     const message = parseInbound(parsed, principal.senderId);
@@ -284,10 +330,18 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
           const url = new URL(req.url);
           const route = url.pathname.replace(path, "") || "/";
 
+          // CORS preflight — must answer for every cross-origin browser POST.
+          // Without this, browsers block the request before /messages is even
+          // hit. Only allowed origins receive permissive headers.
+          if (req.method === "OPTIONS") {
+            if (originDenied(req)) return new Response("Forbidden", { status: 403 });
+            return withCors(req, new Response(null, { status: 204 }));
+          }
+
           if (route === "/ws") {
             if (originDenied(req)) return new Response("Forbidden", { status: 403 });
             const threadId = url.searchParams.get("thread") ?? undefined;
-            const principal = await authorize(req, threadId);
+            const principal = await authorize(req, url, threadId);
             if (principal === null) return new Response("Unauthorized", { status: 401 });
             if (srv.upgrade(req, { data: { threadId, senderId: principal.senderId } })) {
               return undefined as unknown as Response;
@@ -296,7 +350,7 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
           }
 
           if (route === "/messages" && req.method === "POST") {
-            return handleMessages(req);
+            return withCors(req, await handleMessages(req, url));
           }
 
           return new Response("Not Found", { status: 404 });

@@ -259,6 +259,7 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
           (event) => dispatch?.(event),
           features,
           () => handlerCount,
+          (key) => dedupe.observe(key, Date.now()),
         );
         await socketClient.start();
       }
@@ -469,7 +470,28 @@ function wireSocketModeEvents(
   handler: (event: SlackEvent) => void,
   features: ResolvedFeatures,
   getHandlerCount: () => number,
+  /**
+   * Returns true if this delivery has already been processed (within the
+   * replay window). Slack's Socket Mode redelivers unacked envelopes, so
+   * application events MUST be deduped before dispatch — otherwise reconnect
+   * scenarios cause double execution of side-effecting handlers.
+   */
+  observeDelivery: (key: string) => boolean,
 ): void {
+  /**
+   * Build a Socket Mode dedupe key. `envelope_id` is set on every Socket
+   * Mode delivery. Falls back to a content hash so events from older SDKs
+   * or non-standard test doubles still get a stable key.
+   */
+  function deliveryKey(wrapper: Record<string, unknown>): string {
+    const envelopeId = wrapper["envelope_id"];
+    if (typeof envelopeId === "string" && envelopeId.length > 0) return `sm-env:${envelopeId}`;
+    // strip the SDK-supplied `ack` callback so the hash is reproducible
+    const { ack: _ack, ...rest } = wrapper;
+    void _ack;
+    return `sm-hash:${createHash("sha256").update(JSON.stringify(rest)).digest("hex").slice(0, 32)}`;
+  }
+
   // No-handler guard for application events. We do NOT ack — Slack will retry
   // and we'll process on the next delivery once a consumer is attached. This
   // mirrors the HTTP 503 behavior so events are never acked-and-dropped during
@@ -482,6 +504,12 @@ function wireSocketModeEvents(
     return (raw: unknown) => {
       if (getHandlerCount() === 0) return;
       const wrapper = raw as Record<string, unknown>;
+      // Dedupe BEFORE dispatch. Retried deliveries are ack'd-as-no-op so
+      // Slack stops looping, but the handler runs at most once per envelope.
+      if (observeDelivery(deliveryKey(wrapper))) {
+        ack(wrapper);
+        return;
+      }
       fn(wrapper);
       ack(wrapper);
     };
@@ -509,12 +537,15 @@ function wireSocketModeEvents(
       }),
     );
     // Interactive: ack ALWAYS (3-second deadline), but only dispatch if a
-    // handler is attached. Unsupported payload types (modal submission,
-    // shortcuts) are ack'd-and-dropped to suppress the user-visible error.
+    // handler is attached AND we haven't already processed this envelope.
+    // Unsupported payload types (modal submission, shortcuts) are
+    // ack'd-and-dropped to suppress the user-visible error.
     client.on("interactive", (raw: unknown) => {
       const wrapper = raw as Record<string, unknown>;
       ack(wrapper);
       if (getHandlerCount() === 0) return;
+      // Retried button click → already deduped from a previous delivery.
+      if (observeDelivery(deliveryKey(wrapper))) return;
       const payload = (wrapper["payload"] ?? wrapper) as Record<string, unknown>;
       if (payload["type"] !== "block_actions") return;
       const actions = (payload["actions"] ?? []) as readonly Record<string, unknown>[];

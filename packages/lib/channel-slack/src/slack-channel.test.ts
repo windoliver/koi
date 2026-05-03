@@ -163,6 +163,72 @@ describe("@koi/channel-slack — Socket Mode", () => {
     await adapter.disconnect();
   });
 
+  test("Socket Mode dedupes retried message events by envelope_id (no double dispatch)", async () => {
+    const web = makeWebClient();
+    const sock = makeSocketClient();
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      botUserId: "BOT",
+      deployment: { mode: "socket", appToken: "xapp-test" },
+      clients: { webClient: web.client, socketClient: sock.client },
+    });
+    const received: InboundMessage[] = [];
+    adapter.onMessage(async (m) => {
+      received.push(m);
+    });
+    await adapter.connect();
+
+    let acks = 0;
+    const onMessage = sock.listeners.get("message");
+    const envelope = {
+      envelope_id: "01ABC",
+      ack: () => {
+        acks++;
+      },
+      event: { type: "message", text: "x", user: "U1", channel: "C1", ts: "1.0" },
+    };
+    onMessage?.(envelope);
+    onMessage?.(envelope); // retry — same envelope_id
+    onMessage?.(envelope); // retry again
+    await new Promise((r) => setTimeout(r, 5));
+    // All three deliveries must be ack'd (else Slack keeps retrying)…
+    expect(acks).toBe(3);
+    // …but the handler runs exactly once.
+    expect(received).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
+  test("Socket Mode dedupes retried block_action by envelope_id", async () => {
+    const web = makeWebClient();
+    const sock = makeSocketClient();
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "socket", appToken: "xapp-test" },
+      clients: { webClient: web.client, socketClient: sock.client },
+    });
+    const received: InboundMessage[] = [];
+    adapter.onMessage(async (m) => {
+      received.push(m);
+    });
+    await adapter.connect();
+
+    const onInter = sock.listeners.get("interactive");
+    const envelope = {
+      envelope_id: "ENV-XYZ",
+      ack: () => {},
+      payload: {
+        type: "block_actions",
+        user: { id: "U" },
+        actions: [{ action_id: "approve", block_id: "b1", value: "yes", type: "button" }],
+      },
+    };
+    onInter?.(envelope);
+    onInter?.(envelope); // retry
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
   test("Socket Mode does NOT ack message events when no onMessage handler is registered (Slack retries)", async () => {
     const web = makeWebClient();
     const sock = makeSocketClient();

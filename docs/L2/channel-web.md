@@ -20,6 +20,11 @@ unavailable. No external dependencies — uses Bun's native HTTP/WS server.
 - Capability negotiation (text + images + files + buttons + threads)
 - Origin allow-list + principal-resolving auth (`authenticate(ctx)` returns
   the verified `senderId`; the transport never trusts a body-supplied one)
+- Browser-friendly auth: `Authorization: Bearer <t>` for `fetch`, plus a
+  `?token=<t>` query-string fallback for WebSocket upgrades (browsers cannot
+  set arbitrary headers on `new WebSocket()`)
+- CORS preflight (`OPTIONS`) handled with `Access-Control-Allow-{Origin,
+  Methods, Headers}` echoed back for allow-listed origins
 - Graceful disconnect drains in-flight sends before tearing the server down
 
 ## What it does NOT own

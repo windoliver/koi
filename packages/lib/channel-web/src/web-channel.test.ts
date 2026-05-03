@@ -366,6 +366,73 @@ describe("@koi/channel-web", () => {
     wsBob.close();
   });
 
+  test("WS upgrade accepts ?token= query (browsers can't set Authorization header)", async () => {
+    h = await startHarness({
+      authenticate: (ctx) => (ctx.token === "secret-tok" ? { senderId: "alice" } : null),
+    });
+    // Browser-style: token only in URL
+    const ws = new WebSocket(`ws://127.0.0.1:${h.port}/ws?thread=room-A&token=secret-tok`);
+    const opened = new Promise<void>((r) => ws.addEventListener("open", () => r(), { once: true }));
+    await opened;
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
+  });
+
+  test("WS upgrade rejects when ?token= is wrong", async () => {
+    h = await startHarness({
+      authenticate: (ctx) => (ctx.token === "good" ? { senderId: "u" } : null),
+    });
+    const ws = new WebSocket(`ws://127.0.0.1:${h.port}/ws?token=BAD`);
+    const closed = new Promise<number>((r) =>
+      ws.addEventListener("error", () => r(401), { once: true }),
+    );
+    expect(await closed).toBe(401);
+  });
+
+  test("OPTIONS preflight returns 204 with CORS headers for allowed origins", async () => {
+    h = await startHarness({
+      originAllowList: ["https://app.example"],
+    });
+    const res = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://app.example",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "authorization, content-type",
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get("access-control-allow-origin")).toBe("https://app.example");
+    expect(res.headers.get("access-control-allow-methods")).toContain("POST");
+    expect(res.headers.get("access-control-allow-headers")).toContain("authorization");
+  });
+
+  test("OPTIONS preflight rejects disallowed origins with 403", async () => {
+    h = await startHarness({ originAllowList: ["https://app.example"] });
+    const res = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "OPTIONS",
+      headers: { origin: "https://evil.example" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("POST /messages includes CORS headers on the actual response", async () => {
+    h = await startHarness({
+      originAllowList: ["https://app.example"],
+      authenticate: () => ({ senderId: "alice" }),
+    });
+    const res = await fetch(`http://127.0.0.1:${h.port}/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "https://app.example",
+      },
+      body: JSON.stringify({ content: [{ kind: "text", text: "hi" }] }),
+    });
+    expect(res.status).toBe(202);
+    expect(res.headers.get("access-control-allow-origin")).toBe("https://app.example");
+  });
+
   test("disconnect() drains in-flight WS sends", async () => {
     h = await startHarness();
     const ws = new WebSocket(`ws://127.0.0.1:${h.port}/ws`);
