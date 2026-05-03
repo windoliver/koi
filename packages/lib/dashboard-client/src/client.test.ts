@@ -57,6 +57,18 @@ describe("createDashboardClient", () => {
     expect(url).toContain("tag=agent%3Da1");
   });
 
+  test("listAgents rejects ok:true with a malformed payload (per-endpoint validation)", async () => {
+    const fetchImpl = async (): Promise<Response> =>
+      new Response(JSON.stringify({ ok: true, value: [{ wrongShape: 1 }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    const client = createDashboardClient({ baseUrl: "http://h:1", fetch: fetchImpl });
+    const result = await client.listAgents();
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
   test("getTrace url-encodes the turn id", async () => {
     const calls: string[] = [];
     const fetchImpl = async (url: string): Promise<Response> => {

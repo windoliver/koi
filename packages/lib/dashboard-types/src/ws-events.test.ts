@@ -153,6 +153,16 @@ describe("isWsEvent", () => {
   test("rejects agent-status frame with empty status payload", () => {
     expect(isWsEvent({ v: 1, kind: "agent-status", status: {} })).toBe(false);
   });
+
+  test("accepts agent-status with unknown future state (forward-compat)", () => {
+    expect(
+      isWsEvent({
+        v: 1,
+        kind: "agent-status",
+        status: { ...wellFormedAgentStatus, state: "future-state" },
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("topic-specific guards", () => {
@@ -165,6 +175,26 @@ describe("topic-specific guards", () => {
     );
     expect(isMetricEvent({ v: 1, kind: "metric", points: [wellFormedMetricPoint] })).toBe(true);
     expect(isTraceEvent({ v: 1, kind: "trace", trace: wellFormedTrace })).toBe(true);
+  });
+
+  test("metric guard rejects array-shaped tags", () => {
+    expect(
+      isMetricEvent({
+        v: 1,
+        kind: "metric",
+        points: [{ ...wellFormedMetricPoint, tags: ["prod"] }],
+      }),
+    ).toBe(false);
+  });
+
+  test("trace guard rejects array-shaped span attributes", () => {
+    expect(
+      isTraceEvent({
+        v: 1,
+        kind: "trace",
+        trace: { ...wellFormedTrace, root: { ...wellFormedSpan, attributes: [1, true] } },
+      }),
+    ).toBe(false);
   });
 
   test("guards reject malformed nested payload fields", () => {

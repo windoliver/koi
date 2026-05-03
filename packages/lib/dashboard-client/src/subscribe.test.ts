@@ -157,6 +157,26 @@ describe("openSubscription", () => {
     expect(errors[0]?.retryable).toBe(true);
   });
 
+  test("late error after pre-open teardown is suppressed", () => {
+    const socket = fakeSocket();
+    let errors = 0;
+    let closes = 0;
+    const teardown = openSubscription(() => socket, "ws://x", ["trace"], {
+      onEvent: () => {},
+      onError: () => {
+        errors += 1;
+      },
+      onClose: () => {
+        closes += 1;
+      },
+    });
+    teardown();
+    socket.fireError(new Error("late handshake failure"));
+    socket.fireClose();
+    expect(errors).toBe(0);
+    expect(closes).toBe(0);
+  });
+
   test("caller teardown does NOT fire onClose (caller already knows)", () => {
     const socket = fakeSocket();
     let closes = 0;

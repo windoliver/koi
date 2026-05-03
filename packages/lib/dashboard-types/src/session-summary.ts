@@ -7,7 +7,12 @@ import type { AgentId, SessionId } from "@koi/core";
 export interface SessionSummary {
   readonly sessionId: SessionId;
   readonly agentId: AgentId;
-  readonly status: "active" | "completed" | "failed" | "cancelled";
+  /**
+   * Known v1 statuses are `active|completed|failed|cancelled`. Forward-compat
+   * escape hatch keeps the IntelliSense for known values while still allowing
+   * additional values from newer servers without rejecting them as malformed.
+   */
+  readonly status: "active" | "completed" | "failed" | "cancelled" | (string & {});
   readonly turns: number;
   readonly inputTokens: number;
   readonly outputTokens: number;

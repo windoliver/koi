@@ -7,6 +7,21 @@ import type {
   TraceView,
   WsTopic,
 } from "@koi/dashboard-types";
+import {
+  isAgentStatus,
+  isMetricPointValue,
+  isReadonlyArrayOf,
+  isSessionSummary,
+  isTraceView,
+} from "@koi/dashboard-types";
+
+const isAgentStatusList = (x: unknown): x is readonly AgentStatus[] =>
+  isReadonlyArrayOf(x, isAgentStatus);
+const isSessionSummaryList = (x: unknown): x is readonly SessionSummary[] =>
+  isReadonlyArrayOf(x, isSessionSummary);
+const isMetricPointList = (x: unknown): x is readonly MetricPoint[] =>
+  isReadonlyArrayOf(x, isMetricPointValue);
+
 import { type FetchLike, getJson } from "./http.js";
 import {
   openSubscription,
@@ -43,29 +58,34 @@ export function createDashboardClient(config: DashboardClientConfig): DashboardC
 
   return {
     listAgents: (): Promise<Result<readonly AgentStatus[]>> =>
-      getJson<readonly AgentStatus[]>(fetchImpl, `${baseUrl}/api/agents`),
+      getJson<readonly AgentStatus[]>(fetchImpl, `${baseUrl}/api/agents`, {
+        validate: isAgentStatusList,
+      }),
 
     getAgent: (id): Promise<Result<AgentStatus | undefined>> =>
       getJson<AgentStatus | undefined>(
         fetchImpl,
         `${baseUrl}/api/agents/${encodeURIComponent(id)}`,
-        { allowUndefinedValue: true },
+        { allowUndefinedValue: true, validate: isAgentStatus },
       ),
 
     listSessions: (): Promise<Result<readonly SessionSummary[]>> =>
-      getJson<readonly SessionSummary[]>(fetchImpl, `${baseUrl}/api/sessions`),
+      getJson<readonly SessionSummary[]>(fetchImpl, `${baseUrl}/api/sessions`, {
+        validate: isSessionSummaryList,
+      }),
 
     getMetrics: (query): Promise<Result<readonly MetricPoint[]>> =>
       getJson<readonly MetricPoint[]>(
         fetchImpl,
         `${baseUrl}/api/metrics?${encodeMetricQuery(query)}`,
+        { validate: isMetricPointList },
       ),
 
     getTrace: (turnId): Promise<Result<TraceView | undefined>> =>
       getJson<TraceView | undefined>(
         fetchImpl,
         `${baseUrl}/api/traces/${encodeURIComponent(turnId)}`,
-        { allowUndefinedValue: true },
+        { allowUndefinedValue: true, validate: isTraceView },
       ),
 
     subscribe: (topics, handlers): Unsubscribe =>

@@ -9,7 +9,14 @@ import type { AgentId, ProcessState } from "@koi/core";
 export interface AgentStatus {
   readonly agentId: AgentId;
   readonly name: string;
-  readonly state: ProcessState;
+  /**
+   * Known v1 values are the `ProcessState` literals from `@koi/core`
+   * (`created|running|waiting|suspended|idle|terminated`). The string-escape
+   * hatch keeps that IntelliSense while staying forward-compatible with
+   * newer servers that may emit additional lifecycle states; downstream
+   * exhaustive renderers should treat unknown strings as a fallback path.
+   */
+  readonly state: ProcessState | (string & {});
   /**
    * Known v1 values are `"copilot"` and `"worker"`. The string-escape hatch
    * keeps callers IntelliSense-aware of the well-known values while staying

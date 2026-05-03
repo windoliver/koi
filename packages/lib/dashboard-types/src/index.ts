@@ -15,9 +15,14 @@ export type {
   WsUnsubscribe,
 } from "./ws-events.js";
 export {
+  isAgentStatus,
   isAgentStatusEvent,
   isMetricEvent,
+  isMetricPointValue,
+  isReadonlyArrayOf,
   isSessionEvent,
+  isSessionSummary,
   isTraceEvent,
+  isTraceView,
   isWsEvent,
 } from "./ws-events.js";

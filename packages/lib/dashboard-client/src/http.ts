@@ -3,7 +3,7 @@ import { clientError } from "./errors.js";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
-export interface GetJsonOptions {
+export interface GetJsonOptions<T> {
   readonly init?: RequestInit;
   /**
    * When true, an `ok:true` envelope without a `value` field decodes to
@@ -12,6 +12,13 @@ export interface GetJsonOptions {
    * endpoints fail fast on schema drift instead of returning `undefined`.
    */
   readonly allowUndefinedValue?: boolean;
+  /**
+   * Runtime payload guard. Required so `getJson` validates the success
+   * payload at the trust boundary instead of casting `body.value as T`.
+   * `undefined` (missing `value` with allowUndefinedValue=true) is always
+   * accepted without invoking the guard.
+   */
+  readonly validate: (value: unknown) => value is T;
 }
 
 /**
@@ -24,12 +31,27 @@ export interface GetJsonOptions {
 export async function getJson<T>(
   fetchImpl: FetchLike,
   url: string,
-  options: GetJsonOptions = {},
+  options: GetJsonOptions<T>,
 ): Promise<Result<T>> {
-  const response = await safeFetch(fetchImpl, url, options.init);
+  // Defensive: TypeScript requires `options.validate`, but a JS caller or an
+  // escaped-types path may pass `undefined`. Honour the documented
+  // never-throws contract by surfacing this as a Result instead.
+  const safeOptions = (options ?? ({} as Partial<GetJsonOptions<T>>)) as Partial<GetJsonOptions<T>>;
+  if (typeof safeOptions.validate !== "function") {
+    return {
+      ok: false,
+      error: clientError("VALIDATION", "getJson called without a validate function"),
+    };
+  }
+
+  const response = await safeFetch(fetchImpl, url, safeOptions.init);
   if (!response.ok) return { ok: false, error: response.error };
 
-  const parsed = await safeParseEnvelope<T>(response.value, options.allowUndefinedValue ?? false);
+  const parsed = await safeParseEnvelope<T>(
+    response.value,
+    safeOptions.allowUndefinedValue ?? false,
+    safeOptions.validate,
+  );
   if (!parsed.ok) return { ok: false, error: parsed.error };
   return parsed;
 }
@@ -88,6 +110,7 @@ async function safeFetch(
 async function safeParseEnvelope<T>(
   response: Response,
   allowUndefinedValue: boolean,
+  validate: (value: unknown) => value is T,
 ): Promise<Result<T>> {
   let body: unknown;
   try {
@@ -105,7 +128,8 @@ async function safeParseEnvelope<T>(
     };
   }
   if (body.ok === true) {
-    if (!("value" in body) && !allowUndefinedValue) {
+    const hasValue = "value" in body;
+    if (!hasValue && !allowUndefinedValue) {
       return {
         ok: false,
         error: clientError(
@@ -114,9 +138,18 @@ async function safeParseEnvelope<T>(
         ),
       };
     }
-    // For opt-in endpoints, JSON.stringify drops `undefined`, so a missing
-    // `value` round-trips as `undefined` — correct for `Result<T | undefined>`.
-    return { ok: true, value: body.value as T };
+    if (!hasValue) {
+      // Allowed-undefined endpoints: pass `undefined` straight through; the
+      // T at the call site already includes `undefined` in its union.
+      return { ok: true, value: undefined as T };
+    }
+    if (!validate(body.value)) {
+      return {
+        ok: false,
+        error: clientError("VALIDATION", "ApiResult `value` does not match the expected schema"),
+      };
+    }
+    return { ok: true, value: body.value };
   }
   const normalised = normaliseError(body.error);
   if (normalised === undefined) {

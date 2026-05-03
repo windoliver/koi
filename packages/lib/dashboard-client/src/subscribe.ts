@@ -70,13 +70,14 @@ export function openSubscription(
     if (terminalDelivered) return;
     terminalDelivered = true;
     messagesSilenced = true;
+    if (callerTorndown) return; // caller already disposed; suppress terminal
     handlers.onError?.(error);
   };
   const fireClose = (): void => {
     if (terminalDelivered) return;
     terminalDelivered = true;
     messagesSilenced = true;
-    if (callerTorndown) return; // suppress for caller-initiated teardown
+    if (callerTorndown) return; // caller already disposed; suppress terminal
     handlers.onClose?.();
   };
 

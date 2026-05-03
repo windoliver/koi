@@ -66,21 +66,89 @@ function hasV1(x: Readonly<Record<string, unknown>>): boolean {
   return x.v === 1;
 }
 
+function isStringArray(x: unknown): x is readonly string[] {
+  return Array.isArray(x) && x.every((v): v is string => typeof v === "string");
+}
+
+function isOptional<T>(x: unknown, predicate: (v: unknown) => v is T): x is T | undefined {
+  return x === undefined || predicate(x);
+}
+
+function isPlainRecord(x: unknown): x is Readonly<Record<string, unknown>> {
+  return isObject(x) && !Array.isArray(x);
+}
+
+function isStringRecord(x: unknown): x is Readonly<Record<string, string>> {
+  if (!isPlainRecord(x)) return false;
+  for (const v of Object.values(x)) {
+    if (typeof v !== "string") return false;
+  }
+  return true;
+}
+
+function isAttributeValue(x: unknown): x is string | number | boolean {
+  return typeof x === "string" || typeof x === "number" || typeof x === "boolean";
+}
+
+function isAttributeRecord(x: unknown): x is Readonly<Record<string, string | number | boolean>> {
+  if (!isPlainRecord(x)) return false;
+  for (const v of Object.values(x)) {
+    if (!isAttributeValue(v)) return false;
+  }
+  return true;
+}
+
+/**
+ * Runtime type guard for `AgentStatus`. True iff every required scalar is
+ * present and well-typed. Re-exported via the package barrel so HTTP/SDK
+ * decoders can use the same trust-boundary check as the WS guards.
+ */
+export function isAgentStatus(x: unknown): x is AgentStatus {
+  return isAgentStatusPayload(x);
+}
+
+/** Runtime type guard for `SessionSummary`. */
+export function isSessionSummary(x: unknown): x is SessionSummary {
+  return isSessionPayload(x);
+}
+
+/** Runtime type guard for `MetricPoint`. */
+export function isMetricPointValue(x: unknown): x is MetricPoint {
+  return isMetricPoint(x);
+}
+
+/** Runtime type guard for `TraceView`. */
+export function isTraceView(x: unknown): x is TraceView {
+  return isTracePayload(x);
+}
+
+/** Element-wise array guard helper. */
+export function isReadonlyArrayOf<T>(
+  x: unknown,
+  elementGuard: (v: unknown) => v is T,
+): x is readonly T[] {
+  return Array.isArray(x) && x.every(elementGuard);
+}
+
 function isAgentStatusPayload(x: unknown): boolean {
   if (!isObject(x)) return false;
   return (
     typeof x.agentId === "string" &&
     typeof x.name === "string" &&
+    // Accept any string for state — forward-compat with newer servers that
+    // emit additional ProcessState variants. Rendering layers gate display.
     typeof x.state === "string" &&
     // Accept any string for agentType so a v1 server can add new variants
     // additively. The caller's narrow type gates which values it renders.
     typeof x.agentType === "string" &&
-    Array.isArray(x.channels) &&
+    isStringArray(x.channels) &&
     typeof x.turns === "number" &&
     typeof x.tokenCount === "number" &&
     typeof x.startedAt === "number" &&
     typeof x.lastActivityAt === "number" &&
-    typeof x.childCount === "number"
+    typeof x.childCount === "number" &&
+    isOptional(x.model, (v): v is string => typeof v === "string") &&
+    isOptional(x.parentId, (v): v is string => typeof v === "string")
   );
 }
 
@@ -94,14 +162,18 @@ function isSessionPayload(x: unknown): boolean {
     typeof x.inputTokens === "number" &&
     typeof x.outputTokens === "number" &&
     typeof x.costUsd === "number" &&
-    typeof x.startedAt === "number"
+    typeof x.startedAt === "number" &&
+    isOptional(x.endedAt, (v): v is number => typeof v === "number")
   );
 }
 
 function isMetricPoint(x: unknown): boolean {
   if (!isObject(x)) return false;
   return (
-    typeof x.name === "string" && typeof x.value === "number" && typeof x.timestampMs === "number"
+    typeof x.name === "string" &&
+    typeof x.value === "number" &&
+    typeof x.timestampMs === "number" &&
+    isOptional(x.tags, isStringRecord)
   );
 }
 
@@ -133,7 +205,9 @@ function isTraceSpanTree(root: unknown): boolean {
       typeof node.category !== "string" ||
       typeof node.startedAtMs !== "number" ||
       typeof node.durationMs !== "number" ||
-      !Array.isArray(node.children)
+      !Array.isArray(node.children) ||
+      !isOptional(node.error, (v): v is string => typeof v === "string") ||
+      !isOptional(node.attributes, isAttributeRecord)
     ) {
       return false;
     }
