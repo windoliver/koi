@@ -6240,8 +6240,13 @@ describe("createKoi stop gate", () => {
 
     await collectEvents(runtime.run({ kind: "text", text: "hello" }));
 
-    // First turn: empty messages (text input — bridge builds its own conversation)
-    expect(capturedMessages[0]).toEqual([]);
+    // First turn: text input is now seeded into onBeforeTurn so stateful
+    // context engines see the real user payload (#1767 round 4-5 fixes).
+    const firstMessages = capturedMessages[0] as ReadonlyArray<{
+      readonly content: ReadonlyArray<{ readonly text?: string }>;
+    }>;
+    expect(firstMessages?.length).toBe(1);
+    expect(firstMessages?.[0]?.content[0]?.text).toBe("hello");
 
     // Retry turn: original user message + block feedback (#1493: retry
     // includes original question so the model can re-anchor on the task)

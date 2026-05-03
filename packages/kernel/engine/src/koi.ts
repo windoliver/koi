@@ -1961,12 +1961,21 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // Emit turn_start event with onBeforeTurn hooks.
           // Update activeTurnMessages so cooperating-adapter middleware
           // (getTurnContext) sees the same messages as onBeforeTurn hooks.
+          // Preserve the seeded text-input payload on the FIRST turn so
+          // onBeforeTurn / getTurnContext / onAfterTurn all observe the
+          // real user message instead of []. The earlier seed populated
+          // activeTurnMessages from input.text; resetting to [] here on
+          // text input would lose it for the most common entry path.
+          // Subsequent turns (idle-wake, stop-gate retry) still use
+          // pendingStopInput / input.messages or fall back to [].
           const turnMessages =
             pendingStopInput?.kind === "messages"
               ? pendingStopInput.messages
               : input.kind === "messages"
                 ? input.messages
-                : [];
+                : currentTurnIndex === 0 && activeTurnMessages.length > 0
+                  ? activeTurnMessages
+                  : [];
           activeTurnMessages = turnMessages;
           pendingStopInput = undefined;
           const turnCtx = createTurnContext({
