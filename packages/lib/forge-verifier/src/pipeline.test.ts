@@ -1035,6 +1035,42 @@ describe("plugin contract hardening (malformed inputs stay in Result envelope)",
   });
 });
 
+describe("canonical cache-key encoding (string-vs-sentinel collisions)", () => {
+  // Bare-string sentinels would collide with user strings of the same
+  // content. Type tags on every leaf prevent this.
+  test.each([
+    ["NaN vs string 'NaN'", { x: Number.NaN }, { x: "NaN" }],
+    ["+Infinity vs string '+Inf'", { x: Number.POSITIVE_INFINITY }, { x: "+Inf" }],
+    ["-Infinity vs string '-Inf'", { x: Number.NEGATIVE_INFINITY }, { x: "-Inf" }],
+    ["-0 vs string '-0'", { x: -0 }, { x: "-0" }],
+    ["undefined vs string 'u:'", { x: undefined }, { x: "u:" }],
+    ["null vs string 'n:'", { x: null }, { x: "n:" }],
+    ["bigint 1n vs string '1'", { x: 1n }, { x: "1" }],
+    ["true vs string 't'", { x: true }, { x: "t" }],
+  ])("%s do not alias the same cache key", async (_label, a, b) => {
+    const cache = createMemoryCache();
+    const stage = counted(createSyntaxStage(okCheck));
+    await runPipeline([stage.stage], a as unknown as FakeArtifact, { cache });
+    expect(stage.calls()).toBe(1);
+    await runPipeline([stage.stage], b as unknown as FakeArtifact, { cache });
+    expect(stage.calls()).toBe(2);
+  });
+});
+
+describe("preprocessing budget (DoS guard for wide artifacts)", () => {
+  test("artifact wider than MAX_ARTIFACT_NODES is rejected", async () => {
+    // Shallow but huge: a single object with 60_000 keys defeats the depth
+    // cap. Node-count budget catches it.
+    const wide: Record<string, number> = {};
+    for (let i = 0; i < 60_000; i++) wide[`k${i}`] = i;
+    const result = await runPipeline([createSyntaxStage(okCheck)], wide as unknown as FakeArtifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.message).toContain("maximum node count");
+  });
+});
+
 describe("canonical cache-key encoding (no value-identity collisions)", () => {
   // JSON.stringify maps NaN, ±Infinity → "null" and -0 → "0", so a naive
   // serializer would let a successful pass for {x: NaN} replay as a hit

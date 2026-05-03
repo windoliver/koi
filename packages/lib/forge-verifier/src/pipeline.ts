@@ -95,38 +95,70 @@ function isCachedSummaryConsistent<I>(
  */
 /**
  * Encode a primitive leaf for the canonical key. JSON.stringify is not
- * injective for JS values: NaN/±Infinity all serialize to "null", -0
- * serializes to "0", and `undefined` yields the literal undefined (which
- * breaks string concatenation). Each ambiguous case gets a sentinel token
- * so two distinct artifacts cannot collide to the same cache key.
+ * injective for JS values:
+ *   - NaN / ±Infinity all serialize to "null"
+ *   - -0 serializes to "0"
+ *   - undefined yields literal undefined (string-concat hazard)
+ *   - bigint throws
+ *
+ * Bare-string sentinels like `"#NaN"` would collide with user strings of
+ * the same content. Every leaf instead gets a TYPE TAG prefix unique to
+ * its JS type — `s:`, `f:`, `b:`, `n:`, `u:`, `g:` — so the encoded
+ * string for a value of one type can never equal the encoded string for
+ * a value of any other type. Arrays/objects retain their `[`/`{` prefix
+ * and never start with a tag, so they are distinguishable too.
  */
 function encodePrimitive(value: unknown): string {
+  if (value === null) return "n:";
+  if (value === undefined) return "u:";
+  if (typeof value === "boolean") return value ? "b:t" : "b:f";
   if (typeof value === "number") {
-    if (Number.isNaN(value)) return '"#NaN"';
-    if (value === Number.POSITIVE_INFINITY) return '"#+Infinity"';
-    if (value === Number.NEGATIVE_INFINITY) return '"#-Infinity"';
-    if (Object.is(value, -0)) return '"#-0"';
-    return String(value);
+    if (Number.isNaN(value)) return "f:NaN";
+    if (value === Number.POSITIVE_INFINITY) return "f:+Inf";
+    if (value === Number.NEGATIVE_INFINITY) return "f:-Inf";
+    if (Object.is(value, -0)) return "f:-0";
+    return `f:${value}`;
   }
-  if (value === undefined) return '"#undefined"';
-  if (typeof value === "bigint") return `"#bigint:${value.toString()}"`;
-  // string, boolean, null all serialize unambiguously
-  return JSON.stringify(value);
+  if (typeof value === "string") return `s:${JSON.stringify(value)}`;
+  if (typeof value === "bigint") return `g:${value.toString()}`;
+  // Symbols/functions cannot reach here — rejectUnsupportedShape rejects
+  // them upstream — but keep a defensive tag rather than fall through.
+  return `?:${JSON.stringify(String(value))}`;
 }
 
 /**
- * Hard cap on artifact graph depth. Both `rejectUnsupportedShape` and
- * `canonicalJson` recurse synchronously over an attacker-controlled graph;
- * an abort signal cannot interrupt synchronous JS. Capping depth turns a
- * potential DoS (deeply-nested artifact under cancellation pressure) into
- * a fast `INVALID_CONFIG` rejection. 256 is well above any realistic
- * verification artifact and safely below V8's default call-stack limit.
+ * Hard caps on artifact graph traversal. Both `rejectUnsupportedShape`
+ * and `canonicalJson` recurse synchronously over attacker-controlled
+ * input; an abort signal cannot interrupt synchronous JS, so the only
+ * way to bound preprocessing CPU under cancellation pressure is to bound
+ * the input itself.
+ *
+ *   - DEPTH (256): catches stack-blowing inputs; safely below V8's default
+ *     call-stack limit while exceeding any realistic config artifact.
+ *   - NODES (50_000): catches wide flat inputs (e.g. an array/object with
+ *     1M entries) that the depth cap alone cannot stop. Counts every
+ *     visited primitive AND every container so the bound is total work,
+ *     not just leaf work.
  */
 const MAX_ARTIFACT_DEPTH = 256;
+const MAX_ARTIFACT_NODES = 50_000;
 
-function canonicalJson(value: unknown, seen: WeakSet<object>, depth = 0): string {
+interface NodeBudget {
+  count: number;
+}
+
+function canonicalJson(
+  value: unknown,
+  seen: WeakSet<object>,
+  budget: NodeBudget,
+  depth = 0,
+): string {
   if (depth > MAX_ARTIFACT_DEPTH) {
     throw new Error(`snapshot exceeds maximum depth (${MAX_ARTIFACT_DEPTH})`);
+  }
+  budget.count += 1;
+  if (budget.count > MAX_ARTIFACT_NODES) {
+    throw new Error(`snapshot exceeds maximum node count (${MAX_ARTIFACT_NODES})`);
   }
   if (value === null || typeof value !== "object") return encodePrimitive(value);
   if (seen.has(value)) {
@@ -134,11 +166,13 @@ function canonicalJson(value: unknown, seen: WeakSet<object>, depth = 0): string
   }
   seen.add(value);
   if (Array.isArray(value)) {
-    return `[${value.map((v) => canonicalJson(v, seen, depth + 1)).join(",")}]`;
+    return `[${value.map((v) => canonicalJson(v, seen, budget, depth + 1)).join(",")}]`;
   }
   const obj = value as Record<string, unknown>;
   const keys = Object.keys(obj).sort();
-  const parts = keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k], seen, depth + 1)}`);
+  const parts = keys.map(
+    (k) => `${JSON.stringify(k)}:${canonicalJson(obj[k], seen, budget, depth + 1)}`,
+  );
   return `{${parts.join(",")}}`;
 }
 
@@ -241,7 +275,7 @@ export async function runPipeline<I>(
       // by the walk). Same Proxy-trap exposure surface as structuredClone
       // itself — we accept it once here in exchange for catching attacks
       // that would otherwise be invisible to every stage.
-      rejectUnsupportedShape(artifact, "$", new WeakSet<object>());
+      rejectUnsupportedShape(artifact, "$", new WeakSet<object>(), { count: 0 });
       // Clone — runs in V8 internals on a graph we already proved to be
       // pure data. Symbol/non-enumerable rejection above means clone cannot
       // silently elide caller state: the snapshot is bit-equivalent to
@@ -283,7 +317,7 @@ export async function runPipeline<I>(
       // the snapshot boundary. canonicalJson is sorted-keys + cycle-rejecting,
       // so two structurally-equal artifacts always produce the same key and
       // a cyclic snapshot bypasses caching rather than aliasing.
-      const digest = canonicalJson(snapshot, new WeakSet<object>());
+      const digest = canonicalJson(snapshot, new WeakSet<object>(), { count: 0 });
       composedKey = composeCacheKey(namespace, digest, stages);
     } catch (e: unknown) {
       // Cyclic snapshot (or other digest failure) — bypass caching for this
@@ -494,11 +528,18 @@ function rejectUnsupportedShape(
   value: unknown,
   path: string,
   seen: WeakSet<object>,
+  budget: NodeBudget,
   depth = 0,
 ): void {
   if (depth > MAX_ARTIFACT_DEPTH) {
     throw new TypeError(
       `Artifact at ${path} exceeds maximum depth (${MAX_ARTIFACT_DEPTH}); deeply-nested artifacts are rejected to bound preprocessing CPU under cancellation.`,
+    );
+  }
+  budget.count += 1;
+  if (budget.count > MAX_ARTIFACT_NODES) {
+    throw new TypeError(
+      `Artifact at ${path} exceeds maximum node count (${MAX_ARTIFACT_NODES}); wide artifacts are rejected to bound preprocessing CPU under cancellation.`,
     );
   }
   if (value === null || typeof value !== "object") {
@@ -558,7 +599,7 @@ function rejectUnsupportedShape(
           `Artifact at ${path}.${k} (array property) is a non-index own property; verifier requires plain-data arrays (extra named properties are not preserved by structuredClone).`,
         );
       }
-      rejectUnsupportedShape(desc.value, `${path}[${k}]`, seen, depth + 1);
+      rejectUnsupportedShape(desc.value, `${path}[${k}]`, seen, budget, depth + 1);
     }
     return;
   }
@@ -596,7 +637,7 @@ function rejectUnsupportedShape(
         `Artifact at ${path}.${k} is non-enumerable; verifier requires plain-data artifacts (non-enumerable properties are not preserved by structuredClone).`,
       );
     }
-    rejectUnsupportedShape(desc.value, `${path}.${k}`, seen, depth + 1);
+    rejectUnsupportedShape(desc.value, `${path}.${k}`, seen, budget, depth + 1);
   }
 }
 
