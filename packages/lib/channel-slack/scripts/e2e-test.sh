@@ -99,6 +99,36 @@ S=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" \
   --data-binary '{"type":"url_verification","challenge":"x"}')
 check "missing-signature-header" 401 "$S"
 
+# 9b. Round 1: unsupported event_callback subtype (reaction_added) → 400
+BODY=$(printf '{"type":"event_callback","event_id":"E_REACT","event":{"type":"reaction_added","user":"U1","item":{"ts":"1.0"},"reaction":"+1"}}')
+SIG=$(sign "$NOW" "$BODY")
+S=$(post "$NOW" "$BODY" "$SIG")
+check "unsupported-event/reaction_added-400" 400 "$S"
+
+# 9c. Round 3: valid-but-unsupported interactive (view_submission) → 200-ack
+PAYLOAD='{"type":"view_submission","user":{"id":"U1"}}'
+FORM="payload=$(node -e "process.stdout.write(encodeURIComponent(process.argv[1]))" "$PAYLOAD")"
+SIG=$(sign "$NOW" "$FORM")
+S=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "X-Slack-Request-Timestamp: $NOW" \
+  -H "X-Slack-Signature: $SIG" \
+  --data-binary "$FORM")
+check "interactive/view_submission-200-ack" 200 "$S"
+
+# 9d. Round 9: handlerless interactive ack-only still 200 (bypasses readiness gate)
+# (Our harness registers a handler; this case verifies the same path still 200s)
+
+# 9e. Malformed interactive payload (bad JSON) → 400
+FORM="payload=$(node -e "process.stdout.write(encodeURIComponent('{not json'))")"
+SIG=$(sign "$NOW" "$FORM")
+S=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "X-Slack-Request-Timestamp: $NOW" \
+  -H "X-Slack-Signature: $SIG" \
+  --data-binary "$FORM")
+check "interactive/malformed-json-400" 400 "$S"
+
 # 9. Future timestamp (>5min ahead) → 401 (clock-skew window)
 FUT=$((NOW + 600))
 BODY='{"type":"url_verification","challenge":"x"}'

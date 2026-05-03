@@ -28,12 +28,19 @@ check() {
   else echo "  FAIL  $name  expect=$expect got=$got"; FAIL=$((FAIL+1)); fi
 }
 
-# 1. Auth: valid token → 202
+# 1. Auth: valid token + threadId → 202
 S=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL/messages" \
   -H "Authorization: Bearer tok-alice" -H "Origin: http://localhost:3000" \
   -H "Content-Type: application/json" \
   -d '{"content":[{"kind":"text","text":"hello"}],"threadId":"t1"}')
 check "auth/valid-token" 202 "$S"
+
+# 1b. Round 4: authenticated POST without threadId → 400 by default
+S=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL/messages" \
+  -H "Authorization: Bearer tok-alice" -H "Origin: http://localhost:3000" \
+  -H "Content-Type: application/json" \
+  -d '{"content":[{"kind":"text","text":"orphan"}]}')
+check "auth/threadless-default-rejected" 400 "$S"
 
 # 2. Auth: missing token → 401
 S=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL/messages" \
