@@ -553,6 +553,44 @@ describe("@koi/channel-slack — Socket Mode", () => {
     await adapter.disconnect();
   });
 
+  test("Socket Mode does NOT commit dedupe when no handler present (retry can dispatch)", async () => {
+    // Regression: committing dedupe before handler check turned transient
+    // handler-absence into permanent loss — the retry was treated as a
+    // duplicate and never reached a freshly-attached handler.
+    const web = makeWebClient();
+    const sock = makeSocketClient();
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      botUserId: "BOT",
+      deployment: { mode: "socket", appToken: "xapp-test" },
+      clients: { webClient: web.client, socketClient: sock.client },
+    });
+    // NO onMessage yet
+    await adapter.connect();
+    const onMsg = sock.listeners.get("message");
+    let acked = 0;
+    const env = {
+      envelope_id: "ENV-STARTUP",
+      ack: () => {
+        acked++;
+      },
+      event: { type: "message", text: "during-churn", user: "U1", channel: "C1", ts: "1.0" },
+    };
+    onMsg?.(env); // arrives during handler-less window
+    expect(acked).toBe(0); // not acked, Slack will retry
+    // Now attach handler
+    const received: InboundMessage[] = [];
+    adapter.onMessage(async (m) => {
+      received.push(m);
+    });
+    // Slack retries the same envelope — must dispatch (dedupe NOT poisoned)
+    onMsg?.(env);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toHaveLength(1);
+    expect(acked).toBe(1);
+    await adapter.disconnect();
+  });
+
   test("Socket Mode dedupe wins over no-handler check (already-processed retry always acks)", async () => {
     const web = makeWebClient();
     const sock = makeSocketClient();

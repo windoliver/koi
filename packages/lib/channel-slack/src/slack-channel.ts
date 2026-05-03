@@ -46,7 +46,10 @@ const DEDUPE_HIGH_WATER = 50_000;
  *      entry. This is the safety valve against OOM under abnormal bursts.
  */
 function createIngressDedupe(): {
-  readonly observe: (key: string, nowMs: number) => boolean;
+  /** True if this key has already been committed within the live window. */
+  readonly has: (key: string, nowMs: number) => boolean;
+  /** Commit the key (only call AFTER the delivery has been handed to a handler). */
+  readonly commit: (key: string, nowMs: number) => void;
   readonly size: () => number;
 } {
   const seen = new Map<string, number>();
@@ -57,16 +60,18 @@ function createIngressDedupe(): {
     }
   };
   return {
-    observe: (key: string, nowMs: number): boolean => {
+    has: (key: string, nowMs: number): boolean => {
       sweepExpired(nowMs);
-      if (seen.has(key)) return true;
+      return seen.has(key);
+    },
+    commit: (key: string, nowMs: number): void => {
+      sweepExpired(nowMs);
       while (seen.size >= DEDUPE_HIGH_WATER) {
         const oldest = seen.keys().next().value;
         if (oldest === undefined) break;
         seen.delete(oldest);
       }
       seen.set(key, nowMs + DEDUPE_TTL_MS);
-      return false;
     },
     size: (): number => seen.size,
   };
@@ -316,7 +321,8 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
           (event) => dispatch?.(event),
           features,
           () => (dispatch === undefined ? 0 : handlerCount),
-          (key) => dedupe.observe(key, Date.now()),
+          (key) => dedupe.has(key, Date.now()),
+          (key) => dedupe.commit(key, Date.now()),
         );
         await socketClient.start();
       }
@@ -461,19 +467,23 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
         }
       }
 
-      // Dedupe BEFORE the no-handler gate. A retry of an already-processed
-      // delivery must always 200 — even during listener churn — or Slack
-      // keeps redelivering and once a listener returns the side effects
-      // run a second time. Idempotency takes precedence over presence.
-      // Key is stable across the original and all retries (event_id, or
-      // signed-body hash for slash/interactive); legitimate fresh
-      // invocations carry unique nonces so they never collide.
-      if (dedupe.observe(dedupeKeyFor(result.body, parsed), Date.now())) {
+      // Already-committed retry → 200 ack. Idempotency takes precedence
+      // over presence: even during listener churn, a retry of a
+      // previously-dispatched delivery must always 200 or Slack keeps
+      // redelivering and once a listener returns the side effects run
+      // a second time. Key is stable across original + all retries
+      // (event_id, or signed-body hash for slash/interactive);
+      // legitimate fresh invocations carry unique nonces.
+      const dedupeKey = dedupeKeyFor(result.body, parsed);
+      const now = Date.now();
+      if (dedupe.has(dedupeKey, now)) {
         return new Response("OK", { status: 200 });
       }
 
-      // Fresh delivery + no handler → 503 so Slack retries until a
-      // consumer is attached.
+      // Fresh delivery + no handler → 503, do NOT commit dedupe. Slack
+      // retries; the cache stays empty so the retry CAN dispatch once a
+      // consumer is attached. Committing here would poison the cache and
+      // turn handler-less arrivals into permanent loss.
       if (handlerCount === 0) {
         return new Response("Service Unavailable", { status: 503 });
       }
@@ -484,10 +494,14 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
         } else {
           dispatchSlashCommand(result.body);
         }
+        // Commit AFTER dispatch — the delivery is now considered handled.
+        dedupe.commit(dedupeKey, now);
         return new Response("", { status: 200 });
       }
 
       dispatchHttpEvent(parsed);
+      // Commit AFTER dispatch — the delivery is now considered handled.
+      dedupe.commit(dedupeKey, now);
       return new Response("OK", { status: 200 });
     };
     return wrapWithHandlerCounter(
@@ -544,12 +558,14 @@ function wireSocketModeEvents(
   features: ResolvedFeatures,
   getHandlerCount: () => number,
   /**
-   * Returns true if this delivery has already been processed (within the
-   * replay window). Slack's Socket Mode redelivers unacked envelopes, so
-   * application events MUST be deduped before dispatch — otherwise reconnect
-   * scenarios cause double execution of side-effecting handlers.
+   * `hasDelivery`: true if this key was already committed (a previous
+   * delivery was dispatched). `commitDelivery`: record the key now —
+   * caller MUST only call this after the delivery is handed off to a
+   * handler. Splitting check from commit prevents poisoning the cache
+   * with deliveries that arrived during a handler-less window.
    */
-  observeDelivery: (key: string) => boolean,
+  hasDelivery: (key: string) => boolean,
+  commitDelivery: (key: string) => void,
 ): void {
   /**
    * Build a Socket Mode dedupe key. `envelope_id` is set on every Socket
@@ -576,18 +592,23 @@ function wireSocketModeEvents(
   const guarded = (fn: (wrapper: Record<string, unknown>) => void): ((raw: unknown) => void) => {
     return (raw: unknown) => {
       const wrapper = raw as Record<string, unknown>;
-      // Dedupe BEFORE the handler-count gate. A retry of an already-processed
-      // envelope must always be ack'd — even during listener churn — or Slack
-      // keeps redelivering and once a listener returns the side effects run
-      // a second time. Idempotency takes precedence over presence.
-      if (observeDelivery(deliveryKey(wrapper))) {
+      const key = deliveryKey(wrapper);
+      // Already-committed retry → ack-as-no-op. Idempotency takes
+      // precedence over presence: even during listener churn, a retry
+      // of a previously-dispatched envelope must always be ack'd or
+      // Slack keeps redelivering and side effects can run twice.
+      if (hasDelivery(key)) {
         ack(wrapper);
         return;
       }
-      // Fresh delivery + no handler → don't ack so Slack retries until a
-      // consumer is attached.
+      // Fresh delivery + no handler → don't ack and don't commit. Slack
+      // retries; the cache stays empty so the retry CAN dispatch once a
+      // consumer is attached. Committing here would poison the cache and
+      // turn handler-less arrivals into permanent loss.
       if (getHandlerCount() === 0) return;
       fn(wrapper);
+      // Commit only AFTER successful dispatch. Then ack so Slack stops.
+      commitDelivery(key);
       ack(wrapper);
     };
   };
@@ -625,16 +646,31 @@ function wireSocketModeEvents(
     // the correct signal that the action was not delivered.
     client.on("interactive", (raw: unknown) => {
       const wrapper = raw as Record<string, unknown>;
+      const key = deliveryKey(wrapper);
+      // Already-committed retry → ack as no-op, do not redispatch.
+      if (hasDelivery(key)) {
+        ack(wrapper);
+        return;
+      }
+      // Fresh delivery + no handler → don't ack, don't commit. Slack
+      // already received the click; ack'ing here would permanently
+      // consume it with no retry path. Letting the 3s deadline elapse
+      // surfaces a user-visible "didn't work" error in Slack.
       if (getHandlerCount() === 0) return;
       ack(wrapper);
-      // Retried button click → already deduped from a previous delivery.
-      if (observeDelivery(deliveryKey(wrapper))) return;
       // SDK wrapper carries the user payload at `body` (canonical) or
       // `payload` (older shapes / test doubles). Either way we want the
       // inner `block_actions` payload, not the wrapper.
       const payload = (wrapper.body ?? wrapper.payload ?? wrapper) as Record<string, unknown>;
-      if (payload.type !== "block_actions") return;
+      if (payload.type !== "block_actions") {
+        // Unsupported payload type — committed (we ack'd) but no dispatch.
+        commitDelivery(key);
+        return;
+      }
       const actions = (payload.actions ?? []) as readonly Record<string, unknown>[];
+      // Commit BEFORE dispatch loop so a re-entrant delivery (rare) cannot
+      // fire the actions twice. Once we ack, the delivery is owned by us.
+      commitDelivery(key);
       for (const action of actions) {
         handler({
           kind: "block_action",

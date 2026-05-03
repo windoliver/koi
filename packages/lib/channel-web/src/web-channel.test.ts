@@ -504,6 +504,42 @@ describe("@koi/channel-web", () => {
     expect(h.received).toHaveLength(1); // duplicate dispatch suppressed
   });
 
+  test("Idempotency-Key NOT committed when first attempt fails (503), retry dispatches", async () => {
+    // Regression: poisoning the idempotency cache on 503 turned transient
+    // handler-absence into permanent loss for retrying clients. Failed
+    // attempts must not record the key.
+    const adapter = createWebChannel({
+      port: 0,
+      hostname: "127.0.0.1",
+      allowUnauthenticated: true,
+      allowAnyOrigin: true,
+    });
+    await adapter.connect();
+    const port = (adapter as unknown as { readonly port: number }).port;
+    // No onMessage yet → 503 first attempt
+    const r1 = await fetch(`http://127.0.0.1:${port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "tx-startup" },
+      body: JSON.stringify({ content: [{ kind: "text", text: "x" }] }),
+    });
+    expect(r1.status).toBe(503);
+    // Now attach a handler
+    const received: InboundMessage[] = [];
+    adapter.onMessage(async (m) => {
+      received.push(m);
+    });
+    // Retry with the SAME key — must dispatch (key wasn't committed on 503)
+    const r2 = await fetch(`http://127.0.0.1:${port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "tx-startup" },
+      body: JSON.stringify({ content: [{ kind: "text", text: "x" }] }),
+    });
+    expect(r2.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(received).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
   test("missing Idempotency-Key dispatches every POST (opt-in only)", async () => {
     h = await startHarness();
     const send = (): Promise<Response> =>

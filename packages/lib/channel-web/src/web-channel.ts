@@ -308,25 +308,30 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
   // let requires justification: counts active onMessage subscribers so HTTP
   // ingress can refuse 202 when there's nobody to deliver to (no silent drop).
   let handlerCount = 0;
-  // Idempotency cache for client-supplied `Idempotency-Key` headers. Lazy
-  // TTL eviction with a high-water OOM backstop. When a client retries a
-  // POST with the same key inside the window we return 202 with no
-  // dispatch — duplicate side effects become a configuration choice
-  // (caller opted into idempotency) rather than the default failure mode.
+  // Idempotency cache for client-supplied `Idempotency-Key` headers.
+  // Split into has/commit so a request that fails before dispatch (e.g.
+  // 503 no-handler) does NOT poison the key — a retry once a handler is
+  // attached must still dispatch. Lazy TTL eviction with high-water OOM
+  // backstop.
   const idempotency = new Map<string, number>();
-  function observeIdempotencyKey(key: string, nowMs: number): boolean {
+  function sweepIdempotency(nowMs: number): void {
     for (const [k, exp] of idempotency) {
-      if (exp > nowMs) break;
+      if (exp > nowMs) return;
       idempotency.delete(k);
     }
-    if (idempotency.has(key)) return true;
+  }
+  function hasIdempotencyKey(key: string, nowMs: number): boolean {
+    sweepIdempotency(nowMs);
+    return idempotency.has(key);
+  }
+  function commitIdempotencyKey(key: string, nowMs: number): void {
+    sweepIdempotency(nowMs);
     while (idempotency.size >= IDEMPOTENCY_HIGH_WATER) {
       const oldest = idempotency.keys().next().value;
       if (oldest === undefined) break;
       idempotency.delete(oldest);
     }
     idempotency.set(key, nowMs + IDEMPOTENCY_TTL_MS);
-    return false;
   }
   // let requires justification: live WS subscribers tagged with the principal
   // and thread they were authorized for. Routing uses `threadId` exclusively.
@@ -435,24 +440,26 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
     if (message === null) return new Response("Invalid payload", { status: 400 });
 
     // Optional client-supplied idempotency key — caller opts in by sending
-    // `Idempotency-Key: <unique>`. Within IDEMPOTENCY_TTL_MS, repeats of
-    // the same key return 202 with no re-dispatch so retried POSTs from
-    // browsers/proxies don't double-trigger side effects. Without the
-    // header, behavior is unchanged (every POST dispatches).
+    // `Idempotency-Key: <unique>`. Already-committed retry → 202 with no
+    // re-dispatch. Without the header, every POST dispatches.
     const idemKey = req.headers.get("idempotency-key");
-    if (idemKey !== null && idemKey.length > 0) {
-      if (observeIdempotencyKey(idemKey, Date.now())) {
-        return new Response(null, { status: 202 });
-      }
+    const now = Date.now();
+    if (idemKey !== null && idemKey.length > 0 && hasIdempotencyKey(idemKey, now)) {
+      return new Response(null, { status: 202 });
     }
 
-    // Refuse to silently drop: if no listener is attached we have nobody to
-    // deliver to. 503 lets clients/proxies retry with backoff instead of
-    // believing the message was processed.
+    // Refuse to silently drop: if no listener is attached we have nobody
+    // to deliver to. Returning 503 BEFORE committing the idempotency key
+    // means a retry once a handler is attached will still dispatch.
     if (emit === undefined || handlerCount === 0) {
       return new Response("No handler registered", { status: 503 });
     }
     emit(message);
+    // Commit idempotency key AFTER successful dispatch so failed
+    // attempts (503/etc) do not poison future retries.
+    if (idemKey !== null && idemKey.length > 0) {
+      commitIdempotencyKey(idemKey, now);
+    }
     return new Response(null, { status: 202 });
   }
 
