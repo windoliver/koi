@@ -18,6 +18,10 @@ import type {
 import type { ServerWebSocket } from "bun";
 
 const MAX_BODY_BYTES = 1_000_000;
+/** Idempotency window: how long to remember a client-supplied message ID. */
+const IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
+/** Hard cap on stored idempotency keys (OOM backstop). */
+const IDEMPOTENCY_HIGH_WATER = 50_000;
 
 /**
  * Read the request body as a UTF-8 string, aborting once the byte cap is
@@ -304,6 +308,26 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
   // let requires justification: counts active onMessage subscribers so HTTP
   // ingress can refuse 202 when there's nobody to deliver to (no silent drop).
   let handlerCount = 0;
+  // Idempotency cache for client-supplied `Idempotency-Key` headers. Lazy
+  // TTL eviction with a high-water OOM backstop. When a client retries a
+  // POST with the same key inside the window we return 202 with no
+  // dispatch — duplicate side effects become a configuration choice
+  // (caller opted into idempotency) rather than the default failure mode.
+  const idempotency = new Map<string, number>();
+  function observeIdempotencyKey(key: string, nowMs: number): boolean {
+    for (const [k, exp] of idempotency) {
+      if (exp > nowMs) break;
+      idempotency.delete(k);
+    }
+    if (idempotency.has(key)) return true;
+    while (idempotency.size >= IDEMPOTENCY_HIGH_WATER) {
+      const oldest = idempotency.keys().next().value;
+      if (oldest === undefined) break;
+      idempotency.delete(oldest);
+    }
+    idempotency.set(key, nowMs + IDEMPOTENCY_TTL_MS);
+    return false;
+  }
   // let requires justification: live WS subscribers tagged with the principal
   // and thread they were authorized for. Routing uses `threadId` exclusively.
   let sockets: ReadonlySet<
@@ -409,6 +433,18 @@ export function createWebChannel(config: WebChannelConfig = {}): WebChannelAdapt
 
     const message = parseInbound(parsed, principal.senderId);
     if (message === null) return new Response("Invalid payload", { status: 400 });
+
+    // Optional client-supplied idempotency key — caller opts in by sending
+    // `Idempotency-Key: <unique>`. Within IDEMPOTENCY_TTL_MS, repeats of
+    // the same key return 202 with no re-dispatch so retried POSTs from
+    // browsers/proxies don't double-trigger side effects. Without the
+    // header, behavior is unchanged (every POST dispatches).
+    const idemKey = req.headers.get("idempotency-key");
+    if (idemKey !== null && idemKey.length > 0) {
+      if (observeIdempotencyKey(idemKey, Date.now())) {
+        return new Response(null, { status: 202 });
+      }
+    }
 
     // Refuse to silently drop: if no listener is attached we have nobody to
     // deliver to. 503 lets clients/proxies retry with backoff instead of

@@ -494,6 +494,100 @@ describe("@koi/channel-slack — Socket Mode", () => {
     await adapter.disconnect();
   });
 
+  test("Socket Mode slash_commands unwraps SDK `body` field (canonical wrapper shape)", async () => {
+    const web = makeWebClient();
+    const sock = makeSocketClient();
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "socket", appToken: "xapp-test" },
+      clients: { webClient: web.client, socketClient: sock.client },
+    });
+    const received: InboundMessage[] = [];
+    adapter.onMessage(async (m) => {
+      received.push(m);
+    });
+    await adapter.connect();
+    // SDK shape: { ack, body: { command, user_id, channel_id, ... } }
+    sock.listeners.get("slash_commands")?.({
+      ack: () => {},
+      envelope_id: "ENV-S",
+      body: {
+        command: "/koi",
+        text: "help",
+        user_id: "U1",
+        channel_id: "C1",
+        trigger_id: "T1",
+        response_url: "https://hooks.slack.com/x",
+      },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toHaveLength(1);
+    expect(received[0]?.senderId).toBe("U1");
+    await adapter.disconnect();
+  });
+
+  test("Socket Mode interactive unwraps SDK `body` field (canonical wrapper shape)", async () => {
+    const web = makeWebClient();
+    const sock = makeSocketClient();
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "socket", appToken: "xapp-test" },
+      clients: { webClient: web.client, socketClient: sock.client },
+    });
+    const received: InboundMessage[] = [];
+    adapter.onMessage(async (m) => {
+      received.push(m);
+    });
+    await adapter.connect();
+    sock.listeners.get("interactive")?.({
+      ack: () => {},
+      envelope_id: "ENV-I",
+      body: {
+        type: "block_actions",
+        user: { id: "U1" },
+        actions: [{ action_id: "approve", block_id: "b1", value: "yes", type: "button" }],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
+  test("Socket Mode dedupe wins over no-handler check (already-processed retry always acks)", async () => {
+    const web = makeWebClient();
+    const sock = makeSocketClient();
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      botUserId: "BOT",
+      deployment: { mode: "socket", appToken: "xapp-test" },
+      clients: { webClient: web.client, socketClient: sock.client },
+    });
+    const received: InboundMessage[] = [];
+    const unsub = adapter.onMessage(async (m) => {
+      received.push(m);
+    });
+    await adapter.connect();
+    const onMsg = sock.listeners.get("message");
+    let acked = 0;
+    const env = {
+      envelope_id: "ENV-DEDUPE",
+      ack: () => {
+        acked++;
+      },
+      event: { type: "message", text: "hi", user: "U1", channel: "C1", ts: "1.0" },
+    };
+    onMsg?.(env); // first delivery, processed + acked
+    expect(acked).toBe(1);
+    expect(received).toHaveLength(1);
+    // Now unsubscribe — handlerCount drops to 0.
+    unsub();
+    // Slack retries the same envelope. Must ack-as-no-op (NOT process again).
+    onMsg?.(env);
+    expect(acked).toBe(2); // dedupe path acked
+    expect(received).toHaveLength(1); // not redispatched
+    await adapter.disconnect();
+  });
+
   test("connect() fails when auth.test throws (refuses unknown bot identity)", async () => {
     // Regression: silently falling back to "unknown" botUserId disables
     // self-message filtering, so bot-authored events would loop back into

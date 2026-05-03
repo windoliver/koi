@@ -461,19 +461,21 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
         }
       }
 
-      // No handler attached → tell Slack to retry instead of acking and
-      // silently dropping. Slack will redeliver per its retry policy.
-      if (handlerCount === 0) {
-        return new Response("Service Unavailable", { status: 503 });
-      }
-
-      // Dedupe BEFORE dispatch so retried payloads are ack'd as no-ops
-      // rather than processed twice. The key is stable across the original
-      // delivery and all of its retries (event_id, or signed-body hash for
-      // slash/interactive); legitimate fresh invocations carry unique
-      // nonces in the signed body so they never collide.
+      // Dedupe BEFORE the no-handler gate. A retry of an already-processed
+      // delivery must always 200 — even during listener churn — or Slack
+      // keeps redelivering and once a listener returns the side effects
+      // run a second time. Idempotency takes precedence over presence.
+      // Key is stable across the original and all retries (event_id, or
+      // signed-body hash for slash/interactive); legitimate fresh
+      // invocations carry unique nonces so they never collide.
       if (dedupe.observe(dedupeKeyFor(result.body, parsed), Date.now())) {
         return new Response("OK", { status: 200 });
+      }
+
+      // Fresh delivery + no handler → 503 so Slack retries until a
+      // consumer is attached.
+      if (handlerCount === 0) {
+        return new Response("Service Unavailable", { status: 503 });
       }
 
       if (isForm) {
@@ -573,14 +575,18 @@ function wireSocketModeEvents(
   // error in Slack's UI even when no consumer is registered.
   const guarded = (fn: (wrapper: Record<string, unknown>) => void): ((raw: unknown) => void) => {
     return (raw: unknown) => {
-      if (getHandlerCount() === 0) return;
       const wrapper = raw as Record<string, unknown>;
-      // Dedupe BEFORE dispatch. Retried deliveries are ack'd-as-no-op so
-      // Slack stops looping, but the handler runs at most once per envelope.
+      // Dedupe BEFORE the handler-count gate. A retry of an already-processed
+      // envelope must always be ack'd — even during listener churn — or Slack
+      // keeps redelivering and once a listener returns the side effects run
+      // a second time. Idempotency takes precedence over presence.
       if (observeDelivery(deliveryKey(wrapper))) {
         ack(wrapper);
         return;
       }
+      // Fresh delivery + no handler → don't ack so Slack retries until a
+      // consumer is attached.
+      if (getHandlerCount() === 0) return;
       fn(wrapper);
       ack(wrapper);
     };
@@ -604,7 +610,11 @@ function wireSocketModeEvents(
     client.on(
       "slash_commands",
       guarded((wrapper) => {
-        handler({ kind: "slash_command", command: wrapper as never });
+        // Slack Socket Mode SDK delivers slash commands as { ack, body, ... }.
+        // The `body` carries the actual command/user_id/channel_id fields;
+        // forwarding the whole wrapper would emit a malformed inbound message.
+        const command = (wrapper.body ?? wrapper) as Record<string, unknown>;
+        handler({ kind: "slash_command", command: command as never });
       }),
     );
     // Interactive: handler-count check BEFORE ack so a button click is never
@@ -619,7 +629,10 @@ function wireSocketModeEvents(
       ack(wrapper);
       // Retried button click → already deduped from a previous delivery.
       if (observeDelivery(deliveryKey(wrapper))) return;
-      const payload = (wrapper.payload ?? wrapper) as Record<string, unknown>;
+      // SDK wrapper carries the user payload at `body` (canonical) or
+      // `payload` (older shapes / test doubles). Either way we want the
+      // inner `block_actions` payload, not the wrapper.
+      const payload = (wrapper.body ?? wrapper.payload ?? wrapper) as Record<string, unknown>;
       if (payload.type !== "block_actions") return;
       const actions = (payload.actions ?? []) as readonly Record<string, unknown>[];
       for (const action of actions) {

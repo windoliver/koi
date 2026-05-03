@@ -28,6 +28,9 @@ outbound streaming, REST POST for inbound messages. No external dependencies
      `?token=` value as a single-use, short-lived ticket and revoke it on
      first consumption inside `authenticate()`.
 - POST `/messages` requires `Authorization: Bearer <t>` ONLY (no URL fallback)
+- POST `/messages` accepts an optional `Idempotency-Key: <unique>` header.
+  Repeats of the same key within 10 minutes return 202 with no re-dispatch
+  so retries from browsers/proxies don't double-trigger side effects.
 - CORS preflight (`OPTIONS`) handled with `Access-Control-Allow-{Origin,
   Methods, Headers}` echoed back for allow-listed origins
 - Graceful disconnect drains in-flight sends before tearing the server down

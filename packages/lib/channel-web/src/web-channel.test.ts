@@ -488,6 +488,36 @@ describe("@koi/channel-web", () => {
     await adapter.disconnect();
   });
 
+  test("Idempotency-Key suppresses duplicate dispatch within the window", async () => {
+    h = await startHarness();
+    const send = (): Promise<Response> =>
+      fetch(`http://127.0.0.1:${h.port}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": "tx-123" },
+        body: JSON.stringify({ content: [{ kind: "text", text: "ping" }] }),
+      });
+    const r1 = await send();
+    const r2 = await send();
+    expect(r1.status).toBe(202);
+    expect(r2.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.received).toHaveLength(1); // duplicate dispatch suppressed
+  });
+
+  test("missing Idempotency-Key dispatches every POST (opt-in only)", async () => {
+    h = await startHarness();
+    const send = (): Promise<Response> =>
+      fetch(`http://127.0.0.1:${h.port}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: [{ kind: "text", text: "x" }] }),
+      });
+    await send();
+    await send();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.received).toHaveLength(2);
+  });
+
   test("WS upgrade accepts `koi_ws` cookie (preferred over URL token)", async () => {
     h = await startHarness({
       authenticate: (ctx) => (ctx.token === "cookie-tok" ? { senderId: "alice" } : null),
