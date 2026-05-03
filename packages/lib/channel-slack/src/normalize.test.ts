@@ -109,6 +109,33 @@ describe("normalize.message", () => {
     ]);
   });
 
+  test("bot message with no user resolves to bot:<bot_id> sender", () => {
+    const result = norm({
+      kind: "message",
+      event: {
+        type: "message",
+        text: "from bot",
+        bot_id: "B999",
+        channel: "C1",
+        ts: "1.0",
+      },
+    });
+    expect(result?.senderId).toBe("bot:B999");
+  });
+
+  test("message with neither user nor bot_id is dropped", () => {
+    const result = norm({
+      kind: "message",
+      event: {
+        type: "message",
+        text: "ghost",
+        channel: "C1",
+        ts: "1.0",
+      },
+    });
+    expect(result).toBeNull();
+  });
+
   test("file without url_private is skipped", () => {
     const result = norm({
       kind: "message",

@@ -999,6 +999,35 @@ describe("@koi/channel-slack — HTTP Events mode", () => {
     await adapter.disconnect();
   });
 
+  test("handleHttpRequest returns 503 when handler registered but connect() not yet called (dispatch not installed)", async () => {
+    const web = makeWebClient();
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "http", signingSecret: SECRET },
+      clients: { webClient: web.client },
+    });
+    // Handler registered, but connect() NOT called yet. handlerCount > 0 but
+    // dispatch is undefined — must 503 (NOT 200+commit) so Slack retries.
+    adapter.onMessage(async () => {});
+    const ts = String(Math.floor(Date.now() / 1000));
+    const body = JSON.stringify({
+      type: "event_callback",
+      event_id: "Ev_pre_connect",
+      event: { type: "message", text: "x", user: "U1", channel: "C1", ts: "1.0" },
+    });
+    const req = new Request("http://x", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "X-Slack-Request-Timestamp": ts,
+        "X-Slack-Signature": sign(ts, body),
+      },
+      body,
+    });
+    const res = await adapter.handleHttpRequest?.(req);
+    expect(res?.status).toBe(503);
+  });
+
   test("url_verification handshake works even before any onMessage handler is registered", async () => {
     const web = makeWebClient();
     const adapter = createSlackChannel({

@@ -480,11 +480,14 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
         return new Response("OK", { status: 200 });
       }
 
-      // Fresh delivery + no handler → 503, do NOT commit dedupe. Slack
-      // retries; the cache stays empty so the retry CAN dispatch once a
-      // consumer is attached. Committing here would poison the cache and
-      // turn handler-less arrivals into permanent loss.
-      if (handlerCount === 0) {
+      // Fresh delivery + not ready → 503, do NOT commit dedupe. "Ready"
+      // means BOTH a handler is registered AND the platform dispatch
+      // path is installed. handlerCount can rise via onMessage() before
+      // connect() / onPlatformEvent(), so checking it alone isn't enough
+      // — without `dispatch` the handlers below silently no-op and we'd
+      // 200+commit despite delivering nothing. Slack retries until both
+      // sides are ready.
+      if (handlerCount === 0 || dispatch === undefined) {
         return new Response("Service Unavailable", { status: 503 });
       }
 

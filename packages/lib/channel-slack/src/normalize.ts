@@ -98,9 +98,19 @@ function normalizeMessage(event: SlackMessageEvent, botUserId: string): InboundM
     }
   }
   if (blocks.length === 0) return null;
+  // Identity resolution preserves provenance:
+  //   - human user → `event.user` (e.g. "U123")
+  //   - bot/integration with no user → `bot:<bot_id>` so distinct
+  //     bots remain distinguishable downstream
+  //   - neither present → drop, do not synthesize a shared "unknown"
+  //     principal that would collapse multiple actors into one
+  // Downstream auth/audit/dedupe keyed on senderId would otherwise
+  // make decisions on the wrong principal.
+  const senderId = event.user ?? (event.bot_id !== undefined ? `bot:${event.bot_id}` : null);
+  if (senderId === null) return null;
   return {
     content: blocks,
-    senderId: event.user ?? "unknown",
+    senderId,
     threadId: resolveThreadId(event.channel, event.thread_ts),
     timestamp: Math.floor(Number(event.ts) * 1000),
   };
