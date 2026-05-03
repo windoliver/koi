@@ -208,9 +208,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // cannot replace the manifest-declared engine with a mismatched identity
     // unless the operator passes `force: true`. Without this, manifest pin
     // is enforced only at boot — defeating the trust boundary.
+    // Pin the swap controller whenever the manifest declares ANY context
+    // pin (engine OR version). Previously version-only pins were only
+    // enforced at boot, so a later runtime swap/rollback could move the
+    // runtime onto a different version while the manifest still claimed
+    // the pinned version was in force — defeating the trust boundary.
+    const hasManifestPin =
+      manifest.context?.engine !== undefined || manifest.context?.version !== undefined;
     contextEngineSwapController = createContextEngineSwapController(
       initialEngine,
-      manifest.context?.engine !== undefined ? { pinnedIdentity: initialEngine.identity } : {},
+      hasManifestPin ? { pinnedIdentity: initialEngine.identity } : {},
     );
     const ctrlRef = contextEngineSwapController;
     // Auto-subscribe the host's `onContextEngineSwap` observer (if any).
