@@ -208,6 +208,23 @@ describe("normalize.block_action", () => {
   });
 });
 
+describe("normalize.block_action without channel", () => {
+  test("modal/home-tab interactions with no channel are dropped (no synthetic threadId)", () => {
+    const result = norm({
+      kind: "block_action",
+      action: {
+        type: "button",
+        action_id: "approve",
+        block_id: "b1",
+        value: "yes",
+        user: { id: "U9" },
+        // no channel — modal/home tab interaction
+      },
+    });
+    expect(result).toBeNull();
+  });
+});
+
 describe("resolveThreadId", () => {
   test("plain channel without thread_ts", () => {
     expect(resolveThreadId("C1")).toBe("C1");

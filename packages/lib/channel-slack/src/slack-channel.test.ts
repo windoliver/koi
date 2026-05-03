@@ -219,6 +219,7 @@ describe("@koi/channel-slack — Socket Mode", () => {
       payload: {
         type: "block_actions",
         user: { id: "U" },
+        channel: { id: "C1" },
         actions: [{ action_id: "approve", block_id: "b1", value: "yes", type: "button" }],
       },
     };
@@ -545,6 +546,7 @@ describe("@koi/channel-slack — Socket Mode", () => {
       body: {
         type: "block_actions",
         user: { id: "U1" },
+        channel: { id: "C1" },
         actions: [{ action_id: "approve", block_id: "b1", value: "yes", type: "button" }],
       },
     });
@@ -1026,6 +1028,42 @@ describe("@koi/channel-slack — HTTP Events mode", () => {
     });
     const res = await adapter.handleHttpRequest?.(req);
     expect(res?.status).toBe(503);
+  });
+
+  test("handleHttpRequest returns 400 for unsupported event_callback subtype (no silent 200+commit)", async () => {
+    const web = makeWebClient();
+    const adapter = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "http", signingSecret: SECRET },
+      clients: { webClient: web.client },
+    });
+    const received: InboundMessage[] = [];
+    adapter.onMessage(async (m) => {
+      received.push(m);
+    });
+    await adapter.connect();
+    const ts = String(Math.floor(Date.now() / 1000));
+    // reaction_added — operator subscribed but adapter doesn't dispatch it.
+    // Must surface (4xx) so the misconfiguration is visible in Slack's
+    // event-delivery dashboard, not silently committed.
+    const body = JSON.stringify({
+      type: "event_callback",
+      event_id: "Ev_unsupported",
+      event: { type: "reaction_added", user: "U1", item: { ts: "1.0" }, reaction: "+1" },
+    });
+    const req = new Request("http://x", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "X-Slack-Request-Timestamp": ts,
+        "X-Slack-Signature": sign(ts, body),
+      },
+      body,
+    });
+    const res = await adapter.handleHttpRequest?.(req);
+    expect(res?.status).toBe(400);
+    expect(received).toHaveLength(0);
+    await adapter.disconnect();
   });
 
   test("url_verification handshake works even before any onMessage handler is registered", async () => {

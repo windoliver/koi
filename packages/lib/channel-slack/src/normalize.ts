@@ -136,7 +136,14 @@ function normalizeSlashCommand(cmd: SlackSlashCommand): InboundMessage {
   };
 }
 
-function normalizeBlockAction(a: SlackBlockAction): InboundMessage {
+function normalizeBlockAction(a: SlackBlockAction): InboundMessage | null {
+  // Modal/home-tab interactions can omit `channel` — they have no
+  // routable reply target. Synthesizing `threadId: "unknown"` would
+  // collapse unrelated interactions onto one fake conversation key
+  // and any reply attempt would post to channel `"unknown"`. Drop
+  // here; downstream handlers that need to react to non-channel
+  // interactions should subscribe to a different surface.
+  if (a.channel === undefined) return null;
   return {
     content: [
       {
@@ -150,8 +157,7 @@ function normalizeBlockAction(a: SlackBlockAction): InboundMessage {
       },
     ],
     senderId: a.user.id,
-    threadId:
-      a.channel !== undefined ? resolveThreadId(a.channel.id, a.message?.thread_ts) : "unknown",
+    threadId: resolveThreadId(a.channel.id, a.message?.thread_ts),
     timestamp: Date.now(),
   };
 }

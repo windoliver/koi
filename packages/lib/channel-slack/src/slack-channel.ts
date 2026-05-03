@@ -366,18 +366,21 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
       : {}),
   });
 
-  function dispatchHttpEvent(payload: unknown): void {
-    if (dispatch === undefined || typeof payload !== "object" || payload === null) return;
+  function dispatchHttpEvent(payload: unknown): boolean {
+    if (dispatch === undefined || typeof payload !== "object" || payload === null) return false;
     const p = payload as Record<string, unknown>;
-    if (p.type === "event_callback") {
-      const inner = p.event as Record<string, unknown> | undefined;
-      const innerType = inner?.type;
-      if (innerType === "app_mention") {
-        dispatch({ kind: "app_mention", event: inner as never });
-      } else if (innerType === "message") {
-        dispatch({ kind: "message", event: inner as never });
-      }
+    if (p.type !== "event_callback") return false;
+    const inner = p.event as Record<string, unknown> | undefined;
+    const innerType = inner?.type;
+    if (innerType === "app_mention") {
+      dispatch({ kind: "app_mention", event: inner as never });
+      return true;
     }
+    if (innerType === "message") {
+      dispatch({ kind: "message", event: inner as never });
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -502,7 +505,16 @@ export function createSlackChannel(config: SlackChannelConfig): SlackChannelAdap
         return new Response("", { status: 200 });
       }
 
-      dispatchHttpEvent(parsed);
+      const dispatched = dispatchHttpEvent(parsed);
+      if (!dispatched) {
+        // Unsupported event_callback subtype (e.g. operator subscribed to
+        // reaction_added). Fail loud rather than silently 200+commit:
+        // Slack surfaces 4xx responses in the app's event-delivery
+        // dashboard so the misconfiguration is visible. Do NOT commit
+        // dedupe — if support is added later, queued deliveries can be
+        // replayed without dedupe collisions.
+        return new Response("Unsupported event type", { status: 400 });
+      }
       // Commit AFTER dispatch — the delivery is now considered handled.
       dedupe.commit(dedupeKey, now);
       return new Response("OK", { status: 200 });
