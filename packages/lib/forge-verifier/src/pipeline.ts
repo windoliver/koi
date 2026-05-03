@@ -129,23 +129,48 @@ export async function runPipeline<I>(
   const namespace = options?.namespace ?? "";
   const cache = options?.cache;
   const signal = options?.signal;
+
+  // Snapshot the artifact via structuredClone before BOTH fingerprinting
+  // AND running stages. This binds the cache key, the verification work,
+  // and the cached pass result to the same immutable bytes — a stage
+  // cannot mutate nested artifact content after the fingerprint is
+  // computed and cause a later run to receive a cached pass for content
+  // it never verified. structuredClone handles Date, Map, Set, typed
+  // arrays, etc.; functions and class instances are out of scope and
+  // will throw — surface that as INVALID_CONFIG.
+  let snapshot: I;
+  try {
+    snapshot =
+      artifact !== null && typeof artifact === "object" ? structuredClone(artifact) : artifact;
+  } catch (e: unknown) {
+    return {
+      ok: false,
+      error: {
+        code: "INVALID_CONFIG",
+        message: "Artifact is not structured-cloneable; verifier requires plain-data artifacts.",
+        retryable: RETRYABLE_DEFAULTS.INVALID_CONFIG,
+        cause: e,
+      },
+    };
+  }
+  // Sandbox is derived from the static stage declarations, never from
+  // arbitrary stage runtime self-reports — same source on fresh runs and
+  // cache hits, so the trust signal cannot diverge across cache state.
+  const declaredSandbox = stages.some((s) => s.sandboxed === true);
+
   const composedKey =
     fingerprint !== undefined && cache !== undefined
-      ? composeCacheKey(namespace, fingerprint(artifact), stages)
+      ? composeCacheKey(namespace, fingerprint(snapshot), stages)
       : undefined;
 
   if (composedKey !== undefined && cache !== undefined) {
     const hit = await cache.get(composedKey);
     if (hit !== undefined && isCachedSummaryConsistent(hit, stages)) {
-      // Recompute `sandbox` from declared stage capabilities — never trust
-      // a cached `sandbox: true` from a hostile or buggy backend, since the
-      // current stage list may not actually exercise a sandbox.
-      const sandboxFromStages = stages.some((s) => s.sandboxed === true);
       return {
         ok: true,
         value: freezeSummary({
           passed: hit.passed,
-          sandbox: sandboxFromStages,
+          sandbox: declaredSandbox,
           totalDurationMs: hit.totalDurationMs,
           stageResults: hit.stageResults,
         }),
@@ -154,19 +179,8 @@ export async function runPipeline<I>(
     // Inconsistent or malformed hit — treat as a miss and re-verify.
   }
 
-  // Treat the artifact as immutable for the duration of verification so a
-  // stage cannot mutate it after the cache fingerprint has been computed.
-  // Shallow `Object.freeze` is what's portable across arbitrary `I`; deep
-  // freezing arbitrary user data is unsafe (Date, Map, class instances).
-  // Stages that need to normalize an artifact must produce a new value.
-  if (artifact !== null && typeof artifact === "object") {
-    Object.freeze(artifact);
-  }
-
-  // let justified: digests accumulates immutably-replaced array as stages run;
-  // sandbox folds in optional sandboxed flags from successful stage outcomes.
+  // let justified: digests accumulates immutably-replaced array as stages run.
   let digests: readonly ForgeStageDigest[] = [];
-  let sandbox = false;
   let totalDurationMs = 0;
 
   for (const stage of stages) {
@@ -185,7 +199,7 @@ export async function runPipeline<I>(
       previous: Object.freeze(digests.map((d) => Object.freeze({ ...d }))),
       ...(signal !== undefined ? { signal } : {}),
     };
-    const { outcome, durationMs, thrown } = await runStage(stage, artifact, ctx);
+    const { outcome, durationMs, thrown } = await runStage(stage, snapshot, ctx);
     totalDurationMs += durationMs;
 
     if (!outcome.ok) {
@@ -200,10 +214,22 @@ export async function runPipeline<I>(
       };
     }
 
-    digests = [...digests, { stage: stage.name, passed: true, durationMs }];
-    if (outcome.sandboxed === true) {
-      sandbox = true;
+    // Validate that the stage's runtime self-report agrees with its static
+    // declaration. A stage that returns sandboxed:true without declaring
+    // sandboxed:true (or vice versa) makes the cached/fresh sandbox values
+    // diverge — fail closed at config boundary instead.
+    if ((outcome.sandboxed ?? false) !== (stage.sandboxed ?? false)) {
+      return {
+        ok: false,
+        error: stageError(
+          "INVALID_CONFIG",
+          stage.name,
+          `Stage "${stage.name}" runtime sandboxed=${outcome.sandboxed === true} disagrees with static sandboxed=${stage.sandboxed === true}.`,
+        ),
+      };
     }
+
+    digests = [...digests, { stage: stage.name, passed: true, durationMs }];
 
     // Re-check abort *after* every stage (including the last) and *before*
     // returning success. A long-running stage that finishes after the signal
@@ -227,7 +253,7 @@ export async function runPipeline<I>(
   // retained reference.
   const summary = freezeSummary({
     passed: true,
-    sandbox,
+    sandbox: declaredSandbox,
     totalDurationMs,
     stageResults: digests,
   });

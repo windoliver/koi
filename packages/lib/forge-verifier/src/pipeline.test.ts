@@ -183,15 +183,27 @@ describe("runPipeline", () => {
     expect(seen).toEqual([0, 1, 2]);
   });
 
-  test("sandboxed flag from a stage flows into summary.sandbox", async () => {
+  test("sandboxed declaration flows into summary.sandbox", async () => {
     const stages: readonly VerifierStage<FakeArtifact>[] = [
       { name: "plain", run: async () => PASS },
-      { name: "sb", run: async () => ({ ok: true, sandboxed: true }) },
+      { name: "sb", sandboxed: true, run: async () => ({ ok: true, sandboxed: true }) },
     ];
     const result = await runPipeline(stages, artifact);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.sandbox).toBe(true);
+  });
+
+  test("stage runtime sandboxed flag must agree with static declaration", async () => {
+    const stages: readonly VerifierStage<FakeArtifact>[] = [
+      // Declared not-sandboxed but reports sandboxed=true at runtime — mismatch.
+      { name: "lying", run: async () => ({ ok: true, sandboxed: true }) },
+    ];
+    const result = await runPipeline(stages, artifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+    expect(result.error.context?.stage).toBe("lying");
   });
 });
 
@@ -437,25 +449,61 @@ describe("runPipeline — security regressions", () => {
     expect(result.value.sandbox).toBe(true);
   });
 
-  test("artifact is frozen for the duration of verification", async () => {
-    const obj: { name: string; mutated?: boolean } = { name: "frozen-test" };
-    let captured: typeof obj | undefined;
+  test("stages receive a deep snapshot — caller object cannot be mutated", async () => {
+    const obj: { name: string; nested: { count: number }; mutated?: boolean } = {
+      name: "snapshot-test",
+      nested: { count: 1 },
+    };
+    let receivedNested: { count: number } | undefined;
     const stage: VerifierStage<typeof obj> = {
       name: "mutator",
       run: async (a) => {
-        captured = a;
-        // Stages that try to mutate the artifact must throw, not silently corrupt
-        // the value before later stages see it or the cache fingerprint has it.
-        expect(() => {
-          a.mutated = true;
-        }).toThrow();
+        receivedNested = a.nested;
+        // Mutating the snapshot is allowed (it's the cloned copy), but the
+        // caller's object MUST be untouched.
+        a.mutated = true;
+        a.nested.count = 999;
         return PASS;
       },
     };
     const result = await runPipeline([stage], obj);
     expect(result.ok).toBe(true);
-    expect(captured).toBe(obj);
+    // Deep clone — nested object is a different reference.
+    expect(receivedNested).not.toBe(obj.nested);
     expect(obj.mutated).toBeUndefined();
+    expect(obj.nested.count).toBe(1);
+  });
+
+  test("artifact that is not structured-cloneable is rejected", async () => {
+    // Functions are not cloneable.
+    const fn = () => 42;
+    const stages = [createSyntaxStage(okCheck)];
+    const result = await runPipeline(stages, { fn } as unknown as FakeArtifact);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_CONFIG");
+  });
+
+  test("fresh and cached runs produce the same sandbox value", async () => {
+    const cache = createMemoryCache();
+    const sb: VerifierStage<FakeArtifact> = {
+      name: "sb",
+      sandboxed: true,
+      run: async () => ({ ok: true, sandboxed: true }),
+    };
+    const fresh = await runPipeline([sb], artifact, {
+      artifactFingerprint: () => "k",
+      cache,
+    });
+    const cached = await runPipeline([sb], artifact, {
+      artifactFingerprint: () => "k",
+      cache,
+    });
+    expect(fresh.ok).toBe(true);
+    expect(cached.ok).toBe(true);
+    if (!fresh.ok || !cached.ok) return;
+    expect(fresh.value.sandbox).toBe(cached.value.sandbox);
+    expect(cached.value.sandbox).toBe(true);
   });
 
   test("empty stages list is rejected — fail-closed against misconfiguration", async () => {

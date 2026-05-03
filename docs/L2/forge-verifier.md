@@ -100,30 +100,27 @@ via the same `VerifierStage` interface.
 ### Sandbox flag
 
 `ForgeVerificationSummary.sandbox: boolean` asserts at least one stage
-executed the artifact in an isolation boundary. Computation depends on
-the path:
+executed the artifact in an isolation boundary. **One canonical
+source**: `stages.some(s => s.sandboxed === true)`. The same
+expression computes the value on fresh runs and cache hits, so the
+trust signal cannot diverge across cache state. Stages that report
+`StageOutcome.sandboxed` at runtime must agree with their static
+`VerifierStage.sandboxed` declaration; mismatch returns
+`INVALID_CONFIG` rather than committing an incoherent summary.
 
-- **Fresh runs**: OR-fold of `StageOutcome.sandboxed` returned by each
-  stage that ran successfully (the producer's self-report).
-- **Cache hits**: recomputed from the current stage list as
-  `stages.some(s => s.sandboxed === true)`. The cached `sandbox` bit
-  is **never trusted** — a hostile cache backend cannot forge the
-  trust signal because the orchestrator overrides it on every read.
+### Artifact snapshotting
 
-Stages that sandbox should declare `sandboxed: true` on their
-`VerifierStage` value AND return `sandboxed: true` from `run` so both
-paths agree.
+`runPipeline` calls `structuredClone(artifact)` before computing the
+cache fingerprint AND before running any stage. The snapshot — not
+the caller's object — is what gets fingerprinted, what stages
+receive, and what the cached pass attests to. A stage that tries to
+mutate the snapshot does NOT alter the caller's artifact, and no
+stage can mutate nested content between fingerprint computation and
+verification.
 
-### Artifact immutability during verification
-
-`runPipeline` `Object.freeze`s the artifact (when it is a non-null
-object) before any stage executes. A stage that mutates the artifact
-between fingerprint computation and verification would otherwise let
-a cached pass attach to the wrong content. Deep freezing arbitrary
-generics is unsafe (Date, Map, class instances, etc.), so the freeze
-is shallow — stages that need to normalize an artifact must produce
-and return a new value via separate channels rather than in-place
-mutation.
+Artifacts that contain functions, class instances, or other
+non-cloneable values are rejected with `INVALID_CONFIG` rather than
+silently bypassed — verifier inputs must be plain data.
 
 ## Error Mapping
 
