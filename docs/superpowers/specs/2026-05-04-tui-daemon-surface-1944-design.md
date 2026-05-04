@@ -666,30 +666,34 @@ restart policy can replace the live process between row selection and
 confirm. We detect this via the registry's `version` field, which the
 existing `attachRegistry` bridge already advances on every transition.
 
-**Action availability per row** (BgView gates `k` on row state AND
-local-supervisor ownership — `/bg` lists the global per-state-dir
-registry, which can carry foreign rows from other processes' supervisors;
-on-path `supervisor.stop()` returns `NOT_FOUND` for foreign workers and
-must NEVER be attempted):
+**Action availability per row** (BgView gates `k` on local-supervisor
+ownership — `/bg` lists the global per-state-dir registry, which can
+carry foreign rows from other processes' supervisors; on-path
+`supervisor.stop()` returns `NOT_FOUND` for foreign workers and must
+never be attempted):
 
-| Row status | Owned locally? | `k` available? | Action |
-|------------|:--:|:--:|--------|
-| `running` | yes | ✅ | confirm → on-path supervisor.stop |
-| `starting` | yes | ❌ | hint: "starting…; wait or use `koi bg kill <id>` if hung" — see note |
-| `running` | no (foreign) | ❌ | hint: "foreign worker; use `koi bg kill <id>` from a separate shell" |
-| `terminating` | any | ❌ | hint: "kill in flight; wait" |
-| `detached` | any | ❌ | hint: "use `koi bg kill <id>` from a separate shell, or `koi bg attach`" |
-| `exited`, `crashed` | any | ❌ | hint: "already terminal" |
+| Row condition | `k` available? | Action |
+|---------------|:--:|--------|
+| Locally owned (`workerId ∈ supervisor.health().workers`) | ✅ | confirm → `supervisor.stop(workerId, "user-requested")` |
+| Foreign `running` | ❌ | hint: "foreign worker; use `koi bg kill <id>` from a separate shell" |
+| Locally-owned `terminating` (kill already in flight) | ❌ | hint: "kill in flight; wait" |
+| Locally-owned but bridge already reading terminal status (`exited`/`crashed` AND no live health override) | ❌ | hint: "already terminal" |
+| `detached` (any) | ❌ | hint: "use `koi bg kill <id>` from a separate shell, or `koi bg attach`" |
+| `starting` (any — by L0 contract no `WorkerHealth` entry exists yet) | ❌ | hint: "starting…; wait or use `koi bg kill <id>` if hung" |
+
+**Includes `quarantined` and `stopping`**: locally-owned workers in
+those `WorkerHealth.state` values ARE killable from the TUI. The
+supervisor holds an `activeIds` reservation until `stop()` is retried
+to completion, so calling `supervisor.stop()` again is the canonical
+recovery path that releases the reservation and lets the workerId be
+reused. Not surfacing `k` for these states would strand them.
 
 **Why `starting` is not killable from the TUI**: `WorkerHealth.state`
 only takes values `running | restarting | quarantined | stopping`. A
 worker in registry status `starting` has not yet emitted a `started`
 event and therefore has no `health.workers[]` entry — local ownership
-cannot be proven via the health snapshot. Falsely allowing kill could
-target a worker the local supervisor never spawned, or race a not-yet-
-registered worker. Recovery for hung-startup workers is the off-path
-`koi bg kill <id>` flow, which handles PID-by-fingerprint without
-requiring health-snapshot membership.
+cannot be proven via the health snapshot. Recovery for hung-startup
+workers is the off-path `koi bg kill <id>` flow.
 
 Ownership is determined by intersecting the registry record's `workerId`
 with `supervisor.health().workers.map(w => w.workerId)`. The per-worker
@@ -706,156 +710,63 @@ stranded-claim resume, and pid-aware CAS. Reimplementing those
 guarantees in the TUI bridge would duplicate ~200 LOC of subtle race
 handling. Pointing operators at `koi bg kill` is the correct contract.
 
-For supported rows (`running`/`starting`):
+For locally-owned rows (`workerId ∈ supervisor.health().workers`):
 
-1. `BgView`: user presses `k` on a row → dispatch
+`supervisor.stop()` is the source of truth and emits `exited` (verified
+by the existing regression test
+`packages/net/daemon/src/__tests__/supervisor.test.ts:1227` —
+*"SIGTERM via stop() reports exited, not crashed"*). The `attachRegistry`
+bridge already maps that `exited` event to a `running → exited`
+registry transition. **No pre-stop registry CAS is required** — adding
+one would create a second state machine for the on-path case, with its
+own rollback failure modes that strand rows in `terminating`. The
+off-path `runKill` flow in `bg.ts` keeps its terminating-claim CAS
+because it has no in-process supervisor to commit to a stop intent
+atomically — the TUI does.
+
+1. `BgView`: user presses `k` on a locally-owned row → dispatch
    `set_bg_kill_confirm({ workerId, version, pid })` capturing the
-   identity the operator saw.
+   identity the operator saw (used for respawn-race detection only).
 2. Modal renders. `y` → call
    `onCommand("system:bg-kill", { workerId, expectedVersion, expectedPid })`.
 3. `tui-root` routes to
    `bridge.requestKill({ workerId, expectedVersion, expectedPid })`.
-4. Bridge re-reads the live record using the **strict** read so I/O
-   faults cannot collapse to a false "already gone":
-   `result = await registry.describe(workerId as WorkerId)`.
-   - **`result.ok: false`** — registry is unreadable (permission denied,
-     corruption, transient I/O fault). Toast
-     `"⚠ registry unavailable: ${err.message}; aborting kill"` and
-     return without calling `supervisor.stop`. NEVER attempt to kill on
-     unreadable registry state — recovery requires fixing the registry
-     first.
-   - From here, `current = result.value` — typed
-     `BackgroundSessionRecord | undefined`.
-   - **`current === undefined`** — successful empty read. Record was
-     unregistered (retention sweep finalized). Toast
-     `"⚠ worker <id> already gone"`, return.
-   - **`current.status === "exited" | "crashed"`** — already terminal.
-     Toast `"⚠ worker <id> is ${status}"`, return.
-   - **`current.status === "terminating"`** — kill already in flight from
-     another caller. Toast `"⚠ worker <id> kill already in progress"`,
-     return.
-   - **`current.version !== expectedVersion || current.pid !== expectedPid`**
-     — the worker was respawned under the same `workerId` since the
-     operator selected the row. Toast `"⚠ worker <id> respawned; refresh
-     and try again"`, return. **No `supervisor.stop` call** — never kill
-     a process the operator did not pick.
-   - **`current.status === "detached"`** — backend (e.g. tmux) detached
-     the worker; the supervisor no longer owns the OS process and
-     `supervisor.stop` is a no-op. Toast `"⚠ worker <id> is detached;
-     reattach with `koi bg attach` first"`, return.
-5. **Atomic claim + stop, with full rollback** — the on-path TUI kill is
-   not the same race as the off-path CLI kill. `bg.ts` runKill stamps
-   `signaledAt` only after SIGTERM is delivered because there is no
-   in-process supervisor to commit to a stop intent atomically. Inside
-   the TUI, however, we need `signaledAt` to be present BEFORE the
-   supervisor publishes the terminal `exited`/`crashed` event, otherwise
-   `attachRegistry` will classify the operator-initiated stop as a
-   crash. (The supervisor can publish the terminal event between
-   `stop()` returning and any post-stop registry write — there is no
-   way to interpose another atomic write.)
-
-   Solution: write the full kill claim — `terminating` + `signaledAt`
-   together — in a single CAS update BEFORE calling `supervisor.stop`.
-   On stop failure, the rollback CAS clears BOTH the status and the
-   `signaledAt` stamp atomically, so a follow-up genuine crash is not
-   biased toward classification as intentional. This matches the
-   atomicity property `attachRegistry` actually depends on (one
-   freshness-window-defining write, not two).
-
-5a. **Phase 1 — atomic terminating + signaledAt claim**:
-
-```typescript
-// Capture pre-claim status so a failed stop can revert to the EXACT
-// prior status (not assume "running"). Action gate already proved
-// status ∈ {running, starting}, but a worker mid-startup may have
-// any of those.
-const preClaimStatus = current.status;  // "running" | "starting"
-
-const claim = await registry.update(workerId as WorkerId, {
-  status: "terminating",
-  signaledAt: Date.now(),                  // atomic with status flip
-  expectedVersion: current.version ?? 0,  // CAS guard against respawn
-  expectedPid: current.pid,                // pin to the exact process
-});
-if (!claim.ok) {
-  if (claim.error.code === "CONFLICT") {
-    pushToast(`⚠ worker ${workerId} respawned mid-kill; aborting`);
-    return;
-  }
-  pushToast(`⚠ failed to claim kill on ${workerId}: ${claim.error.message}`);
-  return;
-}
-const claimedVersion = claim.value.version ?? 0;
-```
-
-   The `terminating` claim flips the `/bg` row's freshness to
-   `terminating` (kill-in-flight yellow) on the next poll.
-
-5b. **Phase 2 — supervisor stop, with atomic rollback on failure**:
-
-```typescript
-const stopResult = await supervisor.stop(workerId, "user-requested");
-if (!stopResult.ok) {
-  // Stop failed (NOT_FOUND, INVALID_STATE, etc.). Atomic rollback:
-  // restore EXACT prior status AND clear the signaledAt stamp in a
-  // single CAS update. The rollback is itself a CAS write that can
-  // fail (CONFLICT if the bridge advanced state past our claim;
-  // I/O failure if the registry is unreadable). We MUST inspect the
-  // result — never fire-and-forget — because a failed rollback leaves
-  // a live `terminating` + `signaledAt` claim that biases future
-  // crash classification toward intentional.
-  const rollback = await registry.update(workerId as WorkerId, {
-    status: preClaimStatus,                 // EXACT prior status
-    clearSignaledAt: true,                  // wipe the intent marker
-    expectedVersion: claimedVersion,
-    expectedPid: current.pid,
-  });
-  if (!rollback.ok) {
-    if (rollback.error.code === "CONFLICT") {
-      // Bridge advanced the record (e.g. worker died during the failed
-      // stop attempt). The terminal write already discharged the claim.
-      // Acceptable; nothing else to do.
-    } else {
-      // I/O fault, corruption, etc. Surface explicitly so operators
-      // know the row may be stuck in `terminating`.
-      pushToast(
-        `⚠ supervisor.stop failed AND rollback failed (${rollback.error.code}); ` +
-        `worker ${workerId} may be stuck in 'terminating' — check registry`,
-      );
-      // Schedule a single bounded retry after 1s; if that also fails,
-      // give up and let the operator intervene. Never silently retry
-      // forever — the registry may be unrecoverable.
-      setTimeout(() => {
-        void registry.update(workerId as WorkerId, {
-          status: preClaimStatus,
-          clearSignaledAt: true,
-          expectedVersion: claimedVersion,
-          expectedPid: current.pid,
-        }).then(retry => {
-          if (!retry.ok && retry.error.code !== "CONFLICT") {
-            pushToast(`⚠ rollback retry failed; manual recovery required`);
-          }
-        }).catch(() => { /* logged elsewhere */ });
-      }, 1000);
-      return;
-    }
-  }
-  pushToast(`⚠ supervisor.stop failed: ${stopResult.error.message}`);
-  return;
-}
-// Stop accepted. The signaledAt stamp from Phase 1 is already present,
-// so attachRegistry's freshness window correctly classifies the
-// upcoming exited/crashed event as intentional. No further write needed.
-```
-
-   - `stopResult.ok: true` → supervisor publishes `exited` to
-     `watchAll()` (the L0 `WorkerEvent` union has no separate `stopped`
-     kind; clean stops are `exited` with `code: 0`); `attachRegistry`
-     sees the existing `signaledAt` stamp and writes `status: "exited"`,
-     not `"crashed"`. Next poll refreshes the row.
+4. **Best-effort respawn-race check** (does NOT block kill on registry
+   unreadability — local stop authority must work even when state-dir
+   is degraded):
+   - `result = await registry.describe(workerId as WorkerId)`.
+   - `result.ok: true, value !== undefined` AND
+     `(value.version !== expectedVersion || value.pid !== expectedPid)`
+     — worker was respawned under the same `workerId` since the
+     operator selected the row. Toast `"⚠ worker <id> respawned;
+     refresh and try again"` and return. **No `supervisor.stop` call**
+     — never kill a process the operator did not pick.
+   - Any other outcome (Result.ok: false, undefined record, version+pid
+     match) → proceed to step 5. If the registry is unreadable we log
+     the fault but trust the supervisor's own ownership signal (we
+     already proved local ownership via `supervisor.health().workers`
+     before opening the modal).
+5. `await supervisor.stop(workerId, "user-requested")`.
+   - `Result.ok: true` → supervisor emits `exited` (NOT `crashed`,
+     per the regression test). `attachRegistry` flips the registry row
+     `running → exited`. Next poll refreshes `/bg`. Done.
+   - `Result.ok: false` → toast
+     `"⚠ supervisor.stop failed: ${err.message}"`. Common cases:
+     `NOT_FOUND` (worker already gone — benign; row will reconcile on
+     next poll), `INVALID_STATE` (supervisor shutting down — benign).
+     No registry mutation by the bridge in either case.
 
 6. Cancel paths (`n` or Esc on the modal) → dispatch
    `set_bg_kill_confirm({ confirm: null })`. No supervisor calls made.
+
+**Why no pre-stop CAS:**
+- `supervisor.stop()` already emits `exited` for clean stops; the
+  registry transition is correct without any pre-stamp.
+- A failed pre-stop CAS would block kill on registry health — exactly
+  the failure mode (registry unreadable) where the operator most needs
+  the local supervisor handle.
+- Rollback of a stranded `terminating` claim is its own brittle
+  protocol; the simplest correct design is to never enter that state.
 
 ### Log tail
 
@@ -994,43 +905,29 @@ on the right side: governance segment, then supervisor segment, separator
   - Worker disappearing between health snapshots does not synthesize a
     fake terminal event — only the next push event is authoritative.
   - `health` ok→degraded transition fires toast (not on every tick).
-  - `requestKill` happy path: atomic CAS write of
-    `{ status: "terminating", signaledAt: now }` precedes
-    `supervisor.stop(workerId, "user-requested")`. Verified via call
-    order spy. Subsequent `exited` event is classified intentional
-    (record flips terminating → exited, not crashed) because the
-    signaledAt stamp is already in the freshness window when the
-    bridge processes the event.
-  - `requestKill` aborts on Phase 1 CAS conflict — never calls
-    `supervisor.stop` if registry update returns `CONFLICT`.
-  - `requestKill` uses `registry.describe()` for the pre-kill re-read,
-    NOT `registry.get()`. A `Result.ok: false` from `describe()`
-    surfaces as a registry-unavailable toast; `supervisor.stop` is
-    never called. A successful `Result.ok: true` with `value: undefined`
-    is the only path that toasts "already gone".
-  - **Atomic rollback**: when `supervisor.stop` returns `Result.ok:
-    false`, the rollback CAS writes `{ status: preClaimStatus,
-    clearSignaledAt: true }` together — restoring EXACT prior status
-    AND wiping the intent marker. Cover both `running → terminating →
-    running` and `starting → terminating → starting`. A follow-up
-    genuine crash after rollback is correctly classified as `crashed`,
-    not `exited`, proving the stamp was actually cleared.
-  - **Race regression test**: simulate a worker that exits during
-    `supervisor.stop` (terminal event lands inline with stop's resolve).
-    With the atomic Phase 1 stamp, classification is intentional. Test
-    that swapping to a delayed-stamp variant reproduces the misclassify
-    — guards the design from drifting back to a racy two-phase write.
-  - **Rollback CAS conflict path**: `supervisor.stop` returns
-    `Result.ok: false`; rollback returns `CONFLICT` (bridge advanced
-    state past our claim). Bridge swallows the conflict — acceptable
-    because the terminal write discharged the intent — and surfaces
-    only the original stop-failure toast.
-  - **Rollback I/O failure path**: `supervisor.stop` fails; rollback
-    returns a non-CONFLICT error. Bridge surfaces an explicit
-    "stuck in terminating; check registry" toast AND schedules one
-    1s-delayed retry. Retry success → no further toast. Retry also
-    failing with non-CONFLICT → "manual recovery required" toast.
-    Test asserts no infinite retry loop.
+  - `requestKill` happy path: bridge calls
+    `supervisor.stop(workerId, "user-requested")` directly without any
+    pre-stop registry mutation. The supervisor's existing
+    `exited`-classification regression test (`supervisor.test.ts:1227`)
+    covers the registry transition end-to-end via `attachRegistry`.
+  - `requestKill` performs a best-effort respawn-race check via
+    `registry.describe()` BEFORE calling `supervisor.stop`. Mismatched
+    `version` or `pid` aborts the kill with the "respawned" toast.
+  - **Registry-unreadable does NOT block kill**: when
+    `registry.describe()` returns `Result.ok: false`, the bridge logs
+    the fault but proceeds to call `supervisor.stop` because local
+    ownership was already proven via `supervisor.health().workers`.
+    Test fixture: stub describe to fail with PERMISSION_DENIED;
+    assert supervisor.stop is still invoked.
+  - `supervisor.stop` returning `Result.ok: false` (NOT_FOUND,
+    INVALID_STATE) surfaces as a toast; bridge does not mutate the
+    registry. A subsequent legitimate event still flows through
+    attachRegistry without contamination.
+  - **Quarantine recovery**: locally-owned worker with
+    `WorkerHealth.state: "quarantined"`. Pressing `k` confirm calls
+    `supervisor.stop`; supervisor releases `activeIds` reservation.
+    Test verifies the workerId can be respawned afterward (no
+    CONFLICT on subsequent `start`).
   - `requestKill` refuses for foreign rows: when row's `workerId` is
     NOT in `supervisor.health().workers.map(w => w.workerId)`, the action is
     gated off in BgView (no `k` available). Bridge `requestKill` also
@@ -1152,15 +1049,16 @@ calls. Existing daemon golden queries cover supervisor lifecycle.
       foreign-owned `running` rows (workerId not in
       `supervisor.health().workers`); each disabled state shows the
       correct hint.
-- [ ] On-path kill performs a single atomic CAS write of
-      `{ status: "terminating", signaledAt }` BEFORE calling
-      `supervisor.stop`. On `Result.ok: false`, an atomic rollback CAS
-      writes `{ status: preClaimStatus, clearSignaledAt: true }` —
-      restoring the EXACT prior status AND wiping the intent marker
-      together so a follow-up genuine crash classifies as `crashed`,
-      not `exited`. A delayed/post-stop `signaledAt` write is NOT
-      acceptable: it races the terminal event and misclassifies clean
-      stops as crashes.
+- [ ] On-path kill calls `supervisor.stop()` directly with NO pre-stop
+      registry mutation. `supervisor.stop()` already emits `exited`
+      (per `supervisor.test.ts:1227`), so `attachRegistry` writes
+      `running → exited` without any TUI-side claim. A registry-read
+      failure from `describe()` MUST NOT block the stop call — local
+      ownership comes from `supervisor.health().workers`, not registry
+      readability.
+- [ ] Locally-owned `quarantined` and `stopping` rows expose `k` and
+      route through `supervisor.stop()`, releasing the `activeIds`
+      reservation so the workerId can be reused.
 - [ ] Manifest without `supervision:` and in-process-only `supervision:`
       both render no badge; in-process supervision keeps showing in
       `/agents` Supervised section as before.
