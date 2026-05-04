@@ -638,4 +638,104 @@ describe("createSnapshotStoreNexus", () => {
     expect(got.ok).toBe(true);
     if (got.ok) expect(got.value.data.v).toBe(10);
   });
+
+  // --- Fix 2 (round 7): list and ancestors propagate non-NOT_FOUND errors (#1405) ---
+
+  test("list: INTERNAL error on readNode propagates instead of silently skipping", async () => {
+    // If a canonical file contains corrupt/unparseable JSON, readNode returns INTERNAL.
+    // list() must propagate it, not silently drop the node.
+    const transport = createFakeNexusTransport();
+    const store = createSnapshotStoreNexus<TData>({ transport });
+    const cid = chainId("c-list-corrupt");
+    const n1 = await store.put(cid, { v: 1 }, []);
+    const n2 = await store.put(cid, { v: 2 }, []);
+    if (!n1.ok || n1.value === undefined || !n2.ok || n2.value === undefined)
+      throw new Error("setup failed");
+
+    // Overwrite n1's canonical file with corrupt JSON to trigger a parse error (INTERNAL).
+    const wr = await transport.call<unknown>("write", {
+      path: `snapshots/_nodes/${n1.value.nodeId}.json`,
+      content: "{corrupt json!!!",
+    });
+    expect(wr.ok).toBe(true);
+
+    // list() must propagate the INTERNAL parse error, not silently skip n1.
+    const result = await store.list(cid);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("INTERNAL");
+  });
+
+  test("list: NOT_FOUND on a listed node is tolerated (concurrent prune race)", async () => {
+    // If meta lists a node but its canonical file has been deleted (concurrent prune),
+    // list must silently skip it, not propagate the error.
+    const transport = createFakeNexusTransport();
+    const store = createSnapshotStoreNexus<TData>({ transport });
+    const cid = chainId("c-list-tolerate-nf");
+    const n1 = await store.put(cid, { v: 5 }, []);
+    const n2 = await store.put(cid, { v: 6 }, []);
+    if (!n1.ok || n1.value === undefined || !n2.ok || n2.value === undefined)
+      throw new Error("setup failed");
+
+    // Delete n1's canonical — simulates concurrent prune race.
+    await transport.call<unknown>("delete", {
+      path: `snapshots/_nodes/${n1.value.nodeId}.json`,
+    });
+
+    const result = await store.list(cid);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Only n2 survives; n1 is silently skipped.
+      expect(result.value.length).toBe(1);
+      if (result.value[0] !== undefined) expect(result.value[0].data.v).toBe(6);
+    }
+  });
+
+  test("ancestors: NOT_FOUND on a parent returns INTERNAL dangling-edge error", async () => {
+    // If a parent nodeId referenced in node.parentIds cannot be found,
+    // ancestors must return INTERNAL (dangling parent edge) — not silently stop.
+    const transport = createFakeNexusTransport();
+    const store = createSnapshotStoreNexus<TData>({ transport });
+    const cid = chainId("c-ancestors-dangling");
+    const root = await store.put(cid, { v: 1 }, []);
+    if (!root.ok || root.value === undefined) throw new Error("root put failed");
+    const child = await store.put(cid, { v: 2 }, [root.value.nodeId]);
+    if (!child.ok || child.value === undefined) throw new Error("child put failed");
+
+    // Delete the root canonical file — child still references it as parentId.
+    await transport.call<unknown>("delete", {
+      path: `snapshots/_nodes/${root.value.nodeId}.json`,
+    });
+
+    const result = await store.ancestors({ startNodeId: child.value.nodeId });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("INTERNAL");
+      expect(result.error.message).toContain("dangling parent edge");
+    }
+  });
+
+  test("ancestors: non-NOT_FOUND error on parent read propagates directly", async () => {
+    // If reading a parent fails with INTERNAL (e.g. corrupt canonical file),
+    // ancestors must propagate it rather than silently stopping the walk.
+    const transport = createFakeNexusTransport();
+    const store = createSnapshotStoreNexus<TData>({ transport });
+    const cid = chainId("c-ancestors-corrupt-parent");
+    const root = await store.put(cid, { v: 1 }, []);
+    if (!root.ok || root.value === undefined) throw new Error("root put failed");
+    const child = await store.put(cid, { v: 2 }, [root.value.nodeId]);
+    if (!child.ok || child.value === undefined) throw new Error("child put failed");
+
+    // Overwrite parent's canonical file with unparseable content.
+    // readJson will fail to parse it and return an INTERNAL error.
+    const wr = await transport.call<unknown>("write", {
+      path: `snapshots/_nodes/${root.value.nodeId}.json`,
+      content: "not valid json {{{",
+    });
+    expect(wr.ok).toBe(true);
+
+    const result = await store.ancestors({ startNodeId: child.value.nodeId });
+    expect(result.ok).toBe(false);
+    // Parse failure surfaces as INTERNAL (not silently skipped).
+    if (!result.ok) expect(result.error.code).toBe("INTERNAL");
+  });
 });

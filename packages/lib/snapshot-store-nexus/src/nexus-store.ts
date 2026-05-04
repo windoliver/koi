@@ -256,7 +256,13 @@ export function createSnapshotStoreNexus<T>(
       const id = ids[i];
       if (id === undefined) continue;
       const r = await readNode(id);
-      if (r.ok) out.push(r.value);
+      if (r.ok) {
+        out.push(r.value);
+      } else if (r.error.code !== "NOT_FOUND") {
+        // Propagate unexpected errors (EXTERNAL, INTERNAL, etc.).
+        // NOT_FOUND is tolerated: a concurrent prune can race a stale meta read.
+        return r;
+      }
     }
     return { ok: true, value: out };
   };
@@ -281,7 +287,19 @@ export function createSnapshotStoreNexus<T>(
       for (const pid of node.parentIds) {
         if (visited.has(pid)) continue;
         const pr = await get(pid);
-        if (pr.ok) queue.push([pr.value, depth + 1]);
+        if (pr.ok) {
+          queue.push([pr.value, depth + 1]);
+        } else if (pr.error.code === "NOT_FOUND") {
+          // A missing parent means the DAG has a dangling edge — this indicates
+          // corruption (child references a parent that no longer exists).
+          return {
+            ok: false,
+            error: internal(`ancestors: dangling parent edge: ${pid}`),
+          };
+        } else {
+          // EXTERNAL, INTERNAL, or other errors — propagate directly.
+          return pr;
+        }
       }
     }
     return { ok: true, value: out };
