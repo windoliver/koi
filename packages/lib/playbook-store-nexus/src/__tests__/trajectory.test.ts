@@ -58,7 +58,7 @@ describe("createNexusTrajectoryStore", () => {
     await store.append("sess-x", [makeEntry(0, "tool")]);
     await store.append("sess-y", [makeEntry(0, "tool")]);
     const sessions = await store.listSessions();
-    expect(sessions.sort()).toEqual(["sess-x", "sess-y"]);
+    expect([...sessions].sort()).toEqual(["sess-x", "sess-y"]);
   });
 
   test("colon in session id is sanitized for storage", async () => {
