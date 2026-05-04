@@ -24,6 +24,10 @@ function newStore() {
   return createNexusTrajectoryStore({ transport: createFakeNexusTransport() });
 }
 
+function newStoreWithSharedTransport(transport: ReturnType<typeof createFakeNexusTransport>) {
+  return createNexusTrajectoryStore({ transport });
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -159,5 +163,57 @@ describe("createNexusTrajectoryStore", () => {
     expect(entries.length).toBe(4);
     const ids = entries.map((e) => e.identifier).sort();
     expect(ids).toEqual(["first", "fourth", "second", "third"]);
+  });
+
+  // --- Fix 1: cross-instance correctness via per-batch file layout ---
+
+  test("two store instances against the same transport see all entries", async () => {
+    // Cross-instance: each instance gets its own per-process lock, but both
+    // write to the same underlying transport. Per-batch layout means no file
+    // collision — every append is a fresh file.
+    const transport = createFakeNexusTransport();
+    const storeA = newStoreWithSharedTransport(transport);
+    const storeB = newStoreWithSharedTransport(transport);
+    await Promise.all([
+      storeA.append("shared-session", [makeEntry(0, "from-a-1"), makeEntry(1, "from-a-2")]),
+      storeB.append("shared-session", [makeEntry(2, "from-b-1"), makeEntry(3, "from-b-2")]),
+    ]);
+    const entries = await storeA.getSession("shared-session");
+    expect(entries.length).toBe(4);
+    const ids = entries.map((e) => e.identifier).sort();
+    expect(ids).toEqual(["from-a-1", "from-a-2", "from-b-1", "from-b-2"]);
+  });
+
+  test("insertion order within a batch is preserved across instances", async () => {
+    const transport = createFakeNexusTransport();
+    const store = newStoreWithSharedTransport(transport);
+    await store.append("batch-order-sess", [
+      makeEntry(0, "x"),
+      makeEntry(1, "y"),
+      makeEntry(2, "z"),
+    ]);
+    const entries = await store.getSession("batch-order-sess");
+    expect(entries.map((e) => e.identifier)).toEqual(["x", "y", "z"]);
+  });
+
+  test("entries appended later are ordered after earlier entries (batch timestamp ordering)", async () => {
+    // Within a single instance, serial appends produce batches with increasing
+    // timestamps, so getSession returns them in append order.
+    const store = newStore();
+    await store.append("ts-order-sess", [makeEntry(0, "first-batch")]);
+    await store.append("ts-order-sess", [makeEntry(1, "second-batch")]);
+    const entries = await store.getSession("ts-order-sess");
+    expect(entries[0]?.identifier).toBe("first-batch");
+    expect(entries[1]?.identifier).toBe("second-batch");
+  });
+
+  test("listSessions returns the original (decoded) session ID", async () => {
+    const transport = createFakeNexusTransport();
+    const store = newStoreWithSharedTransport(transport);
+    await store.append("decoded:session:id", [makeEntry(0, "tool")]);
+    const sessions = await store.listSessions();
+    expect(sessions).toContain("decoded:session:id");
+    // Must NOT contain the encoded form
+    expect(sessions).not.toContain("decoded_3Asession_3Aid");
   });
 });

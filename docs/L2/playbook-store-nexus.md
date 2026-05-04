@@ -42,13 +42,28 @@ Dependencies: @koi/ace-types, @koi/core, @koi/nexus-client
 ```
 <basePath>/playbooks/<id>.json
 <basePath>/structured/<id>.json
-<basePath>/trajectories/<sessionId>.json
+<basePath>/trajectories/<sessionId>/<batchId>.json  (per-batch; one file per append call)
 <basePath>/proposals/<proposalId>.json
-<basePath>/proposals-by-playbook/<playbookId>/<proposalId>.json   (index)
 <basePath>/evaluations/<proposalId>.json
 ```
 
-`basePath` defaults to `"ace"`. IDs are sanitized — colons in session IDs become `_` so Nexus list/glob can index them.
+`basePath` defaults to `"ace"`. IDs are sanitized — colons in session IDs become `_3A` so Nexus list/glob can index them.
+
+### Trajectory batch layout
+
+`TrajectoryStore.append` writes one immutable batch file per call:
+
+```
+<basePath>/trajectories/<encodedSessionId>/<timestamp>-<seq>-<randomSlice>.json
+```
+
+`batchId = ${Date.now()}-${seqPadded6}-${uuid.slice(0,8)}`
+
+- **Cross-instance correctness**: two store instances appending concurrently write to *different* filenames (random suffix). No read-modify-write race.
+- **In-process ordering**: the per-session mutex serializes appends within one process; the monotonic `seq` counter breaks `Date.now()` ties so batchIds are strictly increasing.
+- `getSession` lists all batch files, sorts by filename (lexicographic = chronological), flattens.
+- `listSessions` lists `<basePath>/trajectories/*/*.json`, extracts the session directory segment.
+- `before` cursor option is documented divergence — ignored (returns all sessions).
 
 ## Differences vs sqlite sibling
 
