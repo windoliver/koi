@@ -114,6 +114,34 @@ describe("createSnapshotStoreNexus", () => {
     expect(r.ok).toBe(false);
   });
 
+  // --- Prune meta-before-delete regression test (Finding 4) ---
+
+  test("after prune, every nodeId in meta has a corresponding node file", async () => {
+    // Invariant: meta must never reference a node that has been deleted.
+    // This regression test guards against the old order (delete-then-write-meta)
+    // where a meta write failure could leave meta pointing at deleted nodes.
+    const store = newStore();
+    const cid = chainId("c-prune-invariant");
+    for (let i = 0; i < 4; i++) {
+      const r = await store.put(cid, { v: i }, []);
+      if (!r.ok) throw new Error("put failed");
+    }
+    const pruned = await store.prune(cid, { retainCount: 2 });
+    expect(pruned.ok).toBe(true);
+    if (pruned.ok) expect(pruned.value).toBe(2);
+
+    // After prune, list must return exactly 2 nodes, all readable
+    const list = await store.list(cid);
+    expect(list.ok).toBe(true);
+    if (!list.ok) throw new Error("list failed");
+    expect(list.value.length).toBe(2);
+    // Each listed node must round-trip via get (no dangling pointers)
+    for (const node of list.value) {
+      const got = await store.get(node.nodeId);
+      expect(got.ok).toBe(true);
+    }
+  });
+
   // --- Parent validation inside chain lock regression test (Finding 3) ---
 
   test("put with missing parent returns validation error (not silent success)", async () => {

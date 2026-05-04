@@ -258,6 +258,18 @@ export function createSnapshotStoreNexus<T>(
       if (policy.retainBranches !== false) remove.delete(ids.length - 1);
 
       const sorted = [...remove].sort((a, b) => b - a);
+
+      // Compute the post-prune node list and write meta FIRST.
+      // A partial failure leaves orphan blobs (recoverable / harmless) rather
+      // than meta that references already-deleted nodes (dangling pointers).
+      const postPruneIds = ids.filter((_, i) => !remove.has(i));
+      const newHead =
+        postPruneIds.length > 0 ? (postPruneIds[postPruneIds.length - 1] ?? null) : null;
+      const wm = await writeMeta(cid, { headNodeId: newHead, nodeIds: postPruneIds });
+      if (!wm.ok) return wm;
+
+      // Now delete the orphaned node files. A failure here leaves an orphan blob
+      // but meta is already consistent — the chain is still queryable.
       let removed = 0;
       for (const idx of sorted) {
         const id = ids[idx];
@@ -266,11 +278,7 @@ export function createSnapshotStoreNexus<T>(
           if (!d.ok) return d;
           removed += 1;
         }
-        ids.splice(idx, 1);
       }
-      const newHead = ids.length > 0 ? (ids[ids.length - 1] ?? null) : null;
-      const wm = await writeMeta(cid, { headNodeId: newHead, nodeIds: ids });
-      if (!wm.ok) return wm;
       return { ok: true, value: removed };
     });
   };
