@@ -35,10 +35,13 @@ export function createNexusPlaybookStore(config: NexusPlaybookStoreConfig): Play
       const out: Playbook[] = [];
       for (const p of lr.value) {
         const r = await readJson<Playbook>(transport, p);
-        if (!r.ok || r.value === undefined) {
-          // Fall back to decoding from path if read failed
-          continue;
+        if (!r.ok) {
+          // Tolerate NOT_FOUND: file vanished between list and read (race).
+          if (r.error.code === "NOT_FOUND") continue;
+          // All other errors (EXTERNAL, INTERNAL, etc.) indicate a real failure.
+          throw new Error(r.error.message);
         }
+        if (r.value === undefined) continue;
         const pb = r.value;
         if (options?.minConfidence !== undefined && pb.confidence < options.minConfidence) continue;
         if (

@@ -36,7 +36,13 @@ export function createNexusStructuredPlaybookStore(
       const out: StructuredPlaybook[] = [];
       for (const p of lr.value) {
         const r = await readJson<StructuredPlaybook>(transport, p);
-        if (!r.ok || r.value === undefined) continue;
+        if (!r.ok) {
+          // Tolerate NOT_FOUND: file vanished between list and read (race).
+          if (r.error.code === "NOT_FOUND") continue;
+          // All other errors (EXTERNAL, INTERNAL, etc.) indicate a real failure.
+          throw new Error(r.error.message);
+        }
+        if (r.value === undefined) continue;
         const spb = r.value;
         if (
           options?.tags !== undefined &&

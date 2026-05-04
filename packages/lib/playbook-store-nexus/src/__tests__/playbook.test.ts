@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
 import type { Playbook } from "@koi/ace-types";
+import type { KoiError, Result } from "@koi/core";
+import type { NexusTransport as FsNexusTransport } from "@koi/fs-nexus";
 import { createFakeNexusTransport } from "@koi/fs-nexus/testing";
 
 import { createNexusPlaybookStore } from "../playbook.js";
@@ -138,5 +140,44 @@ describe("createNexusPlaybookStore", () => {
     // list must return both
     const all = await store.list();
     expect(all.map((p) => p.id).sort()).toEqual(["a:b", "a_b"]);
+  });
+
+  // --- Fix 5 (round 5): list propagates non-NOT_FOUND errors ---
+
+  test("list propagates EXTERNAL error from mid-list file read", async () => {
+    // Scenario: one playbook is written normally. Then a transport wrapper injects
+    // EXTERNAL on the read of that file during list(). The method must throw.
+    const baseTransport = createFakeNexusTransport();
+    const baseStore = createNexusPlaybookStore({ transport: baseTransport });
+    await baseStore.save(pb("pb-list-err"));
+
+    let listCallDone = false;
+    const wrappedTransport: FsNexusTransport = {
+      call: async <T>(
+        method: string,
+        params: Record<string, unknown>,
+      ): Promise<Result<T, KoiError>> => {
+        const path = params.path as string | undefined;
+        if (
+          listCallDone &&
+          method === "read" &&
+          typeof path === "string" &&
+          path.includes("/playbooks/")
+        ) {
+          return {
+            ok: false,
+            error: { code: "EXTERNAL", message: "simulated backend failure", retryable: true },
+          } as Result<T, KoiError>;
+        }
+        if (method === "list") listCallDone = true;
+        return baseTransport.call<T>(method, params);
+      },
+      subscribe: baseTransport.subscribe.bind(baseTransport),
+      submitAuthCode: baseTransport.submitAuthCode.bind(baseTransport),
+      close: baseTransport.close.bind(baseTransport),
+    };
+
+    const wrappedStore = createNexusPlaybookStore({ transport: wrappedTransport });
+    await expect(wrappedStore.list()).rejects.toThrow("simulated backend failure");
   });
 });
