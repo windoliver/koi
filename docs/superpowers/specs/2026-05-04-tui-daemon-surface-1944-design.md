@@ -148,11 +148,21 @@ packages/meta/cli/src/
                                          attachRegistry. Returns handle +
                                          dispose. Skipped when no subprocess
                                          children declared.
-  bin.ts                            EDIT  ~30 LOC
+  tui-command.ts                    EDIT  ~30 LOC
                                          Wire wireDaemonSupervisor +
-                                         createDaemonBridge into the TUI
-                                         startup path; dispose in graceful
-                                         shutdown.
+                                         createDaemonBridge alongside the
+                                         existing wireManifestSupervision
+                                         attachment (~line 1172, 2051+).
+                                         Dispose in the existing shutdown
+                                         sequence — between
+                                         supervisionHandle.dispose() and
+                                         runtime.dispose() — so the
+                                         renderer is still alive when
+                                         terminal events drain through
+                                         watchAll. NOT bin.ts (which
+                                         dispatches commands; TUI
+                                         lifecycle ownership lives in
+                                         tui-command.ts).
 
 packages/ui/tui/src/
   state/types.ts                    EDIT  ~80 LOC
@@ -398,21 +408,31 @@ only once `supervisor.shutdown()` begins, so the bridge must remain
 subscribed while shutdown is in flight, otherwise the final lifecycle
 updates the bridge exists to surface are lost.
 
+The graceful shutdown sequence is wired into the existing
+`tui-command.ts` teardown — daemon disposal slots between
+`supervisionHandle.dispose()` (in-process stub from #1866) and
+`runtime.dispose()` (renderer). The renderer must still be alive while
+terminal events drain so the session log can render them.
+
 ```
-graceful shutdown sequence in bin.ts
-  1. const shutdownTask = supervisor.shutdown(reason);  // start async
-  2. await shutdownTask;                                // wait for terminal events to drain through watchAll
-  3. await bridge.close();                              // closed-sentinel + iterator cleanup
-  4. await registryBridge.close();                      // attachRegistry's own bridge
+existing tui-command.ts shutdown (additions in **bold**)
+  1. **const shutdownTask = supervisor.shutdown(reason);**  // async, no await yet
+  2. supervisionHandle.dispose();                            // existing in-process stub
+  3. **await shutdownTask;**                                 // drain terminal events through watchAll
+  4. **await daemonBridge.close();**                         // closed-sentinel + iterator cleanup
+  5. **await registryBridge.close();**                       // attachRegistry bridge
+  6. await runtime.dispose();                                // existing — renderer still alive above
+  7. (renderer teardown continues as today)
 ```
 
-Step 3 happens after `shutdown()` resolves so `watchAll()` has already
-emitted the final `exited`/`crashed` events through both registry and
-TUI bridges. If steps are reversed, the bridge times out before
-`supervisor.shutdown()` even begins publishing — exactly the regression
-this surface should not introduce. A shared deadline (e.g., total 5s)
-is enforced by wrapping step 2 in a timeout; on expiry, step 3 still
-runs to release resources.
+Step 3 awaits `shutdown()` BEFORE `bridge.close()` so `watchAll()` has
+already emitted the final `exited`/`crashed` events through both
+registry and TUI bridges. A shared deadline (5s total for steps 1+3)
+wraps the await in a timeout; on expiry, steps 4–6 still run to release
+resources. NOT wired in `bin.ts` — bin dispatches commands; the live
+TUI lifecycle owns startup, store wiring, and shutdown in
+`tui-command.ts`. Reusing the existing teardown sequence (rather than
+parallel hooks) is what keeps `runtime.dispose()` ordering correct.
 
 ### Bridge failure handling
 
@@ -576,15 +596,24 @@ restart policy can replace the live process between row selection and
 confirm. We detect this via the registry's `version` field, which the
 existing `attachRegistry` bridge already advances on every transition.
 
-**Action availability per row** (BgView gates `k` on row state — never
-advertises an action it cannot deliver):
+**Action availability per row** (BgView gates `k` on row state AND
+local-supervisor ownership — `/bg` lists the global per-state-dir
+registry, which can carry foreign rows from other processes' supervisors;
+on-path `supervisor.stop()` returns `NOT_FOUND` for foreign workers and
+must NEVER be attempted):
 
-| Row status | `k` available? | Action |
-|------------|:--------------:|--------|
-| `running`, `starting` | ✅ | confirm → on-path supervisor.stop |
-| `terminating` | ❌ | hint: "kill in flight; wait" |
-| `detached` | ❌ | hint: "use `koi bg kill <id>` from a separate shell, or `koi bg attach`" — falls back to off-path CLI flow whose CAS+fingerprint protections handle the no-supervisor case correctly |
-| `exited`, `crashed` | ❌ | hint: "already terminal" |
+| Row status | Owned locally? | `k` available? | Action |
+|------------|:--:|:--:|--------|
+| `running`, `starting` | yes | ✅ | confirm → on-path supervisor.stop |
+| `running`, `starting` | no (foreign) | ❌ | hint: "foreign worker; use `koi bg kill <id>` from a separate shell" |
+| `terminating` | any | ❌ | hint: "kill in flight; wait" |
+| `detached` | any | ❌ | hint: "use `koi bg kill <id>` from a separate shell, or `koi bg attach`" |
+| `exited`, `crashed` | any | ❌ | hint: "already terminal" |
+
+Ownership is determined by intersecting the registry record's `workerId`
+with `supervisor.list().map(p => p.workerId)`. The supervisor list is
+the authoritative set of workers the local process owns. Cached at the
+1s health-poll cadence; row identity reconciled on every render.
 
 The detached-kill recovery path is intentionally NOT routed through the
 TUI bridge. The off-path `runKill` in `packages/meta/cli/src/commands/bg.ts`
@@ -620,46 +649,74 @@ For supported rows (`running`/`starting`):
      the worker; the supervisor no longer owns the OS process and
      `supervisor.stop` is a no-op. Toast `"⚠ worker <id> is detached;
      reattach with `koi bg attach` first"`, return.
-5a. **Operator-intent claim (before stop)** — bridge writes the kill
-    intent into the registry first so the `attachRegistry` event handler
-    correctly classifies the upcoming `exited`/`crashed` event as an
-    intentional stop, not a fault:
+5. **Two-phase kill** — mirrors the off-path `runKill` invariant in
+   `packages/meta/cli/src/commands/bg.ts`: claim `terminating` BEFORE
+   stop, but stamp `signaledAt` ONLY after the supervisor has actually
+   initiated termination. Pre-stamping `signaledAt` is unsafe — it
+   biases the `attachRegistry` freshness window, so a genuine crash
+   landing between the early stamp and `supervisor.stop` would be
+   misclassified as `exited`.
+
+5a. **Phase 1 — terminating claim (no signaledAt yet)**:
 
 ```typescript
 const claim = await registry.update(workerId as WorkerId, {
   status: "terminating",
-  signaledAt: Date.now(),
+  clearSignaledAt: true,                   // wipe any stale prior stamp
   expectedVersion: current.version ?? 0,  // CAS guard against respawn
   expectedPid: current.pid,                // pin to the exact process
 });
 if (!claim.ok) {
   if (claim.error.code === "CONFLICT") {
-    // Identity drifted between our re-read and this CAS — same
-    // semantics as the off-path detection in step 4.
     pushToast(`⚠ worker ${workerId} respawned mid-kill; aborting`);
     return;
   }
   pushToast(`⚠ failed to claim kill on ${workerId}: ${claim.error.message}`);
   return;
 }
+const claimedVersion = claim.value.version ?? 0;
 ```
 
-   The `terminating` claim also flips the `/bg` row's freshness to
-   `terminating` (kill-in-flight yellow) on the next poll, so the
-   operator sees the action take effect immediately.
+   The `terminating` claim flips the `/bg` row's freshness to
+   `terminating` (kill-in-flight yellow) on the next poll.
 
-5b. Bridge calls `await supervisor.stop(workerId, "user-requested")`.
-   `Result<void, KoiError>` — rejection is impossible (the API returns a
-   `Result`); inspect `.ok`:
-   - `ok: false` → toast `"⚠ supervisor.stop failed: ${err.message}"`,
-     return without crashing the bridge.
-   - `ok: true` → done. The supervisor publishes `exited` to `watchAll()`
-     (the L0 `WorkerEvent` union has no separate `stopped` kind — clean
-     stops are encoded as `exited` with `code: 0` plus the registry's
-     `terminating → exited` transition that the upstream `terminating`
-     claim from step 5a authorizes),
-     `attachRegistry` advances the record to `exited`, the next poll tick
-     refreshes the row.
+5b. **Phase 2 — supervisor stop + signaledAt stamp**:
+
+```typescript
+const stopResult = await supervisor.stop(workerId, "user-requested");
+if (!stopResult.ok) {
+  // Stop failed (NOT_FOUND, INVALID_STATE, etc.). Best-effort revert
+  // the terminating claim back to running so the record doesn't
+  // strand. CAS-guarded; if the bridge already advanced state past
+  // our claim, leave it.
+  await registry.update(workerId as WorkerId, {
+    status: "running",
+    expectedVersion: claimedVersion,
+    expectedPid: current.pid,
+  });
+  pushToast(`⚠ supervisor.stop failed: ${stopResult.error.message}`);
+  return;
+}
+
+// Stop accepted — supervisor is now driving the worker through
+// termination. Stamp signaledAt so attachRegistry's freshness window
+// downgrades the resulting exited/crashed event to "intentional".
+await registry.update(workerId as WorkerId, {
+  signaledAt: Date.now(),
+  expectedVersion: claimedVersion,
+  expectedPid: current.pid,
+});
+// Stamp failure here is non-fatal (bridge may have already advanced
+// the record on a fast exit) — log only, no toast.
+```
+
+   - `stopResult.ok: true` → supervisor publishes `exited` to
+     `watchAll()` (the L0 `WorkerEvent` union has no separate `stopped`
+     kind — clean stops are encoded as `exited` with `code: 0` plus the
+     registry's `terminating → exited` transition that this PR's
+     `signaledAt` stamp authorizes), the row flips to terminal on the
+     next poll.
+
 6. Cancel paths (`n` or Esc on the modal) → dispatch
    `set_bg_kill_confirm({ confirm: null })`. No supervisor calls made.
 
@@ -755,8 +812,10 @@ on the right side: governance segment, then supervisor segment, separator
   when `detached`; format `"3/5 workers"`.
 - **`SupervisorView.test.tsx`** — worker table columns; reasons section
   hidden when empty; event feed last-N order.
-- **`BgView.test.tsx`** — registry rows merged with health workers; kill
-  modal flow only opens for `running`/`starting` rows; `terminating`,
+- **`BgView.test.tsx`** — registry rows merged with health workers + the
+  ownership set from `supervisor.list()`; kill modal flow only opens for
+  locally-owned `running`/`starting` rows; foreign-owned rows render `k`
+  disabled with hint pointing at `koi bg kill <id>`; `terminating`,
   `detached`, `exited`, `crashed` rows render `k` disabled with
   status-specific hint; Enter dispatches `set_bg_tailing({ workerId })`
   using the row's workerId (never sessionId).
@@ -778,14 +837,22 @@ on the right side: governance segment, then supervisor segment, separator
   - Worker disappearing between health snapshots does not synthesize a
     fake terminal event — only the next push event is authoritative.
   - `health` ok→degraded transition fires toast (not on every tick).
-  - `requestKill` happy path: refreshes registry, **CAS-writes
-    `status: "terminating"` + `signaledAt` BEFORE** calling
-    `supervisor.stop(workerId, "user-requested")`. Verifies registry
-    update precedes supervisor.stop via call-order assertion. Subsequent
-    `exited` event from supervisor is classified as intentional, not
-    `crashed`.
-  - `requestKill` aborts on `terminating` claim CAS conflict — never
-    calls `supervisor.stop` if registry update returns `CONFLICT`.
+  - `requestKill` happy path is two-phase:
+    1. CAS-writes `status: "terminating"` with `clearSignaledAt: true`
+       BEFORE calling `supervisor.stop(workerId, "user-requested")`.
+    2. Stamps `signaledAt` ONLY after `supervisor.stop` returns
+       `Result.ok: true`. Pre-stop snapshot has no `signaledAt`.
+    Asserted via call-order spy on registry.update + supervisor.stop.
+  - `requestKill` aborts on Phase 1 CAS conflict — never calls
+    `supervisor.stop` if registry update returns `CONFLICT`.
+  - `requestKill` reverts `terminating → running` (CAS-guarded) when
+    `supervisor.stop` returns `Result.ok: false`. `signaledAt` is never
+    written in this case (preserves crash-classification accuracy).
+  - `requestKill` refuses for foreign rows: when row's `workerId` is
+    NOT in `supervisor.list().map(p => p.workerId)`, the action is
+    gated off in BgView (no `k` available). Bridge `requestKill` also
+    refuses defensively if called for a non-owned worker — never
+    writes a `terminating` claim against a foreign record.
   - `requestKill` refuses when current record is `undefined`, `exited`,
     `crashed`, `terminating`, or `detached` — surfaces correct toast,
     `supervisor.stop` not called.
@@ -898,7 +965,13 @@ calls. Existing daemon golden queries cover supervisor lifecycle.
 - [ ] `/bg` `k` flow terminates a `running` worker and updates the row to
       `exited`.
 - [ ] `/bg` `k` is disabled for `detached`/`terminating`/`exited`/`crashed`
-      rows; detached row hint references `koi bg kill` recovery path.
+      rows AND for foreign-owned rows (workerId not in
+      `supervisor.list()`); each disabled state shows the correct hint.
+- [ ] On-path kill writes `status: terminating` (no `signaledAt`) BEFORE
+      calling supervisor.stop, then stamps `signaledAt` only after stop
+      returns `ok: true`. A failed stop reverts `terminating → running`
+      and leaves `signaledAt` unwritten so a follow-up genuine crash
+      classifies correctly.
 - [ ] Manifest without `supervision:` and in-process-only `supervision:`
       both render no badge; in-process supervision keeps showing in
       `/agents` Supervised section as before.
