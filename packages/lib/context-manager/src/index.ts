@@ -10,6 +10,8 @@
 
 export type { BackoffTracker } from "./backoff.js";
 export { createBackoffTracker } from "./backoff.js";
+export type { ContextEngineOptions } from "./create-context-engine.js";
+export { createContextEngine, DEFAULT_CONTEXT_ENGINE_IDENTITY } from "./create-context-engine.js";
 export type { DecisionSignalExtractorConfig } from "./decision-extract.js";
 export { extractDecisionSignals } from "./decision-extract.js";
 export type {
@@ -20,6 +22,8 @@ export type {
 } from "./enforce-budget.js";
 export { budgetConfigFromResolved, enforceBudget } from "./enforce-budget.js";
 export { findOptimalSplit } from "./find-split.js";
+export type { ContextEngineSwapNotice } from "./format-swap-notice.js";
+export { formatContextEngineSwapNotice } from "./format-swap-notice.js";
 export { microcompact } from "./micro-compact.js";
 export { wrapWithOverflowRecovery } from "./overflow-recovery.js";
 export type { AssistantToolPair } from "./pair-boundaries.js";
@@ -28,6 +32,11 @@ export {
   matchAssistantToolPairs,
   rescuePinnedGroups,
 } from "./pair-boundaries.js";
+export type { PassthroughContextEngineOptions } from "./passthrough-context-engine.js";
+export {
+  createPassthroughContextEngine,
+  PASSTHROUGH_CONTEXT_ENGINE_IDENTITY,
+} from "./passthrough-context-engine.js";
 export { shouldCompact } from "./policy.js";
 export type { PressureTrendTracker } from "./pressure-trend.js";
 export { createPressureTrendTracker } from "./pressure-trend.js";

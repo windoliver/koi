@@ -11,7 +11,9 @@
  */
 
 import type {
+  ComponentProvider,
   ComposedCallHandlers,
+  ContextEngine,
   EngineEvent,
   EngineInput,
   EngineStopReason,
@@ -36,12 +38,15 @@ import type {
   TurnContext,
 } from "@koi/core";
 import {
+  COMPONENT_PRIORITY,
+  CONTEXT_ENGINE,
   DEFAULT_MAX_STOP_RETRIES,
   GOVERNANCE,
   INBOX,
   runId,
   sessionId,
   toolToken,
+  turnId,
 } from "@koi/core";
 import type {
   DebugInstrumentation,
@@ -74,6 +79,12 @@ import {
 import { AgentEntity } from "./agent-entity.js";
 import { createBrickRequiresExtension } from "./brick-requires-extension.js";
 import { createTerminalHandlers } from "./compose-bridge.js";
+import { createContextEngineProxyProvider } from "./context-engine-provider.js";
+import { createContextEngineSlotMiddleware } from "./context-engine-runtime.js";
+import {
+  type ContextEngineSwapController,
+  createContextEngineSwapController,
+} from "./context-engine-swap.js";
 import { createDedupedToolsAccessor } from "./deduped-tools-accessor.js";
 import { createTurnContext, generatePid, unrefTimer } from "./koi-helpers.js";
 import type { CreateKoiOptions, KoiRuntime, RunHandle } from "./types.js";
@@ -99,8 +110,205 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
   });
   const governanceProvider = createGovernanceProvider(options.governance);
-  const allProviders = [governanceProvider, ...providers];
+  // Pluggable context-engine slot (#1767). When `manifest.context.engine`
+  // is set, `contextEngineFactory` is required so the runtime can own the
+  // full wiring (slot provider + middleware + swap controller) and
+  // guarantee the manifest identity, ECS slot, and the engine driving
+  // model requests all reference the same instance.
+  //
+  // `manifest.context` requires `contextEngineFactory`. The runtime owns
+  // slot wiring + swap controller + per-turn pin lifecycle through the
+  // factory path, so prepare()/onAfterTurn always run, swap-controller
+  // pin enforcement applies, and ECS reads stay consistent with the
+  // engine driving model calls. A ComponentProvider can still attach
+  // CONTEXT_ENGINE for ECS-only observability — that's just not how
+  // manifest pins are honored, because the runtime would have no way to
+  // wire prepare()/onAfterTurn without the controller and slot middleware.
+  if (manifest.context !== undefined && options.contextEngineFactory === undefined) {
+    throw KoiRuntimeError.from(
+      "VALIDATION",
+      "createKoi: manifest.context is set but no contextEngineFactory was supplied. The runtime needs the factory to own slot wiring, the swap controller, and the slot middleware that drives prepare()/onAfterTurn — without it, the manifest pin would have no effect on actual model calls. Pass `contextEngineFactory`, or remove `manifest.context`.",
+      {
+        retryable: false,
+        context: {
+          ...(manifest.context.engine !== undefined
+            ? { manifestEngine: manifest.context.engine }
+            : {}),
+          ...(manifest.context.version !== undefined
+            ? { manifestVersion: manifest.context.version }
+            : {}),
+          hasConfig: manifest.context.config !== undefined,
+        },
+      },
+    );
+  }
+  let contextEngineSwapController: ContextEngineSwapController | undefined;
+  let contextEngineProxy: ContextEngine | undefined;
+  const contextEngineProviders: ComponentProvider[] = [];
+  const contextEngineMiddleware: KoiMiddleware[] = [];
+  // Stable ref for the per-run TurnContext cache. createKoi creates the
+  // slot middleware once but the cache map is per-run state inside
+  // streamEvents, so the middleware closes over this container and
+  // streamEvents reassigns `.current` each run.
+  const turnCtxByTurnIdRef: { current: Map<string, TurnContext> | undefined } = {
+    current: undefined,
+  };
+  if (options.contextEngineFactory !== undefined) {
+    const initialEngine = options.contextEngineFactory(manifest.context);
+    // Identity drift check: when the manifest pins an engine name (and
+    // optionally a version), the returned engine MUST match. Silently
+    // running with a different identity than the manifest claims would
+    // make incident response misleading.
+    if (manifest.context?.engine !== undefined) {
+      if (initialEngine.identity.name !== manifest.context.engine) {
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          `contextEngineFactory returned identity "${initialEngine.identity.name}" but manifest pins "${manifest.context.engine}". Reject before assembly so operator tooling cannot misreport the active engine.`,
+          { retryable: false, context: { returnedIdentity: initialEngine.identity } },
+        );
+      }
+    }
+    // Validate `manifest.context.version` whenever set, even when the
+    // manifest does not also pin `engine`. Previously a manifest like
+    // `context: { version: "9.9.9" }` with a factory was accepted even
+    // when the factory returned a different version — manifest stopped
+    // being a trustworthy rollback/audit boundary because operators
+    // could believe a tested version was pinned while a different
+    // implementation was actually serving turns.
+    if (
+      manifest.context?.version !== undefined &&
+      manifest.context.version !== initialEngine.identity.version
+    ) {
+      throw KoiRuntimeError.from(
+        "VALIDATION",
+        `contextEngineFactory returned version "${initialEngine.identity.version}" but manifest pins "${manifest.context.version}".`,
+        { retryable: false, context: { returnedIdentity: initialEngine.identity } },
+      );
+    }
+    // Wire manifest pin into the swap controller so runtime `swap()` calls
+    // cannot replace the manifest-declared engine with a mismatched identity
+    // unless the operator passes `force: true`. Without this, manifest pin
+    // is enforced only at boot — defeating the trust boundary.
+    // Pin the swap controller whenever the manifest declares ANY context
+    // pin (engine OR version). Previously version-only pins were only
+    // enforced at boot, so a later runtime swap/rollback could move the
+    // runtime onto a different version while the manifest still claimed
+    // the pinned version was in force — defeating the trust boundary.
+    contextEngineSwapController = createContextEngineSwapController(initialEngine, {
+      ...(manifest.context?.engine !== undefined ? { pinnedName: manifest.context.engine } : {}),
+      ...(manifest.context?.version !== undefined
+        ? { pinnedVersion: manifest.context.version }
+        : {}),
+    });
+    const ctrlRef = contextEngineSwapController;
+    // Auto-subscribe the host's `onContextEngineSwap` observer (if any).
+    // Without an in-runtime subscription, every host would have to wire
+    // `runtime.contextEngineSwapController.subscribe(...)` themselves, and
+    // forced swaps/rollbacks become silent in production whenever a host
+    // forgets to do so.
+    if (options.onContextEngineSwap !== undefined) {
+      ctrlRef.subscribe(options.onContextEngineSwap);
+    }
+    // Attach a proxy under CONTEXT_ENGINE that delegates to the swap
+    // controller's current engine on every read. AgentEntity freezes
+    // assembled components, so attaching the boot-time instance directly
+    // would leave `agent.component(CONTEXT_ENGINE)` pointing at the old
+    // engine forever after a swap.
+    const proxyResult = createContextEngineProxyProvider((tid) => ctrlRef.current(tid), {
+      priority: COMPONENT_PRIORITY.BUNDLED,
+      getPinnedEngines: () => ctrlRef.pinnedEngines(),
+    });
+    contextEngineProxy = proxyResult.proxy;
+    contextEngineProviders.push(proxyResult.provider);
+    contextEngineMiddleware.push(
+      createContextEngineSlotMiddleware(ctrlRef, {
+        // Evict the per-turn ctx cache when a turn fails. Without this,
+        // turnCtxByTurnId would retain full prompt history for the
+        // runtime's lifetime since terminal cleanup only purges entries
+        // for turns still in pinnedTurnIds(), and the slot middleware
+        // releases the pin before terminal cleanup runs. The ref is
+        // populated by streamEvents per run.
+        onFailedTurn: (failedTurnId) => {
+          turnCtxByTurnIdRef.current?.delete(failedTurnId as string);
+        },
+        // Populate the per-turn ctx cache from the slot middleware so
+        // native streaming adapters (which do not flow through
+        // adapter.terminals.getTurnContext()) still register a real
+        // TurnContext for terminal-path onAfterTurn synthesis. Without
+        // this, a done-only streaming turn would synth onAfterTurn with
+        // messages: [] and stateful engines would checkpoint against
+        // empty input.
+        onTurnStart: (turnCtx) => {
+          turnCtxByTurnIdRef.current?.set(turnCtx.turnId as string, turnCtx);
+        },
+      }),
+    );
+  }
+  // Middleware-level double-wire guard (#1767, round 7). Reject any
+  // user-supplied middleware that also names itself "context-engine" — it
+  // would either run prepare() twice (double compaction) or substitute a
+  // second engine in front of the controller, breaking the swap-aware
+  // wiring. `contextEngineFactory` is the only supported integration
+  // route; any in-tree manual middleware helper has been removed.
+  if (options.contextEngineFactory !== undefined) {
+    const dup = (options.middleware ?? []).find((mw) => mw.name === "context-engine");
+    if (dup !== undefined) {
+      throw KoiRuntimeError.from(
+        "VALIDATION",
+        "createKoi: contextEngineFactory is set, but middleware also includes a context-engine entry. createKoi already injects the slot middleware; remove the duplicate or stop passing contextEngineFactory.",
+        { retryable: false, context: { conflictKind: "context-engine-middleware-double-wire" } },
+      );
+    }
+  }
+  const allProviders = [governanceProvider, ...contextEngineProviders, ...providers];
   const { agent, conflicts } = await AgentEntity.assemble(pid, manifest, allProviders);
+
+  // Provider-only CONTEXT_ENGINE wiring is rejected. Without
+  // `contextEngineFactory`, no slot middleware ever runs, so a host that
+  // attaches CONTEXT_ENGINE through a ComponentProvider would advertise an
+  // engine in ECS while `prepare()`/`onAfterTurn` are bypassed on every
+  // model call — observability would say a context engine is attached
+  // while compaction is actually inert. Rejecting at boot makes that
+  // failure mode unrepresentable.
+  if (options.contextEngineFactory === undefined) {
+    const providerSlot = agent.component(CONTEXT_ENGINE);
+    if (providerSlot !== undefined) {
+      throw KoiRuntimeError.from(
+        "VALIDATION",
+        "createKoi: a ComponentProvider attached CONTEXT_ENGINE but no contextEngineFactory was supplied. Without the factory, the runtime never installs the slot middleware that drives prepare()/onAfterTurn, so the attached engine would be inert on real model calls. Pass `contextEngineFactory` (the documented integration route) instead of attaching CONTEXT_ENGINE directly.",
+        {
+          retryable: false,
+          context: {
+            conflictKind: "context-engine-provider-only",
+            attachedIdentity: providerSlot.identity,
+          },
+        },
+      );
+    }
+  }
+  // ECS slot/middleware divergence guard (#1767, round 6). When the host wires
+  // a contextEngineFactory we attach a controller-backed proxy under
+  // CONTEXT_ENGINE so post-swap reads track the active engine. If a
+  // user-supplied ComponentProvider declares a lower priority and shadows the
+  // proxy, ECS reads silently diverge from the engine actually driving model
+  // requests through middleware. Reject before any turn runs so the host must
+  // pick one wiring path explicitly.
+  if (contextEngineProxy !== undefined) {
+    const slotEngine = agent.component(CONTEXT_ENGINE);
+    if (slotEngine !== undefined && slotEngine !== contextEngineProxy) {
+      throw KoiRuntimeError.from(
+        "VALIDATION",
+        "createKoi: a user-supplied ComponentProvider attached CONTEXT_ENGINE while contextEngineFactory is also set. The runtime cannot guarantee that ECS reads (`agent.component(CONTEXT_ENGINE)`) and the engine driving model requests reference the same instance. Choose one wiring path: drop contextEngineFactory and manage swaps manually, or remove the external CONTEXT_ENGINE provider and let createKoi own the slot.",
+        { retryable: false, context: { conflictKind: "context-engine-double-wire" } },
+      );
+    }
+  }
+  // Pre-assembly identity drift validation handled the factory path; by
+  // this point CONTEXT_ENGINE is either filled by the auto-wired proxy or
+  // intentionally empty (manifest.context unset). A user-supplied
+  // ComponentProvider may attach an engine for ECS-only observability,
+  // but cannot satisfy a manifest pin — the runtime requires
+  // contextEngineFactory for that, enforced pre-assembly above.
 
   // --- 2. Compose kernel extensions (governance + default guards) ---
   const governanceExt = createGovernanceExtension();
@@ -140,9 +348,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // --- 2c. Wire transition validator into agent entity ---
   agent.setTransitionValidator(composed.validateTransition);
 
-  // --- 3. Compose middleware chain: guard middleware + user middleware, phase-sorted ---
+  // --- 3. Compose middleware chain: guard + auto-injected slot + user, phase-sorted ---
+  // The context-engine slot middleware (#1767) is appended before user
+  // middleware so its onion layer sits inside permissions/audit; the resolve
+  // phase keeps it after intercept-phase guards.
   const { sorted: allMiddleware, provenanceHints: staticProvenanceHints } = resolveActiveMiddleware(
-    [...composed.guardMiddleware, ...middleware],
+    [...composed.guardMiddleware, ...contextEngineMiddleware, ...middleware],
   );
 
   // --- 3b. Create debug instrumentation if enabled ---
@@ -631,6 +842,73 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     const sessionStartedAt = Date.now();
     // let justified: mutable turn counter incremented on turn_end
     let currentTurnIndex = 0;
+    // The most-recently-built TurnContext from the cooperating adapter's
+    // getTurnContext(). Hoisted to streamEvents scope so the terminal
+    // cleanup path can reuse the real per-turn ctx (with real messages
+    // and metadata) when synthesizing `onAfterTurn` for engines that
+    // depend on those fields.
+    // let justified: mutable cache shared across cooperating-adapter calls
+    let lastBuiltTurnCtx: TurnContext | undefined;
+    // Per-turn TurnContext snapshots keyed by turnId. Populated whenever
+    // getTurnContext() builds a fresh ctx for a turn — the terminal
+    // cleanup path uses this to replay the EXACT context (matching turnId
+    // and messages) for any turn whose pin needs releasing, even when
+    // multiple overlapping turns are pinned. Without this map, only the
+    // most recent turn would have a real ctx and older pinned turns
+    // would receive a synthetic ctx with the wrong turnId.
+    const turnCtxByTurnId = new Map<string, TurnContext>();
+    // Publish to the createKoi-scope ref so the slot middleware (created
+    // once at setup) can evict failed-turn entries through onFailedTurn.
+    turnCtxByTurnIdRef.current = turnCtxByTurnId;
+    // The specific turnId that reached a `done` event without first
+    // emitting `turn_end` (the cooperating-adapter shortcut). Only this
+    // turn's pinned engine receives a synthetic `onAfterTurn` during
+    // terminal cleanup — other still-pinned turns (e.g. overlapping or
+    // incomplete sibling turns) just have their pins released. Abort,
+    // consumer break, and adapter error paths leave this undefined so
+    // no turn is finalized as successful.
+    // let justified: mutable success-turn marker set in the done branch
+    let doneSyntheticTurnId: import("@koi/core").TurnId | undefined;
+
+    // Run synthetic onAfterTurn for a single completed turn that emitted
+    // `done` without `turn_end` (cooperating-adapter shortcut), then
+    // release its pin. Shared between the reusable-done path (must run
+    // before idle) and terminal cleanup (runs at generator finally).
+    // Captures references that must already be in scope: the swap
+    // controller, the per-turn ctx cache, sessionCtx, runSignal, and
+    // request options.
+    const synthCompletedTurnCleanup = async (
+      completedTurnId: import("@koi/core").TurnId,
+    ): Promise<void> => {
+      if (contextEngineSwapController === undefined) return;
+      const pinnedEngine = contextEngineSwapController.current(completedTurnId);
+      if (pinnedEngine.onAfterTurn !== undefined) {
+        try {
+          const realCtx = turnCtxByTurnId.get(completedTurnId as string);
+          const fallbackTurnCtx: TurnContext = realCtx ?? {
+            ...createTurnContext({
+              session: sessionCtx,
+              turnIndex: currentTurnIndex,
+              messages: [],
+              signal: runSignal,
+              approvalHandler: options.approvalHandler,
+              sendStatus: options.sendStatus,
+            }),
+            turnId: completedTurnId,
+          };
+          await pinnedEngine.onAfterTurn(fallbackTurnCtx);
+        } catch (hookErr: unknown) {
+          // Bookkeeping must not corrupt cleanup; release the pin even
+          // if the engine throws.
+          console.warn(
+            "[koi] context-engine onAfterTurn synth failed during reusable-done cleanup",
+            hookErr,
+          );
+        }
+      }
+      contextEngineSwapController.endTurn(completedTurnId);
+      turnCtxByTurnId.delete(completedTurnId as string);
+    };
     // Sync the outer mutable ref so defaultToolTerminal can read it
     outerCurrentTurnIndex = 0;
 
@@ -802,6 +1080,26 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       terminals: TerminalHandlers,
       consumeReset: boolean = false,
     ): Promise<void> {
+      // #1767 round 10: enforce the context-engine double-wire guard on
+      // every recomposition, not just at startup. Forged or hot-attached
+      // dynamic middleware named "context-engine" would either re-run
+      // prepare() or substitute a second engine in front of the
+      // controller-backed slot.
+      if (options.contextEngineFactory !== undefined) {
+        const dup =
+          (forgedMw ?? []).find((mw) => mw.name === "context-engine") ??
+          (dynamicMw ?? []).find((mw) => mw.name === "context-engine");
+        if (dup !== undefined) {
+          throw KoiRuntimeError.from(
+            "VALIDATION",
+            "createKoi: forged or dynamic middleware named 'context-engine' was added during recomposition while contextEngineFactory is set. Remove the duplicate from forge / dynamicMiddleware, or stop passing contextEngineFactory.",
+            {
+              retryable: false,
+              context: { conflictKind: "context-engine-middleware-double-wire" },
+            },
+          );
+        }
+      }
       const { sorted, provenanceHints } = resolveActiveMiddleware(
         allMiddleware,
         forgedMw ?? undefined,
@@ -1128,8 +1426,25 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       let effectiveInput: EngineInput = { ...input, signal: runSignal };
       // let justified: mutable per-turn messages — updated on stop-gate retries
       // so cooperating-adapter middleware sees the same messages as onBeforeTurn
+      // Seed from `kind:"text"` input as well so the per-turn TurnContext
+      // cache sees the actual user payload that drove the turn. Without
+      // this, ContextEngine.onAfterTurn observes `messages: []` on the
+      // common text-entry path and stateful engines checkpoint/evict
+      // against an empty turn even though the model request carried real
+      // user content. The cooperating-adapter middleware updates this on
+      // each turn boundary; this is just the initial value.
       let activeTurnMessages: readonly InboundMessage[] =
-        input.kind === "messages" ? input.messages : [];
+        input.kind === "messages"
+          ? input.messages
+          : input.kind === "text" && input.text.length > 0
+            ? [
+                {
+                  senderId: "user",
+                  timestamp: Date.now(),
+                  content: [{ kind: "text" as const, text: input.text }],
+                },
+              ]
+            : [];
 
       // Snapshot the original user prompt for stop-gate retries: when the
       // initial input is `kind: "text"`, activeTurnMessages is empty (the
@@ -1152,14 +1467,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       if (adapter.terminals) {
         // Cache turn context per turn index to avoid repeated allocations
         // let justified: mutable cache invalidated on turn index change
-        let cachedTurnCtx: TurnContext | undefined;
         let cachedTurnIndex = -1;
         const getTurnContext = (): TurnContext => {
-          if (cachedTurnIndex === currentTurnIndex && cachedTurnCtx) {
-            return cachedTurnCtx;
+          if (cachedTurnIndex === currentTurnIndex && lastBuiltTurnCtx) {
+            return lastBuiltTurnCtx;
           }
           cachedTurnIndex = currentTurnIndex;
-          cachedTurnCtx = createTurnContext({
+          const built = createTurnContext({
             session: sessionCtx,
             turnIndex: currentTurnIndex,
             messages: activeTurnMessages,
@@ -1169,7 +1483,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             dispatchPermissionDecision: (query, decision) =>
               runPermissionDecisionHooks(allMiddleware, getTurnContext(), query, decision),
           });
-          return cachedTurnCtx;
+          lastBuiltTurnCtx = built;
+          turnCtxByTurnId.set(built.turnId as string, built);
+          return built;
         };
         const rawModelTerminal = adapter.terminals.modelCall;
         const baseToolTerminal = adapter.terminals.toolCall ?? defaultToolTerminal;
@@ -1663,12 +1979,21 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // Emit turn_start event with onBeforeTurn hooks.
           // Update activeTurnMessages so cooperating-adapter middleware
           // (getTurnContext) sees the same messages as onBeforeTurn hooks.
+          // Preserve the seeded text-input payload on the FIRST turn so
+          // onBeforeTurn / getTurnContext / onAfterTurn all observe the
+          // real user message instead of []. The earlier seed populated
+          // activeTurnMessages from input.text; resetting to [] here on
+          // text input would lose it for the most common entry path.
+          // Subsequent turns (idle-wake, stop-gate retry) still use
+          // pendingStopInput / input.messages or fall back to [].
           const turnMessages =
             pendingStopInput?.kind === "messages"
               ? pendingStopInput.messages
               : input.kind === "messages"
                 ? input.messages
-                : [];
+                : currentTurnIndex === 0 && activeTurnMessages.length > 0
+                  ? activeTurnMessages
+                  : [];
           activeTurnMessages = turnMessages;
           pendingStopInput = undefined;
           const turnCtx = createTurnContext({
@@ -1687,6 +2012,44 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             const result = await adapterIterator.next();
 
             if (result.done) {
+              // Bare stream exhaustion — adapter ended without emitting
+              // turn_end/done. Drain any active context-engine pin
+              // before idling/terminating so per-turn state (occupancy,
+              // eviction, checkpoint) is released. Mark as stopBlocked
+              // because EOF without a real `done` is an interrupted
+              // terminal path, not a successful turn.
+              if (
+                contextEngineSwapController !== undefined &&
+                contextEngineSwapController.hasActivePin()
+              ) {
+                for (const pinnedTurnId of contextEngineSwapController.pinnedTurnIds()) {
+                  const pinnedEngine = contextEngineSwapController.current(pinnedTurnId);
+                  if (pinnedEngine.onAfterTurn !== undefined) {
+                    try {
+                      const realCtx = turnCtxByTurnId.get(pinnedTurnId as string);
+                      const baseCtx: TurnContext = realCtx ?? {
+                        ...createTurnContext({
+                          session: sessionCtx,
+                          turnIndex: currentTurnIndex,
+                          messages: [],
+                          signal: runSignal,
+                          approvalHandler: options.approvalHandler,
+                          sendStatus: options.sendStatus,
+                        }),
+                        turnId: pinnedTurnId,
+                      };
+                      await pinnedEngine.onAfterTurn({ ...baseCtx, stopBlocked: true });
+                    } catch (hookErr: unknown) {
+                      console.warn(
+                        "[koi] context-engine onAfterTurn synth failed during EOF cleanup",
+                        hookErr,
+                      );
+                    }
+                  }
+                  contextEngineSwapController.endTurn(pinnedTurnId);
+                  turnCtxByTurnId.delete(pinnedTurnId as string);
+                }
+              }
               // Adapter stream exhausted — idle if reusable, else terminate
               if (agent.manifest.reuse === true) {
                 enterIdle = true;
@@ -1722,17 +2085,39 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               // turn_end. Without this copy, a timed-out partial turn would
               // still invoke onAfterTurn as if the turn had completed
               // successfully and middleware could persist partial state.
-              const turnEndCtx = createTurnContext({
-                session: sessionCtx,
-                turnIndex: event.turnIndex,
-                messages: [],
-                signal: runSignal,
-                approvalHandler: options.approvalHandler,
-                sendStatus: options.sendStatus,
-                ...(event.stopBlocked === true ? { stopBlocked: true as const } : {}),
-              });
+              // Reuse the cached real per-turn ctx so onAfterTurn observers
+              // (notably stateful context engines) see the actual messages
+              // and metadata processed during the turn — not an empty stub.
+              // Synthesizing afresh dropped the payload that engines need to
+              // checkpoint/evict against. Falls back to a synth ctx only if
+              // the cache miss happens (no model call ran this turn).
+              // Build the same turnId createTurnContext would produce so
+              // we hit the per-turn cache populated when getTurnContext()
+              // ran for this turn.
+              const turnIdForLookup = turnId(sessionCtx.runId, event.turnIndex) as string;
+              const cachedTurnCtx = turnCtxByTurnId.get(turnIdForLookup);
+              const turnEndCtx: TurnContext =
+                cachedTurnCtx !== undefined && event.stopBlocked === true
+                  ? { ...cachedTurnCtx, stopBlocked: true as const }
+                  : (cachedTurnCtx ??
+                    createTurnContext({
+                      session: sessionCtx,
+                      turnIndex: event.turnIndex,
+                      messages: [],
+                      signal: runSignal,
+                      approvalHandler: options.approvalHandler,
+                      sendStatus: options.sendStatus,
+                      ...(event.stopBlocked === true ? { stopBlocked: true as const } : {}),
+                    }));
               await runTurnHooks(allMiddleware, "onAfterTurn", turnEndCtx);
               debugInstrumentation?.onTurnEnd(event.turnIndex);
+              // Release the per-turn ctx cache entry (if any) — the
+              // normal turn_end path has now run onAfterTurn, so terminal
+              // cleanup will not need it. Without this, the cache would
+              // retain every completed turn's messages for the life of
+              // a long-running cooperating run (memory pressure on
+              // exactly the workload context-engines target).
+              turnCtxByTurnId.delete(turnEndCtx.turnId as string);
               yield event;
               break; // → next turn in outer loop
             }
@@ -1857,21 +2242,40 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   pendingForgeRefresh = true;
                   agent.transition({ kind: "advance_turn", turnIndex: currentTurnIndex });
 
-                  const blockedTurnCtx = createTurnContext({
-                    session: sessionCtx,
-                    turnIndex: blockedTurnIndex,
-                    messages: [],
-                    signal: runSignal,
-                    approvalHandler: options.approvalHandler,
-                    sendStatus: options.sendStatus,
-                    stopBlocked: true,
-                    stopGateReason: gateResult.reason,
-                    ...(gateResult.blockedBy !== undefined
-                      ? { stopGateBlockedBy: gateResult.blockedBy }
-                      : {}),
-                  });
+                  // Reuse cached real ctx if available (so onAfterTurn
+                  // observers see actual messages), then layer the
+                  // stop-gate fields over it.
+                  const cachedBlockedCtx = turnCtxByTurnId.get(
+                    turnId(sessionCtx.runId, blockedTurnIndex) as string,
+                  );
+                  const blockedTurnCtx: TurnContext =
+                    cachedBlockedCtx !== undefined
+                      ? {
+                          ...cachedBlockedCtx,
+                          stopBlocked: true as const,
+                          stopGateReason: gateResult.reason,
+                          ...(gateResult.blockedBy !== undefined
+                            ? { stopGateBlockedBy: gateResult.blockedBy }
+                            : {}),
+                        }
+                      : createTurnContext({
+                          session: sessionCtx,
+                          turnIndex: blockedTurnIndex,
+                          messages: [],
+                          signal: runSignal,
+                          approvalHandler: options.approvalHandler,
+                          sendStatus: options.sendStatus,
+                          stopBlocked: true,
+                          stopGateReason: gateResult.reason,
+                          ...(gateResult.blockedBy !== undefined
+                            ? { stopGateBlockedBy: gateResult.blockedBy }
+                            : {}),
+                        });
                   await runTurnHooks(allMiddleware, "onAfterTurn", blockedTurnCtx);
                   debugInstrumentation?.onTurnEnd(blockedTurnIndex);
+                  // Blocked-turn path also released onAfterTurn; drop the
+                  // cached ctx (if any) so it doesn't accumulate.
+                  turnCtxByTurnId.delete(blockedTurnCtx.turnId as string);
 
                   yield {
                     kind: "turn_end",
@@ -1907,6 +2311,37 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 priorBlockMessages.length = 0;
                 bannerCached = false;
                 cachedCapabilityBanner = undefined;
+                // Tag the *actually completed* turn so terminal cleanup
+                // can synthesize its onAfterTurn against the right pin.
+                // Reading the global `lastBuiltTurnCtx` was unsafe under
+                // overlapping pinned turns — a sibling turn's later
+                // getTurnContext() would clobber it and silently misroute
+                // the synthetic onAfterTurn. `currentTurnIndex` is the
+                // index of the turn that just produced this `done`
+                // (turn_end hasn't fired on the cooperating-adapter path,
+                // so it has not yet been advanced).
+                doneSyntheticTurnId = turnId(sessionCtx.runId, currentTurnIndex);
+                // Reusable runtimes idle here and serve more turns. The
+                // generator's `finally` block does not run between
+                // turns, so deferring the synthetic onAfterTurn/endTurn
+                // until then would leave the just-completed turn pinned
+                // across idle and into the next turn — corrupting
+                // per-turn occupancy and ECS context-engine reads.
+                // Drain the synth now so turn boundary is enforced.
+                if (contextEngineSwapController !== undefined) {
+                  await synthCompletedTurnCleanup(doneSyntheticTurnId);
+                  doneSyntheticTurnId = undefined;
+                }
+                // Advance currentTurnIndex BEFORE idling so the next
+                // wake gets a fresh turnId. Without this, two reusable
+                // done-only turns in the same run would reuse
+                // turnId(runId, currentTurnIndex), aliasing distinct
+                // turns and breaking the turn-keyed controller pins,
+                // per-turn ctx cache, and per-turn occupancy. Mirrors
+                // the turn_end path which advances the FSM/index there.
+                currentTurnIndex = currentTurnIndex + 1;
+                outerCurrentTurnIndex = currentTurnIndex;
+                agent.transition({ kind: "advance_turn", turnIndex: currentTurnIndex });
                 yield normalizedDone;
                 break turnLoop;
               }
@@ -1916,6 +2351,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 stopReason: event.output.stopReason,
                 metrics: normalizedMetrics,
               });
+              // Same reasoning as the reusable branch above: derive from
+              // the actually-completed turn index, not the global
+              // lastBuiltTurnCtx (overlapping pinned turns can clobber it).
+              doneSyntheticTurnId = turnId(sessionCtx.runId, currentTurnIndex);
               yield normalizedDone;
               return;
             }
@@ -2093,6 +2532,73 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       if (unsubRegistryWatch !== undefined) unsubRegistryWatch();
       cleanupForgeSubscription();
       runSignal.removeEventListener("abort", onAbort);
+      // #1767 round 9/10/11/12: guarantee turn-pin release AND post-turn
+      // bookkeeping for the context engine even when the run exits via
+      // `done` without `onAfterTurn` (cooperating adapters that yield
+      // `done` directly, error/abort paths, consumer break). If a pin is
+      // still active, the adapter completed a turn that never received a
+      // runtime-level `onAfterTurn`. Invoke ONLY the context engine's
+      // own `onAfterTurn` directly through the controller — broadcasting
+      // to all middleware on these incomplete-turn paths would falsely
+      // signal a successful turn to unrelated middleware (e.g. counters,
+      // checkpoints, stop-gate retries that key off `ctx.stopBlocked`).
+      if (contextEngineSwapController !== undefined) {
+        // Iterate every active turn pin and run `onAfterTurn` against the
+        // engine that ran `prepare()` for THAT specific turn. Earlier
+        // versions used no-arg `current()`/`endTurn()`, which under
+        // overlapping turns would collapse unrelated pins and run
+        // bookkeeping on the wrong engine.
+        //
+        // Synthesize `onAfterTurn` ONLY for the specific turn that
+        // reached `done` without first emitting `turn_end` (cooperating-
+        // adapter shortcut). Other still-pinned turns (e.g. overlapping
+        // sibling turns or incomplete prior turns) must NOT be marked
+        // successful — they just have their pins released. Abort,
+        // consumer break, and adapter error paths leave
+        // doneSyntheticTurnId undefined so no synth fires.
+        for (const pinnedTurnId of contextEngineSwapController.pinnedTurnIds()) {
+          const pinnedEngine = contextEngineSwapController.current(pinnedTurnId);
+          // Run onAfterTurn for EVERY still-pinned turn so stateful
+          // engines (per-turn occupancy, eviction queues, checkpoints)
+          // can release per-turn allocations on every terminal path —
+          // not only on the `done`-shortcut success branch. Abort,
+          // consumer break, and adapter error paths previously skipped
+          // this and leaked engine state. Use stopBlocked=true on the
+          // non-success branches so engines that gate state advancement
+          // on the marker do not mistake interrupted turns for success.
+          const isSuccessfulDoneShortcut =
+            doneSyntheticTurnId !== undefined && pinnedTurnId === doneSyntheticTurnId;
+          if (pinnedEngine.onAfterTurn !== undefined) {
+            try {
+              const realCtx = turnCtxByTurnId.get(pinnedTurnId as string);
+              const baseCtx: TurnContext = realCtx ?? {
+                ...createTurnContext({
+                  session: sessionCtx,
+                  turnIndex: currentTurnIndex,
+                  messages: [],
+                  signal: runSignal,
+                  approvalHandler: options.approvalHandler,
+                  sendStatus: options.sendStatus,
+                }),
+                turnId: pinnedTurnId,
+              };
+              const finalCtx: TurnContext = isSuccessfulDoneShortcut
+                ? baseCtx
+                : { ...baseCtx, stopBlocked: true };
+              await pinnedEngine.onAfterTurn(finalCtx);
+            } catch (hookErr: unknown) {
+              // Bookkeeping hooks must not corrupt cleanup. Log and keep
+              // releasing pins so the controller is not left wedged.
+              console.warn(
+                "[koi] context-engine onAfterTurn synth failed during terminal cleanup",
+                hookErr,
+              );
+            }
+          }
+          contextEngineSwapController.endTurn(pinnedTurnId);
+          turnCtxByTurnId.delete(pinnedTurnId as string);
+        }
+      }
 
       // Clean up adapter iterator (important on early return / break)
       if (adapterIterator?.return !== undefined) {
@@ -2140,6 +2646,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // --- 7. Build runtime ---
   const runtime: KoiRuntime = {
     agent,
+    ...(contextEngineSwapController !== undefined ? { contextEngineSwapController } : {}),
     // #1742: getter so callers always see the CURRENT factorySessionId,
     // including after `cycleSession()` rotates it for a fresh
     // conversation. Reading at construction time was correct when the

@@ -269,7 +269,7 @@
     },
     "packages/lib/context-manager": {
       "name": "@koi/context-manager",
-      "version": "0.0.0",
+      "version": "1.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",

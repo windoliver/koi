@@ -7,7 +7,7 @@
  * Growth rule: each new package PR adds assertions here.
  */
 
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
 import { readdir } from "node:fs/promises";
 import type { EngineAdapter, EngineEvent, EngineInput, ModelChunk } from "@koi/core";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
@@ -724,8 +724,24 @@ describe("Golden: @koi/audit-sink-ndjson", () => {
 // Golden: @koi/context-manager (#1623)
 // ---------------------------------------------------------------------------
 
-import { budgetConfigFromResolved, enforceBudget, resolveConfig } from "@koi/context-manager";
-import type { InboundMessage, ModelRequest, ModelResponse } from "@koi/core";
+import {
+  budgetConfigFromResolved,
+  createContextEngine,
+  createPassthroughContextEngine,
+  DEFAULT_CONTEXT_ENGINE_IDENTITY,
+  enforceBudget,
+  PASSTHROUGH_CONTEXT_ENGINE_IDENTITY,
+  resolveConfig,
+} from "@koi/context-manager";
+import type {
+  ContextEngine,
+  InboundMessage,
+  ModelRequest,
+  ModelResponse,
+  TurnContext,
+} from "@koi/core";
+import { CONTEXT_ENGINE } from "@koi/core";
+import { createContextEngineProvider, createContextEngineSwapController } from "@koi/engine";
 
 describe("Golden: @koi/context-manager", () => {
   function makeMsg(senderId: "user" | "assistant", text: string): InboundMessage {
@@ -772,6 +788,367 @@ describe("Golden: @koi/context-manager", () => {
     expect(cfg.contextWindowSize).toBe(1_000_000);
     expect(cfg.softTriggerFraction).toBeDefined();
     expect(cfg.hardTriggerFraction).toBeDefined();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Pluggable context-engine slot (#1767) — standalone golden queries
+  // ---------------------------------------------------------------------------
+
+  test("default ContextEngine prepares messages and reports occupancy via slot", async () => {
+    const engine = createContextEngine({ contextWindowSize: 4000, softTriggerFraction: 0.5 });
+    expect(engine.identity).toEqual(DEFAULT_CONTEXT_ENGINE_IDENTITY);
+
+    const ctx = { metadata: {} } as unknown as TurnContext;
+    const msgs: InboundMessage[] = [
+      makeMsg("user", `Q: ${block}`),
+      makeMsg("assistant", `A: ${block}`),
+      makeMsg("user", `Q2: ${block}`),
+      makeMsg("assistant", `A2: ${block}`),
+    ];
+
+    const out = await engine.prepare(ctx, msgs);
+    expect(Array.isArray(out)).toBe(true);
+    expect(out.length).toBeGreaterThan(0);
+
+    const occ = await engine.describeOccupancy?.();
+    expect(occ).toBeDefined();
+    expect(occ?.maxTokens).toBe(4000);
+    expect(occ?.pressure).toBeGreaterThanOrEqual(0);
+    expect(occ?.pressure).toBeLessThanOrEqual(1);
+
+    // Provider maps the engine onto the CONTEXT_ENGINE singleton slot.
+    const provider = createContextEngineProvider(engine);
+    const components = await provider.attach({ pid: { id: "x" } } as never);
+    const map = "components" in components ? components.components : components;
+    expect(map.get(CONTEXT_ENGINE as string)).toBe(engine);
+  });
+
+  test("passthrough ContextEngine returns input verbatim and omits occupancy", async () => {
+    const engine = createPassthroughContextEngine();
+    expect(engine.identity).toEqual(PASSTHROUGH_CONTEXT_ENGINE_IDENTITY);
+
+    const ctx = { metadata: {} } as unknown as TurnContext;
+    const msgs: InboundMessage[] = [
+      makeMsg("user", `Q: ${block}`),
+      makeMsg("assistant", `A: ${block}`),
+      makeMsg("user", `Q2: ${block}`),
+      makeMsg("assistant", `A2: ${block}`),
+    ];
+
+    const out = await engine.prepare(ctx, msgs);
+    expect(out).toEqual(msgs);
+
+    // Passthrough deliberately omits describeOccupancy so callers cannot
+    // mistake it for a zero-pressure budget signal under overflow.
+    expect(engine.describeOccupancy).toBeUndefined();
+  });
+
+  test("swap controller swaps default → passthrough, then rolls back at boundary", () => {
+    const def = createContextEngine();
+    const pass = createPassthroughContextEngine();
+    const ctrl = createContextEngineSwapController(def);
+
+    expect(ctrl.current().identity.name).toBe("@koi/context-manager");
+
+    const swap1 = ctrl.swap(pass, {
+      turnId: "run-1:t3" as Parameters<typeof ctrl.swap>[1]["turnId"],
+      reason: "operator forced full-context for debugging",
+    });
+    expect(swap1?.kind).toBe("context-engine-swap");
+    expect(swap1?.from.name).toBe("@koi/context-manager");
+    expect(swap1?.to.name).toBe("@koi/context-manager/passthrough");
+    expect(ctrl.current()).toBe(pass);
+
+    // Same-identity swap is a noop (idempotent boundary).
+    const noop = ctrl.swap(pass, {
+      turnId: "run-1:t4" as Parameters<typeof ctrl.swap>[1]["turnId"],
+      reason: "redundant",
+    });
+    expect(noop).toBeUndefined();
+
+    // Rollback at next reset boundary (#1939 semantics) restores prior engine.
+    const rb = ctrl.rollback({
+      turnId: "run-1:t5" as Parameters<typeof ctrl.swap>[1]["turnId"],
+      reason: "regression detected by evaluator",
+    });
+    expect(rb?.from.name).toBe("@koi/context-manager/passthrough");
+    expect(rb?.to.name).toBe("@koi/context-manager");
+    expect(ctrl.current()).toBe(def);
+
+    // History is append-only and ordered.
+    const h = ctrl.history();
+    expect(h).toHaveLength(2);
+    expect(h[0]?.to.name).toBe("@koi/context-manager/passthrough");
+    expect(h[1]?.to.name).toBe("@koi/context-manager");
+  });
+
+  // Silence unused-binding warning when ContextEngine type is only referenced
+  // for documentation purposes within this golden block.
+  test("ContextEngine type is structurally satisfied by both bundled engines", () => {
+    const a: ContextEngine = createContextEngine();
+    const b: ContextEngine = createPassthroughContextEngine();
+    expect(a.identity.name).not.toBe(b.identity.name);
+  });
+
+  // The legacy `createContextEngineMiddleware` helper has been unexported
+  // from the @koi/context-manager package surface (#1767 — known
+  // done-shortcut lifecycle gap; hosts should use createKoi's
+  // contextEngineFactory). End-to-end coverage of prepare()-driven
+  // adapter integration now flows through the auto-wired controller path
+  // exercised by the other golden-replay tests in this file.
+
+  // ---------------------------------------------------------------------------
+  // Pluggable context-engine slot — corner cases (#1767)
+  // ---------------------------------------------------------------------------
+
+  describe("manifest config validation", () => {
+    test("rejects out-of-range microTargetFraction", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { microTargetFraction: 1.5 },
+        }),
+      ).toThrow(/microTargetFraction.*must be in \(0, 1\]/);
+    });
+
+    test("rejects previewChars=0", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { previewChars: 0 },
+        }),
+      ).toThrow(/previewChars=0 must be > 0/);
+    });
+
+    test("rejects non-integer prunePreserveLastK", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { prunePreserveLastK: 1.5 },
+        }),
+      ).toThrow(/prunePreserveLastK=1\.5 must be an integer/);
+    });
+
+    test("rejects soft > hard cross-field invariant", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { softTriggerFraction: 0.9, hardTriggerFraction: 0.5 },
+        }),
+      ).toThrow(/softTriggerFraction \(0\.9\) must be <= hardTriggerFraction \(0\.5\)/);
+    });
+
+    test("rejects micro >= soft cross-field invariant", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { microTargetFraction: 0.6, softTriggerFraction: 0.6 },
+        }),
+      ).toThrow(/microTargetFraction \(0\.6\) must be < softTriggerFraction \(0\.6\)/);
+    });
+
+    test("rejects contextWindowSize=0", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { contextWindowSize: 0 },
+        }),
+      ).toThrow(/contextWindowSize=0 must be > 0/);
+    });
+
+    test("rejects non-numeric value with field name in message", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { contextWindowSize: "100000" as unknown as number },
+        }),
+      ).toThrow(/contextWindowSize.*finite, non-negative number/);
+    });
+
+    test("accepts a valid manifest config bag and applies contextWindowSize", async () => {
+      const engine = createContextEngine({
+        engine: "@koi/context-manager",
+        version: "1.0.0",
+        config: { contextWindowSize: 50_000, softTriggerFraction: 0.6 },
+      });
+      const ctx = {
+        session: {
+          agentId: "a" as never,
+          runId: "r" as never,
+          sessionId: "s" as never,
+          metadata: {},
+        },
+        turnIndex: 0,
+        turnId: "t-cfg" as never,
+        messages: [],
+        metadata: {},
+      } satisfies TurnContext;
+      await engine.prepare(ctx, [makeMsg("user", "hi")]);
+      const occ = await engine.describeOccupancy?.();
+      expect(occ?.maxTokens).toBe(50_000);
+    });
+
+    test("direct options path also enforces invariants", () => {
+      expect(() => createContextEngine({ contextWindowSize: 0 })).toThrow(
+        /contextWindowSize=0 must be > 0/,
+      );
+      expect(() => createContextEngine({ microTargetFraction: 2 })).toThrow(
+        /microTargetFraction.*must be in \(0, 1\]/,
+      );
+    });
+  });
+
+  describe("per-turn occupancy lifecycle", () => {
+    function makeCtx(turnId: string): TurnContext {
+      return {
+        session: {
+          agentId: "a" as never,
+          runId: "r" as never,
+          sessionId: "s" as never,
+          metadata: {},
+        },
+        turnIndex: 0,
+        turnId: turnId as never,
+        messages: [],
+        metadata: {},
+      } satisfies TurnContext;
+    }
+
+    test("describeOccupancy reports peak across overlapping turns", async () => {
+      const engine = createContextEngine({ contextWindowSize: 100_000 });
+      const small: InboundMessage[] = [makeMsg("user", "tiny")];
+      const large: InboundMessage[] = [];
+      for (let i = 0; i < 6; i++) large.push(makeMsg("user", `B${i}: ${block}`));
+
+      await engine.prepare(makeCtx("turn-A"), small);
+      const occA = await engine.describeOccupancy?.();
+      const peakAfterA = occA?.estimatedTokens ?? 0;
+
+      await engine.prepare(makeCtx("turn-B"), large);
+      const occBoth = await engine.describeOccupancy?.();
+      expect(occBoth?.estimatedTokens).toBeGreaterThan(peakAfterA);
+
+      // Releasing the larger turn drops the peak back to A's level.
+      engine.onAfterTurn?.(makeCtx("turn-B"));
+      const occAfterRelease = await engine.describeOccupancy?.();
+      expect(occAfterRelease?.estimatedTokens).toBe(peakAfterA);
+
+      // Releasing both leaves no active turns → zero pressure.
+      engine.onAfterTurn?.(makeCtx("turn-A"));
+      const occEmpty = await engine.describeOccupancy?.();
+      expect(occEmpty?.estimatedTokens).toBe(0);
+      expect(occEmpty?.pressure).toBe(0);
+    });
+
+    test("re-entrant turnId overwrites prior estimate without leaking", async () => {
+      const engine = createContextEngine({ contextWindowSize: 100_000 });
+      await engine.prepare(makeCtx("turn-X"), [makeMsg("user", `${block}${block}`)]);
+      const heavy = (await engine.describeOccupancy?.())?.estimatedTokens ?? 0;
+      expect(heavy).toBeGreaterThan(0);
+
+      // Same turnId, smaller payload — must replace, not accumulate.
+      await engine.prepare(makeCtx("turn-X"), [makeMsg("user", "hi")]);
+      const light = (await engine.describeOccupancy?.())?.estimatedTokens ?? 0;
+      expect(light).toBeLessThan(heavy);
+
+      engine.onAfterTurn?.(makeCtx("turn-X"));
+      const empty = await engine.describeOccupancy?.();
+      expect(empty?.estimatedTokens).toBe(0);
+    });
+  });
+
+  describe("swap controller resilience", () => {
+    test("subscriber throw does not break swap or block other subscribers", () => {
+      const def = createContextEngine();
+      const pass = createPassthroughContextEngine();
+      const seenErrors: unknown[] = [];
+      const ctrl = createContextEngineSwapController(def, {
+        onListenerError: (err) => seenErrors.push(err),
+      });
+
+      const seenByGood: string[] = [];
+      const errSpy = spyOn(console, "error").mockImplementation(() => {});
+      ctrl.subscribe(() => {
+        throw new Error("subscriber boom");
+      });
+      ctrl.subscribe((notice) => {
+        seenByGood.push(notice.to.name);
+      });
+
+      const swap = ctrl.swap(pass, {
+        turnId: "run-x:t1" as Parameters<typeof ctrl.swap>[1]["turnId"],
+        reason: "test",
+      });
+      expect(swap?.to.name).toBe("@koi/context-manager/passthrough");
+      expect(ctrl.current()).toBe(pass);
+      expect(seenByGood).toEqual(["@koi/context-manager/passthrough"]);
+      expect(seenErrors.length).toBe(1);
+      errSpy.mockRestore();
+    });
+  });
+
+  describe("end-to-end: bundled factory + pinned manifest via createKoi", () => {
+    function buildMockAdapter(): import("@koi/core").EngineAdapter {
+      return {
+        engineId: "test-adapter",
+        capabilities: { text: true, images: false, files: false, audio: false },
+        stream: () => ({
+          [Symbol.asyncIterator]: () => ({
+            async next(): Promise<IteratorResult<EngineEvent>> {
+              return { done: true, value: undefined };
+            },
+          }),
+        }),
+      };
+    }
+
+    test("createKoi accepts the documented (createContextEngine, manifest pin) path", async () => {
+      const { createKoi } = await import("@koi/engine");
+      const runtime = await createKoi({
+        manifest: {
+          name: "agent",
+          version: "1.0.0",
+          model: { name: "test" },
+          context: {
+            engine: DEFAULT_CONTEXT_ENGINE_IDENTITY.name,
+            version: DEFAULT_CONTEXT_ENGINE_IDENTITY.version,
+            config: { contextWindowSize: 200_000 },
+          },
+        },
+        adapter: buildMockAdapter(),
+        contextEngineFactory: createContextEngine,
+      });
+      expect(runtime.agent.state).toBe("created");
+      const slot = runtime.agent.component(CONTEXT_ENGINE);
+      expect(slot?.identity.name).toBe(DEFAULT_CONTEXT_ENGINE_IDENTITY.name);
+      expect(slot?.identity.version).toBe(DEFAULT_CONTEXT_ENGINE_IDENTITY.version);
+    });
+
+    test("manifest version that does not match the bundled artifact is rejected", async () => {
+      const { createKoi } = await import("@koi/engine");
+      await expect(
+        createKoi({
+          manifest: {
+            name: "agent",
+            version: "1.0.0",
+            model: { name: "test" },
+            context: {
+              engine: DEFAULT_CONTEXT_ENGINE_IDENTITY.name,
+              version: "9.9.9",
+            },
+          },
+          adapter: buildMockAdapter(),
+          contextEngineFactory: createContextEngine,
+        }),
+      ).rejects.toThrow(/version/);
+    });
   });
 });
 
