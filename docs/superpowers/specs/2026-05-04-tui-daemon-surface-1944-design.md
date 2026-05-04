@@ -327,11 +327,14 @@ The actual `Supervisor` surface is:
   193–298). Calling `iter.return()` while parked does NOT resolve the
   pending await; we race each `next()` against a `closed` Promise that
   `bridge.close()` resolves.
-- `registry.list(): Promise<readonly BackgroundSessionRecord[]>` — async
-  (FS read for the file-backed implementation).
+- `registry.describeList(): Promise<Result<readonly BackgroundSessionRecord[], KoiError>>`
+  — **strict** read; surfaces directory/permission/corruption faults as
+  `Result.ok: false`. The bridge **must** use this and not the lenient
+  `registry.describeList()`, which collapses errors to an empty array (`list()`
+  is a CLI ergonomic for `koi bg ps`, not a liveness primitive).
 - `registry.watch(): AsyncIterable<BackgroundSessionEvent>` — also
-  available; we consume it with the same closed-sentinel pattern instead
-  of polling `list()` when the bridge first attaches.
+  available; we consume it with the same closed-sentinel pattern as a
+  push channel for incremental updates between polls.
 
 Cadence:
 
@@ -339,7 +342,7 @@ Cadence:
 |--------|--------|----------|
 | `supervisor.health()` | poll | 1s |
 | `supervisor.watchAll()` | async iterable, closed-sentinel race | event-driven |
-| `registry.list()` | poll for full table refresh | 1s (debounced if last call >250ms) |
+| `registry.describeList()` | poll for full table refresh | 1s (debounced if last call >250ms) |
 | `registry.watch()` | async iterable, closed-sentinel race | event-driven, drives row patches between polls |
 
 Polling `health()` keeps the badge fresh even when no events fire (worker
@@ -371,10 +374,27 @@ interface DaemonBridge {
 
 `requestKill` rejects internal errors as toasts, never throws to caller.
 
-All intervals + iterators stop on `close()`. `bin.ts` invokes `close()`
-during graceful shutdown **before** `supervisor.shutdown()`, so the
-bridge drains its event loop while the supervisor is still publishing
-final lifecycle events.
+All intervals + iterators stop on `close()`. **Shutdown ordering** is
+the inverse of attach: terminal `stopped`/`exited` events are published
+only once `supervisor.shutdown()` begins, so the bridge must remain
+subscribed while shutdown is in flight, otherwise the final lifecycle
+updates the bridge exists to surface are lost.
+
+```
+graceful shutdown sequence in bin.ts
+  1. const shutdownTask = supervisor.shutdown(reason);  // start async
+  2. await shutdownTask;                                // wait for terminal events to drain through watchAll
+  3. await bridge.close();                              // closed-sentinel + iterator cleanup
+  4. await registryBridge.close();                      // attachRegistry's own bridge
+```
+
+Step 3 happens after `shutdown()` resolves so `watchAll()` has already
+emitted the final `stopped`/`exited` events through both registry and
+TUI bridges. If steps are reversed, the bridge times out before
+`supervisor.shutdown()` even begins publishing — exactly the regression
+this surface should not introduce. A shared deadline (e.g., total 5s)
+is enforced by wrapping step 2 in a timeout; on expiry, step 3 still
+runs to release resources.
 
 ### Bridge failure handling
 
@@ -385,9 +405,9 @@ last-known snapshot and flags the surface as stale.
 | Failure | Action |
 |---------|--------|
 | `health()` throws (synchronous read; rare — bug or torn snapshot) | Increment `healthFailureCount`. After 3 consecutive failures, dispatch `set_supervisor_status({ kind: "stale", since: firstFailureAt, reason })`. Keep `health` slice unchanged so the worker table does not blink empty. Log via existing logger. |
-| `registry.list()` rejects | Same 3-strike → `stale` status; keep last `rows`. Toast once per stale transition: `"⚠ background session registry unavailable"`. |
-| `watchAll()` iterator throws or ends `done: true` | Iterator pattern means a thrown error surfaces in the `for await` `catch`. Dispatch stale; **reacquire indefinitely** with capped exponential backoff `1s, 2s, 5s, 10s, 30s, 60s` (cap), each attempt jittered ±20% to avoid lockstep retry storms. While stream is down, `health()` + `registry.list()` polling continue (degraded poll-only mode); the surface remains functional, just without push events. |
-| `registry.watch()` iterator throws or ends | Same indefinite-reacquire policy as `watchAll`. Independent counter — a flaky FS watcher does not cancel the supervisor stream. `registry.list()` polling backstops row freshness. |
+| `registry.describeList()` returns `Result.ok: false` OR throws | Same 3-strike → `stale` status; keep last `rows`. Toast once per stale transition: `"⚠ background session registry unavailable: ${err.message}"`. (Lenient `list()` is intentionally not used here — empty arrays would be indistinguishable from real outage.) |
+| `watchAll()` iterator throws or ends `done: true` | Iterator pattern means a thrown error surfaces in the `for await` `catch`. Dispatch stale; **reacquire indefinitely** with capped exponential backoff `1s, 2s, 5s, 10s, 30s, 60s` (cap), each attempt jittered ±20% to avoid lockstep retry storms. While stream is down, `health()` + `registry.describeList()` polling continue (degraded poll-only mode); the surface remains functional, just without push events. |
+| `registry.watch()` iterator throws or ends | Same indefinite-reacquire policy as `watchAll`. Independent counter — a flaky FS watcher does not cancel the supervisor stream. `registry.describeList()` polling backstops row freshness. |
 | Recovery (any successful operation) | Reset that channel's failure counter; mark its `ChannelLiveness` slot back to `live`. **Recompute composite status from the full liveness map** — only flip back to `kind: "live"` when ALL four channels are live. If push channels are still down, status remains `degraded`. Toast on transitions: `"✓ supervisor stream restored"` when both push channels recover; `"✓ supervisor connection restored"` only on `degraded → live` or `stale → live` transitions. |
 | `bridge.close()` during reconnect backoff | The closed-sentinel race exits the backoff sleep immediately; no leaked timers. |
 
@@ -422,9 +442,12 @@ governance dedup helper if extractable; otherwise a tiny local map.
 
 ### Freshness computation
 
-Per row, at dispatch time (not render). `heartbeatDeadlineMs` read from
-supervisor config via `health()` snapshot. Treat `lastHeartbeatAt === null`
-explicitly — never coerce to `0`.
+Per row, at dispatch time (not render). The supervisor publishes
+**per-worker** `lastHeartbeatAt` and `heartbeatDeadlineAt` on the
+`SupervisorHealth.workers[]` snapshot — both are `number | undefined`.
+There is **no** global `heartbeatDeadlineMs`. Both fields can be
+`undefined` for workers in non-running states or before the first
+heartbeat. Treat `undefined` explicitly — never coerce to `0`.
 
 ```
 // Status-priority short-circuits — registry status drives more than heartbeat.
@@ -432,17 +455,35 @@ if (status === "exited" || status === "crashed") return "terminal";
 if (status === "detached")    return "detached";
 if (status === "terminating") return "terminating";
 
-// status is "starting" or "running" → derive from heartbeat
-if (lastHeartbeatAt === null) {
-  // No heartbeat yet. Allow a grace window from startedAt before flipping red.
-  if (now - startedAt < 2 * heartbeatDeadlineMs) return "pending";
+// status is "starting" or "running" → derive from per-worker health snapshot
+const workerSnap = health.workers.find(w => w.workerId === row.workerId);
+const lastHeartbeatAt   = workerSnap?.lastHeartbeatAt ?? null;
+const heartbeatDeadlineAt = workerSnap?.heartbeatDeadlineAt ?? null;
+
+if (heartbeatDeadlineAt === null || lastHeartbeatAt === null) {
+  // Worker present in registry but not yet in supervisor.health (rare race
+  // window between register and first heartbeat-config publish), OR pre-
+  // first-heartbeat. Allow a grace window from startedAt.
+  const PENDING_GRACE_MS = 30_000;  // explicit constant, not a deadline guess
+  if (now - startedAt < PENDING_GRACE_MS) return "pending";
   return "timeout";
 }
-const age = now - lastHeartbeatAt;
-if (age < heartbeatDeadlineMs)     return "ok";
-if (age < 2 * heartbeatDeadlineMs) return "stale";
+
+if (now <= heartbeatDeadlineAt)    return "ok";
+// Past the deadline. Use the publishing supervisor's own deadline interval
+// to derive a stale window: 2× of (deadlineAt - lastHeartbeatAt).
+const interval = heartbeatDeadlineAt - lastHeartbeatAt;
+if (now - heartbeatDeadlineAt < interval) return "stale";
 return "timeout";
 ```
+
+Notes:
+- The reducer reads the per-worker entry by `workerId`, never assumes a
+  shared global deadline.
+- Pending grace is a fixed 30s constant, not a derived multiple of an
+  unknown interval. Documented in code so future tuning is explicit.
+- If the L0 contract grows a published global deadline later, swap the
+  derivation in one place.
 
 Render mapping in `BgView`:
 
@@ -586,10 +627,12 @@ on the right side: governance segment, then supervisor segment, separator
 
 - **`reduce.test.ts`** — new actions update slices; events ring buffer caps
   at 50; bg row freshness boundaries cover all 7 outcomes (pending, ok,
-  stale, timeout, terminating, detached, terminal) including null
-  `lastHeartbeatAt` grace window, status-priority short-circuits for
-  `exited`/`crashed`/`detached`/`terminating`, and respect for
-  `heartbeatDeadlineMs` from health snapshot.
+  stale, timeout, terminating, detached, terminal) including
+  `undefined`/`null` `lastHeartbeatAt`/`heartbeatDeadlineAt` grace
+  window, status-priority short-circuits for
+  `exited`/`crashed`/`detached`/`terminating`, per-worker lookup by
+  `workerId` (not a shared global deadline), and stale-interval
+  derivation from `(deadlineAt - lastHeartbeatAt)`.
 - **`StatusBar.test.tsx`** — badge renders ◎/◑/● per `health.status` when
   bridge `live`; renders `◌ stale Ns` when bridge `stale`; segment hidden
   when `detached`; format `"3/5 workers"`.
@@ -640,6 +683,13 @@ on the right side: governance segment, then supervisor segment, separator
     reacquire — does NOT cancel `watchAll`.
   - `close()` resolves the `closed` sentinel, both consumer loops drain,
     polls clear, no leaked timers.
+  - Bridge uses `registry.describeList()` not `list()`: a permission-denied
+    fixture returns `Result.ok: false`, surfaces as stale; the lenient
+    `list()` empty-fallback is never invoked.
+  - Shutdown ordering: `supervisor.shutdown()` resolves before
+    `bridge.close()`; final `stopped` events from shutdown reach the
+    store. Reversed-order regression test (close-before-shutdown) loses
+    events — guarded by an explicit assertion that ordering matches spec.
 - **`wire-daemon-supervisor.test.ts`** — manifest with subprocess child
   instantiates daemon + registry + bridge; manifest with only in-process
   children skips daemon; dispose tears down in reverse order.
