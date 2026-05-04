@@ -54,11 +54,21 @@ function globToRegex(pattern: string): RegExp {
 
 /**
  * Extract the non-glob directory prefix from a glob pattern.
- * e.g. `/snapshots/*.json` → `/snapshots`
+ * Stops at the first path segment that contains a glob character (*, ?, [).
+ * For example, snapshots-slash-star-slash-node.json returns snapshots.
  */
 function patternDir(pattern: string): string {
-  const lastSlash = pattern.lastIndexOf("/");
-  return lastSlash <= 0 ? "/" : pattern.slice(0, lastSlash);
+  const parts = pattern.split("/");
+  const nonGlob: string[] = [];
+  for (const part of parts) {
+    if (part.includes("*") || part.includes("?") || part.includes("[")) break;
+    nonGlob.push(part);
+  }
+  // If no non-glob parts, list root
+  if (nonGlob.length === 0) return "/";
+  // If the first part is empty (absolute path like /foo/bar), preserve leading /
+  const joined = nonGlob.join("/");
+  return joined === "" ? "/" : joined;
 }
 
 /** Read + JSON-parse a file. Missing file → `value: undefined`. */
