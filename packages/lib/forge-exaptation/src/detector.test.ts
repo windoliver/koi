@@ -47,6 +47,7 @@ function asResult(report: DriftReport): DetectionResult {
     report,
     droppedCount: 0,
     duplicateCount: 0,
+    validObservationCount: report.observationCount,
     replayProtected: true,
   };
 }
@@ -267,6 +268,7 @@ describe("suggestAction", () => {
         {
           kind: "no-drift",
           observationCount: 3,
+          validObservationCount: 3,
           droppedCount: 0,
           duplicateCount: 0,
           replayProtected: true,
@@ -339,6 +341,7 @@ describe("suggestAction", () => {
       report,
       droppedCount: 0,
       duplicateCount: 0,
+      validObservationCount: report.observationCount,
       replayProtected: true,
     };
     expect(suggestAction(result, 3).kind).toBe("new-artifact");
@@ -352,6 +355,7 @@ describe("suggestAction replay-protection gate", () => {
       kind: "drift",
       droppedCount: 0,
       duplicateCount: 0,
+      validObservationCount: 5,
       replayProtected: false,
       report: {
         kind: "purpose_drift",
@@ -536,6 +540,7 @@ describe("suggestAction quality gate", () => {
       kind: "drift",
       droppedCount: 3,
       duplicateCount: 0,
+      validObservationCount: 5,
       replayProtected: true,
       report: {
         kind: "purpose_drift",
@@ -554,6 +559,7 @@ describe("suggestAction quality gate", () => {
       kind: "drift",
       droppedCount: 1,
       duplicateCount: 0,
+      validObservationCount: 5,
       replayProtected: true,
       report: {
         kind: "purpose_drift",
@@ -571,6 +577,7 @@ describe("suggestAction quality gate", () => {
       kind: "drift",
       droppedCount: 0,
       duplicateCount: 4,
+      validObservationCount: 5,
       replayProtected: true,
       report: {
         kind: "purpose_drift",
@@ -637,5 +644,50 @@ describe("dedup key isolation regression", () => {
       expect(result.observationCount).toBe(2);
       expect(result.duplicateCount).toBe(4);
     }
+  });
+});
+
+describe("mixed-traffic regressions", () => {
+  test("agents mixing baseline + drift observations still surface drift", () => {
+    // Two agents, each with 2 baseline (0.1) + 3 high-divergence (0.95) samples.
+    // All-observations average is (2*0.1 + 3*0.95) / 5 = 0.61 < 0.7 — under the
+    // old all-or-none rule the agents would have been excluded entirely and
+    // drift would never surface.
+    const obsList: UsagePurposeObservation[] = [
+      ...[0.1, 0.1, 0.95, 0.95, 0.95].map((s) => obs("a", s)),
+      ...[0.1, 0.1, 0.95, 0.95, 0.95].map((s) => obs("b", s)),
+    ];
+    const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      // Cohort = the 6 high-divergence samples only; baselines stay out.
+      expect(result.report.divergentAgents).toBe(2);
+      expect(result.report.observationCount).toBe(6);
+      expect(result.report.avgDivergence).toBeCloseTo(0.95, 5);
+      // Full window is still tracked.
+      expect(result.validObservationCount).toBe(10);
+    }
+  });
+
+  test("quality gate uses full validated window, not just cohort slice", () => {
+    // 10 valid samples (6 cohort + 4 baseline) and 2 dropped. Old denominator
+    // (cohort.observationCount = 6) would have computed 2/(6+2)=25% which is
+    // not >25%. A new dropped sample (3) would push it to 3/(6+3)=33% wrongly.
+    // New denominator uses validObservationCount = 10, giving 3/(10+3)≈23% — still acceptable.
+    const result: DetectionResult = {
+      kind: "drift",
+      droppedCount: 3,
+      duplicateCount: 0,
+      validObservationCount: 10,
+      replayProtected: true,
+      report: {
+        kind: "purpose_drift",
+        severity: 0.95,
+        avgDivergence: 0.92,
+        divergentAgents: 2,
+        observationCount: 6,
+      },
+    };
+    expect(suggestAction(result, 5).kind).toBe("new-artifact");
   });
 });

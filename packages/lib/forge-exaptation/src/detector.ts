@@ -105,12 +105,20 @@ export type DetectionResult =
       readonly report: DriftReport;
       readonly droppedCount: number;
       readonly duplicateCount: number;
+      /**
+       * Total post-dedup valid observations in the window — including baseline
+       * traffic outside the divergent cohort. Used by `suggestAction`'s quality
+       * gate so that clean baseline-heavy windows aren't punished for the
+       * cohort being a small slice.
+       */
+      readonly validObservationCount: number;
       /** False when no `observationKey` was provided — `suggestAction` will refuse. */
       readonly replayProtected: boolean;
     }
   | {
       readonly kind: "no-drift";
       readonly observationCount: number;
+      readonly validObservationCount: number;
       readonly droppedCount: number;
       readonly duplicateCount: number;
       readonly replayProtected: boolean;
@@ -211,6 +219,7 @@ export function detectDrift(
   const noDrift = (): DetectionResult => ({
     kind: "no-drift",
     observationCount: unique.length,
+    validObservationCount: unique.length,
     droppedCount,
     duplicateCount,
     replayProtected,
@@ -244,6 +253,7 @@ export function detectDrift(
     kind: "drift",
     droppedCount,
     duplicateCount,
+    validObservationCount: unique.length,
     replayProtected,
     report: {
       kind: "purpose_drift",
@@ -284,8 +294,11 @@ export function suggestAction(
   if (!input.replayProtected) return { kind: "none" };
 
   // Quality gate is mandatory: refuse to act on a window where most
-  // observations were dropped or collapsed as duplicates.
-  const total = input.report.observationCount + input.droppedCount + input.duplicateCount;
+  // observations were dropped or collapsed as duplicates. The denominator
+  // is the *full* validated window (not just the divergent cohort) so a
+  // clean baseline-heavy window isn't punished for the cohort being a
+  // small slice.
+  const total = input.validObservationCount + input.droppedCount + input.duplicateCount;
   const lowQuality = input.droppedCount + input.duplicateCount;
   if (total > 0 && lowQuality / total > MAX_QUALITY_DEGRADATION_RATIO) {
     return { kind: "none" };
@@ -380,36 +393,39 @@ interface DivergentCohort {
 
 /**
  * Identify the cohort of agents whose *own* drift evidence clears the bar:
- *   - at least `minObservationsPerAgent` observations attributed to them, AND
- *   - their personal average divergence ≥ `divergenceThreshold`.
+ * an agent contributes when they have at least `minObservationsPerAgent`
+ * observations whose `divergenceScore ≥ divergenceThreshold`. Only those
+ * qualifying observations enter the cohort totals — baseline samples from
+ * the same agent stay out.
  *
- * Returns the count and the aggregate divergence/observation totals for that
- * cohort only. Drift is then scored on this subset, NOT on the whole window —
- * preventing low-divergence baseline traffic from masking a smaller but
- * consistent divergent cohort.
+ * Earlier versions averaged every observation for an agent then included
+ * all-or-none, so an agent who mixed baseline and repurposed traffic could
+ * never clear their personal average and their drift evidence was dropped.
+ * Per-observation qualification fixes that without lowering the bar:
+ * a single high-divergence sample still isn't enough (the per-agent floor
+ * holds), but real drift mixed with baseline now surfaces.
  */
 function computeDivergentCohort(
   observations: readonly UsagePurposeObservation[],
   thresholds: ExaptationThresholds,
 ): DivergentCohort {
-  const sums = new Map<string, number>();
-  const counts = new Map<string, number>();
+  const divergentSums = new Map<string, number>();
+  const divergentCounts = new Map<string, number>();
   for (const o of observations) {
-    sums.set(o.agentId, (sums.get(o.agentId) ?? 0) + o.divergenceScore);
-    counts.set(o.agentId, (counts.get(o.agentId) ?? 0) + 1);
+    if (o.divergenceScore < thresholds.divergenceThreshold) continue;
+    divergentSums.set(o.agentId, (divergentSums.get(o.agentId) ?? 0) + o.divergenceScore);
+    divergentCounts.set(o.agentId, (divergentCounts.get(o.agentId) ?? 0) + 1);
   }
 
   // let: cohort accumulators
   let agentCount = 0;
   let observationCount = 0;
   let totalDivergence = 0;
-  for (const [agentId, count] of counts) {
+  for (const [agentId, count] of divergentCounts) {
     if (count < thresholds.minObservationsPerAgent) continue;
-    const sum = sums.get(agentId) ?? 0;
-    if (sum / count < thresholds.divergenceThreshold) continue;
     agentCount++;
     observationCount += count;
-    totalDivergence += sum;
+    totalDivergence += divergentSums.get(agentId) ?? 0;
   }
   return { agentCount, observationCount, totalDivergence };
 }

@@ -35,8 +35,8 @@ The detector first identifies the **divergent cohort** — agents whose own evid
 
 | Per-agent gate | Default | Why |
 |---|---|---|
-| Agent observation count ≥ `minObservationsPerAgent` | 2 | Reject one-off spikes |
-| Per-agent average divergence ≥ `divergenceThreshold` | 0.7 | Sustained drift, not a single outlier |
+| Per-agent **divergent** observation count ≥ `minObservationsPerAgent` | 2 | Reject one-off spikes |
+| Each cohort observation has `divergenceScore ≥ divergenceThreshold` | 0.7 | Baseline samples don't dilute the cohort — agents who *mix* baseline and drift still contribute their drift evidence |
 
 | Cohort gate | Default | Why |
 |---|---|---|
@@ -65,7 +65,7 @@ Severity ∈ [0, 1]: scales with how broadly and how strongly the artifact has d
 |---|---|
 | `result.kind ≠ "drift"` (no-drift, invalid-config, undefined) | `none` |
 | `replayProtected: false` (no observationKey provided) | `none` |
-| `(droppedCount + duplicateCount) / total > 25%` | `none` (low-quality window) |
+| `(droppedCount + duplicateCount) / (validObservationCount + dropped + duplicate) > 25%` | `none` (low-quality window — the denominator is the *full* validated window, not just the divergent cohort, so clean baseline-heavy traffic isn't punished for the cohort being a small slice) |
 | Single drift window (`stableWindows < 2`) | `reclassify` — rewrite the artifact's description to match observed usage |
 | `stableWindows ≥ 2` AND `avgDivergence ≥ 0.85` | `new-artifact` — fork a specialized variant; the drift is a real second use case |
 | `stableWindows ≥ 2` AND `avgDivergence < 0.85` | `reclassify` — drift exists but isn't strong enough to justify forking |
