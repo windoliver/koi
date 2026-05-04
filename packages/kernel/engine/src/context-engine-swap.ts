@@ -208,8 +208,17 @@ export function createContextEngineSwapController(
       ...(evt.rollbackTarget !== undefined
         ? { rollbackTarget: freezeIdentity(evt.rollbackTarget) }
         : {}),
-      ...(evt.pinnedTurnIds !== undefined
-        ? { pinnedTurnIds: Object.freeze([...evt.pinnedTurnIds]) }
+      ...(evt.pinnedTurns !== undefined
+        ? {
+            pinnedTurns: Object.freeze(
+              evt.pinnedTurns.map((p) =>
+                Object.freeze({
+                  turnId: p.turnId,
+                  engineIdentity: freezeIdentity(p.engineIdentity),
+                }),
+              ),
+            ),
+          }
         : {}),
     };
     return Object.freeze(cloned);
@@ -300,10 +309,13 @@ export function createContextEngineSwapController(
       }
     }
     // Snapshot pinned turns BEFORE flipping `active` so observers see
-    // exactly which in-flight turns are still serving on the pre-swap
-    // engine. `swap()` only repoints new-turn lookups; per-turn pins
-    // stay anchored to the engine they began with.
-    const pinnedSnapshot: readonly TurnId[] = turnPins.size > 0 ? Array.from(turnPins.keys()) : [];
+    // exactly which in-flight turns are still serving on each engine.
+    // `swap()` only repoints new-turn lookups; per-turn pins stay anchored
+    // to the engine they began with — and across multiple sequential
+    // swaps those pins may resolve to different engines, so we record the
+    // engine identity per turn rather than assuming "all pinned turns
+    // are on `from`".
+    const pinnedSnapshot = pinnedTurnsSnapshot();
     const evt: ContextEngineSwapEvent = {
       kind: "context-engine-swap",
       turnId: options.turnId,
@@ -311,7 +323,7 @@ export function createContextEngineSwapController(
       to: to.identity,
       reason: options.reason,
       ...(options.rollbackTarget !== undefined ? { rollbackTarget: options.rollbackTarget } : {}),
-      ...(pinnedSnapshot.length > 0 ? { pinnedTurnIds: pinnedSnapshot } : {}),
+      ...(pinnedSnapshot.length > 0 ? { pinnedTurns: pinnedSnapshot } : {}),
       timestamp: new Date().toISOString(),
     };
     priorStack.push({
@@ -361,16 +373,16 @@ export function createContextEngineSwapController(
     }
     // Commit only after every refusal check has passed.
     priorStack.length = truncateLength;
-    // Snapshot in-flight pins so observers can attribute turns still
-    // running on `from` instead of mistakenly crediting `target`.
-    const pinnedSnapshot: readonly TurnId[] = turnPins.size > 0 ? Array.from(turnPins.keys()) : [];
+    // Snapshot per-turn engine attribution so observers can attribute
+    // each in-flight turn to whichever engine it actually started on.
+    const pinnedSnapshot = pinnedTurnsSnapshot();
     const evt: ContextEngineSwapEvent = {
       kind: "context-engine-swap",
       turnId: options.turnId,
       from: active.identity,
       to: target.identity,
       reason: options.reason,
-      ...(pinnedSnapshot.length > 0 ? { pinnedTurnIds: pinnedSnapshot } : {}),
+      ...(pinnedSnapshot.length > 0 ? { pinnedTurns: pinnedSnapshot } : {}),
       timestamp: new Date().toISOString(),
     };
     const frozen = freezeEvent(evt);
@@ -382,6 +394,17 @@ export function createContextEngineSwapController(
 
   const hasActivePin = (): boolean => turnPins.size > 0;
   const pinnedTurnIds = (): readonly TurnId[] => Array.from(turnPins.keys());
+  const pinnedTurnsSnapshot = (): readonly {
+    readonly turnId: TurnId;
+    readonly engineIdentity: import("@koi/core").ContextEngineIdentity;
+  }[] => {
+    if (turnPins.size === 0) return [];
+    const out: { turnId: TurnId; engineIdentity: import("@koi/core").ContextEngineIdentity }[] = [];
+    for (const [turnId, engine] of turnPins) {
+      out.push({ turnId, engineIdentity: engine.identity });
+    }
+    return out;
+  };
 
   const listeners = new Set<(event: ContextEngineSwapEvent) => void>();
   const subscribe = (listener: (event: ContextEngineSwapEvent) => void): (() => void) => {
