@@ -218,6 +218,13 @@ const mockResumeSessionFromJsonl = mock(
     value: { sid: "mock-sid", messages: [], issueCount: 0 },
   }),
 );
+// Mock the Nexus endpoint resolver so tests don't try to spawn a real
+// nexus-ai-fs subprocess via uvx when manifests declare backend: nexus.
+// Returns `value: undefined` (no endpoint needed) — the downstream fs-nexus
+// resolution is itself mocked through `@koi/runtime`'s resolveFileSystem.
+mock.module("../resolve-nexus-for-host.js", () => ({
+  resolveNexusForHost: mock(async () => ({ ok: true as const, value: undefined })),
+}));
 mock.module("../shared-wiring.js", () => ({
   buildPluginMcpSetup: mock(() => undefined),
   loadUserMcpSetup: mock(async () => undefined),
