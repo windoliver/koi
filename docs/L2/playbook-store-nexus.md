@@ -84,6 +84,12 @@ Contract parity verified by `src/__tests__/{playbook,structured,trajectory,propo
 | All stores | No SQL — list ops are O(N) over a glob | SQL `SELECT` with indices | Glob list + client-side filter | Acceptable: ACE list operations are user-driven, not hot-path |
 | All stores | Writer concurrency | DB-level locking (WAL + write-lock) | No lock — concurrent writers cause last-write-wins races | Use sqlite for single-host concurrency guarantees |
 
+## Concurrency limits
+
+Audit immutability (proposals and evaluations) is enforced **per-process** via in-memory mutexes in `createNexusPlaybookProposalStore`. Within a single process, concurrent `recordProposal` or `recordEvaluation` calls for the same ID are serialised: the first writer commits, and any subsequent writer with identical content is a no-op; a writer with different content throws an immutability error.
+
+**Cross-process atomicity is not guaranteed.** Two separate processes can both observe an absent proposal file and both commit conflicting records — last writer wins. True cross-process atomic create-if-absent requires Nexus-level CAS (etag / if-match), which `@koi/nexus-client` does not yet expose. Distributed deployments that need this guarantee must funnel proposal and evaluation writes through a single coordinator process until issue #1469 lands CAS support.
+
 ## Connection-loss handling
 
 Each store method propagates transport errors. `read` calls returning NOT_FOUND/EXTERNAL are treated as `undefined`, matching the contract.

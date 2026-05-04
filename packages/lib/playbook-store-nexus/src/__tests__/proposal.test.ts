@@ -48,10 +48,6 @@ function makeEvaluation(id: string, proposalId: string): PlaybookEvaluation {
   };
 }
 
-function newStore() {
-  return createNexusPlaybookProposalStore({ transport: createFakeNexusTransport() });
-}
-
 function makeStructuredPlaybook(id: string, version: number): StructuredPlaybook {
   return {
     id,
@@ -77,13 +73,34 @@ function makeProposalWithBase(
   };
 }
 
+/**
+ * Creates a fresh store pair (proposal + structured) sharing the same transport.
+ * Returns both so tests can pre-save structured playbooks as needed.
+ */
+function newStores() {
+  const transport = createFakeNexusTransport();
+  const proposal = createNexusPlaybookProposalStore({ transport });
+  const structured = createNexusStructuredPlaybookStore({ transport });
+  return { proposal, structured };
+}
+
+/**
+ * Convenience: create stores AND pre-save a structured playbook with version 1
+ * for playbookId. Returns the proposal store for immediate use.
+ */
+async function storeWithPlaybook(playbookId: string, version = 1) {
+  const { proposal, structured } = newStores();
+  await structured.save(makeStructuredPlaybook(playbookId, version));
+  return { proposal, structured };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 describe("createNexusPlaybookProposalStore", () => {
   test("recordProposal → getProposal round-trip", async () => {
-    const store = newStore();
+    const { proposal: store } = await storeWithPlaybook("pb-a");
     await store.recordProposal(makeProposal("p1", "pb-a"));
     const got = await store.getProposal("p1");
     expect(got?.id).toBe("p1");
@@ -92,12 +109,14 @@ describe("createNexusPlaybookProposalStore", () => {
   });
 
   test("getProposal returns undefined for missing", async () => {
-    const store = newStore();
+    const { proposal: store } = newStores();
     expect(await store.getProposal("nope")).toBeUndefined();
   });
 
   test("listProposals returns proposals for given playbook only", async () => {
-    const store = newStore();
+    const { proposal: store, structured } = newStores();
+    await structured.save(makeStructuredPlaybook("pb-a", 1));
+    await structured.save(makeStructuredPlaybook("pb-b", 1));
     await store.recordProposal(makeProposal("p1", "pb-a"));
     await store.recordProposal(makeProposal("p2", "pb-a"));
     await store.recordProposal(makeProposal("p3", "pb-b"));
@@ -108,13 +127,13 @@ describe("createNexusPlaybookProposalStore", () => {
   });
 
   test("listProposals for unknown playbook returns []", async () => {
-    const store = newStore();
+    const { proposal: store } = newStores();
     const result = await store.listProposals("unknown-pb");
     expect(result).toEqual([]);
   });
 
   test("recordEvaluation persists alongside proposal", async () => {
-    const store = newStore();
+    const { proposal: store } = await storeWithPlaybook("pb-a");
     await store.recordProposal(makeProposal("p1", "pb-a"));
     await expect(store.recordEvaluation(makeEvaluation("e1", "p1"))).resolves.toBeUndefined();
   });
@@ -123,14 +142,14 @@ describe("createNexusPlaybookProposalStore", () => {
 
   test("getProposal for missing id returns undefined (not throws)", async () => {
     // Matches sqlite contract: missing proposal returns undefined, not an error.
-    const store = newStore();
+    const { proposal: store } = newStores();
     const result = await store.getProposal("completely-unknown-id");
     expect(result).toBeUndefined();
   });
 
   test("listProposals returns all proposals for a playbook (content complete)", async () => {
     // Verify the full proposal object is round-tripped, not just the ID.
-    const store = newStore();
+    const { proposal: store } = await storeWithPlaybook("pb-round");
     const p = makeProposal("p-full", "pb-round");
     await store.recordProposal(p);
     const list = await store.listProposals("pb-round");
@@ -144,7 +163,7 @@ describe("createNexusPlaybookProposalStore", () => {
     // Nexus returns in whatever order the transport lists files (undefined order).
     // Callers that need a stable sort must sort the returned array themselves.
     // Documented in docs/L2/playbook-store-nexus.md.
-    const store = newStore();
+    const { proposal: store } = await storeWithPlaybook("pb-order");
     await store.recordProposal(makeProposal("p1", "pb-order"));
     await store.recordProposal(makeProposal("p2", "pb-order"));
     await store.recordProposal(makeProposal("p3", "pb-order"));
@@ -156,19 +175,19 @@ describe("createNexusPlaybookProposalStore", () => {
   // --- ACE ID path-safety regression tests (Finding 1) ---
 
   test("recordProposal with id containing '/' is rejected", async () => {
-    const store = newStore();
+    const { proposal: store } = await storeWithPlaybook("pb-a");
     await expect(store.recordProposal(makeProposal("p/bad", "pb-a"))).rejects.toThrow(
       "Proposal ID",
     );
   });
 
   test("recordProposal with id containing '..' is rejected", async () => {
-    const store = newStore();
+    const { proposal: store } = await storeWithPlaybook("pb-a");
     await expect(store.recordProposal(makeProposal("a..b", "pb-a"))).rejects.toThrow("Proposal ID");
   });
 
   test("'p:1' and 'p_1' are distinct proposals — no collision", async () => {
-    const store = newStore();
+    const { proposal: store } = await storeWithPlaybook("pb-a");
     await store.recordProposal(makeProposal("p:1", "pb-a"));
     await store.recordProposal(makeProposal("p_1", "pb-a"));
     // Both must be individually retrievable
@@ -182,7 +201,7 @@ describe("createNexusPlaybookProposalStore", () => {
   // --- Immutable proposal contract regression tests (Finding 6) ---
 
   test("recordProposal with same id + same content is idempotent (no error)", async () => {
-    const store = newStore();
+    const { proposal: store } = await storeWithPlaybook("pb-a");
     const p = makeProposal("p-idem", "pb-a");
     await store.recordProposal(p);
     // Second call with identical content must succeed silently
@@ -192,9 +211,13 @@ describe("createNexusPlaybookProposalStore", () => {
   });
 
   test("recordProposal with same id + different content throws", async () => {
-    const store = newStore();
+    const { proposal: store } = await storeWithPlaybook("pb-a");
     await store.recordProposal(makeProposal("p-immut", "pb-a"));
-    const changed = { ...makeProposal("p-immut", "pb-a"), baseVersion: 99 };
+    // Changing baseVersion to 1 (already saved version) but alter another field
+    const changed = {
+      ...makeProposal("p-immut", "pb-a"),
+      reflection: { ...makeProposal("p-immut", "pb-a").reflection, rootCause: "different" },
+    };
     await expect(store.recordProposal(changed)).rejects.toThrow(
       "already recorded with different content",
     );
@@ -202,7 +225,7 @@ describe("createNexusPlaybookProposalStore", () => {
 
   test("listProposals returns proposal recorded even when index write retried", async () => {
     // Smoke: after a normal recordProposal, listProposals finds the proposal.
-    const store = newStore();
+    const { proposal: store } = await storeWithPlaybook("pb-idx");
     await store.recordProposal(makeProposal("p-idx", "pb-idx"));
     const list = await store.listProposals("pb-idx");
     expect(list.map((p) => p.id)).toContain("p-idx");
@@ -212,7 +235,7 @@ describe("createNexusPlaybookProposalStore", () => {
 
   test("recordProposal then listProposals immediately — visible", async () => {
     // Proposal file is the sole source of truth; no index needed.
-    const store = newStore();
+    const { proposal: store } = await storeWithPlaybook("pb-direct");
     await store.recordProposal(makeProposal("p-direct", "pb-direct"));
     const list = await store.listProposals("pb-direct");
     expect(list.map((p) => p.id)).toContain("p-direct");
@@ -220,7 +243,7 @@ describe("createNexusPlaybookProposalStore", () => {
 
   test("recordProposal + listProposals round-trips full content", async () => {
     // Positive test: single record + list returns the full proposal object.
-    const store = newStore();
+    const { proposal: store } = await storeWithPlaybook("pb-roundtrip");
     const p = makeProposal("p-roundtrip", "pb-roundtrip");
     await store.recordProposal(p);
     const list = await store.listProposals("pb-roundtrip");
@@ -233,7 +256,9 @@ describe("createNexusPlaybookProposalStore", () => {
   test("listProposals filters by playbookId — proposals from other playbooks excluded", async () => {
     // When proposals exist for multiple playbooks, listProposals returns only
     // the ones for the requested playbookId.
-    const store = newStore();
+    const { proposal: store, structured } = newStores();
+    await structured.save(makeStructuredPlaybook("pb-x", 1));
+    await structured.save(makeStructuredPlaybook("pb-y", 1));
     await store.recordProposal(makeProposal("px1", "pb-x"));
     await store.recordProposal(makeProposal("py1", "pb-y"));
     await store.recordProposal(makeProposal("py2", "pb-y"));
@@ -246,7 +271,7 @@ describe("createNexusPlaybookProposalStore", () => {
   // --- Fix 4: immutable evaluation audit + require proposal exists ---
 
   test("recordEvaluation twice with same proposalId + same content is idempotent", async () => {
-    const store = newStore();
+    const { proposal: store } = await storeWithPlaybook("pb-eval");
     await store.recordProposal(makeProposal("p-eval-idem", "pb-eval"));
     const e = makeEvaluation("e-idem", "p-eval-idem");
     await store.recordEvaluation(e);
@@ -255,7 +280,7 @@ describe("createNexusPlaybookProposalStore", () => {
   });
 
   test("recordEvaluation twice with same proposalId + different verdict throws", async () => {
-    const store = newStore();
+    const { proposal: store } = await storeWithPlaybook("pb-eval");
     await store.recordProposal(makeProposal("p-eval-conflict", "pb-eval"));
     await store.recordEvaluation(makeEvaluation("e-conflict", "p-eval-conflict"));
     const changed = {
@@ -268,7 +293,7 @@ describe("createNexusPlaybookProposalStore", () => {
   });
 
   test("recordEvaluation for nonexistent proposal throws", async () => {
-    const store = newStore();
+    const { proposal: store } = newStores();
     await expect(
       store.recordEvaluation(makeEvaluation("e-orphan", "p-nonexistent")),
     ).rejects.toThrow("not found");
@@ -298,11 +323,65 @@ describe("createNexusPlaybookProposalStore", () => {
     ).rejects.toThrow("version");
   });
 
-  test("recordProposal against never-saved playbook (fresh) succeeds", async () => {
-    // No structured playbook file exists → fresh proposal → allowed
-    const store = newStore();
+  // Fix 2 regression: absent structured playbook must now be rejected (not silently accepted)
+  test("recordProposal against never-saved structured playbook throws", async () => {
+    // sqlite sibling rejects this case; nexus now matches that behaviour.
+    const { proposal: store } = newStores();
     await expect(
       store.recordProposal(makeProposalWithBase("p-fresh", "pb-fresh", 0)),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow("does not exist");
+  });
+
+  // --- Fix 1: per-id in-process mutex closes same-process audit race ---
+
+  test("concurrent recordProposal for same id + same content is idempotent (both resolve)", async () => {
+    // Two concurrent calls with identical content must both succeed.
+    const { proposal: store } = await storeWithPlaybook("pb-conc");
+    const p = makeProposal("p-conc-same", "pb-conc");
+    await expect(
+      Promise.all([store.recordProposal(p), store.recordProposal(p)]),
+    ).resolves.toBeDefined();
+    expect((await store.getProposal("p-conc-same"))?.id).toBe("p-conc-same");
+  });
+
+  test("concurrent recordProposal for same id + different content — second rejects", async () => {
+    // Two concurrent calls with different content: the second to acquire the lock
+    // must see the already-written record and throw immutability error.
+    const { proposal: store } = await storeWithPlaybook("pb-conc2");
+    const p1 = makeProposal("p-race", "pb-conc2");
+    const p2 = {
+      ...makeProposal("p-race", "pb-conc2"),
+      reflection: { ...makeProposal("p-race", "pb-conc2").reflection, rootCause: "different" },
+    };
+    const results = await Promise.allSettled([store.recordProposal(p1), store.recordProposal(p2)]);
+    const rejected = results.filter((r) => r.status === "rejected");
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    // Exactly one must succeed and one must be rejected with immutability error
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(1);
+    const err = rejected[0];
+    if (err?.status === "rejected") {
+      expect(String(err.reason)).toContain("already recorded with different content");
+    }
+  });
+
+  test("concurrent recordEvaluation for same proposalId + different content — second rejects", async () => {
+    // Same invariant for evaluations: concurrent conflicting writes → one wins, one throws.
+    const { proposal: store } = await storeWithPlaybook("pb-eval-conc");
+    await store.recordProposal(makeProposal("p-eval-race", "pb-eval-conc"));
+    const e1 = makeEvaluation("e-race", "p-eval-race");
+    const e2 = { ...makeEvaluation("e-race", "p-eval-race"), verdict: "reject" as const };
+    const results = await Promise.allSettled([
+      store.recordEvaluation(e1),
+      store.recordEvaluation(e2),
+    ]);
+    const rejected = results.filter((r) => r.status === "rejected");
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(1);
+    const err = rejected[0];
+    if (err?.status === "rejected") {
+      expect(String(err.reason)).toContain("already recorded with different content");
+    }
   });
 });
