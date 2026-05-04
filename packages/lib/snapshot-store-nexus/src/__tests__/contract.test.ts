@@ -287,4 +287,85 @@ describe("SnapshotChainStore [nexus] — contract", () => {
       expect(result.error.code).toBe("INTERNAL");
     }
   });
+
+  // --- Regression tests for canonical node store / fork fix (#1405) ---
+
+  test("fork shares canonical nodes — get resolves same node in both chains", async () => {
+    store = newStore<string>();
+    const r1 = await store.put(c1, "origin", []);
+    if (!r1.ok || r1.value === undefined) throw new Error("r1 failed");
+    const sourceNodeId = r1.value.nodeId;
+
+    const forkResult = await store.fork(sourceNodeId, c2, "exp");
+    expect(forkResult.ok).toBe(true);
+
+    // get by nodeId must succeed (canonical file is shared — no duplication)
+    const gotResult = await store.get(sourceNodeId);
+    expect(gotResult.ok).toBe(true);
+    if (gotResult.ok) expect(gotResult.value.data).toBe("origin");
+
+    // head of new chain resolves to the same sourceNodeId
+    const headResult = await store.head(c2);
+    expect(headResult.ok).toBe(true);
+    if (headResult.ok) expect(headResult.value?.nodeId).toBe(sourceNodeId);
+  });
+
+  test("fork copies ancestor membership — list(newChain) contains all three ancestors", async () => {
+    store = newStore<string>();
+    const ra = await store.put(c1, "a", []);
+    if (!ra.ok || ra.value === undefined) throw new Error("ra failed");
+    const rb = await store.put(c1, "b", [ra.value.nodeId]);
+    if (!rb.ok || rb.value === undefined) throw new Error("rb failed");
+    const rc = await store.put(c1, "c", [rb.value.nodeId]);
+    if (!rc.ok || rc.value === undefined) throw new Error("rc failed");
+
+    const forkResult = await store.fork(rc.value.nodeId, c2, "branch");
+    expect(forkResult.ok).toBe(true);
+
+    // New chain must contain all three nodes (a, b, c)
+    const listResult = await store.list(c2);
+    expect(listResult.ok).toBe(true);
+    if (listResult.ok) {
+      expect(listResult.value.length).toBe(3);
+      const ids = listResult.value.map((n) => n.nodeId);
+      expect(ids).toContain(ra.value.nodeId);
+      expect(ids).toContain(rb.value.nodeId);
+      expect(ids).toContain(rc.value.nodeId);
+    }
+  });
+
+  test("source prune does not affect forked chain — canonical node survives", async () => {
+    store = newStore<string>();
+    const r1 = await store.put(c1, "node", []);
+    if (!r1.ok || r1.value === undefined) throw new Error("r1 failed");
+    const sourceNodeId = r1.value.nodeId;
+
+    const forkResult = await store.fork(sourceNodeId, c2, "fork");
+    expect(forkResult.ok).toBe(true);
+
+    // Aggressively prune source chain — removes membership marker but NOT canonical node
+    const pruneResult = await store.prune(c1, { retainCount: 0, retainBranches: false });
+    expect(pruneResult.ok).toBe(true);
+
+    // get must still succeed — canonical node file is untouched by prune
+    const gotResult = await store.get(sourceNodeId);
+    expect(gotResult.ok).toBe(true);
+    if (gotResult.ok) expect(gotResult.value.data).toBe("node");
+
+    // head of forked chain must also still resolve
+    const headResult = await store.head(c2);
+    expect(headResult.ok).toBe(true);
+    if (headResult.ok) expect(headResult.value?.nodeId).toBe(sourceNodeId);
+  });
+
+  test("no nodeId collision — two puts with same data produce different nodeIds", async () => {
+    store = newStore<string>();
+    const r1 = await store.put(c1, "same-data", []);
+    const r2 = await store.put(c1, "same-data", []);
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+    if (r1.ok && r1.value !== undefined && r2.ok && r2.value !== undefined) {
+      expect(r1.value.nodeId).not.toBe(r2.value.nodeId);
+    }
+  });
 });

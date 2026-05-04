@@ -1,9 +1,23 @@
 import { describe, expect, test } from "bun:test";
-import { metaPath, nodePath, validateSegment } from "./paths.js";
+import { canonicalNodePath, memberGlob, memberPath, metaPath, validateSegment } from "./paths.js";
 
-describe("nodePath", () => {
-  test("composes basePath/chainId/nodeId.json", () => {
-    expect(nodePath("snapshots", "chain-1", "node-abc")).toBe("snapshots/chain-1/node-abc.json");
+describe("canonicalNodePath", () => {
+  test("composes basePath/_nodes/nodeId.json", () => {
+    expect(canonicalNodePath("snapshots", "node-abc")).toBe("snapshots/_nodes/node-abc.json");
+  });
+});
+
+describe("memberPath", () => {
+  test("composes basePath/chainId/members/nodeId.member", () => {
+    expect(memberPath("snapshots", "chain-1", "node-abc")).toBe(
+      "snapshots/chain-1/members/node-abc.member",
+    );
+  });
+});
+
+describe("memberGlob", () => {
+  test("composes basePath/chainId/members/*.member", () => {
+    expect(memberGlob("snapshots", "chain-1")).toBe("snapshots/chain-1/members/*.member");
   });
 });
 

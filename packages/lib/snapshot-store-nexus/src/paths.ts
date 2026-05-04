@@ -1,16 +1,38 @@
 /**
  * Path layout + segment validation for the Nexus snapshot store.
  *
- * Snapshots are stored as JSON files at deterministic paths:
- *   <basePath>/<chainId>/<nodeId>.json   — node payload
- *   <basePath>/<chainId>/meta.json       — chain head + node list
+ * Three-tier layout:
+ *
+ *   <basePath>/_nodes/<nodeId>.json                — canonical node payload
+ *                                                    (one file per unique nodeId,
+ *                                                    shared across chains)
+ *   <basePath>/<chainId>/members/<nodeId>.member   — membership marker
+ *                                                    (presence means nodeId belongs
+ *                                                    to chainId; file body is empty {})
+ *   <basePath>/<chainId>/meta.json                 — chain head pointer + nodeIds list
+ *
+ * The `_nodes` prefix is reserved and cannot collide with user chain IDs because
+ * `validateSegment` rejects empty segments and `_nodes` begins with `_`, which is
+ * a normal character — but chain IDs are user-controlled and must not equal `_nodes`.
+ * By convention, callers must not use `_nodes` as a chain ID.
  */
 
 import type { KoiError, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
 
-export function nodePath(basePath: string, chainId: string, nodeId: string): string {
-  return `${basePath}/${chainId}/${nodeId}.json`;
+/** Canonical node payload — one file per unique nodeId, shared across chains. */
+export function canonicalNodePath(basePath: string, nodeId: string): string {
+  return `${basePath}/_nodes/${nodeId}.json`;
+}
+
+/** Chain membership marker — presence means nodeId belongs to chainId. */
+export function memberPath(basePath: string, chainId: string, nodeId: string): string {
+  return `${basePath}/${chainId}/members/${nodeId}.member`;
+}
+
+/** Glob for all membership markers in a chain (used by list/prune sweeps). */
+export function memberGlob(basePath: string, chainId: string): string {
+  return `${basePath}/${chainId}/members/*.member`;
 }
 
 export function metaPath(basePath: string, chainId: string): string {

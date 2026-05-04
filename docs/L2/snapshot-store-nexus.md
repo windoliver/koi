@@ -37,11 +37,29 @@ Dependencies: @koi/core, @koi/hash, @koi/nexus-client
 ## Path layout
 
 ```
-<basePath>/<chainId>/<nodeId>.json   — node payload (SnapshotNode<T>)
-<basePath>/<chainId>/meta.json       — { headNodeId, nodeIds[] }
+<basePath>/_nodes/<nodeId>.json                — canonical node payload (SnapshotNode<T>)
+                                                 one file per unique nodeId, shared across chains
+<basePath>/<chainId>/members/<nodeId>.member   — membership marker
+                                                 presence means nodeId belongs to chainId
+<basePath>/<chainId>/meta.json                 — { headNodeId, nodeIds[] }
 ```
 
 `basePath` defaults to `"snapshots"`. Chain ID and node ID are validated for path safety (no `/`, `..`, null bytes, or backslash).
+
+The `_nodes` prefix is reserved and must not be used as a chain ID. Because `validateSegment` rejects empty and slash-containing segments, a user chain ID of `_nodes` is technically allowed by the validator but is reserved by convention.
+
+### Why canonical nodes
+
+Storing node payloads at a chain-independent path solves two bugs:
+
+1. **Fork without duplication** — `fork(sourceNodeId, newChainId)` copies membership markers and meta only. The canonical node file is shared; no byte is duplicated.
+2. **Deterministic `get`** — `get(nodeId)` reads `_nodes/<nodeId>.json` directly. No wildcard glob, no non-determinism when the same nodeId appears in multiple chains.
+
+### Canonical-node garbage collection
+
+Pruning a chain removes membership markers only (`<chainId>/members/<nodeId>.member`); canonical node files in `_nodes/` remain. This means a node that belongs to multiple chains (e.g., the fork point) is not deleted when only one chain prunes it.
+
+A future GC pass (tracked in #1469) will sweep `_nodes/` against the union of every chain's membership markers and delete orphan canonical files. That sweep is intentionally out of scope for this PR to keep the change atomic and reviewable.
 
 ## Concurrency
 

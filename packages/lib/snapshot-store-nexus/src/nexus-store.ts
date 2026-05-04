@@ -1,9 +1,15 @@
 /**
  * Nexus-backed `SnapshotChainStore<T>`.
  *
- * Each chain lives at <basePath>/<chainId>/, with one JSON file per node and
- * a meta.json holding the head pointer + node order. Per-chain mutex
- * serializes meta read-modify-write within a single process.
+ * Three-tier layout:
+ *   <basePath>/_nodes/<nodeId>.json              — canonical node payload (one per nodeId)
+ *   <basePath>/<chainId>/members/<nodeId>.member — membership marker (chain ↔ nodeId)
+ *   <basePath>/<chainId>/meta.json              — head pointer + nodeIds list
+ *
+ * Node files are chain-independent: forking a chain copies membership markers only,
+ * not canonical node files. This ensures nodeIds are globally unique and all
+ * ancestor nodes remain reachable after a fork. Per-chain mutex serializes
+ * meta read-modify-write within a single process.
  */
 
 import type {
@@ -19,8 +25,8 @@ import type {
 } from "@koi/core";
 import { nodeId as makeNodeId, notFound, validation } from "@koi/core";
 import { computeContentHash } from "@koi/hash";
-import { deleteJson, exists, listChildren, readJson, writeJson } from "./json-io.js";
-import { metaPath, nodePath, validateSegment } from "./paths.js";
+import { deleteJson, exists, readJson, writeJson } from "./json-io.js";
+import { canonicalNodePath, memberPath, metaPath, validateSegment } from "./paths.js";
 import type { NexusSnapshotStoreConfig } from "./types.js";
 
 interface ChainMeta {
@@ -29,6 +35,7 @@ interface ChainMeta {
 }
 
 const EMPTY_META: ChainMeta = { headNodeId: null, nodeIds: [] };
+const EMPTY_MEMBER_BODY = {};
 
 const DEFAULT_BASE_PATH = "snapshots";
 
@@ -50,8 +57,9 @@ export function createSnapshotStoreNexus<T>(
     return writeJson(transport, metaPath(basePath, cid), meta);
   }
 
-  async function readNode(cid: ChainId, nid: NodeId): Promise<Result<SnapshotNode<T>, KoiError>> {
-    const r = await readJson<SnapshotNode<T>>(transport, nodePath(basePath, cid, nid));
+  /** Read a node by nodeId from the canonical store (chain-independent). */
+  async function readNode(nid: NodeId): Promise<Result<SnapshotNode<T>, KoiError>> {
+    const r = await readJson<SnapshotNode<T>>(transport, canonicalNodePath(basePath, nid));
     if (!r.ok) return r;
     if (r.value === undefined) {
       return { ok: false, error: notFound(nid, `Snapshot node not found: ${nid}`) };
@@ -59,8 +67,14 @@ export function createSnapshotStoreNexus<T>(
     return { ok: true, value: r.value };
   }
 
+  /** Write a node to the canonical store (path is chain-independent). */
   async function writeNode(node: SnapshotNode<T>): Promise<Result<void, KoiError>> {
-    return writeJson(transport, nodePath(basePath, node.chainId, node.nodeId), node);
+    return writeJson(transport, canonicalNodePath(basePath, node.nodeId), node);
+  }
+
+  /** Write a membership marker linking nodeId to chainId. */
+  async function writeMember(cid: ChainId, nid: NodeId): Promise<Result<void, KoiError>> {
+    return writeJson(transport, memberPath(basePath, cid, nid), EMPTY_MEMBER_BODY);
   }
 
   async function withChainLock<R>(cid: ChainId, fn: () => Promise<R>): Promise<R> {
@@ -96,7 +110,7 @@ export function createSnapshotStoreNexus<T>(
     // prune cannot delete a parent between validation and the child write.
     return withChainLock(cid, async () => {
       for (const pid of parentIds) {
-        const ex = await exists(transport, nodePath(basePath, cid, pid));
+        const ex = await exists(transport, canonicalNodePath(basePath, pid));
         if (!ex.ok) return ex;
         if (!ex.value) return { ok: false, error: validation(`Parent node not found: ${pid}`) };
       }
@@ -106,7 +120,7 @@ export function createSnapshotStoreNexus<T>(
       const meta = metaRes.value;
 
       if (options?.skipIfUnchanged === true && meta.headNodeId !== null) {
-        const head = await readNode(cid, meta.headNodeId);
+        const head = await readNode(meta.headNodeId);
         if (head.ok && head.value.contentHash === hash) {
           return { ok: true, value: undefined };
         }
@@ -122,8 +136,12 @@ export function createSnapshotStoreNexus<T>(
         createdAt: Date.now(),
         metadata: metadata ?? {},
       };
+      // Write canonical node first, then membership marker, then meta.
+      // Order: data durable before pointer updates (Fix 4 invariant).
       const wn = await writeNode(node);
       if (!wn.ok) return wn;
+      const wmbr = await writeMember(cid, nid);
+      if (!wmbr.ok) return wmbr;
       const wm = await writeMeta(cid, {
         headNodeId: nid,
         nodeIds: [...meta.nodeIds, nid],
@@ -138,18 +156,8 @@ export function createSnapshotStoreNexus<T>(
   ): Promise<Result<SnapshotNode<T>, KoiError>> => {
     const seg = validateSegment(nid, "Node ID");
     if (!seg.ok) return { ok: false, error: seg.error };
-    const matches = await listChildren(transport, `${basePath}/*/${nid}.json`);
-    if (!matches.ok) return matches;
-    const path = matches.value[0];
-    if (path === undefined) {
-      return { ok: false, error: notFound(nid, `Snapshot node not found: ${nid}`) };
-    }
-    const r = await readJson<SnapshotNode<T>>(transport, path);
-    if (!r.ok) return r;
-    if (r.value === undefined) {
-      return { ok: false, error: notFound(nid, `Snapshot node not found: ${nid}`) };
-    }
-    return { ok: true, value: r.value };
+    // Single canonical resolution — no wildcard glob needed.
+    return readNode(nid);
   };
 
   const head: SnapshotChainStore<T>["head"] = async (
@@ -160,7 +168,7 @@ export function createSnapshotStoreNexus<T>(
     const m = await readMeta(cid);
     if (!m.ok) return m;
     if (m.value.headNodeId === null) return { ok: true, value: undefined };
-    return readNode(cid, m.value.headNodeId);
+    return readNode(m.value.headNodeId);
   };
 
   const list: SnapshotChainStore<T>["list"] = async (
@@ -175,7 +183,7 @@ export function createSnapshotStoreNexus<T>(
     for (let i = ids.length - 1; i >= 0; i--) {
       const id = ids[i];
       if (id === undefined) continue;
-      const r = await readNode(cid, id);
+      const r = await readNode(id);
       if (r.ok) out.push(r.value);
     }
     return { ok: true, value: out };
@@ -216,16 +224,33 @@ export function createSnapshotStoreNexus<T>(
     if (!sseg.ok) return { ok: false, error: sseg.error };
     const cseg = validateSegment(newChainId, "New Chain ID");
     if (!cseg.ok) return { ok: false, error: cseg.error };
+
+    // Source node must exist in the canonical store.
     const src = await get(sourceNodeId);
     if (!src.ok) return src;
-    const copy: SnapshotNode<T> = { ...src.value, chainId: newChainId };
-    const wn = await writeNode(copy);
-    if (!wn.ok) return wn;
+
+    // Compute the full ancestor closure (includes the source node at index 0).
+    const ancestorsRes = await ancestors({ startNodeId: sourceNodeId });
+    if (!ancestorsRes.ok) return ancestorsRes;
+
+    // ancestorsRes.value is ordered depth-ascending (source first, oldest last).
+    // Reverse to oldest-first so meta.nodeIds matches insertion order (oldest → newest).
+    const ancestorList = [...ancestorsRes.value].reverse();
+
+    // Write membership markers for every ancestor — do NOT touch canonical files.
+    for (const node of ancestorList) {
+      const wm = await writeMember(newChainId, node.nodeId);
+      if (!wm.ok) return wm;
+    }
+
+    // Write meta last: pointers after data is durable (Fix 4 invariant).
+    const nodeIds = ancestorList.map((n) => n.nodeId);
     const wm = await writeMeta(newChainId, {
       headNodeId: sourceNodeId,
-      nodeIds: [sourceNodeId],
+      nodeIds,
     });
     if (!wm.ok) return wm;
+
     const ref: ForkRef = { parentNodeId: sourceNodeId, label };
     return { ok: true, value: ref };
   };
@@ -251,30 +276,31 @@ export function createSnapshotStoreNexus<T>(
         for (let i = 0; i < ids.length; i++) {
           const id = ids[i];
           if (id === undefined) continue;
-          const node = await readNode(cid, id);
+          const node = await readNode(id);
           if (node.ok && node.value.createdAt < cutoff) remove.add(i);
         }
       }
       if (policy.retainBranches !== false) remove.delete(ids.length - 1);
 
-      const sorted = [...remove].sort((a, b) => b - a);
-
       // Compute the post-prune node list and write meta FIRST.
-      // A partial failure leaves orphan blobs (recoverable / harmless) rather
-      // than meta that references already-deleted nodes (dangling pointers).
+      // A partial failure leaves orphan markers (recoverable / harmless) rather
+      // than meta that references already-deleted membership markers.
       const postPruneIds = ids.filter((_, i) => !remove.has(i));
       const newHead =
         postPruneIds.length > 0 ? (postPruneIds[postPruneIds.length - 1] ?? null) : null;
       const wm = await writeMeta(cid, { headNodeId: newHead, nodeIds: postPruneIds });
       if (!wm.ok) return wm;
 
-      // Now delete the orphaned node files. A failure here leaves an orphan blob
-      // but meta is already consistent — the chain is still queryable.
+      // Delete membership markers for removed nodeIds.
+      // Do NOT touch canonical node files — they may be referenced by other chains.
+      // Note: canonical-node GC (orphan sweep over _nodes/ vs union of all memberships)
+      // is future work tracked in #1469 — not part of this PR.
+      const sorted = [...remove].sort((a, b) => b - a);
       let removed = 0;
       for (const idx of sorted) {
         const id = ids[idx];
         if (id !== undefined) {
-          const d = await deleteJson(transport, nodePath(basePath, cid, id));
+          const d = await deleteJson(transport, memberPath(basePath, cid, id));
           if (!d.ok) return d;
           removed += 1;
         }
