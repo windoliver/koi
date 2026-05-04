@@ -177,9 +177,16 @@ import type {
 
 const SUPERVISOR_EVENT_BUFFER_CAP = 50;
 
+type BridgeStatus =
+  | { readonly kind: "detached" }   // no supervisor in this session
+  | { readonly kind: "live" }       // last poll succeeded
+  | { readonly kind: "stale"; readonly since: number; readonly reason: string };
+                                    // bridge attached but data plane failing
+
 interface SupervisorSlice {
-  readonly attached: boolean;
-  readonly health: SupervisorHealth | null;
+  readonly attached: boolean;       // false ⇔ status.kind === "detached"
+  readonly status: BridgeStatus;    // distinguishes detached from unavailable
+  readonly health: SupervisorHealth | null;  // last-known; not cleared on failure
   readonly events: readonly SupervisorEventEntry[];
 }
 
@@ -201,7 +208,16 @@ interface BgSessionRow {
   readonly endedAt: number | null;
   readonly lastHeartbeatAt: number | null;
   readonly logPath: string;
-  readonly freshness: "ok" | "stale" | "timeout";
+  /**
+   * `pending`  — no heartbeat yet AND within `2 * heartbeatDeadlineMs` of
+   *              `startedAt` (worker still booting, OR registry-only entry
+   *              that has not registered with the supervisor yet).
+   * `ok`       — heartbeat received within deadline.
+   * `stale`    — heartbeat older than deadline but under 2× deadline.
+   * `timeout`  — heartbeat older than 2× deadline OR no heartbeat past the
+   *              `pending` grace window OR status `crashed`/`exited`.
+   */
+  readonly freshness: "pending" | "ok" | "stale" | "timeout";
   readonly backendKind: WorkerBackendKind | null;
 }
 
@@ -215,6 +231,7 @@ interface BgSessionsSlice {
 Dispatch actions:
 
 - `set_supervisor_attached: { attached: boolean }`
+- `set_supervisor_status: { status: BridgeStatus }`
 - `set_supervisor_health: { health: SupervisorHealth | null }`
 - `push_supervisor_event: { entry: SupervisorEventEntry }` (caps buffer)
 - `clear_supervisor_events`
@@ -233,6 +250,28 @@ Toasts reuse existing `push_toast` action — no new shape.
 - `supervisor.events()` → push subscription, no polling.
 - All intervals stop on `bridge.close()`.
 
+### Bridge failure handling
+
+Every poll and the event subscription wrap their work in try/catch. The
+bridge **never** silently clears state on failure; instead it preserves the
+last-known snapshot and flags the surface as stale.
+
+| Failure | Action |
+|---------|--------|
+| `health()` rejects or throws | Increment `healthFailureCount`. After 3 consecutive failures (≈3s), dispatch `set_supervisor_status({ kind: "stale", since: firstFailureAt, reason })`. Keep `health` slice unchanged so the worker table does not blink empty. Log via existing logger. |
+| `registry.list()` rejects | Same pattern: 3-strike → `stale` status; keep last `rows`. Toast once per stale transition: `"⚠ background session registry unavailable"`. |
+| `supervisor.events()` subscription ends unexpectedly | Treat as terminal for that subscription. Dispatch stale; attempt resubscribe with backoff (1s, 2s, 5s, 5s …). If 5 reconnects fail, leave stale and stop trying — operator must restart the TUI. |
+| Recovery (any successful poll after a failure) | Reset failure counter; dispatch `set_supervisor_status({ kind: "live" })`; toast `"✓ supervisor connection restored"` only if previously stale. |
+
+Status-line rendering uses `status.kind`:
+- `detached` → segment hidden (current behavior).
+- `live` → badge ◎/◑/● per `health.status`.
+- `stale` → badge `◌` (open circle) plus `"stale Ns"` countdown — explicit
+  signal that observability is broken, not that everything is healthy.
+
+This rules out the failure mode where a dead bridge silently presents as
+"no supervisor attached".
+
 ### Toast triggers (bridge maps WorkerEvent → toast)
 
 | Trigger | Message |
@@ -247,23 +286,53 @@ governance dedup helper if extractable; otherwise a tiny local map.
 
 ### Freshness computation
 
-Per row, at dispatch time (not render):
+Per row, at dispatch time (not render). `heartbeatDeadlineMs` read from
+supervisor config via `health()` snapshot. Treat `lastHeartbeatAt === null`
+explicitly — never coerce to `0`.
 
-- `ok` — `now - lastHeartbeatAt < heartbeatDeadlineMs`
-- `stale` — `heartbeatDeadlineMs ≤ now - lastHeartbeatAt < 2 * heartbeatDeadlineMs`
-- `timeout` — `now - lastHeartbeatAt ≥ 2 * heartbeatDeadlineMs` OR status `crashed`/`exited`
+```
+if (status === "crashed" || status === "exited") return "timeout";
+if (lastHeartbeatAt === null) {
+  // No heartbeat yet. Allow a grace window from startedAt before flipping red.
+  if (now - startedAt < 2 * heartbeatDeadlineMs) return "pending";
+  return "timeout";
+}
+const age = now - lastHeartbeatAt;
+if (age < heartbeatDeadlineMs) return "ok";
+if (age < 2 * heartbeatDeadlineMs) return "stale";
+return "timeout";
+```
 
-`heartbeatDeadlineMs` read from supervisor config via `health()` snapshot.
+`pending` renders neutral (no color flag) so booting workers and
+registry-only entries do not falsely alarm before their first heartbeat.
 
 ### Kill flow
 
-1. `BgView`: user presses `k` → dispatch `set_bg_kill_confirm({ sessionId })`.
-2. Modal renders. `y` → call `onCommand("system:bg-kill", { sessionId })`.
-3. `tui-root` routes to `bridge.requestKill(sessionId)`.
-4. Bridge resolves `workerId` via `registry.get(sessionId)`; calls
-   `supervisor.stop(workerId, "user-requested")`.
-5. Supervisor emits `stopped`; bridge dispatches event + status.
-6. `n` or Esc → dispatch `set_bg_kill_confirm({ confirm: null })`.
+The selected `BgSessionRow` carries `workerId` from the last poll merge —
+that snapshot can be stale by the time the user confirms. Resolution must
+happen at execution time against the **live supervisor snapshot**, not the
+cached registry row.
+
+1. `BgView`: user presses `k` → dispatch
+   `set_bg_kill_confirm({ sessionId, expectedWorkerId })` where
+   `expectedWorkerId` captures the worker the operator intended to stop.
+2. Modal renders. `y` → call
+   `onCommand("system:bg-kill", { sessionId, expectedWorkerId })`.
+3. `tui-root` routes to `bridge.requestKill({ sessionId, expectedWorkerId })`.
+4. Bridge resolves the **current** mapping:
+   - `entry = await registry.get(sessionId)`; if absent OR
+     `entry.status !== "running"`/`"starting"`, dispatch a `push_toast`
+     `"⚠ session <id> already terminated"` and return without calling stop.
+   - `currentWorkerId = entry.workerId`. If `currentWorkerId !== expectedWorkerId`
+     (the worker was restarted between selection and confirm), dispatch
+     `"⚠ session <id> rebound to a new worker; refresh and try again"`
+     and return — never stop a worker the operator did not pick.
+5. Bridge calls `supervisor.stop(currentWorkerId, "user-requested")`. If
+   the call rejects (worker already gone, supervisor shutting down), catch
+   and surface as a toast; do not crash the bridge.
+6. Supervisor emits `stopped`; bridge dispatches event + the next poll
+   refreshes status.
+7. `n` or Esc → dispatch `set_bg_kill_confirm({ confirm: null })`.
 
 ### Log tail
 
@@ -288,9 +357,11 @@ on the right side: governance segment, then supervisor segment, separator
 ### Unit tests (bun:test, colocated)
 
 - **`reduce.test.ts`** — new actions update slices; events ring buffer caps
-  at 50; bg row freshness boundaries (ok/stale/timeout).
-- **`StatusBar.test.tsx`** — badge renders ◎/◑/● per status; hidden when
-  `attached: false`; format `"3/5 workers"`.
+  at 50; bg row freshness boundaries (pending/ok/stale/timeout) including
+  null `lastHeartbeatAt` grace window and crashed/exited → timeout.
+- **`StatusBar.test.tsx`** — badge renders ◎/◑/● per `health.status` when
+  bridge `live`; renders `◌ stale Ns` when bridge `stale`; segment hidden
+  when `detached`; format `"3/5 workers"`.
 - **`SupervisorView.test.tsx`** — worker table columns; reasons section
   hidden when empty; event feed last-N order.
 - **`BgView.test.tsx`** — registry rows merged with health workers; kill
@@ -298,7 +369,13 @@ on the right side: governance segment, then supervisor segment, separator
 - **`daemon-bridge.test.ts`** — `WorkerEvent.crashed` triggers `push_toast`
   + `push_supervisor_event`; same crash within 30s deduped to 1 toast;
   `health` ok→degraded transition fires toast (not on every tick); kill
-  resolves workerId via registry; close() unsubscribes + clears intervals.
+  resolves workerId via live registry, refuses when session terminated or
+  rebound to a different worker (no-op + warn toast), surfaces
+  `supervisor.stop` rejection as toast without crashing; 3 consecutive
+  `health()` failures flip status to `stale` while preserving last snapshot;
+  recovery flips back to `live` with restored toast; events subscription
+  loss triggers backoff resubscribe (1s, 2s, 5s, 5s); `close()`
+  unsubscribes + clears intervals.
 - **`wire-daemon-supervisor.test.ts`** — manifest with subprocess child
   instantiates daemon + registry + bridge; manifest with only in-process
   children skips daemon; dispose tears down in reverse order.
