@@ -125,15 +125,32 @@ describe("startSandbox", () => {
     expect(env?.NEXUS_EMBEDDING_MODEL).toBe("text-embedding-3-large");
   });
 
-  test("vectorSearch off by default — env vars not set", async () => {
+  test("vectorSearch off by default — emits NEXUS_ENABLE_VECTOR_SEARCH=false to override inherited env", async () => {
     let env: Record<string, string | undefined> | undefined;
     const spawn: SpawnFn = (_cmd, opts) => {
       env = opts?.env;
       return mockProcess();
     };
     await startSandbox({ spawn, fetch: alwaysHealthyFetch() });
-    expect(env?.NEXUS_ENABLE_VECTOR_SEARCH).toBeUndefined();
+    expect(env?.NEXUS_ENABLE_VECTOR_SEARCH).toBe("false");
     expect(env?.NEXUS_EMBEDDING_MODEL).toBeUndefined();
+  });
+
+  test("strips inherited NEXUS_* keys (sanitize child env)", async () => {
+    const saved = process.env.NEXUS_DATA_DIR;
+    process.env.NEXUS_DATA_DIR = "/tmp/from-parent-shell";
+    try {
+      let env: Record<string, string | undefined> | undefined;
+      const spawn: SpawnFn = (_cmd, opts) => {
+        env = opts?.env;
+        return mockProcess();
+      };
+      await startSandbox({ spawn, fetch: alwaysHealthyFetch() });
+      expect(env?.NEXUS_DATA_DIR).toBeUndefined();
+    } finally {
+      if (saved === undefined) delete process.env.NEXUS_DATA_DIR;
+      else process.env.NEXUS_DATA_DIR = saved;
+    }
   });
 
   test("HEALTH_TIMEOUT when /health never returns 200 → kills child", async () => {
@@ -198,6 +215,24 @@ describe("startSandbox", () => {
     if (!result.ok) {
       expect(result.error.code).toBe("EXTERNAL");
       expect(result.error.context).toMatchObject({ exitCode: 2 });
+    }
+  });
+});
+
+describe("startSandbox port probe (default spawn path)", () => {
+  test("PORT_IN_USE when probePort reports occupied, no spawn attempted", async () => {
+    const spawnCalled = false;
+    // Default-spawn path: omit `spawn` so the probe runs.
+    const result = await startSandbox({
+      port: 2026,
+      fetch: alwaysHealthyFetch(),
+      probePort: async () => true,
+    });
+    expect(spawnCalled).toBe(false);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("CONFLICT");
+      expect(result.error.context).toMatchObject({ port: 2026 });
     }
   });
 });

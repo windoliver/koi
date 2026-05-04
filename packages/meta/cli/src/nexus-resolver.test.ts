@@ -246,6 +246,30 @@ describe("resolveNexusEndpoint", () => {
     expect(r.error.code).toBe("EXTERNAL");
   });
 
+  test("auto mode with NEXUS_URL still spawns when nexus.mode is sandbox", async () => {
+    // (already covered by sandbox-mode test above, but explicitly assert the
+    // nexus-resolver.ts boundary: cliNexusUrl undefined + manifestNexus.mode
+    // sandbox → spawn even if env has a URL)
+    const state = { capturedConfigs: [] as SandboxConfig[], stopped: [] as number[] };
+    const r = await resolveNexusEndpoint(
+      {
+        manifestNexus: {
+          mode: "sandbox",
+          url: undefined,
+          port: undefined,
+          dataDir: undefined,
+          enableVectorSearch: undefined,
+          embeddingModel: undefined,
+        },
+        cliNexusUrl: undefined,
+        env: { NEXUS_URL: "http://stale" },
+      },
+      mockDeps(state),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.source).toBe("spawned-sandbox");
+  });
+
   test("treats whitespace-only URL as missing", async () => {
     const r = await resolveNexusEndpoint(
       {

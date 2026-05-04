@@ -19,8 +19,20 @@ import type { ManifestNexusConfig } from "./manifest.js";
 export interface NexusEndpoint {
   readonly url: string;
   readonly source: "cli-flag" | "manifest-url" | "env" | "spawned-sandbox";
-  /** Called on host shutdown when source === "spawned-sandbox"; otherwise no-op. */
+  /**
+   * Called on host shutdown when source === "spawned-sandbox"; otherwise
+   * a no-op. Throws when the underlying `stopSandbox` returns `{ ok: false }`
+   * so callers can surface drain timeouts / orphan-process failures rather
+   * than silently swallowing them.
+   */
   readonly shutdown: () => Promise<void>;
+  /**
+   * Synchronous best-effort SIGTERM. Safe to call from `process.on("exit")`
+   * handlers (which forbid async work). For non-spawn sources this is a
+   * no-op. Used as the safety net when a host bails before its async
+   * `shutdown()` chain has been fully wired.
+   */
+  readonly terminate: () => void;
 }
 
 export interface ResolveNexusEndpointInput {
@@ -44,7 +56,7 @@ export async function resolveNexusEndpoint(
   const envUrl = nonEmpty(input.env.NEXUS_URL);
 
   if (cliUrl !== undefined) {
-    return ok({ url: cliUrl, source: "cli-flag", shutdown: noop });
+    return ok({ url: cliUrl, source: "cli-flag", shutdown: noop, terminate: noopSync });
   }
 
   if (mode === "external") {
@@ -65,6 +77,7 @@ export async function resolveNexusEndpoint(
       url,
       source: manifestUrl !== undefined ? "manifest-url" : "env",
       shutdown: noop,
+      terminate: noopSync,
     });
   }
 
@@ -75,6 +88,7 @@ export async function resolveNexusEndpoint(
         url,
         source: manifestUrl !== undefined ? "manifest-url" : "env",
         shutdown: noop,
+        terminate: noopSync,
       });
     }
   }
@@ -88,7 +102,34 @@ export async function resolveNexusEndpoint(
     url: handle.baseUrl,
     source: "spawned-sandbox",
     shutdown: async (): Promise<void> => {
-      await deps.stopSandbox(handle);
+      const result = await deps.stopSandbox(handle);
+      if (!result.ok) {
+        // Surface drain timeout / SIGKILL escalation as an exception so the
+        // host's `try { await shutdown(); } catch { … }` block can report it.
+        // Without this, stopSandbox's `{ ok: false }` signal is swallowed and
+        // pinned ports / orphan processes go unreported to operators.
+        throw Object.assign(new Error(`nexus sandbox stop failed: ${result.error.message}`), {
+          cause: result.error,
+        });
+      }
+    },
+    terminate: (): void => {
+      // Sync best-effort: process.on("exit") forbids async, so we only get
+      // a few syscalls. The OS reaps the orphan if SIGTERM is ignored — fine
+      // for a local-dev daemon. Real graceful drain runs in shutdown().
+      try {
+        handle._process.kill("SIGTERM");
+      } catch {
+        /* already dead — nothing to do */
+      }
+      // Release the port lock too: leaving it behind makes the next start
+      // fail with PORT_IN_USE even after the kernel has freed the listener.
+      // Lock release is sync (closeSync + unlinkSync), safe in process exit.
+      try {
+        handle._releasePortLock?.();
+      } catch {
+        /* lock already released */
+      }
     },
   });
 }
@@ -117,3 +158,4 @@ function ok(value: NexusEndpoint): Result<NexusEndpoint, KoiError> {
 }
 
 const noop: () => Promise<void> = async () => {};
+const noopSync: () => void = () => {};

@@ -1307,6 +1307,59 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         : undefined;
   }
 
+  // ---------------------------------------------------------------------------
+  // Nexus endpoint resolution (Issue #1403). MUST run before filesystem
+  // resolution / delegation provider wiring so process.env.NEXUS_URL is set
+  // when downstream consumers (fs-nexus, nexus-delegation, audit-sink-nexus)
+  // read it. Resolves only when something downstream needs Nexus (delegation
+  // backend, explicit `manifest.nexus` block, fs-nexus, --nexus-url).
+  // ---------------------------------------------------------------------------
+  const { resolveNexusForHost } = await import("./resolve-nexus-for-host.js");
+  const nexusEndpointResult = await resolveNexusForHost({
+    manifestNexus,
+    manifestDelegation,
+    manifestFilesystem: manifestFilesystemConfig,
+    cliNexusUrl: flags.nexusUrl,
+  });
+  if (!nexusEndpointResult.ok) {
+    process.stderr.write(`koi tui: ${nexusEndpointResult.error.message}\n`);
+    process.exit(1);
+  }
+  const nexusEndpoint = nexusEndpointResult.value;
+  // Holder so the existing `shutdown()` chain (defined far below) can await
+  // sandbox teardown alongside runtime/filesystem dispose. Set ONLY when a
+  // sandbox was spawned; cli-flag / manifest-url / env paths supply a noop.
+  let nexusEndpointShutdown: (() => Promise<void>) | undefined;
+  if (nexusEndpoint !== undefined) {
+    process.env.NEXUS_URL = nexusEndpoint.url;
+    nexusEndpointShutdown = nexusEndpoint.shutdown;
+    // Safety net for early-bootstrap process.exit(1) paths between here and
+    // section 4b where the full graceful `shutdown()` is wired. process.on
+    // ("exit") forbids async, so we use the sync `terminate()` (best-effort
+    // SIGTERM) — drain happens in `shutdown()` for the normal path. Any
+    // failure during a normal shutdown is harmless: the child is already
+    // dead, and `kill` on a dead pid no-ops via the catch in terminate.
+    const terminate = nexusEndpoint.terminate;
+    process.on("exit", () => {
+      terminate();
+    });
+    // Plumb the resolved URL back into the filesystem config so that
+    // `resolveFileSystemAsync` and the HTTP-transport branch (line ~2080)
+    // see a concrete URL when the manifest only declared `backend: nexus`
+    // with no explicit `options.url`. Without this, fs-nexus tries to
+    // construct a transport against `undefined` and silently no-ops.
+    if (manifestFilesystemConfig?.backend === "nexus") {
+      const existingOpts = (manifestFilesystemConfig.options ?? {}) as Record<string, unknown>;
+      const existingUrl = typeof existingOpts.url === "string" ? existingOpts.url.trim() : "";
+      if (existingUrl.length === 0) {
+        manifestFilesystemConfig = {
+          ...manifestFilesystemConfig,
+          options: { ...existingOpts, url: nexusEndpoint.url },
+        };
+      }
+    }
+  }
+
   // Previously this block auto-disabled the spawn preset stack
   // whenever manifest.middleware was non-empty, because children
   // inheriting the parent's mutable middleware instances would
@@ -2167,6 +2220,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         try {
           await resolvedFilesystemBackend?.dispose?.();
         } catch {}
+        // Sandbox teardown runs AFTER fs-nexus dispose so any in-flight
+        // tool calls hit a live nexusd, not a half-killed one.
+        try {
+          if (nexusEndpointShutdown !== undefined) await nexusEndpointShutdown();
+        } catch {}
         try {
           await otelHandle?.shutdown();
         } catch {}
@@ -2322,34 +2380,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         process.exit(1);
       }
     }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Nexus endpoint resolution (Issue #1403). Determines whether to connect to
-  // an external URL or auto-spawn a local @koi/nexus-sandbox subprocess based
-  // on `manifest.nexus.mode`, `--nexus-url`, and NEXUS_URL env. We trigger
-  // resolution when something downstream needs Nexus (delegation backend,
-  // explicit `manifest.nexus` block) — `mode: auto` with no consumer is a no-op
-  // so the sandbox doesn't spawn for agents that don't talk to Nexus.
-  // ---------------------------------------------------------------------------
-  const { resolveNexusForHost } = await import("./resolve-nexus-for-host.js");
-  const nexusEndpointResult = await resolveNexusForHost({
-    manifestNexus,
-    manifestDelegation,
-    manifestFilesystem: manifestFilesystemConfig,
-    cliNexusUrl: flags.nexusUrl,
-  });
-  if (!nexusEndpointResult.ok) {
-    process.stderr.write(`koi tui: ${nexusEndpointResult.error.message}\n`);
-    process.exit(1);
-  }
-  const nexusEndpoint = nexusEndpointResult.value;
-  if (nexusEndpoint !== undefined) {
-    process.env.NEXUS_URL = nexusEndpoint.url;
-    const shutdown = nexusEndpoint.shutdown;
-    process.on("exit", () => {
-      void shutdown();
-    });
   }
 
   let nexusDelegationProvider: import("@koi/core").ComponentProvider | undefined;
@@ -4089,6 +4119,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // Must run after runtimeHandle.runtime.dispose() so in-flight tool calls
       // complete before the transport is closed.
       await resolvedFilesystemBackend?.dispose?.();
+      // Stop the spawned nexusd sandbox AFTER fs-nexus has released its
+      // transport, so tool calls in flight during shutdown find a live server
+      // rather than a half-killed one.
+      if (nexusEndpointShutdown !== undefined) {
+        try {
+          await nexusEndpointShutdown();
+        } catch (err) {
+          process.stderr.write(
+            `[koi tui] nexus sandbox shutdown failed: ${
+              err instanceof Error ? err.message : String(err)
+            }\n`,
+          );
+        }
+      }
       // Close the artifact store (release advisory lock, close SQLite handle).
       // dispose() is host-owned per @koi/runtime contract.
       if (artifactStore !== undefined) {
