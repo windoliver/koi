@@ -47,6 +47,30 @@ export function createNexusPlaybookProposalStore(
   const structuredPath = (playbookId: string): string =>
     `${base}/structured/${encodeAceId(playbookId)}.json`;
 
+  // Per-id in-process mutex. Closes the same-process read-modify-write race for
+  // both recordProposal and recordEvaluation. Cross-process atomicity requires
+  // Nexus-level CAS (tracked in #1469).
+  const idLocks = new Map<string, Promise<void>>();
+
+  function withIdLock<R>(id: string, fn: () => Promise<R>): Promise<R> {
+    const prev = idLocks.get(id) ?? Promise.resolve();
+    // let is justified: release must be assigned inside the Promise constructor callback
+    let release = (): void => {};
+    const next = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    idLocks.set(id, next);
+    const run = async (): Promise<R> => {
+      await prev;
+      try {
+        return await fn();
+      } finally {
+        release();
+      }
+    };
+    return run();
+  }
+
   return {
     async recordProposal(proposal: PlaybookProposal): Promise<void> {
       const vId = validateAceId(proposal.id, "Proposal ID");
@@ -54,76 +78,86 @@ export function createNexusPlaybookProposalStore(
       const vPb = validateAceId(proposal.playbookId, "Playbook ID");
       if (!vPb.ok) throw new Error(vPb.error.message);
 
-      // Stale-baseVersion check: if a structured playbook exists and its
-      // version does not match proposal.baseVersion, reject the proposal.
-      const spb = await readJson<StructuredPlaybook>(
-        transport,
-        structuredPath(proposal.playbookId),
-      );
-      if (!spb.ok) throw new Error(spb.error.message);
-      if (spb.value !== undefined && spb.value.version !== proposal.baseVersion) {
-        throw new Error(
-          `Proposal baseVersion ${proposal.baseVersion} does not match current structured playbook version ${spb.value.version}`,
+      return withIdLock(proposal.id, async () => {
+        // Existence + version check: structured playbook MUST exist and its version
+        // MUST match proposal.baseVersion. Matches sqlite sibling behaviour —
+        // proposals against a never-saved playbook are rejected.
+        const spb = await readJson<StructuredPlaybook>(
+          transport,
+          structuredPath(proposal.playbookId),
         );
-      }
-
-      // Immutable audit record contract: if a proposal with the same id already
-      // exists, it must be byte-identical. If it differs, reject the write.
-      const pPath = proposalPath(proposal.id);
-      const ex = await exists(transport, pPath);
-      if (!ex.ok) throw new Error(ex.error.message);
-      if (ex.value) {
-        const existing = await readJson<PlaybookProposal>(transport, pPath);
-        if (!existing.ok) throw new Error(existing.error.message);
-        if (existing.value !== undefined) {
-          if (canonicalJson(existing.value) !== canonicalJson(proposal)) {
-            throw new Error(`Proposal id ${proposal.id} already recorded with different content`);
-          }
-          // Byte-identical: idempotent success
-          return;
+        if (!spb.ok) throw new Error(spb.error.message);
+        if (spb.value === undefined) {
+          throw new Error(
+            `Cannot record proposal: structured playbook ${proposal.playbookId} does not exist`,
+          );
         }
-      }
+        if (spb.value.version !== proposal.baseVersion) {
+          throw new Error(
+            `Proposal baseVersion ${proposal.baseVersion} does not match current structured playbook version ${spb.value.version}`,
+          );
+        }
 
-      // Write proposal payload — it is the source of truth.
-      // listProposals enumerates <base>/proposals/*.json and filters by playbookId,
-      // so no separate index file is needed.
-      const r = await writeJson(transport, pPath, proposal);
-      if (!r.ok) throw new Error(r.error.message);
+        // Immutable audit record contract: if a proposal with the same id already
+        // exists, it must be byte-identical. If it differs, reject the write.
+        const pPath = proposalPath(proposal.id);
+        const ex = await exists(transport, pPath);
+        if (!ex.ok) throw new Error(ex.error.message);
+        if (ex.value) {
+          const existing = await readJson<PlaybookProposal>(transport, pPath);
+          if (!existing.ok) throw new Error(existing.error.message);
+          if (existing.value !== undefined) {
+            if (canonicalJson(existing.value) !== canonicalJson(proposal)) {
+              throw new Error(`Proposal id ${proposal.id} already recorded with different content`);
+            }
+            // Byte-identical: idempotent success
+            return;
+          }
+        }
+
+        // Write proposal payload — it is the source of truth.
+        // listProposals enumerates <base>/proposals/*.json and filters by playbookId,
+        // so no separate index file is needed.
+        const r = await writeJson(transport, pPath, proposal);
+        if (!r.ok) throw new Error(r.error.message);
+      });
     },
 
     async recordEvaluation(evaluation: PlaybookEvaluation): Promise<void> {
       const v = validateAceId(evaluation.proposalId, "Proposal ID");
       if (!v.ok) throw new Error(v.error.message);
 
-      // Require the proposal to exist before recording an evaluation.
-      const pPath = proposalPath(evaluation.proposalId);
-      const pEx = await exists(transport, pPath);
-      if (!pEx.ok) throw new Error(pEx.error.message);
-      if (!pEx.value) {
-        throw new Error(`Cannot record evaluation: proposal ${evaluation.proposalId} not found`);
-      }
-
-      // Immutable audit record: if an evaluation already exists for this
-      // proposalId, it must be byte-identical. Rejects conflicting verdicts.
-      const ePath = evaluationPath(evaluation.proposalId);
-      const exEval = await exists(transport, ePath);
-      if (!exEval.ok) throw new Error(exEval.error.message);
-      if (exEval.value) {
-        const existing = await readJson<PlaybookEvaluation>(transport, ePath);
-        if (!existing.ok) throw new Error(existing.error.message);
-        if (existing.value !== undefined) {
-          if (canonicalJson(existing.value) !== canonicalJson(evaluation)) {
-            throw new Error(
-              `Evaluation for proposal ${evaluation.proposalId} already recorded with different content`,
-            );
-          }
-          // Byte-identical: idempotent success
-          return;
+      return withIdLock(evaluation.proposalId, async () => {
+        // Require the proposal to exist before recording an evaluation.
+        const pPath = proposalPath(evaluation.proposalId);
+        const pEx = await exists(transport, pPath);
+        if (!pEx.ok) throw new Error(pEx.error.message);
+        if (!pEx.value) {
+          throw new Error(`Cannot record evaluation: proposal ${evaluation.proposalId} not found`);
         }
-      }
 
-      const r = await writeJson(transport, ePath, evaluation);
-      if (!r.ok) throw new Error(r.error.message);
+        // Immutable audit record: if an evaluation already exists for this
+        // proposalId, it must be byte-identical. Rejects conflicting verdicts.
+        const ePath = evaluationPath(evaluation.proposalId);
+        const exEval = await exists(transport, ePath);
+        if (!exEval.ok) throw new Error(exEval.error.message);
+        if (exEval.value) {
+          const existing = await readJson<PlaybookEvaluation>(transport, ePath);
+          if (!existing.ok) throw new Error(existing.error.message);
+          if (existing.value !== undefined) {
+            if (canonicalJson(existing.value) !== canonicalJson(evaluation)) {
+              throw new Error(
+                `Evaluation for proposal ${evaluation.proposalId} already recorded with different content`,
+              );
+            }
+            // Byte-identical: idempotent success
+            return;
+          }
+        }
+
+        const r = await writeJson(transport, ePath, evaluation);
+        if (!r.ok) throw new Error(r.error.message);
+      });
     },
 
     async getProposal(id: string): Promise<PlaybookProposal | undefined> {
