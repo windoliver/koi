@@ -675,10 +675,93 @@ describe("default-key replay-protection downgrade", () => {
     const result = detectDrift(obsList, {
       ...DEFAULT_EXAPTATION_THRESHOLDS,
       observationKey: (o) => `${o.agentId}@${String(o.observedAt)}`,
+      stableEventId: true,
     });
     expect(result.kind).toBe("drift");
     if (result.kind === "drift") expect(result.replayProtected).toBe(true);
     expect(suggestAction(result, 5).kind).toBe("new-artifact");
+  });
+});
+
+describe("stableEventId contract", () => {
+  test("inline clone of DEFAULT_OBSERVATION_KEY is NOT replay-protected without stableEventId", () => {
+    // Identity-based check would have flipped replayProtected to true here.
+    const inlineCloneOfDefault = (o: UsagePurposeObservation): string =>
+      `${String(o.observedAt)}|${o.contextText}`;
+    const obsList: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => obs("a", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("b", s)),
+    ];
+    const result = detectDrift(obsList, {
+      ...DEFAULT_EXAPTATION_THRESHOLDS,
+      observationKey: inlineCloneOfDefault,
+    });
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") expect(result.replayProtected).toBe(false);
+    expect(suggestAction(result, 5)).toEqual({ kind: "none" });
+  });
+
+  test("stableEventId: true without observationKey is invalid-config", () => {
+    const result = detectDrift([], {
+      ...DEFAULT_EXAPTATION_THRESHOLDS,
+      observationKey: undefined,
+      stableEventId: true,
+    });
+    expect(result.kind).toBe("invalid-config");
+  });
+});
+
+describe("cohort-share guard", () => {
+  test("minority drift cohort + not stable + not strong → none (no reclassify)", () => {
+    // 2 drifting agents (3 high-divergence each = 6) embedded in 14 baseline
+    // observations from a third agent. Cohort share = 6/20 = 30% < 50%.
+    // Without stableWindows ≥ 2 + avgDivergence ≥ 0.85, this would have been
+    // a reclassify — overwriting canonical purpose for a minority pattern.
+    const obsList: UsagePurposeObservation[] = [
+      ...[0.75, 0.75, 0.75].map((s) => obs("a", s)),
+      ...[0.75, 0.75, 0.75].map((s) => obs("b", s)),
+      ...Array.from({ length: 14 }, () => obs("c", 0.05)),
+    ];
+    const result = detectDrift(obsList, {
+      ...DEFAULT_EXAPTATION_THRESHOLDS,
+      observationKey: (o) => `${o.agentId}@${String(o.observedAt)}`,
+      stableEventId: true,
+    });
+    expect(result.kind).toBe("drift");
+    expect(suggestAction(result, 1)).toEqual({ kind: "none" });
+  });
+
+  test("minority drift cohort + stable + strong → new-artifact (fork specialized variant)", () => {
+    // Same minority shape, but high divergence + stableWindows ≥ 2: fork
+    // a specialized variant rather than rewriting canonical purpose.
+    const obsList: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => obs("a", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("b", s)),
+      ...Array.from({ length: 14 }, () => obs("c", 0.05)),
+    ];
+    const result = detectDrift(obsList, {
+      ...DEFAULT_EXAPTATION_THRESHOLDS,
+      observationKey: (o) => `${o.agentId}@${String(o.observedAt)}`,
+      stableEventId: true,
+    });
+    expect(result.kind).toBe("drift");
+    expect(suggestAction(result, 3).kind).toBe("new-artifact");
+  });
+
+  test("majority drift cohort → reclassify allowed", () => {
+    // 6 drift cohort + 4 baseline = 60% cohort share, above 50%.
+    const obsList: UsagePurposeObservation[] = [
+      ...[0.75, 0.75, 0.75].map((s) => obs("a", s)),
+      ...[0.75, 0.75, 0.75].map((s) => obs("b", s)),
+      ...Array.from({ length: 4 }, () => obs("c", 0.05)),
+    ];
+    const result = detectDrift(obsList, {
+      ...DEFAULT_EXAPTATION_THRESHOLDS,
+      observationKey: (o) => `${o.agentId}@${String(o.observedAt)}`,
+      stableEventId: true,
+    });
+    expect(result.kind).toBe("drift");
+    expect(suggestAction(result, 1).kind).toBe("reclassify");
   });
 });
 

@@ -31,20 +31,34 @@ export interface ExaptationThresholds {
   /** Severity multiplier weight applied to scaled drift score (in [0, 1]). */
   readonly confidenceWeight: number;
   /**
-   * Optional identity function for replay protection.
+   * Optional identity function for dedup.
    *
    * When supplied, the detector dedupes per-agent (`(agentId, keyFn(o))`)
-   * before scoring so at-least-once delivery cannot fabricate drift evidence.
-   * A throwing `keyFn` is treated as a malformed observation — that sample
+   * before scoring so obvious within-window duplicates are collapsed. A
+   * throwing `keyFn` is treated as a malformed observation — that sample
    * is dropped, never the whole window.
    *
-   * Without this, no dedup runs and the resulting `DetectionResult` is
-   * marked `replayProtected: false`. `suggestAction` will refuse to emit
-   * `reclassify` or `new-artifact` for unprotected results: a retried
-   * high-divergence event could otherwise satisfy `minObservations` AND
-   * `minDivergentAgents` purely from transport replays.
+   * Dedup alone is NOT replay protection. To unlock action-bearing
+   * suggestions (`reclassify` / `new-artifact`), set `stableEventId: true`
+   * — see that field's docs for the contract callers must honour.
    */
   readonly observationKey?: ((o: UsagePurposeObservation) => string) | undefined;
+  /**
+   * Caller assertion that `observationKey` returns a **stable upstream event
+   * identity** (e.g. a correlation ID from the gateway, a monotonic
+   * sequence number, an idempotency key). When `true`, the resulting
+   * `DetectionResult` is marked `replayProtected: true` and `suggestAction`
+   * is allowed to recommend action-bearing changes.
+   *
+   * It is the caller's contract to honour this — the detector cannot
+   * verify event-ID stability at runtime. Lying here means at-least-once
+   * retries can manufacture drift evidence and escalate to irreversible
+   * actions. Default `false`.
+   *
+   * Setting `stableEventId: true` without an `observationKey` is rejected
+   * as `invalid-config`.
+   */
+  readonly stableEventId?: boolean | undefined;
 }
 
 /**
@@ -70,6 +84,7 @@ export const DEFAULT_EXAPTATION_THRESHOLDS: ExaptationThresholds = {
   minObservationsPerAgent: 2,
   confidenceWeight: 0.8,
   observationKey: DEFAULT_OBSERVATION_KEY,
+  stableEventId: false,
 } as const;
 
 /**
@@ -161,6 +176,15 @@ export type ExaptationSuggestion =
 const NEW_ARTIFACT_DIVERGENCE_THRESHOLD = 0.85;
 /** Number of independent drift windows required to call drift "stable". */
 const STABLE_WINDOW_COUNT = 2;
+/**
+ * Minimum cohort share of the full validated window required for a
+ * `reclassify` suggestion. Reclassify rewrites the artifact's canonical
+ * purpose, so the drifting cohort must represent a majority of traffic.
+ * Below this share, only `new-artifact` (fork a specialized variant) is
+ * allowed — minority drift should branch off, not overwrite the canonical
+ * description that the still-baseline majority depends on.
+ */
+const RECLASSIFY_MIN_COHORT_SHARE = 0.5;
 
 // ---------------------------------------------------------------------------
 // Detection
@@ -219,11 +243,11 @@ export function detectDrift(
   const unique =
     keyFn === undefined ? validWithMaybeKey : dedupePerAgentByKey(validWithMaybeKey, keys);
   const duplicateCount = validWithMaybeKey.length - unique.length;
-  // The default key is best-effort telemetry — observedAt is not a stable
-  // event ID, so retries with fresh timestamps slip through and same-tick
-  // distinct events collide. Mark only caller-supplied keys as replay-
-  // protected; suggestAction then refuses to act on default-key results.
-  const replayProtected = keyFn !== undefined && keyFn !== DEFAULT_OBSERVATION_KEY;
+  // Replay protection is an explicit caller contract: only when both a
+  // dedup key is provided AND the caller asserts `stableEventId: true`.
+  // Identity-equality on keyFn would let an inline clone of the default
+  // (or any timestamp-based key) trivially flip the flag.
+  const replayProtected = keyFn !== undefined && thresholds.stableEventId === true;
 
   const noDrift = (): DetectionResult => ({
     kind: "no-drift",
@@ -314,12 +338,21 @@ export function suggestAction(
   }
 
   const report = input.report;
-  if (
+  const stableAndStrong =
     stableWindows >= STABLE_WINDOW_COUNT &&
-    report.avgDivergence >= NEW_ARTIFACT_DIVERGENCE_THRESHOLD
-  ) {
+    report.avgDivergence >= NEW_ARTIFACT_DIVERGENCE_THRESHOLD;
+  if (stableAndStrong) {
     return { kind: "new-artifact", severity: report.severity };
   }
+  // Reclassify rewrites the canonical purpose — only safe when the drifting
+  // cohort is a majority of validated traffic. A minority cohort that isn't
+  // strong enough to fork should NOT overwrite the description that the
+  // baseline majority still depends on; return `none` and wait for either
+  // the cohort to grow or for stableWindows + divergence to qualify the
+  // result for `new-artifact`.
+  const cohortShare =
+    input.validObservationCount > 0 ? report.observationCount / input.validObservationCount : 0;
+  if (cohortShare < RECLASSIFY_MIN_COHORT_SHARE) return { kind: "none" };
   return { kind: "reclassify", severity: report.severity };
 }
 
@@ -347,6 +380,8 @@ function describeInvalidThresholds(t: ExaptationThresholds): string | undefined 
     return `divergenceThreshold must be in [0, 1] (got ${String(t.divergenceThreshold)})`;
   if (!isUnitInterval(t.confidenceWeight))
     return `confidenceWeight must be in [0, 1] (got ${String(t.confidenceWeight)})`;
+  if (t.stableEventId === true && t.observationKey === undefined)
+    return "stableEventId: true requires observationKey to be supplied";
   return undefined;
 }
 
