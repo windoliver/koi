@@ -33,30 +33,37 @@ Two restart authorities exist in the codebase:
 
 If both fire, the same crash produces two replacement workers
 (reconciler spawns a new one; supervisor restarts the old `workerId`).
-This PR resolves the ownership: **the reconciler is the sole restart
-authority** for daemon-spawned children. The supervisor is configured
-with `restart: { restart: "temporary", maxRestarts: 0 }` for any
-worker spawned via `createDaemonSpawnChildFn`. Consequences:
+This PR resolves the ownership: **the reconciler is the sole AUTO-
+RESTART authority** for daemon-spawned children. The supervisor is
+configured with `restart: { restart: "temporary", maxRestarts: 0 }`
+for any worker spawned via `createDaemonSpawnChildFn`. Consequences:
 
-- `WorkerHealth.state` will never be `restarting` or `quarantined`
-  for these workers — the supervisor doesn't auto-restart them. The
-  freshness states `restarting`/`quarantined` in the design remain in
-  the L0 union for completeness (other supervisor configurations may
-  still produce them) but are documented as "won't fire for
-  daemon-spawned children under this PR".
-- A crash drives the reconciler path: `crashed` → `attachRegistry`
-  writes registry `crashed` → `attachAgentRegistry` flips the agent
-  registry to `terminated` → reconciler spawns a NEW workerId/agentId.
-  The TUI sees this as a new row appearing in `/bg`, not an in-place
-  restart.
-- The on-path TUI kill targets the current incarnation only —
-  there is no concurrent supervisor-driven restart that could swap
-  the workerId mapping between confirm and stop.
+- `WorkerHealth.state === "restarting"` will not fire for these
+  workers — the supervisor does not auto-restart them on normal
+  crashes. The freshness state `restarting` remains in the L0 union
+  for completeness; daemon-spawned children just don't reach it.
+- **`quarantined` IS still reachable** for daemon-spawned children.
+  Restart-policy backoff is one path into quarantine, but not the
+  only one — the supervisor also quarantines on **teardown failure**
+  paths (heartbeat-timeout teardown failure, watch-stream fault
+  teardown failure, failed `stop()` teardown). Those paths are
+  independent of restart policy and apply equally to `temporary`
+  workers. The TUI surface keeps `quarantined` in scope: freshness
+  state, derived toast on `*→quarantined`, kill-eligibility (calling
+  `supervisor.stop()` again is the canonical recovery — it releases
+  the `activeIds` reservation if the underlying process is gone).
+- A normal crash drives the reconciler path: `crashed` →
+  `attachRegistry` writes registry `crashed` → `attachAgentRegistry`
+  flips the agent registry to `terminated` → reconciler spawns a NEW
+  workerId/agentId. The TUI sees this as a new row appearing in
+  `/bg`, not an in-place restart.
+- The on-path TUI kill targets the current incarnation only — there
+  is no concurrent supervisor-driven restart that could swap the
+  workerId mapping between confirm and stop.
 
 This decision is reversible later (e.g. when remote/tmux backends
 prefer supervisor-owned restart) by flipping the policy and
-deactivating reconciler-driven respawn for that backend kind. The
-design just requires picking one; this PR picks the reconciler.
+deactivating reconciler-driven respawn for that backend kind.
 
 ### Half A — Runtime wiring (prerequisite)
 
@@ -188,21 +195,45 @@ Six features per the issue:
 
 ```
 packages/meta/cli/src/
-  daemon-bridge.ts                  NEW  ~220 LOC
-                                         Subscribes events; polls health +
-                                         registry; dispatches into store;
-                                         exposes onCommand handler.
+  daemon-bridge.ts                  NEW  ~240 LOC
+                                         Two construction modes:
+                                         - `registry-only`: registry
+                                           describeList polls + watch
+                                           subscription only; no
+                                           supervisor handle. /bg
+                                           rows render; every row is
+                                           foreign; no badge/toasts/
+                                           inline events.
+                                         - `live`: full mode with
+                                           supervisor handle, health
+                                           polls, watchAll, kill
+                                           routing, badge/toasts/
+                                           inline events.
   wire-daemon-supervisor.ts         NEW  ~180 LOC
                                          Composes createSupervisor +
                                          createFileSessionRegistry +
                                          attachRegistry. Returns handle +
                                          dispose. Skipped when no subprocess
                                          children declared.
-  tui-command.ts                    EDIT  ~30 LOC
-                                         Wire wireDaemonSupervisor +
-                                         createDaemonBridge alongside the
+  tui-command.ts                    EDIT  ~40 LOC
+                                         (1) ALWAYS open the read-only
+                                         `FileSessionRegistry` for /bg
+                                         when the state-dir registry
+                                         path exists — independent of
+                                         supervisor attachment. The
+                                         bridge runs in registry-only
+                                         mode here (only registry
+                                         polls/watches; no supervisor
+                                         polls/handles).
+                                         (2) Wire wireDaemonSupervisor
+                                         + the live-supervisor
+                                         features (badge, toasts,
+                                         /supervisor, inline events,
+                                         on-path kill) ONLY when the
+                                         manifest declares subprocess
+                                         supervision. Slot alongside
                                          existing wireManifestSupervision
-                                         attachment (~line 1172, 2051+).
+                                         (~line 1172, 2051+).
                                          Dispose in the existing shutdown
                                          sequence — between
                                          supervisionHandle.dispose() and
@@ -556,7 +587,7 @@ This rules out the failure mode where a dead bridge silently presents as
 | Trigger | Source | Message |
 |---------|--------|---------|
 | `WorkerEvent.crashed` | push | `⚠ worker <agentName> crashed: <error.message>` |
-| `WorkerHealth.state` `*→quarantined` | health diff | `⚠ worker <agentName> quarantined after <restartCount> restarts` |
+| `WorkerHealth.state` `*→quarantined` | health diff | `⚠ worker <agentName> quarantined` (the L0 `WorkerHealth` does not expose a per-worker restart count; aggregate `SupervisorHealthMetrics.quarantinedCount` is shown on `/supervisor` instead) |
 | `WorkerHealth.state` `running→restarting` | health diff | (info, not warning) `↻ worker <agentName> restarting` |
 | `health.status` ok→degraded | health diff | `⚠ supervisor degraded: <first reason>` |
 | `health.status` ok→unhealthy | health diff | `⚠ supervisor unhealthy: <first reason>` |
@@ -1040,9 +1071,13 @@ on the right side: governance segment, then supervisor segment, separator
     is no concurrent in-process incarnation swap to fear.
   - **Restart ownership invariant**: daemon-spawned workers are
     created with `restart: { restart: "temporary", maxRestarts: 0 }`.
-    Test asserts `WorkerHealth.state` for a daemon-spawned worker
-    never enters `restarting` or `quarantined` after a crash; the
-    reconciler instead spawns a NEW row.
+    Test asserts `WorkerHealth.state === "restarting"` never fires
+    for a normal crash of a daemon-spawned worker; the reconciler
+    instead spawns a NEW row. **`quarantined` IS still exercised**:
+    a teardown-failure fixture (e.g. simulated `stop()` failure on
+    heartbeat timeout) verifies the row reaches `quarantined`,
+    fires the toast, and is still kill-eligible via the on-path
+    `supervisor.stop()` retry which releases `activeIds`.
   - **`locallySpawnedIds` ownership tracking**: bridge inserts
     workerId on each `supervisor.start()` from the local process
     BEFORE awaiting the spawn promise; removes on terminal
@@ -1114,7 +1149,12 @@ on the right side: governance segment, then supervisor segment, separator
 - manifest with subprocess supervision → `◎ ok` badge appears.
 - `os.kill` worker → `⚠` toast + status flips to `◑`.
 - Stall worker past heartbeat deadline → timeout toast + `/bg` row red.
-- `/supervisor` renders worker tree with uptime + restart counts.
+- `/supervisor` renders the worker table (workerId, agentId, state,
+  lastHeartbeatAt, heartbeatDeadlineAt) plus aggregate
+  `SupervisorHealthMetrics` counters (poolSize/maxWorkers,
+  quarantinedCount, restartingCount, pendingSpawnCount, eventDropCount,
+  shuttingDown). Per-worker restart counts are NOT exposed by L0;
+  surfaced only as the aggregate `restartingCount`.
 - `/bg` table merges registry + health; `k` confirm terminates worker;
   row flips to `exited`.
 - Manifest without `supervision:` → no badge.
@@ -1203,9 +1243,12 @@ calls. Existing daemon golden queries cover supervisor lifecycle.
       in-process `workerId → process` mapping under the
       reconciler-only restart-ownership decision.
 - [ ] Daemon-spawned workers configured with `restart: temporary`,
-      `maxRestarts: 0`. Reconciler is the sole restart authority for
-      these workers. `WorkerHealth.state` of `restarting`/`quarantined`
-      never fires for them.
+      `maxRestarts: 0`. Reconciler is the sole **auto-restart**
+      authority for normal crashes; `WorkerHealth.state === "restarting"`
+      never fires. `quarantined` REMAINS reachable via teardown-failure
+      paths (heartbeat timeout teardown, watch-stream fault,
+      `stop()` failure) and the TUI surface (toast, freshness, kill)
+      handles it.
 - [ ] Locally-owned `quarantined` and `stopping` rows expose `k` and
       route through `supervisor.stop()`, releasing the `activeIds`
       reservation so the workerId can be reused.
