@@ -94,7 +94,35 @@ export function createNexusPlaybookProposalStore(
     async recordEvaluation(evaluation: PlaybookEvaluation): Promise<void> {
       const v = validateAceId(evaluation.proposalId, "Proposal ID");
       if (!v.ok) throw new Error(v.error.message);
-      const r = await writeJson(transport, evaluationPath(evaluation.proposalId), evaluation);
+
+      // Require the proposal to exist before recording an evaluation.
+      const pPath = proposalPath(evaluation.proposalId);
+      const pEx = await exists(transport, pPath);
+      if (!pEx.ok) throw new Error(pEx.error.message);
+      if (!pEx.value) {
+        throw new Error(`Cannot record evaluation: proposal ${evaluation.proposalId} not found`);
+      }
+
+      // Immutable audit record: if an evaluation already exists for this
+      // proposalId, it must be byte-identical. Rejects conflicting verdicts.
+      const ePath = evaluationPath(evaluation.proposalId);
+      const exEval = await exists(transport, ePath);
+      if (!exEval.ok) throw new Error(exEval.error.message);
+      if (exEval.value) {
+        const existing = await readJson<PlaybookEvaluation>(transport, ePath);
+        if (!existing.ok) throw new Error(existing.error.message);
+        if (existing.value !== undefined) {
+          if (canonicalJson(existing.value) !== canonicalJson(evaluation)) {
+            throw new Error(
+              `Evaluation for proposal ${evaluation.proposalId} already recorded with different content`,
+            );
+          }
+          // Byte-identical: idempotent success
+          return;
+        }
+      }
+
+      const r = await writeJson(transport, ePath, evaluation);
       if (!r.ok) throw new Error(r.error.message);
     },
 

@@ -243,6 +243,37 @@ describe("createNexusPlaybookProposalStore", () => {
     expect(forY.map((p) => p.id).sort()).toEqual(["py1", "py2"]);
   });
 
+  // --- Fix 4: immutable evaluation audit + require proposal exists ---
+
+  test("recordEvaluation twice with same proposalId + same content is idempotent", async () => {
+    const store = newStore();
+    await store.recordProposal(makeProposal("p-eval-idem", "pb-eval"));
+    const e = makeEvaluation("e-idem", "p-eval-idem");
+    await store.recordEvaluation(e);
+    // Second call with identical content must succeed silently
+    await expect(store.recordEvaluation(e)).resolves.toBeUndefined();
+  });
+
+  test("recordEvaluation twice with same proposalId + different verdict throws", async () => {
+    const store = newStore();
+    await store.recordProposal(makeProposal("p-eval-conflict", "pb-eval"));
+    await store.recordEvaluation(makeEvaluation("e-conflict", "p-eval-conflict"));
+    const changed = {
+      ...makeEvaluation("e-conflict", "p-eval-conflict"),
+      verdict: "reject" as const,
+    };
+    await expect(store.recordEvaluation(changed)).rejects.toThrow(
+      "already recorded with different content",
+    );
+  });
+
+  test("recordEvaluation for nonexistent proposal throws", async () => {
+    const store = newStore();
+    await expect(
+      store.recordEvaluation(makeEvaluation("e-orphan", "p-nonexistent")),
+    ).rejects.toThrow("not found");
+  });
+
   // --- Fix 3: stale baseVersion rejection ---
 
   test("recordProposal with matching baseVersion succeeds", async () => {
