@@ -24,5 +24,9 @@
     "@koi/core": "workspace:*",
     "@koi/middleware-rlm": "workspace:*",
     "@koi/token-estimator": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/engine-compose": "workspace:*",
+    "@koi/middleware-tool-disclosure": "workspace:*"
   }
 }
