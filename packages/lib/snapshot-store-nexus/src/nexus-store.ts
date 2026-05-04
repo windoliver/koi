@@ -435,7 +435,20 @@ export function createSnapshotStoreNexus<T>(
           const id = ids[i];
           if (id === undefined) continue;
           const node = await readNode(id);
-          if (node.ok && node.value.createdAt < cutoff) remove.add(i);
+          if (node.ok) {
+            if (node.value.createdAt < cutoff) remove.add(i);
+          } else if (node.error.code === "NOT_FOUND") {
+            // A listed node that doesn't exist is a dangling meta entry —
+            // meta should never reference a node that has been deleted.
+            // Propagate as INTERNAL so the caller can detect and recover.
+            return {
+              ok: false,
+              error: internal(`prune: dangling meta entry for ${id}`),
+            };
+          } else {
+            // EXTERNAL, INTERNAL, or other transport errors — propagate directly.
+            return node;
+          }
         }
       }
       if (policy.retainBranches !== false) remove.delete(ids.length - 1);

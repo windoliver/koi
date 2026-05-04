@@ -791,4 +791,77 @@ describe("createSnapshotStoreNexus", () => {
     if (listA.ok) expect(listA.value.length).toBe(1);
     if (listB.ok) expect(listB.value.length).toBe(1);
   });
+
+  // --- Fix 4 (round 8): prune retainDuration propagates canonical read errors ---
+
+  test("prune retainDuration: EXTERNAL error on node read propagates (not silently ignored)", async () => {
+    // The old code silently skipped failed readNode calls in the retainDuration loop.
+    // With the fix, any non-NOT_FOUND error (e.g. EXTERNAL from a failing transport)
+    // is propagated so the caller knows the prune was incomplete.
+    const baseTransport = createFakeNexusTransport();
+    const store = createSnapshotStoreNexus<TData>({ transport: baseTransport });
+    const cid = chainId("c-prune-external");
+    const r = await store.put(cid, { v: 1 }, []);
+    if (!r.ok || r.value === undefined) throw new Error("put failed");
+
+    // Wrap the transport to inject EXTERNAL on reads of canonical node files.
+    let failNodeReads = false;
+    const wrappedTransport = {
+      call: async <T>(
+        method: string,
+        params: Record<string, unknown>,
+      ): Promise<import("@koi/core").Result<T, import("@koi/core").KoiError>> => {
+        const path = params.path as string | undefined;
+        if (
+          failNodeReads &&
+          method === "read" &&
+          typeof path === "string" &&
+          path.includes("/_nodes/")
+        ) {
+          return {
+            ok: false,
+            error: {
+              code: "EXTERNAL" as const,
+              message: "simulated transport failure",
+              retryable: true,
+            },
+          };
+        }
+        return baseTransport.call<T>(method, params);
+      },
+      subscribe: baseTransport.subscribe.bind(baseTransport),
+      submitAuthCode: baseTransport.submitAuthCode.bind(baseTransport),
+      close: baseTransport.close.bind(baseTransport),
+    };
+    const wrappedStore = createSnapshotStoreNexus<TData>({ transport: wrappedTransport });
+
+    // Enable failures now — prune will hit EXTERNAL when reading the node.
+    failNodeReads = true;
+    const pruneResult = await wrappedStore.prune(cid, { retainDuration: 0 });
+    expect(pruneResult.ok).toBe(false);
+    if (!pruneResult.ok) expect(pruneResult.error.code).toBe("EXTERNAL");
+  });
+
+  test("prune retainDuration: NOT_FOUND node returns INTERNAL dangling meta entry", async () => {
+    // If a node listed in meta is missing from the canonical store, prune with
+    // retainDuration must propagate INTERNAL (dangling meta entry), not silently skip.
+    const transport = createFakeNexusTransport();
+    const store = createSnapshotStoreNexus<TData>({ transport });
+    const cid = chainId("c-prune-dangling");
+    const r = await store.put(cid, { v: 1 }, []);
+    if (!r.ok || r.value === undefined) throw new Error("put failed");
+    const nid = r.value.nodeId;
+
+    // Delete the canonical node file directly — creating a dangling meta entry.
+    await transport.call<unknown>("delete", {
+      path: `snapshots/_nodes/${nid}.json`,
+    });
+
+    const pruneResult = await store.prune(cid, { retainDuration: 0 });
+    expect(pruneResult.ok).toBe(false);
+    if (!pruneResult.ok) {
+      expect(pruneResult.error.code).toBe("INTERNAL");
+      expect(pruneResult.error.message).toContain("dangling meta entry");
+    }
+  });
 });
