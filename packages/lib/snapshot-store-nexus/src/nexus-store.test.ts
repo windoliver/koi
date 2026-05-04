@@ -305,4 +305,58 @@ describe("createSnapshotStoreNexus", () => {
     // prune result doesn't matter — but must not crash
     expect(typeof pruneResult.ok).toBe("boolean");
   });
+
+  // --- Fix 2 (round 4): parent validation requires both meta membership AND marker ---
+
+  test("after successful prune, removed parent is rejected by meta check (regression)", async () => {
+    // Standard prune path: meta written first (removes nodeId), then marker deleted.
+    // Parent validation must reject the pruned node because it is not in meta.nodeIds.
+    const store = newStore();
+    const cid = chainId("c-meta-parent-check");
+    const n0 = await store.put(cid, { v: 0 }, []);
+    if (!n0.ok || n0.value === undefined) throw new Error("n0 put failed");
+    const prunedId = n0.value.nodeId;
+    await store.put(cid, { v: 1 }, []);
+
+    // Prune to retainCount=1 → prunedId leaves meta.nodeIds AND marker is deleted.
+    const pruned = await store.prune(cid, { retainCount: 1 });
+    expect(pruned.ok).toBe(true);
+    if (pruned.ok) expect(pruned.value).toBe(1);
+
+    // prunedId is now absent from meta.nodeIds — must be rejected as a parent.
+    const r = await store.put(cid, { v: 2 }, [prunedId]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("VALIDATION");
+  });
+
+  test("partial-prune failure (meta written, marker survives) — orphaned parent rejected by meta check", async () => {
+    // Scenario: prune writes meta (nodeId removed) but marker deletion fails.
+    // The orphaned marker must NOT allow the node to be used as a parent.
+    // We simulate this by: completing a full prune (meta + marker both gone), then
+    // manually re-inserting the marker file without updating meta.
+    const transport = createFakeNexusTransport();
+    const store = createSnapshotStoreNexus<TData>({ transport });
+    const cid = chainId("c-partial-prune");
+    const n0 = await store.put(cid, { v: 0 }, []);
+    if (!n0.ok || n0.value === undefined) throw new Error("n0 put failed");
+    const orphanId = n0.value.nodeId;
+    await store.put(cid, { v: 1 }, []);
+
+    // Full prune: meta removes orphanId, marker is deleted.
+    const pruned = await store.prune(cid, { retainCount: 1 });
+    expect(pruned.ok).toBe(true);
+
+    // Now re-inject the membership marker without touching meta.
+    // This simulates a partial-prune failure where meta was updated but the
+    // marker delete failed (or was replayed from a cache).
+    const markerPath = `snapshots/${cid}/members/${orphanId}.member`;
+    const wr = await transport.call<unknown>("write", { path: markerPath, content: "{}" });
+    expect(wr.ok).toBe(true);
+
+    // Meta no longer lists orphanId; marker exists. Parent check must use meta
+    // as authoritative source and reject the orphaned parent.
+    const r = await store.put(cid, { v: 2 }, [orphanId]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("VALIDATION");
+  });
 });

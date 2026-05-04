@@ -108,19 +108,30 @@ export function createSnapshotStoreNexus<T>(
     }
     // Parent existence check is inside withChainLock so a concurrent in-process
     // prune cannot delete a parent between validation and the child write.
-    // We check the membership marker (not the canonical file) so that pruned nodes
-    // — whose membership was removed but whose canonical file may still exist due
-    // to deferred GC — are correctly rejected as parents.
+    // We check BOTH the membership marker AND the chain meta nodeIds array:
+    //   - Marker check: fast membership signal; pruned nodes lose their marker.
+    //   - Meta check: authoritative chain membership; guards against partial-prune
+    //     failure where meta was written (removing the nodeId) but marker deletion
+    //     failed, leaving an orphaned marker that would otherwise pass the marker check.
     return withChainLock(cid, async () => {
-      for (const pid of parentIds) {
-        const ex = await exists(transport, memberPath(basePath, cid, pid));
-        if (!ex.ok) return ex;
-        if (!ex.value) return { ok: false, error: validation(`Parent node not found: ${pid}`) };
-      }
       const hash = computeContentHash(data);
       const metaRes = await readMeta(cid);
       if (!metaRes.ok) return metaRes;
       const meta = metaRes.value;
+      const metaNodeIdSet = new Set<NodeId>(meta.nodeIds);
+
+      for (const pid of parentIds) {
+        // Check meta first (authoritative): nodeIds is the definitive membership
+        // list. A pruned parent is removed from nodeIds before markers are deleted,
+        // so a partial-prune failure (marker survives, nodeId gone) is caught here.
+        if (!metaNodeIdSet.has(pid)) {
+          return { ok: false, error: validation(`Parent node not found: ${pid}`) };
+        }
+        // Defense-in-depth: also check the membership marker file.
+        const ex = await exists(transport, memberPath(basePath, cid, pid));
+        if (!ex.ok) return ex;
+        if (!ex.value) return { ok: false, error: validation(`Parent node not found: ${pid}`) };
+      }
 
       if (options?.skipIfUnchanged === true && meta.headNodeId !== null) {
         const head = await readNode(meta.headNodeId);
