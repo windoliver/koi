@@ -54,6 +54,32 @@ describe("json-io", () => {
     if (r.ok) expect(r.value.length).toBe(2);
   });
 
+  // --- Fix 4: empty content is INTERNAL error, not absent ---
+
+  test("readJson on missing file returns ok:true with undefined (NOT_FOUND regression)", async () => {
+    const transport = createFakeNexusTransport();
+    const r = await readJson<unknown>(transport, "/snapshots/truly-missing.json");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toBeUndefined();
+  });
+
+  test("readJson when transport returns empty content returns ok:false INTERNAL", async () => {
+    // Write empty content to simulate a zero-byte / corrupt file.
+    const transport = createFakeNexusTransport();
+    // The fake transport stores content directly; write an empty string.
+    const wr = await transport.call<unknown>("write", {
+      path: "/snapshots/empty.json",
+      content: "",
+    });
+    expect(wr.ok).toBe(true);
+    const r = await readJson<unknown>(transport, "/snapshots/empty.json");
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe("INTERNAL");
+      expect(r.error.message).toContain("empty");
+    }
+  });
+
   // --- EXTERNAL error propagation regression tests (Finding 2) ---
 
   test("readJson returns ok:false on EXTERNAL (-32601), not undefined", async () => {

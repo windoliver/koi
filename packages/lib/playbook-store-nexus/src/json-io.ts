@@ -139,7 +139,7 @@ export async function readJson<T>(
     return r;
   }
   const text = decodeContent(r.value);
-  if (text === "") return { ok: true, value: undefined };
+  if (text === "") return { ok: false, error: internal(`json-io: empty content at ${path}`) };
   try {
     return { ok: true, value: JSON.parse(text) as T };
   } catch (e) {

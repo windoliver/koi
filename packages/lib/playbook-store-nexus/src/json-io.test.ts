@@ -119,6 +119,33 @@ describe("encodeAceId / decodeAceId round-trip", () => {
   });
 });
 
+// --- Fix 4: empty content is INTERNAL error, not absent ---
+
+describe("readJson — empty content is INTERNAL error (Fix 4)", () => {
+  test("readJson on missing file returns ok:true with undefined (NOT_FOUND regression)", async () => {
+    const transport = createFakeNexusTransport();
+    const r = await readJson<unknown>(transport, "/ace/proposals/truly-missing.json");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toBeUndefined();
+  });
+
+  test("readJson when transport returns empty content returns ok:false INTERNAL", async () => {
+    // Write empty content to simulate a zero-byte / corrupt file.
+    const transport = createFakeNexusTransport();
+    const wr = await transport.call<unknown>("write", {
+      path: "/ace/proposals/empty.json",
+      content: "",
+    });
+    expect(wr.ok).toBe(true);
+    const r = await readJson<unknown>(transport, "/ace/proposals/empty.json");
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe("INTERNAL");
+      expect(r.error.message).toContain("empty");
+    }
+  });
+});
+
 describe("readJson — EXTERNAL propagation (Finding 2)", () => {
   test("NOT_FOUND returns ok:true with undefined value", async () => {
     const transport = createFakeNexusTransport();
