@@ -6,10 +6,11 @@
  */
 
 import { resolveThresholds } from "@koi/context-manager";
-import { createRlmMiddleware, DEFAULT_PRIORITY, type RlmConfig } from "@koi/middleware-rlm";
+import { createRlmMiddleware, type RlmConfig } from "@koi/middleware-rlm";
 import {
   CHUNK_CHARS_BY_TIER,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
+  RLM_STACK_PRIORITY_FLOOR,
   type RlmStack,
   type RlmStackConfig,
   type RlmStackThresholds,
@@ -83,32 +84,35 @@ function buildThresholds(contextWindowTokens: number, tier: RlmStackTier): RlmSt
  * `middleware-rlm` requires that RLM run *deeper* in the intercept tier than
  * any tool-injecting `wrapModelCall` middleware so its
  * `request.tools.length > 0` fail-closed guard sees the synthetic tool list
- * BEFORE segmentation. The default priority `800` (`DEFAULT_PRIORITY`) sits
- * above the v1 tool-injectors known at the time this floor was added (e.g.
- * `tool-selector` at 200). Lowering below `DEFAULT_PRIORITY` is a clear
- * footgun: RLM would segment an oversized turn before known tool injectors
- * run, multiplying tool-capable calls per segment.
+ * BEFORE segmentation. The floor `RLM_STACK_PRIORITY_FLOOR` sits **strictly
+ * above** the priority-`800` peers in the repo (notably
+ * `@koi/middleware-tool-disclosure`, which pins itself at `800` and requires
+ * being the innermost tool-list mutator). Equal numeric priorities have
+ * undefined relative order in the engine sorter, so a `priority: 800`
+ * configuration could let RLM segment before tool-disclosure observes the
+ * advertised tool list. Pushing the floor by `+1` removes that ambiguity.
  *
- * **This check is a floor, not a proof.** It blocks the obvious mistake. It
- * does NOT prove that RLM will run deeper than every tool-injecting
- * middleware in the caller's actual composition — a peer middleware
- * registered at a priority > `DEFAULT_PRIORITY` would still bypass the guard.
- * Composers stacking custom tool-injecting `wrapModelCall` middleware must
- * verify their relative ordering and either bump RLM's priority above all
- * such peers or accept that the guard is best-effort for that stack.
+ * **This is still a floor, not a proof.** It blocks the obvious mistakes
+ * (lowered priority, equal-priority races with the known peers it covers).
+ * It does NOT prove that RLM will run deeper than every tool-injecting
+ * middleware in an arbitrary caller composition — a peer registered above
+ * `RLM_STACK_PRIORITY_FLOOR` would still bypass the guard. Composers
+ * stacking custom tool-injecting `wrapModelCall` middleware must verify
+ * their relative ordering and bump RLM's priority above all such peers.
  */
-function resolvePriority(priority: number | undefined): number | undefined {
-  if (priority === undefined) return undefined;
+function resolvePriority(priority: number | undefined): number {
+  if (priority === undefined) return RLM_STACK_PRIORITY_FLOOR;
   if (!Number.isFinite(priority)) {
     throw new Error(`@koi/rlm-stack: priority must be a finite number (got ${String(priority)})`);
   }
-  if (priority < DEFAULT_PRIORITY) {
+  if (priority < RLM_STACK_PRIORITY_FLOOR) {
     throw new Error(
-      `@koi/rlm-stack: priority ${priority} is below DEFAULT_PRIORITY (${DEFAULT_PRIORITY}); ` +
-        `lowering below the floor would let RLM segment before known tool-injecting ` +
-        `middleware materializes request.tools, defeating its fail-closed guard. This is a ` +
+      `@koi/rlm-stack: priority ${priority} is below RLM_STACK_PRIORITY_FLOOR (${RLM_STACK_PRIORITY_FLOOR}); ` +
+        `lowering below the floor would let RLM segment before known tool-injecting / tool-list-mutating ` +
+        `middleware materializes request.tools, defeating its fail-closed guard. The floor sits strictly ` +
+        `above @koi/middleware-tool-disclosure (priority 800) to break the equal-priority tie. This is a ` +
         `best-effort floor — composers stacking custom tool-injecting middleware above ` +
-        `${DEFAULT_PRIORITY} must additionally verify their relative ordering. Use ` +
+        `${RLM_STACK_PRIORITY_FLOOR} must additionally verify their relative ordering. Use ` +
         `createRlmMiddleware directly if you genuinely need a lower priority and accept ` +
         `the tool-fanout risk.`,
     );
@@ -124,8 +128,7 @@ function buildRlmConfig(
     maxInputTokens: thresholds.maxInputTokens,
     maxChunkChars: thresholds.maxChunkChars,
   };
-  const priority = resolvePriority(config?.priority);
-  if (priority !== undefined) out.priority = priority;
+  out.priority = resolvePriority(config?.priority);
   if (config?.acknowledgeSegmentLocalContract !== undefined) {
     out.acknowledgeSegmentLocalContract = config.acknowledgeSegmentLocalContract;
   }

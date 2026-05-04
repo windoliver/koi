@@ -20,6 +20,19 @@ export type RlmDisposition = "passthrough" | "compact" | "virtualize";
 export const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
 
 /**
+ * Default priority for the stack-composed RLM middleware.
+ *
+ * Set strictly above `@koi/middleware-rlm`'s `DEFAULT_PRIORITY` (`800`) so
+ * RLM runs deeper in the intercept tier than other priority-`800` peers
+ * (e.g. `@koi/middleware-tool-disclosure`). Equal numeric priorities have
+ * undefined relative order in the engine sorter, which would let RLM segment
+ * before a peer's `wrapModelCall` materializes its share of the tool list.
+ * Adding `+1` enforces a strict ordering without conflicting with any
+ * downstream middleware that pins itself at `800`.
+ */
+export const RLM_STACK_PRIORITY_FLOOR = 801;
+
+/**
  * Soft compaction trigger fraction. Mirrors `@koi/context-manager`'s default
  * (`COMPACTION_DEFAULTS.micro.triggerFraction`). Held as a constant here so
  * `policyFor` is a pure function with no I/O.
@@ -40,22 +53,35 @@ export interface RlmStackConfig {
   /** Total context window of the target model in tokens. */
   readonly contextWindowTokens?: number;
   /**
-   * Optional model id. When provided and `contextWindowTokens` is omitted, the
-   * window is resolved via `@koi/model-registry`'s `resolveModelWindow`. The
-   * id is normalized to its canonical bare form before lookup
-   * (e.g. `"anthropic:claude-opus-4-6"` → `"claude-opus-4-6"`).
+   * Optional model id. Forwarded **as-is** (no prefix stripping, no
+   * canonicalization) to `@koi/context-manager`'s `resolveThresholds`, so RLM
+   * and context-manager always resolve the same window for the same input
+   * string. For prefixed or private model ids, supply `modelWindowOverrides`
+   * keyed in the same form to control the window in both layers.
+   *
+   * See the *Caveats* section in `docs/L2/rlm-stack.md` — `resolveThresholds`
+   * itself does not currently strip provider prefixes, so a prefixed id will
+   * miss the registry and fall back to the registry default in BOTH layers.
    */
   readonly modelId?: string;
   /**
    * Optional per-model context-window overrides forwarded to
-   * `resolveModelWindow`. Mirrors `@koi/context-manager`'s
-   * `modelWindowOverrides` so the two systems resolve the same window for
-   * overridden models. Keys must be canonical bare ids.
+   * `resolveThresholds`. Keys must match the form used for `modelId` (bare or
+   * prefixed) — `@koi/rlm-stack` does not transform them. Mirrors
+   * `@koi/context-manager`'s `modelWindowOverrides` so the two systems
+   * resolve the same window for overridden models.
    */
   readonly modelWindowOverrides?: Readonly<Record<string, number>>;
   /** Preset chunk-size profile. Defaults to `"standard"`. */
   readonly tier?: RlmStackTier;
-  /** Forwarded to `RlmConfig.priority`. Default: 800. */
+  /**
+   * Forwarded to `RlmConfig.priority`. Defaults to `RLM_STACK_PRIORITY_FLOOR`
+   * (`801`) — strictly above priority-`800` peers like
+   * `@koi/middleware-tool-disclosure` so RLM cannot tie with them in the
+   * engine sorter. Values below the floor are rejected at construction time.
+   * See the priority row in `docs/L2/rlm-stack.md` for caveats and the
+   * `createRlmMiddleware` escape hatch.
+   */
   readonly priority?: number;
   /** Forwarded — required to actually enable virtualization. */
   readonly acknowledgeSegmentLocalContract?: boolean;

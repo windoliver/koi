@@ -113,17 +113,27 @@ describe("createRlmStack", () => {
     expect(stack.middleware.priority).toBe(950);
   });
 
-  it("rejects priorities below DEFAULT_PRIORITY to preserve the tool-fanout safety invariant", () => {
-    // Lowering RLM below DEFAULT_PRIORITY would let it segment before
-    // tool-injecting middleware materialized request.tools, multiplying
-    // tool side effects across segments. The stack must refuse this
-    // configuration up front.
-    expect(() => createRlmStack({ priority: 100 })).toThrow(/priority|DEFAULT_PRIORITY/);
-    expect(() => createRlmStack({ priority: 799 })).toThrow(/priority|DEFAULT_PRIORITY/);
+  it("defaults priority to RLM_STACK_PRIORITY_FLOOR when caller omits it", async () => {
+    const { RLM_STACK_PRIORITY_FLOOR } = await import("./types.js");
+    const stack = createRlmStack();
+    expect(stack.middleware.priority).toBe(RLM_STACK_PRIORITY_FLOOR);
+    // Strictly above tool-disclosure (priority 800) so the engine sorter
+    // cannot place RLM before it under equal-priority ambiguity.
+    expect(stack.middleware.priority).toBeGreaterThan(800);
   });
 
-  it("accepts priority equal to DEFAULT_PRIORITY (the floor) and above", () => {
-    expect(() => createRlmStack({ priority: 800 })).not.toThrow();
+  it("rejects priorities below RLM_STACK_PRIORITY_FLOOR to preserve the tool-fanout safety invariant", () => {
+    // The floor is strictly above 800 so RLM never ties with priority-800
+    // peers like @koi/middleware-tool-disclosure that require being the
+    // innermost tool-list mutator.
+    expect(() => createRlmStack({ priority: 100 })).toThrow(/priority|FLOOR/);
+    expect(() => createRlmStack({ priority: 799 })).toThrow(/priority|FLOOR/);
+    expect(() => createRlmStack({ priority: 800 })).toThrow(/priority|FLOOR/);
+  });
+
+  it("accepts priority equal to RLM_STACK_PRIORITY_FLOOR (the floor) and above", async () => {
+    const { RLM_STACK_PRIORITY_FLOOR } = await import("./types.js");
+    expect(() => createRlmStack({ priority: RLM_STACK_PRIORITY_FLOOR })).not.toThrow();
     expect(() => createRlmStack({ priority: 9_999 })).not.toThrow();
   });
 
