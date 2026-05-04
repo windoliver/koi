@@ -12,6 +12,7 @@
 import type { KoiError, Result } from "@koi/core";
 import { internal } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
+import { extractReadContent } from "@koi/nexus-client";
 
 interface NexusListEntry {
   readonly is_directory?: boolean;
@@ -20,23 +21,6 @@ interface NexusListEntry {
 
 interface NexusListResponse {
   readonly files: readonly NexusListEntry[];
-}
-
-interface NexusReadResponse {
-  readonly content?: unknown;
-  readonly metadata?: { readonly size?: number };
-}
-
-/** Decode a Nexus read result into a UTF-8 string. */
-function decodeContent(raw: unknown): string {
-  if (typeof raw === "string") return raw;
-  if (typeof raw !== "object" || raw === null) return "";
-  const obj = raw as Record<string, unknown>;
-  if (obj.__type__ === "bytes" && typeof obj.data === "string") {
-    return Buffer.from(obj.data, "base64").toString("utf-8");
-  }
-  if (obj.content !== undefined) return decodeContent(obj.content);
-  return "";
 }
 
 /**
@@ -76,7 +60,7 @@ export async function readJson<T>(
   transport: NexusTransport,
   path: string,
 ): Promise<Result<T | undefined, KoiError>> {
-  const r = await transport.call<NexusReadResponse | string>("read", { path });
+  const r = await transport.call<unknown>("read", { path });
   if (!r.ok) {
     // Only NOT_FOUND means "absent". EXTERNAL means a degraded backend — propagate.
     if (r.error.code === "NOT_FOUND") {
@@ -84,7 +68,9 @@ export async function readJson<T>(
     }
     return r;
   }
-  const text = decodeContent(r.value);
+  const extracted = extractReadContent(r.value);
+  if (!extracted.ok) return { ok: false, error: internal(`json-io: decode error at ${path}`) };
+  const text = extracted.value;
   if (text === "") return { ok: false, error: internal(`json-io: empty content at ${path}`) };
   try {
     return { ok: true, value: JSON.parse(text) as T };

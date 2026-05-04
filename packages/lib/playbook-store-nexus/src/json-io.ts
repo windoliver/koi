@@ -23,6 +23,7 @@
 import type { KoiError, Result } from "@koi/core";
 import { internal, validation } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
+import { extractReadContent } from "@koi/nexus-client";
 
 interface NexusListEntry {
   readonly is_directory?: boolean;
@@ -94,17 +95,6 @@ export function basenameNoExt(path: string): string {
   return file.replace(/\.json$/, "");
 }
 
-function decodeContent(raw: unknown): string {
-  if (typeof raw === "string") return raw;
-  if (typeof raw !== "object" || raw === null) return "";
-  const obj = raw as Record<string, unknown>;
-  if (obj.__type__ === "bytes" && typeof obj.data === "string") {
-    return Buffer.from(obj.data, "base64").toString("utf-8");
-  }
-  if (obj.content !== undefined) return decodeContent(obj.content);
-  return "";
-}
-
 function globToRegex(pattern: string): RegExp {
   const escaped = pattern
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
@@ -138,7 +128,9 @@ export async function readJson<T>(
     }
     return r;
   }
-  const text = decodeContent(r.value);
+  const extracted = extractReadContent(r.value);
+  if (!extracted.ok) return { ok: false, error: internal(`json-io: decode error at ${path}`) };
+  const text = extracted.value;
   if (text === "") return { ok: false, error: internal(`json-io: empty content at ${path}`) };
   try {
     return { ok: true, value: JSON.parse(text) as T };

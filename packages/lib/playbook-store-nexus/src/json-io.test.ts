@@ -6,7 +6,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { KoiError, Result } from "@koi/core";
 import { createFakeNexusTransport } from "@koi/fs-nexus/testing";
+import type { NexusTransport } from "@koi/nexus-client";
 import {
   decodeAceId,
   deleteJson,
@@ -16,6 +18,17 @@ import {
   validateAceId,
   writeJson,
 } from "./json-io.js";
+
+/** Build a minimal transport that returns a fixed value for every `read`. */
+function fixedReadTransport(value: unknown): NexusTransport {
+  return {
+    call: async <T>(method: string): Promise<Result<T, KoiError>> => {
+      if (method === "read") return { ok: true, value: value as T };
+      return { ok: false, error: { code: "INTERNAL", message: "not supported", retryable: false } };
+    },
+    close: () => {},
+  };
+}
 
 describe("validateAceId", () => {
   test("accepts plain id", () => {
@@ -211,5 +224,37 @@ describe("deleteJson — EXTERNAL propagation (Finding 2)", () => {
     const r = await deleteJson(transport, "/ace/playbooks/any.json");
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe("EXTERNAL");
+  });
+});
+
+// --- Fix 2 (round 6): strict extractReadContent rejects malformed bytes envelopes (#1405) ---
+
+describe("readJson — strict byte decoding via extractReadContent (Fix 2)", () => {
+  test("malformed base64 bytes envelope returns INTERNAL error", async () => {
+    // Old lenient Buffer.from().toString() silently dropped invalid chars.
+    // extractReadContent rejects the bad alphabet and returns an error.
+    const transport = fixedReadTransport({ __type__: "bytes", data: "!!notbase64!!" });
+    const r = await readJson<unknown>(transport, "/any.json");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("INTERNAL");
+  });
+
+  test("invalid UTF-8 bytes envelope returns INTERNAL error", async () => {
+    // 0xff 0xfe is not valid UTF-8 — strict TextDecoder with fatal:true rejects it.
+    const invalidUtf8 = Buffer.from([0xff, 0xfe]).toString("base64");
+    const transport = fixedReadTransport({ __type__: "bytes", data: invalidUtf8 });
+    const r = await readJson<unknown>(transport, "/any.json");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("INTERNAL");
+  });
+
+  test("valid bytes envelope still decodes correctly", async () => {
+    // Confirm the happy path through extractReadContent still works.
+    const validJson = JSON.stringify({ kind: "trajectory" });
+    const encoded = Buffer.from(validJson, "utf-8").toString("base64");
+    const transport = fixedReadTransport({ __type__: "bytes", data: encoded });
+    const r = await readJson<{ kind: string }>(transport, "/any.json");
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value !== undefined) expect(r.value.kind).toBe("trajectory");
   });
 });
