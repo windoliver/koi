@@ -37,6 +37,13 @@ regardless of queue depth) and makes SQLite the source of truth for task state.
 A min-heap (`createMinHeap`) shadows the SQLite state in memory for early-exit: if the
 nearest scheduled task is still in the future, the poll callback skips the DB query.
 
+### Persist running state before dispatch
+
+`dispatchTask` awaits `TaskStore.updateStatus(task.id, "running", { startedAt })`
+before emitting `task:started` or invoking the `TaskDispatcher`. The store contract
+allows async implementations, so persistence failures must stop dispatch rather than
+letting a task execute while it is still durably recorded as `pending`.
+
 ### Retry with exponential backoff + jitter
 
 On dispatcher failure the task transitions to `pending` with `runAt = now + delay` where

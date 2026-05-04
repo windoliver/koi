@@ -1,23 +1,21 @@
 # @koi/gateway-nexus — Nexus-Backed Gateway State for HA
 
-Nexus-backed implementations of gateway state stores (SessionStore, NodeRegistry, SurfaceStore) enabling multi-instance high-availability deployment. All stores use local-first reads with async Nexus persistence, and gracefully degrade to in-memory when Nexus is unavailable.
+Nexus-backed `SessionStore` implementation enabling multi-instance high-availability gateway deployment. Local-first reads with async Nexus persistence, graceful degradation to in-memory when Nexus is unavailable.
+
+> v2 scope (Issue #1368): SessionStore only. NodeRegistry + SurfaceStore are deferred until v2 ports those subsystems.
 
 ---
 
 ## Why It Exists
 
-The gateway holds three critical in-memory stores:
+The gateway's `SessionStore` holds every active WebSocket session. Without persistence, if the process dies all sessions are lost; running multiple gateway instances behind a load balancer is impossible because they can't share session state.
 
-- **SessionStore** — active WebSocket sessions
-- **NodeRegistry** — connected agent nodes and their tools
-- **SurfaceStore** — rendered HTML/JSON surfaces
+This package solves both problems:
 
-Without persistence, if the gateway process dies all state is lost. Running multiple gateway instances is impossible because they can't share state. This package solves both problems:
-
-- **Durability** — State persists to Nexus (JSON-RPC file store) and survives process restarts
-- **Multi-instance** — Multiple gateways read/write the same Nexus namespace, sharing sessions, nodes, and surfaces
-- **Graceful degradation** — If Nexus goes down, stores fall back to in-memory with zero downtime. When Nexus recovers, stores reconnect automatically
-- **Zero-latency reads** — All reads are served from local cache (sync). Only writes and cache misses touch the network
+- **Durability** — Sessions persist to Nexus (JSON-RPC file store) and survive process restarts
+- **Multi-instance** — Multiple gateways read/write the same Nexus namespace, sharing sessions
+- **Graceful degradation** — If Nexus goes down, the store falls back to local cache with zero downtime. When Nexus recovers, writes flush automatically
+- **Zero-latency reads** — All cache hits are sync. Only cache misses and writes touch the network
 
 ---
 
@@ -29,21 +27,18 @@ Without persistence, if the gateway process dies all state is lost. Running mult
 ┌───────────────────────────────────────────────────────┐
 │  @koi/gateway-nexus  (L2)                             │
 │                                                       │
-│  config.ts               ← GatewayNexusConfig + defaults  │
+│  config.ts               ← GatewayNexusConfig + defaults │
 │  degradation.ts          ← pure state machine (healthy/degraded) │
 │  write-queue.ts          ← coalescing async write queue │
-│  poll-sync.ts            ← generic polling utility     │
 │  nexus-session-store.ts  ← write-through SessionStore  │
-│  nexus-node-registry.ts  ← local-projection NodeRegistry │
-│  nexus-surface-store.ts  ← lazy-fetch SurfaceStore     │
 │  index.ts                ← public API surface          │
 │                                                       │
 ├───────────────────────────────────────────────────────┤
 │  Dependencies                                         │
 │                                                       │
-│  @koi/core          (L0)   Result, KoiError            │
-│  @koi/gateway-types (L0u)  SessionStore, NodeRegistry, SurfaceStore │
-│  @koi/nexus-client  (L0u)  NexusClient, readJson, paths │
+│  @koi/core          (L0)   Result, KoiError, notFound  │
+│  @koi/gateway-types (L0u)  Session, SessionStore       │
+│  @koi/nexus-client  (L0u)  NexusTransport (call-based) │
 └───────────────────────────────────────────────────────┘
 ```
 
@@ -81,18 +76,13 @@ Without persistence, if the gateway process dies all state is lost. Running mult
 
 ```typescript
 import { createNexusSessionStore } from "@koi/gateway-nexus";
-import { createNexusClient } from "@koi/nexus-client";
+import { createHttpTransport } from "@koi/nexus-client";
 
-const client = createNexusClient({
-  baseUrl: "http://nexus:2026",
-  apiKey: "my-key",
-});
+const transport = createHttpTransport({ url: "http://nexus:3100" });
 
 const handle = createNexusSessionStore({
-  client,
+  transport,
   config: {
-    nexusUrl: "http://nexus:2026",
-    apiKey: "my-key",
     instanceId: "gateway-1",       // identifies this instance
     degradation: { failureThreshold: 3 },
     writeQueue: { flushIntervalMs: 500 },
@@ -100,8 +90,8 @@ const handle = createNexusSessionStore({
 });
 
 // Use like any SessionStore — same interface
-handle.store.set(session);              // sync return, async Nexus write
-const r = handle.store.get("sess-1");   // sync from cache, or async Nexus fetch
+handle.store.set(session);                    // sync return, async Nexus write
+const r = await handle.store.get("sess-1");   // sync cache hit, or async Nexus fetch
 
 // Check health
 handle.degradation().mode; // "healthy" | "degraded"
@@ -114,17 +104,20 @@ await handle.dispose();
 
 ```typescript
 import { createGatewayStack } from "@koi/gateway-stack";
+import { createHttpTransport } from "@koi/nexus-client";
 
 const stack = createGatewayStack(
   {
     gateway: { maxConnections: 5_000 },
     canvas: { port: 8081 },
-    nexus: {                           // ← add this to enable HA
-      nexusUrl: "http://nexus:2026",
-      apiKey: "my-key",
-    },
+    nexus: { instanceId: "gateway-1" }, // ← add this to enable HA
   },
-  { transport, auth, canvasAuth },
+  {
+    transport,
+    auth,
+    canvasAuth,
+    nexusTransport: createHttpTransport({ url: "http://nexus:3100" }),
+  },
 );
 
 await stack.start(8080);
@@ -137,12 +130,10 @@ await stack.start(8080);
 
 | Type | Purpose |
 |------|---------|
-| `GatewayNexusConfig` | Full config: nexusUrl, apiKey, instanceId, degradation, writeQueue, polling |
+| `GatewayNexusConfig` | instanceId, basePath, degradation, writeQueue overrides |
 | `DegradationConfig` | Failure threshold + probe interval for degraded mode |
 | `WriteQueueConfig` | Max queue size + flush interval for coalesced writes |
 | `NexusSessionStoreHandle` | SessionStore + degradation status + dispose |
-| `NexusNodeRegistryHandle` | NodeRegistry + degradation status + dispose |
-| `NexusSurfaceStoreHandle` | SurfaceStore + degradation status + dispose |
 | `DegradationState` | Current mode (healthy/degraded), failure count, timestamps |
 
 ---
@@ -151,25 +142,11 @@ await stack.start(8080);
 
 ### SessionStore (write-through cache)
 
-- `get(id)` → local Map first. Cache miss → Nexus `readJson()`. Degraded + miss → NOT_FOUND
+- `get(id)` → local Map first. Cache miss → Nexus `read`. Degraded + miss → NOT_FOUND
 - `set(session)` → write local Map (sync). New sessions flush to Nexus immediately; updates coalesce
-- `delete(id)` → delete local. Immediate Nexus delete
+- `delete(id)` → delete local. Immediate Nexus delete (fire-and-forget)
 - `entries()` → local Map only (sync — required by heartbeat sweep)
 - Sessions track `ownerInstance` for CAS ownership transfer on resume
-
-### NodeRegistry (local projection)
-
-- All reads are local-only (sync): `lookup()`, `findByTool()`, `nodes()`
-- `register()` → local + immediate Nexus write
-- `deregister()` → local + immediate Nexus delete
-- `updateHeartbeat/updateCapacity/updateTools` → local + coalesced Nexus write
-
-### SurfaceStore (lazy content fetch)
-
-- `get(id)` → local cache. Miss → lazy-fetch full content from Nexus
-- `create(id, content)` → compute SHA-256 hash, write local, immediate Nexus write
-- `update(id, content, expectedHash?)` → CAS check, local write, coalesced Nexus write
-- LRU eviction is local-only (configurable `maxSurfaces`, default 10,000)
 
 ---
 

@@ -38,7 +38,15 @@ function isWsData(data: unknown): data is WsData {
   return typeof record.id === "string";
 }
 
-export function createBunTransport(): BunTransport {
+export interface BunTransportOptions {
+  /** When set, restricts the bind to a specific hostname (e.g. "127.0.0.1"
+   *  for loopback-only). Default Bun behavior is to bind 0.0.0.0, which
+   *  exposes the listener on every network interface — unsafe for any
+   *  unauthenticated mode. */
+  readonly hostname?: string | undefined;
+}
+
+export function createBunTransport(options: BunTransportOptions = {}): BunTransport {
   let server: ReturnType<typeof Bun.serve> | undefined;
   let connectionCount = 0;
 
@@ -56,6 +64,7 @@ export function createBunTransport(): BunTransport {
 
       server = Bun.serve({
         port,
+        ...(options.hostname !== undefined ? { hostname: options.hostname } : {}),
         fetch(req, srv) {
           const upgraded = srv.upgrade(req, {
             data: { id: crypto.randomUUID() } satisfies WsData,

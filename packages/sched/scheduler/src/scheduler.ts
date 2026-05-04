@@ -208,16 +208,14 @@ export function createScheduler(
 
   async function dispatchTask(task: ScheduledTask): Promise<void> {
     const startedAt = clock.now();
-    // Call synchronously (SQLite store returns void); no await to avoid an
-    // extra microtask boundary before the dispatcher is invoked.
-    void store.updateStatus(task.id, "running", { startedAt });
-    emit({ kind: "task:started", taskId: task.id });
-
     const controller = new AbortController();
     // let: timeout handle needs to be cleared on both paths
     let timeoutHandle: ReturnType<typeof globalThis.setTimeout> | undefined;
 
     try {
+      await store.updateStatus(task.id, "running", { startedAt });
+      emit({ kind: "task:started", taskId: task.id });
+
       let dispatchPromise: Promise<void> = dispatcher(
         task.agentId,
         task.input,

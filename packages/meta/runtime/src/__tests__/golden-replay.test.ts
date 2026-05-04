@@ -2755,6 +2755,97 @@ describe("Golden: @koi/channel-cli", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/channel-web (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/channel-web", () => {
+  test("createWebChannel exposes WS+REST capabilities (text+images+files+threads)", async () => {
+    const { createWebChannel } = await import("@koi/channel-web");
+
+    const channel = createWebChannel({ port: 0, allowUnauthenticated: true });
+    expect(channel.name).toBe("web");
+    expect(channel.capabilities.text).toBe(true);
+    expect(channel.capabilities.images).toBe(true);
+    expect(channel.capabilities.files).toBe(true);
+    expect(channel.capabilities.threads).toBe(true);
+  });
+
+  test("Bun.serve binds and POST /messages dispatches an InboundMessage", async () => {
+    const { createWebChannel } = await import("@koi/channel-web");
+
+    // In open mode, the adapter stamps every inbound message with
+    // `config.senderId` — body-supplied senderId is intentionally ignored
+    // because the transport never trusts it.
+    const channel = createWebChannel({
+      port: 0,
+      allowUnauthenticated: true,
+      senderId: "golden-user",
+    });
+    await channel.connect();
+    const port = (channel as unknown as { readonly port: number }).port;
+    expect(port).toBeGreaterThan(0);
+
+    const received: Array<{ readonly senderId: string }> = [];
+    channel.onMessage(async (msg) => {
+      received.push({ senderId: msg.senderId });
+    });
+
+    const res = await fetch(`http://127.0.0.1:${port}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        senderId: "golden-user",
+        content: [{ kind: "text", text: "ping" }],
+      }),
+    });
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(received).toHaveLength(1);
+    expect(received[0]?.senderId).toBe("golden-user");
+
+    await channel.disconnect();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/channel-slack (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/channel-slack", () => {
+  test("createSlackChannel exposes Slack capabilities and HTTP handler in HTTP mode", async () => {
+    const { createSlackChannel } = await import("@koi/channel-slack");
+
+    const channel = createSlackChannel({
+      botToken: "xoxb-test",
+      deployment: { mode: "http", signingSecret: "secret" },
+      clients: {
+        webClient: { chat: { postMessage: async () => ({ ok: true }) } },
+      },
+    });
+    expect(channel.name).toBe("slack");
+    expect(channel.capabilities.text).toBe(true);
+    expect(channel.capabilities.threads).toBe(true);
+    expect(typeof channel.handleHttpRequest).toBe("function");
+    expect(channel.handleEvent).toBeUndefined();
+  });
+
+  test("verifySlackSignature accepts/rejects HMAC-SHA256 signatures", async () => {
+    const { verifySlackSignature } = await import("@koi/channel-slack");
+    const { createHmac } = await import("node:crypto");
+
+    const secret = "8f742231b10e8888abcd99yyyzz85a5";
+    const ts = String(Math.floor(Date.now() / 1000));
+    const body = '{"type":"event_callback"}';
+    const h = createHmac("sha256", secret);
+    h.update(`v0:${ts}:${body}`);
+    const sig = `v0=${h.digest("hex")}`;
+
+    expect(verifySlackSignature(secret, ts, body, sig)).toBe(true);
+    expect(verifySlackSignature(secret, ts, "tampered", sig)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/tools-web (2 queries)
 // ---------------------------------------------------------------------------
 
@@ -16741,5 +16832,53 @@ describe("Golden: @koi/skill-distiller", () => {
     expect(evicted).toEqual(["alpha"]);
     expect(store.size()).toBe(2);
     expect(store.has("alpha")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-user-model (2 queries)
+//
+// Standalone — exercises the factory and the formatter directly. The
+// middleware fuses three channels (pre-action, post-action, sensor) into a
+// single `[User Context]` block; verifying that the block renders and that
+// the factory wires the documented hooks is enough to gate orphan / golden
+// CI without depending on a recorded LLM trajectory.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-user-model", () => {
+  test("factory wires onSessionStart/onBeforeTurn/wrapModelCall hooks at priority 415", async () => {
+    const { createUserModelMiddleware } = await import("@koi/middleware-user-model");
+    type MemoryComponent = import("@koi/core").MemoryComponent;
+    const memory: MemoryComponent = {
+      recall: () => Promise.resolve([]),
+      store: () => Promise.resolve(),
+    };
+    const mw = createUserModelMiddleware({ memory, allowSharedScope: true });
+    expect(mw.name).toBe("user-model");
+    expect(mw.priority).toBe(415);
+    expect(typeof mw.onBeforeTurn).toBe("function");
+    expect(typeof mw.wrapModelCall).toBe("function");
+    expect(typeof mw.onSessionStart).toBe("function");
+    expect(typeof mw.onSessionEnd).toBe("function");
+  });
+
+  test("formatUserContext renders preferences + sensor state inside the [User Context] block", async () => {
+    const { formatUserContext } = await import("@koi/middleware-user-model");
+    type UserSnapshot = import("@koi/core").UserSnapshot;
+    const snapshot: UserSnapshot = {
+      preferences: [{ content: "prefers YAML", score: 0.95 }],
+      state: { ide: { language: "typescript" } },
+      ambiguityDetected: false,
+    };
+    const text = formatUserContext(snapshot, {
+      maxPreferenceTokens: 400,
+      maxSensorTokens: 100,
+      maxMetaTokens: 100,
+    });
+    expect(text.startsWith("[User Context]")).toBe(true);
+    expect(text.endsWith("[/User Context]")).toBe(true);
+    expect(text).toContain("prefers YAML");
+    expect(text).toContain("ide:");
+    expect(text).toContain("typescript");
   });
 });
