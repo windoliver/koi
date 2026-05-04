@@ -53,4 +53,42 @@ describe("json-io", () => {
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.length).toBe(2);
   });
+
+  // --- EXTERNAL error propagation regression tests (Finding 2) ---
+
+  test("readJson returns ok:false on EXTERNAL (-32601), not undefined", async () => {
+    const transport = createFakeNexusTransport({
+      failMethod: "read",
+      failCode: -32601,
+      failMessage: "boom",
+    });
+    const r = await readJson<unknown>(transport, "/snapshots/any.json");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("EXTERNAL");
+  });
+
+  test("exists returns ok:false on EXTERNAL", async () => {
+    const transport = createFakeNexusTransport({
+      failMethod: "read",
+      failCode: -32601,
+      failMessage: "boom",
+    });
+    const r = await exists(transport, "/snapshots/any.json");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("EXTERNAL");
+  });
+
+  test("deleteJson returns ok:false on EXTERNAL", async () => {
+    const transport = createFakeNexusTransport({
+      failMethod: "delete",
+      failCode: -32601,
+      failMessage: "boom",
+    });
+    // Write a file so the delete is attempted
+    const write = createFakeNexusTransport();
+    await writeJson(write, "/snapshots/x.json", { v: 1 });
+    const r = await deleteJson(transport, "/snapshots/x.json");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("EXTERNAL");
+  });
 });

@@ -4,9 +4,9 @@
  * Single-file utilities used by the snapshot store. Each helper returns
  * `Result<T, KoiError>` so callers can compose without throwing.
  *
- * `readJson` treats NOT_FOUND / EXTERNAL "file does not exist" responses as
- * `value: undefined` rather than errors — matches the chain-store contract,
- * where reading a missing meta is "empty chain", not a failure.
+ * `readJson` treats NOT_FOUND as "file does not exist" (returns `value:
+ * undefined`). EXTERNAL means a degraded backend and propagates as an error —
+ * it must not be silently collapsed to "absent".
  */
 
 import type { KoiError, Result } from "@koi/core";
@@ -78,7 +78,8 @@ export async function readJson<T>(
 ): Promise<Result<T | undefined, KoiError>> {
   const r = await transport.call<NexusReadResponse | string>("read", { path });
   if (!r.ok) {
-    if (r.error.code === "NOT_FOUND" || r.error.code === "EXTERNAL") {
+    // Only NOT_FOUND means "absent". EXTERNAL means a degraded backend — propagate.
+    if (r.error.code === "NOT_FOUND") {
       return { ok: true, value: undefined };
     }
     return r;
@@ -112,7 +113,8 @@ export async function deleteJson(
   path: string,
 ): Promise<Result<void, KoiError>> {
   const r = await transport.call<unknown>("delete", { path });
-  if (!r.ok && r.error.code !== "NOT_FOUND" && r.error.code !== "EXTERNAL") return r;
+  // Only NOT_FOUND is a no-op (file already absent). EXTERNAL propagates.
+  if (!r.ok && r.error.code !== "NOT_FOUND") return r;
   return { ok: true, value: undefined };
 }
 
@@ -123,7 +125,8 @@ export async function exists(
 ): Promise<Result<boolean, KoiError>> {
   const r = await transport.call<unknown>("read", { path });
   if (r.ok) return { ok: true, value: true };
-  if (r.error.code === "NOT_FOUND" || r.error.code === "EXTERNAL") {
+  // Only NOT_FOUND means absent. EXTERNAL propagates.
+  if (r.error.code === "NOT_FOUND") {
     return { ok: true, value: false };
   }
   return { ok: false, error: r.error };
