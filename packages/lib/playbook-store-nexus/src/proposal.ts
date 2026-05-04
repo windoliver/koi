@@ -52,8 +52,13 @@ export function createNexusPlaybookProposalStore(
     `${base}/structured/${encodeAceId(playbookId)}.json`;
 
   // Per-id in-process mutex. Closes the same-process read-modify-write race for
-  // both recordProposal and recordEvaluation. Cross-process atomicity requires
-  // Nexus-level CAS (tracked in #1469).
+  // both recordProposal and recordEvaluation.
+  //
+  // CONCURRENCY LIMIT: global-uniqueness guarantees for recordProposal and
+  // recordEvaluation hold PER PROCESS only. Cross-process atomic create-if-absent
+  // requires Nexus-level CAS (etag / if_match), which @koi/nexus-client does not
+  // yet expose. Distributed deployments must funnel all proposal and evaluation
+  // writes through a single coordinator process. Tracking issue: #1469.
   const idLocks = new Map<string, Promise<void>>();
 
   function withIdLock<R>(id: string, fn: () => Promise<R>): Promise<R> {

@@ -86,9 +86,22 @@ Contract parity verified by `src/__tests__/{playbook,structured,trajectory,propo
 
 ## Concurrency limits
 
-Audit immutability (proposals and evaluations) is enforced **per-process** via in-memory mutexes in `createNexusPlaybookProposalStore`. Within a single process, concurrent `recordProposal` or `recordEvaluation` calls for the same ID are serialised: the first writer commits, and any subsequent writer with identical content is a no-op; a writer with different content throws an immutability error.
+**Audit immutability scope:** `recordProposal` and `recordEvaluation` global-uniqueness
+guarantees hold **per process**, enforced by in-memory mutexes keyed by id in
+`createNexusPlaybookProposalStore`. Within a single process:
 
-**Cross-process atomicity is not guaranteed.** Two separate processes can both observe an absent proposal file and both commit conflicting records — last writer wins. True cross-process atomic create-if-absent requires Nexus-level CAS (etag / if-match), which `@koi/nexus-client` does not yet expose. Distributed deployments that need this guarantee must funnel proposal and evaluation writes through a single coordinator process until issue #1469 lands CAS support.
+- Concurrent `recordProposal` calls for the same proposal ID are serialised.
+  The first writer commits; any subsequent writer with identical content is a
+  no-op; a writer with different content throws an immutability error.
+- Concurrent `recordEvaluation` calls for the same proposal ID (or the same
+  evaluation ID across different proposals) are serialised the same way.
+
+**Cross-process atomicity is not guaranteed.** Two separate processes can both
+observe an absent proposal or evaluation file and both commit conflicting records —
+last writer wins. True cross-process atomic create-if-absent requires Nexus-level
+CAS (etag / `if_match` semantics), which `@koi/nexus-client` does not yet expose.
+Distributed deployments must funnel `recordProposal` and `recordEvaluation` writes
+through a single coordinator process. Tracking issue: #1469.
 
 ## Connection-loss handling
 
