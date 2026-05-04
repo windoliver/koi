@@ -91,6 +91,7 @@
     { "path": "../../lib/middleware-prompt-cache" },
     { "path": "../../lib/middleware-reflex" },
     { "path": "../../lib/middleware-rlm" },
+    { "path": "../rlm-stack" },
     { "path": "../../lib/middleware-report" },
     { "path": "../../lib/middleware-task-anchor" },
     { "path": "../../lib/middleware-tool-disclosure" },

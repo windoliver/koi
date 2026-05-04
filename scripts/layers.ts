@@ -135,6 +135,7 @@ export const L3_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/cli",
   "@koi-agent/cli",
   "@koi/gateway-stack",
+  "@koi/rlm-stack",
   "@koi/runtime",
 ]);
 
