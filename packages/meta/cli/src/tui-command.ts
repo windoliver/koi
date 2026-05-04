@@ -802,22 +802,13 @@ export async function drainEngineStream(
         }
       }
 
-      // --- Context-engine swap notice (#1767 Phase 6) ---
-      // Surface runtime-emitted swap events as a one-line system notice
-      // through the single-writer store action surface (#1940). Keeps the
-      // notice out of the model transcript and avoids any out-of-band
-      // stderr writes.
-      if (event.kind === "custom" && event.type === "context-engine-swap") {
-        const swap = event.data as {
-          from: { name: string; version: string };
-          to: { name: string; version: string };
-          reason: string;
-        };
-        store.dispatch({
-          kind: "add_info",
-          message: `↔ context engine: ${swap.from.name}@${swap.from.version} → ${swap.to.name}@${swap.to.version} (${swap.reason})`,
-        });
-      }
+      // Context-engine swap notices (#1767 Phase 6) are NOT handled here.
+      // The TUI subscribes directly to runtime.contextEngineSwapController
+      // after createKoiRuntime resolves so out-of-run swaps (idle period,
+      // before first run, between reusable turns) are visible too — the
+      // run-stream `custom` event path only fires while a streamEvents
+      // generator is active. Wiring once at the controller level avoids
+      // both the gap and a double-notice.
 
       // --- Lifecycle events: flush before AND after to isolate them ---
       // This ensures turn_start creates the streaming message before any
@@ -2913,6 +2904,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       return;
     }
     runtimeHandle = handle;
+    // #1767 Phase 6: surface context-engine swap events as TUI notices
+    // through the single-writer store. Subscribing at the controller
+    // level (rather than reading the run-stream `custom` event) covers
+    // out-of-run swaps too — idle, pre-first-run, between reusable
+    // turns. Notices flow through `add_info` like plugin-load banners:
+    // not in the JSONL transcript, not pushed back into model context.
+    handle.runtime.contextEngineSwapController?.subscribe((swap) => {
+      store.dispatch({
+        kind: "add_info",
+        message: `↔ context engine: ${swap.from.name}@${swap.from.version} → ${swap.to.name}@${swap.to.version} (${swap.reason})`,
+      });
+    });
     // Resolve lazy skill agent ref so the injector middleware can query
     // skill components on every subsequent model call.
     skillAgentRef.current = handle.runtime.agent;
