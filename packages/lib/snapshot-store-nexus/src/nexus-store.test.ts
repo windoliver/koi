@@ -329,6 +329,86 @@ describe("createSnapshotStoreNexus", () => {
     if (!r.ok) expect(r.error.code).toBe("VALIDATION");
   });
 
+  // --- Fix 1 (round 5): prune deletes canonical nodes when last chain membership goes ---
+
+  test("prune({ retainCount: 0 }) then get(removedNodeId) returns NOT_FOUND", async () => {
+    // After all nodes are pruned from the only chain that holds them,
+    // the canonical file must be deleted so get() returns NOT_FOUND.
+    const store = newStore();
+    const cid = chainId("c-prune-gc-1");
+    const r = await store.put(cid, { v: 1 }, []);
+    if (!r.ok || r.value === undefined) throw new Error("put failed");
+    const nid = r.value.nodeId;
+
+    await store.prune(cid, { retainCount: 0, retainBranches: false });
+    const got = await store.get(nid);
+    expect(got.ok).toBe(false);
+    if (!got.ok) expect(got.error.code).toBe("NOT_FOUND");
+  });
+
+  test("prune({ retainCount: 0 }) then fork(removedNodeId) returns NOT_FOUND", async () => {
+    // fork calls get internally; if canonical is deleted, fork must also fail.
+    const store = newStore();
+    const cid = chainId("c-prune-gc-fork");
+    const r = await store.put(cid, { v: 1 }, []);
+    if (!r.ok || r.value === undefined) throw new Error("put failed");
+    const nid = r.value.nodeId;
+
+    await store.prune(cid, { retainCount: 0, retainBranches: false });
+    const f = await store.fork(nid, chainId("c-prune-gc-fork-dst"), "test");
+    expect(f.ok).toBe(false);
+    if (!f.ok) expect(f.error.code).toBe("NOT_FOUND");
+  });
+
+  test("prune source chain preserves canonical when forked chain holds a marker", async () => {
+    // After fork, both chains share the canonical node. Pruning the SOURCE chain
+    // must NOT delete the canonical because the forked chain still holds a marker.
+    const store = newStore();
+    const src = chainId("c-prune-gc-src");
+    const r = await store.put(src, { v: 1 }, []);
+    if (!r.ok || r.value === undefined) throw new Error("put failed");
+    const nid = r.value.nodeId;
+
+    // Fork so nid gains a membership marker in the new chain.
+    const dst = chainId("c-prune-gc-dst");
+    const f = await store.fork(nid, dst, "branch");
+    expect(f.ok).toBe(true);
+
+    // Prune the source chain completely — nid is removed from src.
+    await store.prune(src, { retainCount: 0, retainBranches: false });
+
+    // dst still holds the membership marker; canonical must still be accessible.
+    const got = await store.get(nid);
+    expect(got.ok).toBe(true);
+    if (got.ok) expect(got.value.data.v).toBe(1);
+  });
+
+  test("two chains share an ancestor; prune only one chain — canonical persists", async () => {
+    // Both chains share the ancestor node; prune one chain. The other chain's
+    // membership marker must prevent the canonical file from being deleted.
+    const store = newStore();
+    const src = chainId("c-prune-shared-src");
+    const root = await store.put(src, { v: 42 }, []);
+    if (!root.ok || root.value === undefined) throw new Error("root put failed");
+    const rootNid = root.value.nodeId;
+
+    const dst = chainId("c-prune-shared-dst");
+    await store.fork(rootNid, dst, "sibling");
+
+    // Prune src so rootNid is removed from src.
+    await store.prune(src, { retainCount: 0, retainBranches: false });
+
+    // dst still has rootNid in its membership → canonical must survive.
+    const got = await store.get(rootNid);
+    expect(got.ok).toBe(true);
+
+    // Also prune dst → now no chain holds the marker → canonical must be gone.
+    await store.prune(dst, { retainCount: 0, retainBranches: false });
+    const gone = await store.get(rootNid);
+    expect(gone.ok).toBe(false);
+    if (!gone.ok) expect(gone.error.code).toBe("NOT_FOUND");
+  });
+
   test("partial-prune failure (meta written, marker survives) — orphaned parent rejected by meta check", async () => {
     // Scenario: prune writes meta (nodeId removed) but marker deletion fails.
     // The orphaned marker must NOT allow the node to be used as a parent.

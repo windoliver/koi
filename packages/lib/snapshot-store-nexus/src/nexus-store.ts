@@ -25,7 +25,7 @@ import type {
 } from "@koi/core";
 import { nodeId as makeNodeId, notFound, validation } from "@koi/core";
 import { computeContentHash } from "@koi/hash";
-import { deleteJson, exists, readJson, writeJson } from "./json-io.js";
+import { deleteJson, exists, listChildren, readJson, writeJson } from "./json-io.js";
 import { canonicalNodePath, memberPath, metaPath, validateSegment } from "./paths.js";
 import type { NexusSnapshotStoreConfig } from "./types.js";
 
@@ -75,6 +75,26 @@ export function createSnapshotStoreNexus<T>(
   /** Write a membership marker linking nodeId to chainId. */
   async function writeMember(cid: ChainId, nid: NodeId): Promise<Result<void, KoiError>> {
     return writeJson(transport, memberPath(basePath, cid, nid), EMPTY_MEMBER_BODY);
+  }
+
+  /**
+   * Check whether any chain OTHER than `excludingChainId` holds a membership
+   * marker for `nid`. Used by prune to decide whether to delete the canonical
+   * node file.
+   *
+   * Pattern: basePath/asterisk/members/nodeId.member
+   * The _nodes directory never has a members/ subdir, so it is not matched.
+   */
+  async function findOtherChainMembers(
+    nid: NodeId,
+    excludingChainId: ChainId,
+  ): Promise<Result<readonly string[], KoiError>> {
+    const pattern = `${basePath}/*/members/${nid}.member`;
+    const lr = await listChildren(transport, pattern);
+    if (!lr.ok) return lr;
+    // Filter out the marker we just deleted (or are about to delete) for excludingChainId.
+    const others = lr.value.filter((p) => !p.includes(`/${excludingChainId}/`));
+    return { ok: true, value: others };
   }
 
   async function withChainLock<R>(cid: ChainId, fn: () => Promise<R>): Promise<R> {
@@ -321,18 +341,24 @@ export function createSnapshotStoreNexus<T>(
       const wm = await writeMeta(cid, { headNodeId: newHead, nodeIds: postPruneIds });
       if (!wm.ok) return wm;
 
-      // Delete membership markers for removed nodeIds.
-      // Do NOT touch canonical node files — they may be referenced by other chains.
-      // Note: canonical-node GC (orphan sweep over _nodes/ vs union of all memberships)
-      // is future work tracked in #1469 — not part of this PR.
+      // Delete membership markers for removed nodeIds, then delete the canonical
+      // node file if no other chain holds a marker for that node.
       const sorted = [...remove].sort((a, b) => b - a);
       let removed = 0;
       for (const idx of sorted) {
         const id = ids[idx];
-        if (id !== undefined) {
-          const d = await deleteJson(transport, memberPath(basePath, cid, id));
-          if (!d.ok) return d;
-          removed += 1;
+        if (id === undefined) continue;
+        // Delete the membership marker for this chain first.
+        const d = await deleteJson(transport, memberPath(basePath, cid, id));
+        if (!d.ok) return d;
+        removed += 1;
+        // Check whether any OTHER chain still references this node.
+        // If none do, the canonical file is now orphaned — delete it.
+        const others = await findOtherChainMembers(id, cid);
+        if (!others.ok) return others;
+        if (others.value.length === 0) {
+          const dc = await deleteJson(transport, canonicalNodePath(basePath, id));
+          if (!dc.ok) return dc;
         }
       }
       return { ok: true, value: removed };
