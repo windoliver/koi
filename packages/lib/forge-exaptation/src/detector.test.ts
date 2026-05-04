@@ -4,7 +4,6 @@ import {
   DEFAULT_EXAPTATION_THRESHOLDS,
   type DetectionResult,
   type DriftReport,
-  dedupeObservations,
   detectDrift,
   suggestAction,
 } from "./detector.js";
@@ -596,18 +595,47 @@ describe("suggestAction quality gate", () => {
   });
 });
 
-describe("dedupeObservations utility", () => {
-  test("collapses by caller-supplied keyFn, preserves first occurrence", () => {
-    const a: UsagePurposeObservation = {
-      agentId: "x",
+describe("dedup key isolation regression", () => {
+  test("agentId / key delimiter ambiguity does not collapse different agents", () => {
+    // Regression: a flat `${agentId} ${key}` would let
+    // agentId="a", key="b c" collide with agentId="a b", key="c". The
+    // nested-Map dedup makes the (agentId, key) pair unambiguous.
+    const a1: UsagePurposeObservation = {
+      agentId: "a",
       observedAt: 1,
-      contextText: "first",
-      divergenceScore: 0.5,
+      contextText: "x",
+      divergenceScore: 0.95,
     };
-    const b: UsagePurposeObservation = { ...a, contextText: "second" };
-    const c: UsagePurposeObservation = { ...a, contextText: "third" };
-    const out = dedupeObservations([a, b, c], (o) => o.agentId);
-    expect(out).toHaveLength(1);
-    expect(out[0]?.contextText).toBe("first");
+    const a1b: UsagePurposeObservation = {
+      agentId: "a",
+      observedAt: 2,
+      contextText: "y",
+      divergenceScore: 0.95,
+    };
+    const a2: UsagePurposeObservation = {
+      agentId: "a b",
+      observedAt: 3,
+      contextText: "z",
+      divergenceScore: 0.95,
+    };
+    const a2b: UsagePurposeObservation = {
+      agentId: "a b",
+      observedAt: 4,
+      contextText: "w",
+      divergenceScore: 0.95,
+    };
+    const result = detectDrift([a1, a1b, a2, a2b, a1, a2], {
+      ...DEFAULT_EXAPTATION_THRESHOLDS,
+      // Pathological key: a single space. Combined with the colliding
+      // agentIds above, a flat space-delimited scope key would conflate
+      // the two agents. Per-agent Map<Set> isolates them.
+      observationKey: () => " ",
+    });
+    expect(result.kind).toBe("no-drift");
+    if (result.kind === "no-drift") {
+      // Each agent collapses to 1 obs (same key for everything within an agent).
+      expect(result.observationCount).toBe(2);
+      expect(result.duplicateCount).toBe(4);
+    }
   });
 });

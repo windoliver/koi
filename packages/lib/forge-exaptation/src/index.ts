@@ -17,7 +17,6 @@ export type {
 export {
   DEFAULT_EXAPTATION_THRESHOLDS,
   DEFAULT_OBSERVATION_KEY,
-  dedupeObservations,
   detectDrift,
   suggestAction,
 } from "./detector.js";

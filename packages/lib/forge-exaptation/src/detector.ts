@@ -301,27 +301,6 @@ export function suggestAction(
   return { kind: "reclassify", severity: report.severity };
 }
 
-/**
- * Collapse observations whose `keyFn(o)` already appeared. Order preserved;
- * first occurrence wins. Exported as a utility — callers can dedupe inline by
- * passing `thresholds.observationKey`, or up front by calling this helper
- * before `detectDrift`.
- */
-export function dedupeObservations(
-  observations: readonly UsagePurposeObservation[],
-  keyFn: (o: UsagePurposeObservation) => string,
-): readonly UsagePurposeObservation[] {
-  const seen = new Set<string>();
-  const out: UsagePurposeObservation[] = [];
-  for (const o of observations) {
-    const key = keyFn(o);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(o);
-  }
-  return out;
-}
-
 // ---------------------------------------------------------------------------
 // Internals (pure)
 // ---------------------------------------------------------------------------
@@ -368,15 +347,23 @@ function dedupePerAgentByKey(
   observations: readonly UsagePurposeObservation[],
   keys: readonly string[],
 ): readonly UsagePurposeObservation[] {
-  const seen = new Set<string>();
+  // Nested-Map representation — `seen` is keyed by `agentId` so an agent's
+  // dedup keys are isolated from any other agent's. A flat
+  // `${agentId}|${key}` would collide when agentId or key contain the
+  // delimiter.
+  const seen = new Map<string, Set<string>>();
   const out: UsagePurposeObservation[] = [];
   for (let i = 0; i < observations.length; i++) {
     const o = observations[i];
     const key = keys[i];
     if (o === undefined || key === undefined) continue;
-    const scopedKey = `${o.agentId} ${key}`;
-    if (seen.has(scopedKey)) continue;
-    seen.add(scopedKey);
+    let bucket = seen.get(o.agentId);
+    if (bucket === undefined) {
+      bucket = new Set<string>();
+      seen.set(o.agentId, bucket);
+    }
+    if (bucket.has(key)) continue;
+    bucket.add(key);
     out.push(o);
   }
   return out;

@@ -83,7 +83,7 @@ Dedup is **per-agent-scoped** and **on by default**.
 - Pass `observationKey: undefined` to disable dedup entirely; `result.replayProtected` will be `false` and `suggestAction` will refuse to recommend any action.
 - A throwing `keyFn` only drops the offending sample; the rest of the window is still scored. Keys are computed exactly once during validation, so non-deterministic key functions can't crash detection between calls.
 
-`dedupeObservations(observations, keyFn)` is also exported as a standalone helper (global, not per-agent) for callers that prefer to dedupe up front using their own scoping rules.
+Dedup is intentionally only available through `thresholds.observationKey`. There is no externally-deduped path, because a result that wasn't deduped *inside* `detectDrift` cannot honestly carry `replayProtected: true` and `suggestAction` would refuse to act on it anyway.
 
 ## suggestAction Contract
 
