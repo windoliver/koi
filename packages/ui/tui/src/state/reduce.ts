@@ -1238,6 +1238,15 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
 
     // --- Supervisor slice ---
 
+    case "set_bg_rows":
+      return { ...state, bg: { ...state.bg, rows: action.rows } };
+    case "set_bg_registry_status":
+      return { ...state, bg: { ...state.bg, registryStatus: action.status } };
+    case "set_bg_tailing":
+      return { ...state, bg: { ...state.bg, tailingWorkerId: action.workerId } };
+    case "set_bg_kill_confirm":
+      return { ...state, bg: { ...state.bg, killConfirm: action.confirm } };
+
     case "set_supervisor_attached": {
       const next = action.attached;
       return {

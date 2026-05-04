@@ -18,6 +18,7 @@ import {
   userMsg,
 } from "./test-helpers.js";
 import type {
+  BgSessionRow,
   PluginSummary,
   SupervisorEventEntry,
   TuiAction,
@@ -3771,5 +3772,59 @@ describe("supervisor slice reducers", () => {
     expect(seeded.supervisor.events.length).toBe(1);
     const cleared = reduce(seeded, { kind: "clear_supervisor_events" });
     expect(cleared.supervisor.events).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bg slice reducers
+// ---------------------------------------------------------------------------
+
+describe("bg slice reducers", () => {
+  const bgRow: BgSessionRow = {
+    workerId: "w1",
+    agentId: "a1",
+    sessionId: null,
+    status: "running",
+    pid: 1234,
+    startedAt: 1_700_000_000_000,
+    endedAt: null,
+    exitCode: null,
+    lastHeartbeatAt: null,
+    heartbeatDeadlineAt: null,
+    logPath: "/tmp/log",
+    backendKind: "subprocess",
+    version: 1,
+    signaledAt: null,
+    freshness: "ok",
+  };
+
+  test("set_bg_rows replaces rows", () => {
+    const s = reduce(createInitialState(), { kind: "set_bg_rows", rows: [bgRow] });
+    expect(s.bg.rows).toEqual([bgRow]);
+  });
+
+  test("set_bg_registry_status replaces status", () => {
+    const s = reduce(createInitialState(), {
+      kind: "set_bg_registry_status",
+      status: { kind: "stale", since: 1, reason: "boom" },
+    });
+    expect(s.bg.registryStatus).toEqual({ kind: "stale", since: 1, reason: "boom" });
+  });
+
+  test("set_bg_tailing toggles workerId", () => {
+    const a = reduce(createInitialState(), { kind: "set_bg_tailing", workerId: "w1" });
+    expect(a.bg.tailingWorkerId).toBe("w1");
+    const b = reduce(a, { kind: "set_bg_tailing", workerId: null });
+    expect(b.bg.tailingWorkerId).toBeNull();
+  });
+
+  test("set_bg_kill_confirm toggles confirm payload", () => {
+    const c = reduce(createInitialState(), {
+      kind: "set_bg_kill_confirm",
+      confirm: { workerId: "w1", version: 3, pid: 7 },
+    });
+    expect(c.bg.killConfirm).toEqual({ workerId: "w1", version: 3, pid: 7 });
+    const cleared = reduce(c, { kind: "set_bg_kill_confirm", confirm: null });
+    expect(cleared.bg.killConfirm).toBeNull();
   });
 });
