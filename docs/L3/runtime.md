@@ -6,6 +6,14 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 `@koi/rlm-stack` wired (#1359, PR #2126): added as a dependency of `@koi/runtime`. The L3 meta-package composes `@koi/middleware-rlm` with thresholds coordinated against `@koi/context-manager` so RLM segments fire only when a single user input exceeds the entire context window (above the 75% hard-compact threshold). Default priority is `RLM_STACK_PRIORITY_FLOOR = 801` — strictly above `@koi/middleware-tool-disclosure` (800) so the engine sorter cannot place RLM ahead of tool-disclosure under equal-priority ambiguity. Two standalone golden queries cover the factory's threshold computation and `policyFor` classifier (passthrough/compact/virtualize). No cassette trajectory: the middleware fires only on oversized inputs that aren't representative of the goldens' fixture sizes; RLM behavior under load is covered by `@koi/middleware-rlm`'s own 100-test unit suite. See `docs/L2/rlm-stack.md` for the API and `Caveats` (resolveThresholds prefix-canonicalization limitations).
 
+Review-finding wiring sync (#2121): no runtime dependency set changes. The
+existing `@koi/tools-builtin` integration now has an explicit filesystem
+`pathGuard` hook on read/write/edit factories and `fs_write` defaults
+`createDirectories` to `false` when omitted, matching its schema instead of
+inheriting backend auto-create behavior. The existing `@koi/tools-web`
+integration now forwards `ToolExecuteOptions.signal` into fetch/search executor
+calls so cancelled turns can abort slow providers promptly.
+
 `@koi/middleware-user-model` wired (#1389): added as a dependency of `@koi/runtime`. The package fuses three observation channels — pre-action ambiguity detection, post-action correction (incl. optional drift detection sub-channel), and pluggable sensor enrichment via the L0 `SignalSource` contract — into a single `[User Context]` block injected at the head of `ModelRequest.messages`. Default priority `415` (`intercept` phase) places it outside permissions/audit but inside the model adapter. Each channel is independently optional and degrades gracefully: failing `SignalSource.read()` is skipped, memory recall throwing yields empty preferences, classifier failures fall through to fail-closed-on-drift / fail-open-on-salience per the doc. Two standalone golden queries cover the factory wiring (priority 415, all hooks present) and the `formatUserContext` rendering invariant ([User Context] open/close, preferences + sensor state lines). No cassette trajectory recorded — the middleware has no LLM-callable tool surface; the optional drift-detection LLM classifier is a caller-supplied function, mocked in unit tests via `createKeywordDriftDetector`. See `docs/L2/middleware-user-model.md` for the full contract.
 
 `@koi/handoff` + `@koi/task-spawn` wiring (#1371, PR #2117): both L2 packages

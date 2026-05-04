@@ -69,9 +69,11 @@ import {
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import {
   createBuiltinSearchProvider,
+  createCredentialPathGuard,
   createFsEditTool,
   createFsReadTool,
   createFsWriteTool,
+  type FsToolOptions,
 } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import { createSafeFetcher } from "@koi/url-safety";
@@ -1254,6 +1256,11 @@ export interface CoreProvidersConfig {
    */
   readonly filesystemOperations?: readonly ("read" | "write" | "edit")[] | undefined;
   /**
+   * Filesystem tool safety options. Defaults to the credential path guard so
+   * CLI/TUI wiring matches @koi/runtime's security default.
+   */
+  readonly fsToolOptions?: FsToolOptions | undefined;
+  /**
    * When true, wire the web_fetch tool. Defaults to `true` — hosts that
    * run in airgapped environments can pass `false` to strip network access.
    */
@@ -1377,6 +1384,7 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
     // Use the caller-supplied backend when provided (e.g. a Nexus backend
     // from resolveFileSystemAsync); otherwise create the default local one.
     const fs = config.filesystemBackend ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
+    const fsToolOptions = config.fsToolOptions ?? { pathGuard: createCredentialPathGuard() };
     // Operation gating: `undefined` means "wire all three" (the default
     // for host-default filesystems). Manifest-driven filesystems apply
     // the `FileSystemConfig` contract's `["read"]` default at the host
@@ -1391,7 +1399,7 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
         createSingleToolProvider({
           name: "fs-read",
           toolName: "fs_read",
-          createTool: () => createFsReadTool(fs, "fs", DEFAULT_UNSANDBOXED_POLICY),
+          createTool: () => createFsReadTool(fs, "fs", DEFAULT_UNSANDBOXED_POLICY, fsToolOptions),
         }),
       );
     }
@@ -1400,7 +1408,7 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
         createSingleToolProvider({
           name: "fs-write",
           toolName: "fs_write",
-          createTool: () => createFsWriteTool(fs, "fs", DEFAULT_UNSANDBOXED_POLICY),
+          createTool: () => createFsWriteTool(fs, "fs", DEFAULT_UNSANDBOXED_POLICY, fsToolOptions),
         }),
       );
     }
@@ -1409,7 +1417,7 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
         createSingleToolProvider({
           name: "fs-edit",
           toolName: "fs_edit",
-          createTool: () => createFsEditTool(fs, "fs", DEFAULT_UNSANDBOXED_POLICY),
+          createTool: () => createFsEditTool(fs, "fs", DEFAULT_UNSANDBOXED_POLICY, fsToolOptions),
         }),
       );
     }

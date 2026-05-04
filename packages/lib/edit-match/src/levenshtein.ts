@@ -86,6 +86,7 @@ export function computeSlidingWindowMatch(
   const sourceLines = source.split("\n");
   const searchLines = search.split("\n");
   const searchLineCount = searchLines.length;
+  const lineStartOffsets = computeLineStartOffsets(sourceLines);
 
   if (searchLineCount === 0 || sourceLines.length === 0) {
     return undefined;
@@ -102,8 +103,9 @@ export function computeSlidingWindowMatch(
 
   for (let windowSize = minWindowSize; windowSize <= maxWindowSize; windowSize++) {
     for (let i = 0; i <= sourceLines.length - windowSize; i++) {
-      const windowLines = sourceLines.slice(i, i + windowSize);
-      const windowText = windowLines.join("\n");
+      const startIndex = lineStartOffsets[i] ?? 0;
+      const endIndex = computeLineEndOffset(sourceLines, lineStartOffsets, i + windowSize);
+      const windowText = source.slice(startIndex, endIndex);
       const dist = computeLevenshtein(windowText, search, maxDist);
       const maxLen = Math.max(windowText.length, search.length);
 
@@ -113,15 +115,10 @@ export function computeSlidingWindowMatch(
 
       const similarity = 1 - dist / maxLen;
       if (similarity > bestSimilarity) {
-        // Compute character offsets from line positions
-        const startIndex = sourceLines.slice(0, i).join("\n").length + (i > 0 ? 1 : 0);
-        const endText = sourceLines.slice(0, i + windowSize).join("\n");
-        const _endIndex = endText.length + (i + windowSize > 0 && i === 0 ? 0 : 0);
-
         bestSimilarity = similarity;
         best = {
           startIndex,
-          endIndex: startIndex + windowText.length,
+          endIndex,
           similarity,
         };
       }
@@ -129,4 +126,25 @@ export function computeSlidingWindowMatch(
   }
 
   return best;
+}
+
+function computeLineStartOffsets(lines: readonly string[]): readonly number[] {
+  const offsets: number[] = [];
+  let offset = 0;
+  for (let i = 0; i < lines.length; i++) {
+    offsets.push(offset);
+    offset += (lines[i] ?? "").length;
+    if (i < lines.length - 1) offset++;
+  }
+  return offsets;
+}
+
+function computeLineEndOffset(
+  lines: readonly string[],
+  lineStartOffsets: readonly number[],
+  endLineExclusive: number,
+): number {
+  const lastLineIndex = endLineExclusive - 1;
+  if (lastLineIndex < 0) return lineStartOffsets[0] ?? 0;
+  return (lineStartOffsets[lastLineIndex] ?? 0) + (lines[lastLineIndex] ?? "").length;
 }
