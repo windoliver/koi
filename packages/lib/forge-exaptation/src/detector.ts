@@ -47,6 +47,16 @@ export interface ExaptationThresholds {
   readonly observationKey?: ((o: UsagePurposeObservation) => string) | undefined;
 }
 
+/**
+ * Default `observationKey`. Returns `${observedAt}|${contextText}` (the
+ * agentId is added by per-agent dedup scoping, so the key need only be
+ * unique within an agent). Suitable when upstream observers control
+ * `observedAt` per tool call and don't replay events with identical
+ * timestamps; callers with a stronger event ID should pass their own.
+ */
+export const DEFAULT_OBSERVATION_KEY = (o: UsagePurposeObservation): string =>
+  `${String(o.observedAt)}|${o.contextText}`;
+
 /** Sensible defaults — conservative to minimize false positives. */
 export const DEFAULT_EXAPTATION_THRESHOLDS: ExaptationThresholds = {
   minObservations: 5,
@@ -54,6 +64,7 @@ export const DEFAULT_EXAPTATION_THRESHOLDS: ExaptationThresholds = {
   minDivergentAgents: 2,
   minObservationsPerAgent: 2,
   confidenceWeight: 0.8,
+  observationKey: DEFAULT_OBSERVATION_KEY,
 } as const;
 
 /**
@@ -164,21 +175,36 @@ export function detectDrift(
     return { kind: "invalid-config", reason: configError };
   }
 
-  // Validate observations. A throwing `observationKey` callback is treated
-  // as malformed input — that sample is dropped, never the whole window.
+  // Validate observations and compute each dedup key exactly once. A
+  // throwing `observationKey` callback is treated as malformed input —
+  // that sample is dropped, never the whole window. Caching the key here
+  // also rules out non-deterministic / stateful keyFns that succeed on
+  // the first call and throw on the second.
   const keyFn = thresholds.observationKey;
   const validWithMaybeKey: UsagePurposeObservation[] = [];
+  const keys: string[] = [];
   for (const o of observations) {
     if (!isObservationValid(o)) continue;
-    if (keyFn !== undefined && !canKey(o, keyFn)) continue;
+    if (keyFn === undefined) {
+      validWithMaybeKey.push(o);
+      continue;
+    }
+    let key: string;
+    try {
+      key = keyFn(o);
+    } catch {
+      continue;
+    }
     validWithMaybeKey.push(o);
+    keys.push(key);
   }
   const droppedCount = observations.length - validWithMaybeKey.length;
 
   // Dedup is opt-in AND scoped per-agent. Bucketing by agentId before dedup
   // makes payload-only keys safe — identical outputs from different agents
   // always survive.
-  const unique = keyFn === undefined ? validWithMaybeKey : dedupePerAgent(validWithMaybeKey, keyFn);
+  const unique =
+    keyFn === undefined ? validWithMaybeKey : dedupePerAgentByKey(validWithMaybeKey, keys);
   const duplicateCount = validWithMaybeKey.length - unique.length;
   const replayProtected = keyFn !== undefined;
 
@@ -296,26 +322,6 @@ export function dedupeObservations(
   return out;
 }
 
-/**
- * Dedup observations per agent. The dedup namespace is `(agentId, keyFn(o))`,
- * so identical payloads from different agents survive — preserving the
- * cross-agent evidence the detector needs to count divergent agents.
- */
-function dedupePerAgent(
-  observations: readonly UsagePurposeObservation[],
-  keyFn: (o: UsagePurposeObservation) => string,
-): readonly UsagePurposeObservation[] {
-  const seen = new Set<string>();
-  const out: UsagePurposeObservation[] = [];
-  for (const o of observations) {
-    const scopedKey = `${o.agentId}${keyFn(o)}`;
-    if (seen.has(scopedKey)) continue;
-    seen.add(scopedKey);
-    out.push(o);
-  }
-  return out;
-}
-
 // ---------------------------------------------------------------------------
 // Internals (pure)
 // ---------------------------------------------------------------------------
@@ -349,16 +355,31 @@ function isObservationValid(o: UsagePurposeObservation): boolean {
   return true;
 }
 
-function canKey(
-  o: UsagePurposeObservation,
-  keyFn: (o: UsagePurposeObservation) => string,
-): boolean {
-  try {
-    keyFn(o);
-    return true;
-  } catch {
-    return false;
+/**
+ * Dedup observations per agent using precomputed keys. The dedup namespace
+ * is `(agentId, key)`, so identical payloads from different agents survive.
+ *
+ * `keys[i]` is the dedup key for `observations[i]`; arrays must be the same
+ * length. The caller computes keys exactly once during validation, which
+ * guarantees that a non-deterministic `observationKey` cannot crash the
+ * detector by throwing on a second invocation.
+ */
+function dedupePerAgentByKey(
+  observations: readonly UsagePurposeObservation[],
+  keys: readonly string[],
+): readonly UsagePurposeObservation[] {
+  const seen = new Set<string>();
+  const out: UsagePurposeObservation[] = [];
+  for (let i = 0; i < observations.length; i++) {
+    const o = observations[i];
+    const key = keys[i];
+    if (o === undefined || key === undefined) continue;
+    const scopedKey = `${o.agentId} ${key}`;
+    if (seen.has(scopedKey)) continue;
+    seen.add(scopedKey);
+    out.push(o);
   }
+  return out;
 }
 
 interface DivergentCohort {

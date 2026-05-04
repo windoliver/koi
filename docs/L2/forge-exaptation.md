@@ -76,11 +76,12 @@ The quality gate (default 25%) refuses to recommend irreversible action when mos
 
 ## Replay Protection
 
-Dedup is **opt-in and per-agent-scoped**.
+Dedup is **per-agent-scoped** and **on by default**.
 
-- Pass `thresholds.observationKey: (o) => string` to collapse intra-agent replays.
-- The dedup namespace is `(agentId, keyFn(o))`, so identical payloads from different agents always survive — preserving the cross-agent evidence the detector requires. Even a payload-only `keyFn` is safe.
-- Without `observationKey`, no dedup runs.
+- `DEFAULT_EXAPTATION_THRESHOLDS` includes `DEFAULT_OBSERVATION_KEY` — `${observedAt}|${contextText}`. Combined with per-agent scoping (`(agentId, key)`), identical payloads from different agents always survive — preserving the cross-agent evidence the detector requires.
+- Pass your own `observationKey` (e.g. an upstream correlation/event ID) for stronger replay protection.
+- Pass `observationKey: undefined` to disable dedup entirely; `result.replayProtected` will be `false` and `suggestAction` will refuse to recommend any action.
+- A throwing `keyFn` only drops the offending sample; the rest of the window is still scored. Keys are computed exactly once during validation, so non-deterministic key functions can't crash detection between calls.
 
 `dedupeObservations(observations, keyFn)` is also exported as a standalone helper (global, not per-agent) for callers that prefer to dedupe up front using their own scoping rules.
 

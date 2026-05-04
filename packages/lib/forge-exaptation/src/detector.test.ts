@@ -391,10 +391,9 @@ describe("detectDrift throwing observationKey", () => {
 });
 
 describe("detectDrift dedup (opt-in) + telemetry", () => {
-  test("by default: identical observations are NOT deduped — caller responsibility", () => {
-    // Without observationKey, busty repeats are scored as-is. This is the
-    // safe default: a synthetic dedup key like (agentId, observedAt, contextText)
-    // would silently throw away legitimate repeat tool calls in real traffic.
+  test("default thresholds include DEFAULT_OBSERVATION_KEY (per-agent observedAt|contextText)", () => {
+    // Identical (agentId, observedAt, contextText) tuples within an agent
+    // collapse; identical payload from a different agent survives.
     const dup: UsagePurposeObservation = {
       agentId: "a1",
       observedAt: 1234,
@@ -403,10 +402,30 @@ describe("detectDrift dedup (opt-in) + telemetry", () => {
     };
     const dup2: UsagePurposeObservation = { ...dup, agentId: "a2" };
     const result = detectDrift([dup, dup, dup, dup2, dup2, dup2], DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("no-drift");
+    if (result.kind === "no-drift") {
+      expect(result.observationCount).toBe(2);
+      expect(result.duplicateCount).toBe(4);
+      expect(result.replayProtected).toBe(true);
+    }
+  });
+
+  test("explicitly setting observationKey: undefined disables dedup → replayProtected: false", () => {
+    const dup: UsagePurposeObservation = {
+      agentId: "a1",
+      observedAt: 1234,
+      contextText: "ctx",
+      divergenceScore: 0.95,
+    };
+    const dup2: UsagePurposeObservation = { ...dup, agentId: "a2" };
+    const result = detectDrift([dup, dup, dup, dup2, dup2, dup2], {
+      ...DEFAULT_EXAPTATION_THRESHOLDS,
+      observationKey: undefined,
+    });
     expect(result.kind).toBe("drift");
     if (result.kind === "drift") {
+      expect(result.replayProtected).toBe(false);
       expect(result.duplicateCount).toBe(0);
-      expect(result.report.observationCount).toBe(6);
     }
   });
 
