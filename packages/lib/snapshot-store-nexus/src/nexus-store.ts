@@ -329,31 +329,56 @@ export function createSnapshotStoreNexus<T>(
       // the new markers (and skips the canonical delete) or it deletes the
       // canonical before we enter the mutex (caught by the existence check below).
       return withCanonicalMutex(async () => {
-        // Write membership markers for every ancestor — do NOT touch canonical files.
-        for (const node of ancestorList) {
-          const wm = await writeMember(newChainId, node.nodeId);
-          if (!wm.ok) return wm;
-        }
-
-        // Write meta last: pointers after data is durable.
-        const nodeIds = ancestorList.map((n) => n.nodeId);
-        const wm = await writeMeta(newChainId, {
-          headNodeId: sourceNodeId,
-          nodeIds,
-        });
-        if (!wm.ok) return wm;
-
-        // Post-write verification: if a concurrent prune deleted a canonical
-        // file before we wrote our markers, the markers now point at missing
-        // files. Detect this and fail fast so the caller can retry.
+        // Pre-write verification: if a concurrent prune already deleted a canonical
+        // before we enter the mutex, reject now without touching the target chain.
         for (const node of ancestorList) {
           const ex = await exists(transport, canonicalNodePath(basePath, node.nodeId));
           if (!ex.ok) return ex;
           if (!ex.value) {
             return {
               ok: false,
+              error: internal(`fork: source canonical deleted concurrently: ${node.nodeId}`),
+            };
+          }
+        }
+
+        // Write membership markers for every ancestor — do NOT touch canonical files.
+        const writtenMarkers: string[] = [];
+        for (const node of ancestorList) {
+          const wm = await writeMember(newChainId, node.nodeId);
+          if (!wm.ok) return wm;
+          writtenMarkers.push(memberPath(basePath, newChainId, node.nodeId));
+        }
+
+        // Write meta last: pointers after data is durable.
+        const nodeIds = ancestorList.map((n) => n.nodeId);
+        const metaWritePath = metaPath(basePath, newChainId);
+        const wm = await writeMeta(newChainId, {
+          headNodeId: sourceNodeId,
+          nodeIds,
+        });
+        if (!wm.ok) return wm;
+
+        // Post-write defense-in-depth: if a concurrent prune somehow deleted a
+        // canonical in the tiny window between our pre-write check and the marker
+        // writes, roll back everything we wrote to leave the target chain empty.
+        for (const node of ancestorList) {
+          const ex = await exists(transport, canonicalNodePath(basePath, node.nodeId));
+          if (!ex.ok) return ex;
+          if (!ex.value) {
+            // Roll back: delete every marker we wrote, then delete the meta.
+            const leaks: string[] = [];
+            for (const markerPath of writtenMarkers) {
+              const d = await deleteJson(transport, markerPath);
+              if (!d.ok) leaks.push(markerPath);
+            }
+            const dm = await deleteJson(transport, metaWritePath);
+            if (!dm.ok) leaks.push(metaWritePath);
+            const leakMsg = leaks.length > 0 ? ` (rollback leaked: ${leaks.join(", ")})` : "";
+            return {
+              ok: false,
               error: internal(
-                `fork: canonical node deleted during fork (race detected): ${node.nodeId}`,
+                `fork: canonical node deleted during fork (race detected): ${node.nodeId}${leakMsg}`,
               ),
             };
           }
