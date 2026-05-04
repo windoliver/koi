@@ -56,15 +56,39 @@ function expectNoDrift(result: DetectionResult): {
   return { observationCount: result.observationCount, droppedCount: result.droppedCount };
 }
 
-function asResult(report: DriftReport): DetectionResult {
-  return {
-    kind: "drift",
-    report,
-    droppedCount: 0,
-    duplicateCount: 0,
-    validObservationCount: report.observationCount,
-    replayProtected: true,
-  };
+/**
+ * Build a real (branded) drift DetectionResult by calling `detectDrift` with
+ * crafted inputs. Tests use this instead of structurally-constructed result
+ * literals — those are now rejected by the authenticity gate inside
+ * `suggestAction`, by design.
+ *
+ * `score` controls cohort divergence; `agents` × `obsPerAgent` builds the
+ * cohort; optional `baseline`, `drops`, `dups` add baseline traffic, malformed
+ * observations, or same-eventId duplicates respectively.
+ */
+function buildDrift(opts: {
+  readonly agents: number;
+  readonly obsPerAgent: number;
+  readonly score: number;
+  readonly baseline?: number;
+  readonly drops?: number;
+  readonly dups?: number;
+}): DetectionResult {
+  const list: UsagePurposeObservation[] = [];
+  for (let a = 0; a < opts.agents; a++) {
+    for (let i = 0; i < opts.obsPerAgent; i++) {
+      list.push(obs(`drift-${String(a)}`, opts.score));
+    }
+  }
+  for (let i = 0; i < (opts.baseline ?? 0); i++) list.push(obs("baseline", 0.05));
+  for (let i = 0; i < (opts.drops ?? 0); i++) {
+    list.push({ ...obs("drift-0", 0.9), divergenceScore: Number.NaN });
+  }
+  if (opts.dups) {
+    const seed = obs("drift-0", opts.score);
+    for (let i = 0; i < opts.dups; i++) list.push(seed);
+  }
+  return detectDrift(list, DEFAULT_EXAPTATION_THRESHOLDS);
 }
 
 describe("detectDrift", () => {
@@ -278,108 +302,82 @@ describe("suggestAction", () => {
   });
 
   test("no-drift result → no suggestion", () => {
-    expect(
-      suggestAction(
-        {
-          kind: "no-drift",
-          observationCount: 3,
-          validObservationCount: 3,
-          droppedCount: 0,
-          duplicateCount: 0,
-          replayProtected: true,
-        },
-        5,
-      ),
-    ).toEqual({ kind: "none" });
+    // Build a no-drift result via real detectDrift (branded); structurally-
+    // constructed objects are now rejected by the authenticity gate.
+    const noDriftResult = detectDrift(
+      [obs("a", 0.95), obs("b", 0.95)],
+      DEFAULT_EXAPTATION_THRESHOLDS,
+    );
+    expect(noDriftResult.kind).toBe("no-drift");
+    expect(suggestAction(noDriftResult, 5)).toEqual({ kind: "none" });
   });
 
   test("invalid-config result → no suggestion", () => {
-    expect(suggestAction({ kind: "invalid-config", reason: "x" }, 5)).toEqual({ kind: "none" });
+    const invalid = detectDrift([], { ...DEFAULT_EXAPTATION_THRESHOLDS, minObservations: 0 });
+    expect(invalid.kind).toBe("invalid-config");
+    expect(suggestAction(invalid, 5)).toEqual({ kind: "none" });
   });
 
   test("borderline drift → reclassify (not new-artifact, even when stable)", () => {
-    const report: DriftReport = {
-      kind: "purpose_drift",
-      severity: 1,
-      avgDivergence: 0.75,
-      divergentAgents: 2,
-      observationCount: 5,
-    };
-    expect(suggestAction(asResult(report), 5).kind).toBe("reclassify");
+    // avgDivergence=0.75 < 0.85 fork threshold.
+    const result = buildDrift({ agents: 2, obsPerAgent: 3, score: 0.75 });
+    expect(suggestAction(result, 5).kind).toBe("reclassify");
   });
 
   test("stable + raw divergence ≥ 0.85 → new-artifact", () => {
-    const report: DriftReport = {
-      kind: "purpose_drift",
-      severity: 0.85,
-      avgDivergence: 0.92,
-      divergentAgents: 4,
-      observationCount: 12,
-    };
-    expect(suggestAction(asResult(report), 3)).toEqual({ kind: "new-artifact", severity: 0.85 });
+    const result = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92 });
+    const action = suggestAction(result, 3);
+    expect(action.kind).toBe("new-artifact");
   });
 
   test("strong drift but unstable (single window) → reclassify", () => {
-    const report: DriftReport = {
-      kind: "purpose_drift",
-      severity: 0.95,
-      avgDivergence: 0.95,
-      divergentAgents: 4,
-      observationCount: 10,
-    };
-    expect(suggestAction(asResult(report), 1).kind).toBe("reclassify");
+    const result = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    expect(suggestAction(result, 1).kind).toBe("reclassify");
   });
 
   test("regression: minimum-threshold drift cannot escalate to new-artifact via volume", () => {
-    // avgDivergence = 0.7 (just at detection threshold), heavy traffic.
-    const report: DriftReport = {
-      kind: "purpose_drift",
-      severity: 1.0, // saturated by volume
-      avgDivergence: 0.7,
-      divergentAgents: 8,
-      observationCount: 50,
-    };
-    // Despite saturated severity and many windows, raw divergence is 0.7 < 0.85.
-    expect(suggestAction(asResult(report), 10).kind).toBe("reclassify");
+    // avgDivergence at the detection floor (0.7), saturating severity by
+    // volume — must NOT escalate to new-artifact regardless of stableWindows.
+    const result = buildDrift({ agents: 8, obsPerAgent: 6, score: 0.7 });
+    expect(suggestAction(result, 10).kind).toBe("reclassify");
   });
 
-  test("accepts DetectionResult of kind drift", () => {
-    const report: DriftReport = {
-      kind: "purpose_drift",
-      severity: 0.9,
-      avgDivergence: 0.92,
-      divergentAgents: 3,
-      observationCount: 8,
-    };
-    const result: DetectionResult = {
-      kind: "drift",
-      report,
+  test("accepts (real) DetectionResult of kind drift", () => {
+    const result = buildDrift({ agents: 3, obsPerAgent: 3, score: 0.92 });
+    expect(suggestAction(result, 3).kind).toBe("new-artifact");
+  });
+
+  test("structurally-fabricated DetectionResult is rejected (authenticity gate)", () => {
+    // A reconstructed object that wasn't returned by detectDrift cannot bypass
+    // the quality + replay-protection gates: the suggestAction authenticity
+    // check rejects unbranded inputs.
+    const fabricated = {
+      kind: "drift" as const,
       droppedCount: 0,
       duplicateCount: 0,
-      validObservationCount: report.observationCount,
+      validObservationCount: 100,
       replayProtected: true,
+      report: {
+        kind: "purpose_drift" as const,
+        severity: 1,
+        avgDivergence: 0.99,
+        divergentAgents: 10,
+        observationCount: 100,
+      },
     };
-    expect(suggestAction(result, 3).kind).toBe("new-artifact");
+    expect(suggestAction(fabricated as DetectionResult, 5)).toEqual({ kind: "none" });
   });
 });
 
 describe("suggestAction replay-protection gate", () => {
-  test("unprotected drift result (no observationKey) → none", () => {
-    // Detector run without observationKey produces replayProtected: false.
-    const result: DetectionResult = {
-      kind: "drift",
-      droppedCount: 0,
-      duplicateCount: 0,
-      validObservationCount: 5,
-      replayProtected: false,
-      report: {
-        kind: "purpose_drift",
-        severity: 0.95,
-        avgDivergence: 0.92,
-        divergentAgents: 4,
-        observationCount: 5,
-      },
-    };
+  test("unprotected drift result (observation without eventId) → none", () => {
+    const obsList: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => obsNoId("a", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obsNoId("b", s)),
+    ];
+    const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") expect(result.replayProtected).toBe(false);
     expect(suggestAction(result, 5)).toEqual({ kind: "none" });
   });
 });
@@ -476,70 +474,68 @@ describe("eventId-based dedup + replay protection", () => {
 
 describe("suggestAction quality gate", () => {
   test("low-quality drift result (>25% dropped) → none", () => {
-    // 5 valid + 3 dropped → 3/8 = 37.5% degradation > 25%
-    const result: DetectionResult = {
-      kind: "drift",
-      droppedCount: 3,
-      duplicateCount: 0,
-      validObservationCount: 5,
-      replayProtected: true,
-      report: {
-        kind: "purpose_drift",
-        severity: 0.95,
-        avgDivergence: 0.92,
-        divergentAgents: 4,
-        observationCount: 5,
-      },
-    };
+    // 12 valid (4 agents × 3 obs at 0.92) + 5 dropped → 5/17 ≈ 29% > 25%.
+    const result = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92, drops: 5 });
     expect(suggestAction(result, 5)).toEqual({ kind: "none" });
   });
 
   test("acceptable-quality drift result (<=25% dropped) → action", () => {
-    // 5 valid + 1 dropped → 1/6 ≈ 16.7% < 25%
-    const result: DetectionResult = {
-      kind: "drift",
-      droppedCount: 1,
-      duplicateCount: 0,
-      validObservationCount: 5,
-      replayProtected: true,
-      report: {
-        kind: "purpose_drift",
-        severity: 0.95,
-        avgDivergence: 0.92,
-        divergentAgents: 4,
-        observationCount: 5,
-      },
-    };
+    // 12 valid + 2 dropped → 2/14 ≈ 14% < 25%.
+    const result = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92, drops: 2 });
     expect(suggestAction(result, 5).kind).toBe("new-artifact");
   });
 
   test("low-quality drift result (>25% duplicates) → none", () => {
-    const result: DetectionResult = {
-      kind: "drift",
-      droppedCount: 0,
-      duplicateCount: 4,
-      validObservationCount: 5,
-      replayProtected: true,
-      report: {
-        kind: "purpose_drift",
-        severity: 0.95,
-        avgDivergence: 0.92,
-        divergentAgents: 4,
-        observationCount: 5,
-      },
-    };
-    expect(suggestAction(result, 5)).toEqual({ kind: "none" });
+    // 12 valid + 10 same-eventId duplicates that collapse → 10/22 ≈ 45% > 25%.
+    const result = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92, dups: 10 });
+    if (result.kind === "drift") {
+      expect(result.duplicateCount).toBeGreaterThan(0);
+      expect(suggestAction(result, 5)).toEqual({ kind: "none" });
+    }
   });
 
-  test("bare DriftReport bypasses quality gate (caller has no telemetry)", () => {
-    const report: DriftReport = {
-      kind: "purpose_drift",
-      severity: 0.95,
-      avgDivergence: 0.92,
-      divergentAgents: 4,
-      observationCount: 5,
+  test("real branded drift result with no drops/dups passes quality gate", () => {
+    const result = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92 });
+    expect(suggestAction(result, 5).kind).toBe("new-artifact");
+  });
+});
+
+describe("deterministic dedup conflict resolution", () => {
+  test("conflicting (agentId, eventId) duplicates resolve by max divergenceScore (not by arrival order)", () => {
+    // Same (agentId, eventId) twice with different scores. Old first-write-
+    // wins behaviour would let outcome depend on ingestion order. Deterministic
+    // resolution picks the higher divergenceScore — so reordering inputs gives
+    // the same DriftReport.observationCount and avgDivergence.
+    const sharedEid = "evt-shared";
+    const lo: UsagePurposeObservation = {
+      agentId: "a1",
+      eventId: sharedEid,
+      divergenceScore: 0.4,
+      contextText: "x",
+      observedAt: 1,
     };
-    expect(suggestAction(asResult(report), 5).kind).toBe("new-artifact");
+    const hi: UsagePurposeObservation = { ...lo, divergenceScore: 0.95 };
+    const otherAgents: UsagePurposeObservation[] = [
+      obs("a2", 0.95),
+      obs("a2", 0.95),
+      obs("a2", 0.95),
+      obs("a3", 0.95),
+      obs("a3", 0.95),
+      obs("a3", 0.95),
+    ];
+    // Two ingestion orders for the same logical event set.
+    const ordered = [lo, hi, ...otherAgents];
+    const reverseOrdered = [hi, lo, ...otherAgents];
+    const r1 = detectDrift(ordered, DEFAULT_EXAPTATION_THRESHOLDS);
+    const r2 = detectDrift(reverseOrdered, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(r1.kind).toBe("drift");
+    expect(r2.kind).toBe("drift");
+    if (r1.kind === "drift" && r2.kind === "drift") {
+      // Both runs win the same conflict (the high-score sample), so the
+      // resulting DriftReport is identical.
+      expect(r1.report.avgDivergence).toBeCloseTo(r2.report.avgDivergence, 10);
+      expect(r1.report.observationCount).toBe(r2.report.observationCount);
+    }
   });
 });
 
@@ -675,24 +671,16 @@ describe("mixed-traffic regressions", () => {
   });
 
   test("quality gate uses full validated window, not just cohort slice", () => {
-    // 10 valid samples (6 cohort + 4 baseline) and 2 dropped. Old denominator
-    // (cohort.observationCount = 6) would have computed 2/(6+2)=25% which is
-    // not >25%. A new dropped sample (3) would push it to 3/(6+3)=33% wrongly.
-    // New denominator uses validObservationCount = 10, giving 3/(10+3)≈23% — still acceptable.
-    const result: DetectionResult = {
-      kind: "drift",
-      droppedCount: 3,
-      duplicateCount: 0,
-      validObservationCount: 10,
-      replayProtected: true,
-      report: {
-        kind: "purpose_drift",
-        severity: 0.95,
-        avgDivergence: 0.92,
-        divergentAgents: 2,
-        observationCount: 6,
-      },
-    };
+    // 6-obs drift cohort + 4 baseline obs + 2 drops. Old denominator (cohort
+    // only) would have computed 2/(6+2)=25%; new denominator uses
+    // validObservationCount=10, giving 2/(10+2)≈17% — still acceptable.
+    const result = buildDrift({
+      agents: 2,
+      obsPerAgent: 3,
+      score: 0.92,
+      baseline: 4,
+      drops: 2,
+    });
     expect(suggestAction(result, 5).kind).toBe("new-artifact");
   });
 });

@@ -57,6 +57,31 @@ export const DEFAULT_EXAPTATION_THRESHOLDS: ExaptationThresholds = {
 } as const;
 
 /**
+ * Internal brand stamped on every result that comes out of `detectDrift`.
+ * `suggestAction` rejects inputs that lack this brand, so a caller cannot
+ * fabricate a drift result with `replayProtected: true` and zero
+ * dropped/duplicate counts to bypass the quality + replay-protection gates.
+ *
+ * The symbol is intentionally module-local — not exported, not in the
+ * public `DetectionResult` type. External code has no name by which to
+ * attach it, so structurally-reconstructed objects always fail the check.
+ */
+const DETECTION_BRAND = Symbol("forge-exaptation/DetectionResult");
+type Branded<T> = T & { readonly [DETECTION_BRAND]: true };
+
+function brand<T>(result: T): Branded<T> {
+  return Object.freeze({ ...(result as object), [DETECTION_BRAND]: true }) as Branded<T>;
+}
+
+function isBranded(input: unknown): boolean {
+  return (
+    typeof input === "object" &&
+    input !== null &&
+    (input as { readonly [DETECTION_BRAND]?: unknown })[DETECTION_BRAND] === true
+  );
+}
+
+/**
  * Maximum tolerated fraction of low-quality observations in a single window.
  * `suggestAction` returns `none` when (dropped + duplicates) /
  * (dropped + duplicates + valid) exceeds this ratio — refusing to recommend
@@ -178,7 +203,7 @@ export function detectDrift(
 ): DetectionResult {
   const configError = describeInvalidThresholds(thresholds);
   if (configError !== undefined) {
-    return { kind: "invalid-config", reason: configError };
+    return brand({ kind: "invalid-config", reason: configError });
   }
 
   // Validate observations. agentId + divergenceScore are required for any
@@ -204,14 +229,15 @@ export function detectDrift(
   const unique = replayProtected ? dedupePerAgentByEventId(valid) : valid;
   const duplicateCount = valid.length - unique.length;
 
-  const noDrift = (): DetectionResult => ({
-    kind: "no-drift",
-    observationCount: unique.length,
-    validObservationCount: unique.length,
-    droppedCount,
-    duplicateCount,
-    replayProtected,
-  });
+  const noDrift = (): DetectionResult =>
+    brand({
+      kind: "no-drift",
+      observationCount: unique.length,
+      validObservationCount: unique.length,
+      droppedCount,
+      duplicateCount,
+      replayProtected,
+    });
 
   if (unique.length < thresholds.minObservations) return noDrift();
 
@@ -237,7 +263,7 @@ export function detectDrift(
     thresholds,
   );
 
-  return {
+  return brand({
     kind: "drift",
     droppedCount,
     duplicateCount,
@@ -250,7 +276,7 @@ export function detectDrift(
       divergentAgents: cohort.agentCount,
       observationCount: cohort.observationCount,
     },
-  };
+  });
 }
 
 /**
@@ -274,6 +300,11 @@ export function suggestAction(
   input: DetectionResult | undefined,
   stableWindows: number,
 ): ExaptationSuggestion {
+  // Authenticity gate. The internal brand is unreachable from outside this
+  // module, so any input that wasn't returned by `detectDrift` (e.g. a
+  // structurally-reconstructed object intended to bypass the quality and
+  // replay-protection gates) is rejected here.
+  if (!isBranded(input)) return { kind: "none" };
   if (input === undefined || input.kind !== "drift") return { kind: "none" };
 
   // Replay protection is mandatory for action-bearing results. A
@@ -349,25 +380,50 @@ function isObservationValid(o: UsagePurposeObservation): boolean {
  * already verified that every input has a non-empty string `eventId`, so the
  * field reads here are safe. Dedup namespace is `(agentId, eventId)`, so
  * identical event IDs from different agents always survive.
+ *
+ * Conflict resolution is deterministic, content-based — NOT first-write-wins.
+ * When the same `(agentId, eventId)` arrives more than once with different
+ * payloads (a realistic outcome of retries-with-divergent-rescore), pick:
+ *   1. the highest `divergenceScore`     — score conflict resolution
+ *   2. then the highest `observedAt`     — order tiebreak (newest wins)
+ *   3. then `contextText` lexicographic  — final deterministic tiebreak
+ *
+ * Outcome no longer depends on ingestion order, so retried events cannot
+ * silently flip the drift decision based on which copy arrived first.
  */
 function dedupePerAgentByEventId(
   observations: readonly UsagePurposeObservation[],
 ): readonly UsagePurposeObservation[] {
-  const seen = new Map<string, Set<string>>();
-  const out: UsagePurposeObservation[] = [];
+  const winners = new Map<string, Map<string, UsagePurposeObservation>>();
   for (const o of observations) {
     const eventId = o.eventId;
     if (eventId === undefined) continue;
-    let bucket = seen.get(o.agentId);
+    let bucket = winners.get(o.agentId);
     if (bucket === undefined) {
-      bucket = new Set<string>();
-      seen.set(o.agentId, bucket);
+      bucket = new Map<string, UsagePurposeObservation>();
+      winners.set(o.agentId, bucket);
     }
-    if (bucket.has(eventId)) continue;
-    bucket.add(eventId);
-    out.push(o);
+    const incumbent = bucket.get(eventId);
+    if (incumbent === undefined || prefersChallenger(incumbent, o)) {
+      bucket.set(eventId, o);
+    }
   }
+  // Preserve insertion-stable iteration so output is deterministic across
+  // runs given the same input set.
+  const out: UsagePurposeObservation[] = [];
+  for (const bucket of winners.values()) for (const o of bucket.values()) out.push(o);
   return out;
+}
+
+function prefersChallenger(
+  incumbent: UsagePurposeObservation,
+  challenger: UsagePurposeObservation,
+): boolean {
+  if (challenger.divergenceScore !== incumbent.divergenceScore)
+    return challenger.divergenceScore > incumbent.divergenceScore;
+  if (challenger.observedAt !== incumbent.observedAt)
+    return challenger.observedAt > incumbent.observedAt;
+  return challenger.contextText > incumbent.contextText;
 }
 
 interface DivergentCohort {

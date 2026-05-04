@@ -85,7 +85,11 @@ Replay protection is a **per-observation data contract**, not a config knob.
 
 ## suggestAction Contract
 
-`suggestAction` accepts only a `DetectionResult` (or `undefined`) — not a bare `DriftReport`. Persisting just the report and replaying it later would bypass the quality gate; this restriction keeps the gate sticky across serialization boundaries.
+`suggestAction` accepts only `DetectionResult` instances **returned by this module's own `detectDrift`** — they carry an internal, non-exported brand symbol that the action API checks before applying its gates. Structurally-reconstructed objects (e.g. results round-tripped through JSON, or hand-built literals) are rejected as `none`. This means the quality and replay-protection gates cannot be bypassed by persisting a partial result and replaying a synthetic positive later: any cross-process handoff has to round-trip through `detectDrift` again.
+
+## Dedup Conflict Resolution
+
+When the same `(agentId, eventId)` arrives more than once with different payloads, the dedup picks the winner deterministically — highest `divergenceScore`, then highest `observedAt`, then lexicographic `contextText` — instead of first-write-wins. Reordering the same logical event set produces the same `DriftReport`.
 
 ---
 
