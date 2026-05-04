@@ -117,6 +117,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/skill-tool",
   "@koi/skills-runtime",
   "@koi/scratchpad-local",
+  "@koi/playbook-store-nexus",
   "@koi/playbook-store-sqlite",
   "@koi/snapshot-store-nexus",
   "@koi/snapshot-store-sqlite",
