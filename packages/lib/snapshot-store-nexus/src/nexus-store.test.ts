@@ -103,6 +103,21 @@ describe("createSnapshotStoreNexus", () => {
     if (!r.ok) expect(r.error.code).toBe("VALIDATION");
   });
 
+  // --- Fix 4 (round 5): _nodes reserved as chain ID ---
+
+  test("put with chainId '_nodes' returns VALIDATION error", async () => {
+    const store = newStore();
+    const r = await store.put("_nodes" as ChainId, { v: 1 }, []);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("VALIDATION");
+  });
+
+  test("put with chainId '_NODES' succeeds (case-sensitive reservation)", async () => {
+    const store = newStore();
+    const r = await store.put("_NODES" as ChainId, { v: 1 }, []);
+    expect(r.ok).toBe(true);
+  });
+
   test("transport-level error on read surfaces as EXTERNAL", async () => {
     const transport = createFakeNexusTransport({
       failMethod: "read",

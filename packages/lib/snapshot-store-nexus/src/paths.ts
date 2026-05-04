@@ -40,8 +40,12 @@ export function metaPath(basePath: string, chainId: string): string {
 }
 
 /**
- * Reject path segments that could escape the basePath sandbox.
- * Disallows: empty, slash, dot-dot, backslash, null byte.
+ * Reject path segments that could escape the basePath sandbox or collide with
+ * reserved internal namespaces.
+ *
+ * Disallows:
+ *   - empty, slash, dot-dot, backslash, null byte  — path-traversal / sandbox-escape
+ *   - the literal "_nodes" (case-sensitive)          — reserved canonical-node directory
  */
 export function validateSegment(segment: string, label: string): Result<void, KoiError> {
   if (segment.length === 0) return invalid(`${label} cannot be empty`);
@@ -49,6 +53,10 @@ export function validateSegment(segment: string, label: string): Result<void, Ko
   if (segment === "..") return invalid(`${label} cannot be '..'`);
   if (segment.includes("\\")) return invalid(`${label} cannot contain '\\': ${segment}`);
   if (segment.includes("\0")) return invalid(`${label} cannot contain null bytes`);
+  // "_nodes" is the reserved directory for canonical node files; reject it as a
+  // chain ID to prevent writes to <basePath>/_nodes/meta.json which would collide
+  // with canonical node storage. Case-sensitive: "_NODES" is allowed.
+  if (segment === "_nodes") return invalid(`${label} cannot be the reserved name '_nodes'`);
   return { ok: true, value: undefined };
 }
 

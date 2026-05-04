@@ -44,4 +44,17 @@ describe("validateSegment", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe("VALIDATION");
   });
+
+  // --- Fix 4 (round 5): _nodes reserved namespace ---
+
+  test("rejects reserved chain ID '_nodes'", () => {
+    const r = validateSegment("_nodes", "Chain ID");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("VALIDATION");
+  });
+
+  test("accepts '_NODES' (case-sensitive — only the lowercase form is reserved)", () => {
+    const r = validateSegment("_NODES", "Chain ID");
+    expect(r.ok).toBe(true);
+  });
 });
