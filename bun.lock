@@ -382,6 +382,14 @@
         "@koi/hash": "workspace:*",
       },
     },
+    "packages/lib/forge-policy": {
+      "name": "@koi/forge-policy",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+      },
+    },
     "packages/lib/forge-tools": {
       "name": "@koi/forge-tools",
       "version": "0.0.0",
@@ -2280,6 +2288,8 @@
     "@koi/forge-demand": ["@koi/forge-demand@workspace:packages/lib/forge-demand"],
 
     "@koi/forge-integrity": ["@koi/forge-integrity@workspace:packages/lib/forge-integrity"],
+
+    "@koi/forge-policy": ["@koi/forge-policy@workspace:packages/lib/forge-policy"],
 
     "@koi/forge-tools": ["@koi/forge-tools@workspace:packages/lib/forge-tools"],
 
