@@ -176,4 +176,39 @@ describe("createNexusPlaybookProposalStore", () => {
     const list = await store.listProposals("pb-idx");
     expect(list.map((p) => p.id)).toContain("p-idx");
   });
+
+  // --- Fix 2: listProposals reads proposal files directly (no separate index) ---
+
+  test("recordProposal then listProposals immediately — visible", async () => {
+    // Proposal file is the sole source of truth; no index needed.
+    const store = newStore();
+    await store.recordProposal(makeProposal("p-direct", "pb-direct"));
+    const list = await store.listProposals("pb-direct");
+    expect(list.map((p) => p.id)).toContain("p-direct");
+  });
+
+  test("recordProposal + listProposals round-trips full content", async () => {
+    // Positive test: single record + list returns the full proposal object.
+    const store = newStore();
+    const p = makeProposal("p-roundtrip", "pb-roundtrip");
+    await store.recordProposal(p);
+    const list = await store.listProposals("pb-roundtrip");
+    expect(list.length).toBe(1);
+    expect(list[0]?.id).toBe("p-roundtrip");
+    expect(list[0]?.playbookId).toBe("pb-roundtrip");
+    expect(list[0]?.baseVersion).toBe(1);
+  });
+
+  test("listProposals filters by playbookId — proposals from other playbooks excluded", async () => {
+    // When proposals exist for multiple playbooks, listProposals returns only
+    // the ones for the requested playbookId.
+    const store = newStore();
+    await store.recordProposal(makeProposal("px1", "pb-x"));
+    await store.recordProposal(makeProposal("py1", "pb-y"));
+    await store.recordProposal(makeProposal("py2", "pb-y"));
+    const forX = await store.listProposals("pb-x");
+    expect(forX.map((p) => p.id)).toEqual(["px1"]);
+    const forY = await store.listProposals("pb-y");
+    expect(forY.map((p) => p.id).sort()).toEqual(["py1", "py2"]);
+  });
 });

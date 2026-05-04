@@ -43,9 +43,13 @@ Dependencies: @koi/ace-types, @koi/core, @koi/nexus-client
 <basePath>/playbooks/<id>.json
 <basePath>/structured/<id>.json
 <basePath>/trajectories/<sessionId>/<batchId>.json  (per-batch; one file per append call)
-<basePath>/proposals/<proposalId>.json
+<basePath>/proposals/<proposalId>.json              (source of truth; playbookId is a field)
 <basePath>/evaluations/<proposalId>.json
 ```
+
+`listProposals(playbookId)` is O(total proposals) — it enumerates ALL `<base>/proposals/*.json`
+and filters by `proposal.playbookId`. No separate per-playbook index is maintained.
+Acceptable for ACE: list ops are user-driven, not hot-path.
 
 `basePath` defaults to `"ace"`. IDs are sanitized — colons in session IDs become `_3A` so Nexus list/glob can index them.
 
