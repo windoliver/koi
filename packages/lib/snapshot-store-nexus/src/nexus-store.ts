@@ -23,7 +23,7 @@ import type {
   SnapshotChainStore,
   SnapshotNode,
 } from "@koi/core";
-import { nodeId as makeNodeId, notFound, validation } from "@koi/core";
+import { internal, nodeId as makeNodeId, notFound, validation } from "@koi/core";
 import { computeContentHash } from "@koi/hash";
 import { deleteJson, exists, listChildren, readJson, writeJson } from "./json-io.js";
 import { canonicalNodePath, memberPath, metaPath, validateSegment } from "./paths.js";
@@ -45,6 +45,44 @@ export function createSnapshotStoreNexus<T>(
   const basePath = config.basePath ?? DEFAULT_BASE_PATH;
   const transport = config.transport;
   const chainLocks = new Map<ChainId, Promise<void>>();
+
+  /**
+   * Canonical-mutation mutex — serialises the two phases that must be atomic
+   * with respect to each other:
+   *
+   *   fork's marker-write phase: writes target membership markers that protect
+   *     the canonical files from GC.
+   *   prune's canonical-delete phase: checks whether any other chain still holds
+   *     a marker before deleting the canonical file.
+   *
+   * Without this mutex the race is:
+   *   1. fork reads ancestor list.
+   *   2. prune deletes source membership marker + finds no other markers (fork
+   *      hasn't written its target markers yet) → deletes canonical file.
+   *   3. fork writes target markers + meta — canonical is already gone.
+   *
+   * Both phases must hold this mutex while they execute. Either fork finishes
+   * writing its markers first (so prune sees them and skips the canonical
+   * delete), or prune deletes the canonical first (so fork's post-write
+   * verification detects the race and fails with INTERNAL).
+   */
+  let canonicalMutex = Promise.resolve();
+
+  async function withCanonicalMutex<R>(fn: () => Promise<R>): Promise<R> {
+    // let is justified: release must be assigned inside the Promise constructor callback
+    let release = (): void => {};
+    const ticket = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const prev = canonicalMutex;
+    canonicalMutex = ticket;
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
 
   async function readMeta(cid: ChainId): Promise<Result<ChainMeta, KoiError>> {
     const r = await readJson<ChainMeta>(transport, metaPath(basePath, cid));
@@ -286,22 +324,44 @@ export function createSnapshotStoreNexus<T>(
         };
       }
 
-      // Write membership markers for every ancestor — do NOT touch canonical files.
-      for (const node of ancestorList) {
-        const wm = await writeMember(newChainId, node.nodeId);
+      // Write membership markers + meta under the canonical mutex so prune's
+      // canonical-delete phase cannot race the marker writes: either prune sees
+      // the new markers (and skips the canonical delete) or it deletes the
+      // canonical before we enter the mutex (caught by the existence check below).
+      return withCanonicalMutex(async () => {
+        // Write membership markers for every ancestor — do NOT touch canonical files.
+        for (const node of ancestorList) {
+          const wm = await writeMember(newChainId, node.nodeId);
+          if (!wm.ok) return wm;
+        }
+
+        // Write meta last: pointers after data is durable.
+        const nodeIds = ancestorList.map((n) => n.nodeId);
+        const wm = await writeMeta(newChainId, {
+          headNodeId: sourceNodeId,
+          nodeIds,
+        });
         if (!wm.ok) return wm;
-      }
 
-      // Write meta last: pointers after data is durable.
-      const nodeIds = ancestorList.map((n) => n.nodeId);
-      const wm = await writeMeta(newChainId, {
-        headNodeId: sourceNodeId,
-        nodeIds,
+        // Post-write verification: if a concurrent prune deleted a canonical
+        // file before we wrote our markers, the markers now point at missing
+        // files. Detect this and fail fast so the caller can retry.
+        for (const node of ancestorList) {
+          const ex = await exists(transport, canonicalNodePath(basePath, node.nodeId));
+          if (!ex.ok) return ex;
+          if (!ex.value) {
+            return {
+              ok: false,
+              error: internal(
+                `fork: canonical node deleted during fork (race detected): ${node.nodeId}`,
+              ),
+            };
+          }
+        }
+
+        const ref: ForkRef = { parentNodeId: sourceNodeId, label };
+        return { ok: true, value: ref };
       });
-      if (!wm.ok) return wm;
-
-      const ref: ForkRef = { parentNodeId: sourceNodeId, label };
-      return { ok: true, value: ref };
     });
   };
 
@@ -343,6 +403,9 @@ export function createSnapshotStoreNexus<T>(
 
       // Delete membership markers for removed nodeIds, then delete the canonical
       // node file if no other chain holds a marker for that node.
+      // The canonical-delete phase runs under the canonical mutex to prevent a
+      // concurrent fork from writing target markers after we check for other
+      // chain members but before we delete the canonical file.
       const sorted = [...remove].sort((a, b) => b - a);
       let removed = 0;
       for (const idx of sorted) {
@@ -352,14 +415,20 @@ export function createSnapshotStoreNexus<T>(
         const d = await deleteJson(transport, memberPath(basePath, cid, id));
         if (!d.ok) return d;
         removed += 1;
-        // Check whether any OTHER chain still references this node.
-        // If none do, the canonical file is now orphaned — delete it.
-        const others = await findOtherChainMembers(id, cid);
-        if (!others.ok) return others;
-        if (others.value.length === 0) {
-          const dc = await deleteJson(transport, canonicalNodePath(basePath, id));
-          if (!dc.ok) return dc;
-        }
+        // Hold the canonical mutex while checking and conditionally deleting the
+        // canonical file. This prevents fork from writing new markers for this
+        // node between our findOtherChainMembers check and the canonical delete.
+        const deleteResult = await withCanonicalMutex(async () => {
+          // Re-check: a concurrent fork may have written a new marker since we
+          // deleted our marker above.
+          const others = await findOtherChainMembers(id, cid);
+          if (!others.ok) return others;
+          if (others.value.length === 0) {
+            return deleteJson(transport, canonicalNodePath(basePath, id));
+          }
+          return { ok: true, value: undefined } as Result<void, KoiError>;
+        });
+        if (!deleteResult.ok) return deleteResult;
       }
       return { ok: true, value: removed };
     });

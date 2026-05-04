@@ -454,4 +454,63 @@ describe("createSnapshotStoreNexus", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe("VALIDATION");
   });
+
+  // --- Fix 1 (round 6): canonical mutex prevents fork+prune race (#1405) ---
+
+  test("fork+prune race: canonical node is always readable after fork succeeds", async () => {
+    // Race scenario: fork and prune run concurrently on the same source chain.
+    // After both settle, if fork succeeded its canonical nodes must be readable.
+    const store = newStore();
+    const src = chainId("c-fork-prune-race-src");
+    const root = await store.put(src, { v: 1 }, []);
+    if (!root.ok || root.value === undefined) throw new Error("root put failed");
+    const rootNid = root.value.nodeId;
+
+    const dst = chainId("c-fork-prune-race-dst");
+
+    // Run fork and prune concurrently.
+    const [forkResult, pruneResult] = await Promise.all([
+      store.fork(rootNid, dst, "race"),
+      store.prune(src, { retainCount: 0, retainBranches: false }),
+    ]);
+
+    // prune must not crash.
+    expect(typeof pruneResult.ok).toBe("boolean");
+
+    if (forkResult.ok) {
+      // fork succeeded: all canonical nodes that fork copied markers for must exist.
+      const head = await store.head(dst);
+      expect(head.ok).toBe(true);
+      if (head.ok && head.value !== undefined) {
+        const got = await store.get(head.value.nodeId);
+        expect(got.ok).toBe(true);
+      }
+    } else {
+      // fork detected the race and failed with INTERNAL — acceptable outcome.
+      expect(forkResult.error.code).toBe("INTERNAL");
+    }
+  });
+
+  test("sequential fork then prune: source chain prune does not delete shared canonical", async () => {
+    // After fork completes, source prune must not delete canonical nodes that
+    // the fork chain now holds markers for. Canonical mutex ensures this.
+    const store = newStore();
+    const src = chainId("c-fork-seq-src");
+    const root = await store.put(src, { v: 10 }, []);
+    if (!root.ok || root.value === undefined) throw new Error();
+    const rootNid = root.value.nodeId;
+
+    // Fork first (sequential) — markers are written before prune starts.
+    const dst = chainId("c-fork-seq-dst");
+    const f = await store.fork(rootNid, dst, "sequential");
+    expect(f.ok).toBe(true);
+
+    // Prune the source chain completely.
+    await store.prune(src, { retainCount: 0, retainBranches: false });
+
+    // dst still holds the canonical node — must still be readable.
+    const got = await store.get(rootNid);
+    expect(got.ok).toBe(true);
+    if (got.ok) expect(got.value.data.v).toBe(10);
+  });
 });
