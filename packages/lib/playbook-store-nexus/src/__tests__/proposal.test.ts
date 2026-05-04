@@ -1,9 +1,15 @@
 import { describe, expect, test } from "bun:test";
 
-import type { PlaybookEvaluation, PlaybookProposal, TrajectoryRange } from "@koi/ace-types";
+import type {
+  PlaybookEvaluation,
+  PlaybookProposal,
+  StructuredPlaybook,
+  TrajectoryRange,
+} from "@koi/ace-types";
 import { createFakeNexusTransport } from "@koi/fs-nexus/testing";
 
 import { createNexusPlaybookProposalStore } from "../proposal.js";
+import { createNexusStructuredPlaybookStore } from "../structured.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -44,6 +50,31 @@ function makeEvaluation(id: string, proposalId: string): PlaybookEvaluation {
 
 function newStore() {
   return createNexusPlaybookProposalStore({ transport: createFakeNexusTransport() });
+}
+
+function makeStructuredPlaybook(id: string, version: number): StructuredPlaybook {
+  return {
+    id,
+    title: "Test Playbook",
+    sections: [],
+    tags: [],
+    source: "curated",
+    createdAt: 0,
+    updatedAt: 0,
+    sessionCount: 0,
+    version,
+  };
+}
+
+function makeProposalWithBase(
+  id: string,
+  playbookId: string,
+  baseVersion: number,
+): PlaybookProposal {
+  return {
+    ...makeProposal(id, playbookId),
+    baseVersion,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -210,5 +241,37 @@ describe("createNexusPlaybookProposalStore", () => {
     expect(forX.map((p) => p.id)).toEqual(["px1"]);
     const forY = await store.listProposals("pb-y");
     expect(forY.map((p) => p.id).sort()).toEqual(["py1", "py2"]);
+  });
+
+  // --- Fix 3: stale baseVersion rejection ---
+
+  test("recordProposal with matching baseVersion succeeds", async () => {
+    const transport = createFakeNexusTransport();
+    const spbStore = createNexusStructuredPlaybookStore({ transport });
+    const proposalStore = createNexusPlaybookProposalStore({ transport });
+    await spbStore.save(makeStructuredPlaybook("pb-ver5", 5));
+    // baseVersion=5 matches saved version=5 → should succeed
+    await expect(
+      proposalStore.recordProposal(makeProposalWithBase("p-v5", "pb-ver5", 5)),
+    ).resolves.toBeUndefined();
+  });
+
+  test("recordProposal with stale baseVersion throws containing 'version'", async () => {
+    const transport = createFakeNexusTransport();
+    const spbStore = createNexusStructuredPlaybookStore({ transport });
+    const proposalStore = createNexusPlaybookProposalStore({ transport });
+    await spbStore.save(makeStructuredPlaybook("pb-stale", 5));
+    // baseVersion=4 is stale vs current version=5 → must throw
+    await expect(
+      proposalStore.recordProposal(makeProposalWithBase("p-stale", "pb-stale", 4)),
+    ).rejects.toThrow("version");
+  });
+
+  test("recordProposal against never-saved playbook (fresh) succeeds", async () => {
+    // No structured playbook file exists → fresh proposal → allowed
+    const store = newStore();
+    await expect(
+      store.recordProposal(makeProposalWithBase("p-fresh", "pb-fresh", 0)),
+    ).resolves.toBeUndefined();
   });
 });

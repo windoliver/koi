@@ -1,4 +1,9 @@
-import type { PlaybookEvaluation, PlaybookProposal, PlaybookProposalStore } from "@koi/ace-types";
+import type {
+  PlaybookEvaluation,
+  PlaybookProposal,
+  PlaybookProposalStore,
+  StructuredPlaybook,
+} from "@koi/ace-types";
 
 import {
   encodeAceId,
@@ -39,6 +44,8 @@ export function createNexusPlaybookProposalStore(
   const proposalPath = (id: string): string => `${base}/proposals/${encodeAceId(id)}.json`;
   const evaluationPath = (proposalId: string): string =>
     `${base}/evaluations/${encodeAceId(proposalId)}.json`;
+  const structuredPath = (playbookId: string): string =>
+    `${base}/structured/${encodeAceId(playbookId)}.json`;
 
   return {
     async recordProposal(proposal: PlaybookProposal): Promise<void> {
@@ -46,6 +53,19 @@ export function createNexusPlaybookProposalStore(
       if (!vId.ok) throw new Error(vId.error.message);
       const vPb = validateAceId(proposal.playbookId, "Playbook ID");
       if (!vPb.ok) throw new Error(vPb.error.message);
+
+      // Stale-baseVersion check: if a structured playbook exists and its
+      // version does not match proposal.baseVersion, reject the proposal.
+      const spb = await readJson<StructuredPlaybook>(
+        transport,
+        structuredPath(proposal.playbookId),
+      );
+      if (!spb.ok) throw new Error(spb.error.message);
+      if (spb.value !== undefined && spb.value.version !== proposal.baseVersion) {
+        throw new Error(
+          `Proposal baseVersion ${proposal.baseVersion} does not match current structured playbook version ${spb.value.version}`,
+        );
+      }
 
       // Immutable audit record contract: if a proposal with the same id already
       // exists, it must be byte-identical. If it differs, reject the write.
