@@ -58,26 +58,51 @@ export interface DriftReport {
   readonly observationCount: number;
 }
 
+/**
+ * Outcome of a `detectDrift` call. Distinguishes a healthy "no drift" window
+ * from detector failure modes (invalid configuration, dropped observations
+ * leaving too few valid samples). Callers that previously treated `undefined`
+ * as "no drift" silently masked detector failures — the explicit shape lets
+ * them branch on `kind` and emit telemetry / fail closed.
+ */
+export type DetectionResult =
+  | { readonly kind: "drift"; readonly report: DriftReport }
+  | {
+      readonly kind: "no-drift";
+      readonly observationCount: number;
+      readonly droppedCount: number;
+    }
+  | { readonly kind: "invalid-config"; readonly reason: string };
+
 // ---------------------------------------------------------------------------
 // Suggestion
 // ---------------------------------------------------------------------------
 
 /**
  * Recommended action.
- *  - `none`               — no drift / report missing.
- *  - `reclassify`         — single drift window: rewrite the artifact's
- *                           description to match observed usage.
+ *  - `none`               — no drift, detector failure, or no result yet.
+ *  - `reclassify`         — single drift window OR borderline divergence:
+ *                           rewrite the artifact's description to match
+ *                           observed usage.
  *  - `new-artifact`       — drift has persisted across multiple windows
- *                           (`stableWindows ≥ 2`) AND severity is high
- *                           (`≥ 0.8`); fork a new specialized artifact.
+ *                           (`stableWindows ≥ 2`) AND raw average
+ *                           divergence is high (`≥ 0.85`, well above the
+ *                           detection threshold). Fork a new specialized
+ *                           artifact. Gated on raw divergence, NOT on
+ *                           saturated severity, so traffic volume alone
+ *                           cannot trigger irreversible artifact splits.
  */
 export type ExaptationSuggestion =
   | { readonly kind: "none" }
   | { readonly kind: "reclassify"; readonly severity: number }
   | { readonly kind: "new-artifact"; readonly severity: number };
 
-/** Severity threshold above which stable drift implies forking. */
-const NEW_ARTIFACT_SEVERITY_THRESHOLD = 0.8;
+/**
+ * Raw average-divergence threshold above which stable drift is "strong enough"
+ * to warrant forking a new artifact. Set well above `divergenceThreshold` so
+ * minimum-threshold drift cannot escalate via volume alone.
+ */
+const NEW_ARTIFACT_DIVERGENCE_THRESHOLD = 0.85;
 /** Number of independent drift windows required to call drift "stable". */
 const STABLE_WINDOW_COUNT = 2;
 
@@ -87,57 +112,91 @@ const STABLE_WINDOW_COUNT = 2;
 
 /**
  * Detect purpose drift from a sliding window of observations for a single
- * artifact. Returns `undefined` when any criterion is unmet OR when input
- * is malformed (non-finite scores, out-of-range thresholds, etc.).
+ * artifact.
  *
- * Validation is deliberately silent — bad input never produces a poisoned
- * `DriftReport` (with `NaN` fields or saturated severity from divide-by-zero).
- * Callers that want loud failure should pre-validate.
+ * Returns a `DetectionResult` discriminated union:
+ *   - `kind: "drift"`          — drift report ready for `suggestAction`.
+ *   - `kind: "no-drift"`       — healthy window; carries `droppedCount` so
+ *                                callers can alert if dropped > tolerated.
+ *   - `kind: "invalid-config"` — thresholds rejected; carries human reason.
+ *
+ * Bad observations (non-finite scores, empty agentId) are filtered, not
+ * fatal — a single corrupt sample must not blind the whole window.
  */
 export function detectDrift(
   observations: readonly UsagePurposeObservation[],
   thresholds: ExaptationThresholds,
-): DriftReport | undefined {
-  if (!areThresholdsValid(thresholds)) return undefined;
+): DetectionResult {
+  const configError = describeInvalidThresholds(thresholds);
+  if (configError !== undefined) {
+    return { kind: "invalid-config", reason: configError };
+  }
 
   // Filter, don't fail-closed: a single malformed observation must not
   // suppress the whole drift window. Bad inputs are dropped, the rest
   // are scored against the same thresholds.
   const valid = observations.filter(isObservationValid);
-  if (valid.length < thresholds.minObservations) return undefined;
+  const droppedCount = observations.length - valid.length;
+
+  const noDrift = (): DetectionResult => ({
+    kind: "no-drift",
+    observationCount: valid.length,
+    droppedCount,
+  });
+
+  if (valid.length < thresholds.minObservations) return noDrift();
 
   const avgDivergence = computeAverageDivergence(valid);
-  if (avgDivergence < thresholds.divergenceThreshold) return undefined;
+  if (avgDivergence < thresholds.divergenceThreshold) return noDrift();
 
   const divergentAgents = countDivergentAgents(valid, thresholds);
-  if (divergentAgents < thresholds.minDivergentAgents) return undefined;
+  if (divergentAgents < thresholds.minDivergentAgents) return noDrift();
 
   const severity = computeSeverity(avgDivergence, divergentAgents, valid.length, thresholds);
 
   return {
-    kind: "purpose_drift",
-    severity,
-    avgDivergence,
-    divergentAgents,
-    observationCount: valid.length,
+    kind: "drift",
+    report: {
+      kind: "purpose_drift",
+      severity,
+      avgDivergence,
+      divergentAgents,
+      observationCount: valid.length,
+    },
   };
 }
 
 /**
- * Map a (possibly-undefined) drift report to a recommended action,
+ * Map a detection result (or a bare `DriftReport`) to a recommended action,
  * factoring in how many prior drift windows have already fired for the
  * same artifact (stability evidence).
+ *
+ * `new-artifact` is gated on raw `avgDivergence ≥ NEW_ARTIFACT_DIVERGENCE_THRESHOLD`
+ * (NOT on saturated severity). With the default detection threshold of 0.7 and
+ * the fork threshold of 0.85, drift that just barely clears detection cannot
+ * escalate to "fork" purely by accumulating more observations or agents.
  */
 export function suggestAction(
-  report: DriftReport | undefined,
+  input: DetectionResult | DriftReport | undefined,
   stableWindows: number,
 ): ExaptationSuggestion {
+  const report = extractReport(input);
   if (report === undefined) return { kind: "none" };
 
-  if (stableWindows >= STABLE_WINDOW_COUNT && report.severity >= NEW_ARTIFACT_SEVERITY_THRESHOLD) {
+  if (
+    stableWindows >= STABLE_WINDOW_COUNT &&
+    report.avgDivergence >= NEW_ARTIFACT_DIVERGENCE_THRESHOLD
+  ) {
     return { kind: "new-artifact", severity: report.severity };
   }
   return { kind: "reclassify", severity: report.severity };
+}
+
+function extractReport(input: DetectionResult | DriftReport | undefined): DriftReport | undefined {
+  if (input === undefined) return undefined;
+  if ("kind" in input && input.kind === "drift") return input.report;
+  if ("kind" in input && input.kind === "purpose_drift") return input;
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,14 +211,19 @@ function isUnitInterval(value: number): boolean {
   return Number.isFinite(value) && value >= 0 && value <= 1;
 }
 
-function areThresholdsValid(t: ExaptationThresholds): boolean {
-  return (
-    isPositiveInteger(t.minObservations) &&
-    isPositiveInteger(t.minDivergentAgents) &&
-    isPositiveInteger(t.minObservationsPerAgent) &&
-    isUnitInterval(t.divergenceThreshold) &&
-    isUnitInterval(t.confidenceWeight)
-  );
+/** Returns a human reason when thresholds are invalid, or undefined when OK. */
+function describeInvalidThresholds(t: ExaptationThresholds): string | undefined {
+  if (!isPositiveInteger(t.minObservations))
+    return `minObservations must be a positive integer (got ${String(t.minObservations)})`;
+  if (!isPositiveInteger(t.minDivergentAgents))
+    return `minDivergentAgents must be a positive integer (got ${String(t.minDivergentAgents)})`;
+  if (!isPositiveInteger(t.minObservationsPerAgent))
+    return `minObservationsPerAgent must be a positive integer (got ${String(t.minObservationsPerAgent)})`;
+  if (!isUnitInterval(t.divergenceThreshold))
+    return `divergenceThreshold must be in [0, 1] (got ${String(t.divergenceThreshold)})`;
+  if (!isUnitInterval(t.confidenceWeight))
+    return `confidenceWeight must be in [0, 1] (got ${String(t.confidenceWeight)})`;
+  return undefined;
 }
 
 function isObservationValid(o: UsagePurposeObservation): boolean {

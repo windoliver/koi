@@ -20,10 +20,10 @@ This package provides:
 
 | Function | Returns | Role |
 |---|---|---|
-| `tokenize` | `ReadonlySet<string>` | Lowercased keyword set; drops stopwords + tokens shorter than 3 chars |
+| `tokenize` | `ReadonlySet<string>` | Lowercased keyword set; drops stopwords + tokens shorter than 3 chars; splits snake_case / camelCase / acronym boundaries |
 | `computeJaccardDistance` | `number ∈ [0,1]` | Set distance between two token sets |
-| `detectDrift` | `DriftReport \| undefined` | Three-criteria detector over a window of observations |
-| `suggestAction` | `ExaptationSuggestion` | Maps a report (+ stable-window count) to `none` \| `reclassify` \| `new-artifact` |
+| `detectDrift` | `DetectionResult` | Discriminated union: `drift` / `no-drift` / `invalid-config` |
+| `suggestAction` | `ExaptationSuggestion` | Maps a result (+ stable-window count) to `none` \| `reclassify` \| `new-artifact` |
 
 This package **does not** observe tool calls itself. Upstream observers (a future middleware in `@koi/forge-tools` or `@koi/crystallize`) feed `UsagePurposeObservation`s and consume the report.
 
@@ -58,11 +58,12 @@ Severity ∈ [0, 1]: scales with how broadly and how strongly the artifact has d
 
 | Inputs | Suggestion |
 |---|---|
-| `report = undefined` | `none` |
+| `result.kind ≠ "drift"` (no-drift, invalid-config, undefined) | `none` |
 | Single drift window (`stableWindows < 2`) | `reclassify` — rewrite the artifact's description to match observed usage |
-| `stableWindows ≥ 2` AND `severity ≥ 0.8` | `new-artifact` — fork a specialized variant; the drift is a real second use case |
+| `stableWindows ≥ 2` AND `avgDivergence ≥ 0.85` | `new-artifact` — fork a specialized variant; the drift is a real second use case |
+| `stableWindows ≥ 2` AND `avgDivergence < 0.85` | `reclassify` — drift exists but isn't strong enough to justify forking |
 
-The two-window stability gate prevents a single noisy window from triggering speculative artifact creation.
+`new-artifact` is gated on **raw `avgDivergence`**, not on saturated `severity`. With detection threshold `0.7` and fork threshold `0.85`, drift that barely clears detection cannot escalate to "fork" purely by accumulating more observations or agents over time.
 
 ---
 
@@ -88,11 +89,16 @@ const divergence = computeJaccardDistance(description, usage);
 // 2. Push observations into a per-artifact buffer (bounded by the caller).
 const observations = [/* { agentId, contextText, divergenceScore, observedAt } */];
 
-// 3. Detect.
-const report = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+// 3. Detect — branch on kind to distinguish detector failure from "no drift".
+const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+switch (result.kind) {
+  case "invalid-config": /* alert: thresholds rejected */; break;
+  case "no-drift":       /* result.droppedCount > N → alert telemetry */; break;
+  case "drift":          /* see step 4 */; break;
+}
 
 // 4. Decide. `stableWindows` is incremented by the caller across detection cycles.
-const action = suggestAction(report, stableWindows);
+const action = suggestAction(result, stableWindows);
 switch (action.kind) {
   case "none":         break;
   case "reclassify":   /* update artifact description */ break;

@@ -9,6 +9,7 @@
  */
 
 export type {
+  DetectionResult,
   DriftReport,
   ExaptationSuggestion,
   ExaptationThresholds,
