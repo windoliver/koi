@@ -1068,7 +1068,10 @@ describe("Golden: @koi/context-manager", () => {
     test("subscriber throw does not break swap or block other subscribers", () => {
       const def = createContextEngine();
       const pass = createPassthroughContextEngine();
-      const ctrl = createContextEngineSwapController(def);
+      const seenErrors: unknown[] = [];
+      const ctrl = createContextEngineSwapController(def, {
+        onListenerError: (err) => seenErrors.push(err),
+      });
 
       const seenByGood: string[] = [];
       const errSpy = spyOn(console, "error").mockImplementation(() => {});
@@ -1086,6 +1089,7 @@ describe("Golden: @koi/context-manager", () => {
       expect(swap?.to.name).toBe("@koi/context-manager/passthrough");
       expect(ctrl.current()).toBe(pass);
       expect(seenByGood).toEqual(["@koi/context-manager/passthrough"]);
+      expect(seenErrors.length).toBe(1);
       errSpy.mockRestore();
     });
   });
