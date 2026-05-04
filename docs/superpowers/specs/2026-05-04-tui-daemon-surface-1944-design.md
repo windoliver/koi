@@ -59,8 +59,16 @@ Six features per the issue:
 
 1. **Status-line indicator** — supervisor health badge + worker counts on
    right side of `StatusBar.tsx`. Hidden when no supervisor attached.
-2. **Alert toasts** — `crashed`, `quarantined`, and ok→degraded/unhealthy
-   transitions. Dedup per `(sessionId, workerId, kind)` with TTL 30s.
+2. **Alert toasts** — toasts triggered by signals the public API actually
+   exposes:
+   - `WorkerEvent.crashed` (push, from `watchAll()`).
+   - `WorkerSnapshot.state === "quarantined"` transition (derived from
+     `health()` polls — the L0 `WorkerEvent` union does not include a
+     `quarantined` push event today; we infer the transition by diffing
+     consecutive health snapshots).
+   - `WorkerSnapshot.state === "restarting"` transition (same derivation).
+   - `health().status` ok→degraded / ok→unhealthy.
+   Dedup per `(workerId, signalKind)` with TTL 30s.
 3. **`/supervisor`** — full-screen, read-only: health + reasons, worker
    table, last-50 event feed, backend kinds. Mutation actions deferred.
 4. **`/bg`** — full-screen: `FileSessionRegistry.list()` merged with live
@@ -68,9 +76,16 @@ Six features per the issue:
    kill confirm prompt that routes through the bridge.
 5. **Spawn tool output enrichment** — show `workerId`, isolation mode,
    backend kind on Spawn tool result rendering.
-6. **Session log inline events** — supervisor lifecycle events (`started`,
-   `crashed`, `restarting`, `quarantined`, `stopped`) rendered inline in
-   the session log with the subagent name.
+6. **Session log inline events** — supervisor signals rendered inline in
+   the session log with the subagent name. Only signals the public API
+   surfaces today:
+   - `WorkerEvent.started` (push)
+   - `WorkerEvent.exited` (push) — with `code` + `state`
+   - `WorkerEvent.crashed` (push) — with `error.message`
+   - **Inferred** `restarting` and `quarantined` from health-snapshot
+     diffs (derived state, marked clearly in the feed entry as derived
+     so operators don't mistake it for a discrete event timestamp).
+   No "stopped" entry — the L0 event union models stop as `exited`.
 
 ## Architecture
 
@@ -267,14 +282,16 @@ interface BgSessionRow {
   readonly version: number;           // for respawn-race detection on kill
   readonly signaledAt: number | null; // operator kill intent marker
   /**
-   * `pending`     — no heartbeat yet AND within `2 * heartbeatDeadlineMs`
-   *                 of `startedAt` (worker still booting, OR registry-only
-   *                 entry that has not registered with the supervisor yet).
-   * `ok`          — heartbeat received within deadline.
-   * `stale`       — heartbeat older than deadline but under 2× deadline.
-   * `timeout`     — heartbeat older than 2× deadline.
-   * `terminating` — record status is `terminating`; freshness shown as
-   *                 yellow "kill in flight" with `signaledAt` age.
+   * `pending`     — heartbeat opt-in, no heartbeat yet, within grace.
+   * `ok`          — heartbeat opt-in, heartbeat received within deadline.
+   * `stale`       — heartbeat opt-in, heartbeat older than deadline.
+   * `timeout`     — heartbeat opt-in, heartbeat past 2× deadline interval.
+   * `unmonitored` — heartbeat NOT opted in (permanent: heartbeat fields
+   *                 absent from the supervisor's published health snapshot).
+   *                 Renders neutral. NEVER colored as a failure — absence
+   *                 of heartbeat ≠ unhealthy.
+   * `terminating` — record status is `terminating`; yellow "kill in
+   *                 flight" with `signaledAt` age.
    * `detached`    — record status is `detached`; freshness neutral.
    * `terminal`    — record status is `exited` or `crashed`; freshness off.
    */
@@ -283,6 +300,7 @@ interface BgSessionRow {
     | "ok"
     | "stale"
     | "timeout"
+    | "unmonitored"
     | "terminating"
     | "detached"
     | "terminal";
@@ -430,15 +448,24 @@ This rules out the failure mode where a dead bridge silently presents as
 
 ### Toast triggers (bridge maps WorkerEvent → toast)
 
-| Trigger | Message |
-|---------|---------|
-| `WorkerEvent.crashed` | `⚠ worker <agentName> crashed` |
-| `WorkerEvent.quarantined` | `⚠ worker <agentName> quarantined after <N> restarts` |
-| `health.status` ok→degraded | `⚠ supervisor degraded: <first reason>` |
-| `health.status` ok→unhealthy | `⚠ supervisor unhealthy: <first reason>` |
+| Trigger | Source | Message |
+|---------|--------|---------|
+| `WorkerEvent.crashed` | push | `⚠ worker <agentName> crashed: <error.message>` |
+| `WorkerSnapshot.state` `*→quarantined` | health diff | `⚠ worker <agentName> quarantined after <restartCount> restarts` |
+| `WorkerSnapshot.state` `running→restarting` | health diff | (info, not warning) `↻ worker <agentName> restarting` |
+| `health.status` ok→degraded | health diff | `⚠ supervisor degraded: <first reason>` |
+| `health.status` ok→unhealthy | health diff | `⚠ supervisor unhealthy: <first reason>` |
 
-Dedup key: `${sessionId}:${workerId}:${kind}`. TTL 30s. Reuses existing
+Dedup key: `${workerId}:${signalKind}`. TTL 30s. Reuses existing
 governance dedup helper if extractable; otherwise a tiny local map.
+
+Health-diff inference rule: bridge keeps the previous `SupervisorHealth`
+snapshot in memory and computes per-worker state transitions on each
+poll. A toast fires once per transition into `quarantined`/`restarting`,
+not on every poll while in that state. If a worker disappears from the
+snapshot between polls (e.g., quarantine → terminate), the bridge does
+not synthesize a fake event — the next `WorkerEvent.exited`/`crashed`
+push is authoritative.
 
 ### Freshness computation
 
@@ -457,42 +484,56 @@ if (status === "terminating") return "terminating";
 
 // status is "starting" or "running" → derive from per-worker health snapshot
 const workerSnap = health.workers.find(w => w.workerId === row.workerId);
-const lastHeartbeatAt   = workerSnap?.lastHeartbeatAt ?? null;
+
+// Workers can opt out of heartbeat monitoring (BackendHints.heartbeat:false).
+// In that case `lastHeartbeatAt` AND `heartbeatDeadlineAt` are permanently
+// undefined on the snapshot — NOT a transient pre-first-heartbeat state.
+// We can distinguish "opted out" from "opted in but not yet beating" by
+// checking the opt-in flag exposed on the worker snapshot. The snapshot
+// must carry `heartbeatOptedIn: boolean` (or equivalent) for this to work;
+// if not yet present in L0, this PR adds it as a small adjacent change to
+// the SupervisorHealth.workers[] schema (one boolean, well-scoped).
+const optedIn = workerSnap?.heartbeatOptedIn ?? false;
+if (!optedIn) return "unmonitored";
+
+const lastHeartbeatAt    = workerSnap?.lastHeartbeatAt ?? null;
 const heartbeatDeadlineAt = workerSnap?.heartbeatDeadlineAt ?? null;
 
 if (heartbeatDeadlineAt === null || lastHeartbeatAt === null) {
-  // Worker present in registry but not yet in supervisor.health (rare race
-  // window between register and first heartbeat-config publish), OR pre-
-  // first-heartbeat. Allow a grace window from startedAt.
-  const PENDING_GRACE_MS = 30_000;  // explicit constant, not a deadline guess
+  // Opted in but no heartbeat yet (transient; bounded by deadline once set).
+  const PENDING_GRACE_MS = 30_000;
   if (now - startedAt < PENDING_GRACE_MS) return "pending";
   return "timeout";
 }
 
-if (now <= heartbeatDeadlineAt)    return "ok";
-// Past the deadline. Use the publishing supervisor's own deadline interval
-// to derive a stale window: 2× of (deadlineAt - lastHeartbeatAt).
+if (now <= heartbeatDeadlineAt) return "ok";
 const interval = heartbeatDeadlineAt - lastHeartbeatAt;
 if (now - heartbeatDeadlineAt < interval) return "stale";
 return "timeout";
 ```
 
 Notes:
-- The reducer reads the per-worker entry by `workerId`, never assumes a
-  shared global deadline.
-- Pending grace is a fixed 30s constant, not a derived multiple of an
-  unknown interval. Documented in code so future tuning is explicit.
-- If the L0 contract grows a published global deadline later, swap the
-  derivation in one place.
+- Heartbeat is opt-in on the daemon side via
+  `WorkerSpawnRequest.backendHints.heartbeat`. The TUI MUST surface
+  unmonitored workers as such — coloring them red on telemetry absence
+  is a false alarm.
+- This PR adds `heartbeatOptedIn: boolean` to the `WorkerSnapshot` shape
+  in `@koi/core/daemon` (L0). One field, well-scoped, derived directly
+  from the existing `WorkerSpawnRequest.backendHints.heartbeat` plumbing.
+  Without it, "unmonitored vs pending vs broken" is indistinguishable
+  from outside the supervisor.
+- Pending grace is a fixed 30s constant.
+- Stale window derived from `(deadlineAt - lastHeartbeatAt)`.
 
 Render mapping in `BgView`:
 
 | Freshness | Color | Meaning |
 |-----------|-------|---------|
-| `pending` | neutral (gray) | booting, no heartbeat yet |
+| `pending` | neutral (gray) | heartbeat opt-in, no heartbeat yet, within grace |
 | `ok` | green | heartbeat fresh |
 | `stale` | yellow | heartbeat lagging |
 | `timeout` | red | heartbeat past 2× deadline (live worker, dead-or-stuck) |
+| `unmonitored` | neutral (gray, italic) | heartbeat not opted in — health not knowable from telemetry |
 | `terminating` | yellow + spinner | kill in flight (`signaledAt` age in tooltip) |
 | `detached` | blue | tmux/remote backend let go; needs reattach |
 | `terminal` | gray | `exited`/`crashed`; row kept until retention sweep |
@@ -594,25 +635,39 @@ interface TailerState {
 
 Loop:
 
-1. **Initial open** — `stat(logPath)`; record `(ino, dev, size)`. Read last
-   1000 lines via reverse-chunked read; set `readOffset = size`.
-2. **Watch** — `fs.watch(logPath)`. On any event:
-   - `stat(logPath)` again. Three cases:
+1. **Initial open** — `stat(logPath)`. Two outcomes:
+   - **success** → record `(ino, dev, size)`; read last 1000 lines via
+     reverse-chunked read; set `readOffset = size`. Proceed to step 2.
+   - **ENOENT** → enter `waiting` state with banner `… waiting for log
+     file …`. Poll `stat` every 250ms (no time limit — `starting`
+     workers can pre-register before the backend opens stdout). On first
+     successful `stat`, behave as initial open + render `--- log opened ---`
+     banner. `Esc` exits the waiting state.
+2. **Watch** — `fs.watch(logPath)` AND a continuous **liveness watchdog**
+   (separate `setInterval` at 1s). On any `fs.watch` event OR every
+   watchdog tick:
+   - `stat(logPath)`. Resolve via this case table:
      | Condition | Meaning | Action |
      |-----------|---------|--------|
      | `(ino, dev)` unchanged AND `size >= readOffset` | normal append | read `[readOffset, size)`; advance offset |
-     | `(ino, dev)` unchanged AND `size < readOffset` | truncation in place | reset `readOffset = 0`, render banner `--- log truncated ---`, read from start |
-     | `(ino, dev)` changed | file replaced (rotation or restart) | close prior fd, reopen, render banner `--- log rotated ---`, reset offset to 0, read full new file |
-     | `stat` ENOENT | file deleted; await recreate | poll every 250ms for up to 5s; on recreate go to "file replaced" branch |
-3. **Fallback** — if `fs.watch` fires no events within 5s of opening,
-   switch to `setInterval(stat+read)` at 500ms using the same three-case
-   resolution above.
+     | `(ino, dev)` unchanged AND `size < readOffset` | truncation in place | reset `readOffset = 0`, render `--- log truncated ---`, read from start |
+     | `(ino, dev)` changed | rotation/restart | close prior fd, reopen, render `--- log rotated ---`, reset offset to 0, read full new file, **rebind `fs.watch` to the new inode** (the prior watch handle silently went dead the moment the file was replaced) |
+     | `stat` ENOENT | file deleted; await recreate | continue 250ms `stat` poll until recreate, then resolve as rotation |
+3. **Watchdog never expires** — unlike the previous spec, the 1s `stat`
+   sweep runs for the lifetime of the component. `fs.watch` is treated as
+   an optimization (low-latency notify), not the primary signal. This
+   closes the documented `fs.watch` failure modes:
+   - watch handle silently drops after rename on macOS HFS+/APFS,
+   - watch never fires for tail-only writes when the backend uses
+     `O_APPEND` semantics that some kernels coalesce.
 4. **Cleanup on Esc / unmount** — close fd; clear `fs.watch` handle; clear
-   fallback interval. Component-local ring buffer (cap 1000 lines) is
-   discarded with the component.
+   watchdog interval; clear ENOENT poll if active. Ring buffer (cap 1000
+   lines) discarded with the component.
 
-Banners (`--- log truncated ---`, `--- log rotated ---`) render inline so
-operators see the discontinuity rather than a silent gap or duplicate.
+Banners render inline so operators see the discontinuity rather than a
+silent gap or duplicate. The watchdog overhead (a single `stat` per
+second per open tail) is negligible vs. the cost of a stalled tail in
+an incident.
 
 ## Hidden status-line
 
@@ -626,13 +681,14 @@ on the right side: governance segment, then supervisor segment, separator
 ### Unit tests (bun:test, colocated)
 
 - **`reduce.test.ts`** — new actions update slices; events ring buffer caps
-  at 50; bg row freshness boundaries cover all 7 outcomes (pending, ok,
-  stale, timeout, terminating, detached, terminal) including
-  `undefined`/`null` `lastHeartbeatAt`/`heartbeatDeadlineAt` grace
-  window, status-priority short-circuits for
-  `exited`/`crashed`/`detached`/`terminating`, per-worker lookup by
-  `workerId` (not a shared global deadline), and stale-interval
-  derivation from `(deadlineAt - lastHeartbeatAt)`.
+  at 50; bg row freshness boundaries cover all 8 outcomes (pending, ok,
+  stale, timeout, **unmonitored**, terminating, detached, terminal):
+  - heartbeat-opt-out worker → `unmonitored` (never `timeout`).
+  - heartbeat-opt-in pre-first-beat → `pending` for 30s grace, then
+    `timeout`.
+  - status-priority short-circuits for `exited`/`crashed`/`detached`/`terminating`.
+  - per-worker lookup by `workerId`.
+  - stale-interval derivation from `(deadlineAt - lastHeartbeatAt)`.
 - **`StatusBar.test.tsx`** — badge renders ◎/◑/● per `health.status` when
   bridge `live`; renders `◌ stale Ns` when bridge `stale`; segment hidden
   when `detached`; format `"3/5 workers"`.
@@ -644,14 +700,22 @@ on the right side: governance segment, then supervisor segment, separator
   status-specific hint; Enter dispatches `set_bg_tailing({ workerId })`
   using the row's workerId (never sessionId).
 - **`BgLogTail.test.tsx`** — initial reverse-tail produces last 1000 lines;
-  appended write extends buffer; truncation resets offset and renders
-  `--- log truncated ---`; inode change renders `--- log rotated ---` and
-  reads new file from start; `stat` ENOENT then recreate within 5s
-  resumes tail from new file; fs.watch silence for 5s switches to poll
-  fallback; unmount closes fd + clears watcher.
+  appended write extends buffer; truncation resets offset + renders
+  `--- log truncated ---`; inode change renders `--- log rotated ---`,
+  reads new file from start, **rebinds `fs.watch` to the new inode**;
+  `stat` ENOENT at startup enters `waiting` state (no time limit), then
+  resumes on first successful stat with `--- log opened ---` banner;
+  watchdog 1s `stat` sweep detects writes when fs.watch silently drops
+  (verified via spy on `fs.watch.close()` mid-stream); unmount closes
+  fd + clears watcher + clears watchdog interval + clears ENOENT poll.
 - **`daemon-bridge.test.ts`** —
   - `WorkerEvent.crashed` triggers `push_toast` + `push_supervisor_event`;
     same crash within 30s deduped to 1 toast.
+  - `WorkerSnapshot.state` `running→quarantined` (health diff) fires toast
+    once per transition; subsequent polls in `quarantined` do not retoast.
+  - `running→restarting` (health diff) fires info toast (not warning).
+  - Worker disappearing between health snapshots does not synthesize a
+    fake terminal event — only the next push event is authoritative.
   - `health` ok→degraded transition fires toast (not on every tick).
   - `requestKill` happy path: refreshes registry, calls
     `supervisor.stop(workerId, "user-requested")`, no toast.
@@ -723,6 +787,8 @@ calls. Existing daemon golden queries cover supervisor lifecycle.
 | Polling at 1s × 2 in idle TUI | Bridge stops polls when `attached:false` and on `close()`. Polls coexist with `watchAll`/`registry.watch` event streams as defense in depth, not duplicate work. |
 | `watchAll()` parked-iterator cancellation | Use the closed-sentinel race pattern proven in `attachRegistry` — never `await iter.return()`. |
 | `BackgroundSessionStatus` adds future variants | The slice mirrors the L0 union directly; if L0 widens, TS exhaustiveness in the freshness reducer catches it before runtime. |
+| Adjacent L0 addition: `WorkerSnapshot.heartbeatOptedIn` | New boolean on the published health snapshot. Mechanically derived from existing `WorkerSpawnRequest.backendHints.heartbeat` plumbing — no semantic change. Self-contained: one field, one schema bump, no migration. Without it, the TUI cannot distinguish "opted out" from "hung," which is the exact false-alarm risk this PR exists to avoid. |
+| Inferred state (quarantined/restarting toasts derived from health diffs) | Documented as derived in the feed entry; no synthetic event timestamps. If the L0 `WorkerEvent` union later grows discrete `quarantined`/`restarting` events, swap the derivation for the push event in one place. |
 | `fs.watch` macOS rename quirks | Fallback to `stat+read` polling at 500ms after 5s of no events. Cap tail buffer at 1000 lines. |
 | Spawn tool output needs `workerId` | Verify Spawn tool result schema during impl; thread `workerId`/`backendKind` through if missing. Small adjacent change if needed. |
 | Status-bar collision with `/governance` badge | Both render right-side; explicit ordering: governance first, supervisor second, separator `·`. Each segment self-elides. |
