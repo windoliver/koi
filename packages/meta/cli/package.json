@@ -89,6 +89,7 @@
     "@koi/middleware-permissions": "workspace:*",
     "@koi/nexus-client": "workspace:*",
     "@koi/nexus-delegation": "workspace:*",
+    "@koi/nexus-sandbox": "workspace:*",
     "@koi/permissions-nexus": "workspace:*",
     "@koi/middleware-plan-persist": "workspace:*",
     "@koi/middleware-planning": "workspace:*",

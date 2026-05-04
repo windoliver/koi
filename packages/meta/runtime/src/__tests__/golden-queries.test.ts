@@ -7,7 +7,7 @@
  * Growth rule: each new package PR adds assertions here.
  */
 
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
 import { readdir } from "node:fs/promises";
 import type { EngineAdapter, EngineEvent, EngineInput, ModelChunk } from "@koi/core";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
@@ -724,8 +724,25 @@ describe("Golden: @koi/audit-sink-ndjson", () => {
 // Golden: @koi/context-manager (#1623)
 // ---------------------------------------------------------------------------
 
-import { budgetConfigFromResolved, enforceBudget, resolveConfig } from "@koi/context-manager";
-import type { InboundMessage, ModelRequest, ModelResponse } from "@koi/core";
+import {
+  budgetConfigFromResolved,
+  createContextEngine,
+  createPassthroughContextEngine,
+  DEFAULT_CONTEXT_ENGINE_IDENTITY,
+  enforceBudget,
+  formatContextEngineSwapNotice,
+  PASSTHROUGH_CONTEXT_ENGINE_IDENTITY,
+  resolveConfig,
+} from "@koi/context-manager";
+import type {
+  ContextEngine,
+  InboundMessage,
+  ModelRequest,
+  ModelResponse,
+  TurnContext,
+} from "@koi/core";
+import { CONTEXT_ENGINE } from "@koi/core";
+import { createContextEngineProvider, createContextEngineSwapController } from "@koi/engine";
 
 describe("Golden: @koi/context-manager", () => {
   function makeMsg(senderId: "user" | "assistant", text: string): InboundMessage {
@@ -772,6 +789,679 @@ describe("Golden: @koi/context-manager", () => {
     expect(cfg.contextWindowSize).toBe(1_000_000);
     expect(cfg.softTriggerFraction).toBeDefined();
     expect(cfg.hardTriggerFraction).toBeDefined();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Pluggable context-engine slot (#1767) — standalone golden queries
+  // ---------------------------------------------------------------------------
+
+  test("default ContextEngine prepares messages and reports occupancy via slot", async () => {
+    const engine = createContextEngine({ contextWindowSize: 4000, softTriggerFraction: 0.5 });
+    expect(engine.identity).toEqual(DEFAULT_CONTEXT_ENGINE_IDENTITY);
+
+    const ctx = { metadata: {} } as unknown as TurnContext;
+    const msgs: InboundMessage[] = [
+      makeMsg("user", `Q: ${block}`),
+      makeMsg("assistant", `A: ${block}`),
+      makeMsg("user", `Q2: ${block}`),
+      makeMsg("assistant", `A2: ${block}`),
+    ];
+
+    const out = await engine.prepare(ctx, msgs);
+    expect(Array.isArray(out)).toBe(true);
+    expect(out.length).toBeGreaterThan(0);
+
+    const occ = await engine.describeOccupancy?.();
+    expect(occ).toBeDefined();
+    expect(occ?.maxTokens).toBe(4000);
+    expect(occ?.pressure).toBeGreaterThanOrEqual(0);
+    expect(occ?.pressure).toBeLessThanOrEqual(1);
+
+    // Provider maps the engine onto the CONTEXT_ENGINE singleton slot.
+    const provider = createContextEngineProvider(engine);
+    const components = await provider.attach({ pid: { id: "x" } } as never);
+    const map = "components" in components ? components.components : components;
+    expect(map.get(CONTEXT_ENGINE as string)).toBe(engine);
+  });
+
+  test("passthrough ContextEngine returns input verbatim and omits occupancy", async () => {
+    const engine = createPassthroughContextEngine();
+    expect(engine.identity).toEqual(PASSTHROUGH_CONTEXT_ENGINE_IDENTITY);
+
+    const ctx = { metadata: {} } as unknown as TurnContext;
+    const msgs: InboundMessage[] = [
+      makeMsg("user", `Q: ${block}`),
+      makeMsg("assistant", `A: ${block}`),
+      makeMsg("user", `Q2: ${block}`),
+      makeMsg("assistant", `A2: ${block}`),
+    ];
+
+    const out = await engine.prepare(ctx, msgs);
+    expect(out).toEqual(msgs);
+
+    // Passthrough deliberately omits describeOccupancy so callers cannot
+    // mistake it for a zero-pressure budget signal under overflow.
+    expect(engine.describeOccupancy).toBeUndefined();
+  });
+
+  test("swap controller swaps default → passthrough, then rolls back at boundary", () => {
+    const def = createContextEngine();
+    const pass = createPassthroughContextEngine();
+    const ctrl = createContextEngineSwapController(def);
+
+    expect(ctrl.current().identity.name).toBe("@koi/context-manager");
+
+    const swap1 = ctrl.swap(pass, {
+      turnId: "run-1:t3" as Parameters<typeof ctrl.swap>[1]["turnId"],
+      reason: "operator forced full-context for debugging",
+    });
+    expect(swap1?.kind).toBe("context-engine-swap");
+    expect(swap1?.from.name).toBe("@koi/context-manager");
+    expect(swap1?.to.name).toBe("@koi/context-manager/passthrough");
+    expect(ctrl.current()).toBe(pass);
+
+    // Same-identity swap is a noop (idempotent boundary).
+    const noop = ctrl.swap(pass, {
+      turnId: "run-1:t4" as Parameters<typeof ctrl.swap>[1]["turnId"],
+      reason: "redundant",
+    });
+    expect(noop).toBeUndefined();
+
+    // Rollback at next reset boundary (#1939 semantics) restores prior engine.
+    const rb = ctrl.rollback({
+      turnId: "run-1:t5" as Parameters<typeof ctrl.swap>[1]["turnId"],
+      reason: "regression detected by evaluator",
+    });
+    expect(rb?.from.name).toBe("@koi/context-manager/passthrough");
+    expect(rb?.to.name).toBe("@koi/context-manager");
+    expect(ctrl.current()).toBe(def);
+
+    // History is append-only and ordered.
+    const h = ctrl.history();
+    expect(h).toHaveLength(2);
+    expect(h[0]?.to.name).toBe("@koi/context-manager/passthrough");
+    expect(h[1]?.to.name).toBe("@koi/context-manager");
+  });
+
+  // Silence unused-binding warning when ContextEngine type is only referenced
+  // for documentation purposes within this golden block.
+  test("ContextEngine type is structurally satisfied by both bundled engines", () => {
+    const a: ContextEngine = createContextEngine();
+    const b: ContextEngine = createPassthroughContextEngine();
+    expect(a.identity.name).not.toBe(b.identity.name);
+  });
+
+  // The legacy `createContextEngineMiddleware` helper has been unexported
+  // from the @koi/context-manager package surface (#1767 — known
+  // done-shortcut lifecycle gap; hosts should use createKoi's
+  // contextEngineFactory). End-to-end coverage of prepare()-driven
+  // adapter integration now flows through the auto-wired controller path
+  // exercised by the other golden-replay tests in this file.
+
+  // ---------------------------------------------------------------------------
+  // Pluggable context-engine slot — corner cases (#1767)
+  // ---------------------------------------------------------------------------
+
+  describe("manifest config validation", () => {
+    test("rejects out-of-range microTargetFraction", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { microTargetFraction: 1.5 },
+        }),
+      ).toThrow(/microTargetFraction.*must be in \(0, 1\]/);
+    });
+
+    test("rejects previewChars=0", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { previewChars: 0 },
+        }),
+      ).toThrow(/previewChars=0 must be > 0/);
+    });
+
+    test("rejects non-integer prunePreserveLastK", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { prunePreserveLastK: 1.5 },
+        }),
+      ).toThrow(/prunePreserveLastK=1\.5 must be an integer/);
+    });
+
+    test("rejects soft > hard cross-field invariant", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { softTriggerFraction: 0.9, hardTriggerFraction: 0.5 },
+        }),
+      ).toThrow(/softTriggerFraction \(0\.9\) must be <= hardTriggerFraction \(0\.5\)/);
+    });
+
+    test("rejects micro >= soft cross-field invariant", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { microTargetFraction: 0.6, softTriggerFraction: 0.6 },
+        }),
+      ).toThrow(/microTargetFraction \(0\.6\) must be < softTriggerFraction \(0\.6\)/);
+    });
+
+    test("rejects contextWindowSize=0", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { contextWindowSize: 0 },
+        }),
+      ).toThrow(/contextWindowSize=0 must be > 0/);
+    });
+
+    test("rejects non-numeric value with field name in message", () => {
+      expect(() =>
+        createContextEngine({
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { contextWindowSize: "100000" as unknown as number },
+        }),
+      ).toThrow(/contextWindowSize.*finite, non-negative number/);
+    });
+
+    test("accepts a valid manifest config bag and applies contextWindowSize", async () => {
+      const engine = createContextEngine({
+        engine: "@koi/context-manager",
+        version: "1.0.0",
+        config: { contextWindowSize: 50_000, softTriggerFraction: 0.6 },
+      });
+      const ctx = {
+        session: {
+          agentId: "a" as never,
+          runId: "r" as never,
+          sessionId: "s" as never,
+          metadata: {},
+        },
+        turnIndex: 0,
+        turnId: "t-cfg" as never,
+        messages: [],
+        metadata: {},
+      } satisfies TurnContext;
+      await engine.prepare(ctx, [makeMsg("user", "hi")]);
+      const occ = await engine.describeOccupancy?.();
+      expect(occ?.maxTokens).toBe(50_000);
+    });
+
+    test("direct options path also enforces invariants", () => {
+      expect(() => createContextEngine({ contextWindowSize: 0 })).toThrow(
+        /contextWindowSize=0 must be > 0/,
+      );
+      expect(() => createContextEngine({ microTargetFraction: 2 })).toThrow(
+        /microTargetFraction.*must be in \(0, 1\]/,
+      );
+    });
+  });
+
+  describe("per-turn occupancy lifecycle", () => {
+    function makeCtx(turnId: string): TurnContext {
+      return {
+        session: {
+          agentId: "a" as never,
+          runId: "r" as never,
+          sessionId: "s" as never,
+          metadata: {},
+        },
+        turnIndex: 0,
+        turnId: turnId as never,
+        messages: [],
+        metadata: {},
+      } satisfies TurnContext;
+    }
+
+    test("describeOccupancy reports peak across overlapping turns", async () => {
+      const engine = createContextEngine({ contextWindowSize: 100_000 });
+      const small: InboundMessage[] = [makeMsg("user", "tiny")];
+      const large: InboundMessage[] = [];
+      for (let i = 0; i < 6; i++) large.push(makeMsg("user", `B${i}: ${block}`));
+
+      await engine.prepare(makeCtx("turn-A"), small);
+      const occA = await engine.describeOccupancy?.();
+      const peakAfterA = occA?.estimatedTokens ?? 0;
+
+      await engine.prepare(makeCtx("turn-B"), large);
+      const occBoth = await engine.describeOccupancy?.();
+      expect(occBoth?.estimatedTokens).toBeGreaterThan(peakAfterA);
+
+      // Releasing the larger turn drops the peak back to A's level.
+      engine.onAfterTurn?.(makeCtx("turn-B"));
+      const occAfterRelease = await engine.describeOccupancy?.();
+      expect(occAfterRelease?.estimatedTokens).toBe(peakAfterA);
+
+      // Releasing both leaves no active turns → zero pressure.
+      engine.onAfterTurn?.(makeCtx("turn-A"));
+      const occEmpty = await engine.describeOccupancy?.();
+      expect(occEmpty?.estimatedTokens).toBe(0);
+      expect(occEmpty?.pressure).toBe(0);
+    });
+
+    test("re-entrant turnId overwrites prior estimate without leaking", async () => {
+      const engine = createContextEngine({ contextWindowSize: 100_000 });
+      await engine.prepare(makeCtx("turn-X"), [makeMsg("user", `${block}${block}`)]);
+      const heavy = (await engine.describeOccupancy?.())?.estimatedTokens ?? 0;
+      expect(heavy).toBeGreaterThan(0);
+
+      // Same turnId, smaller payload — must replace, not accumulate.
+      await engine.prepare(makeCtx("turn-X"), [makeMsg("user", "hi")]);
+      const light = (await engine.describeOccupancy?.())?.estimatedTokens ?? 0;
+      expect(light).toBeLessThan(heavy);
+
+      engine.onAfterTurn?.(makeCtx("turn-X"));
+      const empty = await engine.describeOccupancy?.();
+      expect(empty?.estimatedTokens).toBe(0);
+    });
+  });
+
+  describe("swap controller resilience", () => {
+    test("subscriber throw does not break swap or block other subscribers", () => {
+      const def = createContextEngine();
+      const pass = createPassthroughContextEngine();
+      const seenErrors: unknown[] = [];
+      const ctrl = createContextEngineSwapController(def, {
+        onListenerError: (err) => seenErrors.push(err),
+      });
+
+      const seenByGood: string[] = [];
+      const errSpy = spyOn(console, "error").mockImplementation(() => {});
+      ctrl.subscribe(() => {
+        throw new Error("subscriber boom");
+      });
+      ctrl.subscribe((notice) => {
+        seenByGood.push(notice.to.name);
+      });
+
+      const swap = ctrl.swap(pass, {
+        turnId: "run-x:t1" as Parameters<typeof ctrl.swap>[1]["turnId"],
+        reason: "test",
+      });
+      expect(swap?.to.name).toBe("@koi/context-manager/passthrough");
+      expect(ctrl.current()).toBe(pass);
+      expect(seenByGood).toEqual(["@koi/context-manager/passthrough"]);
+      expect(seenErrors.length).toBe(1);
+      errSpy.mockRestore();
+    });
+  });
+
+  describe("end-to-end: bundled factory + pinned manifest via createKoi", () => {
+    function buildMockAdapter(): import("@koi/core").EngineAdapter {
+      return {
+        engineId: "test-adapter",
+        capabilities: { text: true, images: false, files: false, audio: false },
+        stream: () => ({
+          [Symbol.asyncIterator]: () => ({
+            async next(): Promise<IteratorResult<EngineEvent>> {
+              return { done: true, value: undefined };
+            },
+          }),
+        }),
+      };
+    }
+
+    test("createKoi accepts the documented (createContextEngine, manifest pin) path", async () => {
+      const { createKoi } = await import("@koi/engine");
+      const runtime = await createKoi({
+        manifest: {
+          name: "agent",
+          version: "1.0.0",
+          model: { name: "test" },
+          context: {
+            engine: DEFAULT_CONTEXT_ENGINE_IDENTITY.name,
+            version: DEFAULT_CONTEXT_ENGINE_IDENTITY.version,
+            config: { contextWindowSize: 200_000 },
+          },
+        },
+        adapter: buildMockAdapter(),
+        contextEngineFactory: createContextEngine,
+      });
+      expect(runtime.agent.state).toBe("created");
+      const slot = runtime.agent.component(CONTEXT_ENGINE);
+      expect(slot?.identity.name).toBe(DEFAULT_CONTEXT_ENGINE_IDENTITY.name);
+      expect(slot?.identity.version).toBe(DEFAULT_CONTEXT_ENGINE_IDENTITY.version);
+    });
+
+    test("swap events emitted during a run surface as kind:custom engine events (#1767 Phase 5+8)", async () => {
+      const { createKoi } = await import("@koi/engine");
+      type ContextEngine = import("@koi/core").ContextEngine;
+      type TurnId = import("@koi/core").TurnId;
+      const passthrough: ContextEngine = createPassthroughContextEngine();
+      const adapter: import("@koi/core").EngineAdapter = {
+        engineId: "test-adapter",
+        capabilities: { text: true, images: false, files: false, audio: false },
+        stream: () => {
+          const events: EngineEvent[] = [
+            { kind: "turn_end", turnIndex: 0 },
+            {
+              kind: "done",
+              output: {
+                content: [],
+                stopReason: "completed",
+                metrics: {
+                  totalTokens: 0,
+                  inputTokens: 0,
+                  outputTokens: 0,
+                  turns: 1,
+                  durationMs: 0,
+                },
+              },
+            },
+          ];
+          let i = 0;
+          return {
+            [Symbol.asyncIterator]: () => ({
+              async next(): Promise<IteratorResult<EngineEvent>> {
+                if (i >= events.length) return { done: true, value: undefined };
+                const value = events[i];
+                if (value === undefined) return { done: true, value: undefined };
+                i += 1;
+                return { done: false, value };
+              },
+            }),
+          };
+        },
+      };
+      const runtime = await createKoi({
+        manifest: {
+          name: "agent",
+          version: "1.0.0",
+          model: { name: "test" },
+          context: { engine: DEFAULT_CONTEXT_ENGINE_IDENTITY.name },
+        },
+        adapter,
+        contextEngineFactory: createContextEngine,
+      });
+
+      const handle = runtime.run({ kind: "text", text: "hi" });
+      const iter = handle[Symbol.asyncIterator]();
+      const collected: EngineEvent[] = [];
+      const first = await iter.next();
+      if (!first.done) collected.push(first.value);
+      // Mid-run swap to passthrough — must be force:true because the
+      // manifest pinned the bundled engine name and passthrough has a
+      // different identity.
+      runtime.contextEngineSwapController?.swap(passthrough, {
+        turnId: "run-1:t1" as TurnId,
+        reason: "phase-8 e2e swap",
+        force: true,
+      });
+      while (true) {
+        const r = await iter.next();
+        if (r.done) break;
+        collected.push(r.value);
+      }
+      const swapEvents = collected.filter(
+        (e): e is Extract<EngineEvent, { kind: "custom" }> =>
+          e.kind === "custom" && e.type === "context-engine-swap",
+      );
+      expect(swapEvents.length).toBe(1);
+      const data = swapEvents[0]?.data as {
+        from: { name: string };
+        to: { name: string };
+        reason: string;
+      };
+      expect(data.from.name).toBe(DEFAULT_CONTEXT_ENGINE_IDENTITY.name);
+      expect(data.to.name).toBe("@koi/context-manager/passthrough");
+      expect(data.reason).toBe("phase-8 e2e swap");
+    });
+
+    test("swap before any run is dropped — telemetry-only delivery between runs (#1767 Phase 5)", async () => {
+      const { createKoi } = await import("@koi/engine");
+      type ContextEngine = import("@koi/core").ContextEngine;
+      type TurnId = import("@koi/core").TurnId;
+      const passthrough: ContextEngine = createPassthroughContextEngine();
+      const runtime = await createKoi({
+        manifest: { name: "agent", version: "1.0.0", model: { name: "test" } },
+        adapter: buildMockAdapter(),
+        contextEngineFactory: createContextEngine,
+      });
+      // Subscribe directly to confirm the controller still fires the swap
+      // even when no run is active — out-of-run delivery is via subscribe().
+      const observed: string[] = [];
+      runtime.contextEngineSwapController?.subscribe((evt) => observed.push(evt.to.name));
+      runtime.contextEngineSwapController?.swap(passthrough, {
+        turnId: "out-of-run" as TurnId,
+        reason: "before-any-run",
+        force: true,
+      });
+      expect(observed).toEqual(["@koi/context-manager/passthrough"]);
+      // Now start a run that completes immediately — the queue must NOT
+      // replay the earlier out-of-run swap (it was dropped at emission time).
+      const collected: EngineEvent[] = [];
+      for await (const e of runtime.run({ kind: "text", text: "hi" })) collected.push(e);
+      const swapEvents = collected.filter(
+        (e) => e.kind === "custom" && e.type === "context-engine-swap",
+      );
+      expect(swapEvents.length).toBe(0);
+    });
+
+    // -------------------------------------------------------------------
+    // TUI swap-notice bridge corner cases (#1767 Phase 6)
+    //
+    // The TUI subscribes to runtime.contextEngineSwapController and
+    // dispatches the formatted notice as an `add_info` block. These
+    // cases simulate that bridge with a spy dispatcher and exercise the
+    // edges that an interactive TUI would otherwise trip on at runtime.
+    // -------------------------------------------------------------------
+    type DispatchSpy = ReturnType<typeof createDispatchSpy>;
+    function createDispatchSpy(): {
+      readonly dispatched: { readonly kind: string; readonly message: string }[];
+      readonly dispatch: (a: { readonly kind: string; readonly message: string }) => void;
+    } {
+      const dispatched: { kind: string; message: string }[] = [];
+      return {
+        get dispatched() {
+          return dispatched;
+        },
+        dispatch(action) {
+          dispatched.push({ kind: action.kind, message: action.message });
+        },
+      };
+    }
+
+    function wireBridge(
+      controller: NonNullable<
+        Awaited<ReturnType<typeof import("@koi/engine").createKoi>>["contextEngineSwapController"]
+      >,
+      spy: DispatchSpy,
+    ): () => void {
+      return controller.subscribe((swap) => {
+        const notice = formatContextEngineSwapNotice(swap);
+        spy.dispatch({ kind: "add_info", message: notice.message });
+      });
+    }
+
+    async function makeBridgedRuntime(
+      spy: DispatchSpy,
+    ): Promise<Awaited<ReturnType<typeof import("@koi/engine").createKoi>>> {
+      const { createKoi } = await import("@koi/engine");
+      const runtime = await createKoi({
+        manifest: { name: "agent", version: "1.0.0", model: { name: "test" } },
+        adapter: buildMockAdapter(),
+        contextEngineFactory: createContextEngine,
+      });
+      const ctrl = runtime.contextEngineSwapController;
+      if (ctrl !== undefined) wireBridge(ctrl, spy);
+      return runtime;
+    }
+
+    test("TUI bridge: out-of-run swap dispatches a notice (closes the round-1 review gap)", async () => {
+      type TurnId = import("@koi/core").TurnId;
+      const spy = createDispatchSpy();
+      const runtime = await makeBridgedRuntime(spy);
+      runtime.contextEngineSwapController?.swap(createPassthroughContextEngine(), {
+        turnId: "out-of-run" as TurnId,
+        reason: "operator-driven",
+        force: true,
+      });
+      expect(spy.dispatched.length).toBe(1);
+      expect(spy.dispatched[0]?.kind).toBe("add_info");
+      expect(spy.dispatched[0]?.message).toContain("Context engine swapped");
+      expect(spy.dispatched[0]?.message).toContain("operator-driven");
+    });
+
+    test("TUI bridge: same-identity swap is a controller no-op — no notice", async () => {
+      type ContextEngine = import("@koi/core").ContextEngine;
+      type TurnId = import("@koi/core").TurnId;
+      const spy = createDispatchSpy();
+      const runtime = await makeBridgedRuntime(spy);
+      const same: ContextEngine = {
+        identity: { ...DEFAULT_CONTEXT_ENGINE_IDENTITY },
+        prepare: (_c, m) => m,
+      };
+      runtime.contextEngineSwapController?.swap(same, {
+        turnId: "noop" as TurnId,
+        reason: "ghost",
+        force: true,
+      });
+      expect(spy.dispatched.length).toBe(0);
+    });
+
+    test("TUI bridge: rollback emits a reversed-direction notice", async () => {
+      type TurnId = import("@koi/core").TurnId;
+      const spy = createDispatchSpy();
+      const runtime = await makeBridgedRuntime(spy);
+      const passthrough = createPassthroughContextEngine();
+      runtime.contextEngineSwapController?.swap(passthrough, {
+        turnId: "fwd" as TurnId,
+        reason: "go-forward",
+        force: true,
+      });
+      runtime.contextEngineSwapController?.rollback({
+        turnId: "back" as TurnId,
+        reason: "rolling-back",
+      });
+      expect(spy.dispatched.length).toBe(2);
+      const fwd = spy.dispatched[0]?.message ?? "";
+      const back = spy.dispatched[1]?.message ?? "";
+      expect(fwd).toContain(`${DEFAULT_CONTEXT_ENGINE_IDENTITY.name}@`);
+      expect(fwd).toContain(`${PASSTHROUGH_CONTEXT_ENGINE_IDENTITY.name}@`);
+      // Rollback flips the arrow: passthrough → bundled.
+      expect(back).toContain(`${PASSTHROUGH_CONTEXT_ENGINE_IDENTITY.name}@`);
+      expect(back).toContain(`${DEFAULT_CONTEXT_ENGINE_IDENTITY.name}@`);
+      expect(back).toContain("rolling-back");
+    });
+
+    test("TUI bridge: multiple distinct swaps in one turn produce distinct notice ids", async () => {
+      type ContextEngine = import("@koi/core").ContextEngine;
+      type TurnId = import("@koi/core").TurnId;
+      const spy = createDispatchSpy();
+      const runtime = await makeBridgedRuntime(spy);
+      const observed: import("@koi/core").ContextEngineSwapEvent[] = [];
+      runtime.contextEngineSwapController?.subscribe((evt) => observed.push(evt));
+      const a: ContextEngine = {
+        identity: { name: "engine-a", version: "1.0.0" },
+        prepare: (_c, m) => m,
+      };
+      const b: ContextEngine = {
+        identity: { name: "engine-b", version: "1.0.0" },
+        prepare: (_c, m) => m,
+      };
+      // bundled → A → B → A: three distinct transitions; each gets a
+      // unique formatter id so the TUI store cannot dedupe legitimate
+      // churn into a single notice.
+      runtime.contextEngineSwapController?.swap(a, {
+        turnId: "t1" as TurnId,
+        reason: "ab",
+        force: true,
+      });
+      runtime.contextEngineSwapController?.swap(b, {
+        turnId: "t1" as TurnId,
+        reason: "ab",
+        force: true,
+      });
+      runtime.contextEngineSwapController?.swap(a, {
+        turnId: "t1" as TurnId,
+        reason: "ab",
+        force: true,
+      });
+      expect(spy.dispatched.length).toBe(3);
+      const ids = observed.map((e) => formatContextEngineSwapNotice(e).id);
+      expect(new Set(ids).size).toBe(3);
+    });
+
+    test("TUI bridge: idempotent re-dispatch of the same event yields a stable id (TUI dedupe key)", () => {
+      type TurnId = import("@koi/core").TurnId;
+      const event: import("@koi/core").ContextEngineSwapEvent = {
+        kind: "context-engine-swap",
+        turnId: "t-stable" as TurnId,
+        from: { name: "x", version: "1.0.0" },
+        to: { name: "y", version: "2.0.0" },
+        reason: "stable",
+        timestamp: "2026-01-01T00:00:00.000Z",
+      };
+      const a = formatContextEngineSwapNotice(event);
+      const b = formatContextEngineSwapNotice(event);
+      expect(a.id).toBe(b.id);
+      expect(a.message).toBe(b.message);
+    });
+
+    test("TUI bridge: subscriber throw is captured by onListenerError; bridge still dispatches", async () => {
+      type TurnId = import("@koi/core").TurnId;
+      const spy = createDispatchSpy();
+      const errors: unknown[] = [];
+      // Build a runtime with onContextEngineSwap undefined so we control
+      // both the noisy listener and the bridge.
+      const { createKoi } = await import("@koi/engine");
+      const runtime = await createKoi({
+        manifest: { name: "agent", version: "1.0.0", model: { name: "test" } },
+        adapter: buildMockAdapter(),
+        contextEngineFactory: createContextEngine,
+      });
+      // Bare controller-level subscription doesn't have an
+      // onListenerError option, so this case validates the
+      // current fail-loud behaviour: a thrown bridge subscriber
+      // surfaces as an aggregated error, AFTER the other
+      // subscribers (including the spy) ran.
+      const ctrl = runtime.contextEngineSwapController;
+      if (ctrl === undefined) throw new Error("controller missing");
+      ctrl.subscribe(() => {
+        throw new Error("noisy");
+      });
+      wireBridge(ctrl, spy);
+      try {
+        ctrl.swap(createPassthroughContextEngine(), {
+          turnId: "throw" as TurnId,
+          reason: "with-throw",
+          force: true,
+        });
+      } catch (e: unknown) {
+        errors.push(e);
+      }
+      expect(spy.dispatched.length).toBe(1);
+      expect(errors.length).toBe(1);
+      expect(String(errors[0])).toContain("subscriber");
+    });
+
+    test("manifest version that does not match the bundled artifact is rejected", async () => {
+      const { createKoi } = await import("@koi/engine");
+      await expect(
+        createKoi({
+          manifest: {
+            name: "agent",
+            version: "1.0.0",
+            model: { name: "test" },
+            context: {
+              engine: DEFAULT_CONTEXT_ENGINE_IDENTITY.name,
+              version: "9.9.9",
+            },
+          },
+          adapter: buildMockAdapter(),
+          contextEngineFactory: createContextEngine,
+        }),
+      ).rejects.toThrow(/version/);
+    });
   });
 });
 

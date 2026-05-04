@@ -387,6 +387,15 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   let manifestFilesystemBackend: FileSystemBackend | undefined;
   let manifestMiddleware: import("../manifest.js").ManifestMiddlewareEntry[] | undefined;
   let manifestGovernance: import("../manifest.js").ManifestGovernanceConfig | undefined;
+  // #1403: hoisted so the nexus-endpoint resolution block (below the manifest
+  // load) can read them outside the resolvedManifestPath branch.
+  let manifestNexusConfig: import("../manifest.js").ManifestNexusConfig | undefined;
+  let manifestDelegationConfig: import("../manifest.js").ManifestDelegationConfig | undefined;
+  let manifestFilesystemConfigForNexus: import("@koi/core").FileSystemConfig | undefined;
+  // Captured when resolveNexusForHost spawned a sandbox; called by the
+  // shared shutdownRuntime() chain (see below) so SIGINT/SIGTERM go through
+  // the host's existing teardown sequence instead of self-signalling.
+  let nexusEndpointShutdown: (() => Promise<void>) | undefined;
   // When resuming without an explicit --manifest, bypass auto-discovery
   // entirely so the cwd's manifest cannot silently override the model, stacks,
   // plugins, filesystem scope, or governance that produced the original session.
@@ -456,6 +465,16 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         ? [...manifestResult.value.middleware]
         : undefined;
     manifestGovernance = manifestResult.value.governance;
+    manifestNexusConfig = manifestResult.value.nexus;
+    manifestDelegationConfig = manifestResult.value.delegation;
+    manifestFilesystemConfigForNexus = manifestResult.value.filesystem;
+
+    // Nexus endpoint resolution is intentionally deferred until after every
+    // koi-start fail-closed manifest gate (lines below + the two-gate nexus
+    // trust boundary) has approved the manifest. Spawning a sandbox for a
+    // manifest that the host will then bail on would create local Nexus side
+    // effects (process, port, data dir) before authorization succeeded.
+    // The resolution block is wired in just before `resolveFileSystem()`.
 
     // Fail fast on settings that `koi start` cannot honor, rather
     // than silently discarding them. A shared manifest that targets
@@ -596,40 +615,85 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     // barrier. Manifest authors who need a true read-only posture
     // should also pass `stacks: [notebook, rules, skills, ...]` (omit
     // `execution`) to strip the bash provider entirely.
-    if (manifestResult.value.filesystem !== undefined) {
-      // Headless fs trust-gate:
-      //  - NEXUS backend: the two-gate path above already enforced manifest
-      //    scope declaration + operator --allow-remote-fs opt-in. Honor it.
-      //  - LOCAL backend with NO `options`: equivalent to the host default
-      //    (workspace-rooted). Safe.
-      //  - LOCAL backend WITH `options` (manifest root/mountUri): can
-      //    redirect fs_* to arbitrary host paths OR scope them to a
-      //    directory a workspace fallback would silently bypass. FAIL
-      //    CLOSED — do not silently substitute the workspace backend.
-      //    Require explicit opt-in via KOI_HEADLESS_ALLOW_MANIFEST_FS=1.
-      //  - Interactive: always resolve as before.
-      const fs = manifestResult.value.filesystem;
+    if (manifestResult.value.stacks?.includes("spawn")) {
+      return bail(
+        'manifest.stacks including "spawn" is not supported on this host. Spawn enables coordinator workflows that poll task_output, which hard-fails under koi start\'s default loop detector. Remove "spawn" from manifest.stacks, or use `koi tui` for coordinator workflows.',
+      );
+    }
+
+    // Headless local-filesystem trust-gate runs HERE (before nexus spawn) so
+    // a manifest with both `backend: local` + manifest options AND a nexus
+    // block cannot trigger a sandbox before this gate rejects the manifest.
+    // Pure manifest validation only — no I/O, no side effects.
+    if (manifestFilesystemConfigForNexus !== undefined) {
+      const fs = manifestFilesystemConfigForNexus;
       const hasLocalOptions =
         fs.backend === "local" && fs.options !== undefined && Object.keys(fs.options).length > 0;
       const headlessOptIn = process.env.KOI_HEADLESS_ALLOW_MANIFEST_FS === "1";
-
       if (flags.headless && hasLocalOptions && !headlessOptIn) {
         return bail(
           "manifest.filesystem.options is not honored in --headless by default (scoped-local roots or mountUris can widen or redirect fs_* access). Remove manifest.filesystem.options, or set KOI_HEADLESS_ALLOW_MANIFEST_FS=1 to explicitly opt in.",
         );
       }
+    }
 
+    // ---------------------------------------------------------------------
+    // Nexus endpoint resolution (Issue #1403). Runs AFTER every fail-closed
+    // manifest gate so a rejected manifest cannot create a sandbox/port/data
+    // dir before authorization succeeds. Runs BEFORE resolveFileSystem so
+    // the resolved URL can be threaded into fs.options.url for the auto-spawn
+    // path (manifest declares backend: nexus without an explicit URL).
+    // ---------------------------------------------------------------------
+    {
+      const { resolveNexusForHost } = await import("../resolve-nexus-for-host.js");
+      const endpointResult = await resolveNexusForHost({
+        manifestNexus: manifestNexusConfig,
+        manifestDelegation: manifestDelegationConfig,
+        manifestFilesystem: manifestFilesystemConfigForNexus,
+        cliNexusUrl: flags.nexusUrl,
+      });
+      if (!endpointResult.ok) {
+        return bail(`nexus endpoint: ${endpointResult.error.message}`);
+      }
+      if (endpointResult.value !== undefined) {
+        const endpoint = endpointResult.value;
+        process.env.NEXUS_URL = endpoint.url;
+        nexusEndpointShutdown = endpoint.shutdown;
+        // Safety net for any post-spawn early-bail() / process.exit(1) path
+        // that returns before reaching `shutdownRuntime()`. process.on("exit")
+        // is sync, so we use `terminate()` (best-effort SIGTERM + lock release);
+        // the full drain still runs in shutdownRuntime() for the normal path.
+        const terminate = endpoint.terminate;
+        process.on("exit", () => {
+          terminate();
+        });
+        // Plumb the resolved URL into the filesystem config when the manifest
+        // only declared `backend: nexus` without an explicit URL. Downstream
+        // `resolveFileSystem` reads `options.url`, not `process.env`, so the
+        // sandbox would be unreachable through the fs backend without this.
+        if (manifestFilesystemConfigForNexus?.backend === "nexus") {
+          const existing = (manifestFilesystemConfigForNexus.options ?? {}) as Record<
+            string,
+            unknown
+          >;
+          const existingUrl = typeof existing.url === "string" ? existing.url.trim() : "";
+          if (existingUrl.length === 0) {
+            manifestFilesystemConfigForNexus = {
+              ...manifestFilesystemConfigForNexus,
+              options: { ...existing, url: endpoint.url },
+            };
+          }
+        }
+      }
+    }
+
+    if (manifestFilesystemConfigForNexus !== undefined) {
+      const fs = manifestFilesystemConfigForNexus;
       manifestFilesystemOps = fs.operations ?? (["read"] as const);
       // Sync resolver is sufficient — OAuth mounts were rejected above,
       // and the async path (local bridge subprocess) is only needed for
       // OAuth-gated mounts.
       manifestFilesystemBackend = resolveFileSystem(fs, process.cwd());
-    }
-
-    if (manifestResult.value.stacks?.includes("spawn")) {
-      return bail(
-        'manifest.stacks including "spawn" is not supported on this host. Spawn enables coordinator workflows that poll task_output, which hard-fails under koi start\'s default loop detector. Remove "spawn" from manifest.stacks, or use `koi tui` for coordinator workflows.',
-      );
     }
   }
 
@@ -1129,6 +1193,22 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           ? `koi: runtime.dispose failed (${raw.length} chars redacted)\n`
           : `koi: runtime.dispose failed — ${raw}\n`,
       );
+    }
+    // Stop the spawned nexusd sandbox (Issue #1403). Runs after runtime.dispose
+    // so any in-flight tool calls hit a live nexusd; runs before OTel flush so
+    // shutdown spans land in the same trace as the rest of teardown.
+    if (nexusEndpointShutdown !== undefined) {
+      try {
+        await nexusEndpointShutdown();
+      } catch (sandboxErr) {
+        shutdownFailed = true;
+        const raw = sandboxErr instanceof Error ? sandboxErr.message : String(sandboxErr);
+        process.stderr.write(
+          flags.headless
+            ? `koi: nexus sandbox shutdown failed (${raw.length} chars redacted)\n`
+            : `koi: nexus sandbox shutdown failed — ${raw}\n`,
+        );
+      }
     }
     // Flush OTel spans before process exit
     await otelHandle?.shutdown();

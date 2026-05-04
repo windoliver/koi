@@ -269,7 +269,7 @@
     },
     "packages/lib/context-manager": {
       "name": "@koi/context-manager",
-      "version": "0.0.0",
+      "version": "1.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
@@ -417,6 +417,14 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/forge-verifier": {
+      "name": "@koi/forge-verifier",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-types": "workspace:*",
       },
     },
     "packages/lib/fs-local": {
@@ -1149,6 +1157,7 @@
         "@koi/model-router": "workspace:*",
         "@koi/nexus-client": "workspace:*",
         "@koi/nexus-delegation": "workspace:*",
+        "@koi/nexus-sandbox": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
         "@koi/playbook-store-sqlite": "workspace:*",
@@ -1576,6 +1585,14 @@
         "@koi/core": "workspace:*",
         "@koi/tools-core": "workspace:*",
         "@modelcontextprotocol/sdk": "1.12.1",
+      },
+    },
+    "packages/net/nexus-sandbox": {
+      "name": "@koi/nexus-sandbox",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
     },
     "packages/sandbox/sandbox-conformance": {
@@ -2324,6 +2341,8 @@
 
     "@koi/forge-types": ["@koi/forge-types@workspace:packages/lib/forge-types"],
 
+    "@koi/forge-verifier": ["@koi/forge-verifier@workspace:packages/lib/forge-verifier"],
+
     "@koi/fs-local": ["@koi/fs-local@workspace:packages/lib/fs-local"],
 
     "@koi/fs-nexus": ["@koi/fs-nexus@workspace:packages/lib/fs-nexus"],
@@ -2469,6 +2488,8 @@
     "@koi/nexus-client": ["@koi/nexus-client@workspace:packages/lib/nexus-client"],
 
     "@koi/nexus-delegation": ["@koi/nexus-delegation@workspace:packages/security/nexus-delegation"],
+
+    "@koi/nexus-sandbox": ["@koi/nexus-sandbox@workspace:packages/net/nexus-sandbox"],
 
     "@koi/outcome-evaluator": ["@koi/outcome-evaluator@workspace:packages/lib/outcome-evaluator"],
 
