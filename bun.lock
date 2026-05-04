@@ -374,6 +374,17 @@
         "@koi/test": "workspace:*",
       },
     },
+    "packages/lib/forge-exaptation": {
+      "name": "@koi/forge-exaptation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test": "workspace:*",
+      },
+    },
     "packages/lib/forge-integrity": {
       "name": "@koi/forge-integrity",
       "version": "0.0.0",
@@ -2278,6 +2289,8 @@
     "@koi/file-type": ["@koi/file-type@workspace:packages/lib/file-type"],
 
     "@koi/forge-demand": ["@koi/forge-demand@workspace:packages/lib/forge-demand"],
+
+    "@koi/forge-exaptation": ["@koi/forge-exaptation@workspace:packages/lib/forge-exaptation"],
 
     "@koi/forge-integrity": ["@koi/forge-integrity@workspace:packages/lib/forge-integrity"],
 
