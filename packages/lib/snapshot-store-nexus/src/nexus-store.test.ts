@@ -152,6 +152,116 @@ describe("createSnapshotStoreNexus", () => {
     if (!r.ok) expect(r.error.code).toBe("VALIDATION");
   });
 
+  // --- Fix 5: parent validation uses memberPath (chain membership) ---
+
+  test("put with parent that has been pruned (membership removed) returns validation error", async () => {
+    // After prune removes a node's membership marker, subsequent puts must not
+    // accept that node as a parent — even though the canonical file still exists.
+    // Setup: 3 nodes, prune to retain only the last 1 → first 2 lose membership.
+    const store = newStore();
+    const cid = chainId("c-pruned-parent");
+    const n0 = await store.put(cid, { v: 0 }, []);
+    if (!n0.ok || n0.value === undefined) throw new Error("n0 put failed");
+    const pruned0Id = n0.value.nodeId;
+    await store.put(cid, { v: 1 }, []);
+    await store.put(cid, { v: 2 }, []);
+
+    // Prune so only the newest 1 node survives (pruned0Id loses its membership marker).
+    const pruned = await store.prune(cid, { retainCount: 1 });
+    expect(pruned.ok).toBe(true);
+    if (pruned.ok) expect(pruned.value).toBeGreaterThanOrEqual(2);
+
+    // The canonical node file for pruned0Id still exists (deferred GC),
+    // but its membership marker was removed. Parent validation must use memberPath
+    // and reject this node.
+    const r = await store.put(cid, { v: 3 }, [pruned0Id]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("VALIDATION");
+  });
+
+  test("fork then put in forked chain using source as parent succeeds (fork copies membership)", async () => {
+    // After fork, ancestor membership is in the new chain so they are valid parents.
+    const store = newStore();
+    const src = chainId("c-fork-parent-src");
+    const root = await store.put(src, { v: 1 }, []);
+    if (!root.ok || root.value === undefined) throw new Error();
+    const rootId = root.value.nodeId;
+
+    const forked = chainId("c-fork-parent-dst");
+    const f = await store.fork(rootId, forked, "branch");
+    expect(f.ok).toBe(true);
+
+    // Source node is now a member of the forked chain → valid parent.
+    const child = await store.put(forked, { v: 2 }, [rootId]);
+    expect(child.ok).toBe(true);
+  });
+
+  // --- Fix 4: fork wraps target chain in lock + rejects non-empty ---
+
+  test("fork into empty chainId succeeds", async () => {
+    const store = newStore();
+    const src = chainId("c-fork-empty-src");
+    const root = await store.put(src, { v: 1 }, []);
+    if (!root.ok || root.value === undefined) throw new Error();
+
+    const dst = chainId("c-fork-empty-dst");
+    const f = await store.fork(root.value.nodeId, dst, "test");
+    expect(f.ok).toBe(true);
+
+    const head = await store.head(dst);
+    expect(head.ok).toBe(true);
+    if (head.ok && head.value !== undefined) expect(head.value.data.v).toBe(1);
+  });
+
+  test("fork into non-empty chainId throws VALIDATION error", async () => {
+    // Once a chain has been populated, forking into it would clobber its head.
+    const store = newStore();
+    const src = chainId("c-fork-nonempty-src");
+    const root = await store.put(src, { v: 1 }, []);
+    if (!root.ok || root.value === undefined) throw new Error();
+
+    const dst = chainId("c-fork-nonempty-dst");
+    // Populate dst first.
+    const p = await store.put(dst, { v: 99 }, []);
+    expect(p.ok).toBe(true);
+
+    // Fork into the already-populated dst must fail.
+    const f = await store.fork(root.value.nodeId, dst, "should-fail");
+    expect(f.ok).toBe(false);
+    if (!f.ok) expect(f.error.code).toBe("VALIDATION");
+  });
+
+  test("concurrent fork + put on same target chainId — fork wins or put wins cleanly", async () => {
+    // Race: fork into an empty chain vs put into the same chain concurrently.
+    // fork acquires the target chain lock; put also acquires it.
+    // One must succeed, and the resulting state must be consistent (no corruption).
+    const store = newStore();
+    const src = chainId("c-fork-race-src");
+    const root = await store.put(src, { v: 1 }, []);
+    if (!root.ok || root.value === undefined) throw new Error();
+
+    const dst = chainId("c-fork-race-dst");
+    const [forkResult, putResult] = await Promise.all([
+      store.fork(root.value.nodeId, dst, "race"),
+      store.put(dst, { v: 2 }, []),
+    ]);
+
+    // Exactly one must have succeeded first; the other either also succeeded
+    // (if put won the lock first, fork then fails non-empty) or both are ok.
+    // The invariant: head of dst must be readable and consistent.
+    const head = await store.head(dst);
+    expect(head.ok).toBe(true);
+
+    // If fork succeeded, fork result is ok
+    if (forkResult.ok) expect(forkResult.value.parentNodeId).toBe(root.value.nodeId);
+    // If put succeeded, the data must be intact
+    if (putResult.ok && putResult.value !== undefined) {
+      expect(putResult.value.data.v).toBe(2);
+    }
+    // At least one must have succeeded
+    expect(forkResult.ok || (putResult.ok && putResult.value !== undefined)).toBe(true);
+  });
+
   test("concurrent put+prune: child either succeeds or fails cleanly — no dangling parentId", async () => {
     // This test verifies that when put and prune race on the same chain,
     // the final state is consistent: every parentId in stored nodes exists.

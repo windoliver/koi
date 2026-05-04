@@ -108,9 +108,12 @@ export function createSnapshotStoreNexus<T>(
     }
     // Parent existence check is inside withChainLock so a concurrent in-process
     // prune cannot delete a parent between validation and the child write.
+    // We check the membership marker (not the canonical file) so that pruned nodes
+    // — whose membership was removed but whose canonical file may still exist due
+    // to deferred GC — are correctly rejected as parents.
     return withChainLock(cid, async () => {
       for (const pid of parentIds) {
-        const ex = await exists(transport, canonicalNodePath(basePath, pid));
+        const ex = await exists(transport, memberPath(basePath, cid, pid));
         if (!ex.ok) return ex;
         if (!ex.value) return { ok: false, error: validation(`Parent node not found: ${pid}`) };
       }
@@ -237,22 +240,38 @@ export function createSnapshotStoreNexus<T>(
     // Reverse to oldest-first so meta.nodeIds matches insertion order (oldest → newest).
     const ancestorList = [...ancestorsRes.value].reverse();
 
-    // Write membership markers for every ancestor — do NOT touch canonical files.
-    for (const node of ancestorList) {
-      const wm = await writeMember(newChainId, node.nodeId);
+    // Wrap target-chain mutations in the target chain lock.
+    // This serialises concurrent fork + put calls on the same target chain and
+    // ensures the non-empty check is atomic with the write.
+    return withChainLock(newChainId, async () => {
+      // Reject non-empty target chains: forking into an existing populated chain
+      // would overwrite its head pointer and orphan its history.
+      const existingMeta = await readMeta(newChainId);
+      if (!existingMeta.ok) return existingMeta;
+      if (existingMeta.value.headNodeId !== null) {
+        return {
+          ok: false,
+          error: validation(`Cannot fork into non-empty chain ${newChainId}`),
+        };
+      }
+
+      // Write membership markers for every ancestor — do NOT touch canonical files.
+      for (const node of ancestorList) {
+        const wm = await writeMember(newChainId, node.nodeId);
+        if (!wm.ok) return wm;
+      }
+
+      // Write meta last: pointers after data is durable.
+      const nodeIds = ancestorList.map((n) => n.nodeId);
+      const wm = await writeMeta(newChainId, {
+        headNodeId: sourceNodeId,
+        nodeIds,
+      });
       if (!wm.ok) return wm;
-    }
 
-    // Write meta last: pointers after data is durable (Fix 4 invariant).
-    const nodeIds = ancestorList.map((n) => n.nodeId);
-    const wm = await writeMeta(newChainId, {
-      headNodeId: sourceNodeId,
-      nodeIds,
+      const ref: ForkRef = { parentNodeId: sourceNodeId, label };
+      return { ok: true, value: ref };
     });
-    if (!wm.ok) return wm;
-
-    const ref: ForkRef = { parentNodeId: sourceNodeId, label };
-    return { ok: true, value: ref };
   };
 
   const prune: SnapshotChainStore<T>["prune"] = async (
