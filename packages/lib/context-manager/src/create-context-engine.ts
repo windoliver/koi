@@ -28,7 +28,7 @@ import { COMPACTION_DEFAULTS } from "./types.js";
  */
 export const DEFAULT_CONTEXT_ENGINE_IDENTITY: ContextEngineIdentity = {
   name: "@koi/context-manager",
-  version: "0.0.0",
+  version: "1.0.0",
 } as const;
 
 /**

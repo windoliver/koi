@@ -3538,11 +3538,32 @@ interface ContextEngineSwapEvent {
     readonly to: ContextEngineIdentity;
     readonly reason: string;
     readonly rollbackTarget?: ContextEngineIdentity;
+    /**
+     * Per-turn pin contract: turns already in flight when \`swap()\` runs keep
+     * using the pre-swap engine until they reach their reset boundary —
+     * mid-turn engine substitution would split \`prepare()\` ↔ \`onAfterTurn()\`
+     * across two engines and corrupt stateful bookkeeping. This list lets
+     * observers (audit logs, TUI notices, evaluators) attribute in-flight
+     * turns to \`from\` rather than \`to\`, so a bad reply is not blamed on the
+     * engine that has not actually served it yet.
+     *
+     * Empty array (or omitted) means no in-flight pins existed at swap time
+     * — every subsequent turn uses \`to\`.
+     */
+    readonly pinnedTurnIds?: readonly TurnId[];
     readonly timestamp: string;
 }
 /**
- * Singleton SubsystemToken for the active context engine. Resolved by L1 in
- * \`createKoi\`; defaults to \`@koi/context-manager\` when no provider attaches one.
+ * Singleton SubsystemToken for the active context engine.
+ *
+ * The slot is opt-in: hosts pass \`contextEngineFactory\` to \`createKoi\` (or
+ * attach a \`ContextEngine\` under this token via a \`ComponentProvider\`). When
+ * neither is present, the slot is empty and the runtime falls back to its
+ * existing per-turn behavior. The kernel does NOT install a default engine
+ * implicitly — that would force \`@koi/engine\` (L1) to depend on a specific
+ * L2/L0u package, violating the layer rules. Hosts that want the bundled
+ * tiered-compaction default pass \`createContextEngine\` from
+ * \`@koi/context-manager\` explicitly.
  */
 declare const CONTEXT_ENGINE: SubsystemToken<ContextEngine>;
 

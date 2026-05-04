@@ -1089,6 +1089,63 @@ describe("Golden: @koi/context-manager", () => {
       errSpy.mockRestore();
     });
   });
+
+  describe("end-to-end: bundled factory + pinned manifest via createKoi", () => {
+    function buildMockAdapter(): import("@koi/core").EngineAdapter {
+      return {
+        engineId: "test-adapter",
+        capabilities: { text: true, images: false, files: false, audio: false },
+        stream: () => ({
+          [Symbol.asyncIterator]: () => ({
+            async next(): Promise<IteratorResult<EngineEvent>> {
+              return { done: true, value: undefined };
+            },
+          }),
+        }),
+      };
+    }
+
+    test("createKoi accepts the documented (createContextEngine, manifest pin) path", async () => {
+      const { createKoi } = await import("@koi/engine");
+      const runtime = await createKoi({
+        manifest: {
+          name: "agent",
+          version: "1.0.0",
+          model: { name: "test" },
+          context: {
+            engine: DEFAULT_CONTEXT_ENGINE_IDENTITY.name,
+            version: DEFAULT_CONTEXT_ENGINE_IDENTITY.version,
+            config: { contextWindowSize: 200_000 },
+          },
+        },
+        adapter: buildMockAdapter(),
+        contextEngineFactory: createContextEngine,
+      });
+      expect(runtime.agent.state).toBe("created");
+      const slot = runtime.agent.component(CONTEXT_ENGINE);
+      expect(slot?.identity.name).toBe(DEFAULT_CONTEXT_ENGINE_IDENTITY.name);
+      expect(slot?.identity.version).toBe(DEFAULT_CONTEXT_ENGINE_IDENTITY.version);
+    });
+
+    test("manifest version that does not match the bundled artifact is rejected", async () => {
+      const { createKoi } = await import("@koi/engine");
+      await expect(
+        createKoi({
+          manifest: {
+            name: "agent",
+            version: "1.0.0",
+            model: { name: "test" },
+            context: {
+              engine: DEFAULT_CONTEXT_ENGINE_IDENTITY.name,
+              version: "9.9.9",
+            },
+          },
+          adapter: buildMockAdapter(),
+          contextEngineFactory: createContextEngine,
+        }),
+      ).rejects.toThrow(/version/);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
