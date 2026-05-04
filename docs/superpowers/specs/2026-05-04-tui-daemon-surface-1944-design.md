@@ -126,7 +126,7 @@ Six features per the issue:
 ### Layer compliance
 
 - **L0** types (`Supervisor`, `WorkerEvent`, `SupervisorHealth`,
-  `WorkerSnapshot`, `BackgroundSessionRegistry`) already live in
+  `WorkerHealth`, `BackgroundSessionRegistry`) already live in
   `@koi/core/daemon` — TUI imports types only, no L2-on-L2 dependency.
 - **L2 `@koi/tui`** holds state slices + view components. No runtime handles.
 - **L3 `@koi/meta-cli`** owns the bridge and instantiation. Already imports
@@ -206,7 +206,7 @@ Tests
 import type {
   SupervisorHealth,
   WorkerEvent,
-  WorkerSnapshot,
+  WorkerHealth,
   WorkerBackendKind,
 } from "@koi/core/daemon";
 
@@ -393,7 +393,7 @@ interface DaemonBridge {
 `requestKill` rejects internal errors as toasts, never throws to caller.
 
 All intervals + iterators stop on `close()`. **Shutdown ordering** is
-the inverse of attach: terminal `stopped`/`exited` events are published
+the inverse of attach: terminal `exited`/`crashed` events are published
 only once `supervisor.shutdown()` begins, so the bridge must remain
 subscribed while shutdown is in flight, otherwise the final lifecycle
 updates the bridge exists to surface are lost.
@@ -407,7 +407,7 @@ graceful shutdown sequence in bin.ts
 ```
 
 Step 3 happens after `shutdown()` resolves so `watchAll()` has already
-emitted the final `stopped`/`exited` events through both registry and
+emitted the final `exited`/`crashed` events through both registry and
 TUI bridges. If steps are reversed, the bridge times out before
 `supervisor.shutdown()` even begins publishing — exactly the regression
 this surface should not introduce. A shared deadline (e.g., total 5s)
@@ -451,8 +451,8 @@ This rules out the failure mode where a dead bridge silently presents as
 | Trigger | Source | Message |
 |---------|--------|---------|
 | `WorkerEvent.crashed` | push | `⚠ worker <agentName> crashed: <error.message>` |
-| `WorkerSnapshot.state` `*→quarantined` | health diff | `⚠ worker <agentName> quarantined after <restartCount> restarts` |
-| `WorkerSnapshot.state` `running→restarting` | health diff | (info, not warning) `↻ worker <agentName> restarting` |
+| `WorkerHealth.state` `*→quarantined` | health diff | `⚠ worker <agentName> quarantined after <restartCount> restarts` |
+| `WorkerHealth.state` `running→restarting` | health diff | (info, not warning) `↻ worker <agentName> restarting` |
 | `health.status` ok→degraded | health diff | `⚠ supervisor degraded: <first reason>` |
 | `health.status` ok→unhealthy | health diff | `⚠ supervisor unhealthy: <first reason>` |
 
@@ -484,16 +484,36 @@ if (status === "terminating") return "terminating";
 
 // status is "starting" or "running" → derive from per-worker health snapshot
 const workerSnap = health.workers.find(w => w.workerId === row.workerId);
+// `health.workers` items are of type `WorkerHealth` (per @koi/core/daemon
+// — `SupervisorHealth.workers: readonly WorkerHealth[]`). NOT
+// `WorkerSnapshot`. The PR extends `WorkerHealth` with one new boolean.
 
-// Workers can opt out of heartbeat monitoring (BackendHints.heartbeat:false).
-// In that case `lastHeartbeatAt` AND `heartbeatDeadlineAt` are permanently
-// undefined on the snapshot — NOT a transient pre-first-heartbeat state.
-// We can distinguish "opted out" from "opted in but not yet beating" by
-// checking the opt-in flag exposed on the worker snapshot. The snapshot
-// must carry `heartbeatOptedIn: boolean` (or equivalent) for this to work;
-// if not yet present in L0, this PR adds it as a small adjacent change to
-// the SupervisorHealth.workers[] schema (one boolean, well-scoped).
-const optedIn = workerSnap?.heartbeatOptedIn ?? false;
+// Heartbeat opt-in classification — fail closed.
+// Required L0 addition: `WorkerHealth.heartbeatOptedIn: boolean`. Until
+// this field lands, the bridge cannot reliably distinguish "opted out"
+// from "broken" and we must not silently flip workers to neutral state.
+//
+// Decision rule (in priority order):
+//   1. workerSnap.heartbeatOptedIn === true  → opted in, run timestamp checks.
+//   2. workerSnap.heartbeatOptedIn === false → unmonitored.
+//   3. flag absent on a worker that has lastHeartbeatAt OR
+//      heartbeatDeadlineAt populated → SCHEMA MISMATCH. Treat as opted in
+//      AND log a one-shot warning toast `"⚠ stale @koi/core schema: rebuild"`
+//      (never silently downgrade to unmonitored).
+//   4. flag absent AND no timestamps → unknown classification: surface a
+//      one-shot warning toast and treat as opted-in-pending (fail closed).
+const optIn = workerSnap?.heartbeatOptedIn;
+const hasTimestamps =
+  workerSnap?.lastHeartbeatAt !== undefined ||
+  workerSnap?.heartbeatDeadlineAt !== undefined;
+let optedIn: boolean;
+if (optIn === true) optedIn = true;
+else if (optIn === false) optedIn = false;
+else {
+  // Field missing — schema mismatch. Toast once, fail closed.
+  warnSchemaMismatchOnce();
+  optedIn = true;
+}
 if (!optedIn) return "unmonitored";
 
 const lastHeartbeatAt    = workerSnap?.lastHeartbeatAt ?? null;
@@ -517,11 +537,13 @@ Notes:
   `WorkerSpawnRequest.backendHints.heartbeat`. The TUI MUST surface
   unmonitored workers as such — coloring them red on telemetry absence
   is a false alarm.
-- This PR adds `heartbeatOptedIn: boolean` to the `WorkerSnapshot` shape
-  in `@koi/core/daemon` (L0). One field, well-scoped, derived directly
-  from the existing `WorkerSpawnRequest.backendHints.heartbeat` plumbing.
-  Without it, "unmonitored vs pending vs broken" is indistinguishable
-  from outside the supervisor.
+- This PR adds `heartbeatOptedIn: boolean` to **`WorkerHealth`** in
+  `@koi/core/daemon` (L0) — the type referenced by
+  `SupervisorHealth.workers: readonly WorkerHealth[]`. One field,
+  derived directly from the existing
+  `WorkerSpawnRequest.backendHints.heartbeat` plumbing.
+- Fail-closed: missing field is treated as opted-in (with a warn toast),
+  never silently as unmonitored.
 - Pending grace is a fixed 30s constant.
 - Stale window derived from `(deadlineAt - lastHeartbeatAt)`.
 
@@ -598,12 +620,44 @@ For supported rows (`running`/`starting`):
      the worker; the supervisor no longer owns the OS process and
      `supervisor.stop` is a no-op. Toast `"⚠ worker <id> is detached;
      reattach with `koi bg attach` first"`, return.
-5. Bridge calls `await supervisor.stop(workerId, "user-requested")`.
+5a. **Operator-intent claim (before stop)** — bridge writes the kill
+    intent into the registry first so the `attachRegistry` event handler
+    correctly classifies the upcoming `exited`/`crashed` event as an
+    intentional stop, not a fault:
+
+```typescript
+const claim = await registry.update(workerId as WorkerId, {
+  status: "terminating",
+  signaledAt: Date.now(),
+  expectedVersion: current.version ?? 0,  // CAS guard against respawn
+  expectedPid: current.pid,                // pin to the exact process
+});
+if (!claim.ok) {
+  if (claim.error.code === "CONFLICT") {
+    // Identity drifted between our re-read and this CAS — same
+    // semantics as the off-path detection in step 4.
+    pushToast(`⚠ worker ${workerId} respawned mid-kill; aborting`);
+    return;
+  }
+  pushToast(`⚠ failed to claim kill on ${workerId}: ${claim.error.message}`);
+  return;
+}
+```
+
+   The `terminating` claim also flips the `/bg` row's freshness to
+   `terminating` (kill-in-flight yellow) on the next poll, so the
+   operator sees the action take effect immediately.
+
+5b. Bridge calls `await supervisor.stop(workerId, "user-requested")`.
    `Result<void, KoiError>` — rejection is impossible (the API returns a
    `Result`); inspect `.ok`:
    - `ok: false` → toast `"⚠ supervisor.stop failed: ${err.message}"`,
      return without crashing the bridge.
-   - `ok: true` → done. The supervisor publishes `stopped` to `watchAll()`,
+   - `ok: true` → done. The supervisor publishes `exited` to `watchAll()`
+     (the L0 `WorkerEvent` union has no separate `stopped` kind — clean
+     stops are encoded as `exited` with `code: 0` plus the registry's
+     `terminating → exited` transition that the upstream `terminating`
+     claim from step 5a authorizes),
      `attachRegistry` advances the record to `exited`, the next poll tick
      refreshes the row.
 6. Cancel paths (`n` or Esc on the modal) → dispatch
@@ -683,9 +737,16 @@ on the right side: governance segment, then supervisor segment, separator
 - **`reduce.test.ts`** — new actions update slices; events ring buffer caps
   at 50; bg row freshness boundaries cover all 8 outcomes (pending, ok,
   stale, timeout, **unmonitored**, terminating, detached, terminal):
-  - heartbeat-opt-out worker → `unmonitored` (never `timeout`).
+  - heartbeat-opt-out worker (`heartbeatOptedIn: false`) → `unmonitored`
+    (never `timeout`).
   - heartbeat-opt-in pre-first-beat → `pending` for 30s grace, then
     `timeout`.
+  - **Fail-closed**: `heartbeatOptedIn` field missing from snapshot
+    (schema mismatch / version skew) on a worker with timestamps present
+    → treat as opted in, fire one-shot warn toast, and surface
+    stale/timeout normally — NEVER silently degrade to `unmonitored`.
+  - `heartbeatOptedIn` missing AND no timestamps → opted-in-pending
+    (still fail-closed), warn toast.
   - status-priority short-circuits for `exited`/`crashed`/`detached`/`terminating`.
   - per-worker lookup by `workerId`.
   - stale-interval derivation from `(deadlineAt - lastHeartbeatAt)`.
@@ -711,14 +772,20 @@ on the right side: governance segment, then supervisor segment, separator
 - **`daemon-bridge.test.ts`** —
   - `WorkerEvent.crashed` triggers `push_toast` + `push_supervisor_event`;
     same crash within 30s deduped to 1 toast.
-  - `WorkerSnapshot.state` `running→quarantined` (health diff) fires toast
+  - `WorkerHealth.state` `running→quarantined` (health diff) fires toast
     once per transition; subsequent polls in `quarantined` do not retoast.
   - `running→restarting` (health diff) fires info toast (not warning).
   - Worker disappearing between health snapshots does not synthesize a
     fake terminal event — only the next push event is authoritative.
   - `health` ok→degraded transition fires toast (not on every tick).
-  - `requestKill` happy path: refreshes registry, calls
-    `supervisor.stop(workerId, "user-requested")`, no toast.
+  - `requestKill` happy path: refreshes registry, **CAS-writes
+    `status: "terminating"` + `signaledAt` BEFORE** calling
+    `supervisor.stop(workerId, "user-requested")`. Verifies registry
+    update precedes supervisor.stop via call-order assertion. Subsequent
+    `exited` event from supervisor is classified as intentional, not
+    `crashed`.
+  - `requestKill` aborts on `terminating` claim CAS conflict — never
+    calls `supervisor.stop` if registry update returns `CONFLICT`.
   - `requestKill` refuses when current record is `undefined`, `exited`,
     `crashed`, `terminating`, or `detached` — surfaces correct toast,
     `supervisor.stop` not called.
@@ -751,7 +818,7 @@ on the right side: governance segment, then supervisor segment, separator
     fixture returns `Result.ok: false`, surfaces as stale; the lenient
     `list()` empty-fallback is never invoked.
   - Shutdown ordering: `supervisor.shutdown()` resolves before
-    `bridge.close()`; final `stopped` events from shutdown reach the
+    `bridge.close()`; final `exited`/`crashed` events from shutdown reach the
     store. Reversed-order regression test (close-before-shutdown) loses
     events — guarded by an explicit assertion that ordering matches spec.
 - **`wire-daemon-supervisor.test.ts`** — manifest with subprocess child
@@ -787,7 +854,7 @@ calls. Existing daemon golden queries cover supervisor lifecycle.
 | Polling at 1s × 2 in idle TUI | Bridge stops polls when `attached:false` and on `close()`. Polls coexist with `watchAll`/`registry.watch` event streams as defense in depth, not duplicate work. |
 | `watchAll()` parked-iterator cancellation | Use the closed-sentinel race pattern proven in `attachRegistry` — never `await iter.return()`. |
 | `BackgroundSessionStatus` adds future variants | The slice mirrors the L0 union directly; if L0 widens, TS exhaustiveness in the freshness reducer catches it before runtime. |
-| Adjacent L0 addition: `WorkerSnapshot.heartbeatOptedIn` | New boolean on the published health snapshot. Mechanically derived from existing `WorkerSpawnRequest.backendHints.heartbeat` plumbing — no semantic change. Self-contained: one field, one schema bump, no migration. Without it, the TUI cannot distinguish "opted out" from "hung," which is the exact false-alarm risk this PR exists to avoid. |
+| Adjacent L0 addition: `WorkerHealth.heartbeatOptedIn` | New boolean on the published health snapshot. Mechanically derived from existing `WorkerSpawnRequest.backendHints.heartbeat` plumbing — no semantic change. Self-contained: one field, one schema bump, no migration. Without it, the TUI cannot distinguish "opted out" from "hung," which is the exact false-alarm risk this PR exists to avoid. |
 | Inferred state (quarantined/restarting toasts derived from health diffs) | Documented as derived in the feed entry; no synthetic event timestamps. If the L0 `WorkerEvent` union later grows discrete `quarantined`/`restarting` events, swap the derivation for the push event in one place. |
 | `fs.watch` macOS rename quirks | Fallback to `stat+read` polling at 500ms after 5s of no events. Cap tail buffer at 1000 lines. |
 | Spawn tool output needs `workerId` | Verify Spawn tool result schema during impl; thread `workerId`/`backendKind` through if missing. Small adjacent change if needed. |
