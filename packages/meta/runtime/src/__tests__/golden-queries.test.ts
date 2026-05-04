@@ -1131,6 +1131,120 @@ describe("Golden: @koi/context-manager", () => {
       expect(slot?.identity.version).toBe(DEFAULT_CONTEXT_ENGINE_IDENTITY.version);
     });
 
+    test("swap events emitted during a run surface as kind:custom engine events (#1767 Phase 5+8)", async () => {
+      const { createKoi } = await import("@koi/engine");
+      type ContextEngine = import("@koi/core").ContextEngine;
+      type TurnId = import("@koi/core").TurnId;
+      const passthrough: ContextEngine = createPassthroughContextEngine();
+      const adapter: import("@koi/core").EngineAdapter = {
+        engineId: "test-adapter",
+        capabilities: { text: true, images: false, files: false, audio: false },
+        stream: () => {
+          const events: EngineEvent[] = [
+            { kind: "turn_end", turnIndex: 0 },
+            {
+              kind: "done",
+              output: {
+                content: [],
+                stopReason: "completed",
+                metrics: {
+                  totalTokens: 0,
+                  inputTokens: 0,
+                  outputTokens: 0,
+                  turns: 1,
+                  durationMs: 0,
+                },
+              },
+            },
+          ];
+          let i = 0;
+          return {
+            [Symbol.asyncIterator]: () => ({
+              async next(): Promise<IteratorResult<EngineEvent>> {
+                if (i >= events.length) return { done: true, value: undefined };
+                const value = events[i];
+                if (value === undefined) return { done: true, value: undefined };
+                i += 1;
+                return { done: false, value };
+              },
+            }),
+          };
+        },
+      };
+      const runtime = await createKoi({
+        manifest: {
+          name: "agent",
+          version: "1.0.0",
+          model: { name: "test" },
+          context: { engine: DEFAULT_CONTEXT_ENGINE_IDENTITY.name },
+        },
+        adapter,
+        contextEngineFactory: createContextEngine,
+      });
+
+      const handle = runtime.run({ kind: "text", text: "hi" });
+      const iter = handle[Symbol.asyncIterator]();
+      const collected: EngineEvent[] = [];
+      const first = await iter.next();
+      if (!first.done) collected.push(first.value);
+      // Mid-run swap to passthrough — must be force:true because the
+      // manifest pinned the bundled engine name and passthrough has a
+      // different identity.
+      runtime.contextEngineSwapController?.swap(passthrough, {
+        turnId: "run-1:t1" as TurnId,
+        reason: "phase-8 e2e swap",
+        force: true,
+      });
+      while (true) {
+        const r = await iter.next();
+        if (r.done) break;
+        collected.push(r.value);
+      }
+      const swapEvents = collected.filter(
+        (e): e is Extract<EngineEvent, { kind: "custom" }> =>
+          e.kind === "custom" && e.type === "context-engine-swap",
+      );
+      expect(swapEvents.length).toBe(1);
+      const data = swapEvents[0]?.data as {
+        from: { name: string };
+        to: { name: string };
+        reason: string;
+      };
+      expect(data.from.name).toBe(DEFAULT_CONTEXT_ENGINE_IDENTITY.name);
+      expect(data.to.name).toBe("@koi/context-manager/passthrough");
+      expect(data.reason).toBe("phase-8 e2e swap");
+    });
+
+    test("swap before any run is dropped — telemetry-only delivery between runs (#1767 Phase 5)", async () => {
+      const { createKoi } = await import("@koi/engine");
+      type ContextEngine = import("@koi/core").ContextEngine;
+      type TurnId = import("@koi/core").TurnId;
+      const passthrough: ContextEngine = createPassthroughContextEngine();
+      const runtime = await createKoi({
+        manifest: { name: "agent", version: "1.0.0", model: { name: "test" } },
+        adapter: buildMockAdapter(),
+        contextEngineFactory: createContextEngine,
+      });
+      // Subscribe directly to confirm the controller still fires the swap
+      // even when no run is active — out-of-run delivery is via subscribe().
+      const observed: string[] = [];
+      runtime.contextEngineSwapController?.subscribe((evt) => observed.push(evt.to.name));
+      runtime.contextEngineSwapController?.swap(passthrough, {
+        turnId: "out-of-run" as TurnId,
+        reason: "before-any-run",
+        force: true,
+      });
+      expect(observed).toEqual(["@koi/context-manager/passthrough"]);
+      // Now start a run that completes immediately — the queue must NOT
+      // replay the earlier out-of-run swap (it was dropped at emission time).
+      const collected: EngineEvent[] = [];
+      for await (const e of runtime.run({ kind: "text", text: "hi" })) collected.push(e);
+      const swapEvents = collected.filter(
+        (e) => e.kind === "custom" && e.type === "context-engine-swap",
+      );
+      expect(swapEvents.length).toBe(0);
+    });
+
     test("manifest version that does not match the bundled artifact is rejected", async () => {
       const { createKoi } = await import("@koi/engine");
       await expect(

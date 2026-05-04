@@ -802,6 +802,23 @@ export async function drainEngineStream(
         }
       }
 
+      // --- Context-engine swap notice (#1767 Phase 6) ---
+      // Surface runtime-emitted swap events as a one-line system notice
+      // through the single-writer store action surface (#1940). Keeps the
+      // notice out of the model transcript and avoids any out-of-band
+      // stderr writes.
+      if (event.kind === "custom" && event.type === "context-engine-swap") {
+        const swap = event.data as {
+          from: { name: string; version: string };
+          to: { name: string; version: string };
+          reason: string;
+        };
+        store.dispatch({
+          kind: "add_info",
+          message: `↔ context engine: ${swap.from.name}@${swap.from.version} → ${swap.to.name}@${swap.to.version} (${swap.reason})`,
+        });
+      }
+
       // --- Lifecycle events: flush before AND after to isolate them ---
       // This ensures turn_start creates the streaming message before any
       // deltas arrive, and turn_end/done closes it only after all deltas

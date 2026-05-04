@@ -211,6 +211,65 @@ describe("createKoi assembly", () => {
     expect(runtime.agent.component(CONTEXT_ENGINE)?.identity.version).toBe("2.0.0");
   });
 
+  test("swap during an active run surfaces as a context-engine-swap custom event (#1767 Phase 5)", async () => {
+    type ContextEngine = import("@koi/core").ContextEngine;
+    type TurnId = import("@koi/core").TurnId;
+    const engineA: ContextEngine = {
+      identity: { name: "a", version: "1.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const engineB: ContextEngine = {
+      identity: { name: "b", version: "2.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([
+        { kind: "turn_end", turnIndex: 0 },
+        {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "completed",
+            metrics: {
+              totalTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              turns: 0,
+              durationMs: 0,
+            },
+          },
+        },
+      ]),
+      contextEngineFactory: () => engineA,
+    });
+
+    const handle = runtime.run({ kind: "text", text: "hi" });
+    const iter = handle[Symbol.asyncIterator]();
+    const collected: EngineEvent[] = [];
+    // Pull turn_start
+    const first = await iter.next();
+    if (!first.done) collected.push(first.value);
+    // Trigger swap before next pull — runtime should enqueue it
+    runtime.contextEngineSwapController?.swap(engineB, {
+      turnId: "run-1:t1" as TurnId,
+      reason: "test",
+    });
+    while (true) {
+      const r = await iter.next();
+      if (r.done) break;
+      collected.push(r.value);
+    }
+    const swapEvents = collected.filter(
+      (e): e is Extract<EngineEvent, { kind: "custom" }> =>
+        e.kind === "custom" && e.type === "context-engine-swap",
+    );
+    expect(swapEvents.length).toBe(1);
+    const data = swapEvents[0]?.data as { from: { name: string }; to: { name: string } };
+    expect(data.from.name).toBe("a");
+    expect(data.to.name).toBe("b");
+  });
+
   test("omitting contextEngineFactory leaves the CONTEXT_ENGINE slot empty", async () => {
     const { CONTEXT_ENGINE } = await import("@koi/core");
     const runtime = await createKoi({
