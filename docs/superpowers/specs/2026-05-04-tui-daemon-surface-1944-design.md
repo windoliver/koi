@@ -515,65 +515,44 @@ if (status === "exited" || status === "crashed") return "terminal";
 if (status === "detached")    return "detached";
 if (status === "terminating") return "terminating";
 
-// status is "starting" or "running" → ownership FIRST, then health.
-const localOwnedIds = new Set(supervisor.list().map(p => p.workerId));
-const isLocallyOwned = localOwnedIds.has(row.workerId);
-
+// status is "starting" or "running" → derive ownership from health snapshot.
+// `Supervisor.list()` returns ProcessDescriptor[] which has agentId only,
+// NOT workerId. The authoritative source for "this supervisor owns these
+// workerIds" is `SupervisorHealth.workers[].workerId` — the per-worker
+// health array IS the ownership set.
 const workerSnap = health.workers.find(w => w.workerId === row.workerId);
 
-// Foreign row: registry has a record from another supervisor process.
-// We do NOT have authoritative health for it; absence of workerSnap is
-// EXPECTED, never a schema mismatch. Render neutral, never red.
-if (!isLocallyOwned) return "foreign";
-
-// Locally owned but missing from health snapshot — THAT is a contract
-// mismatch. Fail-closed: pending within grace, then timeout.
-if (workerSnap === undefined) {
-  warnSchemaMismatchOnce();
-  const PENDING_GRACE_MS = 30_000;
-  if (now - row.startedAt < PENDING_GRACE_MS) return "pending";
-  return "timeout";
-}
+// No matching workerSnap → row is foreign (owned by another supervisor
+// process writing into the same state-dir registry). Foreign rows render
+// neutral and are never killable from this TUI.
+if (workerSnap === undefined) return "foreign";
 
 // `health.workers` items are of type `WorkerHealth` (per @koi/core/daemon
 // — `SupervisorHealth.workers: readonly WorkerHealth[]`).
-// The PR extends `WorkerHealth` with one new boolean.
+// L0 contract: `lastHeartbeatAt` and `heartbeatDeadlineAt` are
+// permanently `undefined` for workers that did NOT opt into heartbeat
+// monitoring. We use that existing semantics directly — no new field,
+// no schema-mismatch handling needed.
 
-// Heartbeat opt-in classification — fail closed.
-// Required L0 addition: `WorkerHealth.heartbeatOptedIn: boolean`. Until
-// this field lands, the bridge cannot reliably distinguish "opted out"
-// from "broken" and we must not silently flip workers to neutral state.
+// Heartbeat classification: rely entirely on the EXISTING contract.
+// Per @koi/core/daemon WorkerHealth jsdoc: lastHeartbeatAt /
+// heartbeatDeadlineAt are `undefined` exactly when the worker did not
+// opt into heartbeat monitoring. No new L0 field needed.
 //
-// Decision rule (in priority order):
-//   1. workerSnap.heartbeatOptedIn === true  → opted in, run timestamp checks.
-//   2. workerSnap.heartbeatOptedIn === false → unmonitored.
-//   3. flag absent on a worker that has lastHeartbeatAt OR
-//      heartbeatDeadlineAt populated → SCHEMA MISMATCH. Treat as opted in
-//      AND log a one-shot warning toast `"⚠ stale @koi/core schema: rebuild"`
-//      (never silently downgrade to unmonitored).
-//   4. flag absent AND no timestamps → unknown classification: surface a
-//      one-shot warning toast and treat as opted-in-pending (fail closed).
-const optIn = workerSnap?.heartbeatOptedIn;
-const hasTimestamps =
-  workerSnap?.lastHeartbeatAt !== undefined ||
-  workerSnap?.heartbeatDeadlineAt !== undefined;
-let optedIn: boolean;
-if (optIn === true) optedIn = true;
-else if (optIn === false) optedIn = false;
-else {
-  // Field missing — schema mismatch. Toast once, fail closed.
-  warnSchemaMismatchOnce();
-  optedIn = true;
-}
-if (!optedIn) return "unmonitored";
+// Decision rule:
+//   - heartbeatDeadlineAt undefined → unmonitored (opt-out).
+//   - heartbeatDeadlineAt present, lastHeartbeatAt undefined → opted-in
+//     pre-first-beat (bounded by 30s grace from startedAt).
+//   - both present → run timestamp checks.
+const lastHeartbeatAt    = workerSnap.lastHeartbeatAt ?? null;
+const heartbeatDeadlineAt = workerSnap.heartbeatDeadlineAt ?? null;
 
-const lastHeartbeatAt    = workerSnap?.lastHeartbeatAt ?? null;
-const heartbeatDeadlineAt = workerSnap?.heartbeatDeadlineAt ?? null;
+if (heartbeatDeadlineAt === null) return "unmonitored";
 
-if (heartbeatDeadlineAt === null || lastHeartbeatAt === null) {
-  // Opted in but no heartbeat yet (transient; bounded by deadline once set).
+if (lastHeartbeatAt === null) {
+  // Opted in but no heartbeat yet.
   const PENDING_GRACE_MS = 30_000;
-  if (now - startedAt < PENDING_GRACE_MS) return "pending";
+  if (now - row.startedAt < PENDING_GRACE_MS) return "pending";
   return "timeout";
 }
 
@@ -585,16 +564,10 @@ return "timeout";
 
 Notes:
 - Heartbeat is opt-in on the daemon side via
-  `WorkerSpawnRequest.backendHints.heartbeat`. The TUI MUST surface
-  unmonitored workers as such — coloring them red on telemetry absence
-  is a false alarm.
-- This PR adds `heartbeatOptedIn: boolean` to **`WorkerHealth`** in
-  `@koi/core/daemon` (L0) — the type referenced by
-  `SupervisorHealth.workers: readonly WorkerHealth[]`. One field,
-  derived directly from the existing
-  `WorkerSpawnRequest.backendHints.heartbeat` plumbing.
-- Fail-closed: missing field is treated as opted-in (with a warn toast),
-  never silently as unmonitored.
+  `WorkerSpawnRequest.backendHints.heartbeat`. The TUI surfaces
+  unmonitored workers via the existing absent-timestamp signal — no L0
+  additions required, no schema mismatch handling, no fail-closed
+  warning toasts.
 - Pending grace is a fixed 30s constant.
 - Stale window derived from `(deadlineAt - lastHeartbeatAt)`.
 
@@ -643,9 +616,12 @@ must NEVER be attempted):
 | `exited`, `crashed` | any | ❌ | hint: "already terminal" |
 
 Ownership is determined by intersecting the registry record's `workerId`
-with `supervisor.list().map(p => p.workerId)`. The supervisor list is
-the authoritative set of workers the local process owns. Cached at the
-1s health-poll cadence; row identity reconciled on every render.
+with `supervisor.health().workers.map(w => w.workerId)`. The per-worker
+health array IS the authoritative set of locally-owned workers — its
+items are typed `WorkerHealth` which carries `workerId` (unlike
+`Supervisor.list()` whose `ProcessDescriptor` items only carry
+`agentId`). Cached at the 1s health-poll cadence; row identity
+reconciled on every render.
 
 The detached-kill recovery path is intentionally NOT routed through the
 TUI bridge. The off-path `runKill` in `packages/meta/cli/src/commands/bg.ts`
@@ -681,15 +657,26 @@ For supported rows (`running`/`starting`):
      the worker; the supervisor no longer owns the OS process and
      `supervisor.stop` is a no-op. Toast `"⚠ worker <id> is detached;
      reattach with `koi bg attach` first"`, return.
-5. **Two-phase kill** — mirrors the off-path `runKill` invariant in
-   `packages/meta/cli/src/commands/bg.ts`: claim `terminating` BEFORE
-   stop, but stamp `signaledAt` ONLY after the supervisor has actually
-   initiated termination. Pre-stamping `signaledAt` is unsafe — it
-   biases the `attachRegistry` freshness window, so a genuine crash
-   landing between the early stamp and `supervisor.stop` would be
-   misclassified as `exited`.
+5. **Atomic claim + stop, with full rollback** — the on-path TUI kill is
+   not the same race as the off-path CLI kill. `bg.ts` runKill stamps
+   `signaledAt` only after SIGTERM is delivered because there is no
+   in-process supervisor to commit to a stop intent atomically. Inside
+   the TUI, however, we need `signaledAt` to be present BEFORE the
+   supervisor publishes the terminal `exited`/`crashed` event, otherwise
+   `attachRegistry` will classify the operator-initiated stop as a
+   crash. (The supervisor can publish the terminal event between
+   `stop()` returning and any post-stop registry write — there is no
+   way to interpose another atomic write.)
 
-5a. **Phase 1 — terminating claim (no signaledAt yet)**:
+   Solution: write the full kill claim — `terminating` + `signaledAt`
+   together — in a single CAS update BEFORE calling `supervisor.stop`.
+   On stop failure, the rollback CAS clears BOTH the status and the
+   `signaledAt` stamp atomically, so a follow-up genuine crash is not
+   biased toward classification as intentional. This matches the
+   atomicity property `attachRegistry` actually depends on (one
+   freshness-window-defining write, not two).
+
+5a. **Phase 1 — atomic terminating + signaledAt claim**:
 
 ```typescript
 // Capture pre-claim status so a failed stop can revert to the EXACT
@@ -700,7 +687,7 @@ const preClaimStatus = current.status;  // "running" | "starting"
 
 const claim = await registry.update(workerId as WorkerId, {
   status: "terminating",
-  clearSignaledAt: true,                   // wipe any stale prior stamp
+  signaledAt: Date.now(),                  // atomic with status flip
   expectedVersion: current.version ?? 0,  // CAS guard against respawn
   expectedPid: current.pid,                // pin to the exact process
 });
@@ -718,42 +705,35 @@ const claimedVersion = claim.value.version ?? 0;
    The `terminating` claim flips the `/bg` row's freshness to
    `terminating` (kill-in-flight yellow) on the next poll.
 
-5b. **Phase 2 — supervisor stop + signaledAt stamp**:
+5b. **Phase 2 — supervisor stop, with atomic rollback on failure**:
 
 ```typescript
 const stopResult = await supervisor.stop(workerId, "user-requested");
 if (!stopResult.ok) {
-  // Stop failed (NOT_FOUND, INVALID_STATE, etc.). Best-effort revert
-  // the terminating claim back to running so the record doesn't
-  // strand. CAS-guarded; if the bridge already advanced state past
-  // our claim, leave it.
+  // Stop failed (NOT_FOUND, INVALID_STATE, etc.). Atomic rollback:
+  // restore EXACT prior status AND clear the signaledAt stamp in a
+  // single CAS update. Both must clear together so a follow-up genuine
+  // crash is not biased toward intentional classification by a stale
+  // signaledAt left behind.
   await registry.update(workerId as WorkerId, {
-    status: preClaimStatus,                 // EXACT prior status, not "running"
+    status: preClaimStatus,                 // EXACT prior status (running/starting)
+    clearSignaledAt: true,                  // wipe the intent marker
     expectedVersion: claimedVersion,
     expectedPid: current.pid,
   });
   pushToast(`⚠ supervisor.stop failed: ${stopResult.error.message}`);
   return;
 }
-
-// Stop accepted — supervisor is now driving the worker through
-// termination. Stamp signaledAt so attachRegistry's freshness window
-// downgrades the resulting exited/crashed event to "intentional".
-await registry.update(workerId as WorkerId, {
-  signaledAt: Date.now(),
-  expectedVersion: claimedVersion,
-  expectedPid: current.pid,
-});
-// Stamp failure here is non-fatal (bridge may have already advanced
-// the record on a fast exit) — log only, no toast.
+// Stop accepted. The signaledAt stamp from Phase 1 is already present,
+// so attachRegistry's freshness window correctly classifies the
+// upcoming exited/crashed event as intentional. No further write needed.
 ```
 
    - `stopResult.ok: true` → supervisor publishes `exited` to
      `watchAll()` (the L0 `WorkerEvent` union has no separate `stopped`
-     kind — clean stops are encoded as `exited` with `code: 0` plus the
-     registry's `terminating → exited` transition that this PR's
-     `signaledAt` stamp authorizes), the row flips to terminal on the
-     next poll.
+     kind; clean stops are `exited` with `code: 0`); `attachRegistry`
+     sees the existing `signaledAt` stamp and writes `status: "exited"`,
+     not `"crashed"`. Next poll refreshes the row.
 
 6. Cancel paths (`n` or Esc on the modal) → dispatch
    `set_bg_kill_confirm({ confirm: null })`. No supervisor calls made.
@@ -830,24 +810,19 @@ on the right side: governance segment, then supervisor segment, separator
 ### Unit tests (bun:test, colocated)
 
 - **`reduce.test.ts`** — new actions update slices; events ring buffer caps
-  at 50; bg row freshness boundaries cover all 8 outcomes (pending, ok,
-  stale, timeout, **unmonitored**, terminating, detached, terminal):
-  - heartbeat-opt-out worker (`heartbeatOptedIn: false`) → `unmonitored`
-    (never `timeout`).
-  - Foreign row (workerId not in `supervisor.list()`) → `foreign`
-    (never `timeout`, no schema-mismatch warn). Test fixture: a
-    BackgroundSessionRecord present in registry but absent from
-    supervisor.list AND absent from health.workers.
-  - Locally-owned row missing from health.workers → schema-mismatch
-    warn fires once, freshness pending → timeout (fail-closed).
-  - heartbeat-opt-in pre-first-beat → `pending` for 30s grace, then
-    `timeout`.
-  - **Fail-closed**: `heartbeatOptedIn` field missing from snapshot
-    (schema mismatch / version skew) on a worker with timestamps present
-    → treat as opted in, fire one-shot warn toast, and surface
-    stale/timeout normally — NEVER silently degrade to `unmonitored`.
-  - `heartbeatOptedIn` missing AND no timestamps → opted-in-pending
-    (still fail-closed), warn toast.
+  at 50; bg row freshness boundaries cover all 9 outcomes (pending, ok,
+  stale, timeout, **unmonitored**, **foreign**, terminating, detached,
+  terminal):
+  - Foreign row: workerId not in `supervisor.health().workers` →
+    `foreign` (never `timeout`). Test fixture: BackgroundSessionRecord
+    present in registry but no matching entry in local health snapshot.
+  - Locally-owned + `heartbeatDeadlineAt: undefined` → `unmonitored`
+    (existing contract: undefined timestamps = opt-out).
+  - Locally-owned + `heartbeatDeadlineAt` present, `lastHeartbeatAt
+    undefined` → `pending` for 30s grace from `startedAt`, then `timeout`.
+  - Locally-owned + both present, `now <= deadlineAt` → `ok`.
+  - Locally-owned + both present, `now - deadlineAt < interval` →
+    `stale`; greater → `timeout`.
   - status-priority short-circuits for `exited`/`crashed`/`detached`/`terminating`.
   - per-worker lookup by `workerId`.
   - stale-interval derivation from `(deadlineAt - lastHeartbeatAt)`.
@@ -885,19 +860,27 @@ on the right side: governance segment, then supervisor segment, separator
   - Worker disappearing between health snapshots does not synthesize a
     fake terminal event — only the next push event is authoritative.
   - `health` ok→degraded transition fires toast (not on every tick).
-  - `requestKill` happy path is two-phase:
-    1. CAS-writes `status: "terminating"` with `clearSignaledAt: true`
-       BEFORE calling `supervisor.stop(workerId, "user-requested")`.
-    2. Stamps `signaledAt` ONLY after `supervisor.stop` returns
-       `Result.ok: true`. Pre-stop snapshot has no `signaledAt`.
-    Asserted via call-order spy on registry.update + supervisor.stop.
+  - `requestKill` happy path: atomic CAS write of
+    `{ status: "terminating", signaledAt: now }` precedes
+    `supervisor.stop(workerId, "user-requested")`. Verified via call
+    order spy. Subsequent `exited` event is classified intentional
+    (record flips terminating → exited, not crashed) because the
+    signaledAt stamp is already in the freshness window when the
+    bridge processes the event.
   - `requestKill` aborts on Phase 1 CAS conflict — never calls
     `supervisor.stop` if registry update returns `CONFLICT`.
-  - `requestKill` reverts `terminating → preClaimStatus` (EXACT prior
-    status, CAS-guarded) when `supervisor.stop` returns `Result.ok:
-    false`. Covers both `running → terminating → running` and
-    `starting → terminating → starting`. `signaledAt` is never written
-    in this case (preserves crash-classification accuracy).
+  - **Atomic rollback**: when `supervisor.stop` returns `Result.ok:
+    false`, the rollback CAS writes `{ status: preClaimStatus,
+    clearSignaledAt: true }` together — restoring EXACT prior status
+    AND wiping the intent marker. Cover both `running → terminating →
+    running` and `starting → terminating → starting`. A follow-up
+    genuine crash after rollback is correctly classified as `crashed`,
+    not `exited`, proving the stamp was actually cleared.
+  - **Race regression test**: simulate a worker that exits during
+    `supervisor.stop` (terminal event lands inline with stop's resolve).
+    With the atomic Phase 1 stamp, classification is intentional. Test
+    that swapping to a delayed-stamp variant reproduces the misclassify
+    — guards the design from drifting back to a racy two-phase write.
   - `requestKill` refuses for foreign rows: when row's `workerId` is
     NOT in `supervisor.list().map(p => p.workerId)`, the action is
     gated off in BgView (no `k` available). Bridge `requestKill` also
@@ -971,7 +954,7 @@ calls. Existing daemon golden queries cover supervisor lifecycle.
 | Polling at 1s × 2 in idle TUI | Bridge stops polls when `attached:false` and on `close()`. Polls coexist with `watchAll`/`registry.watch` event streams as defense in depth, not duplicate work. |
 | `watchAll()` parked-iterator cancellation | Use the closed-sentinel race pattern proven in `attachRegistry` — never `await iter.return()`. |
 | `BackgroundSessionStatus` adds future variants | The slice mirrors the L0 union directly; if L0 widens, TS exhaustiveness in the freshness reducer catches it before runtime. |
-| Adjacent L0 addition: `WorkerHealth.heartbeatOptedIn` | New boolean on the published health snapshot. Mechanically derived from existing `WorkerSpawnRequest.backendHints.heartbeat` plumbing — no semantic change. Self-contained: one field, one schema bump, no migration. Without it, the TUI cannot distinguish "opted out" from "hung," which is the exact false-alarm risk this PR exists to avoid. |
+| Heartbeat opt-in detection | Uses the existing `WorkerHealth` contract: `heartbeatDeadlineAt === undefined` ⇒ opt-out. No new L0 fields. No schema mismatch handling needed. |
 | Inferred state (quarantined/restarting toasts derived from health diffs) | Documented as derived in the feed entry; no synthetic event timestamps. If the L0 `WorkerEvent` union later grows discrete `quarantined`/`restarting` events, swap the derivation for the push event in one place. |
 | `fs.watch` macOS rename quirks | Fallback to `stat+read` polling at 500ms after 5s of no events. Cap tail buffer at 1000 lines. |
 | Spawn tool output needs `workerId` | Verify Spawn tool result schema during impl; thread `workerId`/`backendKind` through if missing. Small adjacent change if needed. |
