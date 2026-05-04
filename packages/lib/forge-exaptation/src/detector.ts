@@ -15,13 +15,20 @@ import type { ExaptationKind, UsagePurposeObservation } from "@koi/core";
 
 /** Detection thresholds. All fields required to make tuning explicit. */
 export interface ExaptationThresholds {
-  /** Minimum observations before detection can trigger. */
+  /** Minimum total observations before detection can trigger (positive integer). */
   readonly minObservations: number;
-  /** Average Jaccard divergence required (0-1). */
+  /** Average Jaccard divergence required across all observations (in [0, 1]). */
   readonly divergenceThreshold: number;
-  /** Minimum distinct agents whose individual divergence ≥ threshold. */
+  /** Minimum distinct agents that independently show drift (positive integer). */
   readonly minDivergentAgents: number;
-  /** Severity multiplier weight (0-1) applied to scaled drift score. */
+  /**
+   * Per-agent observation floor. An agent only counts as divergent when they
+   * have at least this many observations AND their personal average divergence
+   * is at or above `divergenceThreshold`. Prevents one-off spikes from
+   * manufacturing multi-agent drift (positive integer).
+   */
+  readonly minObservationsPerAgent: number;
+  /** Severity multiplier weight applied to scaled drift score (in [0, 1]). */
   readonly confidenceWeight: number;
 }
 
@@ -30,6 +37,7 @@ export const DEFAULT_EXAPTATION_THRESHOLDS: ExaptationThresholds = {
   minObservations: 5,
   divergenceThreshold: 0.7,
   minDivergentAgents: 2,
+  minObservationsPerAgent: 2,
   confidenceWeight: 0.8,
 } as const;
 
@@ -42,9 +50,9 @@ export interface DriftReport {
   readonly kind: ExaptationKind;
   /** Severity score in [0, 1]. */
   readonly severity: number;
-  /** Mean divergence across observations. */
+  /** Mean divergence across observations, in [0, 1]. */
   readonly avgDivergence: number;
-  /** Number of distinct agents at or above the divergence threshold. */
+  /** Number of distinct agents whose own drift evidence cleared the bar. */
   readonly divergentAgents: number;
   /** Total observations evaluated. */
   readonly observationCount: number;
@@ -79,18 +87,25 @@ const STABLE_WINDOW_COUNT = 2;
 
 /**
  * Detect purpose drift from a sliding window of observations for a single
- * artifact. Returns `undefined` when any criterion is unmet.
+ * artifact. Returns `undefined` when any criterion is unmet OR when input
+ * is malformed (non-finite scores, out-of-range thresholds, etc.).
+ *
+ * Validation is deliberately silent — bad input never produces a poisoned
+ * `DriftReport` (with `NaN` fields or saturated severity from divide-by-zero).
+ * Callers that want loud failure should pre-validate.
  */
 export function detectDrift(
   observations: readonly UsagePurposeObservation[],
   thresholds: ExaptationThresholds,
 ): DriftReport | undefined {
+  if (!areThresholdsValid(thresholds)) return undefined;
+  if (!areObservationsValid(observations)) return undefined;
   if (observations.length < thresholds.minObservations) return undefined;
 
   const avgDivergence = computeAverageDivergence(observations);
   if (avgDivergence < thresholds.divergenceThreshold) return undefined;
 
-  const divergentAgents = countDivergentAgents(observations, thresholds.divergenceThreshold);
+  const divergentAgents = countDivergentAgents(observations, thresholds);
   if (divergentAgents < thresholds.minDivergentAgents) return undefined;
 
   const severity = computeSeverity(avgDivergence, divergentAgents, observations.length, thresholds);
@@ -125,6 +140,32 @@ export function suggestAction(
 // Internals (pure)
 // ---------------------------------------------------------------------------
 
+function isPositiveInteger(value: number): boolean {
+  return Number.isInteger(value) && value >= 1;
+}
+
+function isUnitInterval(value: number): boolean {
+  return Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function areThresholdsValid(t: ExaptationThresholds): boolean {
+  return (
+    isPositiveInteger(t.minObservations) &&
+    isPositiveInteger(t.minDivergentAgents) &&
+    isPositiveInteger(t.minObservationsPerAgent) &&
+    isUnitInterval(t.divergenceThreshold) &&
+    isUnitInterval(t.confidenceWeight)
+  );
+}
+
+function areObservationsValid(observations: readonly UsagePurposeObservation[]): boolean {
+  for (const o of observations) {
+    if (!isUnitInterval(o.divergenceScore)) return false;
+    if (typeof o.agentId !== "string" || o.agentId.length === 0) return false;
+  }
+  return true;
+}
+
 function computeAverageDivergence(observations: readonly UsagePurposeObservation[]): number {
   // let: sum accumulator
   let sum = 0;
@@ -132,15 +173,33 @@ function computeAverageDivergence(observations: readonly UsagePurposeObservation
   return sum / observations.length;
 }
 
+/**
+ * Count agents whose *own* drift evidence clears the bar:
+ *   - at least `minObservationsPerAgent` observations attributed to them, AND
+ *   - their personal average divergence ≥ `divergenceThreshold`.
+ *
+ * This rejects the "one-off spike from a second agent fakes multi-agent drift"
+ * failure mode: a single borderline observation no longer counts as evidence.
+ */
 function countDivergentAgents(
   observations: readonly UsagePurposeObservation[],
-  threshold: number,
+  thresholds: ExaptationThresholds,
 ): number {
-  const agents = new Set<string>();
+  const sums = new Map<string, number>();
+  const counts = new Map<string, number>();
   for (const o of observations) {
-    if (o.divergenceScore >= threshold) agents.add(o.agentId);
+    sums.set(o.agentId, (sums.get(o.agentId) ?? 0) + o.divergenceScore);
+    counts.set(o.agentId, (counts.get(o.agentId) ?? 0) + 1);
   }
-  return agents.size;
+
+  // let: divergent agent counter
+  let divergent = 0;
+  for (const [agentId, count] of counts) {
+    if (count < thresholds.minObservationsPerAgent) continue;
+    const sum = sums.get(agentId) ?? 0;
+    if (sum / count >= thresholds.divergenceThreshold) divergent++;
+  }
+  return divergent;
 }
 
 function computeSeverity(

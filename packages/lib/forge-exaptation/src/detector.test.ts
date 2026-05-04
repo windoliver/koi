@@ -30,6 +30,7 @@ describe("detectDrift", () => {
       obs("a3", 0.95),
       obs("a1", 0.8),
       obs("a2", 0.9),
+      obs("a3", 0.85),
     ];
     const report = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(report).toBeDefined();
@@ -44,6 +45,7 @@ describe("detectDrift", () => {
       obs("a3", 0.9),
       obs("a1", 0.85),
       obs("a2", 0.92),
+      obs("a3", 0.88),
     ];
     const report = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(report).toBeDefined();
@@ -63,6 +65,98 @@ describe("detectDrift", () => {
       obs("a1", 0.91),
       obs("a1", 0.95),
       obs("a1", 0.93),
+    ];
+    expect(detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS)).toBeUndefined();
+  });
+
+  test("one agent with sustained drift + a single noisy spike from a second agent → no drift", () => {
+    // Regression: a one-off observation must not let a second agent count as
+    // divergent and manufacture multi-agent evidence.
+    const observations = [
+      obs("a1", 0.9),
+      obs("a1", 0.92),
+      obs("a1", 0.91),
+      obs("a1", 0.95),
+      obs("a2", 0.7),
+    ];
+    expect(detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS)).toBeUndefined();
+  });
+
+  test("non-finite divergence score → no drift (no NaN report)", () => {
+    const observations = [
+      obs("a1", Number.NaN),
+      obs("a2", 0.9),
+      obs("a1", 0.9),
+      obs("a2", 0.9),
+      obs("a1", 0.9),
+    ];
+    expect(detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS)).toBeUndefined();
+  });
+
+  test("out-of-range divergence score → no drift", () => {
+    const observations = [
+      obs("a1", 1.5),
+      obs("a1", 0.9),
+      obs("a2", 0.9),
+      obs("a2", 0.9),
+      obs("a1", 0.9),
+    ];
+    expect(detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS)).toBeUndefined();
+  });
+
+  test("zero minObservations threshold → no drift (rejects invalid config)", () => {
+    const observations = [obs("a1", 0.9), obs("a2", 0.9), obs("a1", 0.9), obs("a2", 0.9)];
+    expect(
+      detectDrift(observations, { ...DEFAULT_EXAPTATION_THRESHOLDS, minObservations: 0 }),
+    ).toBeUndefined();
+  });
+
+  test("zero minDivergentAgents threshold → no drift (rejects invalid config)", () => {
+    const observations = [
+      obs("a1", 0.9),
+      obs("a2", 0.9),
+      obs("a1", 0.9),
+      obs("a2", 0.9),
+      obs("a1", 0.9),
+    ];
+    expect(
+      detectDrift(observations, { ...DEFAULT_EXAPTATION_THRESHOLDS, minDivergentAgents: 0 }),
+    ).toBeUndefined();
+  });
+
+  test("non-integer threshold → no drift (rejects invalid config)", () => {
+    const observations = [
+      obs("a1", 0.9),
+      obs("a2", 0.9),
+      obs("a1", 0.9),
+      obs("a2", 0.9),
+      obs("a1", 0.9),
+    ];
+    expect(
+      detectDrift(observations, { ...DEFAULT_EXAPTATION_THRESHOLDS, minObservations: 2.5 }),
+    ).toBeUndefined();
+  });
+
+  test("out-of-range divergenceThreshold → no drift", () => {
+    const observations = [
+      obs("a1", 0.9),
+      obs("a2", 0.9),
+      obs("a1", 0.9),
+      obs("a2", 0.9),
+      obs("a1", 0.9),
+    ];
+    expect(
+      detectDrift(observations, { ...DEFAULT_EXAPTATION_THRESHOLDS, divergenceThreshold: 1.5 }),
+    ).toBeUndefined();
+  });
+
+  test("empty agentId → no drift", () => {
+    const observations = [
+      obs("", 0.9),
+      obs("a2", 0.9),
+      obs("a1", 0.9),
+      obs("a2", 0.9),
+      obs("a1", 0.9),
     ];
     expect(detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS)).toBeUndefined();
   });
