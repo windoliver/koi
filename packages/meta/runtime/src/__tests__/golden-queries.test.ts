@@ -2947,3 +2947,242 @@ describe("Golden: @koi/sandbox-ssh", () => {
     expect(supports?.has("network")).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/handoff (#1371)
+// ---------------------------------------------------------------------------
+
+import {
+  createAcceptTool,
+  createHandoffMiddleware,
+  createInMemoryHandoffStore,
+  createPrepareTool,
+  generateHandoffSummary,
+} from "@koi/handoff";
+
+describe("Golden: @koi/handoff", () => {
+  test("end-to-end pipeline: prepare → middleware injects → accept", async () => {
+    const store = createInMemoryHandoffStore();
+    const sender = agentId("agent-a");
+    const receiver = agentId("agent-b");
+
+    // Sender packages a handoff
+    const prepare = createPrepareTool({ store, agentId: sender });
+    const prepared = (await prepare.execute({
+      to: receiver,
+      completed: "phase 1 done",
+      next: "do phase 2",
+      results: { score: 42 },
+      warnings: ["careful with X"],
+    })) as { handoffId: string; status: string };
+    expect(prepared.status).toBe("pending");
+
+    // Receiver's middleware injects context on first model call
+    const middleware = createHandoffMiddleware({ store, agentId: receiver });
+    const seen: { messageCount: number }[] = [];
+    if (middleware.wrapModelCall === undefined) throw new Error("wrapModelCall missing");
+    const fakeCtx = { metadata: {} } as unknown as Parameters<
+      NonNullable<typeof middleware.wrapModelCall>
+    >[0];
+    await middleware.wrapModelCall(fakeCtx, { messages: [] }, async (req) => {
+      seen.push({ messageCount: req.messages.length });
+      return { content: "ok", model: "test" };
+    });
+    expect(seen[0]?.messageCount).toBe(1); // summary prepended
+
+    // Receiver accepts and unpacks the envelope
+    const accept = createAcceptTool({ store, agentId: receiver });
+    const accepted = (await accept.execute({ handoff_id: prepared.handoffId })) as {
+      from: string;
+      results: Record<string, unknown>;
+      warnings: readonly string[];
+    };
+    expect(accepted.from).toBe(sender);
+    expect(accepted.results).toEqual({ score: 42 });
+    expect(accepted.warnings).toContain("careful with X");
+  });
+
+  test("generateHandoffSummary produces a structured prompt with id reference", () => {
+    const out = generateHandoffSummary({
+      id: "hoff-test" as never,
+      from: agentId("a"),
+      to: agentId("b"),
+      status: "pending",
+      createdAt: 0,
+      phase: { completed: "did x", next: "do y" },
+      context: {
+        results: {},
+        artifacts: [{ id: "f1", kind: "file", uri: "file:///out.json" }],
+        decisions: [],
+        warnings: [],
+      },
+      metadata: {},
+    });
+    expect(out).toContain("Handoff Context");
+    expect(out).toContain("did x");
+    expect(out).toContain("do y");
+    expect(out).toContain("hoff-test");
+    expect(out).toContain("1 artifact");
+  });
+
+  test("corner: TTL-expired pending envelope is invisible to receiver middleware", async () => {
+    // Past createdAt + tiny ttl → expired before middleware checks.
+    const store = createInMemoryHandoffStore({ ttlMs: 1 });
+    const receiver = agentId("agent-b");
+    const prepare = createPrepareTool({ store, agentId: agentId("agent-a") });
+    await prepare.execute({ to: receiver, completed: "x", next: "y" });
+    await new Promise((r) => setTimeout(r, 5)); // exceed ttl
+
+    const mw = createHandoffMiddleware({ store, agentId: receiver });
+    if (mw.wrapModelCall === undefined) throw new Error("wrapModelCall missing");
+    const seen: number[] = [];
+    await mw.wrapModelCall({ metadata: {} } as never, { messages: [] }, async (req) => {
+      seen.push(req.messages.length);
+      return { content: "ok", model: "test" };
+    });
+    // Expired envelope must NOT be injected.
+    expect(seen[0]).toBe(0);
+  });
+
+  test("corner: double accept_handoff fails with ALREADY_ACCEPTED on second call", async () => {
+    const store = createInMemoryHandoffStore();
+    const sender = agentId("agent-a");
+    const receiver = agentId("agent-b");
+    const prepare = createPrepareTool({ store, agentId: sender });
+    const prepared = (await prepare.execute({
+      to: receiver,
+      completed: "x",
+      next: "y",
+    })) as { handoffId: string };
+    const accept = createAcceptTool({ store, agentId: receiver });
+    const first = (await accept.execute({ handoff_id: prepared.handoffId })) as {
+      from?: string;
+    };
+    expect(first.from).toBe(sender);
+    const second = (await accept.execute({ handoff_id: prepared.handoffId })) as {
+      readonly output: null;
+      readonly metadata: { readonly error: { readonly code: string } };
+    };
+    expect(second.output).toBeNull();
+    expect(second.metadata.error.code).toBe("ALREADY_ACCEPTED");
+  });
+
+  test("corner: middleware reverts reservation on model throw and re-injects next turn", async () => {
+    const store = createInMemoryHandoffStore();
+    const receiver = agentId("agent-b");
+    const prepare = createPrepareTool({ store, agentId: agentId("agent-a") });
+    await prepare.execute({ to: receiver, completed: "x", next: "y" });
+    const mw = createHandoffMiddleware({ store, agentId: receiver });
+    if (mw.wrapModelCall === undefined) throw new Error("wrapModelCall missing");
+    const ctx = { metadata: {} } as never;
+
+    // Turn 1 throws — reservation must revert.
+    await expect(
+      mw.wrapModelCall(ctx, { messages: [] }, async () => {
+        throw new Error("model boom");
+      }),
+    ).rejects.toThrow("model boom");
+
+    // Turn 2 succeeds — summary still injected because envelope reverted to pending.
+    const seen: number[] = [];
+    await mw.wrapModelCall(ctx, { messages: [] }, async (req) => {
+      seen.push(req.messages.length);
+      return { content: "ok", model: "test" };
+    });
+    expect(seen[0]).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/task-spawn (#1371)
+// ---------------------------------------------------------------------------
+
+import { createMapAgentResolver, createTaskTool, type TaskableAgent } from "@koi/task-spawn";
+
+describe("Golden: @koi/task-spawn", () => {
+  const dummyAgent: TaskableAgent = {
+    name: "researcher",
+    description: "Research subagent",
+    manifest: { name: "researcher", version: "1.0.0", model: { name: "m" } },
+  };
+
+  test("spawn path returns extracted output and forwards manifest + description", async () => {
+    const seen: { description: string; agentName: string }[] = [];
+    const tool = await createTaskTool({
+      agents: new Map([["researcher", dummyAgent]]),
+      defaultAgent: "researcher",
+      spawn: async (req) => {
+        seen.push({ description: req.description, agentName: req.agentName });
+        return { ok: true, output: "research result" };
+      },
+    });
+    const out = (await tool.execute({ description: "summarize the moon landing" })) as string;
+    expect(out).toBe("research result");
+    expect(seen[0]?.description).toBe("summarize the moon landing");
+    expect(seen[0]?.agentName).toBe("researcher");
+  });
+
+  test("descriptor enumerates available agent_type from resolver list()", () => {
+    const resolver = createMapAgentResolver(new Map([["researcher", dummyAgent]]));
+    const list = resolver.list();
+    expect(Array.isArray(list)).toBe(true);
+    if (Array.isArray(list)) {
+      expect(list[0]?.key).toBe("researcher");
+      expect(list[0]?.description).toBe("Research subagent");
+    }
+  });
+
+  test("corner: copilot routing — idle live agent is messaged, spawn NOT called", async () => {
+    const messaged: { agentId: string; description: string }[] = [];
+    const spawned: unknown[] = [];
+    const resolver = {
+      ...createMapAgentResolver(new Map([["researcher", dummyAgent]])),
+      findLive: async () => ({ agentId: agentId("live-1"), state: "idle" as const }),
+    };
+    const tool = await createTaskTool({
+      agentResolver: resolver,
+      defaultAgent: "researcher",
+      spawn: async (req) => {
+        spawned.push(req);
+        return { ok: true, output: "spawned" };
+      },
+      message: async (req) => {
+        messaged.push({ agentId: req.agentId, description: req.description });
+        return { ok: true, output: "messaged-result" };
+      },
+    });
+    const out = (await tool.execute({ description: "hello" })) as string;
+    expect(out).toBe("messaged-result");
+    expect(messaged[0]?.agentId).toBe("live-1");
+    expect(spawned.length).toBe(0);
+  });
+
+  test("corner: maxDurationMs aborts hung spawn via signal", async () => {
+    const tool = await createTaskTool({
+      agents: new Map([["researcher", dummyAgent]]),
+      defaultAgent: "researcher",
+      maxDurationMs: 20,
+      spawn: (req) =>
+        new Promise((resolve) => {
+          req.signal?.addEventListener("abort", () =>
+            resolve({ ok: false, error: `aborted: ${String(req.signal?.reason)}` }),
+          );
+        }),
+    });
+    const out = (await tool.execute({ description: "hangs" })) as string;
+    expect(out).toContain("aborted");
+  });
+
+  test("corner: unknown agent_type returns error with available list", async () => {
+    const tool = await createTaskTool({
+      agents: new Map([["researcher", dummyAgent]]),
+      spawn: async () => ({ ok: true, output: "should not run" }),
+    });
+    const out = (await tool.execute({
+      description: "x",
+      agent_type: "deployer",
+    })) as string;
+    expect(out).toContain("unknown agent type 'deployer'");
+    expect(out).toContain("researcher");
+  });
+});

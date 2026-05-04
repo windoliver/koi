@@ -359,4 +359,19 @@ Verified by `bun run check:layers` — passes with zero violations.
 ## Related
 
 - [Issue #799](https://github.com/windoliver/koi/issues/799) — Unified UserModel Component
+- [Issue #1389](https://github.com/windoliver/koi/issues/1389) — v2 Phase 4a-3 implementation slice
 - `docs/architecture/Koi.md` — Four-layer architecture
+
+## Implementation notes (PR #2119, hardened across 10 review-loop rounds)
+
+The implementation lands the doc above with the following deliberate scope choices and degradation contracts, locked in by 13 fixes across the adversarial review rounds:
+
+- **Sensor channel is sensor-only.** `signalSources` returning `kind !== "sensor"` are rejected at the `readSignalSources()` boundary so a misconfigured plugin cannot manufacture pre/post-action prompt-shaping signals (R1F1).
+- **Persistent corrections are best-effort with a bounded turn-path budget.** `memory.store()` runs in the background; `pendingStores` tracks the underlying promise (not a wrapped timeout) so the next turn drains real settlement (R9F1). The drain races against `persistenceTimeoutMs` (default 200ms); abandoned writes are retired from the set so one hung store cannot tax every later turn (R10F2). Their corrections remain in `unresolvedCorrections` and stay overlaid in `[User Context]` until the underlying store actually settles (R10F1).
+- **Detector exception path does not persist.** A throwing drift classifier surfaces the error and skips drift persistence — never durably stores the raw turn text as a preference (R3F1).
+- **Single post-action decision per message.** When both explicit-correction and drift fire on the same message, only the explicit path persists; drift is gated behind it to avoid duplicate stores (R2F2).
+- **Sensor cleanup uses `SignalSource.name`, not `signal.source`.** `sourceNameToInjectedKeys` tracks every payload key each source has populated so a failed source's stale state is fully evicted even when those identifiers diverge (R3F2).
+- **Per-turn ambiguity + correction overlay.** Both `pendingPreAction` and `pendingPostAction` are cleared at every turn boundary so a single vague request or one-time correction cannot reshape the rest of the session's snapshots (R3F3, R8F1).
+- **Recency-only correction overlay.** The current turn's correction (and any unresolved prior-turn corrections) are appended last after recalled preferences. Prior rounds attempted (a) replacing the entire recalled list, (b) string-equal dedupe, and (c) shared-token suppression — all were either too aggressive (silently stripping unrelated standing prefs) or required stable record IDs the L0 `MemoryResult` contract does not expose. Durable supersession remains the memory backend's responsibility via `MemoryStoreOptions.supersedes` (R5–R9 persistent issue).
+- **Snapshot serialization is fail-soft.** Sensor values that fail `JSON.stringify` (cyclic, throwing serializers) are dropped at the formatter boundary — the model call still proceeds (R1F4).
+

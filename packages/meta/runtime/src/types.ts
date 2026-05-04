@@ -506,6 +506,17 @@ export interface RuntimeConfig {
   readonly intentCapsule?: import("@koi/middleware-intent-capsule").IntentCapsuleConfig | undefined;
 
   /**
+   * User-model middleware configuration. When provided, wires
+   * `@koi/middleware-user-model` which fuses three signal channels
+   * (pre-action ambiguity, post-action correction, sensor) into a single
+   * `[User Context]` system message injected before each model call.
+   * Caller MUST set either `subjectId` (per-user/tenant scope) or
+   * `allowSharedScope: true` (single-user opt-in). Skipped if a middleware
+   * named `"user-model"` is already present in `config.middleware`.
+   */
+  readonly userModel?: import("@koi/middleware-user-model").UserModelConfig | undefined;
+
+  /**
    * ACE (Adaptive Continuous Enhancement) middleware configuration. When
    * provided, wires `@koi/middleware-ace` which records per-session
    * trajectory, consolidates it into versioned playbooks via

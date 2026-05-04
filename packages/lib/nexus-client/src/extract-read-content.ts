@@ -68,7 +68,7 @@ function decode(raw: unknown): string | undefined {
     const reencoded = normalizeBase64(bytes.toString("base64"));
     if (reencoded !== normalizeBase64(obj.data)) return undefined;
     try {
-      return UTF8_DECODER.decode(bytes);
+      return UTF8_DECODER.decode(new Uint8Array(bytes));
     } catch {
       return undefined;
     }
