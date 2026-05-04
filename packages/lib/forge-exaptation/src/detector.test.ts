@@ -500,6 +500,64 @@ describe("suggestAction quality gate", () => {
   });
 });
 
+describe("partial-eventId dedup", () => {
+  test("missing eventId on one sample does not disable dedup for the rest", () => {
+    // 3 same-eventId duplicates from a1 + 3 unique a1 + 3 unique a2 +
+    // 1 obsNoId (which flips replayProtected to false but must NOT pass
+    // the duplicate samples through unchecked).
+    const dupSeed = obs("a1", 0.95);
+    const observations: UsagePurposeObservation[] = [
+      dupSeed,
+      dupSeed,
+      dupSeed,
+      obs("a1", 0.95),
+      obs("a1", 0.95),
+      obs("a2", 0.95),
+      obs("a2", 0.95),
+      obs("a2", 0.95),
+      obsNoId("a3", 0.05),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    if (result.kind === "drift" || result.kind === "no-drift") {
+      expect(result.replayProtected).toBe(false);
+      // 2 collapsed copies of dupSeed should still register as duplicates.
+      expect(result.duplicateCount).toBe(2);
+    }
+  });
+});
+
+describe("non-finite observedAt dedup tiebreak", () => {
+  test("equal-score duplicates with NaN observedAt fall through to contextText (order-independent)", () => {
+    const eid = "shared";
+    const a: UsagePurposeObservation = {
+      agentId: "a1",
+      eventId: eid,
+      divergenceScore: 0.95,
+      observedAt: Number.NaN,
+      contextText: "alpha",
+    };
+    const b: UsagePurposeObservation = { ...a, contextText: "beta" };
+    const padding: UsagePurposeObservation[] = [
+      obs("a2", 0.95),
+      obs("a2", 0.95),
+      obs("a2", 0.95),
+      obs("a3", 0.95),
+      obs("a3", 0.95),
+      obs("a3", 0.95),
+    ];
+    const r1 = detectDrift([a, b, ...padding], DEFAULT_EXAPTATION_THRESHOLDS);
+    const r2 = detectDrift([b, a, ...padding], DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(r1.kind).toBe("drift");
+    expect(r2.kind).toBe("drift");
+    if (r1.kind === "drift" && r2.kind === "drift") {
+      // Outcome is identical regardless of arrival order — NaN no longer
+      // re-introduces first-write-wins.
+      expect(r1.report.observationCount).toBe(r2.report.observationCount);
+      expect(r1.report.avgDivergence).toBeCloseTo(r2.report.avgDivergence, 10);
+    }
+  });
+});
+
 describe("deep-freeze tamper resistance", () => {
   test("nested report fields are frozen — mutation cannot escalate suggestion", () => {
     // Build a sub-fork-threshold drift result. Without deep freeze, mutating

@@ -228,18 +228,22 @@ export function detectDrift(
   }
   const droppedCount = observations.length - valid.length;
 
-  // Replay protection is a per-observation data contract: every valid
-  // observation must carry a non-empty string `eventId`. Even one missing
-  // or empty eventId disables replay protection for the whole window —
-  // we cannot know whether the missing samples were retried duplicates.
-  const allHaveEventId = valid.every((o) => typeof o.eventId === "string" && o.eventId.length > 0);
-  const replayProtected = valid.length > 0 && allHaveEventId;
-
-  // Dedup runs only when replay-protected — with eventId per agent as the
-  // dedup key. Without a stable per-event identity we cannot honestly
-  // collapse duplicates without risking discarding distinct events.
-  const unique = replayProtected ? dedupePerAgentByEventId(valid) : valid;
-  const duplicateCount = valid.length - unique.length;
+  // Partition by eventId presence. The replay-protectable subset is always
+  // deduped — even when other samples in the window lack eventId — so a
+  // partial telemetry failure cannot inflate evidence by passing through
+  // replays of properly-IDed events. The non-protectable remainder bypasses
+  // dedup (we can't honestly collapse what we can't identify) and drives
+  // `replayProtected: false`, which keeps `suggestAction` conservative.
+  const withEventId: UsagePurposeObservation[] = [];
+  const withoutEventId: UsagePurposeObservation[] = [];
+  for (const o of valid) {
+    if (typeof o.eventId === "string" && o.eventId.length > 0) withEventId.push(o);
+    else withoutEventId.push(o);
+  }
+  const dedupedWithEventId = dedupePerAgentByEventId(withEventId);
+  const unique: readonly UsagePurposeObservation[] = [...dedupedWithEventId, ...withoutEventId];
+  const duplicateCount = withEventId.length - dedupedWithEventId.length;
+  const replayProtected = valid.length > 0 && withoutEventId.length === 0;
 
   const noDrift = (): DetectionResult =>
     brand({
@@ -433,8 +437,12 @@ function prefersChallenger(
 ): boolean {
   if (challenger.divergenceScore !== incumbent.divergenceScore)
     return challenger.divergenceScore > incumbent.divergenceScore;
-  if (challenger.observedAt !== incumbent.observedAt)
-    return challenger.observedAt > incumbent.observedAt;
+  // Normalize non-finite observedAt to -Infinity so NaN-vs-NaN comparisons
+  // fall through to contextText instead of reintroducing first-write-wins
+  // (NaN > anything is always false in raw comparison).
+  const a = Number.isFinite(challenger.observedAt) ? challenger.observedAt : -Infinity;
+  const b = Number.isFinite(incumbent.observedAt) ? incumbent.observedAt : -Infinity;
+  if (a !== b) return a > b;
   return challenger.contextText > incumbent.contextText;
 }
 
