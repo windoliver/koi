@@ -52,10 +52,18 @@ Dependencies: @koi/ace-types, @koi/core, @koi/nexus-client
 
 ## Differences vs sqlite sibling
 
-- No SQL — list ops are O(N) over a glob. Acceptable: ACE list operations are user-driven, not hot-path.
-- No `getVersion()` lineage — sqlite uses an indexed `version` column; nexus stores only the latest version per ID. The optional `getVersion` returns `undefined` to signal lineage is unavailable. Documented as a known gap; #1469 tracks the lineage solution.
-- `storeId` is derived from the configured `basePath` (deterministic per mount) rather than per-database UUID. ACE's resume guard tolerates this — it cares about "did the database move under me", and the nexus mount has its own identity.
-- No writer lock — ACE in distributed mode tolerates concurrent updates (last-write-wins on `version`). Single-host concurrent writers must use the sqlite backend.
+Contract parity verified by `src/__tests__/{playbook,structured,trajectory,proposal}.test.ts` (#1405).
+
+| Store | Behavior | sqlite | nexus | Notes |
+|---|---|---|---|---|
+| `PlaybookStore` | `save` same id, same version, different content | Throws "already committed with different content" (version-CAS) | Last-write-wins (overwrites silently) | Callers must not rely on CAS protection with nexus backend |
+| `StructuredPlaybookStore` | `save` out-of-order version (e.g., v2 after v3) | Rejected (append-only CAS) | Accepted (last-write-wins) | Nexus can "roll back" version, sqlite cannot |
+| `StructuredPlaybookStore` | `getVersion(id, n)` | Returns historical version `n` from lineage table | Always returns `undefined` | #1469 tracks lineage support |
+| `TrajectoryStore` | `listSessions({ before: N })` | Filters by last-activity timestamp — sessions with activity >= `before` excluded | Ignores `before` entirely; returns all sessions | Callers needing cursor-based pagination must use sqlite or add client-side filtering |
+| `TrajectoryStore` | `listSessions` return order | Descending by last activity timestamp | Filesystem-glob order (undefined) | Sort the result if stable order matters |
+| `PlaybookProposalStore` | `listProposals` return order | Ascending by `created_at, id` | Filesystem-glob order (undefined) | Sort the result if stable order matters |
+| All stores | No SQL — list ops are O(N) over a glob | SQL `SELECT` with indices | Glob list + client-side filter | Acceptable: ACE list operations are user-driven, not hot-path |
+| All stores | Writer concurrency | DB-level locking (WAL + write-lock) | No lock — concurrent writers cause last-write-wins races | Use sqlite for single-host concurrency guarantees |
 
 ## Connection-loss handling
 

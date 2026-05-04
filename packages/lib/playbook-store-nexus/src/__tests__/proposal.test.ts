@@ -87,4 +87,38 @@ describe("createNexusPlaybookProposalStore", () => {
     await store.recordProposal(makeProposal("p1", "pb-a"));
     await expect(store.recordEvaluation(makeEvaluation("e1", "p1"))).resolves.toBeUndefined();
   });
+
+  // --- contract parity tests (ported from sqlite sibling) ---
+
+  test("getProposal for missing id returns undefined (not throws)", async () => {
+    // Matches sqlite contract: missing proposal returns undefined, not an error.
+    const store = newStore();
+    const result = await store.getProposal("completely-unknown-id");
+    expect(result).toBeUndefined();
+  });
+
+  test("listProposals returns all proposals for a playbook (content complete)", async () => {
+    // Verify the full proposal object is round-tripped, not just the ID.
+    const store = newStore();
+    const p = makeProposal("p-full", "pb-round");
+    await store.recordProposal(p);
+    const list = await store.listProposals("pb-round");
+    expect(list.length).toBe(1);
+    expect(list[0]?.baseVersion).toBe(1);
+    expect(list[0]?.reflection.rootCause).toBe("missed precondition");
+  });
+
+  test("listProposals ordering — nexus returns in filesystem-glob order (not creation order)", async () => {
+    // DIVERGENCE vs sqlite: sqlite orders by `created_at, id` (ascending).
+    // Nexus returns in whatever order the transport lists files (undefined order).
+    // Callers that need a stable sort must sort the returned array themselves.
+    // Documented in docs/L2/playbook-store-nexus.md.
+    const store = newStore();
+    await store.recordProposal(makeProposal("p1", "pb-order"));
+    await store.recordProposal(makeProposal("p2", "pb-order"));
+    await store.recordProposal(makeProposal("p3", "pb-order"));
+    const list = await store.listProposals("pb-order");
+    // We assert that all 3 are present (content completeness), not the order.
+    expect(list.map((p) => p.id).sort()).toEqual(["p1", "p2", "p3"]);
+  });
 });

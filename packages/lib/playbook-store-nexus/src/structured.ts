@@ -31,7 +31,7 @@ export function createNexusStructuredPlaybookStore(
         if (
           options?.tags !== undefined &&
           options.tags.length > 0 &&
-          !options.tags.some((t) => spb.tags.includes(t))
+          !options.tags.every((t) => spb.tags.includes(t))
         ) {
           continue;
         }

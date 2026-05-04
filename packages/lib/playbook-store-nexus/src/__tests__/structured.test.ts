@@ -86,4 +86,35 @@ describe("createNexusStructuredPlaybookStore", () => {
     await store.save(spb("v"));
     expect(await store.getVersion?.("v", 1)).toBeUndefined();
   });
+
+  // --- contract parity tests (ported from sqlite sibling) ---
+
+  test("list filters by multiple tags with AND semantics", async () => {
+    // Verifies that when multiple tags are requested, ALL must match (AND),
+    // not just any one of them (OR). Mirrors sqlite filterByTags behaviour.
+    const store = newStore();
+    await store.save(spb("one-tag", ["x"]));
+    await store.save(spb("two-tags", ["x", "y"]));
+    await store.save(spb("other", ["z"]));
+
+    // tags=["x","y"] → only "two-tags" has both; "one-tag" has only "x"
+    const filtered = await store.list({ tags: ["x", "y"] });
+    expect(filtered.map((p) => p.id)).toEqual(["two-tags"]);
+  });
+
+  test("save with same id and different version is last-write-wins", async () => {
+    // DIVERGENCE vs sqlite: sqlite enforces version-CAS (same-version different content
+    // throws; lower-version save is rejected). Nexus is last-write-wins — any save
+    // overwrites the current file regardless of version. Documented in
+    // docs/L2/playbook-store-nexus.md.
+    const store = newStore();
+    await store.save({ ...spb("p"), version: 2, title: "v2" });
+    await store.save({ ...spb("p"), version: 3, title: "v3" });
+    expect((await store.get("p"))?.version).toBe(3);
+    expect((await store.get("p"))?.title).toBe("v3");
+    // sqlite would throw here if v2 were re-saved after v3 (out-of-order);
+    // nexus allows it (last-write-wins).
+    await store.save({ ...spb("p"), version: 2, title: "rollback" });
+    expect((await store.get("p"))?.version).toBe(2);
+  });
 });

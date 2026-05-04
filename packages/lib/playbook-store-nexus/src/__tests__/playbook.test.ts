@@ -75,4 +75,34 @@ describe("createNexusPlaybookStore", () => {
     const store = newStore();
     expect(await store.remove("nope")).toBe(false);
   });
+
+  // --- contract parity tests (ported from sqlite sibling) ---
+
+  test("list filters by tags AND minConfidence together (intersection)", async () => {
+    // Mirrors sqlite "filters list by minConfidence and tags".
+    // Verifies that tags uses AND semantics (ALL requested tags must be present)
+    // and that minConfidence + tags filters compose correctly.
+    const store = newStore();
+    await store.save(pb("lo", 0.1, ["x"]));
+    await store.save(pb("hi", 0.9, ["x", "y"]));
+    await store.save(pb("mid", 0.5, ["z"]));
+
+    // minConfidence=0.5 → "hi" and "mid" (not "lo" at 0.1)
+    const high = await store.list({ minConfidence: 0.5 });
+    expect(high.map((p) => p.id).sort()).toEqual(["hi", "mid"]);
+
+    // tags=["x","y"] with AND semantics → only "hi" (has both x and y; "lo" has only x)
+    const tagged = await store.list({ tags: ["x", "y"] });
+    expect(tagged.map((p) => p.id)).toEqual(["hi"]);
+  });
+
+  test("save overwrites existing playbook (last-write-wins)", async () => {
+    // Nexus is last-write-wins; sqlite uses version-CAS. Divergence is documented.
+    const store = newStore();
+    await store.save(pb("p", 0.5));
+    await store.save({ ...pb("p", 0.9), title: "updated" });
+    const got = await store.get("p");
+    expect(got?.confidence).toBe(0.9);
+    expect(got?.title).toBe("updated");
+  });
 });

@@ -30,7 +30,7 @@ export function createNexusPlaybookStore(config: NexusPlaybookStoreConfig): Play
         if (
           options?.tags !== undefined &&
           options.tags.length > 0 &&
-          !options.tags.some((t) => pb.tags.includes(t))
+          !options.tags.every((t) => pb.tags.includes(t))
         ) {
           continue;
         }

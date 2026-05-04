@@ -68,4 +68,44 @@ describe("createNexusTrajectoryStore", () => {
     expect(entries.length).toBe(1);
     expect(entries[0]?.identifier).toBe("tool");
   });
+
+  // --- contract parity tests (ported from sqlite sibling) ---
+
+  test("append preserves insertion order within a single call", async () => {
+    // Entries within a single append call must be returned in the order they
+    // were passed, not sorted or reordered. Matches sqlite row-insert order.
+    const store = newStore();
+    await store.append("sess-order", [
+      makeEntry(0, "first"),
+      makeEntry(1, "second"),
+      makeEntry(2, "third"),
+    ]);
+    const entries = await store.getSession("sess-order");
+    expect(entries.map((e) => e.identifier)).toEqual(["first", "second", "third"]);
+  });
+
+  test("append preserves insertion order across multiple calls", async () => {
+    // Across appends, earlier-appended entries must come before later-appended ones.
+    const store = newStore();
+    await store.append("sess-multi", [makeEntry(0, "a"), makeEntry(1, "b")]);
+    await store.append("sess-multi", [makeEntry(2, "c")]);
+    const entries = await store.getSession("sess-multi");
+    expect(entries.map((e) => e.identifier)).toEqual(["a", "b", "c"]);
+  });
+
+  test("listSessions before option is not supported (nexus ignores it)", async () => {
+    // DIVERGENCE vs sqlite: sqlite respects the `before` timestamp cursor to
+    // exclude sessions whose last activity timestamp >= `before`. Nexus has no
+    // per-session activity timestamp index and ignores the `before` option,
+    // returning all sessions regardless. Documented in
+    // docs/L2/playbook-store-nexus.md.
+    const store = newStore();
+    await store.append("sess-a", [makeEntry(0, "tool")]);
+    await store.append("sess-b", [makeEntry(0, "tool")]);
+    // sqlite: before=0 would return [] (all sessions have timestamp >= 0)
+    // nexus: before is ignored, returns all sessions
+    const sessions = await store.listSessions({ before: 0 });
+    // nexus returns both regardless of before
+    expect([...sessions].sort()).toEqual(["sess-a", "sess-b"]);
+  });
 });
