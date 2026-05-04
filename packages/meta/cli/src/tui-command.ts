@@ -35,7 +35,7 @@ import { isAbsolute, join } from "node:path";
 import type { SummaryOk } from "@koi/agent-summary";
 import { createAgentSummary } from "@koi/agent-summary";
 import { type ArtifactStore, createArtifactStore } from "@koi/artifacts";
-import { microcompact } from "@koi/context-manager";
+import { formatContextEngineSwapNotice, microcompact } from "@koi/context-manager";
 import type {
   Agent,
   AuditEntry,
@@ -801,6 +801,14 @@ export async function drainEngineStream(
           partialOutputTokens = usage.outputTokens;
         }
       }
+
+      // Context-engine swap notices (#1767 Phase 6) are NOT handled here.
+      // The TUI subscribes directly to runtime.contextEngineSwapController
+      // after createKoiRuntime resolves so out-of-run swaps (idle period,
+      // before first run, between reusable turns) are visible too — the
+      // run-stream `custom` event path only fires while a streamEvents
+      // generator is active. Wiring once at the controller level avoids
+      // both the gap and a double-notice.
 
       // --- Lifecycle events: flush before AND after to isolate them ---
       // This ensures turn_start creates the streaming message before any
@@ -2896,6 +2904,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       return;
     }
     runtimeHandle = handle;
+    // #1767 Phase 6: surface context-engine swap events as TUI notices
+    // through the single-writer store. Subscribing at the controller
+    // level (rather than reading the run-stream `custom` event) covers
+    // out-of-run swaps too — idle, pre-first-run, between reusable
+    // turns. Notices flow through `add_info` like plugin-load banners:
+    // not in the JSONL transcript, not pushed back into model context.
+    handle.runtime.contextEngineSwapController?.subscribe((swap) => {
+      const notice = formatContextEngineSwapNotice(swap);
+      store.dispatch({ kind: "add_info", message: notice.message });
+    });
     // Resolve lazy skill agent ref so the injector middleware can query
     // skill components on every subsequent model call.
     skillAgentRef.current = handle.runtime.agent;

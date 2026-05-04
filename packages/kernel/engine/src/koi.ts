@@ -146,6 +146,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   let contextEngineProxy: ContextEngine | undefined;
   const contextEngineProviders: ComponentProvider[] = [];
   const contextEngineMiddleware: KoiMiddleware[] = [];
+  // #1767 Phase 5 emission: when a streamEvents generator is active, swap
+  // events are pushed onto its `pendingEngineEvents` queue so they surface
+  // as `{ kind: "custom", type: "context-engine-swap" }` engine events. When
+  // no run is active, swap events are dropped — `custom` is escape-hatch
+  // telemetry per the anti-leak rules; in-run subscribers (TUI, audit
+  // logs) read them from the controller's own subscribe() if they need
+  // out-of-run delivery.
+  // let justified: mutable per-run queue ref, set in streamEvents start, cleared in finally
+  let activeRunPendingEvents: EngineEvent[] | undefined;
   // Stable ref for the per-run TurnContext cache. createKoi creates the
   // slot middleware once but the cache map is per-run state inside
   // streamEvents, so the middleware closes over this container and
@@ -209,6 +218,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     if (options.onContextEngineSwap !== undefined) {
       ctrlRef.subscribe(options.onContextEngineSwap);
     }
+    // #1767 Phase 5: bridge swap events into the engine event stream as
+    // `custom` events. The queue ref is set only while a run is active;
+    // outside of a run swap events are dropped on the floor (host
+    // observers can still receive them via controller.subscribe()).
+    ctrlRef.subscribe((swapEvent) => {
+      if (activeRunPendingEvents === undefined) return;
+      activeRunPendingEvents.push({
+        kind: "custom",
+        type: "context-engine-swap",
+        data: swapEvent,
+      });
+    });
     // Attach a proxy under CONTEXT_ENGINE that delegates to the swap
     // controller's current engine on every read. AgentEntity freezes
     // assembled components, so attaching the boot-time instance directly
@@ -972,6 +993,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
     // let justified: pending engine events emitted by terminal wrappers (e.g., discovery:miss)
     const pendingEngineEvents: EngineEvent[] = [];
+    // #1767 Phase 5: register this generator's queue with the swap-event
+    // bridge so swap events surface as `custom` engine events while the
+    // run is active. Cleared in the finally below — between runs, swap
+    // events are dropped (telemetry-only per anti-leak policy).
+    activeRunPendingEvents = pendingEngineEvents;
 
     const rid: RunId = outerRunId;
     const sessionCtx: SessionContext = {
@@ -2529,6 +2555,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // let cycleSession()/dispose() skip the wait while the adapter
       // iterator was still being torn down. The flag is lowered only
       // after every cleanup step AND the resolver have completed.
+
+      // #1767 Phase 5: detach the swap-event bridge from this generator's
+      // queue. After this point, swap events are dropped until the next
+      // run() activates a fresh queue.
+      if (activeRunPendingEvents === pendingEngineEvents) {
+        activeRunPendingEvents = undefined;
+      }
       if (unsubRegistryWatch !== undefined) unsubRegistryWatch();
       cleanupForgeSubscription();
       runSignal.removeEventListener("abort", onAbort);
