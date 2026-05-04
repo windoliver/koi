@@ -80,9 +80,19 @@ This PR completes it.
 
 | Manifest shape | Status-line badge | Toasts | `/supervisor` | `/bg` | Inline events | `/agents` |
 |----------------|:-:|:-:|:-:|:-:|:-:|:-:|
-| No `supervision:` | hidden | — | empty state | empty state | — | unchanged |
-| `supervision:` with subprocess child | ✅ | ✅ | ✅ | ✅ | ✅ | unchanged |
-| `supervision:` in-process only | hidden | — | empty state | empty state | — | shows children (existing) |
+| No `supervision:` | hidden | — | empty state | **registry-only** | — | unchanged |
+| `supervision:` with subprocess child | ✅ | ✅ | ✅ | ✅ (full) | ✅ | unchanged |
+| `supervision:` in-process only | hidden | — | empty state | **registry-only** | — | shows children (existing) |
+
+**`/bg` is registry-backed and always available** when the state-dir
+registry exists — even when the current TUI session has no local
+supervisor. Rows are loaded from `describeList()` regardless of local
+attachment. Operators can inspect detached/foreign rows for incident
+response from any TUI invocation. Without a local supervisor, every
+row is foreign and `k` is disabled (the off-path
+`koi bg kill <id>` is the recovery path); the status-line badge,
+toasts, `/supervisor` view, and inline lifecycle events still gate on
+local supervisor attachment.
 
 The new surfaces are explicitly the **OS-process supervision** UX. They
 require a live `@koi/net/daemon` Supervisor with subprocess-backed workers
@@ -706,20 +716,34 @@ restart policy can replace the live process between row selection and
 confirm. We detect this via the registry's `version` field, which the
 existing `attachRegistry` bridge already advances on every transition.
 
-**Action availability per row** (BgView gates `k` on local-supervisor
-ownership — `/bg` lists the global per-state-dir registry, which can
-carry foreign rows from other processes' supervisors; on-path
-`supervisor.stop()` returns `NOT_FOUND` for foreign workers and must
-never be attempted):
+**Local ownership** is the union of:
+- `workerId ∈ supervisor.health().workers[].workerId` — workers that
+  have emitted `started` and are tracked in the per-worker health
+  array.
+- `workerId ∈ bridge.locallySpawnedIds` — a `Set<WorkerId>` the bridge
+  maintains by hooking the local spawn path. Each call to
+  `supervisor.start(req)` from the local process inserts
+  `req.workerId`; each terminal `WorkerEvent.exited`/`crashed`
+  removes it. This covers `starting` workers that haven't yet
+  emitted `started` and therefore have no `health.workers[]` entry.
+
+`supervisor.stop(workerId, ...)` already supports cancelling an
+in-flight spawn before any `started` event (see
+`packages/net/daemon/src/__tests__/supervisor.test.ts` —
+spawn-cancel coverage). So a wedged `starting` row from a locally-
+spawned worker IS killable on the on-path; the prior design
+incorrectly banned it.
+
+**Action availability per row**:
 
 | Row condition | `k` available? | Action |
 |---------------|:--:|--------|
-| Locally owned (`workerId ∈ supervisor.health().workers`) | ✅ | confirm → `supervisor.stop(workerId, "user-requested")` |
+| Locally owned (in `health.workers` OR in `locallySpawnedIds`), status `running`/`starting`/`restarting`/`stopping`/`quarantined` | ✅ | confirm → `supervisor.stop(workerId, "user-requested")` |
 | Foreign `running` | ❌ | hint: "foreign worker; use `koi bg kill <id>` from a separate shell" |
+| Foreign `starting` (any other process spawning) | ❌ | hint: "foreign starting; cannot kill from this TUI" |
 | Locally-owned `terminating` (kill already in flight) | ❌ | hint: "kill in flight; wait" |
-| Locally-owned but bridge already reading terminal status (`exited`/`crashed` AND no live health override) | ❌ | hint: "already terminal" |
+| Locally-owned terminal (`exited`/`crashed`, no live health override) | ❌ | hint: "already terminal" |
 | `detached` (any) | ❌ | hint: "use `koi bg kill <id>` from a separate shell, or `koi bg attach`" |
-| `starting` (any) | ❌ | hint: "starting…; supervisor will fault hung spawns at `spawnTimeoutMs` (default 30s)" — no kill path until `started` |
 
 **`quarantined`/`stopping` (defensive coverage)**: under this PR's
 restart-ownership decision (`temporary`, `maxRestarts: 0` for
@@ -731,18 +755,13 @@ fixture-built supervisor configured for `transient` to verify the
 recovery path works if the restart-ownership decision is later
 flipped.
 
-**Why `starting` is not killable from the TUI**: `WorkerHealth.state`
-only takes values `running | restarting | quarantined | stopping`. A
-worker in registry status `starting` has not yet emitted a `started`
-event and therefore has no `health.workers[]` entry — local ownership
-cannot be proven via the health snapshot. **Off-path `koi bg kill`
-also does NOT work for `starting` rows**: `createDaemonSpawnChildFn`
-pre-registers them with `pid: 0`, and `runKill` refuses records with
-`pid <= 0`. Recovery is therefore handled by the supervisor's own
-`spawnTimeoutMs` (`SupervisorConfig.spawnTimeoutMs`, default 30s) —
-a hung spawn faults automatically and surfaces as a normal
-`crashed`/`exited` event the operator can act on. The `starting`
-hint surfaces this so operators don't expect manual recovery.
+**Off-path `koi bg kill` does not work for `starting` rows**:
+`createDaemonSpawnChildFn` pre-registers them with `pid: 0`, and
+`runKill` refuses records with `pid <= 0`. The TUI's on-path
+`supervisor.stop(workerId)` does not have this restriction — it
+cancels in-flight spawns directly via the supervisor's own state.
+That's why locally-spawned `starting` rows are killable here while
+foreign ones are not.
 
 Ownership is determined by intersecting the registry record's `workerId`
 with `supervisor.health().workers.map(w => w.workerId)`. The per-worker
@@ -840,6 +859,15 @@ Selection identity is `workerId` end-to-end — `sessionId` is optional
 display-only metadata and is never the row key. `Enter` on row → dispatch
 `set_bg_tailing({ workerId })` → `BgLogTail` resolves the matching row
 from `state.bg.rows` and reads `logPath` from there.
+
+**No-log rows** (`logPath === ""`): the daemon spawn path allows
+omitting `logDir`, in which case stdout/stderr are routed to
+`/dev/null` and the registry record persists `logPath: ""`. For these
+rows, `Enter` is gated off and the row's tail-affordance shows
+`logging disabled (no logDir configured)` instead of opening
+`BgLogTail`. The component is never mounted; there is no waiting
+state, no banner, no fd open. Operators wanting logs must restart
+the worker with a configured `logDir`.
 
 The mounted `BgLogTail` subscribes to the row in the store (selector
 keyed by `workerId`). On every store update it inspects the row's
@@ -957,16 +985,18 @@ on the right side: governance segment, then supervisor segment, separator
   when `detached`; format `"3/5 workers"`.
 - **`SupervisorView.test.tsx`** — worker table columns; reasons section
   hidden when empty; event feed last-N order.
-- **`BgView.test.tsx`** — registry rows merged with health workers; kill
-  modal flow opens **only** for locally-owned `running` rows (`status ===
-  "running"` AND `workerId` present in `health.workers`); `starting`
-  rows always render `k` disabled with the "starting…/off-path recovery"
-  hint regardless of ownership; foreign `running` rows render `k`
-  disabled with hint pointing at `koi bg kill <id>`; `terminating`,
-  `detached`, `exited`, `crashed` rows render `k` disabled with
-  status-specific hint; Enter dispatches `set_bg_tailing({ workerId })`
-  using the row's workerId (never sessionId).
-- **`BgLogTail.test.tsx`** — initial reverse-tail produces last 1000 lines;
+- **`BgView.test.tsx`** — registry rows merged with health + the
+  bridge's `locallySpawnedIds`; kill modal flow opens for any
+  locally-owned non-terminal/non-detached/non-terminating row,
+  including `starting` rows that are locally-spawned (covers
+  spawn-cancel via supervisor.stop); foreign rows render `k` disabled
+  with the appropriate hint; rows with `logPath === ""` show
+  `logging disabled` and Enter does not mount BgLogTail; Enter on
+  rows with logPath dispatches `set_bg_tailing({ workerId })` using
+  the row's workerId (never sessionId).
+- **`BgLogTail.test.tsx`** — never mounts when row has `logPath === ""`
+  (BgView shows "logging disabled" hint instead); for non-empty paths,
+  initial reverse-tail produces last 1000 lines;
   appended write extends buffer; truncation resets offset + renders
   `--- log truncated ---`; inode change (same path) renders
   `--- log rotated ---`, reads new file from start, rebinds
@@ -1013,6 +1043,17 @@ on the right side: governance segment, then supervisor segment, separator
     Test asserts `WorkerHealth.state` for a daemon-spawned worker
     never enters `restarting` or `quarantined` after a crash; the
     reconciler instead spawns a NEW row.
+  - **`locallySpawnedIds` ownership tracking**: bridge inserts
+    workerId on each `supervisor.start()` from the local process
+    BEFORE awaiting the spawn promise; removes on terminal
+    `exited`/`crashed` from `watchAll()`. Test verifies `starting`
+    rows are kill-eligible from this set even before the worker has
+    a `health.workers[]` entry.
+  - **Spawn-cancel via supervisor.stop**: locally-spawned worker in
+    registry status `starting` (pid: 0). `requestKill` calls
+    `supervisor.stop(workerId, "user-requested")` which cancels the
+    in-flight spawn. Test verifies the supervisor releases the
+    worker slot and emits an `exited` event with cancel-shaped error.
   - `supervisor.stop` returning `Result.ok: false` (NOT_FOUND,
     INVALID_STATE) surfaces as a toast; bridge does not mutate the
     registry. A subsequent legitimate event still flows through
@@ -1138,11 +1179,19 @@ calls. Existing daemon golden queries cover supervisor lifecycle.
       heartbeat deadline + 1s.
 - [ ] `/bg` `k` flow terminates a locally-owned `running` worker and
       updates the row to `exited`.
-- [ ] `/bg` `k` is disabled for `starting` rows (regardless of
-      ownership), `detached`/`terminating`/`exited`/`crashed` rows, and
-      foreign-owned `running` rows (workerId not in
-      `supervisor.health().workers`); each disabled state shows the
+- [ ] `/bg` `k` flow cancels a locally-spawned `starting` worker via
+      `supervisor.stop()` (spawn-cancel path); the operator does not
+      need to wait for `spawnTimeoutMs`.
+- [ ] `/bg` `k` is disabled for `detached`/`terminating`/terminal
+      rows AND for foreign rows (workerId not in
+      `supervisor.health().workers` AND not in
+      `bridge.locallySpawnedIds`); each disabled state shows the
       correct hint.
+- [ ] `/bg` renders registry-backed rows even when the current TUI
+      session has no local supervisor attached (registry-only mode).
+      In that mode, every row is foreign and `k` is uniformly disabled.
+- [ ] `/bg` rows with `logPath === ""` show "logging disabled" and
+      Enter does NOT mount BgLogTail.
 - [ ] On-path kill calls `supervisor.stop()` directly with NO pre-stop
       registry mutation. `supervisor.stop()` emits `exited` (per
       `supervisor.test.ts:1227`), so `attachRegistry` writes
