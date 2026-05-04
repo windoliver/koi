@@ -71,7 +71,7 @@ Six features per the issue:
    Dedup per `(workerId, signalKind)` with TTL 30s.
 3. **`/supervisor`** — full-screen, read-only: health + reasons, worker
    table, last-50 event feed, backend kinds. Mutation actions deferred.
-4. **`/bg`** — full-screen: `FileSessionRegistry.list()` merged with live
+4. **`/bg`** — full-screen: `FileSessionRegistry.describeList()` merged with live
    health, freshness badge per row, `Enter` tails logs in-TUI, `k` triggers
    kill confirm prompt that routes through the bridge.
 5. **Spawn tool output enrichment** — show `workerId`, isolation mode,
@@ -106,7 +106,7 @@ Six features per the issue:
                                           │
                   ┌───────────────────────┼───────────────────────┐
                   │                       │                       │
-            supervisor.events()   supervisor.health()    registry.list()
+            supervisor.events()   supervisor.health()    registry.describeList()
             (subscribe)              (poll 1s)             (poll 1s)
                   │                       │                       │
                   ▼                       ▼                       ▼
@@ -228,7 +228,7 @@ const SUPERVISOR_EVENT_BUFFER_CAP = 50;
  */
 interface ChannelLiveness {
   readonly health: "live" | "stale";       // supervisor.health() poll
-  readonly registryList: "live" | "stale"; // registry.list() poll
+  readonly registryList: "live" | "stale"; // registry.describeList() poll
   readonly workerEvents: "live" | "stale"; // supervisor.watchAll() iter
   readonly registryEvents: "live" | "stale"; // registry.watch() iter
 }
@@ -451,13 +451,37 @@ Every poll and the event subscription wrap their work in try/catch. The
 bridge **never** silently clears state on failure; instead it preserves the
 last-known snapshot and flags the surface as stale.
 
-| Failure | Action |
-|---------|--------|
-| `health()` throws (synchronous read; rare — bug or torn snapshot) | Increment `healthFailureCount`. After 3 consecutive failures, dispatch `set_supervisor_status({ kind: "stale", since: firstFailureAt, reason })`. Keep `health` slice unchanged so the worker table does not blink empty. Log via existing logger. |
-| `registry.describeList()` returns `Result.ok: false` OR throws | Same 3-strike → `stale` status; keep last `rows`. Toast once per stale transition: `"⚠ background session registry unavailable: ${err.message}"`. (Lenient `list()` is intentionally not used here — empty arrays would be indistinguishable from real outage.) |
-| `watchAll()` iterator throws or ends `done: true` | Iterator pattern means a thrown error surfaces in the `for await` `catch`. Dispatch stale; **reacquire indefinitely** with capped exponential backoff `1s, 2s, 5s, 10s, 30s, 60s` (cap), each attempt jittered ±20% to avoid lockstep retry storms. While stream is down, `health()` + `registry.describeList()` polling continue (degraded poll-only mode); the surface remains functional, just without push events. |
-| `registry.watch()` iterator throws or ends | Same indefinite-reacquire policy as `watchAll`. Independent counter — a flaky FS watcher does not cancel the supervisor stream. `registry.describeList()` polling backstops row freshness. |
-| Recovery (any successful operation) | Reset that channel's failure counter; mark its `ChannelLiveness` slot back to `live`. **Recompute composite status from the full liveness map** — only flip back to `kind: "live"` when ALL four channels are live. If push channels are still down, status remains `degraded`. Toast on transitions: `"✓ supervisor stream restored"` when both push channels recover; `"✓ supervisor connection restored"` only on `degraded → live` or `stale → live` transitions. |
+Canonical transition rule (single source of truth):
+
+| Channel that failed | Channel kind | Mark this channel | Composite status (derived) |
+|---------------------|--------------|-------------------|----------------------------|
+| `health()` (3 consecutive) | poll | `health: stale` | `stale` (poll dimension dirty) |
+| `registry.describeList()` (3 consecutive) | poll | `registryList: stale` | `stale` (poll dimension dirty) |
+| `watchAll()` iterator throws/ends | push | `workerEvents: stale` | `degraded` (poll-only mode still functional) |
+| `registry.watch()` iterator throws/ends | push | `registryEvents: stale` | `degraded` (poll-only mode still functional) |
+| Any recovery | — | reset that channel to `live` | composite recomputed from the four-slot map |
+
+The composite mapping is derived ONLY from `ChannelLiveness`:
+
+```
+detached if no supervisor attached
+stale    if any poll dimension stale
+degraded else if any push dimension stale
+live     else (all four live)
+```
+
+This rule replaces any earlier prose. Push-channel failure NEVER
+dispatches `stale`. Poll-channel failure NEVER dispatches `degraded`.
+
+Per-channel detail:
+
+| Failure | Action (in addition to the channel mark above) |
+|---------|------------------------------------------------|
+| `health()` throws | Keep `health` slice unchanged so the worker table does not blink empty. Log via existing logger. |
+| `registry.describeList()` returns `Result.ok: false` OR throws | Keep last `rows`. Toast once on first transition into stale: `"⚠ background session registry unavailable: ${err.message}"`. Lenient `list()` MUST NOT be used — empty arrays would be indistinguishable from real outage. |
+| `watchAll()` iterator throws or ends `done: true` | Reacquire indefinitely with capped exponential backoff `1s, 2s, 5s, 10s, 30s, 60s` (cap), each attempt jittered ±20%. While stream is down, polling continues so the surface stays functional. |
+| `registry.watch()` iterator throws or ends | Same indefinite-reacquire policy. Independent counter — a flaky FS watcher does not cancel the supervisor stream. |
+| Recovery (any successful op on a previously failed channel) | Reset that channel to `live`. Toast: `"✓ supervisor stream restored"` once when both push channels return to live after either was stale; `"✓ supervisor connection restored"` once on every `stale → !stale` composite transition. |
 | `bridge.close()` during reconnect backoff | The closed-sentinel race exits the backoff sleep immediately; no leaked timers. |
 
 The composite-status rule rules out a known anti-pattern: a flapping
@@ -1008,7 +1032,7 @@ on the right side: governance segment, then supervisor segment, separator
     failing with non-CONFLICT → "manual recovery required" toast.
     Test asserts no infinite retry loop.
   - `requestKill` refuses for foreign rows: when row's `workerId` is
-    NOT in `supervisor.list().map(p => p.workerId)`, the action is
+    NOT in `supervisor.health().workers.map(w => w.workerId)`, the action is
     gated off in BgView (no `k` available). Bridge `requestKill` also
     refuses defensively if called for a non-owned worker — never
     writes a `terminating` claim against a foreign record.
