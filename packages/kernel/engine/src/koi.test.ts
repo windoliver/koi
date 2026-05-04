@@ -154,6 +154,436 @@ describe("createKoi assembly", () => {
     expect(runtime.agent.pid.type).toBe("copilot");
   });
 
+  test("contextEngineFactory attaches a fresh engine onto CONTEXT_ENGINE slot (#1767)", async () => {
+    const { CONTEXT_ENGINE } = await import("@koi/core");
+    type ContextEngine = import("@koi/core").ContextEngine;
+    let factoryCalls = 0;
+    const factory = (): ContextEngine => {
+      factoryCalls++;
+      return {
+        identity: { name: "@test/stub", version: `1.0.${factoryCalls}` },
+        prepare: (_ctx, msgs) => msgs,
+      };
+    };
+    const runtimeA = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+      contextEngineFactory: factory,
+    });
+    const runtimeB = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+      contextEngineFactory: factory,
+    });
+    expect(factoryCalls).toBe(2);
+    expect(runtimeA.agent.has(CONTEXT_ENGINE)).toBe(true);
+    expect(runtimeB.agent.has(CONTEXT_ENGINE)).toBe(true);
+    // Each agent gets its OWN proxy with its OWN identity — no cross-agent leak.
+    const idA = runtimeA.agent.component(CONTEXT_ENGINE)?.identity;
+    const idB = runtimeB.agent.component(CONTEXT_ENGINE)?.identity;
+    expect(idA?.version).not.toBe(idB?.version);
+  });
+
+  test("post-swap, agent.component(CONTEXT_ENGINE) reflects the new engine", async () => {
+    const { CONTEXT_ENGINE } = await import("@koi/core");
+    type ContextEngine = import("@koi/core").ContextEngine;
+    type TurnId = import("@koi/core").TurnId;
+    const factory = (): ContextEngine => ({
+      identity: { name: "boot", version: "1.0.0" },
+      prepare: (_c, m) => m,
+    });
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+      contextEngineFactory: factory,
+    });
+    expect(runtime.agent.component(CONTEXT_ENGINE)?.identity.name).toBe("boot");
+    const replacement: ContextEngine = {
+      identity: { name: "swapped", version: "2.0.0" },
+      prepare: (_c, m) => m,
+    };
+    runtime.contextEngineSwapController?.swap(replacement, {
+      turnId: "run-1:t1" as TurnId,
+      reason: "test",
+    });
+    // ECS read MUST follow the swap — boot-time aliasing was the round-5 bug.
+    expect(runtime.agent.component(CONTEXT_ENGINE)?.identity.name).toBe("swapped");
+    expect(runtime.agent.component(CONTEXT_ENGINE)?.identity.version).toBe("2.0.0");
+  });
+
+  test("swap during an active run surfaces as a context-engine-swap custom event (#1767 Phase 5)", async () => {
+    type ContextEngine = import("@koi/core").ContextEngine;
+    type TurnId = import("@koi/core").TurnId;
+    const engineA: ContextEngine = {
+      identity: { name: "a", version: "1.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const engineB: ContextEngine = {
+      identity: { name: "b", version: "2.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([
+        { kind: "turn_end", turnIndex: 0 },
+        {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "completed",
+            metrics: {
+              totalTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              turns: 0,
+              durationMs: 0,
+            },
+          },
+        },
+      ]),
+      contextEngineFactory: () => engineA,
+    });
+
+    const handle = runtime.run({ kind: "text", text: "hi" });
+    const iter = handle[Symbol.asyncIterator]();
+    const collected: EngineEvent[] = [];
+    // Pull turn_start
+    const first = await iter.next();
+    if (!first.done) collected.push(first.value);
+    // Trigger swap before next pull — runtime should enqueue it
+    runtime.contextEngineSwapController?.swap(engineB, {
+      turnId: "run-1:t1" as TurnId,
+      reason: "test",
+    });
+    while (true) {
+      const r = await iter.next();
+      if (r.done) break;
+      collected.push(r.value);
+    }
+    const swapEvents = collected.filter(
+      (e): e is Extract<EngineEvent, { kind: "custom" }> =>
+        e.kind === "custom" && e.type === "context-engine-swap",
+    );
+    expect(swapEvents.length).toBe(1);
+    const data = swapEvents[0]?.data as { from: { name: string }; to: { name: string } };
+    expect(data.from.name).toBe("a");
+    expect(data.to.name).toBe("b");
+  });
+
+  test("omitting contextEngineFactory leaves the CONTEXT_ENGINE slot empty", async () => {
+    const { CONTEXT_ENGINE } = await import("@koi/core");
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+    });
+    expect(runtime.agent.has(CONTEXT_ENGINE)).toBe(false);
+  });
+
+  test("bare manifest.context: {} without contextEngineFactory throws — no silent inert", async () => {
+    await expect(
+      createKoi({
+        manifest: testManifest({ context: {} }),
+        adapter: mockAdapter([]),
+      }),
+    ).rejects.toThrow(/contextEngineFactory/);
+  });
+
+  test("manifest.context.engine without contextEngineFactory throws — no silent inert", async () => {
+    await expect(
+      createKoi({
+        manifest: testManifest({
+          context: { engine: "@koi/context-manager", version: "1.0.0" },
+        }),
+        adapter: mockAdapter([]),
+      }),
+    ).rejects.toThrow(/contextEngineFactory/);
+  });
+
+  test("manifest.context.engine with matching factory assembles successfully", async () => {
+    type ContextEngine = import("@koi/core").ContextEngine;
+    const factory = (): ContextEngine => ({
+      identity: { name: "@koi/context-manager", version: "1.0.0" },
+      prepare: (_ctx, msgs) => msgs,
+    });
+    const runtime = await createKoi({
+      manifest: testManifest({
+        context: { engine: "@koi/context-manager", version: "1.0.0" },
+      }),
+      adapter: mockAdapter([]),
+      contextEngineFactory: factory,
+    });
+    expect(runtime.agent.state).toBe("created");
+  });
+
+  test("identity drift between manifest and factory is rejected", async () => {
+    type ContextEngine = import("@koi/core").ContextEngine;
+    const factory = (): ContextEngine => ({
+      identity: { name: "@koi/something-else", version: "1.0.0" },
+      prepare: (_ctx, m) => m,
+    });
+    await expect(
+      createKoi({
+        manifest: testManifest({
+          context: { engine: "@koi/context-manager", version: "1.0.0" },
+        }),
+        adapter: mockAdapter([]),
+        contextEngineFactory: factory,
+      }),
+    ).rejects.toThrow(/identity/);
+  });
+
+  test("version drift between manifest and factory is rejected", async () => {
+    type ContextEngine = import("@koi/core").ContextEngine;
+    const factory = (): ContextEngine => ({
+      identity: { name: "@koi/context-manager", version: "9.9.9" },
+      prepare: (_ctx, m) => m,
+    });
+    await expect(
+      createKoi({
+        manifest: testManifest({
+          context: { engine: "@koi/context-manager", version: "1.0.0" },
+        }),
+        adapter: mockAdapter([]),
+        contextEngineFactory: factory,
+      }),
+    ).rejects.toThrow(/version/);
+  });
+
+  test("contextEngineFactory receives the manifest.context config bag", async () => {
+    type ContextEngine = import("@koi/core").ContextEngine;
+    type ContextManifestConfig = import("@koi/core").ContextManifestConfig;
+    let received: ContextManifestConfig | undefined;
+    const factory = (cfg?: ContextManifestConfig): ContextEngine => {
+      received = cfg;
+      return {
+        identity: { name: "@koi/context-manager", version: "1.0.0" },
+        prepare: (_c, m) => m,
+      };
+    };
+    await createKoi({
+      manifest: testManifest({
+        context: {
+          engine: "@koi/context-manager",
+          version: "1.0.0",
+          config: { preset: "balanced" },
+        },
+      }),
+      adapter: mockAdapter([]),
+      contextEngineFactory: factory,
+    });
+    expect(received?.engine).toBe("@koi/context-manager");
+    expect(received?.config).toEqual({ preset: "balanced" });
+  });
+
+  test("runtime exposes contextEngineSwapController when factory is supplied", async () => {
+    type ContextEngine = import("@koi/core").ContextEngine;
+    const factory = (): ContextEngine => ({
+      identity: { name: "x", version: "1.0.0" },
+      prepare: (_c, m) => m,
+    });
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+      contextEngineFactory: factory,
+    });
+    expect(runtime.contextEngineSwapController).toBeDefined();
+    expect(runtime.contextEngineSwapController?.current().identity.name).toBe("x");
+  });
+
+  test("no swap controller exposed when no factory supplied", async () => {
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+    });
+    expect(runtime.contextEngineSwapController).toBeUndefined();
+  });
+
+  test("ECS proxy forwards describeOccupancy to the active engine (and reflects swaps)", async () => {
+    const { CONTEXT_ENGINE } = await import("@koi/core");
+    type ContextEngine = import("@koi/core").ContextEngine;
+    type ContextOccupancy = import("@koi/core").ContextOccupancy;
+    type TurnId = import("@koi/core").TurnId;
+    const occA: ContextOccupancy = {
+      estimatedTokens: 100,
+      maxTokens: 1000,
+      pressure: 0.1,
+    };
+    const occB: ContextOccupancy = {
+      estimatedTokens: 800,
+      maxTokens: 1000,
+      pressure: 0.8,
+    };
+    const engineA: ContextEngine = {
+      identity: { name: "a", version: "1.0.0" },
+      prepare: (_c, m) => m,
+      describeOccupancy: () => occA,
+    };
+    const engineB: ContextEngine = {
+      identity: { name: "b", version: "2.0.0" },
+      prepare: (_c, m) => m,
+      describeOccupancy: () => occB,
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+      contextEngineFactory: () => engineA,
+    });
+    const slot = runtime.agent.component(CONTEXT_ENGINE);
+    expect(slot?.describeOccupancy?.()).toEqual(occA);
+    runtime.contextEngineSwapController?.swap(engineB, {
+      turnId: "run-1:t1" as TurnId,
+      reason: "test",
+    });
+    expect(slot?.describeOccupancy?.()).toEqual(occB);
+  });
+
+  test("ECS proxy hides describeOccupancy when active engine omits it", async () => {
+    const { CONTEXT_ENGINE } = await import("@koi/core");
+    type ContextEngine = import("@koi/core").ContextEngine;
+    const engine: ContextEngine = {
+      identity: { name: "passthrough", version: "1.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+      contextEngineFactory: () => engine,
+    });
+    const slot = runtime.agent.component(CONTEXT_ENGINE);
+    expect(slot?.describeOccupancy).toBeUndefined();
+  });
+
+  test("rejects external CONTEXT_ENGINE provider when contextEngineFactory is set (no silent ECS/middleware split)", async () => {
+    type ContextEngine = import("@koi/core").ContextEngine;
+    const { CONTEXT_ENGINE: CE_TOKEN, COMPONENT_PRIORITY } = await import("@koi/core");
+    const factoryEngine: ContextEngine = {
+      identity: { name: "factory", version: "1.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const externalEngine: ContextEngine = {
+      identity: { name: "external", version: "1.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const externalProvider: import("@koi/core").ComponentProvider = {
+      name: "external-context-engine",
+      // AGENT_FORGED beats BUNDLED, so without the guard the factory's proxy
+      // would lose ECS first-write while middleware still uses the factory.
+      priority: COMPONENT_PRIORITY.AGENT_FORGED,
+      attach: async () => new Map<string, unknown>([[CE_TOKEN as string, externalEngine]]),
+    };
+    await expect(
+      createKoi({
+        manifest: testManifest(),
+        adapter: mockAdapter([]),
+        contextEngineFactory: () => factoryEngine,
+        providers: [externalProvider],
+      }),
+    ).rejects.toThrow(/CONTEXT_ENGINE|context-engine-double-wire/);
+  });
+
+  test("releases the turn pin on `done`-only completion (no `turn_end`)", async () => {
+    // Round-10 regression: cooperating adapters that emit `done` directly
+    // bypass `onAfterTurn`. Without the streamEvents-finally cleanup, the
+    // controller would stay pinned to the pre-completion engine forever.
+    type ContextEngine = import("@koi/core").ContextEngine;
+    type TurnId = import("@koi/core").TurnId;
+    const engineA: ContextEngine = {
+      identity: { name: "a", version: "1.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const engineB: ContextEngine = {
+      identity: { name: "b", version: "2.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const modelTerminal: ModelHandler = async () =>
+      ({ content: "ok", model: "x" }) as import("@koi/core").ModelResponse;
+    const adapter = cooperatingAdapter(modelTerminal, [{ kind: "done", output: doneOutput() }]);
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      contextEngineFactory: () => engineA,
+      loopDetection: false,
+    });
+    // Drive a turn through the cooperating adapter so the slot middleware's
+    // wrapModelCall fires and pins the turn.
+    await collectEvents(runtime.run({ kind: "text", text: "hi" }));
+    // After the run ends, a fresh swap MUST be visible — proving the
+    // streamEvents-finally cleanup released the pin even though the
+    // cooperating adapter never went through `turn_end`/`onAfterTurn`.
+    runtime.contextEngineSwapController?.swap(engineB, {
+      turnId: "run-1:t1" as TurnId,
+      reason: "test",
+    });
+    expect(runtime.contextEngineSwapController?.current().identity.name).toBe("b");
+  });
+
+  test("synthesizes onAfterTurn on `done`-only completion (terminal-path bookkeeping)", async () => {
+    // Round-11 regression: cooperating adapters that emit `done` directly
+    // would otherwise drop the engine's onAfterTurn entirely, silently
+    // losing post-turn bookkeeping (eviction/backoff/checkpoint).
+    type ContextEngine = import("@koi/core").ContextEngine;
+    let afterCalls = 0;
+    const engine: ContextEngine = {
+      identity: { name: "bookkeeping", version: "1.0.0" },
+      prepare: (_c, m) => m,
+      onAfterTurn: () => {
+        afterCalls++;
+      },
+    };
+    // Adapter must actually call callHandlers.modelCall so the slot
+    // middleware's wrapModelCall fires and pins the turn — only THEN does
+    // the terminal-path synth have something to clean up.
+    const adapter: EngineAdapter = {
+      engineId: "done-only",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: async () => ({ content: "ok", model: "x" }),
+      },
+      stream: (input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          if (input.callHandlers) {
+            await input.callHandlers.modelCall({ messages: [] });
+          }
+          // Yield `done` directly (no `turn_end`) — exact path that round 11
+          // identified as dropping onAfterTurn entirely.
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      contextEngineFactory: () => engine,
+      loopDetection: false,
+    });
+    await collectEvents(runtime.run({ kind: "text", text: "hi" }));
+    expect(afterCalls).toBe(1);
+  });
+
+  test("rejects user-supplied middleware named 'context-engine' when contextEngineFactory is set", async () => {
+    type ContextEngine = import("@koi/core").ContextEngine;
+    type KoiMiddleware = import("@koi/core").KoiMiddleware;
+    const factoryEngine: ContextEngine = {
+      identity: { name: "factory", version: "1.0.0" },
+      prepare: (_c, m) => m,
+    };
+    const dupMiddleware: KoiMiddleware = {
+      name: "context-engine",
+      phase: "resolve",
+      priority: 500,
+      describeCapabilities: () => undefined,
+      wrapModelCall: async (_c, req, next) => next(req),
+    };
+    await expect(
+      createKoi({
+        manifest: testManifest(),
+        adapter: mockAdapter([]),
+        contextEngineFactory: () => factoryEngine,
+        middleware: [dupMiddleware],
+      }),
+    ).rejects.toThrow(/context-engine/);
+  });
+
   test("manifest lifecycle overrides default type", async () => {
     const runtime = await createKoi({
       manifest: testManifest({ lifecycle: "worker" }),
@@ -5878,8 +6308,13 @@ describe("createKoi stop gate", () => {
 
     await collectEvents(runtime.run({ kind: "text", text: "hello" }));
 
-    // First turn: empty messages (text input — bridge builds its own conversation)
-    expect(capturedMessages[0]).toEqual([]);
+    // First turn: text input is now seeded into onBeforeTurn so stateful
+    // context engines see the real user payload (#1767 round 4-5 fixes).
+    const firstMessages = capturedMessages[0] as ReadonlyArray<{
+      readonly content: ReadonlyArray<{ readonly text?: string }>;
+    }>;
+    expect(firstMessages?.length).toBe(1);
+    expect(firstMessages?.[0]?.content[0]?.text).toBe("hello");
 
     // Retry turn: original user message + block feedback (#1493: retry
     // includes original question so the model can re-anchor on the task)

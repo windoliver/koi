@@ -27,6 +27,15 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
   hardening: per-port advisory lock with reclaim sentinel, lsof+ps
   process-tree listener-ownership verification (handles the uvx
   wrapper around nexusd), and stopSandbox descendant-PID sweep.
+- **Review-finding wiring sync (#2121)**: no CLI command, flag, or dependency
+  changes. Shared CLI tool wiring now passes the default credential path guard
+  into local filesystem read/write/edit tools, so credential locations are
+  denied before backend I/O even when a local permission mode allows filesystem
+  access. The same integrated `@koi/tools-builtin` surface now makes
+  `fs_write.createDirectories` fail closed by default (`false` when omitted),
+  and integrated `@koi/tools-web` forwards the turn cancellation signal into
+  `web_fetch` and `web_search` providers so cancelled turns do not wait on slow
+  network calls.
 - **Review-finding wiring sync**: no CLI command, flag, or dependency changes.
   The existing runtime/TUI wiring inherits two L2 behavior fixes: scheduled task
   dispatch now waits for async stores to persist `running` before the dispatcher

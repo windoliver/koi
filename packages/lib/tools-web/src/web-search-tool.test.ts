@@ -77,6 +77,24 @@ describe("createWebSearchTool", () => {
   });
 
   describe("results", () => {
+    test("forwards caller abort signal to the executor", async () => {
+      const controller = new AbortController();
+      let capturedSignal: AbortSignal | undefined;
+      const executor: WebExecutor = {
+        fetch: async () => ({
+          ok: false,
+          error: { code: "VALIDATION", message: "Not implemented", retryable: false },
+        }),
+        search: async (_query, options) => {
+          capturedSignal = options?.signal;
+          return { ok: true, value: SAMPLE_RESULTS };
+        },
+      };
+      const tool = createWebSearchTool(executor, "web", DEFAULT_UNSANDBOXED_POLICY);
+      await tool.execute({ query: "test" }, { signal: controller.signal });
+      expect(capturedSignal).toBe(controller.signal);
+    });
+
     test("returns search results", async () => {
       const tool = createWebSearchTool(
         mockExecutor({ ok: true, value: SAMPLE_RESULTS }),
