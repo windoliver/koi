@@ -56,41 +56,12 @@ export const DEFAULT_EXAPTATION_THRESHOLDS: ExaptationThresholds = {
   confidenceWeight: 0.8,
 } as const;
 
-/**
- * Internal brand stamped on every result that comes out of `detectDrift`.
- * `suggestAction` rejects inputs that lack this brand, so a caller cannot
- * fabricate a drift result with `replayProtected: true` and zero
- * dropped/duplicate counts to bypass the quality + replay-protection gates.
- *
- * The symbol is intentionally module-local — not exported, not in the
- * public `DetectionResult` type. External code has no name by which to
- * attach it, so structurally-reconstructed objects always fail the check.
- */
-const DETECTION_BRAND = Symbol("forge-exaptation/DetectionResult");
-type Branded<T> = T & { readonly [DETECTION_BRAND]: true };
-
 function deepFreeze<T>(value: T): T {
   if (value === null || typeof value !== "object") return value;
   for (const key of Object.keys(value as object)) {
     deepFreeze((value as Record<string, unknown>)[key]);
   }
   return Object.freeze(value);
-}
-
-function brand<T>(result: T): Branded<T> {
-  // Deep-freeze the entire object graph. Shallow freezing leaves nested
-  // fields (e.g. result.report.avgDivergence) mutable, so a caller could
-  // tamper with cohort numbers after detectDrift returned and cause
-  // suggestAction to recommend irreversible actions on tampered data.
-  return deepFreeze({ ...(result as object), [DETECTION_BRAND]: true }) as Branded<T>;
-}
-
-function isBranded(input: unknown): boolean {
-  return (
-    typeof input === "object" &&
-    input !== null &&
-    (input as { readonly [DETECTION_BRAND]?: unknown })[DETECTION_BRAND] === true
-  );
 }
 
 /**
@@ -215,7 +186,7 @@ export function detectDrift(
 ): DetectionResult {
   const configError = describeInvalidThresholds(thresholds);
   if (configError !== undefined) {
-    return brand({ kind: "invalid-config", reason: configError });
+    return deepFreeze({ kind: "invalid-config", reason: configError });
   }
 
   // Validate observations. agentId + divergenceScore are required for any
@@ -240,14 +211,14 @@ export function detectDrift(
     if (typeof o.eventId === "string" && o.eventId.length > 0) withEventId.push(o);
     else withoutEventId.push(o);
   }
-  const dedupedWithEventId = dedupePerAgentByEventId(withEventId);
+  const dedupedWithEventId = dedupeByEventId(withEventId);
   const unique: readonly UsagePurposeObservation[] = [...dedupedWithEventId, ...withoutEventId];
   const duplicateCount = withEventId.length - dedupedWithEventId.length;
   const replayProtected = valid.length > 0 && withoutEventId.length === 0;
 
   const noDrift = (): DetectionResult =>
-    brand({
-      kind: "no-drift",
+    deepFreeze({
+      kind: "no-drift" as const,
       observationCount: unique.length,
       validObservationCount: unique.length,
       droppedCount,
@@ -279,14 +250,14 @@ export function detectDrift(
     thresholds,
   );
 
-  return brand({
-    kind: "drift",
+  return deepFreeze({
+    kind: "drift" as const,
     droppedCount,
     duplicateCount,
     validObservationCount: unique.length,
     replayProtected,
     report: {
-      kind: "purpose_drift",
+      kind: "purpose_drift" as const,
       severity,
       avgDivergence: cohortAvgDivergence,
       divergentAgents: cohort.agentCount,
@@ -316,11 +287,6 @@ export function suggestAction(
   input: DetectionResult | undefined,
   stableWindows: number,
 ): ExaptationSuggestion {
-  // Authenticity gate. The internal brand is unreachable from outside this
-  // module, so any input that wasn't returned by `detectDrift` (e.g. a
-  // structurally-reconstructed object intended to bypass the quality and
-  // replay-protection gates) is rejected here.
-  if (!isBranded(input)) return { kind: "none" };
   if (input === undefined || input.kind !== "drift") return { kind: "none" };
 
   // Replay protection is mandatory for action-bearing results. A
@@ -392,43 +358,36 @@ function isObservationValid(o: UsagePurposeObservation): boolean {
 }
 
 /**
- * Dedup observations per agent using each observation's `eventId`. Caller has
- * already verified that every input has a non-empty string `eventId`, so the
- * field reads here are safe. Dedup namespace is `(agentId, eventId)`, so
- * identical event IDs from different agents always survive.
+ * Dedup observations **globally** by `eventId` — across agents, not just
+ * within them. Caller has already verified that every input has a non-empty
+ * string `eventId`, so the field reads here are safe.
  *
- * Conflict resolution is deterministic, content-based — NOT first-write-wins.
- * When the same `(agentId, eventId)` arrives more than once with different
- * payloads (a realistic outcome of retries-with-divergent-rescore), pick:
- *   1. the highest `divergenceScore`     — score conflict resolution
- *   2. then the highest `observedAt`     — order tiebreak (newest wins)
- *   3. then `contextText` lexicographic  — final deterministic tiebreak
+ * Why globally and not per-agent: a single causal upstream event fanned out
+ * to multiple executors arrives once per agent with the same eventId. If the
+ * detector kept those copies, `minDivergentAgents` would be satisfied by
+ * one logical event multiplied across agents — manufacturing "multi-agent
+ * drift" out of cross-agent duplication. Global dedup separates replay
+ * identity from independence identity: distinct agentIds count as
+ * independent evidence ONLY when their eventIds also differ.
  *
- * Outcome no longer depends on ingestion order, so retried events cannot
- * silently flip the drift decision based on which copy arrived first.
+ * Conflict resolution is deterministic, content-based — NOT first-write-wins:
+ *   1. highest `divergenceScore`        — score conflict resolution
+ *   2. highest finite `observedAt`      — order tiebreak (NaN normalized)
+ *   3. lexicographic `contextText`      — final deterministic tiebreak
  */
-function dedupePerAgentByEventId(
+function dedupeByEventId(
   observations: readonly UsagePurposeObservation[],
 ): readonly UsagePurposeObservation[] {
-  const winners = new Map<string, Map<string, UsagePurposeObservation>>();
+  const winners = new Map<string, UsagePurposeObservation>();
   for (const o of observations) {
     const eventId = o.eventId;
     if (eventId === undefined) continue;
-    let bucket = winners.get(o.agentId);
-    if (bucket === undefined) {
-      bucket = new Map<string, UsagePurposeObservation>();
-      winners.set(o.agentId, bucket);
-    }
-    const incumbent = bucket.get(eventId);
+    const incumbent = winners.get(eventId);
     if (incumbent === undefined || prefersChallenger(incumbent, o)) {
-      bucket.set(eventId, o);
+      winners.set(eventId, o);
     }
   }
-  // Preserve insertion-stable iteration so output is deterministic across
-  // runs given the same input set.
-  const out: UsagePurposeObservation[] = [];
-  for (const bucket of winners.values()) for (const o of bucket.values()) out.push(o);
-  return out;
+  return [...winners.values()];
 }
 
 function prefersChallenger(

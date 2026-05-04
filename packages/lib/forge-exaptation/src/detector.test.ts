@@ -347,25 +347,14 @@ describe("suggestAction", () => {
     expect(suggestAction(result, 3).kind).toBe("new-artifact");
   });
 
-  test("structurally-fabricated DetectionResult is rejected (authenticity gate)", () => {
-    // A reconstructed object that wasn't returned by detectDrift cannot bypass
-    // the quality + replay-protection gates: the suggestAction authenticity
-    // check rejects unbranded inputs.
-    const fabricated = {
-      kind: "drift" as const,
-      droppedCount: 0,
-      duplicateCount: 0,
-      validObservationCount: 100,
-      replayProtected: true,
-      report: {
-        kind: "purpose_drift" as const,
-        severity: 1,
-        avgDivergence: 0.99,
-        divergentAgents: 10,
-        observationCount: 100,
-      },
-    };
-    expect(suggestAction(fabricated as DetectionResult, 5)).toEqual({ kind: "none" });
+  test("DetectionResult survives JSON round-trip and still drives suggestAction", () => {
+    // Pure-data contract: clone/serialize boundaries (worker IPC, persistence,
+    // cross-package handoff) MUST NOT silently disable suggestions. The fields
+    // are the contract; honest callers preserving them keep their
+    // recommendations.
+    const result = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92 });
+    const cloned = JSON.parse(JSON.stringify(result)) as DetectionResult;
+    expect(suggestAction(cloned, 3).kind).toBe("new-artifact");
   });
 });
 
@@ -393,9 +382,9 @@ describe("eventId-based dedup + replay protection", () => {
     }
   });
 
-  test("every observation carrying eventId enables replay protection + per-agent dedup", () => {
-    // Identical eventId from same agent collapses; same eventId across agents
-    // survives (per-agent scope).
+  test("every observation carrying eventId enables replay protection + global dedup", () => {
+    // Same eventId across agents collapses too — see "cross-agent fan-out
+    // regression" below for why this is required.
     const sharedId = "shared-eid";
     const a1: UsagePurposeObservation = {
       agentId: "a1",
@@ -409,8 +398,9 @@ describe("eventId-based dedup + replay protection", () => {
     expect(result.kind).toBe("no-drift");
     if (result.kind === "no-drift") {
       expect(result.replayProtected).toBe(true);
-      expect(result.observationCount).toBe(2);
-      expect(result.duplicateCount).toBe(4);
+      // Global dedup collapses to 1 — same eventId regardless of agent.
+      expect(result.observationCount).toBe(1);
+      expect(result.duplicateCount).toBe(5);
     }
   });
 
@@ -619,25 +609,62 @@ describe("deterministic dedup conflict resolution", () => {
   });
 });
 
-describe("eventId per-agent isolation regression", () => {
-  test("identical eventId across different agents does not collapse them", () => {
-    // Per-agent dedup namespace is `(agentId, eventId)`. A flat
-    // `${agentId}|${eventId}` join would have a delimiter ambiguity bug.
-    // Two distinct agents reporting the same (e.g. globally unique but
-    // accidentally repeated) eventId must each survive.
-    const sharedEid = "evt-shared";
-    const samples = (agentId: string): UsagePurposeObservation[] => [
-      { agentId, divergenceScore: 0.95, contextText: "x", observedAt: 1, eventId: sharedEid },
-      { agentId, divergenceScore: 0.95, contextText: "y", observedAt: 2, eventId: sharedEid }, // dup
+describe("cross-agent fan-out regression", () => {
+  test("same causal eventId fanned out to multiple agents counts as ONE observation, not multi-agent evidence", () => {
+    // One upstream event was processed by 3 agents (e.g. retry fan-out).
+    // Without global dedup, this would have satisfied minDivergentAgents=2
+    // and triggered drift even though there is no genuinely-independent
+    // evidence — just one logical event multiplied across executors.
+    const fannedOut: UsagePurposeObservation[] = [
+      {
+        agentId: "a1",
+        eventId: "shared-causal-evt",
+        divergenceScore: 0.95,
+        observedAt: 1,
+        contextText: "x",
+      },
+      {
+        agentId: "a2",
+        eventId: "shared-causal-evt",
+        divergenceScore: 0.95,
+        observedAt: 2,
+        contextText: "x",
+      },
+      {
+        agentId: "a3",
+        eventId: "shared-causal-evt",
+        divergenceScore: 0.95,
+        observedAt: 3,
+        contextText: "x",
+      },
+      {
+        agentId: "a4",
+        eventId: "shared-causal-evt",
+        divergenceScore: 0.95,
+        observedAt: 4,
+        contextText: "x",
+      },
     ];
-    const result = detectDrift([...samples("a"), ...samples("a b"), ...samples("a")], {
-      ...DEFAULT_EXAPTATION_THRESHOLDS,
-      minObservationsPerAgent: 1,
-    });
+    const result = detectDrift(fannedOut, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("no-drift");
     if (result.kind === "no-drift") {
-      // Each agent collapses to 1 (same eventId per-agent). 2 agents survive.
-      expect(result.observationCount).toBe(2);
+      // Global dedup leaves exactly 1 observation; cohort empty.
+      expect(result.observationCount).toBe(1);
+      expect(result.duplicateCount).toBe(3);
+    }
+  });
+
+  test("genuinely independent agents (distinct eventIds) still register as multi-agent drift", () => {
+    // Each agent has its own causal events — no fan-out. Drift surfaces.
+    const obsList: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => obs("a1", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("a2", s)),
+    ];
+    const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      expect(result.report.divergentAgents).toBe(2);
+      expect(result.report.observationCount).toBe(6);
     }
   });
 });

@@ -85,11 +85,13 @@ Replay protection is a **per-observation data contract**, not a config knob.
 
 ## suggestAction Contract
 
-`suggestAction` accepts only `DetectionResult` instances **returned by this module's own `detectDrift`** — they carry an internal, non-exported brand symbol that the action API checks before applying its gates. Structurally-reconstructed objects (e.g. results round-tripped through JSON, or hand-built literals) are rejected as `none`. This means the quality and replay-protection gates cannot be bypassed by persisting a partial result and replaying a synthetic positive later: any cross-process handoff has to round-trip through `detectDrift` again.
+`suggestAction` accepts any `DetectionResult` whose data fields satisfy the gates: `kind: "drift"`, `replayProtected: true`, and `(droppedCount + duplicateCount) / (validObservationCount + dropped + duplicate) ≤ 25%`. The fields ARE the contract — results survive JSON / `structuredClone` / cross-package handoff. Earlier rounds gated on a hidden module-local symbol, but that silently broke serialization paths and any cross-package usage of the library, so the brand was removed in favour of trusting the data. Honest callers preserving the fields keep their recommendations; callers that fabricate results take the responsibility on themselves.
 
 ## Dedup Conflict Resolution
 
-When the same `(agentId, eventId)` arrives more than once with different payloads, the dedup picks the winner deterministically — highest `divergenceScore`, then highest `observedAt`, then lexicographic `contextText` — instead of first-write-wins. Reordering the same logical event set produces the same `DriftReport`.
+`eventId` dedup is **global** across agents, not just within an agent. A single causal upstream event fanned out to N executors arrives N times with the same eventId — without global dedup, those copies would satisfy `minDivergentAgents` and manufacture "multi-agent drift" out of one logical event. Distinct `agentId`s only count as independent evidence when their `eventId`s also differ.
+
+When the same `eventId` arrives more than once with different payloads, the winner is picked deterministically — highest `divergenceScore`, then highest finite `observedAt` (NaN normalized to −∞), then lexicographic `contextText` — instead of first-write-wins. Reordering the same logical event set produces the same `DriftReport`.
 
 ---
 
