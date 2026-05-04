@@ -101,6 +101,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/middleware-strict-agentic",
   "@koi/middleware-turn-prelude",
   "@koi/nexus-delegation",
+  "@koi/nexus-sandbox",
   "@koi/permissions-nexus",
   "@koi/plugins",
   "@koi/sandbox-conformance",

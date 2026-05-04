@@ -6,6 +6,27 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`@koi/nexus-sandbox` wired (#1403)**: new direct CLI dependency.
+  When a manifest declares `nexus.mode: "sandbox"` (or `auto` with no
+  `NEXUS_URL`/`--nexus-url`), or simply needs Nexus and no external URL
+  is provided, `koi tui` and `koi start` invoke `resolveNexusForHost`
+  to spawn a local `nexus-ai-fs[sandbox]` subprocess (default
+  `uvx --from nexus-ai-fs nexusd --profile sandbox …`) and set
+  `process.env.NEXUS_URL` for downstream consumers (fs-nexus,
+  nexus-delegation, audit-sink-nexus). Resolution runs AFTER every
+  fail-closed manifest gate (background-subprocesses, audit, network,
+  credentials, fs two-gate trust boundary, headless local-fs opt-in)
+  so a rejected manifest cannot create local Nexus side effects. The
+  resolved URL is plumbed back into `manifest.filesystem.options.url`
+  when fs-nexus declared no URL of its own. Sandbox shutdown is
+  integrated into the host's existing teardown chain (interim SIGUSR1
+  + full `shutdown()` in TUI; `shutdownRuntime()` in start), with a
+  `process.on("exit")` sync `terminate()` (SIGTERM + lock release) as
+  the safety net for unexpected exits. `--nexus-url <url>` CLI flag
+  bypasses spawn (operator-supplied external Nexus). Lifecycle
+  hardening: per-port advisory lock with reclaim sentinel, lsof+ps
+  process-tree listener-ownership verification (handles the uvx
+  wrapper around nexusd), and stopSandbox descendant-PID sweep.
 - **Review-finding wiring sync**: no CLI command, flag, or dependency changes.
   The existing runtime/TUI wiring inherits two L2 behavior fixes: scheduled task
   dispatch now waits for async stores to persist `running` before the dispatcher
