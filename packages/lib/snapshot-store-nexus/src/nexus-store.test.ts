@@ -738,4 +738,57 @@ describe("createSnapshotStoreNexus", () => {
     // Parse failure surfaces as INTERNAL (not silently skipped).
     if (!result.ok) expect(result.error.code).toBe("INTERNAL");
   });
+
+  // --- Fix 1 (round 8): module-level lock registry — cross-instance correctness ---
+
+  test("two instances sharing same transport+basePath serialize concurrent puts on same chainId", async () => {
+    // Without module-level locks, two instances produce independent lock maps.
+    // Both could proceed concurrently on the same chainId and corrupt meta.
+    // With module-level locks, they share the same chainLock and serialize.
+    const transport = createFakeNexusTransport();
+    const storeA = createSnapshotStoreNexus<TData>({ transport });
+    const storeB = createSnapshotStoreNexus<TData>({ transport });
+    const cid = chainId("c-cross-instance");
+
+    // Fire concurrent puts from two different instances on the same chainId.
+    const results = await Promise.all([
+      storeA.put(cid, { v: 1 }, []),
+      storeB.put(cid, { v: 2 }, []),
+    ]);
+
+    // Both must succeed (independent node writes, not conflicting).
+    expect(results[0].ok).toBe(true);
+    expect(results[1].ok).toBe(true);
+
+    // The chain must contain exactly 2 nodes — no lost update.
+    // (If both instances raced without the shared lock, meta could be overwritten
+    // by the second write, leaving the first node orphaned in meta.)
+    const list = await storeA.list(cid);
+    expect(list.ok).toBe(true);
+    if (list.ok) expect(list.value.length).toBe(2);
+  });
+
+  test("two instances with DIFFERENT transports have independent lock pools (test isolation)", async () => {
+    // WeakMap keying ensures different transport instances get separate lock pools.
+    // Concurrent puts from separate instances targeting the same chainId but
+    // different transports must not block each other.
+    const transportA = createFakeNexusTransport();
+    const transportB = createFakeNexusTransport();
+    const storeA = createSnapshotStoreNexus<TData>({ transport: transportA });
+    const storeB = createSnapshotStoreNexus<TData>({ transport: transportB });
+    const cid = chainId("c-isolated");
+
+    const [rA, rB] = await Promise.all([
+      storeA.put(cid, { v: 10 }, []),
+      storeB.put(cid, { v: 20 }, []),
+    ]);
+
+    expect(rA.ok).toBe(true);
+    expect(rB.ok).toBe(true);
+    // Each transport has its own data — they are fully independent.
+    const listA = await storeA.list(cid);
+    const listB = await storeB.list(cid);
+    if (listA.ok) expect(listA.value.length).toBe(1);
+    if (listB.ok) expect(listB.value.length).toBe(1);
+  });
 });

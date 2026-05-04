@@ -26,6 +26,7 @@ import type {
 import { internal, nodeId as makeNodeId, notFound, validation } from "@koi/core";
 import { computeContentHash } from "@koi/hash";
 import { deleteJson, exists, listChildren, readJson, writeJson } from "./json-io.js";
+import { getCanonicalMutexBox, getChainLockMap } from "./locks.js";
 import { canonicalNodePath, memberPath, metaPath, validateSegment } from "./paths.js";
 import type { NexusSnapshotStoreConfig } from "./types.js";
 
@@ -44,7 +45,10 @@ export function createSnapshotStoreNexus<T>(
 ): SnapshotChainStore<T> {
   const basePath = config.basePath ?? DEFAULT_BASE_PATH;
   const transport = config.transport;
-  const chainLocks = new Map<ChainId, Promise<void>>();
+  // Module-level lock pools shared across all instances with the same
+  // transport + basePath. See locks.ts for the full design rationale.
+  const chainLocks = getChainLockMap(transport, basePath);
+  const canonicalMutexBox = getCanonicalMutexBox(transport, basePath);
 
   /**
    * Canonical-mutation mutex — serialises the two phases that must be atomic
@@ -65,17 +69,18 @@ export function createSnapshotStoreNexus<T>(
    * writing its markers first (so prune sees them and skips the canonical
    * delete), or prune deletes the canonical first (so fork's post-write
    * verification detects the race and fails with INTERNAL).
+   *
+   * The mutex box is module-level (shared across instances with the same
+   * transport + basePath) so cross-instance races are also serialised.
    */
-  let canonicalMutex = Promise.resolve();
-
   async function withCanonicalMutex<R>(fn: () => Promise<R>): Promise<R> {
     // let is justified: release must be assigned inside the Promise constructor callback
     let release = (): void => {};
     const ticket = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const prev = canonicalMutex;
-    canonicalMutex = ticket;
+    const prev = canonicalMutexBox.current;
+    canonicalMutexBox.current = ticket;
     await prev;
     try {
       return await fn();
