@@ -64,7 +64,14 @@ export function createNexusTrajectoryStore(config: NexusPlaybookStoreConfig): Tr
       if (!v.ok) throw new Error(v.error.message);
       await withSessionLock(sessionId, async () => {
         // Strictly increasing batchId: timestamp + zero-padded seq + random suffix.
-        // Seq breaks ties when Date.now() returns the same value for two serial appends.
+        // Seq breaks ties when Date.now() returns the same value for two serial appends
+        // within ONE process. CROSS-PROCESS ORDERING LIMIT: two separate processes
+        // appending concurrently produce disjoint files; getSession sorts by batchId
+        // filename. Clock skew or same-millisecond appends from different instances
+        // cause the UUID suffix to determine order — i.e., cross-process append order
+        // is UNDEFINED. Distributed deployments requiring strict ordering must funnel
+        // writes through a single coordinator or add a `seq` field to TrajectoryEntry.
+        // See docs/L2/playbook-store-nexus.md "Concurrency limits" and issue #1469.
         const seq = (sessionSeq.get(sessionId) ?? 0) + 1;
         sessionSeq.set(sessionId, seq);
         const batchId = `${Date.now()}-${String(seq).padStart(6, "0")}-${crypto.randomUUID().slice(0, 8)}`;

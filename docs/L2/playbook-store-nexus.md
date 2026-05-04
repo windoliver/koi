@@ -103,6 +103,16 @@ CAS (etag / `if_match` semantics), which `@koi/nexus-client` does not yet expose
 Distributed deployments must funnel `recordProposal` and `recordEvaluation` writes
 through a single coordinator process. Tracking issue: #1469.
 
+**Trajectory ordering:** `getSession` returns entries from concurrent appends in
+batchId order, where `batchId = ${Date.now()}-${seqPadded6}-${randomSlice}`. Within
+ONE process, batchIds are strictly increasing (the in-process seq counter breaks any
+`Date.now()` tie). ACROSS processes, clock skew or same-millisecond appends from
+two instances mean batchId order becomes lexicographic on the UUID suffix — i.e.,
+append-order is undefined in the multi-process case. Distributed deployments that
+depend on strict append-order semantics must funnel writes through a single
+coordinator process or attach an explicit `seq` field at the entry level (tracking
+issue: #1469 covers adding a `seq` field to `TrajectoryEntry`).
+
 ## Connection-loss handling
 
 Each store method propagates transport errors. `read` calls returning NOT_FOUND/EXTERNAL are treated as `undefined`, matching the contract.
