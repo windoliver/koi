@@ -105,4 +105,38 @@ describe("createNexusPlaybookStore", () => {
     expect(got?.confidence).toBe(0.9);
     expect(got?.title).toBe("updated");
   });
+
+  // --- ACE ID path-safety regression tests (Finding 1) ---
+
+  test("save with id containing '/' is rejected with validation error", async () => {
+    const store = newStore();
+    await expect(store.save(pb("a/b"))).rejects.toThrow("Playbook ID cannot contain '/'");
+  });
+
+  test("save with id containing '..' is rejected with validation error", async () => {
+    const store = newStore();
+    await expect(store.save(pb("a..b"))).rejects.toThrow("Playbook ID");
+  });
+
+  test("save with id containing backslash is rejected", async () => {
+    const store = newStore();
+    await expect(store.save(pb("a\\b"))).rejects.toThrow("Playbook ID");
+  });
+
+  test("save with id containing null byte is rejected", async () => {
+    const store = newStore();
+    await expect(store.save(pb("a\0b"))).rejects.toThrow("Playbook ID");
+  });
+
+  test("save 'a:b' and 'a_b' produce distinct files — no collision", async () => {
+    const store = newStore();
+    await store.save(pb("a:b", 0.1));
+    await store.save(pb("a_b", 0.9));
+    // Both must be independently retrievable
+    expect((await store.get("a:b"))?.confidence).toBe(0.1);
+    expect((await store.get("a_b"))?.confidence).toBe(0.9);
+    // list must return both
+    const all = await store.list();
+    expect(all.map((p) => p.id).sort()).toEqual(["a:b", "a_b"]);
+  });
 });

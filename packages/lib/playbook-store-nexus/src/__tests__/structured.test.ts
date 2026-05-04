@@ -117,4 +117,26 @@ describe("createNexusStructuredPlaybookStore", () => {
     await store.save({ ...spb("p"), version: 2, title: "rollback" });
     expect((await store.get("p"))?.version).toBe(2);
   });
+
+  // --- ACE ID path-safety regression tests (Finding 1) ---
+
+  test("save with id containing '/' is rejected with validation error", async () => {
+    const store = newStore();
+    await expect(store.save(spb("a/b"))).rejects.toThrow("Structured Playbook ID");
+  });
+
+  test("save with id containing '..' is rejected", async () => {
+    const store = newStore();
+    await expect(store.save(spb("a..b"))).rejects.toThrow("Structured Playbook ID");
+  });
+
+  test("save 'a:b' and 'a_b' produce distinct files — no collision", async () => {
+    const store = newStore();
+    await store.save({ ...spb("a:b"), version: 1 });
+    await store.save({ ...spb("a_b"), version: 2 });
+    expect((await store.get("a:b"))?.version).toBe(1);
+    expect((await store.get("a_b"))?.version).toBe(2);
+    const all = await store.list();
+    expect(all.map((p) => p.id).sort()).toEqual(["a:b", "a_b"]);
+  });
 });

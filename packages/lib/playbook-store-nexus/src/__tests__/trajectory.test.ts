@@ -108,4 +108,56 @@ describe("createNexusTrajectoryStore", () => {
     // nexus returns both regardless of before
     expect([...sessions].sort()).toEqual(["sess-a", "sess-b"]);
   });
+
+  // --- ACE ID path-safety regression tests (Finding 1) ---
+
+  test("append with session id containing '/' is rejected", async () => {
+    const store = newStore();
+    await expect(store.append("a/b", [makeEntry(0, "tool")])).rejects.toThrow("Session ID");
+  });
+
+  test("append with session id containing '..' is rejected", async () => {
+    const store = newStore();
+    await expect(store.append("a..b", [makeEntry(0, "tool")])).rejects.toThrow("Session ID");
+  });
+
+  test("append with session id containing backslash is rejected", async () => {
+    const store = newStore();
+    await expect(store.append("a\\b", [makeEntry(0, "tool")])).rejects.toThrow("Session ID");
+  });
+
+  test("append with session id containing null byte is rejected", async () => {
+    const store = newStore();
+    await expect(store.append("a\0b", [makeEntry(0, "tool")])).rejects.toThrow("Session ID");
+  });
+
+  test("'a:b' and 'a_b' are distinct sessions — no collision", async () => {
+    const store = newStore();
+    await store.append("a:b", [makeEntry(0, "colon")]);
+    await store.append("a_b", [makeEntry(0, "underscore")]);
+    expect((await store.getSession("a:b"))[0]?.identifier).toBe("colon");
+    expect((await store.getSession("a_b"))[0]?.identifier).toBe("underscore");
+  });
+
+  test("listSessions returns original session IDs with colons (not encoded)", async () => {
+    const store = newStore();
+    await store.append("session:2026:abc", [makeEntry(0, "tool")]);
+    const sessions = await store.listSessions();
+    expect(sessions).toContain("session:2026:abc");
+  });
+
+  // --- Concurrent append regression test (Finding 5) ---
+
+  test("concurrent append calls serialize — all entries present", async () => {
+    const store = newStore();
+    // Fire two concurrent appends to the same session
+    await Promise.all([
+      store.append("concurrent-sess", [makeEntry(0, "first"), makeEntry(1, "second")]),
+      store.append("concurrent-sess", [makeEntry(2, "third"), makeEntry(3, "fourth")]),
+    ]);
+    const entries = await store.getSession("concurrent-sess");
+    expect(entries.length).toBe(4);
+    const ids = entries.map((e) => e.identifier).sort();
+    expect(ids).toEqual(["first", "fourth", "second", "third"]);
+  });
 });

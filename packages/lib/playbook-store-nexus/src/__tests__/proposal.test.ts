@@ -121,4 +121,59 @@ describe("createNexusPlaybookProposalStore", () => {
     // We assert that all 3 are present (content completeness), not the order.
     expect(list.map((p) => p.id).sort()).toEqual(["p1", "p2", "p3"]);
   });
+
+  // --- ACE ID path-safety regression tests (Finding 1) ---
+
+  test("recordProposal with id containing '/' is rejected", async () => {
+    const store = newStore();
+    await expect(store.recordProposal(makeProposal("p/bad", "pb-a"))).rejects.toThrow(
+      "Proposal ID",
+    );
+  });
+
+  test("recordProposal with id containing '..' is rejected", async () => {
+    const store = newStore();
+    await expect(store.recordProposal(makeProposal("a..b", "pb-a"))).rejects.toThrow("Proposal ID");
+  });
+
+  test("'p:1' and 'p_1' are distinct proposals — no collision", async () => {
+    const store = newStore();
+    await store.recordProposal(makeProposal("p:1", "pb-a"));
+    await store.recordProposal(makeProposal("p_1", "pb-a"));
+    // Both must be individually retrievable
+    expect((await store.getProposal("p:1"))?.id).toBe("p:1");
+    expect((await store.getProposal("p_1"))?.id).toBe("p_1");
+    // listProposals must return both
+    const list = await store.listProposals("pb-a");
+    expect(list.map((p) => p.id).sort()).toEqual(["p:1", "p_1"]);
+  });
+
+  // --- Immutable proposal contract regression tests (Finding 6) ---
+
+  test("recordProposal with same id + same content is idempotent (no error)", async () => {
+    const store = newStore();
+    const p = makeProposal("p-idem", "pb-a");
+    await store.recordProposal(p);
+    // Second call with identical content must succeed silently
+    await expect(store.recordProposal(p)).resolves.toBeUndefined();
+    // Proposal still retrievable
+    expect((await store.getProposal("p-idem"))?.id).toBe("p-idem");
+  });
+
+  test("recordProposal with same id + different content throws", async () => {
+    const store = newStore();
+    await store.recordProposal(makeProposal("p-immut", "pb-a"));
+    const changed = { ...makeProposal("p-immut", "pb-a"), baseVersion: 99 };
+    await expect(store.recordProposal(changed)).rejects.toThrow(
+      "already recorded with different content",
+    );
+  });
+
+  test("listProposals returns proposal recorded even when index write retried", async () => {
+    // Smoke: after a normal recordProposal, listProposals finds the proposal.
+    const store = newStore();
+    await store.recordProposal(makeProposal("p-idx", "pb-idx"));
+    const list = await store.listProposals("pb-idx");
+    expect(list.map((p) => p.id)).toContain("p-idx");
+  });
 });

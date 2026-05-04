@@ -1,6 +1,15 @@
 import type { Playbook, PlaybookStore } from "@koi/ace-types";
 
-import { deleteJson, listChildren, readJson, sanitizeId, writeJson } from "./json-io.js";
+import {
+  basenameNoExt,
+  decodeAceId,
+  deleteJson,
+  encodeAceId,
+  listChildren,
+  readJson,
+  validateAceId,
+  writeJson,
+} from "./json-io.js";
 import type { NexusPlaybookStoreConfig } from "./types.js";
 
 const DEFAULT_BASE = "ace";
@@ -9,10 +18,12 @@ export function createNexusPlaybookStore(config: NexusPlaybookStoreConfig): Play
   const base = config.basePath ?? DEFAULT_BASE;
   const dir = `${base}/playbooks`;
   const transport = config.transport;
-  const path = (id: string): string => `${dir}/${sanitizeId(id)}.json`;
+  const path = (id: string): string => `${dir}/${encodeAceId(id)}.json`;
 
   return {
     async get(id: string): Promise<Playbook | undefined> {
+      const v = validateAceId(id, "Playbook ID");
+      if (!v.ok) throw new Error(v.error.message);
       const r = await readJson<Playbook>(transport, path(id));
       if (!r.ok) throw new Error(r.error.message);
       return r.value;
@@ -24,7 +35,10 @@ export function createNexusPlaybookStore(config: NexusPlaybookStoreConfig): Play
       const out: Playbook[] = [];
       for (const p of lr.value) {
         const r = await readJson<Playbook>(transport, p);
-        if (!r.ok || r.value === undefined) continue;
+        if (!r.ok || r.value === undefined) {
+          // Fall back to decoding from path if read failed
+          continue;
+        }
         const pb = r.value;
         if (options?.minConfidence !== undefined && pb.confidence < options.minConfidence) continue;
         if (
@@ -40,14 +54,21 @@ export function createNexusPlaybookStore(config: NexusPlaybookStoreConfig): Play
     },
 
     async save(playbook: Playbook): Promise<void> {
+      const v = validateAceId(playbook.id, "Playbook ID");
+      if (!v.ok) throw new Error(v.error.message);
       const r = await writeJson(transport, path(playbook.id), playbook);
       if (!r.ok) throw new Error(r.error.message);
     },
 
     async remove(id: string): Promise<boolean> {
+      const v = validateAceId(id, "Playbook ID");
+      if (!v.ok) throw new Error(v.error.message);
       const r = await deleteJson(transport, path(id));
       if (!r.ok) throw new Error(r.error.message);
       return r.value;
     },
   };
 }
+
+// Re-export for callers that need to decode a listed path back to an id
+export { basenameNoExt, decodeAceId };

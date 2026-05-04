@@ -1,8 +1,18 @@
 /**
  * JSON I/O helpers for the Nexus-backed ACE stores.
  *
- * `sanitizeId` collapses colons to underscores so session IDs like
- * "session:2026-05-03:abc" are storable as filenames Nexus can list/glob.
+ * `validateAceId` rejects IDs that would escape the basePath sandbox.
+ * `encodeAceId` / `decodeAceId` provide a reversible, path-safe encoding so
+ * that distinct IDs always map to distinct filenames (no collision between
+ * "a:b" and "a_b").
+ *
+ * Encoding rules:
+ *   `_` → `_5F`  (escape character itself, so round-trip is unambiguous)
+ *   `:` → `_3A`  (colons are common in session IDs)
+ *
+ * All other ASCII-printable characters that are valid in filenames are kept
+ * as-is. Characters that are never allowed in ACE IDs (/, \, \0, \n, \r, ..)
+ * are rejected by `validateAceId` before encoding runs.
  *
  * `listChildren` lists the non-glob prefix of the pattern recursively and
  * filters client-side, matching how `@koi/fs-nexus` implements search. This
@@ -11,7 +21,7 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
-import { internal } from "@koi/core";
+import { internal, validation } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
 
 interface NexusListEntry {
@@ -23,8 +33,46 @@ interface NexusListResponse {
   readonly files: readonly NexusListEntry[];
 }
 
-export function sanitizeId(id: string): string {
-  return id.replace(/:/g, "_");
+/**
+ * Reject ACE IDs that would escape the basePath sandbox or cause filename
+ * collisions. Throws a typed validation error if the id is unsafe.
+ */
+export function validateAceId(id: string, label: string): Result<void, KoiError> {
+  if (id.length === 0) return { ok: false, error: validation(`${label} cannot be empty`) };
+  if (id.includes("/"))
+    return { ok: false, error: validation(`${label} cannot contain '/': ${id}`) };
+  if (id === ".." || id.includes("/..") || id.startsWith("../")) {
+    return { ok: false, error: validation(`${label} cannot be '..': ${id}`) };
+  }
+  if (id.includes("..")) {
+    // Catch embedded ".." anywhere
+    return { ok: false, error: validation(`${label} cannot contain '..': ${id}`) };
+  }
+  if (id.includes("\\"))
+    return { ok: false, error: validation(`${label} cannot contain '\\': ${id}`) };
+  if (id.includes("\0"))
+    return { ok: false, error: validation(`${label} cannot contain null bytes`) };
+  if (id.includes("\n"))
+    return { ok: false, error: validation(`${label} cannot contain newlines`) };
+  if (id.includes("\r"))
+    return { ok: false, error: validation(`${label} cannot contain carriage returns`) };
+  return { ok: true, value: undefined };
+}
+
+/**
+ * Reversible, path-safe encoding for ACE IDs.
+ * `_` → `_5F`, `:` → `_3A`
+ * This ensures distinct IDs always produce distinct filenames.
+ */
+export function encodeAceId(id: string): string {
+  return id.replace(/_/g, "_5F").replace(/:/g, "_3A");
+}
+
+/**
+ * Inverse of `encodeAceId`. Reconstructs the original ID from a filename stem.
+ */
+export function decodeAceId(encoded: string): string {
+  return encoded.replace(/_3A/g, ":").replace(/_5F/g, "_");
 }
 
 export function basenameNoExt(path: string): string {
@@ -70,7 +118,8 @@ export async function readJson<T>(
 ): Promise<Result<T | undefined, KoiError>> {
   const r = await transport.call<unknown>("read", { path });
   if (!r.ok) {
-    if (r.error.code === "NOT_FOUND" || r.error.code === "EXTERNAL") {
+    // Only NOT_FOUND means "absent". EXTERNAL means a degraded backend — propagate.
+    if (r.error.code === "NOT_FOUND") {
       return { ok: true, value: undefined };
     }
     return r;
@@ -100,12 +149,27 @@ export async function deleteJson(
 ): Promise<Result<boolean, KoiError>> {
   const r = await transport.call<unknown>("delete", { path });
   if (!r.ok) {
-    if (r.error.code === "NOT_FOUND" || r.error.code === "EXTERNAL") {
+    // Only NOT_FOUND is a no-op (file already absent). EXTERNAL propagates.
+    if (r.error.code === "NOT_FOUND") {
       return { ok: true, value: false };
     }
     return r;
   }
   return { ok: true, value: true };
+}
+
+/** Existence check — true when the path can be read. */
+export async function exists(
+  transport: NexusTransport,
+  path: string,
+): Promise<Result<boolean, KoiError>> {
+  const r = await transport.call<unknown>("read", { path });
+  if (r.ok) return { ok: true, value: true };
+  // Only NOT_FOUND means absent. EXTERNAL propagates.
+  if (r.error.code === "NOT_FOUND") {
+    return { ok: true, value: false };
+  }
+  return { ok: false, error: r.error };
 }
 
 export async function listChildren(

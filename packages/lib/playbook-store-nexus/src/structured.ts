@@ -1,6 +1,13 @@
 import type { StructuredPlaybook, StructuredPlaybookStore } from "@koi/ace-types";
 
-import { deleteJson, listChildren, readJson, sanitizeId, writeJson } from "./json-io.js";
+import {
+  deleteJson,
+  encodeAceId,
+  listChildren,
+  readJson,
+  validateAceId,
+  writeJson,
+} from "./json-io.js";
 import type { NexusPlaybookStoreConfig } from "./types.js";
 
 const DEFAULT_BASE = "ace";
@@ -11,10 +18,12 @@ export function createNexusStructuredPlaybookStore(
   const base = config.basePath ?? DEFAULT_BASE;
   const dir = `${base}/structured`;
   const transport = config.transport;
-  const path = (id: string): string => `${dir}/${sanitizeId(id)}.json`;
+  const path = (id: string): string => `${dir}/${encodeAceId(id)}.json`;
 
   return {
     async get(id: string): Promise<StructuredPlaybook | undefined> {
+      const v = validateAceId(id, "Structured Playbook ID");
+      if (!v.ok) throw new Error(v.error.message);
       const r = await readJson<StructuredPlaybook>(transport, path(id));
       if (!r.ok) throw new Error(r.error.message);
       return r.value;
@@ -41,11 +50,15 @@ export function createNexusStructuredPlaybookStore(
     },
 
     async save(playbook: StructuredPlaybook): Promise<void> {
+      const v = validateAceId(playbook.id, "Structured Playbook ID");
+      if (!v.ok) throw new Error(v.error.message);
       const r = await writeJson(transport, path(playbook.id), playbook);
       if (!r.ok) throw new Error(r.error.message);
     },
 
     async remove(id: string): Promise<boolean> {
+      const v = validateAceId(id, "Structured Playbook ID");
+      if (!v.ok) throw new Error(v.error.message);
       const r = await deleteJson(transport, path(id));
       if (!r.ok) throw new Error(r.error.message);
       return r.value;
