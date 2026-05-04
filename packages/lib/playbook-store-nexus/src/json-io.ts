@@ -32,6 +32,11 @@ interface NexusListEntry {
 
 interface NexusListResponse {
   readonly files: readonly NexusListEntry[];
+  /**
+   * True when Nexus truncated the result set. This helper fails closed on
+   * truncation — callers must use a narrower scope or implement pagination.
+   */
+  readonly has_more?: boolean;
 }
 
 /**
@@ -178,6 +183,13 @@ export async function exists(
   return { ok: false, error: r.error };
 }
 
+/**
+ * Glob list — returns file paths matching the pattern.
+ *
+ * Fails closed if Nexus returns a truncated result (`has_more: true`). Partial
+ * results are never returned — callers must use a narrower scope or implement
+ * explicit pagination.
+ */
 export async function listChildren(
   transport: NexusTransport,
   pattern: string,
@@ -189,6 +201,14 @@ export async function listChildren(
     recursive: true,
   });
   if (!r.ok) return r;
+  if (r.value.has_more === true) {
+    return {
+      ok: false,
+      error: internal(
+        `listChildren: nexus list truncated; results incomplete for pattern ${pattern}`,
+      ),
+    };
+  }
   const paths = r.value.files
     .filter((f) => f.is_directory !== true && regex.test(f.path))
     .map((f) => f.path);

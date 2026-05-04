@@ -4,6 +4,19 @@ import { createFakeNexusTransport } from "@koi/fs-nexus/testing";
 import type { NexusTransport } from "@koi/nexus-client";
 import { deleteJson, exists, listChildren, readJson, writeJson } from "./json-io.js";
 
+/** Build a transport that returns a truncated list response (`has_more: true`). */
+function truncatedListTransport(files: readonly { path: string }[]): NexusTransport {
+  return {
+    call: async <T>(method: string): Promise<Result<T, KoiError>> => {
+      if (method === "list") {
+        return { ok: true, value: { files, has_more: true } as T };
+      }
+      return { ok: false, error: { code: "INTERNAL", message: "not supported", retryable: false } };
+    },
+    close: () => {},
+  };
+}
+
 /** Build a minimal transport that returns a fixed value for every `read`. */
 function fixedReadTransport(value: unknown): NexusTransport {
   return {
@@ -158,5 +171,30 @@ describe("json-io", () => {
     const r = await readJson<{ v: number }>(transport, "/any.json");
     expect(r.ok).toBe(true);
     if (r.ok && r.value !== undefined) expect(r.value.v).toBe(42);
+  });
+
+  // --- Fix 10: listChildren fails closed on truncated Nexus list (#1405) ---
+
+  test("listChildren returns INTERNAL when transport returns has_more: true", async () => {
+    const transport = truncatedListTransport([
+      { path: "/snapshots/a.json" },
+      { path: "/snapshots/b.json" },
+    ]);
+    const r = await listChildren(transport, "/snapshots/*.json");
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe("INTERNAL");
+      expect(r.error.message).toContain("truncated");
+      expect(r.error.message).toContain("/snapshots/*.json");
+    }
+  });
+
+  test("listChildren happy-path still returns matching files when has_more is absent", async () => {
+    const transport = createFakeNexusTransport();
+    await writeJson(transport, "/snapshots/a.json", { i: 1 });
+    await writeJson(transport, "/snapshots/b.json", { i: 2 });
+    const r = await listChildren(transport, "/snapshots/*.json");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.length).toBe(2);
   });
 });

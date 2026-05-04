@@ -11,10 +11,39 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import type { ChainId, NodeId, SnapshotChainStore } from "@koi/core";
+import type { ChainId, KoiError, NodeId, Result, SnapshotChainStore } from "@koi/core";
 import { chainId, nodeId } from "@koi/core";
 import { createFakeNexusTransport } from "@koi/fs-nexus/testing";
+import type { NexusTransport } from "@koi/nexus-client";
 import { createSnapshotStoreNexus } from "../nexus-store.js";
+
+/**
+ * Wraps an inner transport, intercepting all `list` calls and injecting
+ * `has_more: true` to simulate a truncated Nexus response.
+ */
+function truncatingListTransport(inner: NexusTransport): NexusTransport {
+  return {
+    call: async <T>(
+      method: string,
+      params: Record<string, unknown>,
+    ): Promise<Result<T, KoiError>> => {
+      if (method === "list") {
+        // Delegate to inner first to get the real files, then set has_more: true
+        const r = await inner.call<{ files: readonly unknown[]; has_more?: boolean }>(
+          method,
+          params,
+        );
+        if (!r.ok) return r as Result<T, KoiError>;
+        return {
+          ok: true,
+          value: { files: r.value.files, has_more: true } as T,
+        };
+      }
+      return inner.call<T>(method, params);
+    },
+    close: () => inner.close(),
+  };
+}
 
 function newStore<T>(): SnapshotChainStore<T> {
   return createSnapshotStoreNexus<T>({ transport: createFakeNexusTransport() });
@@ -367,5 +396,46 @@ describe("SnapshotChainStore [nexus] — contract", () => {
     if (r1.ok && r1.value !== undefined && r2.ok && r2.value !== undefined) {
       expect(r1.value.nodeId).not.toBe(r2.value.nodeId);
     }
+  });
+});
+
+// --- Fix 10: truncated list during prune must fail closed, not delete canonical node (#1405) ---
+
+describe("SnapshotChainStore [nexus] — prune truncation regression (Fix 10)", () => {
+  test("prune returns INTERNAL when findOtherChainMembers list is truncated — canonical node NOT deleted", async () => {
+    const c1t = chainId("chain-1-trunc");
+    const c2t = chainId("chain-2-trunc");
+    // Setup: use a normal transport to build state (c1 has 1 node, c2 forks it)
+    const inner = createFakeNexusTransport();
+    const setupStore = createSnapshotStoreNexus<string>({ transport: inner });
+
+    const r1 = await setupStore.put(c1t, "shared-node", []);
+    expect(r1.ok).toBe(true);
+    if (!r1.ok || r1.value === undefined) throw new Error("put failed");
+    const sharedNodeId = r1.value.nodeId;
+
+    const forkResult = await setupStore.fork(sharedNodeId, c2t, "branch");
+    expect(forkResult.ok).toBe(true);
+
+    // Now swap in a truncating transport so the list in findOtherChainMembers is truncated
+    const wrappedTransport = truncatingListTransport(inner);
+    const pruneStore = createSnapshotStoreNexus<string>({
+      transport: wrappedTransport,
+      lockScope: "prune-truncation-test",
+    });
+
+    // Prune c1t aggressively — this will try to delete the canonical node but
+    // must fail closed because findOtherChainMembers gets a truncated list
+    const pruneResult = await pruneStore.prune(c1t, { retainCount: 0, retainBranches: false });
+    expect(pruneResult.ok).toBe(false);
+    if (!pruneResult.ok) {
+      expect(pruneResult.error.code).toBe("INTERNAL");
+      expect(pruneResult.error.message).toContain("truncated");
+    }
+
+    // The canonical node must still be readable via c2 (no data loss)
+    const getResult = await setupStore.get(sharedNodeId);
+    expect(getResult.ok).toBe(true);
+    if (getResult.ok) expect(getResult.value.data).toBe("shared-node");
   });
 });

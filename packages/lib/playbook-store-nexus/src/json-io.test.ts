@@ -14,10 +14,24 @@ import {
   deleteJson,
   encodeAceId,
   exists,
+  listChildren,
   readJson,
   validateAceId,
   writeJson,
 } from "./json-io.js";
+
+/** Build a transport that returns a truncated list response (`has_more: true`). */
+function truncatedListTransport(files: readonly { path: string }[]): NexusTransport {
+  return {
+    call: async <T>(method: string): Promise<Result<T, KoiError>> => {
+      if (method === "list") {
+        return { ok: true, value: { files, has_more: true } as T };
+      }
+      return { ok: false, error: { code: "INTERNAL", message: "not supported", retryable: false } };
+    },
+    close: () => {},
+  };
+}
 
 /** Build a minimal transport that returns a fixed value for every `read`. */
 function fixedReadTransport(value: unknown): NexusTransport {
@@ -256,5 +270,32 @@ describe("readJson — strict byte decoding via extractReadContent (Fix 2)", () 
     const r = await readJson<{ kind: string }>(transport, "/any.json");
     expect(r.ok).toBe(true);
     if (r.ok && r.value !== undefined) expect(r.value.kind).toBe("trajectory");
+  });
+});
+
+// --- Fix 10: listChildren fails closed on truncated Nexus list (#1405) ---
+
+describe("listChildren — fails closed on truncation (Fix 10)", () => {
+  test("returns INTERNAL when transport returns has_more: true", async () => {
+    const transport = truncatedListTransport([
+      { path: "/ace/playbooks/a.json" },
+      { path: "/ace/playbooks/b.json" },
+    ]);
+    const r = await listChildren(transport, "/ace/playbooks/*.json");
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe("INTERNAL");
+      expect(r.error.message).toContain("truncated");
+      expect(r.error.message).toContain("/ace/playbooks/*.json");
+    }
+  });
+
+  test("happy-path returns matching files when has_more is absent", async () => {
+    const transport = createFakeNexusTransport();
+    await writeJson(transport, "/ace/playbooks/x.json", { v: 1 });
+    await writeJson(transport, "/ace/playbooks/y.json", { v: 2 });
+    const r = await listChildren(transport, "/ace/playbooks/*.json");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.length).toBe(2);
   });
 });
