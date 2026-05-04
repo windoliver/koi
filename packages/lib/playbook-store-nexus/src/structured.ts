@@ -19,6 +19,10 @@ export function createNexusStructuredPlaybookStore(
   const base = config.basePath ?? DEFAULT_BASE;
   const dir = `${base}/structured`;
   const transport = config.transport;
+  // Derive the effective lock scope — must match the scope used by any
+  // createNexusPlaybookProposalStore pointing at the same backend so that
+  // save/recordProposal interleaving is serialised across instances.
+  const scope = config.lockScope ?? base;
   const path = (id: string): string => `${dir}/${encodeAceId(id)}.json`;
 
   return {
@@ -61,7 +65,7 @@ export function createNexusStructuredPlaybookStore(
       if (!v.ok) throw new Error(v.error.message);
       // Acquire the per-playbook lock shared with recordProposal to serialise
       // in-process save + baseVersion-check interleaving. See playbook-locks.ts.
-      await withPlaybookLock(playbook.id, async () => {
+      await withPlaybookLock(scope, playbook.id, async () => {
         const r = await writeJson(transport, path(playbook.id), playbook);
         if (!r.ok) throw new Error(r.error.message);
       });
@@ -72,7 +76,7 @@ export function createNexusStructuredPlaybookStore(
       if (!v.ok) throw new Error(v.error.message);
       // Also hold the per-playbook lock for remove so a concurrent recordProposal
       // cannot see the playbook disappear mid-check.
-      return withPlaybookLock(id, async () => {
+      return withPlaybookLock(scope, id, async () => {
         const r = await deleteJson(transport, path(id));
         if (!r.ok) throw new Error(r.error.message);
         return r.value;

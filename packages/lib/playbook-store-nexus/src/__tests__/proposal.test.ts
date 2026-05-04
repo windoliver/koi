@@ -626,4 +626,62 @@ describe("createNexusPlaybookProposalStore", () => {
     // Must resolve within the 5-second timeout; a deadlock would time out.
     await expect(store.recordEvaluation(evaluation)).resolves.toBeUndefined();
   }, 5000);
+
+  // --- Fix 1 (round 9): lockScope-keyed registry — wrapper-transport race tests ---
+
+  test("wrapper-transport: two proposal stores with same lockScope — concurrent conflicting recordProposal serializes", async () => {
+    // Two stores over wrapper transports of the same backend, SAME lockScope.
+    // Concurrent conflicting recordProposal for the same id must serialize:
+    // exactly one succeeds, the other throws immutability error.
+    const baseTransport = createFakeNexusTransport();
+
+    function wrapTransport(t: typeof baseTransport): typeof baseTransport {
+      return {
+        call: (m, p, opts) => t.call(m, p, opts),
+        subscribe: t.subscribe.bind(t),
+        submitAuthCode: t.submitAuthCode.bind(t),
+        close: () => t.close(),
+      };
+    }
+
+    const spbStore = createNexusStructuredPlaybookStore({
+      transport: baseTransport,
+      lockScope: "shared-proposal-backend",
+    });
+    await spbStore.save(makeStructuredPlaybook("pb-wrapper-proposal", 1));
+
+    const storeA = createNexusPlaybookProposalStore({
+      transport: wrapTransport(baseTransport),
+      lockScope: "shared-proposal-backend",
+    });
+    const storeB = createNexusPlaybookProposalStore({
+      transport: wrapTransport(baseTransport),
+      lockScope: "shared-proposal-backend",
+    });
+
+    const p1 = makeProposal("p-wrapper-race", "pb-wrapper-proposal");
+    const p2 = {
+      ...makeProposal("p-wrapper-race", "pb-wrapper-proposal"),
+      reflection: {
+        ...makeProposal("p-wrapper-race", "pb-wrapper-proposal").reflection,
+        rootCause: "different rootCause",
+      },
+    };
+
+    const results = await Promise.allSettled([
+      storeA.recordProposal(p1),
+      storeB.recordProposal(p2),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+
+    // Exactly one succeeds and the other rejects with immutability error.
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(1);
+    const err = rejected[0];
+    if (err?.status === "rejected") {
+      expect(String(err.reason)).toContain("already recorded with different content");
+    }
+  });
 });

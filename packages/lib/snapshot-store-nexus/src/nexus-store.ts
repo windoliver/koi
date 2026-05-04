@@ -45,10 +45,15 @@ export function createSnapshotStoreNexus<T>(
 ): SnapshotChainStore<T> {
   const basePath = config.basePath ?? DEFAULT_BASE_PATH;
   const transport = config.transport;
-  // Module-level lock pools shared across all instances with the same
-  // transport + basePath. See locks.ts for the full design rationale.
-  const chainLocks = getChainLockMap(transport, basePath);
-  const canonicalMutexBox = getCanonicalMutexBox(transport, basePath);
+  // Derive the effective lock scope. Two stores pointing at the same backend
+  // via DIFFERENT transport objects (e.g. decorator wrappers) share a pool
+  // when they supply the same lockScope. Default: basePath — safe when each
+  // basePath maps to exactly one backend in a given process.
+  const scope = config.lockScope ?? basePath;
+  // Module-level lock pools shared across all instances with the same scope.
+  // See locks.ts for the full design rationale.
+  const chainLocks = getChainLockMap(scope);
+  const canonicalMutexBox = getCanonicalMutexBox(scope);
 
   /**
    * Canonical-mutation mutex — serialises the two phases that must be atomic

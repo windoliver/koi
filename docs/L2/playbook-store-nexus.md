@@ -86,6 +86,18 @@ Contract parity verified by `src/__tests__/{playbook,structured,trajectory,propo
 
 ## Concurrency limits
 
+### `lockScope` — cross-instance lock sharing
+
+The module-level lock registries in `proposal-locks.ts` and `playbook-locks.ts` are keyed by a **`lockScope` string**, not by transport object identity. This means two store instances that point at the **same Nexus backend via different transport objects** (e.g. decorator wrappers, separate HTTP clients to the same URL) can share a lock pool and correctly serialize concurrent writes.
+
+**Rules:**
+
+- Two stores targeting the **same backend** with the **same `basePath`** MUST use the same `lockScope` (or rely on the default).
+- The **default** `lockScope` is `basePath` (or `"ace"` if neither is supplied). Safe when each `basePath` maps to exactly one backend in the process and no wrapper transports are involved.
+- If you create multiple stores over the same backend with **wrapper transports**, you MUST supply an explicit `lockScope` that is identical across all of those instances.
+- Two stores with **different** `lockScope` values get **independent** lock pools — unsafe when they target the same backend.
+- `createNexusStructuredPlaybookStore` and `createNexusPlaybookProposalStore` MUST use the **same** `lockScope` when sharing a backend — they coordinate through the same `playbook-locks.ts` registry, which is keyed by scope.
+
 **Audit immutability scope:** `recordProposal` and `recordEvaluation` global-uniqueness
 guarantees hold **per process**, enforced by in-memory mutexes keyed by id in
 `createNexusPlaybookProposalStore`. Within a single process:

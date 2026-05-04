@@ -65,6 +65,29 @@ A future GC pass (tracked in #1469) will sweep `_nodes/` against the union of ev
 
 Operations that touch `meta.json` (`put`, `prune`) are serialized **per chain** via an in-memory mutex map. Two processes pointing at the same Nexus mount need a higher-level lock — same constraint as v1.
 
+### `lockScope` — cross-instance lock sharing
+
+The module-level lock registry is keyed by a **`lockScope` string**, not by transport object identity. This means two store instances that point at the **same Nexus backend via different transport objects** (e.g. decorator wrappers, separate HTTP clients to the same URL) can share a lock pool and correctly serialize concurrent writes.
+
+**Rules:**
+
+- Two stores targeting the **same backend** with the **same `basePath`** MUST use the same `lockScope` (or rely on the default).
+- The **default** `lockScope` is `basePath` (or `"snapshots"` if neither is supplied). This default is safe when each `basePath` maps to exactly one backend in the process and no wrapper transports are involved.
+- If you create multiple stores over the same backend with **wrapper transports** (decorators, retrying wrappers, etc.), you MUST supply an explicit `lockScope` that is identical across all of those instances.
+- Two stores with **different** `lockScope` values get **independent** lock pools — this is the documented *unsafe* configuration when they actually target the same backend. The config field is opt-in precisely so single-store deployments are not forced to choose a scope name.
+
+**Example:**
+
+```ts
+// Safe: single basePath, default lockScope (= "snapshots")
+const storeA = createSnapshotStoreNexus({ transport: wrapA(base) });
+const storeB = createSnapshotStoreNexus({ transport: wrapB(base) });
+// ❌ UNSAFE: wrapA and wrapB are different objects → different WeakMap keys (old code) → races
+// ✅ SAFE with lockScope:
+const storeA = createSnapshotStoreNexus({ transport: wrapA(base), lockScope: "my-backend" });
+const storeB = createSnapshotStoreNexus({ transport: wrapB(base), lockScope: "my-backend" });
+```
+
 ## Batch operations
 
 Not exposed — `SnapshotChainStore<T>` has no batch method. Callers issuing many `put`s pay one round-trip per node. If batch becomes a bottleneck, lift a `putMany` into the L0 contract first.

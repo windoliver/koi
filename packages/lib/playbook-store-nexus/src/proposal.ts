@@ -42,6 +42,11 @@ export function createNexusPlaybookProposalStore(
 ): PlaybookProposalStore {
   const base = config.basePath ?? DEFAULT_BASE;
   const transport = config.transport;
+  // Derive the effective lock scope. Two stores pointing at the same backend
+  // via DIFFERENT transport objects share a pool when they supply the same
+  // lockScope. Default: base — safe when each basePath maps to exactly one
+  // backend in a given process.
+  const scope = config.lockScope ?? base;
 
   const proposalPath = (id: string): string => `${base}/proposals/${encodeAceId(id)}.json`;
   const evaluationPath = (proposalId: string): string =>
@@ -54,8 +59,8 @@ export function createNexusPlaybookProposalStore(
     `${base}/structured/${encodeAceId(playbookId)}.json`;
 
   // Per-id in-process mutex via the module-level registry. Shared across all
-  // instances with the same transport + basePath so cross-instance same-process
-  // races on the same proposal/evaluation id are also serialised.
+  // instances with the same lockScope so cross-instance same-process races on
+  // the same proposal/evaluation id are also serialised.
   //
   // CONCURRENCY LIMIT: global-uniqueness guarantees hold PER PROCESS only.
   // Cross-process atomic create-if-absent requires Nexus-level CAS (etag /
@@ -63,7 +68,7 @@ export function createNexusPlaybookProposalStore(
   // deployments must funnel all proposal and evaluation writes through a single
   // coordinator process. Tracking issue: #1469.
   function withIdLock<R>(key: string, fn: () => Promise<R>): Promise<R> {
-    return withProposalLock(transport, base, key, fn);
+    return withProposalLock(scope, key, fn);
   }
 
   return {
@@ -99,7 +104,7 @@ export function createNexusPlaybookProposalStore(
         // in-process structured.save calls. Cross-process atomicity still requires
         // Nexus CAS (tracking: #1469). Lock order: idLock (proposal id) first, then
         // playbookLock — consistent with all other call sites (no deadlock).
-        await withPlaybookLock(proposal.playbookId, async () => {
+        await withPlaybookLock(scope, proposal.playbookId, async () => {
           // Existence + version check: structured playbook MUST exist and its version
           // MUST match proposal.baseVersion. Matches sqlite sibling behaviour —
           // proposals against a never-saved playbook are rejected.

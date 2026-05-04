@@ -10,14 +10,32 @@
  * LIMIT: this is a per-process lock. Cross-process atomicity still requires
  * Nexus-level CAS (tracking: #1469).
  *
- * Callers import withPlaybookLock(playbookId, fn). The module-level Map is the
- * singleton — one lock domain per Bun process, shared across all store instances
- * that import this module.
+ * KEY DESIGN:
+ *   - Outer key: caller-supplied `lockScope` string (module-level Map).
+ *   - Inner key: `playbookId`.
+ *   - Two stores with the same `lockScope` share one lock domain, regardless
+ *     of how many transport objects are involved. This prevents races between
+ *     wrapper-transport store instances pointing at the same backend.
  */
 
-const playbookLocks = new Map<string, Promise<void>>();
+// Module-level singleton: outer key = lockScope, inner key = playbookId.
+const registry = new Map<string, Map<string, Promise<void>>>();
 
-export function withPlaybookLock<R>(playbookId: string, fn: () => Promise<R>): Promise<R> {
+function getLockMap(scope: string): Map<string, Promise<void>> {
+  let lockMap = registry.get(scope);
+  if (lockMap === undefined) {
+    lockMap = new Map();
+    registry.set(scope, lockMap);
+  }
+  return lockMap;
+}
+
+export function withPlaybookLock<R>(
+  scope: string,
+  playbookId: string,
+  fn: () => Promise<R>,
+): Promise<R> {
+  const playbookLocks = getLockMap(scope);
   const prev = playbookLocks.get(playbookId) ?? Promise.resolve();
   // let is justified: release must be assigned inside the Promise constructor callback
   let release = (): void => {};

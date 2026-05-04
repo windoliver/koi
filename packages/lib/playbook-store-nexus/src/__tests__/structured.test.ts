@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import type { StructuredPlaybook } from "@koi/ace-types";
+import type { PlaybookProposal, StructuredPlaybook, TrajectoryRange } from "@koi/ace-types";
 import type { KoiError, Result } from "@koi/core";
 import type { NexusTransport as FsNexusTransport } from "@koi/fs-nexus";
 import { createFakeNexusTransport } from "@koi/fs-nexus/testing";
 
+import { createNexusPlaybookProposalStore } from "../proposal.js";
 import { createNexusStructuredPlaybookStore } from "../structured.js";
 
 // ---------------------------------------------------------------------------
@@ -179,5 +180,72 @@ describe("createNexusStructuredPlaybookStore", () => {
 
     const wrappedStore = createNexusStructuredPlaybookStore({ transport: wrappedTransport });
     await expect(wrappedStore.list()).rejects.toThrow("simulated backend failure");
+  });
+
+  // --- Fix 1 (round 9): lockScope-keyed registry — wrapper-transport race tests ---
+
+  test("wrapper-transport: structured.save + recordProposal from wrapper stores with same lockScope serialize", async () => {
+    // Two stores (one structured, one proposal) over wrapper transports of the
+    // SAME backend, SAME lockScope. Concurrent save(v=2) + recordProposal(baseVersion=1)
+    // must serialize through the shared playbook lock — same invariant as the
+    // single-transport concurrent test in proposal.test.ts but verified here with
+    // wrapper transports to confirm the lockScope fix propagates correctly.
+    const trajRange: TrajectoryRange = { sessionId: "s1", fromStepIndex: 0, toStepIndex: 1 };
+    function makeProposal(id: string, playbookId: string, baseVersion: number): PlaybookProposal {
+      return {
+        id,
+        playbookId,
+        baseVersion,
+        operations: [{ kind: "add", section: "errors", content: "check first" }],
+        sourceTrajectoryRange: trajRange,
+        reflection: {
+          rootCause: "missed precondition",
+          keyInsight: "verify state first",
+          bulletTags: [{ id: "b1", tag: "helpful" }],
+        },
+        createdAt: 100,
+      };
+    }
+
+    const baseTransport = createFakeNexusTransport();
+
+    function wrapTransport(t: typeof baseTransport): typeof baseTransport {
+      return {
+        call: (m, p, opts) => t.call(m, p, opts),
+        subscribe: t.subscribe.bind(t),
+        submitAuthCode: t.submitAuthCode.bind(t),
+        close: () => t.close(),
+      };
+    }
+
+    const structuredStore = createNexusStructuredPlaybookStore({
+      transport: wrapTransport(baseTransport),
+      lockScope: "shared-structured-backend",
+    });
+    const proposalStore = createNexusPlaybookProposalStore({
+      transport: wrapTransport(baseTransport),
+      lockScope: "shared-structured-backend",
+    });
+
+    // Bootstrap: save v1 so recordProposal has a starting point.
+    await structuredStore.save({ ...spb("pb-wrapper-lock"), version: 1 });
+
+    // Race: bump to v2 while simultaneously recording a proposal against v1.
+    const [saveResult, recordResult] = await Promise.allSettled([
+      structuredStore.save({ ...spb("pb-wrapper-lock"), version: 2 }),
+      proposalStore.recordProposal(makeProposal("p-wrapper-lock", "pb-wrapper-lock", 1)),
+    ]);
+
+    // save must always succeed (last-write-wins).
+    expect(saveResult.status).toBe("fulfilled");
+
+    if (recordResult.status === "rejected") {
+      // Proposal lost the lock (save ran first, bumped to v=2, proposal saw v=2).
+      expect(String(recordResult.reason)).toContain("version");
+    } else {
+      // Proposal won the lock (read v=1, wrote proposal, save ran after).
+      const got = await proposalStore.getProposal("p-wrapper-lock");
+      expect(got?.baseVersion).toBe(1);
+    }
   });
 });
