@@ -64,7 +64,7 @@ Severity ∈ [0, 1]: scales with how broadly and how strongly the artifact has d
 | Inputs | Suggestion |
 |---|---|
 | `result.kind ≠ "drift"` (no-drift, invalid-config, undefined) | `none` |
-| `replayProtected: false` (no observationKey provided) | `none` |
+| `replayProtected: false` (any valid observation lacks `eventId`) | `none` |
 | `(droppedCount + duplicateCount) / (validObservationCount + dropped + duplicate) > 25%` | `none` (low-quality window — the denominator is the *full* validated window, not just the divergent cohort, so clean baseline-heavy traffic isn't punished for the cohort being a small slice) |
 | `stableWindows ≥ 2` AND `avgDivergence ≥ 0.85` | `new-artifact` — fork a specialized variant; the drift is a real second use case |
 | Cohort share `< 50%` of validated window AND not stable+strong | `none` — minority drift should NOT overwrite the canonical purpose the baseline majority depends on; wait for it to grow into majority or qualify for `new-artifact` |
@@ -72,19 +72,16 @@ Severity ∈ [0, 1]: scales with how broadly and how strongly the artifact has d
 
 `new-artifact` is gated on **raw `avgDivergence`**, not on saturated `severity`. With detection threshold `0.7` and fork threshold `0.85`, drift that barely clears detection cannot escalate to "fork" purely by accumulating more observations or agents over time.
 
-The quality gate (default 25%) refuses to recommend irreversible action when most of the input window was discarded as malformed or as duplicates. Pass a bare `DriftReport` to `suggestAction` if you want to bypass the gate.
+The quality gate (default 25%) refuses to recommend irreversible action when most of the input window was discarded as malformed or as duplicates.
 
 ## Replay Protection
 
-Dedup is **per-agent-scoped** and **on by default**, but the default key is best-effort telemetry only.
+Replay protection is a **per-observation data contract**, not a config knob.
 
-- `DEFAULT_EXAPTATION_THRESHOLDS` includes `DEFAULT_OBSERVATION_KEY` — `${observedAt}|${contextText}`. It collapses obvious within-tick duplicates but `observedAt` is **not** a stable event identity: at-least-once retries with fresh timestamps slip through, and two distinct same-tick events with identical context collide. The default config also sets `stableEventId: false`, so the default-key path always returns `replayProtected: false` and `suggestAction` will refuse to act on it.
-- To unlock action-bearing suggestions, callers must (a) supply their own `observationKey` derived from a stable upstream event/correlation ID AND (b) explicitly opt in with `stableEventId: true`. Identity-equality on the key function is intentionally NOT used — an inline clone of the default would otherwise trivially flip the flag. `stableEventId: true` without `observationKey` is rejected as `invalid-config`.
-- Pass `observationKey: undefined` to disable dedup entirely; `result.replayProtected` will be `false`.
-- A throwing `keyFn` only drops the offending sample; the rest of the window is still scored. Keys are computed exactly once during validation, so non-deterministic key functions can't crash detection between calls.
-- Observations with non-finite `observedAt` or non-string `contextText` are dropped during validation — they would otherwise stringify into a poisoned default-key bucket and silently merge unrelated samples.
-
-Dedup is intentionally only available through `thresholds.observationKey`. There is no externally-deduped path, because a result that wasn't deduped *inside* `detectDrift` cannot honestly carry `replayProtected: true` and `suggestAction` would refuse to act on it anyway.
+- The detector marks a window `replayProtected: true` only when **every valid observation** carries a non-empty string `eventId` — a stable upstream event identity such as a gateway correlation ID, an idempotency key, or a monotonic sequence number. That same `eventId` is used as the dedup key, scoped per-agent.
+- If even one valid observation in the window lacks `eventId` (or has an empty string), the window is `replayProtected: false`, dedup does **not** run, and `suggestAction` refuses to recommend `reclassify` or `new-artifact`.
+- There is no caller-supplied dedup key function and no honor-system "trust me, this is stable" boolean — both were rejected because the detector cannot validate them at runtime. Putting the contract on the data shape lets `isObservationValid` enforce it.
+- `eventId` is optional in the L0 `UsagePurposeObservation` type, so upstream observers that only have best-effort telemetry can still feed the detector — they just can't unlock action-bearing suggestions until they propagate a stable event ID.
 
 ## suggestAction Contract
 
@@ -105,6 +102,10 @@ import {
   tokenize,
   computeJaccardDistance,
 } from "@koi/forge-exaptation";
+
+// Observations must carry `eventId` (a stable upstream event identity) for
+// suggestAction to recommend any action. Without it, detection still runs
+// and you get telemetry, but suggestions return `none`.
 
 // 1. Compute per-observation divergence upstream:
 const description = tokenize(artifact.description);

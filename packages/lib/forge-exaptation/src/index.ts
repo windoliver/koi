@@ -14,10 +14,5 @@ export type {
   ExaptationSuggestion,
   ExaptationThresholds,
 } from "./detector.js";
-export {
-  DEFAULT_EXAPTATION_THRESHOLDS,
-  DEFAULT_OBSERVATION_KEY,
-  detectDrift,
-  suggestAction,
-} from "./detector.js";
+export { DEFAULT_EXAPTATION_THRESHOLDS, detectDrift, suggestAction } from "./detector.js";
 export { computeJaccardDistance, tokenize } from "./divergence.js";

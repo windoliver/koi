@@ -8,11 +8,26 @@ import {
   suggestAction,
 } from "./detector.js";
 
-// Each obs() call gets a unique observedAt so dedup never collapses
-// independently-fed observations in tests. Real callers either control
-// observedAt themselves or rely on monotonic clocks.
+// Each obs() call gets a fresh, unique eventId — so by default tests
+// produce replay-protected windows. Tests that need to exercise the
+// no-eventId path use obsNoId().
 let obsClock = 0;
 function obs(
+  agentId: string,
+  divergenceScore: number,
+  contextText?: string,
+): UsagePurposeObservation {
+  obsClock += 1;
+  return {
+    agentId,
+    divergenceScore,
+    contextText: contextText ?? `ctx-${agentId}-${String(obsClock)}`,
+    observedAt: obsClock,
+    eventId: `evt-${String(obsClock)}`,
+  };
+}
+
+function obsNoId(
   agentId: string,
   divergenceScore: number,
   contextText?: string,
@@ -369,146 +384,70 @@ describe("suggestAction replay-protection gate", () => {
   });
 });
 
-describe("detectDrift throwing observationKey", () => {
-  test("a throwing keyFn drops the offending sample, not the whole window", () => {
-    const a1: UsagePurposeObservation = {
-      agentId: "a1",
-      observedAt: 1,
-      contextText: "ctx",
-      divergenceScore: 0.9,
-    };
-    const a2: UsagePurposeObservation = { ...a1, agentId: "a2" };
-    const observations = [a1, { ...a1, contextText: "throw-me" }, a1, a2, a2, a2];
-    const result = detectDrift(observations, {
-      ...DEFAULT_EXAPTATION_THRESHOLDS,
-      observationKey: (o) => {
-        if (o.contextText === "throw-me") throw new Error("boom");
-        return `${o.agentId}|${o.contextText}`;
-      },
-    });
-    expect(result.kind).not.toBe("invalid-config");
+describe("eventId-based dedup + replay protection", () => {
+  test("missing eventId on any observation disables replay protection (no dedup)", () => {
+    // Even one obsNoId() in the window flips replayProtected off.
+    const observations = [...Array.from({ length: 6 }, () => obs("a", 0.9)), obsNoId("b", 0.9)];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
     if (result.kind === "drift" || result.kind === "no-drift") {
-      expect(result.droppedCount).toBe(1);
-    }
-  });
-});
-
-describe("detectDrift dedup (opt-in) + telemetry", () => {
-  test("default key dedupes but is NOT replay-protected (best-effort telemetry only)", () => {
-    // observedAt is not a stable event ID — at-least-once retries with fresh
-    // timestamps would slip through. Default key still suppresses obvious
-    // duplicates within a tick, but result.replayProtected stays false so
-    // suggestAction will refuse to recommend irreversible actions.
-    const dup: UsagePurposeObservation = {
-      agentId: "a1",
-      observedAt: 1234,
-      contextText: "ctx",
-      divergenceScore: 0.95,
-    };
-    const dup2: UsagePurposeObservation = { ...dup, agentId: "a2" };
-    const result = detectDrift([dup, dup, dup, dup2, dup2, dup2], DEFAULT_EXAPTATION_THRESHOLDS);
-    expect(result.kind).toBe("no-drift");
-    if (result.kind === "no-drift") {
-      expect(result.observationCount).toBe(2);
-      expect(result.duplicateCount).toBe(4);
-      expect(result.replayProtected).toBe(false);
-    }
-  });
-
-  test("explicitly setting observationKey: undefined disables dedup → replayProtected: false", () => {
-    const dup: UsagePurposeObservation = {
-      agentId: "a1",
-      observedAt: 1234,
-      contextText: "ctx",
-      divergenceScore: 0.95,
-    };
-    const dup2: UsagePurposeObservation = { ...dup, agentId: "a2" };
-    const result = detectDrift([dup, dup, dup, dup2, dup2, dup2], {
-      ...DEFAULT_EXAPTATION_THRESHOLDS,
-      observationKey: undefined,
-    });
-    expect(result.kind).toBe("drift");
-    if (result.kind === "drift") {
       expect(result.replayProtected).toBe(false);
       expect(result.duplicateCount).toBe(0);
     }
   });
 
-  test("opt-in dedup is scoped per-agent: identical payload across agents survives", () => {
-    // Regression: an observationKey that ignores agentId (e.g. payload-only)
-    // must not collapse identical observations from different agents — that
-    // would erase the cross-agent evidence detectDrift requires.
+  test("every observation carrying eventId enables replay protection + per-agent dedup", () => {
+    // Identical eventId from same agent collapses; same eventId across agents
+    // survives (per-agent scope).
+    const sharedId = "shared-eid";
     const a1: UsagePurposeObservation = {
       agentId: "a1",
-      observedAt: 1,
-      contextText: "same-payload",
       divergenceScore: 0.95,
-    };
-    const a2: UsagePurposeObservation = { ...a1, agentId: "a2", observedAt: 2 };
-    const a3: UsagePurposeObservation = { ...a1, agentId: "a3", observedAt: 3 };
-    // Caller's keyFn deliberately ignores agentId. Per-agent dedup still
-    // keeps one observation per agent (3 agents × 1 obs each = 3).
-    const observations = [
-      a1,
-      a1, // intra-agent replay → collapsed
-      a2,
-      a2, // intra-agent replay → collapsed
-      a3,
-      a3, // intra-agent replay → collapsed
-      a1,
-      a2,
-      a3, // more cross-agent dupes → collapsed within each agent
-    ];
-    const result = detectDrift(observations, {
-      ...DEFAULT_EXAPTATION_THRESHOLDS,
-      minObservationsPerAgent: 1,
-      observationKey: (o) => o.contextText, // payload-only key
-    });
-    // 3 agents, all divergent → drift would be detected if minObs were 3.
-    // With default minObservations=5 we only need to confirm the surviving
-    // count after dedup is 3 (one per agent), not 1.
-    expect(result.kind).toBe("no-drift");
-    if (result.kind === "no-drift") {
-      expect(result.observationCount).toBe(3);
-      expect(result.duplicateCount).toBe(6);
-    }
-  });
-
-  test("opt-in dedup via observationKey collapses replays", () => {
-    const dup: UsagePurposeObservation = {
-      agentId: "a1",
-      observedAt: 1234,
       contextText: "ctx",
-      divergenceScore: 0.95,
+      observedAt: 1,
+      eventId: sharedId,
     };
-    const result = detectDrift([dup, dup, dup, dup, dup], {
-      ...DEFAULT_EXAPTATION_THRESHOLDS,
-      observationKey: (o) => `${o.agentId}|${String(o.observedAt)}|${o.contextText}`,
-    });
+    const a2: UsagePurposeObservation = { ...a1, agentId: "a2" };
+    const result = detectDrift([a1, a1, a1, a2, a2, a2], DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("no-drift");
     if (result.kind === "no-drift") {
-      expect(result.observationCount).toBe(1);
+      expect(result.replayProtected).toBe(true);
+      expect(result.observationCount).toBe(2);
       expect(result.duplicateCount).toBe(4);
     }
   });
 
-  test("duplicateCount is reported on the drift branch too (when dedup is enabled)", () => {
-    const keyFn = (o: UsagePurposeObservation): string =>
-      `${o.agentId}|${String(o.observedAt)}|${o.contextText}`;
-    const observations: UsagePurposeObservation[] = [
-      { agentId: "a1", observedAt: 1, contextText: "x", divergenceScore: 0.9 },
-      { agentId: "a1", observedAt: 1, contextText: "x", divergenceScore: 0.9 }, // dup
-      { agentId: "a1", observedAt: 2, contextText: "y", divergenceScore: 0.9 },
-      { agentId: "a2", observedAt: 3, contextText: "z", divergenceScore: 0.9 },
-      { agentId: "a2", observedAt: 4, contextText: "w", divergenceScore: 0.9 },
-      { agentId: "a2", observedAt: 4, contextText: "w", divergenceScore: 0.9 }, // dup
-      { agentId: "a3", observedAt: 5, contextText: "v", divergenceScore: 0.9 },
-      { agentId: "a3", observedAt: 6, contextText: "u", divergenceScore: 0.9 },
-    ];
-    const result = detectDrift(observations, {
-      ...DEFAULT_EXAPTATION_THRESHOLDS,
-      observationKey: keyFn,
+  test("empty-string eventId is treated as missing (not replay-protected)", () => {
+    const observations = Array.from({ length: 6 }, () => ({
+      ...obs("a", 0.9),
+      eventId: "",
+    }));
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    if (result.kind === "drift" || result.kind === "no-drift") {
+      expect(result.replayProtected).toBe(false);
+    }
+  });
+
+  test("duplicateCount reported on drift branch too", () => {
+    const a1 = (eid: string, score = 0.9): UsagePurposeObservation => ({
+      agentId: "a1",
+      divergenceScore: score,
+      contextText: "x",
+      observedAt: 1,
+      eventId: eid,
     });
+    const a2 = (eid: string): UsagePurposeObservation => ({ ...a1(eid), agentId: "a2" });
+    const a3 = (eid: string): UsagePurposeObservation => ({ ...a1(eid), agentId: "a3" });
+    const observations = [
+      a1("e1"),
+      a1("e1"), // dup
+      a1("e2"),
+      a2("e3"),
+      a2("e4"),
+      a2("e4"), // dup
+      a3("e5"),
+      a3("e6"),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
     if (result.kind === "drift") {
       expect(result.duplicateCount).toBe(2);
@@ -517,14 +456,14 @@ describe("detectDrift dedup (opt-in) + telemetry", () => {
     }
   });
 
-  test("droppedCount is reported on the drift branch too", () => {
+  test("droppedCount reported on drift branch too", () => {
     const observations: UsagePurposeObservation[] = [
-      { agentId: "a1", observedAt: 1, contextText: "x", divergenceScore: Number.NaN },
-      { agentId: "a1", observedAt: 2, contextText: "y", divergenceScore: 0.9 },
-      { agentId: "a1", observedAt: 3, contextText: "z", divergenceScore: 0.9 },
-      { agentId: "a2", observedAt: 4, contextText: "w", divergenceScore: 0.9 },
-      { agentId: "a2", observedAt: 5, contextText: "v", divergenceScore: 0.9 },
-      { agentId: "a2", observedAt: 6, contextText: "u", divergenceScore: 0.9 },
+      { ...obs("a1", 0.9), divergenceScore: Number.NaN }, // dropped
+      obs("a1", 0.9),
+      obs("a1", 0.9),
+      obs("a2", 0.9),
+      obs("a2", 0.9),
+      obs("a2", 0.9),
     ];
     const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
@@ -604,59 +543,34 @@ describe("suggestAction quality gate", () => {
   });
 });
 
-describe("dedup key isolation regression", () => {
-  test("agentId / key delimiter ambiguity does not collapse different agents", () => {
-    // Regression: a flat `${agentId} ${key}` would let
-    // agentId="a", key="b c" collide with agentId="a b", key="c". The
-    // nested-Map dedup makes the (agentId, key) pair unambiguous.
-    const a1: UsagePurposeObservation = {
-      agentId: "a",
-      observedAt: 1,
-      contextText: "x",
-      divergenceScore: 0.95,
-    };
-    const a1b: UsagePurposeObservation = {
-      agentId: "a",
-      observedAt: 2,
-      contextText: "y",
-      divergenceScore: 0.95,
-    };
-    const a2: UsagePurposeObservation = {
-      agentId: "a b",
-      observedAt: 3,
-      contextText: "z",
-      divergenceScore: 0.95,
-    };
-    const a2b: UsagePurposeObservation = {
-      agentId: "a b",
-      observedAt: 4,
-      contextText: "w",
-      divergenceScore: 0.95,
-    };
-    const result = detectDrift([a1, a1b, a2, a2b, a1, a2], {
+describe("eventId per-agent isolation regression", () => {
+  test("identical eventId across different agents does not collapse them", () => {
+    // Per-agent dedup namespace is `(agentId, eventId)`. A flat
+    // `${agentId}|${eventId}` join would have a delimiter ambiguity bug.
+    // Two distinct agents reporting the same (e.g. globally unique but
+    // accidentally repeated) eventId must each survive.
+    const sharedEid = "evt-shared";
+    const samples = (agentId: string): UsagePurposeObservation[] => [
+      { agentId, divergenceScore: 0.95, contextText: "x", observedAt: 1, eventId: sharedEid },
+      { agentId, divergenceScore: 0.95, contextText: "y", observedAt: 2, eventId: sharedEid }, // dup
+    ];
+    const result = detectDrift([...samples("a"), ...samples("a b"), ...samples("a")], {
       ...DEFAULT_EXAPTATION_THRESHOLDS,
-      // Pathological key: a single space. Combined with the colliding
-      // agentIds above, a flat space-delimited scope key would conflate
-      // the two agents. Per-agent Map<Set> isolates them.
-      observationKey: () => " ",
+      minObservationsPerAgent: 1,
     });
     expect(result.kind).toBe("no-drift");
     if (result.kind === "no-drift") {
-      // Each agent collapses to 1 obs (same key for everything within an agent).
+      // Each agent collapses to 1 (same eventId per-agent). 2 agents survive.
       expect(result.observationCount).toBe(2);
-      expect(result.duplicateCount).toBe(4);
     }
   });
 });
 
-describe("default-key replay-protection downgrade", () => {
-  test("default key dedupes but suggestAction refuses to act on the result", () => {
-    // Build a strong-drift window using the default config — would otherwise
-    // recommend new-artifact. With the default key downgraded to best-effort,
-    // suggestAction must return `none`.
+describe("eventId contract — actions only when replay-protected", () => {
+  test("window without eventId can detect drift but suggestAction refuses to act", () => {
     const obsList: UsagePurposeObservation[] = [
-      ...[0.95, 0.95, 0.95].map((s) => obs("a", s)),
-      ...[0.95, 0.95, 0.95].map((s) => obs("b", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obsNoId("a", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obsNoId("b", s)),
     ];
     const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
@@ -664,50 +578,15 @@ describe("default-key replay-protection downgrade", () => {
     expect(suggestAction(result, 5)).toEqual({ kind: "none" });
   });
 
-  test("caller-supplied stable key restores replay protection and unlocks actions", () => {
-    // Caller derives a stable per-event ID from observedAt+agentId — any
-    // function not identity-equal to DEFAULT_OBSERVATION_KEY counts as a
-    // caller-supplied key.
+  test("every-observation-has-eventId window unlocks actions", () => {
     const obsList: UsagePurposeObservation[] = [
       ...[0.95, 0.95, 0.95].map((s) => obs("a", s)),
       ...[0.95, 0.95, 0.95].map((s) => obs("b", s)),
     ];
-    const result = detectDrift(obsList, {
-      ...DEFAULT_EXAPTATION_THRESHOLDS,
-      observationKey: (o) => `${o.agentId}@${String(o.observedAt)}`,
-      stableEventId: true,
-    });
+    const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
     if (result.kind === "drift") expect(result.replayProtected).toBe(true);
     expect(suggestAction(result, 5).kind).toBe("new-artifact");
-  });
-});
-
-describe("stableEventId contract", () => {
-  test("inline clone of DEFAULT_OBSERVATION_KEY is NOT replay-protected without stableEventId", () => {
-    // Identity-based check would have flipped replayProtected to true here.
-    const inlineCloneOfDefault = (o: UsagePurposeObservation): string =>
-      `${String(o.observedAt)}|${o.contextText}`;
-    const obsList: UsagePurposeObservation[] = [
-      ...[0.95, 0.95, 0.95].map((s) => obs("a", s)),
-      ...[0.95, 0.95, 0.95].map((s) => obs("b", s)),
-    ];
-    const result = detectDrift(obsList, {
-      ...DEFAULT_EXAPTATION_THRESHOLDS,
-      observationKey: inlineCloneOfDefault,
-    });
-    expect(result.kind).toBe("drift");
-    if (result.kind === "drift") expect(result.replayProtected).toBe(false);
-    expect(suggestAction(result, 5)).toEqual({ kind: "none" });
-  });
-
-  test("stableEventId: true without observationKey is invalid-config", () => {
-    const result = detectDrift([], {
-      ...DEFAULT_EXAPTATION_THRESHOLDS,
-      observationKey: undefined,
-      stableEventId: true,
-    });
-    expect(result.kind).toBe("invalid-config");
   });
 });
 
@@ -722,75 +601,51 @@ describe("cohort-share guard", () => {
       ...[0.75, 0.75, 0.75].map((s) => obs("b", s)),
       ...Array.from({ length: 14 }, () => obs("c", 0.05)),
     ];
-    const result = detectDrift(obsList, {
-      ...DEFAULT_EXAPTATION_THRESHOLDS,
-      observationKey: (o) => `${o.agentId}@${String(o.observedAt)}`,
-      stableEventId: true,
-    });
+    const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
     expect(suggestAction(result, 1)).toEqual({ kind: "none" });
   });
 
   test("minority drift cohort + stable + strong → new-artifact (fork specialized variant)", () => {
-    // Same minority shape, but high divergence + stableWindows ≥ 2: fork
-    // a specialized variant rather than rewriting canonical purpose.
     const obsList: UsagePurposeObservation[] = [
       ...[0.95, 0.95, 0.95].map((s) => obs("a", s)),
       ...[0.95, 0.95, 0.95].map((s) => obs("b", s)),
       ...Array.from({ length: 14 }, () => obs("c", 0.05)),
     ];
-    const result = detectDrift(obsList, {
-      ...DEFAULT_EXAPTATION_THRESHOLDS,
-      observationKey: (o) => `${o.agentId}@${String(o.observedAt)}`,
-      stableEventId: true,
-    });
+    const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
     expect(suggestAction(result, 3).kind).toBe("new-artifact");
   });
 
   test("majority drift cohort → reclassify allowed", () => {
-    // 6 drift cohort + 4 baseline = 60% cohort share, above 50%.
     const obsList: UsagePurposeObservation[] = [
       ...[0.75, 0.75, 0.75].map((s) => obs("a", s)),
       ...[0.75, 0.75, 0.75].map((s) => obs("b", s)),
       ...Array.from({ length: 4 }, () => obs("c", 0.05)),
     ];
-    const result = detectDrift(obsList, {
-      ...DEFAULT_EXAPTATION_THRESHOLDS,
-      observationKey: (o) => `${o.agentId}@${String(o.observedAt)}`,
-      stableEventId: true,
-    });
+    const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
     expect(suggestAction(result, 1).kind).toBe("reclassify");
   });
 });
 
-describe("observation-field validation", () => {
-  test("non-finite observedAt is dropped (would otherwise poison default dedup key)", () => {
-    const bad: UsagePurposeObservation = {
-      agentId: "a",
-      divergenceScore: 0.95,
-      contextText: "ctx",
+describe("observation-field validation (relaxed)", () => {
+  test("non-finite observedAt does NOT drop the sample (telemetry-only field)", () => {
+    // observedAt is descriptive metadata, not consumed by scoring or dedup.
+    // Earlier versions used it in the default key and rejected NaN — that
+    // created a silent observability blind spot under degraded telemetry.
+    const observations = Array.from({ length: 6 }, () => ({
+      ...obs("a", 0.95),
       observedAt: Number.NaN,
-    };
-    const result = detectDrift(
-      [bad, bad, bad, bad, bad, bad, bad, bad],
-      DEFAULT_EXAPTATION_THRESHOLDS,
-    );
-    expect(result.kind).toBe("no-drift");
-    if (result.kind === "no-drift") {
-      expect(result.droppedCount).toBe(8);
-      expect(result.observationCount).toBe(0);
+    }));
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    if (result.kind === "drift" || result.kind === "no-drift") {
+      expect(result.droppedCount).toBe(0);
     }
   });
 
-  test("non-string contextText is dropped", () => {
-    const bad = {
-      agentId: "a",
-      divergenceScore: 0.95,
-      contextText: undefined,
-      observedAt: 1,
-    } as unknown as UsagePurposeObservation;
+  test("missing agentId is still dropped (required for cohort attribution)", () => {
+    const bad = { ...obs("", 0.9), agentId: "" };
     const result = detectDrift([bad, bad, bad], DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("no-drift");
     if (result.kind === "no-drift") expect(result.droppedCount).toBe(3);

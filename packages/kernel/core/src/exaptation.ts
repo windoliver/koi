@@ -51,4 +51,14 @@ export interface UsagePurposeObservation {
   /** Jaccard distance vs the brick's stated purpose (0-1). */
   readonly divergenceScore: number;
   readonly observedAt: number;
+  /**
+   * Optional stable upstream event identity (correlation ID, idempotency
+   * key, monotonic sequence number). When every observation in a window
+   * carries a non-empty `eventId`, the exaptation detector treats the
+   * window as replay-protected and is allowed to recommend irreversible
+   * actions (`reclassify` / `new-artifact`); otherwise such suggestions
+   * are refused. Unlike a free-form key function, this field is a
+   * data-shape contract the detector can validate at runtime.
+   */
+  readonly eventId?: string;
 }

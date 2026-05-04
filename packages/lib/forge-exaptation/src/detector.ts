@@ -30,51 +30,22 @@ export interface ExaptationThresholds {
   readonly minObservationsPerAgent: number;
   /** Severity multiplier weight applied to scaled drift score (in [0, 1]). */
   readonly confidenceWeight: number;
-  /**
-   * Optional identity function for dedup.
-   *
-   * When supplied, the detector dedupes per-agent (`(agentId, keyFn(o))`)
-   * before scoring so obvious within-window duplicates are collapsed. A
-   * throwing `keyFn` is treated as a malformed observation — that sample
-   * is dropped, never the whole window.
-   *
-   * Dedup alone is NOT replay protection. To unlock action-bearing
-   * suggestions (`reclassify` / `new-artifact`), set `stableEventId: true`
-   * — see that field's docs for the contract callers must honour.
-   */
-  readonly observationKey?: ((o: UsagePurposeObservation) => string) | undefined;
-  /**
-   * Caller assertion that `observationKey` returns a **stable upstream event
-   * identity** (e.g. a correlation ID from the gateway, a monotonic
-   * sequence number, an idempotency key). When `true`, the resulting
-   * `DetectionResult` is marked `replayProtected: true` and `suggestAction`
-   * is allowed to recommend action-bearing changes.
-   *
-   * It is the caller's contract to honour this — the detector cannot
-   * verify event-ID stability at runtime. Lying here means at-least-once
-   * retries can manufacture drift evidence and escalate to irreversible
-   * actions. Default `false`.
-   *
-   * Setting `stableEventId: true` without an `observationKey` is rejected
-   * as `invalid-config`.
-   */
-  readonly stableEventId?: boolean | undefined;
 }
 
 /**
- * Default `observationKey`. Returns `${observedAt}|${contextText}` and is
- * **best-effort telemetry only** — `observedAt` is not a stable event ID, so
- * an at-least-once pipeline that re-emits with a fresh timestamp will pass
- * the duplicate through, and two distinct same-tick events will collapse.
+ * Replay protection is a **per-observation data contract**, not a config knob.
  *
- * Result: `detectDrift` still dedupes with this key, but reports
- * `replayProtected: false` and `suggestAction` will refuse to recommend
- * `reclassify` or `new-artifact`. Callers that need action-bearing results
- * MUST supply their own `observationKey` derived from a stable upstream
- * event/correlation ID.
+ * The detector marks a window `replayProtected: true` when every valid
+ * observation carries a non-empty string `eventId` (e.g. an upstream
+ * correlation ID, idempotency key, or monotonic sequence number) — and uses
+ * that ID, scoped per-agent, as the dedup key. If even one observation lacks
+ * `eventId`, the window is `replayProtected: false`, no dedup runs, and
+ * `suggestAction` refuses to recommend `reclassify` or `new-artifact`.
+ *
+ * No honor-system boolean. No caller-supplied key function whose stability
+ * the detector can't verify. The presence of `eventId` on every sample is
+ * the contract, and `isObservationValid` validates it.
  */
-export const DEFAULT_OBSERVATION_KEY = (o: UsagePurposeObservation): string =>
-  `${String(o.observedAt)}|${o.contextText}`;
 
 /** Sensible defaults — conservative to minimize false positives. */
 export const DEFAULT_EXAPTATION_THRESHOLDS: ExaptationThresholds = {
@@ -83,8 +54,6 @@ export const DEFAULT_EXAPTATION_THRESHOLDS: ExaptationThresholds = {
   minDivergentAgents: 2,
   minObservationsPerAgent: 2,
   confidenceWeight: 0.8,
-  observationKey: DEFAULT_OBSERVATION_KEY,
-  stableEventId: false,
 } as const;
 
 /**
@@ -132,7 +101,7 @@ export type DetectionResult =
        * cohort being a small slice.
        */
       readonly validObservationCount: number;
-      /** False when no `observationKey` was provided — `suggestAction` will refuse. */
+      /** False when any valid observation lacks `eventId` — `suggestAction` will refuse. */
       readonly replayProtected: boolean;
     }
   | {
@@ -212,42 +181,28 @@ export function detectDrift(
     return { kind: "invalid-config", reason: configError };
   }
 
-  // Validate observations and compute each dedup key exactly once. A
-  // throwing `observationKey` callback is treated as malformed input —
-  // that sample is dropped, never the whole window. Caching the key here
-  // also rules out non-deterministic / stateful keyFns that succeed on
-  // the first call and throw on the second.
-  const keyFn = thresholds.observationKey;
-  const validWithMaybeKey: UsagePurposeObservation[] = [];
-  const keys: string[] = [];
+  // Validate observations. agentId + divergenceScore are required for any
+  // scoring path. eventId is OPTIONAL data — its presence on every valid
+  // sample is what unlocks replay protection downstream.
+  const valid: UsagePurposeObservation[] = [];
   for (const o of observations) {
     if (!isObservationValid(o)) continue;
-    if (keyFn === undefined) {
-      validWithMaybeKey.push(o);
-      continue;
-    }
-    let key: string;
-    try {
-      key = keyFn(o);
-    } catch {
-      continue;
-    }
-    validWithMaybeKey.push(o);
-    keys.push(key);
+    valid.push(o);
   }
-  const droppedCount = observations.length - validWithMaybeKey.length;
+  const droppedCount = observations.length - valid.length;
 
-  // Dedup is opt-in AND scoped per-agent. Bucketing by agentId before dedup
-  // makes payload-only keys safe — identical outputs from different agents
-  // always survive.
-  const unique =
-    keyFn === undefined ? validWithMaybeKey : dedupePerAgentByKey(validWithMaybeKey, keys);
-  const duplicateCount = validWithMaybeKey.length - unique.length;
-  // Replay protection is an explicit caller contract: only when both a
-  // dedup key is provided AND the caller asserts `stableEventId: true`.
-  // Identity-equality on keyFn would let an inline clone of the default
-  // (or any timestamp-based key) trivially flip the flag.
-  const replayProtected = keyFn !== undefined && thresholds.stableEventId === true;
+  // Replay protection is a per-observation data contract: every valid
+  // observation must carry a non-empty string `eventId`. Even one missing
+  // or empty eventId disables replay protection for the whole window —
+  // we cannot know whether the missing samples were retried duplicates.
+  const allHaveEventId = valid.every((o) => typeof o.eventId === "string" && o.eventId.length > 0);
+  const replayProtected = valid.length > 0 && allHaveEventId;
+
+  // Dedup runs only when replay-protected — with eventId per agent as the
+  // dedup key. Without a stable per-event identity we cannot honestly
+  // collapse duplicates without risking discarding distinct events.
+  const unique = replayProtected ? dedupePerAgentByEventId(valid) : valid;
+  const duplicateCount = valid.length - unique.length;
 
   const noDrift = (): DetectionResult => ({
     kind: "no-drift",
@@ -380,52 +335,36 @@ function describeInvalidThresholds(t: ExaptationThresholds): string | undefined 
     return `divergenceThreshold must be in [0, 1] (got ${String(t.divergenceThreshold)})`;
   if (!isUnitInterval(t.confidenceWeight))
     return `confidenceWeight must be in [0, 1] (got ${String(t.confidenceWeight)})`;
-  if (t.stableEventId === true && t.observationKey === undefined)
-    return "stableEventId: true requires observationKey to be supplied";
   return undefined;
 }
 
 function isObservationValid(o: UsagePurposeObservation): boolean {
   if (!isUnitInterval(o.divergenceScore)) return false;
   if (typeof o.agentId !== "string" || o.agentId.length === 0) return false;
-  // observedAt and contextText feed the default dedup key. Reject malformed
-  // values up front rather than letting them stringify into a poisoned key
-  // and silently bucket unrelated samples together.
-  if (typeof o.observedAt !== "number" || !Number.isFinite(o.observedAt)) return false;
-  if (typeof o.contextText !== "string") return false;
   return true;
 }
 
 /**
- * Dedup observations per agent using precomputed keys. The dedup namespace
- * is `(agentId, key)`, so identical payloads from different agents survive.
- *
- * `keys[i]` is the dedup key for `observations[i]`; arrays must be the same
- * length. The caller computes keys exactly once during validation, which
- * guarantees that a non-deterministic `observationKey` cannot crash the
- * detector by throwing on a second invocation.
+ * Dedup observations per agent using each observation's `eventId`. Caller has
+ * already verified that every input has a non-empty string `eventId`, so the
+ * field reads here are safe. Dedup namespace is `(agentId, eventId)`, so
+ * identical event IDs from different agents always survive.
  */
-function dedupePerAgentByKey(
+function dedupePerAgentByEventId(
   observations: readonly UsagePurposeObservation[],
-  keys: readonly string[],
 ): readonly UsagePurposeObservation[] {
-  // Nested-Map representation — `seen` is keyed by `agentId` so an agent's
-  // dedup keys are isolated from any other agent's. A flat
-  // `${agentId}|${key}` would collide when agentId or key contain the
-  // delimiter.
   const seen = new Map<string, Set<string>>();
   const out: UsagePurposeObservation[] = [];
-  for (let i = 0; i < observations.length; i++) {
-    const o = observations[i];
-    const key = keys[i];
-    if (o === undefined || key === undefined) continue;
+  for (const o of observations) {
+    const eventId = o.eventId;
+    if (eventId === undefined) continue;
     let bucket = seen.get(o.agentId);
     if (bucket === undefined) {
       bucket = new Set<string>();
       seen.set(o.agentId, bucket);
     }
-    if (bucket.has(key)) continue;
-    bucket.add(key);
+    if (bucket.has(eventId)) continue;
+    bucket.add(eventId);
     out.push(o);
   }
   return out;
