@@ -92,12 +92,14 @@ export function createSnapshotStoreNexus<T>(
       const psg = validateSegment(pid, "Parent Node ID");
       if (!psg.ok) return { ok: false, error: psg.error };
     }
-    for (const pid of parentIds) {
-      const ex = await exists(transport, nodePath(basePath, cid, pid));
-      if (!ex.ok) return ex;
-      if (!ex.value) return { ok: false, error: validation(`Parent node not found: ${pid}`) };
-    }
+    // Parent existence check is inside withChainLock so a concurrent in-process
+    // prune cannot delete a parent between validation and the child write.
     return withChainLock(cid, async () => {
+      for (const pid of parentIds) {
+        const ex = await exists(transport, nodePath(basePath, cid, pid));
+        if (!ex.ok) return ex;
+        if (!ex.value) return { ok: false, error: validation(`Parent node not found: ${pid}`) };
+      }
       const hash = computeContentHash(data);
       const metaRes = await readMeta(cid);
       if (!metaRes.ok) return metaRes;
