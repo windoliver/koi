@@ -101,6 +101,7 @@
     "@koi/middleware-prompt-cache": "workspace:*",
     "@koi/middleware-reflex": "workspace:*",
     "@koi/middleware-rlm": "workspace:*",
+    "@koi/rlm-stack": "workspace:*",
     "@koi/rules-loader": "workspace:*",
     "@koi/middleware-semantic-retry": "workspace:*",
     "@koi/middleware-report": "workspace:*",

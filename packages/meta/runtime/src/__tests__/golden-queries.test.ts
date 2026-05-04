@@ -3186,3 +3186,32 @@ describe("Golden: @koi/task-spawn", () => {
     expect(out).toContain("researcher");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/rlm-stack — composition wiring
+// ---------------------------------------------------------------------------
+
+import { CHUNK_CHARS_BY_TIER, createRlmStack, policyFor } from "@koi/rlm-stack";
+
+describe("Golden: @koi/rlm-stack", () => {
+  test("createRlmStack wires middleware-rlm with the configured context window as the virtualize threshold", () => {
+    const stack = createRlmStack({
+      contextWindowTokens: 200_000,
+      tier: "standard",
+      acknowledgeSegmentLocalContract: true,
+    });
+    expect(stack.middleware.name).toBe("koi:rlm");
+    expect(stack.thresholds.contextWindowTokens).toBe(200_000);
+    expect(stack.thresholds.maxInputTokens).toBe(200_000);
+    expect(stack.thresholds.maxChunkChars).toBe(CHUNK_CHARS_BY_TIER.standard);
+    // Coordination invariant: virtualize threshold sits above context-manager hard compact (75%).
+    expect(stack.thresholds.maxInputTokens).toBeGreaterThan(200_000 * 0.75);
+  });
+
+  test("policyFor classifies passthrough / compact / virtualize across the threshold tiers", () => {
+    const stack = createRlmStack({ contextWindowTokens: 100_000 });
+    expect(policyFor(10_000, stack.thresholds)).toBe("passthrough");
+    expect(policyFor(60_000, stack.thresholds)).toBe("compact");
+    expect(policyFor(150_000, stack.thresholds)).toBe("virtualize");
+  });
+});

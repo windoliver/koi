@@ -1211,6 +1211,16 @@
         "ssh2": "1.16.0",
       },
     },
+    "packages/meta/rlm-stack": {
+      "name": "@koi/rlm-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/context-manager": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/middleware-rlm": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+    },
     "packages/meta/runtime": {
       "name": "@koi/runtime",
       "version": "0.0.0",
@@ -1326,6 +1336,7 @@
         "@koi/query-engine": "workspace:*",
         "@koi/redaction": "workspace:*",
         "@koi/replay": "workspace:*",
+        "@koi/rlm-stack": "workspace:*",
         "@koi/rules-loader": "workspace:*",
         "@koi/sandbox-conformance": "workspace:*",
         "@koi/sandbox-docker": "workspace:*",
@@ -2472,6 +2483,8 @@
     "@koi/redaction": ["@koi/redaction@workspace:packages/security/redaction"],
 
     "@koi/replay": ["@koi/replay@workspace:packages/lib/replay"],
+
+    "@koi/rlm-stack": ["@koi/rlm-stack@workspace:packages/meta/rlm-stack"],
 
     "@koi/rules-loader": ["@koi/rules-loader@workspace:packages/lib/rules-loader"],
 
