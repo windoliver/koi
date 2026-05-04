@@ -6,7 +6,7 @@
  */
 
 import { resolveThresholds } from "@koi/context-manager";
-import { createRlmMiddleware, type RlmConfig } from "@koi/middleware-rlm";
+import { createRlmMiddleware, DEFAULT_PRIORITY, type RlmConfig } from "@koi/middleware-rlm";
 import {
   CHUNK_CHARS_BY_TIER,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
@@ -77,6 +77,45 @@ function buildThresholds(contextWindowTokens: number, tier: RlmStackTier): RlmSt
   };
 }
 
+/**
+ * Best-effort priority floor for `middleware-rlm`'s tool-safety guard.
+ *
+ * `middleware-rlm` requires that RLM run *deeper* in the intercept tier than
+ * any tool-injecting `wrapModelCall` middleware so its
+ * `request.tools.length > 0` fail-closed guard sees the synthetic tool list
+ * BEFORE segmentation. The default priority `800` (`DEFAULT_PRIORITY`) sits
+ * above the v1 tool-injectors known at the time this floor was added (e.g.
+ * `tool-selector` at 200). Lowering below `DEFAULT_PRIORITY` is a clear
+ * footgun: RLM would segment an oversized turn before known tool injectors
+ * run, multiplying tool-capable calls per segment.
+ *
+ * **This check is a floor, not a proof.** It blocks the obvious mistake. It
+ * does NOT prove that RLM will run deeper than every tool-injecting
+ * middleware in the caller's actual composition — a peer middleware
+ * registered at a priority > `DEFAULT_PRIORITY` would still bypass the guard.
+ * Composers stacking custom tool-injecting `wrapModelCall` middleware must
+ * verify their relative ordering and either bump RLM's priority above all
+ * such peers or accept that the guard is best-effort for that stack.
+ */
+function resolvePriority(priority: number | undefined): number | undefined {
+  if (priority === undefined) return undefined;
+  if (!Number.isFinite(priority)) {
+    throw new Error(`@koi/rlm-stack: priority must be a finite number (got ${String(priority)})`);
+  }
+  if (priority < DEFAULT_PRIORITY) {
+    throw new Error(
+      `@koi/rlm-stack: priority ${priority} is below DEFAULT_PRIORITY (${DEFAULT_PRIORITY}); ` +
+        `lowering below the floor would let RLM segment before known tool-injecting ` +
+        `middleware materializes request.tools, defeating its fail-closed guard. This is a ` +
+        `best-effort floor — composers stacking custom tool-injecting middleware above ` +
+        `${DEFAULT_PRIORITY} must additionally verify their relative ordering. Use ` +
+        `createRlmMiddleware directly if you genuinely need a lower priority and accept ` +
+        `the tool-fanout risk.`,
+    );
+  }
+  return priority;
+}
+
 function buildRlmConfig(
   config: RlmStackConfig | undefined,
   thresholds: RlmStackThresholds,
@@ -85,7 +124,8 @@ function buildRlmConfig(
     maxInputTokens: thresholds.maxInputTokens,
     maxChunkChars: thresholds.maxChunkChars,
   };
-  if (config?.priority !== undefined) out.priority = config.priority;
+  const priority = resolvePriority(config?.priority);
+  if (priority !== undefined) out.priority = priority;
   if (config?.acknowledgeSegmentLocalContract !== undefined) {
     out.acknowledgeSegmentLocalContract = config.acknowledgeSegmentLocalContract;
   }

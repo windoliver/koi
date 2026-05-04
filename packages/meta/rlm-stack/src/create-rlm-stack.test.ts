@@ -113,6 +113,25 @@ describe("createRlmStack", () => {
     expect(stack.middleware.priority).toBe(950);
   });
 
+  it("rejects priorities below DEFAULT_PRIORITY to preserve the tool-fanout safety invariant", () => {
+    // Lowering RLM below DEFAULT_PRIORITY would let it segment before
+    // tool-injecting middleware materialized request.tools, multiplying
+    // tool side effects across segments. The stack must refuse this
+    // configuration up front.
+    expect(() => createRlmStack({ priority: 100 })).toThrow(/priority|DEFAULT_PRIORITY/);
+    expect(() => createRlmStack({ priority: 799 })).toThrow(/priority|DEFAULT_PRIORITY/);
+  });
+
+  it("accepts priority equal to DEFAULT_PRIORITY (the floor) and above", () => {
+    expect(() => createRlmStack({ priority: 800 })).not.toThrow();
+    expect(() => createRlmStack({ priority: 9_999 })).not.toThrow();
+  });
+
+  it("rejects non-finite priorities", () => {
+    expect(() => createRlmStack({ priority: Number.NaN })).toThrow(/finite/);
+    expect(() => createRlmStack({ priority: Number.POSITIVE_INFINITY })).toThrow(/finite/);
+  });
+
   it("exposes a sandboxExecutor on the stack handle when provided (forward-compat, not wired)", () => {
     const sandboxExecutor: SandboxExecutor = {
       execute: async () => ({
