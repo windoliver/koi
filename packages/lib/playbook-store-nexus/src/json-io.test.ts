@@ -60,6 +60,35 @@ describe("validateAceId", () => {
     const r = validateAceId("a\nb", "ID");
     expect(r.ok).toBe(false);
   });
+
+  // Fix 3: glob metacharacter rejection
+  test("rejects id with '*'", () => {
+    const r = validateAceId("a*b", "ID");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("VALIDATION");
+  });
+
+  test("rejects id with '?'", () => {
+    const r = validateAceId("a?b", "ID");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("VALIDATION");
+  });
+
+  test("rejects id with '['", () => {
+    const r = validateAceId("a[b", "ID");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("VALIDATION");
+  });
+
+  test("rejects id with ']'", () => {
+    const r = validateAceId("a]b", "ID");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("VALIDATION");
+  });
+
+  test("accepts id with hyphen and dot (non-glob ASCII)", () => {
+    expect(validateAceId("session-2026.05.03", "ID").ok).toBe(true);
+  });
 });
 
 describe("encodeAceId / decodeAceId round-trip", () => {

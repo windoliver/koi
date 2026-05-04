@@ -34,8 +34,13 @@ interface NexusListResponse {
 }
 
 /**
- * Reject ACE IDs that would escape the basePath sandbox or cause filename
- * collisions. Throws a typed validation error if the id is unsafe.
+ * Reject ACE IDs that would escape the basePath sandbox, cause filename
+ * collisions, or inject glob metacharacters into list/search patterns.
+ *
+ * Rejected characters:
+ *   empty, '/', '..', '\', '\0', '\n', '\r'  — path-traversal / sandbox-escape
+ *   '*', '?', '[', ']'                        — glob metacharacters that would
+ *                                               corrupt listChildren patterns
  */
 export function validateAceId(id: string, label: string): Result<void, KoiError> {
   if (id.length === 0) return { ok: false, error: validation(`${label} cannot be empty`) };
@@ -56,6 +61,15 @@ export function validateAceId(id: string, label: string): Result<void, KoiError>
     return { ok: false, error: validation(`${label} cannot contain newlines`) };
   if (id.includes("\r"))
     return { ok: false, error: validation(`${label} cannot contain carriage returns`) };
+  // Glob metacharacters: reject to prevent ID injection into listChildren patterns.
+  if (id.includes("*"))
+    return { ok: false, error: validation(`${label} cannot contain '*': ${id}`) };
+  if (id.includes("?"))
+    return { ok: false, error: validation(`${label} cannot contain '?': ${id}`) };
+  if (id.includes("["))
+    return { ok: false, error: validation(`${label} cannot contain '[': ${id}`) };
+  if (id.includes("]"))
+    return { ok: false, error: validation(`${label} cannot contain ']': ${id}`) };
   return { ok: true, value: undefined };
 }
 
