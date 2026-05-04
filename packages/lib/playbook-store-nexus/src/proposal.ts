@@ -13,6 +13,7 @@ import {
   validateAceId,
   writeJson,
 } from "./json-io.js";
+import { withPlaybookLock } from "./playbook-locks.js";
 import type { NexusPlaybookStoreConfig } from "./types.js";
 
 const DEFAULT_BASE = "ace";
@@ -108,31 +109,37 @@ export function createNexusPlaybookProposalStore(
           }
         }
 
-        // New proposal: validate baseVersion against the current playbook.
-        // Existence + version check: structured playbook MUST exist and its version
-        // MUST match proposal.baseVersion. Matches sqlite sibling behaviour —
-        // proposals against a never-saved playbook are rejected.
-        const spb = await readJson<StructuredPlaybook>(
-          transport,
-          structuredPath(proposal.playbookId),
-        );
-        if (!spb.ok) throw new Error(spb.error.message);
-        if (spb.value === undefined) {
-          throw new Error(
-            `Cannot record proposal: structured playbook ${proposal.playbookId} does not exist`,
+        // New proposal: acquire the per-playbook lock shared with structured.save
+        // so the baseVersion read and proposal write are atomic with respect to
+        // in-process structured.save calls. Cross-process atomicity still requires
+        // Nexus CAS (tracking: #1469). Lock order: idLock (proposal id) first, then
+        // playbookLock — consistent with all other call sites (no deadlock).
+        await withPlaybookLock(proposal.playbookId, async () => {
+          // Existence + version check: structured playbook MUST exist and its version
+          // MUST match proposal.baseVersion. Matches sqlite sibling behaviour —
+          // proposals against a never-saved playbook are rejected.
+          const spb = await readJson<StructuredPlaybook>(
+            transport,
+            structuredPath(proposal.playbookId),
           );
-        }
-        if (spb.value.version !== proposal.baseVersion) {
-          throw new Error(
-            `Proposal baseVersion ${proposal.baseVersion} does not match current structured playbook version ${spb.value.version}`,
-          );
-        }
+          if (!spb.ok) throw new Error(spb.error.message);
+          if (spb.value === undefined) {
+            throw new Error(
+              `Cannot record proposal: structured playbook ${proposal.playbookId} does not exist`,
+            );
+          }
+          if (spb.value.version !== proposal.baseVersion) {
+            throw new Error(
+              `Proposal baseVersion ${proposal.baseVersion} does not match current structured playbook version ${spb.value.version}`,
+            );
+          }
 
-        // Write proposal payload — it is the source of truth.
-        // listProposals enumerates <base>/proposals/*.json and filters by playbookId,
-        // so no separate index file is needed.
-        const r = await writeJson(transport, pPath, proposal);
-        if (!r.ok) throw new Error(r.error.message);
+          // Write proposal payload — it is the source of truth.
+          // listProposals enumerates <base>/proposals/*.json and filters by playbookId,
+          // so no separate index file is needed.
+          const r = await writeJson(transport, pPath, proposal);
+          if (!r.ok) throw new Error(r.error.message);
+        });
       });
     },
 

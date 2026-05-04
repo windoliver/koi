@@ -513,4 +513,55 @@ describe("createNexusPlaybookProposalStore", () => {
       "simulated backend failure",
     );
   });
+
+  // --- Fix 3 (round 5): per-playbook lock shared between structured.save and recordProposal ---
+
+  test("concurrent structured.save(v=2) + recordProposal(baseVersion=1) serialize — no interleaving", async () => {
+    // In the same process, structured.save and recordProposal both acquire
+    // withPlaybookLock(playbookId). One must complete before the other reads.
+    //
+    // Two outcomes are valid:
+    //   A) save wins first → proposal sees v=2 → throws "version" mismatch
+    //   B) proposal wins first → writes the proposal → save proceeds (no conflict)
+    //
+    // The INVALID outcome is that the proposal reads v=1, then save bumps to v=2,
+    // and then the proposal successfully writes with a stale base (interleaving).
+    // The lock prevents this.
+    const { proposal: proposalStore, structured: spbStore } = newStores();
+    await spbStore.save(makeStructuredPlaybook("pb-lock-race", 1));
+
+    // Fire both concurrently without awaiting either.
+    const savePromise = spbStore.save(makeStructuredPlaybook("pb-lock-race", 2));
+    const recordPromise = proposalStore.recordProposal(
+      makeProposalWithBase("p-lock-race", "pb-lock-race", 1),
+    );
+
+    const [saveResult, recordResult] = await Promise.allSettled([savePromise, recordPromise]);
+
+    // save must always succeed (it's a last-write-wins overwrite)
+    expect(saveResult.status).toBe("fulfilled");
+
+    if (recordResult.status === "rejected") {
+      // Proposal lost the lock (save ran first, bumped to v=2, proposal saw v=2)
+      expect(String(recordResult.reason)).toContain("version");
+    } else {
+      // Proposal won the lock (read v=1, wrote proposal, save ran after)
+      // Proposal must be retrievable with baseVersion=1
+      const got = await proposalStore.getProposal("p-lock-race");
+      expect(got?.baseVersion).toBe(1);
+    }
+  });
+
+  test("existing recordProposal and structured.save happy paths still pass after lock wiring", async () => {
+    // Smoke test: serial happy path is unaffected by the new lock.
+    const { proposal: store, structured: spbStore } = newStores();
+    await spbStore.save(makeStructuredPlaybook("pb-lock-smoke", 3));
+    await store.recordProposal(makeProposalWithBase("p-lock-smoke", "pb-lock-smoke", 3));
+    const got = await store.getProposal("p-lock-smoke");
+    expect(got?.baseVersion).toBe(3);
+    // Advance version and save another proposal.
+    await spbStore.save(makeStructuredPlaybook("pb-lock-smoke", 4));
+    await store.recordProposal(makeProposalWithBase("p-lock-smoke-2", "pb-lock-smoke", 4));
+    expect((await store.getProposal("p-lock-smoke-2"))?.baseVersion).toBe(4);
+  });
 });

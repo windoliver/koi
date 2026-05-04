@@ -8,6 +8,7 @@ import {
   validateAceId,
   writeJson,
 } from "./json-io.js";
+import { withPlaybookLock } from "./playbook-locks.js";
 import type { NexusPlaybookStoreConfig } from "./types.js";
 
 const DEFAULT_BASE = "ace";
@@ -52,16 +53,24 @@ export function createNexusStructuredPlaybookStore(
     async save(playbook: StructuredPlaybook): Promise<void> {
       const v = validateAceId(playbook.id, "Structured Playbook ID");
       if (!v.ok) throw new Error(v.error.message);
-      const r = await writeJson(transport, path(playbook.id), playbook);
-      if (!r.ok) throw new Error(r.error.message);
+      // Acquire the per-playbook lock shared with recordProposal to serialise
+      // in-process save + baseVersion-check interleaving. See playbook-locks.ts.
+      await withPlaybookLock(playbook.id, async () => {
+        const r = await writeJson(transport, path(playbook.id), playbook);
+        if (!r.ok) throw new Error(r.error.message);
+      });
     },
 
     async remove(id: string): Promise<boolean> {
       const v = validateAceId(id, "Structured Playbook ID");
       if (!v.ok) throw new Error(v.error.message);
-      const r = await deleteJson(transport, path(id));
-      if (!r.ok) throw new Error(r.error.message);
-      return r.value;
+      // Also hold the per-playbook lock for remove so a concurrent recordProposal
+      // cannot see the playbook disappear mid-check.
+      return withPlaybookLock(id, async () => {
+        const r = await deleteJson(transport, path(id));
+        if (!r.ok) throw new Error(r.error.message);
+        return r.value;
+      });
     },
 
     async getVersion(_id: string, _version: number): Promise<StructuredPlaybook | undefined> {
