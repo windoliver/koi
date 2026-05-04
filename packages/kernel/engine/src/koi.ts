@@ -262,6 +262,29 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   const allProviders = [governanceProvider, ...contextEngineProviders, ...providers];
   const { agent, conflicts } = await AgentEntity.assemble(pid, manifest, allProviders);
 
+  // Provider-only CONTEXT_ENGINE wiring is rejected. Without
+  // `contextEngineFactory`, no slot middleware ever runs, so a host that
+  // attaches CONTEXT_ENGINE through a ComponentProvider would advertise an
+  // engine in ECS while `prepare()`/`onAfterTurn` are bypassed on every
+  // model call — observability would say a context engine is attached
+  // while compaction is actually inert. Rejecting at boot makes that
+  // failure mode unrepresentable.
+  if (options.contextEngineFactory === undefined) {
+    const providerSlot = agent.component(CONTEXT_ENGINE);
+    if (providerSlot !== undefined) {
+      throw KoiRuntimeError.from(
+        "VALIDATION",
+        "createKoi: a ComponentProvider attached CONTEXT_ENGINE but no contextEngineFactory was supplied. Without the factory, the runtime never installs the slot middleware that drives prepare()/onAfterTurn, so the attached engine would be inert on real model calls. Pass `contextEngineFactory` (the documented integration route) instead of attaching CONTEXT_ENGINE directly.",
+        {
+          retryable: false,
+          context: {
+            conflictKind: "context-engine-provider-only",
+            attachedIdentity: providerSlot.identity,
+          },
+        },
+      );
+    }
+  }
   // ECS slot/middleware divergence guard (#1767, round 6). When the host wires
   // a contextEngineFactory we attach a controller-backed proxy under
   // CONTEXT_ENGINE so post-swap reads track the active engine. If a

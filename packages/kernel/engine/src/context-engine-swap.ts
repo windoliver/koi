@@ -38,16 +38,31 @@ export interface SwapOptions {
 
 export interface ContextEngineSwapController {
   /**
-   * Returns the engine currently serving requests. With a `turnId`, returns
-   * the engine pinned for that specific turn (correct under overlapping or
-   * re-entrant turns). Without a `turnId`, returns the most-recently-pinned
-   * engine (LIFO) if any pin is active, otherwise the live `active` engine —
-   * used by ECS reads (`agent.component(CONTEXT_ENGINE)`) which have no
-   * turn context. ECS reads under overlapping turns observe the most-recent
-   * pin; within slot middleware, the turnId-keyed lookup keeps `prepare()`
-   * and `onAfterTurn` paired on the same engine even across overlap.
+   * Returns the engine for a specific turn (slot-middleware path) or the
+   * "active for new turns" engine (no-arg, ECS-read path).
+   *
+   * - With `turnId`: returns the engine pinned for that turn — correct
+   *   under overlapping/re-entrant turns. The slot middleware uses this
+   *   so `prepare()` and `onAfterTurn` always pair on the same engine
+   *   even when a swap lands mid-flight.
+   * - Without `turnId`: returns the engine that will serve the NEXT
+   *   request. After a swap with in-flight pins, that is the post-swap
+   *   `active`, not whichever pinned engine happens to be LIFO-last —
+   *   the older behavior collapsed overlapping state into one
+   *   arbitrarily-chosen engine and made ECS reads / occupancy reports
+   *   reason over partial state precisely when swaps were in flight.
+   *   Hosts that need full visibility into in-flight pinned engines use
+   *   `pinnedEngines()`.
    */
   readonly current: (turnId?: TurnId) => ContextEngine;
+  /**
+   * Snapshot of all engines currently pinned to in-flight turns. Empty
+   * when no turn is in flight. Used by host-facing tooling that needs
+   * the full overlapping state during a swap (audit log, TUI, occupancy
+   * aggregator) — `current()` no-arg deliberately returns only `active`
+   * to avoid silently collapsing the overlapping set to one engine.
+   */
+  readonly pinnedEngines: () => readonly ContextEngine[];
   readonly history: () => readonly ContextEngineSwapEvent[];
   readonly swap: (to: ContextEngine, options: SwapOptions) => ContextEngineSwapEvent | undefined;
   readonly rollback: (options: SwapOptions) => ContextEngineSwapEvent | undefined;
@@ -212,18 +227,32 @@ export function createContextEngineSwapController(
   // beginTurn wins, matching the most-recent caller's expectation).
   const turnPins = new Map<TurnId, ContextEngine>();
 
-  const lastPinnedEngine = (): ContextEngine | undefined => {
-    let last: ContextEngine | undefined;
-    for (const e of turnPins.values()) last = e;
-    return last;
-  };
-
   const current = (turnId?: TurnId): ContextEngine => {
     if (turnId !== undefined) {
       const pinned = turnPins.get(turnId);
       if (pinned !== undefined) return pinned;
     }
-    return lastPinnedEngine() ?? active;
+    // No-arg readers (ECS proxy, occupancy aggregator) get the engine
+    // that will serve the NEXT request. Returning a LIFO-pinned engine
+    // here would silently collapse overlapping in-flight turns into
+    // whichever pin landed last, hiding the rest. Use `pinnedEngines()`
+    // for the full set when overlap matters.
+    return active;
+  };
+
+  const pinnedEngines = (): readonly ContextEngine[] => {
+    if (turnPins.size === 0) return [];
+    // Deduplicate while preserving insertion order so callers can iterate
+    // each unique engine once for occupancy aggregation/audit.
+    const seen = new Set<ContextEngine>();
+    const out: ContextEngine[] = [];
+    for (const e of turnPins.values()) {
+      if (!seen.has(e)) {
+        seen.add(e);
+        out.push(e);
+      }
+    }
+    return out;
   };
   // Defensive copy of the backing array so callers cannot rewrite history
   // by mutating the returned slice. Each event is already frozen at push
@@ -391,6 +420,7 @@ export function createContextEngineSwapController(
 
   return {
     current,
+    pinnedEngines,
     history: historyView,
     swap,
     rollback,
