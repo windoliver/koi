@@ -208,7 +208,11 @@ export function detectDrift(
   const withEventId: UsagePurposeObservation[] = [];
   const withoutEventId: UsagePurposeObservation[] = [];
   for (const o of valid) {
-    if (typeof o.eventId === "string" && o.eventId.length > 0) withEventId.push(o);
+    // Trim before checking: a whitespace-only string is upstream's way of
+    // saying "field present but empty" (common JSON serialization quirk).
+    // Treating " " or "\n" as a real ID would falsely flip replayProtected
+    // on and collapse distinct observations into one whitespace bucket.
+    if (typeof o.eventId === "string" && o.eventId.trim().length > 0) withEventId.push(o);
     else withoutEventId.push(o);
   }
   const dedupedWithEventId = dedupePerAgentByEventId(withEventId);
@@ -387,8 +391,11 @@ function dedupePerAgentByEventId(
 ): readonly UsagePurposeObservation[] {
   const winners = new Map<string, Map<string, UsagePurposeObservation>>();
   for (const o of observations) {
-    const eventId = o.eventId;
-    if (eventId === undefined) continue;
+    if (typeof o.eventId !== "string") continue;
+    // Use trimmed eventId as the dedup key so upstream that varies
+    // surrounding whitespace ("foo " vs "foo") still collapses retries.
+    const eventId = o.eventId.trim();
+    if (eventId.length === 0) continue;
     let bucket = winners.get(o.agentId);
     if (bucket === undefined) {
       bucket = new Map<string, UsagePurposeObservation>();

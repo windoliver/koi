@@ -967,25 +967,32 @@ interface UsagePurposeObservation {
     readonly divergenceScore: number;
     readonly observedAt: number;
     /**
-     * Optional **per-observation idempotency key**. Must be unique to *this
-     * specific observation* — NOT a request-level correlation ID, NOT an
-     * upstream causal event ID shared by multiple agents handling the same
-     * fan-out, NOT an account-level identifier. Generate it at the moment of
-     * observation (e.g. \`\${agentId}:\${observedAt}:\${nonce}\`) so that:
+     * Optional **per-observation idempotency key**. Must be a *deterministic*
+     * function of stable per-observation identity — NOT a request-level
+     * correlation ID, NOT an upstream causal event ID shared by multiple
+     * agents handling the same fan-out, NOT an account-level identifier, and
+     * NOT a freshly-generated nonce/UUID at emission time (random values mint
+     * a new key on every retry, defeating replay dedup).
      *
-     *   - Retries of the same observation re-emit the same \`eventId\` (replay
-     *     dedup collapses them).
-     *   - Distinct tool calls inside one request, multiple agents recording
-     *     the same upstream event, and observations from different tenants
-     *     all produce DIFFERENT \`eventId\`s and survive as independent
-     *     evidence.
+     * Required properties:
      *
-     * When every observation in a window carries a non-empty \`eventId\` the
-     * exaptation detector treats the window as \`replayProtected: true\` and
-     * allows action-bearing suggestions (\`reclassify\` / \`new-artifact\`).
-     * Otherwise such suggestions are refused. Unlike a free-form key
-     * function, this field is a data-shape contract the detector validates
-     * at runtime.
+     *   - **Idempotent under retry.** If the same observation is re-emitted
+     *     (e.g. at-least-once delivery, transport replay), the function MUST
+     *     produce the same \`eventId\`. Derive it from inputs that don't change
+     *     across retries: e.g. \`sha256(agentId + ":" + toolCallId)\` where
+     *     \`toolCallId\` is a stable upstream identifier of the originating
+     *     tool invocation.
+     *   - **Distinct per observation.** Different tool calls within one
+     *     request, multiple agents recording the same upstream event, and
+     *     observations from different tenants must produce DIFFERENT keys.
+     *
+     * Empty / whitespace-only / missing values are treated as "no key" and
+     * disable replay protection for the window. When every observation in a
+     * window carries a non-empty \`eventId\`, the exaptation detector marks the
+     * window \`replayProtected: true\` and allows action-bearing suggestions
+     * (\`reclassify\` / \`new-artifact\`). Otherwise such suggestions are
+     * refused. Unlike a free-form key function, this field is a data-shape
+     * contract the detector validates at runtime.
      */
     readonly eventId?: string;
 }

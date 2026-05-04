@@ -610,6 +610,52 @@ describe("deterministic dedup conflict resolution", () => {
   });
 });
 
+describe("whitespace-only eventId is treated as missing", () => {
+  test('eventId of " " or "\\n" does NOT enable replayProtected', () => {
+    const observations: UsagePurposeObservation[] = [
+      { ...obs("a1", 0.95), eventId: " " },
+      { ...obs("a1", 0.95), eventId: "\t" },
+      { ...obs("a1", 0.95), eventId: "\n" },
+      { ...obs("a2", 0.95), eventId: "  " },
+      { ...obs("a2", 0.95), eventId: "" },
+      { ...obs("a2", 0.95), eventId: " " },
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    if (result.kind === "drift" || result.kind === "no-drift") {
+      expect(result.replayProtected).toBe(false);
+    }
+    expect(suggestAction(result, 5)).toEqual({ kind: "none" });
+  });
+
+  test("eventIds varying only in surrounding whitespace still collapse", () => {
+    // Upstream emitter sometimes pads keys; trim makes "foo" and "foo " the
+    // same dedup bucket so retries still collapse.
+    const make = (eventId: string, observedAt: number): UsagePurposeObservation => ({
+      agentId: "a1",
+      eventId,
+      divergenceScore: 0.95,
+      observedAt,
+      contextText: "x",
+    });
+    const observations: UsagePurposeObservation[] = [
+      make("foo", 1),
+      make("foo ", 2),
+      make(" foo", 3),
+      make(" foo\n", 4),
+      ...[0.95, 0.95, 0.95].map((s) => obs("a2", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("a3", s)),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      // a1: 4 inputs collapse to 1 unique → fails minObservationsPerAgent=2
+      // and is excluded from cohort. a2 + a3: 3 each = 6 cohort obs.
+      expect(result.report.observationCount).toBe(6);
+      expect(result.duplicateCount).toBe(3);
+    }
+  });
+});
+
 describe("eventId contract regressions", () => {
   test("multiple distinct tool calls in one request (each with its own eventId) all count as evidence", () => {
     // L0 contract: eventId is per-observation unique, not request-level.
