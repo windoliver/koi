@@ -19,6 +19,15 @@ import type {
   ContextEngineSwapEvent,
   TurnId,
 } from "@koi/core";
+import {
+  findFrameMatching,
+  freezeEvent,
+  type SwapControllerOptions,
+  type SwapStackFrame,
+  sameIdentity,
+} from "./context-engine-swap-internals.js";
+
+export type { SwapControllerOptions } from "./context-engine-swap-internals.js";
 
 export interface SwapOptions {
   readonly turnId: TurnId;
@@ -111,62 +120,11 @@ export interface ContextEngineSwapController {
   readonly subscribe: (listener: (event: ContextEngineSwapEvent) => void) => () => void;
 }
 
-function sameIdentity(a: ContextEngineIdentity, b: ContextEngineIdentity): boolean {
-  return a.name === b.name && a.version === b.version;
-}
-
-interface SwapStackFrame {
-  readonly prior: ContextEngine;
-  readonly rollbackTarget?: ContextEngineIdentity;
-}
-
-function findFrameMatching(
-  stack: readonly SwapStackFrame[],
-  target: ContextEngineIdentity,
-): number {
-  for (let i = stack.length - 1; i >= 0; i--) {
-    const frame = stack[i];
-    if (frame !== undefined && sameIdentity(frame.prior.identity, target)) {
-      return i;
-    }
-  }
-  return -1;
-}
-
 /**
  * Build a swap controller that holds the active engine plus the ordered
  * history of swap events. Both `swap()` and `rollback()` return the emitted
  * event so callers can forward it to the event bus / TUI / trace.
  */
-export interface SwapControllerOptions {
-  /**
-   * If set, swap targets whose `identity.name` does not match this string
-   * are refused unless `SwapOptions.force` is true. Set by `createKoi`
-   * from `manifest.context.engine` so runtime swaps cannot silently move
-   * off the manifest-declared engine name.
-   */
-  readonly pinnedName?: string;
-  /**
-   * If set, swap targets whose `identity.version` does not match this
-   * string are refused unless `SwapOptions.force` is true. Set by
-   * `createKoi` from `manifest.context.version`. Enforced independently
-   * of `pinnedName` so a manifest with version-only pin still allows
-   * cross-engine swaps within that version (matching the documented
-   * manifest contract).
-   */
-  readonly pinnedVersion?: string;
-  /**
-   * Hook for structured handling of subscriber delivery failures. The
-   * controller treats subscribers as best-effort observers and never lets a
-   * thrown listener corrupt the swap transaction (`active`, `history`, and
-   * `priorStack` are already mutated by the time `emit()` runs). When this
-   * hook is supplied, host audit/event-bus code can route the failure to a
-   * durable sink instead of relying on `console.error`. The hook itself
-   * MUST NOT throw — exceptions from it are caught and logged.
-   */
-  readonly onListenerError?: (err: unknown, event: ContextEngineSwapEvent) => void;
-}
-
 export function createContextEngineSwapController(
   initial: ContextEngine,
   options: SwapControllerOptions = {},
@@ -189,40 +147,6 @@ export function createContextEngineSwapController(
   };
   const history: ContextEngineSwapEvent[] = [];
 
-  // Freeze every reachable field of an emitted event so that neither a
-  // buggy subscriber, a downstream caller, nor a later mutation of the
-  // engine's own identity object can rewrite swap history after commit.
-  // Identities are supplied by engine implementations and are otherwise
-  // live references — without cloning them into the event we'd freeze
-  // only the wrapper while leaving `event.from.name` etc. mutable.
-  const freezeIdentity = (id: ContextEngineIdentity): ContextEngineIdentity =>
-    Object.freeze({ name: id.name, version: id.version });
-  const freezeEvent = (evt: ContextEngineSwapEvent): ContextEngineSwapEvent => {
-    const cloned: ContextEngineSwapEvent = {
-      kind: evt.kind,
-      turnId: evt.turnId,
-      from: freezeIdentity(evt.from),
-      to: freezeIdentity(evt.to),
-      reason: evt.reason,
-      timestamp: evt.timestamp,
-      ...(evt.rollbackTarget !== undefined
-        ? { rollbackTarget: freezeIdentity(evt.rollbackTarget) }
-        : {}),
-      ...(evt.pinnedTurns !== undefined
-        ? {
-            pinnedTurns: Object.freeze(
-              evt.pinnedTurns.map((p) =>
-                Object.freeze({
-                  turnId: p.turnId,
-                  engineIdentity: freezeIdentity(p.engineIdentity),
-                }),
-              ),
-            ),
-          }
-        : {}),
-    };
-    return Object.freeze(cloned);
-  };
   let active: ContextEngine = initial;
   // Each frame records the engine displaced by a swap plus the rollback
   // target the caller declared at swap time (if any). Rollback resolves to
