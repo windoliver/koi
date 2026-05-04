@@ -315,9 +315,10 @@ interface ChannelLiveness {
 }
 
 /**
- * UI surface status — derived from ChannelLiveness, never set directly:
+ * SUPERVISOR surface status — applies to status-line badge, toasts,
+ * /supervisor, inline lifecycle events. Gated on supervisor attachment.
  *
- *   detached  ⇔ no supervisor attached this session
+ *   detached  ⇔ no supervisor attached this session (registry-only mode)
  *   live      ⇔ ALL four channels live
  *   degraded  ⇔ at least one push channel (workerEvents/registryEvents)
  *               stale, but polls live — surface still functions in
@@ -329,6 +330,25 @@ type BridgeStatus =
   | { readonly kind: "detached" }
   | { readonly kind: "live" }
   | { readonly kind: "degraded"; readonly missing: readonly ("workerEvents" | "registryEvents")[]; readonly since: number }
+  | { readonly kind: "stale"; readonly since: number; readonly reason: string };
+
+/**
+ * REGISTRY surface status — applies to /bg ROWS only. Tracked
+ * independently of supervisor attachment so registry-only mode can
+ * still surface registry outages. The /bg view renders an inline
+ * stale/error banner when this is not `live` regardless of supervisor
+ * status.
+ *
+ *   live    ⇔ describeList AND registry.watch both live
+ *   stale   ⇔ describeList polling failed (3-strike) — preserve last
+ *             rows; banner shows "registry unreadable: <err>"
+ *   degraded ⇔ describeList live but registry.watch dropped — rows
+ *              still refresh on poll cadence; banner shows
+ *              "registry events unavailable; rows may lag"
+ */
+type RegistryStatus =
+  | { readonly kind: "live" }
+  | { readonly kind: "degraded"; readonly since: number }
   | { readonly kind: "stale"; readonly since: number; readonly reason: string };
 
 interface SupervisorSlice {
@@ -410,6 +430,7 @@ interface BgSessionRow {
 
 interface BgSessionsSlice {
   readonly rows: readonly BgSessionRow[];
+  readonly registryStatus: RegistryStatus;  // independent of supervisor attachment
   /** workerId of the row whose log is being tailed. */
   readonly tailingWorkerId: string | null;
   /** workerId + version of the row pending kill confirmation. */
@@ -427,6 +448,7 @@ Dispatch actions:
 - `push_supervisor_event: { entry: SupervisorEventEntry }` (caps buffer)
 - `clear_supervisor_events`
 - `set_bg_rows: { rows: readonly BgSessionRow[] }`
+- `set_bg_registry_status: { status: RegistryStatus }`
 - `set_bg_tailing: { workerId: string | null }`
 - `set_bg_kill_confirm: { confirm: { workerId: string; version: number; pid: number } | null }`
 
@@ -841,27 +863,37 @@ atomically — the TUI does.
    I/O failure — that would prevent operators from clearing wedged
    local workers exactly when the state dir is degraded.
 
+   **The CAS is also bypassed for locally-spawned `starting` rows.**
+   A normal `starting → running` transition advances both `version`
+   (every registry write bumps it) AND `pid` (`0` → real pid). Those
+   are *startup progress* on the same worker incarnation, not a
+   replacement. With reconciler-only restart, a `starting` worker
+   cannot be swapped for a different incarnation under the same
+   `workerId` between confirm and stop without first transitioning
+   through a terminal state — and bridge-tracked
+   `locallySpawnedIds` removes the workerId on terminal events. So
+   for any row where `expectedPid === 0` (operator selected
+   pre-`started`), bypass the version/pid CAS and trust local
+   ownership.
+
    - `result = await registry.describe(workerId as WorkerId)`.
    - **`result.ok: false`** — registry unreadable. Log + best-effort
      toast `"ℹ registry unreadable; proceeding with local stop"` and
-     proceed to step 5. Local supervisor is the source of truth for
-     the in-process `workerId → process` mapping.
-   - **`result.value === undefined`** — record was unregistered. Log
-     and proceed (supervisor may still own the worker; if it does
-     not, `supervisor.stop` returns `NOT_FOUND` and surfaces in
-     step 5).
-   - **`result.value.version !== expectedVersion ||
-     result.value.pid !== expectedPid`** — registry shows a fresher
-     incarnation than the row the operator selected. With
-     reconciler-only restart, this happens when a crash + reconciler
-     respawn landed in the time between row selection and confirm,
-     under a NEW workerId. The operator's `workerId` therefore
-     points to the prior process which the supervisor has already
-     released. Toast `"⚠ row stale; the worker has restarted under a
-     new id — refresh and pick the new row"` and return without
-     calling `supervisor.stop`.
-   - **Identity verified or registry unavailable but supervisor owns
-     the worker** → proceed to step 5.
+     proceed to step 5.
+   - **`result.value === undefined`** — record unregistered. Log and
+     proceed.
+   - **`expectedPid === 0` (kill of a `starting` row)** — bypass CAS
+     entirely; proceed to step 5. Local ownership via
+     `locallySpawnedIds` plus the absence of supervisor auto-restart
+     means there is no foreign-incarnation hazard.
+   - **`expectedPid > 0` AND
+     (`result.value.version !== expectedVersion` OR
+     `result.value.pid !== expectedPid`)** — registry shows a fresher
+     incarnation than the row the operator selected. Toast
+     `"⚠ row stale; the worker has restarted under a new id — refresh
+     and pick the new row"` and return without calling
+     `supervisor.stop`.
+   - **Identity verified or CAS bypassed** → proceed to step 5.
 5. `await supervisor.stop(workerId, "user-requested")`.
    - `Result.ok: true` → supervisor emits `exited` (NOT `crashed`,
      per the regression test). `attachRegistry` flips the registry row
@@ -1134,6 +1166,14 @@ on the right side: governance segment, then supervisor segment, separator
   - Bridge uses `registry.describeList()` not `list()`: a permission-denied
     fixture returns `Result.ok: false`, surfaces as stale; the lenient
     `list()` empty-fallback is never invoked.
+  - **Registry status independence**: `registryStatus` flips
+    `live → stale` after 3 consecutive `registry.describeList()`
+    failures (or `registry.watch()` outage past backoff threshold)
+    even when supervisor `health()` is fully `live`. Conversely,
+    supervisor `degraded` (push channel down) does NOT degrade
+    `registryStatus` if registry polls keep succeeding. BgView
+    reads only `registryStatus`; SupervisorView reads only the
+    supervisor `BridgeStatus`.
   - Shutdown ordering: `supervisor.shutdown()` resolves before
     `bridge.close()`; final `exited`/`crashed` events from shutdown reach the
     store. Reversed-order regression test (close-before-shutdown) loses
@@ -1230,6 +1270,11 @@ calls. Existing daemon golden queries cover supervisor lifecycle.
 - [ ] `/bg` renders registry-backed rows even when the current TUI
       session has no local supervisor attached (registry-only mode).
       In that mode, every row is foreign and `k` is uniformly disabled.
+- [ ] `/bg` shows a `registry stale` banner when `registryStatus`
+      goes stale (registry IO failing) — independent of supervisor
+      attachment. The banner clears on `registryStatus → live`.
+      Supervisor `degraded` (watchAll outage) does NOT trigger the
+      `/bg` registry-stale banner if registry reads keep succeeding.
 - [ ] `/bg` rows with `logPath === ""` show "logging disabled" and
       Enter does NOT mount BgLogTail.
 - [ ] On-path kill calls `supervisor.stop()` directly with NO pre-stop
