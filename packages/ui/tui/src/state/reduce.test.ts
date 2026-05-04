@@ -1,5 +1,6 @@
 // Cache-bust: snapshot regenerated for #1728 plugin summary state field.
 import { describe, expect, test } from "bun:test";
+import type { SupervisorHealth } from "@koi/core/daemon";
 import type { GovernanceSnapshot } from "@koi/core/governance";
 import { createInitialState } from "./initial.js";
 import { reduce } from "./reduce.js";
@@ -16,7 +17,14 @@ import {
   toolResult,
   userMsg,
 } from "./test-helpers.js";
-import type { PluginSummary, TuiAction, TuiAssistantBlock, TuiMessage, TuiState } from "./types.js";
+import type {
+  PluginSummary,
+  SupervisorEventEntry,
+  TuiAction,
+  TuiAssistantBlock,
+  TuiMessage,
+  TuiState,
+} from "./types.js";
 import {
   COMPACT_THRESHOLD,
   MAX_ALERTS_IN_MEMORY,
@@ -24,6 +32,7 @@ import {
   MAX_MESSAGES,
   MAX_TOOL_RESULT_BYTES,
   MAX_VIOLATIONS_IN_MEMORY,
+  SUPERVISOR_EVENT_BUFFER_CAP,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -3661,5 +3670,106 @@ describe("toast actions", () => {
     expect(s.toasts).toHaveLength(3);
     expect(s.toasts[0]?.id).toBe("t2");
     expect(s.toasts[2]?.id).toBe("t4");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Supervisor slice reducers
+// ---------------------------------------------------------------------------
+
+const SAMPLE_HEALTH: SupervisorHealth = {
+  status: "ok",
+  reasons: [],
+  metrics: {
+    poolSize: 2,
+    maxWorkers: 10,
+    quarantinedCount: 0,
+    restartingCount: 0,
+    pendingSpawnCount: 0,
+    eventDropCount: 0,
+    shuttingDown: false,
+  },
+  workers: [],
+};
+
+const evt = (id: string, ts: number): SupervisorEventEntry => ({
+  id,
+  ts,
+  kind: "started",
+  workerId: "w",
+  agentName: "a",
+});
+
+describe("supervisor slice reducers", () => {
+  test("set_supervisor_attached(true) sets attached", () => {
+    const s = reduce(createInitialState(), { kind: "set_supervisor_attached", attached: true });
+    expect(s.supervisor.attached).toBe(true);
+  });
+
+  test("set_supervisor_attached(false) clears health", () => {
+    const withHealth = reduce(
+      reduce(createInitialState(), { kind: "set_supervisor_attached", attached: true }),
+      { kind: "set_supervisor_health", health: SAMPLE_HEALTH },
+    );
+    expect(withHealth.supervisor.health).toBeTruthy();
+    const detached = reduce(withHealth, { kind: "set_supervisor_attached", attached: false });
+    expect(detached.supervisor.attached).toBe(false);
+    expect(detached.supervisor.health).toBeNull();
+  });
+
+  test("set_supervisor_attached(true) leaves health as-is", () => {
+    const withHealth = reduce(
+      reduce(createInitialState(), { kind: "set_supervisor_attached", attached: true }),
+      { kind: "set_supervisor_health", health: SAMPLE_HEALTH },
+    );
+    const reattached = reduce(withHealth, { kind: "set_supervisor_attached", attached: true });
+    expect(reattached.supervisor.health).toEqual(SAMPLE_HEALTH);
+  });
+
+  test("set_supervisor_status replaces status", () => {
+    const s = reduce(createInitialState(), {
+      kind: "set_supervisor_status",
+      status: { kind: "live" },
+    });
+    expect(s.supervisor.status).toEqual({ kind: "live" });
+  });
+
+  test("set_supervisor_health replaces health", () => {
+    const s = reduce(createInitialState(), {
+      kind: "set_supervisor_health",
+      health: SAMPLE_HEALTH,
+    });
+    expect(s.supervisor.health).toEqual(SAMPLE_HEALTH);
+  });
+
+  test("set_supervisor_health accepts null to clear health", () => {
+    const withHealth = reduce(createInitialState(), {
+      kind: "set_supervisor_health",
+      health: SAMPLE_HEALTH,
+    });
+    const cleared = reduce(withHealth, { kind: "set_supervisor_health", health: null });
+    expect(cleared.supervisor.health).toBeNull();
+  });
+
+  test("push_supervisor_event prepends and caps at SUPERVISOR_EVENT_BUFFER_CAP", () => {
+    let s = createInitialState();
+    for (let i = 0; i < 60; i++) {
+      s = reduce(s, { kind: "push_supervisor_event", entry: evt(`e${i}`, i) });
+    }
+    expect(s.supervisor.events.length).toBe(SUPERVISOR_EVENT_BUFFER_CAP);
+    // newest first
+    expect(s.supervisor.events[0]?.id).toBe("e59");
+    // oldest kept is e10 (e0..e9 evicted)
+    expect(s.supervisor.events[49]?.id).toBe("e10");
+  });
+
+  test("clear_supervisor_events empties the event buffer", () => {
+    const seeded = reduce(createInitialState(), {
+      kind: "push_supervisor_event",
+      entry: evt("x", 0),
+    });
+    expect(seeded.supervisor.events.length).toBe(1);
+    const cleared = reduce(seeded, { kind: "clear_supervisor_events" });
+    expect(cleared.supervisor.events).toEqual([]);
   });
 });
