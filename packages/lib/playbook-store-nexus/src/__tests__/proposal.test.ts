@@ -7,8 +7,8 @@ import type {
   TrajectoryRange,
 } from "@koi/ace-types";
 import type { KoiError, Result } from "@koi/core";
+import type { NexusTransport as FsNexusTransport } from "@koi/fs-nexus";
 import { createFakeNexusTransport } from "@koi/fs-nexus/testing";
-import type { NexusTransport } from "@koi/nexus-client";
 
 import { createNexusPlaybookProposalStore } from "../proposal.js";
 import { createNexusStructuredPlaybookStore } from "../structured.js";
@@ -482,7 +482,7 @@ describe("createNexusPlaybookProposalStore", () => {
     // Wrap the transport so that reads of proposal files return EXTERNAL.
     // We allow list and the structured-playbook reads (which don't match proposals/).
     let listCallDone = false;
-    const wrappedTransport: NexusTransport = {
+    const wrappedTransport: FsNexusTransport = {
       call: async <T>(
         method: string,
         params: Record<string, unknown>,
