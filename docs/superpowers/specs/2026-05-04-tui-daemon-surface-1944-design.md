@@ -8,8 +8,11 @@
 
 Surface the `@koi/daemon` subsystem in `@koi/tui`. Today the daemon ships
 supervisors, session registries, and heartbeat health, but a TUI user spawning
-a subagent sees nothing about supervision — no crash recovery signal, no
-isolation visibility, no health insight. This PR makes the daemon observable.
+a **subprocess-isolated** subagent sees nothing about supervision — no crash
+recovery signal, no isolation visibility, no health insight. This PR makes
+the OS-process supervision path observable. In-process supervision continues
+to surface via the existing `/agents` Supervised section; see "Scope
+clarification" below.
 
 ## Scope
 
@@ -30,8 +33,25 @@ This PR completes it.
 - Expose the supervisor handle from the CLI bootstrap so the daemon-bridge
   (Half B) can subscribe to it. TUI itself never holds the handle.
 - In-process-only manifests (no subprocess children) skip daemon
-  instantiation — the existing in-memory wiring continues to drive the
-  `/agents` Supervised section.
+  instantiation — the existing in-memory `AgentRegistry` wiring continues
+  to drive the `/agents` Supervised section.
+
+**Scope clarification — what the new surfaces cover:**
+
+| Manifest shape | Status-line badge | Toasts | `/supervisor` | `/bg` | Inline events | `/agents` |
+|----------------|:-:|:-:|:-:|:-:|:-:|:-:|
+| No `supervision:` | hidden | — | empty state | empty state | — | unchanged |
+| `supervision:` with subprocess child | ✅ | ✅ | ✅ | ✅ | ✅ | unchanged |
+| `supervision:` in-process only | hidden | — | empty state | empty state | — | shows children (existing) |
+
+The new surfaces are explicitly the **OS-process supervision** UX. They
+require a live `@koi/net/daemon` Supervisor with subprocess-backed workers
+to have anything to render — heartbeat, PID, log path, backend kind, and
+crash semantics are OS-process concepts. In-process supervision continues
+to surface through the existing `/agents` Supervised section (#1866). A
+future issue can unify both paths if/when in-process workers grow
+heartbeat semantics; today they don't and conflating the two would mean
+inventing fake telemetry.
 
 ### Half B — TUI surface
 
@@ -344,9 +364,10 @@ last-known snapshot and flags the surface as stale.
 |---------|--------|
 | `health()` throws (synchronous read; rare — bug or torn snapshot) | Increment `healthFailureCount`. After 3 consecutive failures, dispatch `set_supervisor_status({ kind: "stale", since: firstFailureAt, reason })`. Keep `health` slice unchanged so the worker table does not blink empty. Log via existing logger. |
 | `registry.list()` rejects | Same 3-strike → `stale` status; keep last `rows`. Toast once per stale transition: `"⚠ background session registry unavailable"`. |
-| `watchAll()` iterator throws or ends `done: true` | Iterator pattern means a thrown error surfaces in the `for await` `catch`. Dispatch stale; attempt to acquire a fresh iterator with backoff `1s, 2s, 5s, 5s, 5s`. After 5 failed reacquisitions, leave stale and stop trying — operator must restart the TUI. |
-| `registry.watch()` iterator throws or ends | Same backoff strategy as `watchAll`. Independent counter — a flaky FS watcher does not cancel the supervisor stream. |
+| `watchAll()` iterator throws or ends `done: true` | Iterator pattern means a thrown error surfaces in the `for await` `catch`. Dispatch stale; **reacquire indefinitely** with capped exponential backoff `1s, 2s, 5s, 10s, 30s, 60s` (cap), each attempt jittered ±20% to avoid lockstep retry storms. While stream is down, `health()` + `registry.list()` polling continue (degraded poll-only mode); the surface remains functional, just without push events. |
+| `registry.watch()` iterator throws or ends | Same indefinite-reacquire policy as `watchAll`. Independent counter — a flaky FS watcher does not cancel the supervisor stream. `registry.list()` polling backstops row freshness. |
 | Recovery (any successful poll/event after a failure) | Reset failure counter; dispatch `set_supervisor_status({ kind: "live" })`; toast `"✓ supervisor connection restored"` only if previously stale. |
+| `bridge.close()` during reconnect backoff | The closed-sentinel race exits the backoff sleep immediately; no leaked timers. |
 
 Status-line rendering uses `status.kind`:
 - `detached` → segment hidden (current behavior).
@@ -421,6 +442,25 @@ restart policy can replace the live process between row selection and
 confirm. We detect this via the registry's `version` field, which the
 existing `attachRegistry` bridge already advances on every transition.
 
+**Action availability per row** (BgView gates `k` on row state — never
+advertises an action it cannot deliver):
+
+| Row status | `k` available? | Action |
+|------------|:--------------:|--------|
+| `running`, `starting` | ✅ | confirm → on-path supervisor.stop |
+| `terminating` | ❌ | hint: "kill in flight; wait" |
+| `detached` | ❌ | hint: "use `koi bg kill <id>` from a separate shell, or `koi bg attach`" — falls back to off-path CLI flow whose CAS+fingerprint protections handle the no-supervisor case correctly |
+| `exited`, `crashed` | ❌ | hint: "already terminal" |
+
+The detached-kill recovery path is intentionally NOT routed through the
+TUI bridge. The off-path `runKill` in `packages/meta/cli/src/commands/bg.ts`
+is the canonical recovery flow — it handles PID-reuse fingerprinting,
+stranded-claim resume, and pid-aware CAS. Reimplementing those
+guarantees in the TUI bridge would duplicate ~200 LOC of subtle race
+handling. Pointing operators at `koi bg kill` is the correct contract.
+
+For supported rows (`running`/`starting`):
+
 1. `BgView`: user presses `k` on a row → dispatch
    `set_bg_kill_confirm({ workerId, version, pid })` capturing the
    identity the operator saw.
@@ -491,7 +531,9 @@ on the right side: governance segment, then supervisor segment, separator
 - **`SupervisorView.test.tsx`** — worker table columns; reasons section
   hidden when empty; event feed last-N order.
 - **`BgView.test.tsx`** — registry rows merged with health workers; kill
-  modal flow; Enter triggers tailing dispatch.
+  modal flow only opens for `running`/`starting` rows; `terminating`,
+  `detached`, `exited`, `crashed` rows render `k` disabled with
+  status-specific hint; Enter triggers tailing dispatch.
 - **`daemon-bridge.test.ts`** —
   - `WorkerEvent.crashed` triggers `push_toast` + `push_supervisor_event`;
     same crash within 30s deduped to 1 toast.
@@ -509,8 +551,12 @@ on the right side: governance segment, then supervisor segment, separator
   - 3 consecutive `health()` failures flip status to `stale` while
     preserving last snapshot; recovery flips back to `live` with
     restored toast.
-  - `watchAll()` iterator throwing triggers backoff reacquire
-    (`1s, 2s, 5s, 5s, 5s`); 5 failures keep `stale` status.
+  - `watchAll()` iterator throwing triggers indefinite reacquire with
+    backoff `1s → 60s` (verified via fake timers): 6th failure schedules
+    next attempt, never gives up; `bridge.close()` during a backoff sleep
+    cancels the wait via the closed sentinel.
+  - During a stream outage, `health()` + `list()` polling continues —
+    rows + badge stay current in poll-only mode.
   - `registry.watch()` iterator throwing triggers an independent backoff
     reacquire — does NOT cancel `watchAll`.
   - `close()` resolves the `closed` sentinel, both consumer loops drain,
@@ -587,6 +633,14 @@ calls. Existing daemon golden queries cover supervisor lifecycle.
       TUI status line within 1s of startup.
 - [ ] Killing a supervised worker via `os.kill` produces a toast within
       heartbeat deadline + 1s.
-- [ ] `/bg` `k` flow terminates a worker and updates the row to `exited`.
-- [ ] Manifest without `supervision:` renders no badge and no daemon
-      lifecycle events in the session log.
+- [ ] `/bg` `k` flow terminates a `running` worker and updates the row to
+      `exited`.
+- [ ] `/bg` `k` is disabled for `detached`/`terminating`/`exited`/`crashed`
+      rows; detached row hint references `koi bg kill` recovery path.
+- [ ] Manifest without `supervision:` and in-process-only `supervision:`
+      both render no badge; in-process supervision keeps showing in
+      `/agents` Supervised section as before.
+- [ ] Killing the supervisor `watchAll()` mid-session (induced fault)
+      flips badge to `◌ stale`, polling continues to refresh rows, and
+      a successful reacquire toast restores `live` status without
+      operator action.
