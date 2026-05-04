@@ -387,6 +387,51 @@ describe("createNexusPlaybookProposalStore", () => {
     }
   });
 
+  // --- Fix 5: evaluation id validation and global uniqueness ---
+
+  test("recordEvaluation with valid id succeeds", async () => {
+    const { proposal: store } = await storeWithPlaybook("pb-eid-valid");
+    await store.recordProposal(makeProposal("p-eid-valid", "pb-eid-valid"));
+    await expect(
+      store.recordEvaluation(makeEvaluation("e-valid-id", "p-eid-valid")),
+    ).resolves.toBeUndefined();
+  });
+
+  test("recordEvaluation with empty evalId throws VALIDATION", async () => {
+    const { proposal: store } = await storeWithPlaybook("pb-eid-empty");
+    await store.recordProposal(makeProposal("p-eid-empty", "pb-eid-empty"));
+    const badEval: PlaybookEvaluation = { ...makeEvaluation("e1", "p-eid-empty"), id: "" };
+    await expect(store.recordEvaluation(badEval)).rejects.toThrow("Evaluation ID");
+  });
+
+  test("recordEvaluation with glob char in evalId throws VALIDATION", async () => {
+    const { proposal: store } = await storeWithPlaybook("pb-eid-glob");
+    await store.recordProposal(makeProposal("p-eid-glob", "pb-eid-glob"));
+    const badEval: PlaybookEvaluation = { ...makeEvaluation("e1", "p-eid-glob"), id: "e*bad" };
+    await expect(store.recordEvaluation(badEval)).rejects.toThrow("Evaluation ID");
+  });
+
+  test("recordEvaluation twice with same evalId + same proposalId + same content is idempotent", async () => {
+    const { proposal: store } = await storeWithPlaybook("pb-eid-idem");
+    await store.recordProposal(makeProposal("p-eid-idem", "pb-eid-idem"));
+    const e = makeEvaluation("e-idem-eid", "p-eid-idem");
+    await store.recordEvaluation(e);
+    await expect(store.recordEvaluation(e)).resolves.toBeUndefined();
+  });
+
+  test("recordEvaluation with same evalId for DIFFERENT proposals throws 'id already used'", async () => {
+    const { proposal: store, structured } = newStores();
+    await structured.save(makeStructuredPlaybook("pb-eid-p1", 1));
+    await structured.save(makeStructuredPlaybook("pb-eid-p2", 1));
+    await store.recordProposal(makeProposal("p-eid-first", "pb-eid-p1"));
+    await store.recordProposal(makeProposal("p-eid-second", "pb-eid-p2"));
+    await store.recordEvaluation(makeEvaluation("e-shared-id", "p-eid-first"));
+    // Same evalId but different proposalId → must be rejected.
+    await expect(
+      store.recordEvaluation(makeEvaluation("e-shared-id", "p-eid-second")),
+    ).rejects.toThrow("id already used");
+  });
+
   // --- Fix 1: proposal idempotency takes precedence over baseVersion check ---
 
   test("retry of already-recorded proposal succeeds after playbook head advances (idempotency over baseVersion)", async () => {
