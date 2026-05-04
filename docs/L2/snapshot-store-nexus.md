@@ -58,3 +58,17 @@ Every method returns `Result<T, KoiError>`. Transport errors propagate as `EXTER
 ## Wiring
 
 `@koi/snapshot-store-nexus` is `koi.optional: true`. L3 (`@koi/runtime` or successor) selects between sqlite and nexus backends at assembly time based on config — no static `dependencies` link.
+
+---
+
+## Differences vs sqlite sibling
+
+Contract parity verified by `src/__tests__/contract.test.ts` (15 tests, 0 skipped as of #1405).
+
+| Behavior | sqlite | nexus | Notes |
+|---|---|---|---|
+| BFS ancestor depth semantics | `maxDepth=N` returns start + N ancestors | Same — fixed in #1405 (was off-by-one: start initialized at depth=1 instead of 0) | Bug fixed; both backends now agree |
+| `ancestors` BFS visit order | Recursive CTE: depths returned in ascending order | In-memory BFS: same depth-ascending order for linear chains; DAG tie-breaking may differ | No observable difference for linear chains |
+| Canonical JSON hashing | `skipIfUnchanged` compares via `canonicalJson` (key-sorted) | Uses `computeContentHash` from `@koi/hash` | If payloads serialize differently, nexus may not deduplicate what sqlite would |
+| `close` post-operation behavior | SQLite raises a native "database is closed" error → `INTERNAL` | Fake transport returns `INTERNAL` after close; production transport behavior is transport-dependent | Contract: both return `ok: false, code: "INTERNAL"` |
+| Cross-process concurrency | Not supported (single process per db file) | Not supported (per-chain mutex is in-process only) | Same limitation |

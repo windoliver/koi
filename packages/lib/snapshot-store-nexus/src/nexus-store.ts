@@ -186,7 +186,8 @@ export function createSnapshotStoreNexus<T>(
     if (!start.ok) return start;
     const out: SnapshotNode<T>[] = [];
     const visited = new Set<NodeId>();
-    const queue: Array<readonly [SnapshotNode<T>, number]> = [[start.value, 1]];
+    // depth 0 = start node; maxDepth is the maximum number of hops from start.
+    const queue: Array<readonly [SnapshotNode<T>, number]> = [[start.value, 0]];
     while (queue.length > 0) {
       const entry = queue.shift();
       if (entry === undefined) break;
