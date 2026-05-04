@@ -296,17 +296,21 @@ interface BgSessionRow {
    * `ok`          — heartbeat opt-in, heartbeat received within deadline.
    * `stale`       — heartbeat opt-in, heartbeat older than deadline.
    * `timeout`     — heartbeat opt-in, heartbeat past 2× deadline interval.
-   * `unmonitored` — heartbeat NOT opted in (permanent: heartbeat fields
-   *                 absent from the supervisor's published health snapshot).
-   *                 Renders neutral. NEVER colored as a failure.
+   * `unmonitored` — heartbeat NOT opted in (permanent).
    * `foreign`     — registry row exists but worker is not owned by the
-   *                 local supervisor. `health()` lookup intentionally
-   *                 misses; freshness is unknowable from this process.
-   *                 Renders neutral with "foreign" label. NEVER red.
-   * `terminating` — record status is `terminating`; yellow "kill in
-   *                 flight" with `signaledAt` age.
-   * `detached`    — record status is `detached`; freshness neutral.
-   * `terminal`    — record status is `exited` or `crashed`; freshness off.
+   *                 local supervisor.
+   * `restarting`  — `WorkerHealth.state === "restarting"` — supervisor
+   *                 is between `crashed`/`exited` and the next `started`
+   *                 event. Overrides registry's `crashed` status.
+   * `quarantined` — `WorkerHealth.state === "quarantined"` — restart
+   *                 budget exhausted; worker is pinned. Override.
+   * `stopping`    — `WorkerHealth.state === "stopping"` — supervisor is
+   *                 mid-shutdown of this worker. Override.
+   * `terminating` — registry status is `terminating`; "kill in flight"
+   *                 with `signaledAt` age.
+   * `detached`    — registry status is `detached`; neutral.
+   * `terminal`    — registry status is `exited`/`crashed` AND no live
+   *                 health override.
    */
   readonly freshness:
     | "pending"
@@ -315,6 +319,9 @@ interface BgSessionRow {
     | "timeout"
     | "unmonitored"
     | "foreign"
+    | "restarting"
+    | "quarantined"
+    | "stopping"
     | "terminating"
     | "detached"
     | "terminal";
@@ -510,7 +517,24 @@ There is **no** global `heartbeatDeadlineMs`. Both fields can be
 heartbeat. Treat `undefined` explicitly — never coerce to `0`.
 
 ```
-// Status-priority short-circuits — registry status drives more than heartbeat.
+// IMPORTANT: registry-vs-health precedence.
+// `attachRegistry` only writes `running | exited | crashed | terminating |
+// detached` into the registry. The supervisor surfaces `restarting`,
+// `quarantined`, and `stopping` exclusively via `WorkerHealth.state`.
+// A worker in a crash-loop sits in registry `crashed` between successive
+// `started` events even though the supervisor is actively restarting it.
+// We therefore consult locally-owned health state BEFORE accepting
+// registry's terminal status; a live `restarting`/`quarantined`/`stopping`
+// always wins.
+const workerSnap = health.workers.find(w => w.workerId === row.workerId);
+if (workerSnap !== undefined) {
+  if (workerSnap.state === "quarantined") return "quarantined";
+  if (workerSnap.state === "restarting")  return "restarting";
+  if (workerSnap.state === "stopping")    return "stopping";
+  // workerSnap.state === "running" → fall through to registry-based logic
+}
+
+// No live health state asserts the override; honor registry status now.
 if (status === "exited" || status === "crashed") return "terminal";
 if (status === "detached")    return "detached";
 if (status === "terminating") return "terminating";
@@ -531,16 +555,14 @@ if (row.status === "starting") {
   return "timeout";
 }
 
-// row.status === "running"
+// row.status === "running" — workerSnap was already looked up above.
 // `Supervisor.list()` returns ProcessDescriptor[] which has agentId only,
 // NOT workerId. The authoritative source for "this supervisor owns these
 // workerIds" is `SupervisorHealth.workers[].workerId` — the per-worker
 // health array IS the ownership set.
-const workerSnap = health.workers.find(w => w.workerId === row.workerId);
 
 // No matching workerSnap → row is foreign (owned by another supervisor
-// process writing into the same state-dir registry). Foreign rows render
-// neutral and are never killable from this TUI.
+// process writing into the same state-dir registry).
 if (workerSnap === undefined) return "foreign";
 
 // `health.workers` items are of type `WorkerHealth` (per @koi/core/daemon
@@ -597,6 +619,9 @@ Render mapping in `BgView`:
 | `timeout` | red | heartbeat past 2× deadline (live worker, dead-or-stuck) |
 | `unmonitored` | neutral (gray, italic) | heartbeat not opted in — health not knowable from telemetry |
 | `foreign` | neutral (gray, italic) + "foreign" label | row owned by another supervisor process; not killable from this TUI |
+| `restarting` | yellow + spinner | supervisor restarting after fault; expect `started` event soon |
+| `quarantined` | red + "quarantined" label | restart budget exhausted; supervisor pinned the worker |
+| `stopping` | yellow | supervisor in mid-shutdown of this worker |
 | `terminating` | yellow + spinner | kill in flight (`signaledAt` age in tooltip) |
 | `detached` | blue | tmux/remote backend let go; needs reattach |
 | `terminal` | gray | `exited`/`crashed`; row kept until retention sweep |
@@ -749,15 +774,48 @@ const stopResult = await supervisor.stop(workerId, "user-requested");
 if (!stopResult.ok) {
   // Stop failed (NOT_FOUND, INVALID_STATE, etc.). Atomic rollback:
   // restore EXACT prior status AND clear the signaledAt stamp in a
-  // single CAS update. Both must clear together so a follow-up genuine
-  // crash is not biased toward intentional classification by a stale
-  // signaledAt left behind.
-  await registry.update(workerId as WorkerId, {
-    status: preClaimStatus,                 // EXACT prior status (running/starting)
+  // single CAS update. The rollback is itself a CAS write that can
+  // fail (CONFLICT if the bridge advanced state past our claim;
+  // I/O failure if the registry is unreadable). We MUST inspect the
+  // result — never fire-and-forget — because a failed rollback leaves
+  // a live `terminating` + `signaledAt` claim that biases future
+  // crash classification toward intentional.
+  const rollback = await registry.update(workerId as WorkerId, {
+    status: preClaimStatus,                 // EXACT prior status
     clearSignaledAt: true,                  // wipe the intent marker
     expectedVersion: claimedVersion,
     expectedPid: current.pid,
   });
+  if (!rollback.ok) {
+    if (rollback.error.code === "CONFLICT") {
+      // Bridge advanced the record (e.g. worker died during the failed
+      // stop attempt). The terminal write already discharged the claim.
+      // Acceptable; nothing else to do.
+    } else {
+      // I/O fault, corruption, etc. Surface explicitly so operators
+      // know the row may be stuck in `terminating`.
+      pushToast(
+        `⚠ supervisor.stop failed AND rollback failed (${rollback.error.code}); ` +
+        `worker ${workerId} may be stuck in 'terminating' — check registry`,
+      );
+      // Schedule a single bounded retry after 1s; if that also fails,
+      // give up and let the operator intervene. Never silently retry
+      // forever — the registry may be unrecoverable.
+      setTimeout(() => {
+        void registry.update(workerId as WorkerId, {
+          status: preClaimStatus,
+          clearSignaledAt: true,
+          expectedVersion: claimedVersion,
+          expectedPid: current.pid,
+        }).then(retry => {
+          if (!retry.ok && retry.error.code !== "CONFLICT") {
+            pushToast(`⚠ rollback retry failed; manual recovery required`);
+          }
+        }).catch(() => { /* logged elsewhere */ });
+      }, 1000);
+      return;
+    }
+  }
   pushToast(`⚠ supervisor.stop failed: ${stopResult.error.message}`);
   return;
 }
@@ -850,7 +908,15 @@ on the right side: governance segment, then supervisor segment, separator
   at 50; bg row freshness boundaries cover all 9 outcomes (pending, ok,
   stale, timeout, **unmonitored**, **foreign**, terminating, detached,
   terminal):
-  - **Registry status discriminates first**:
+  - **Live health overrides terminal registry status** (crash-loop case):
+    - Row with `status: "crashed"` AND `health.workers` entry with
+      `state: "restarting"` → `restarting` (NOT `terminal`).
+    - Same row, `state: "quarantined"` → `quarantined`.
+    - Same row, `state: "stopping"` → `stopping`.
+    - Row with `status: "exited"` AND health entry `state: "running"`
+      → `running`-derived freshness (rare race window where bridge
+      hasn't caught up; health wins).
+  - **Registry status discriminates** when no live health override:
     - `status: "starting"` row → `pending` within 30s grace, then
       `timeout`. Never `foreign` even with no matching health entry —
       L0 `WorkerHealth.state` excludes `starting` so absence is
@@ -930,6 +996,17 @@ on the right side: governance segment, then supervisor segment, separator
     With the atomic Phase 1 stamp, classification is intentional. Test
     that swapping to a delayed-stamp variant reproduces the misclassify
     — guards the design from drifting back to a racy two-phase write.
+  - **Rollback CAS conflict path**: `supervisor.stop` returns
+    `Result.ok: false`; rollback returns `CONFLICT` (bridge advanced
+    state past our claim). Bridge swallows the conflict — acceptable
+    because the terminal write discharged the intent — and surfaces
+    only the original stop-failure toast.
+  - **Rollback I/O failure path**: `supervisor.stop` fails; rollback
+    returns a non-CONFLICT error. Bridge surfaces an explicit
+    "stuck in terminating; check registry" toast AND schedules one
+    1s-delayed retry. Retry success → no further toast. Retry also
+    failing with non-CONFLICT → "manual recovery required" toast.
+    Test asserts no infinite retry loop.
   - `requestKill` refuses for foreign rows: when row's `workerId` is
     NOT in `supervisor.list().map(p => p.workerId)`, the action is
     gated off in BgView (no `k` available). Bridge `requestKill` also
