@@ -4,6 +4,7 @@ import {
   DEFAULT_EXAPTATION_THRESHOLDS,
   type DetectionResult,
   type DriftReport,
+  dedupeObservations,
   detectDrift,
   suggestAction,
 } from "./detector.js";
@@ -283,17 +284,37 @@ describe("suggestAction", () => {
   });
 });
 
-describe("detectDrift dedup + telemetry", () => {
-  test("duplicate observations are collapsed (replay protection)", () => {
-    // The same (agentId, observedAt, contextText) tuple repeated 5 times
-    // must not satisfy minObservations.
+describe("detectDrift dedup (opt-in) + telemetry", () => {
+  test("by default: identical observations are NOT deduped — caller responsibility", () => {
+    // Without observationKey, busty repeats are scored as-is. This is the
+    // safe default: a synthetic dedup key like (agentId, observedAt, contextText)
+    // would silently throw away legitimate repeat tool calls in real traffic.
     const dup: UsagePurposeObservation = {
       agentId: "a1",
       observedAt: 1234,
       contextText: "ctx",
       divergenceScore: 0.95,
     };
-    const result = detectDrift([dup, dup, dup, dup, dup], DEFAULT_EXAPTATION_THRESHOLDS);
+    const dup2: UsagePurposeObservation = { ...dup, agentId: "a2" };
+    const result = detectDrift([dup, dup, dup, dup2, dup2, dup2], DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      expect(result.duplicateCount).toBe(0);
+      expect(result.report.observationCount).toBe(6);
+    }
+  });
+
+  test("opt-in dedup via observationKey collapses replays", () => {
+    const dup: UsagePurposeObservation = {
+      agentId: "a1",
+      observedAt: 1234,
+      contextText: "ctx",
+      divergenceScore: 0.95,
+    };
+    const result = detectDrift([dup, dup, dup, dup, dup], {
+      ...DEFAULT_EXAPTATION_THRESHOLDS,
+      observationKey: (o) => `${o.agentId}|${String(o.observedAt)}|${o.contextText}`,
+    });
     expect(result.kind).toBe("no-drift");
     if (result.kind === "no-drift") {
       expect(result.observationCount).toBe(1);
@@ -301,7 +322,9 @@ describe("detectDrift dedup + telemetry", () => {
     }
   });
 
-  test("duplicateCount is reported on the drift branch too", () => {
+  test("duplicateCount is reported on the drift branch too (when dedup is enabled)", () => {
+    const keyFn = (o: UsagePurposeObservation): string =>
+      `${o.agentId}|${String(o.observedAt)}|${o.contextText}`;
     const observations: UsagePurposeObservation[] = [
       { agentId: "a1", observedAt: 1, contextText: "x", divergenceScore: 0.9 },
       { agentId: "a1", observedAt: 1, contextText: "x", divergenceScore: 0.9 }, // dup
@@ -312,7 +335,10 @@ describe("detectDrift dedup + telemetry", () => {
       { agentId: "a3", observedAt: 5, contextText: "v", divergenceScore: 0.9 },
       { agentId: "a3", observedAt: 6, contextText: "u", divergenceScore: 0.9 },
     ];
-    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    const result = detectDrift(observations, {
+      ...DEFAULT_EXAPTATION_THRESHOLDS,
+      observationKey: keyFn,
+    });
     expect(result.kind).toBe("drift");
     if (result.kind === "drift") {
       expect(result.duplicateCount).toBe(2);
@@ -336,5 +362,84 @@ describe("detectDrift dedup + telemetry", () => {
       expect(result.droppedCount).toBe(1);
       expect(result.duplicateCount).toBe(0);
     }
+  });
+});
+
+describe("suggestAction quality gate", () => {
+  test("low-quality drift result (>25% dropped) → none", () => {
+    // 5 valid + 3 dropped → 3/8 = 37.5% degradation > 25%
+    const result: DetectionResult = {
+      kind: "drift",
+      droppedCount: 3,
+      duplicateCount: 0,
+      report: {
+        kind: "purpose_drift",
+        severity: 0.95,
+        avgDivergence: 0.92,
+        divergentAgents: 4,
+        observationCount: 5,
+      },
+    };
+    expect(suggestAction(result, 5)).toEqual({ kind: "none" });
+  });
+
+  test("acceptable-quality drift result (<=25% dropped) → action", () => {
+    // 5 valid + 1 dropped → 1/6 ≈ 16.7% < 25%
+    const result: DetectionResult = {
+      kind: "drift",
+      droppedCount: 1,
+      duplicateCount: 0,
+      report: {
+        kind: "purpose_drift",
+        severity: 0.95,
+        avgDivergence: 0.92,
+        divergentAgents: 4,
+        observationCount: 5,
+      },
+    };
+    expect(suggestAction(result, 5).kind).toBe("new-artifact");
+  });
+
+  test("low-quality drift result (>25% duplicates) → none", () => {
+    const result: DetectionResult = {
+      kind: "drift",
+      droppedCount: 0,
+      duplicateCount: 4,
+      report: {
+        kind: "purpose_drift",
+        severity: 0.95,
+        avgDivergence: 0.92,
+        divergentAgents: 4,
+        observationCount: 5,
+      },
+    };
+    expect(suggestAction(result, 5)).toEqual({ kind: "none" });
+  });
+
+  test("bare DriftReport bypasses quality gate (caller has no telemetry)", () => {
+    const report: DriftReport = {
+      kind: "purpose_drift",
+      severity: 0.95,
+      avgDivergence: 0.92,
+      divergentAgents: 4,
+      observationCount: 5,
+    };
+    expect(suggestAction(report, 5).kind).toBe("new-artifact");
+  });
+});
+
+describe("dedupeObservations utility", () => {
+  test("collapses by caller-supplied keyFn, preserves first occurrence", () => {
+    const a: UsagePurposeObservation = {
+      agentId: "x",
+      observedAt: 1,
+      contextText: "first",
+      divergenceScore: 0.5,
+    };
+    const b: UsagePurposeObservation = { ...a, contextText: "second" };
+    const c: UsagePurposeObservation = { ...a, contextText: "third" };
+    const out = dedupeObservations([a, b, c], (o) => o.agentId);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.contextText).toBe("first");
   });
 });

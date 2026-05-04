@@ -59,11 +59,20 @@ Severity ∈ [0, 1]: scales with how broadly and how strongly the artifact has d
 | Inputs | Suggestion |
 |---|---|
 | `result.kind ≠ "drift"` (no-drift, invalid-config, undefined) | `none` |
+| `(droppedCount + duplicateCount) / total > 25%` | `none` (low-quality window) |
 | Single drift window (`stableWindows < 2`) | `reclassify` — rewrite the artifact's description to match observed usage |
 | `stableWindows ≥ 2` AND `avgDivergence ≥ 0.85` | `new-artifact` — fork a specialized variant; the drift is a real second use case |
 | `stableWindows ≥ 2` AND `avgDivergence < 0.85` | `reclassify` — drift exists but isn't strong enough to justify forking |
 
 `new-artifact` is gated on **raw `avgDivergence`**, not on saturated `severity`. With detection threshold `0.7` and fork threshold `0.85`, drift that barely clears detection cannot escalate to "fork" purely by accumulating more observations or agents over time.
+
+The quality gate (default 25%) refuses to recommend irreversible action when most of the input window was discarded as malformed or as duplicates. Pass a bare `DriftReport` to `suggestAction` if you want to bypass the gate.
+
+## Replay Protection
+
+Dedup is **opt-in**. Pass `thresholds.observationKey: (o) => string` to collapse observations sharing a return value. Without it, observations are scored as-is. The default is "no dedup" because a synthetic key like `(agentId, observedAt, contextText)` would silently discard legitimate repeat tool calls in bursty traffic.
+
+`dedupeObservations(observations, keyFn)` is also exported as a standalone helper for callers that prefer to dedupe up front.
 
 ---
 

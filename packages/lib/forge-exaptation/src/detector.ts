@@ -13,7 +13,7 @@ import type { ExaptationKind, UsagePurposeObservation } from "@koi/core";
 // Configuration
 // ---------------------------------------------------------------------------
 
-/** Detection thresholds. All fields required to make tuning explicit. */
+/** Detection thresholds. All numeric fields required to make tuning explicit. */
 export interface ExaptationThresholds {
   /** Minimum total observations before detection can trigger (positive integer). */
   readonly minObservations: number;
@@ -30,6 +30,17 @@ export interface ExaptationThresholds {
   readonly minObservationsPerAgent: number;
   /** Severity multiplier weight applied to scaled drift score (in [0, 1]). */
   readonly confidenceWeight: number;
+  /**
+   * Optional caller-supplied identity function for replay protection.
+   *
+   * When supplied, observations sharing a return value are collapsed before
+   * scoring (first occurrence wins). Without it, no dedup runs — the
+   * detector trusts the input. This is opt-in by design: a default key like
+   * `(agentId, observedAt, contextText)` is unsafe because legitimate repeat
+   * tool calls in a busy workflow can collide on those fields and be
+   * silently discarded as "duplicates".
+   */
+  readonly observationKey?: ((o: UsagePurposeObservation) => string) | undefined;
 }
 
 /** Sensible defaults — conservative to minimize false positives. */
@@ -40,6 +51,14 @@ export const DEFAULT_EXAPTATION_THRESHOLDS: ExaptationThresholds = {
   minObservationsPerAgent: 2,
   confidenceWeight: 0.8,
 } as const;
+
+/**
+ * Maximum tolerated fraction of low-quality observations in a single window.
+ * `suggestAction` returns `none` when (dropped + duplicates) /
+ * (dropped + duplicates + valid) exceeds this ratio — refusing to recommend
+ * irreversible actions from windows where most evidence was thrown away.
+ */
+const MAX_QUALITY_DEGRADATION_RATIO = 0.25;
 
 // ---------------------------------------------------------------------------
 // Report
@@ -61,17 +80,9 @@ export interface DriftReport {
 /**
  * Outcome of a `detectDrift` call. Distinguishes a healthy "no drift" window
  * from detector failure modes (invalid configuration, dropped observations
- * leaving too few valid samples). Callers that previously treated `undefined`
- * as "no drift" silently masked detector failures — the explicit shape lets
- * them branch on `kind` and emit telemetry / fail closed.
- *
- * Both `drift` and `no-drift` carry sample-quality telemetry:
- *   - `droppedCount`     — observations rejected as malformed.
- *   - `duplicateCount`   — observations collapsed by dedup (replay protection).
- *   - `observationCount` — distinct, valid observations actually scored.
- *
- * A `drift` result with a high `droppedCount` or `duplicateCount` relative to
- * the input length is a quality red flag — callers can refuse to act on it.
+ * leaving too few valid samples). Both `drift` and `no-drift` carry sample-
+ * quality telemetry (`droppedCount`, `duplicateCount`) so callers can refuse
+ * to act on low-quality windows.
  */
 export type DetectionResult =
   | {
@@ -94,7 +105,7 @@ export type DetectionResult =
 
 /**
  * Recommended action.
- *  - `none`               — no drift, detector failure, or no result yet.
+ *  - `none`               — no drift, detector failure, or low-quality window.
  *  - `reclassify`         — single drift window OR borderline divergence:
  *                           rewrite the artifact's description to match
  *                           observed usage.
@@ -146,17 +157,16 @@ export function detectDrift(
     return { kind: "invalid-config", reason: configError };
   }
 
-  // Filter, don't fail-closed: a single malformed observation must not
-  // suppress the whole drift window.
   const valid = observations.filter(isObservationValid);
   const droppedCount = observations.length - valid.length;
 
-  // Dedup by (agentId, observedAt, contextText). At-least-once ingestion or
-  // retried event delivery would otherwise let the same underlying tool call
-  // be counted multiple times, manufacturing drift evidence and stable-window
-  // gates from transport replays. Callers that need a different identity key
-  // should pre-collapse before calling.
-  const unique = dedupeObservations(valid);
+  // Dedup is opt-in: only when the caller supplied a stable identity key.
+  // Defaulting to (agentId, observedAt, contextText) would silently discard
+  // legitimate repeat tool calls in bursty traffic.
+  const unique =
+    thresholds.observationKey === undefined
+      ? valid
+      : dedupeObservations(valid, thresholds.observationKey);
   const duplicateCount = valid.length - unique.length;
 
   const noDrift = (): DetectionResult => ({
@@ -191,19 +201,34 @@ export function detectDrift(
 }
 
 /**
- * Map a detection result (or a bare `DriftReport`) to a recommended action,
- * factoring in how many prior drift windows have already fired for the
- * same artifact (stability evidence).
+ * Map a detection result (or a bare `DriftReport`) to a recommended action.
  *
- * `new-artifact` is gated on raw `avgDivergence ≥ NEW_ARTIFACT_DIVERGENCE_THRESHOLD`
- * (NOT on saturated severity). With the default detection threshold of 0.7 and
- * the fork threshold of 0.85, drift that just barely clears detection cannot
- * escalate to "fork" purely by accumulating more observations or agents.
+ * Behaviour:
+ *   - `none` for `no-drift`, `invalid-config`, or `undefined`.
+ *   - `none` for `drift` results whose dropped + duplicate fraction exceeds
+ *     `MAX_QUALITY_DEGRADATION_RATIO` (default 25%) — refusing to act on
+ *     low-quality windows.
+ *   - `new-artifact` requires `stableWindows ≥ 2` AND raw `avgDivergence ≥
+ *     NEW_ARTIFACT_DIVERGENCE_THRESHOLD` (0.85). Gated on raw divergence,
+ *     not on saturated `severity`, so traffic volume alone cannot escalate.
+ *   - `reclassify` otherwise.
  */
 export function suggestAction(
   input: DetectionResult | DriftReport | undefined,
   stableWindows: number,
 ): ExaptationSuggestion {
+  if (input === undefined) return { kind: "none" };
+
+  // Quality gate: refuse to act on a drift window where most observations
+  // were dropped or collapsed as duplicates.
+  if (isDetectionResult(input) && input.kind === "drift") {
+    const total = input.report.observationCount + input.droppedCount + input.duplicateCount;
+    const lowQuality = input.droppedCount + input.duplicateCount;
+    if (total > 0 && lowQuality / total > MAX_QUALITY_DEGRADATION_RATIO) {
+      return { kind: "none" };
+    }
+  }
+
   const report = extractReport(input);
   if (report === undefined) return { kind: "none" };
 
@@ -216,11 +241,38 @@ export function suggestAction(
   return { kind: "reclassify", severity: report.severity };
 }
 
-function extractReport(input: DetectionResult | DriftReport | undefined): DriftReport | undefined {
-  if (input === undefined) return undefined;
-  if ("kind" in input && input.kind === "drift") return input.report;
-  if ("kind" in input && input.kind === "purpose_drift") return input;
+function isDetectionResult(input: DetectionResult | DriftReport): input is DetectionResult {
+  return (
+    "kind" in input &&
+    (input.kind === "drift" || input.kind === "no-drift" || input.kind === "invalid-config")
+  );
+}
+
+function extractReport(input: DetectionResult | DriftReport): DriftReport | undefined {
+  if (isDetectionResult(input)) return input.kind === "drift" ? input.report : undefined;
+  if (input.kind === "purpose_drift") return input;
   return undefined;
+}
+
+/**
+ * Collapse observations whose `keyFn(o)` already appeared. Order preserved;
+ * first occurrence wins. Exported as a utility — callers can dedupe inline by
+ * passing `thresholds.observationKey`, or up front by calling this helper
+ * before `detectDrift`.
+ */
+export function dedupeObservations(
+  observations: readonly UsagePurposeObservation[],
+  keyFn: (o: UsagePurposeObservation) => string,
+): readonly UsagePurposeObservation[] {
+  const seen = new Set<string>();
+  const out: UsagePurposeObservation[] = [];
+  for (const o of observations) {
+    const key = keyFn(o);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(o);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -256,26 +308,6 @@ function isObservationValid(o: UsagePurposeObservation): boolean {
   return true;
 }
 
-/**
- * Collapse observations that share `(agentId, observedAt, contextText)`. This
- * is the smallest identity key that resists at-least-once delivery without
- * requiring upstream observers to mint a stable observation ID. Order is
- * preserved (first occurrence wins).
- */
-function dedupeObservations(
-  observations: readonly UsagePurposeObservation[],
-): readonly UsagePurposeObservation[] {
-  const seen = new Set<string>();
-  const out: UsagePurposeObservation[] = [];
-  for (const o of observations) {
-    const key = `${o.agentId} ${String(o.observedAt)} ${o.contextText}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(o);
-  }
-  return out;
-}
-
 function computeAverageDivergence(observations: readonly UsagePurposeObservation[]): number {
   // let: sum accumulator
   let sum = 0;
@@ -288,7 +320,7 @@ function computeAverageDivergence(observations: readonly UsagePurposeObservation
  *   - at least `minObservationsPerAgent` observations attributed to them, AND
  *   - their personal average divergence ≥ `divergenceThreshold`.
  *
- * This rejects the "one-off spike from a second agent fakes multi-agent drift"
+ * Rejects the "one-off spike from a second agent fakes multi-agent drift"
  * failure mode: a single borderline observation no longer counts as evidence.
  */
 function countDivergentAgents(

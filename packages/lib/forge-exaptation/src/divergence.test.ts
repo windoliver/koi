@@ -27,6 +27,10 @@ describe("tokenize", () => {
     expect([...tokenize("parse-json-config")].sort()).toEqual(["config", "json", "parse"]);
   });
 
+  test("preserves 2-letter acronyms (db, ui, ml, ci)", () => {
+    expect([...tokenize("db ui ml ci tool")].sort()).toEqual(["ci", "db", "ml", "tool", "ui"]);
+  });
+
   test("snake_case and camelCase tokenize identically", () => {
     expect([...tokenize("parse_json_config")].sort()).toEqual(
       [...tokenize("parseJsonConfig")].sort(),

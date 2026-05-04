@@ -48,7 +48,10 @@ export function tokenize(text: string): ReadonlySet<string> {
     .flatMap((seg) => seg.split(/(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/));
   for (const segment of segments) {
     const word = segment.toLowerCase();
-    if (word.length >= 3 && !STOPWORDS.has(word)) {
+    // Length 2 is kept so 2-letter acronyms (`db`, `ui`, `ml`, `ci`) survive —
+    // dropping them used to give acronym-heavy descriptions zero lexical
+    // signal, which the detector then misread as "no drift".
+    if (word.length >= 2 && !STOPWORDS.has(word)) {
       tokens.add(word);
     }
   }
