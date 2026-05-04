@@ -14,6 +14,7 @@ import {
   writeJson,
 } from "./json-io.js";
 import { withPlaybookLock } from "./playbook-locks.js";
+import { withProposalLock } from "./proposal-locks.js";
 import type { NexusPlaybookStoreConfig } from "./types.js";
 
 const DEFAULT_BASE = "ace";
@@ -52,33 +53,17 @@ export function createNexusPlaybookProposalStore(
   const structuredPath = (playbookId: string): string =>
     `${base}/structured/${encodeAceId(playbookId)}.json`;
 
-  // Per-id in-process mutex. Closes the same-process read-modify-write race for
-  // both recordProposal and recordEvaluation.
+  // Per-id in-process mutex via the module-level registry. Shared across all
+  // instances with the same transport + basePath so cross-instance same-process
+  // races on the same proposal/evaluation id are also serialised.
   //
-  // CONCURRENCY LIMIT: global-uniqueness guarantees for recordProposal and
-  // recordEvaluation hold PER PROCESS only. Cross-process atomic create-if-absent
-  // requires Nexus-level CAS (etag / if_match), which @koi/nexus-client does not
-  // yet expose. Distributed deployments must funnel all proposal and evaluation
-  // writes through a single coordinator process. Tracking issue: #1469.
-  const idLocks = new Map<string, Promise<void>>();
-
-  function withIdLock<R>(id: string, fn: () => Promise<R>): Promise<R> {
-    const prev = idLocks.get(id) ?? Promise.resolve();
-    // let is justified: release must be assigned inside the Promise constructor callback
-    let release = (): void => {};
-    const next = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    idLocks.set(id, next);
-    const run = async (): Promise<R> => {
-      await prev;
-      try {
-        return await fn();
-      } finally {
-        release();
-      }
-    };
-    return run();
+  // CONCURRENCY LIMIT: global-uniqueness guarantees hold PER PROCESS only.
+  // Cross-process atomic create-if-absent requires Nexus-level CAS (etag /
+  // if_match), which @koi/nexus-client does not yet expose. Distributed
+  // deployments must funnel all proposal and evaluation writes through a single
+  // coordinator process. Tracking issue: #1469.
+  function withIdLock<R>(key: string, fn: () => Promise<R>): Promise<R> {
+    return withProposalLock(transport, base, key, fn);
   }
 
   return {

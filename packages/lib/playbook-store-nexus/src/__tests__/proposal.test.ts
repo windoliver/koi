@@ -468,6 +468,41 @@ describe("createNexusPlaybookProposalStore", () => {
     );
   });
 
+  // --- Fix 2 (round 8): module-level proposal/evaluation lock registry ---
+
+  test("two instances sharing same transport+basePath: concurrent recordProposal same id+different content — exactly one succeeds", async () => {
+    // Without module-level locks, two instances produce independent idLock maps.
+    // Both could proceed concurrently on the same proposal id, both reading
+    // "not exists", and both writing — the second overwrites the first silently.
+    // With module-level locks they share the registry and serialize.
+    const transport = createFakeNexusTransport();
+    const structured = createNexusStructuredPlaybookStore({ transport });
+    await structured.save(makeStructuredPlaybook("pb-cross", 1));
+    const storeA = createNexusPlaybookProposalStore({ transport });
+    const storeB = createNexusPlaybookProposalStore({ transport });
+
+    const p1 = makeProposal("p-cross", "pb-cross");
+    const p2 = {
+      ...makeProposal("p-cross", "pb-cross"),
+      reflection: { ...makeProposal("p-cross", "pb-cross").reflection, rootCause: "different" },
+    };
+
+    const results = await Promise.allSettled([
+      storeA.recordProposal(p1),
+      storeB.recordProposal(p2),
+    ]);
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+
+    // Exactly one succeeds and the other rejects with immutability error.
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(1);
+    const err = rejected[0];
+    if (err?.status === "rejected") {
+      expect(String(err.reason)).toContain("already recorded with different content");
+    }
+  });
+
   // --- Fix 3: listProposals propagates non-NOT_FOUND errors ---
 
   test("listProposals propagates EXTERNAL error from proposal file read", async () => {
