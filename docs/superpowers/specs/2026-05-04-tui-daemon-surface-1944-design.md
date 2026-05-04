@@ -666,19 +666,28 @@ if (status === "exited" || status === "crashed") return "terminal";
 if (status === "detached")    return "detached";
 if (status === "terminating") return "terminating";
 
-// status is "starting" or "running" → ownership + freshness from health.
-// `WorkerHealth.state` is `running | restarting | quarantined | stopping`
-// (no `starting` entry — pre-`started` workers don't appear in
-// health.workers[]). Use the registry status as the discriminator.
+// status is "starting" or "running" → ownership classification FIRST,
+// then freshness. Ownership precedes freshness because misclassifying a
+// foreign worker as a local pending/timeout is a trust-boundary bug:
+// operators see another process's startup as their own health failure.
 //
-// For `running`: workerSnap absent ⇒ foreign; present ⇒ derive from heartbeat.
-// For `starting`: there is no health entry by definition. Render `pending`
-// (no health to red-flag); kill is gated off in BgView regardless.
+// Ownership signals (intersection with the registry row's workerId):
+//   - `health.workers[].workerId` — workers that have emitted `started`.
+//   - `bridge.locallySpawnedIds` — Set tracking in-flight local spawns
+//     (workerId inserted at `supervisor.start()` call, removed on
+//     terminal `WorkerEvent`).
+//
+// `WorkerHealth.state` excludes `starting` (pre-`started` workers don't
+// appear in health.workers[]). For `starting` rows the ONLY ownership
+// proof is `locallySpawnedIds`. In registry-only mode (no supervisor
+// attached) `locallySpawnedIds` is empty by construction → every row
+// is foreign, including `starting`.
 if (row.status === "starting") {
+  if (!locallySpawnedIds.has(row.workerId)) return "foreign";
   const PENDING_GRACE_MS = 30_000;
   if (now - row.startedAt < PENDING_GRACE_MS) return "pending";
-  // Lingering "starting" past grace = backend never produced `started`.
-  // Visible signal so operator can off-path kill if hung.
+  // Locally-spawned, but lingering past grace = backend never produced
+  // `started`. Visible signal so operator can on-path kill via supervisor.stop.
   return "timeout";
 }
 
@@ -779,6 +788,19 @@ existing `attachRegistry` bridge already advances on every transition.
   `req.workerId`; each terminal `WorkerEvent.exited`/`crashed`
   removes it. This covers `starting` workers that haven't yet
   emitted `started` and therefore have no `health.workers[]` entry.
+  - **Self-healing under push-channel loss**: terminal removal
+    depends on `watchAll()` actually delivering events. If the
+    `workerEvents` ChannelLiveness flips to `stale` (push channel
+    down past the backoff threshold), `locallySpawnedIds` is
+    no longer authoritative — a worker may have crashed and its
+    `workerId` could be reused by a later spawn while the marker
+    sits stale. The bridge therefore **clears
+    `locallySpawnedIds` whenever `workerEvents` transitions to
+    `stale`**, and re-populates only on subsequent
+    `supervisor.start()` calls observed locally. While
+    `workerEvents` is `stale` or `degraded`, the kill path
+    treats `locallySpawnedIds` membership as advisory, not
+    authoritative — see the CAS rules in the kill flow.
 
 `supervisor.stop(workerId, ...)` already supports cancelling an
 in-flight spawn before any `started` event (see
@@ -863,18 +885,27 @@ atomically — the TUI does.
    I/O failure — that would prevent operators from clearing wedged
    local workers exactly when the state dir is degraded.
 
-   **The CAS is also bypassed for locally-spawned `starting` rows.**
-   A normal `starting → running` transition advances both `version`
-   (every registry write bumps it) AND `pid` (`0` → real pid). Those
-   are *startup progress* on the same worker incarnation, not a
-   replacement. With reconciler-only restart, a `starting` worker
-   cannot be swapped for a different incarnation under the same
-   `workerId` between confirm and stop without first transitioning
-   through a terminal state — and bridge-tracked
-   `locallySpawnedIds` removes the workerId on terminal events. So
-   for any row where `expectedPid === 0` (operator selected
-   pre-`started`), bypass the version/pid CAS and trust local
-   ownership.
+   **The CAS is bypassed for locally-spawned `starting` rows ONLY
+   while `workerEvents` is live.** A normal `starting → running`
+   transition advances both `version` (every registry write bumps
+   it) AND `pid` (`0` → real pid). Those are *startup progress* on
+   the same worker incarnation, not a replacement. With
+   reconciler-only restart, a `starting` worker cannot be swapped
+   for a different incarnation under the same `workerId` between
+   confirm and stop without first transitioning through a terminal
+   state — and bridge-tracked `locallySpawnedIds` removes the
+   workerId on terminal events.
+   The bypass therefore depends on `locallySpawnedIds` being
+   authoritative, which requires `watchAll()` to be delivering
+   terminal events in real time. **If `workerEvents` is `stale`
+   or `degraded`, the bypass is disabled**: a `starting`-row
+   kill in that mode requires the registry identity check to
+   pass (`expectedVersion` matches a live `starting` record).
+   This guarantees that a stale `locallySpawnedIds` marker
+   cannot authorize a kill against a reused workerId.
+   For any row where `expectedPid === 0` AND `workerEvents` is
+   `live`, bypass the version/pid CAS and trust
+   `locallySpawnedIds`. Otherwise enforce the standard CAS.
 
    - `result = await registry.describe(workerId as WorkerId)`.
    - **`result.ok: false`** — registry unreadable. Log + best-effort
@@ -882,10 +913,16 @@ atomically — the TUI does.
      proceed to step 5.
    - **`result.value === undefined`** — record unregistered. Log and
      proceed.
-   - **`expectedPid === 0` (kill of a `starting` row)** — bypass CAS
-     entirely; proceed to step 5. Local ownership via
-     `locallySpawnedIds` plus the absence of supervisor auto-restart
-     means there is no foreign-incarnation hazard.
+   - **`expectedPid === 0` (kill of a `starting` row) AND
+     `workerEvents` is `live`** — bypass CAS entirely; proceed
+     to step 5. Local ownership via `locallySpawnedIds` plus
+     the absence of supervisor auto-restart means there is no
+     foreign-incarnation hazard.
+   - **`expectedPid === 0` AND `workerEvents` is `stale`/`degraded`**
+     — `locallySpawnedIds` is not authoritative; require the
+     registry record to exist with `status === "starting"` and
+     `version === expectedVersion`. If verified, proceed; on
+     mismatch, abort with the "row stale" toast.
    - **`expectedPid > 0` AND
      (`result.value.version !== expectedVersion` OR
      `result.value.pid !== expectedPid`)** — registry shows a fresher
@@ -1025,11 +1062,13 @@ on the right side: governance segment, then supervisor segment, separator
     - Row with `status: "exited"` AND health entry `state: "running"`
       → `running`-derived freshness (rare race window where bridge
       hasn't caught up; health wins).
-  - **Registry status discriminates** when no live health override:
-    - `status: "starting"` row → `pending` within 30s grace, then
-      `timeout`. Never `foreign` even with no matching health entry —
-      L0 `WorkerHealth.state` excludes `starting` so absence is
-      expected.
+  - **Ownership-first classification for starting rows**:
+    - `status: "starting"` row, workerId IN `locallySpawnedIds` →
+      `pending` within 30s grace, then `timeout`.
+    - `status: "starting"` row, workerId NOT IN
+      `locallySpawnedIds` → `foreign` (regardless of grace
+      window). In registry-only mode (no supervisor) every
+      `starting` row is foreign.
     - `status: "running"` row not in `supervisor.health().workers` →
       `foreign` (never `timeout`).
   - Locally-owned `running` + `heartbeatDeadlineAt: undefined` →
@@ -1116,11 +1155,24 @@ on the right side: governance segment, then supervisor segment, separator
     `exited`/`crashed` from `watchAll()`. Test verifies `starting`
     rows are kill-eligible from this set even before the worker has
     a `health.workers[]` entry.
+  - **`locallySpawnedIds` cleared on `workerEvents` stale**:
+    fixture flips ChannelLiveness `workerEvents` to `stale` (push
+    channel down past backoff threshold). Test verifies the set is
+    purged. After re-attach (`workerEvents → live`), the next
+    `supervisor.start()` re-populates it. While stale, no
+    starting-row CAS bypass is permitted.
+  - **CAS bypass gated on `workerEvents` live**: `requestKill` for
+    a row with `expectedPid === 0` while `workerEvents === "live"`
+    skips the version/pid CAS. Same row with
+    `workerEvents === "stale"` or `"degraded"` enforces the
+    registry identity check; mismatched `version` aborts with the
+    "row stale" toast and does NOT call `supervisor.stop`.
   - **Spawn-cancel via supervisor.stop**: locally-spawned worker in
-    registry status `starting` (pid: 0). `requestKill` calls
-    `supervisor.stop(workerId, "user-requested")` which cancels the
-    in-flight spawn. Test verifies the supervisor releases the
-    worker slot and emits an `exited` event with cancel-shaped error.
+    registry status `starting` (pid: 0), `workerEvents` live.
+    `requestKill` calls `supervisor.stop(workerId, "user-requested")`
+    which cancels the in-flight spawn. Test verifies the supervisor
+    releases the worker slot and emits an `exited` event with
+    cancel-shaped error.
   - `supervisor.stop` returning `Result.ok: false` (NOT_FOUND,
     INVALID_STATE) surfaces as a toast; bridge does not mutate the
     registry. A subsequent legitimate event still flows through
@@ -1260,8 +1312,23 @@ calls. Existing daemon golden queries cover supervisor lifecycle.
 - [ ] `/bg` `k` flow terminates a locally-owned `running` worker and
       updates the row to `exited`.
 - [ ] `/bg` `k` flow cancels a locally-spawned `starting` worker via
-      `supervisor.stop()` (spawn-cancel path); the operator does not
-      need to wait for `spawnTimeoutMs`.
+      `supervisor.stop()` (spawn-cancel path) when `workerEvents` is
+      `live`; the operator does not need to wait for `spawnTimeoutMs`.
+- [ ] When `workerEvents` is `stale`/`degraded`, kill of a
+      `starting` row enforces the registry identity check
+      (no CAS bypass). Stale `locallySpawnedIds` cannot
+      authorize a kill against a workerId that may have been
+      reused after a missed terminal event.
+- [ ] On `workerEvents → stale` transition, bridge clears
+      `locallySpawnedIds`. Re-population only resumes on
+      subsequent local `supervisor.start()` calls after the push
+      channel recovers.
+- [ ] Freshness classification puts ownership before the
+      `starting` short-circuit: a registry row with
+      `status === "starting"` whose workerId is NOT in
+      `locallySpawnedIds` renders as `foreign` (never `pending`
+      or `timeout`). In registry-only mode every `starting` row
+      is foreign.
 - [ ] `/bg` `k` is disabled for `detached`/`terminating`/terminal
       rows AND for foreign rows (workerId not in
       `supervisor.health().workers` AND not in
