@@ -146,11 +146,13 @@ describe("createContextEngineSlotMiddleware", () => {
     expect(ctrl.current().identity.name).toBe("recovery");
   });
 
-  test("controller.current() stays pinned mid-turn so ECS reads agree with middleware", async () => {
-    // Round-8 regression: ECS reads (controller.current()) and middleware
-    // execution must reference the same engine throughout a turn, even when
-    // a host swaps mid-turn. Swaps only become visible after onAfterTurn
-    // releases the pin.
+  test("per-turn pin keeps in-flight turn on the pre-swap engine while next-request reads see the new active", async () => {
+    // ECS reads via the proxy provider aggregate active + pinnedEngines so
+    // mid-turn occupancy stays correct. The bare controller's API split is:
+    //   - current(turnId) → engine pinned for THAT turn (slot-middleware path)
+    //   - current()       → engine that will serve the NEXT request (active)
+    // Returning a LIFO-pinned engine from the no-arg path would collapse
+    // overlapping turns onto whichever pin landed last and hide the rest.
     const engineA: ContextEngine = {
       identity: { name: "a", version: "1.0.0" },
       prepare: (_c, m) => m,
@@ -164,20 +166,27 @@ describe("createContextEngineSlotMiddleware", () => {
     const handler: ModelHandler = async () =>
       ({ content: "ok", model: "x" }) satisfies ModelResponse;
 
-    const turnCtx = { metadata: {}, turnId: "t-mid" } as unknown as TurnContext;
+    const turnId = "t-mid" as Parameters<typeof ctrl.swap>[1]["turnId"];
+    const turnCtx = { metadata: {}, turnId } as unknown as TurnContext;
     await mw.wrapModelCall?.(turnCtx, { messages: [] }, handler);
+    expect(ctrl.current(turnId).identity.name).toBe("a");
     expect(ctrl.current().identity.name).toBe("a");
 
     ctrl.swap(engineB, {
       turnId: "run-1:t1" as Parameters<typeof ctrl.swap>[1]["turnId"],
       reason: "mid-turn",
     });
-    // Mid-turn: ECS-equivalent read MUST still return engine A, matching what
-    // wrapModelCall is using.
-    expect(ctrl.current().identity.name).toBe("a");
+    // Mid-turn: the per-turn lookup MUST still resolve to engine A so
+    // prepare()/onAfterTurn pair on the same engine, while the no-arg path
+    // already reflects the post-swap active so new turns route to B.
+    expect(ctrl.current(turnId).identity.name).toBe("a");
+    expect(ctrl.current().identity.name).toBe("b");
+    expect(ctrl.pinnedEngines().map((e) => e.identity.name)).toContain("a");
 
     await mw.onAfterTurn?.(turnCtx);
-    // After the turn ends, the swap becomes visible to the next caller.
+    // After the turn ends, the pin is released and the per-turn lookup
+    // collapses to active.
+    expect(ctrl.current(turnId).identity.name).toBe("b");
     expect(ctrl.current().identity.name).toBe("b");
   });
 
