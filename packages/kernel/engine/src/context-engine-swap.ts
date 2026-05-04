@@ -414,30 +414,49 @@ export function createContextEngineSwapController(
     };
   };
   const emit = (event: ContextEngineSwapEvent): void => {
-    // Listeners are best-effort observers (audit log, TUI, event bus).
-    // Re-throwing their errors would turn swap()/rollback() into partial
-    // commits — `active`/`history`/`priorStack` have already been mutated
-    // before emit() runs, so a thrown listener error would make the
-    // caller think the swap failed even though it has, in fact, applied.
-    // Swallow + console.error so observability gaps stay visible without
-    // corrupting the swap transaction.
+    // Run every listener regardless of individual failures so one buggy
+    // observer cannot starve the others. `active`/`history`/`priorStack`
+    // are already mutated by the time emit() runs; a thrown listener
+    // error must NOT be reported as "swap failed" because the swap has,
+    // in fact, applied.
+    //
+    // Delivery semantics depend on whether `onListenerError` was wired:
+    //   - hook set    → host owns durability; failures are routed to it
+    //                   (and the swap returns normally)
+    //   - hook unset  → fail loud: collect failures, finish notifying
+    //                   every other listener, then THROW an aggregated
+    //                   error so the caller learns the swap committed
+    //                   but observers never saw it. This makes
+    //                   "unaudited swap" unrepresentable by accident
+    //                   while still protecting the in-memory transaction.
+    const failures: { err: unknown }[] = [];
     for (const listener of listeners) {
       try {
         listener(event);
       } catch (err: unknown) {
         if (onListenerError !== undefined) {
-          // Route through the host-supplied hook so audit/event-bus code
-          // can persist the failure. Guard against the hook itself
-          // throwing — observability code must never break the swap.
           try {
             onListenerError(err, event);
           } catch (hookErr: unknown) {
             console.error("[context-engine-swap] onListenerError hook threw", hookErr);
           }
         } else {
-          console.error("[context-engine-swap] subscribe listener threw", err);
+          failures.push({ err });
         }
       }
+    }
+    if (failures.length > 0) {
+      // Throw AFTER every listener has been given a chance to see the
+      // event. Caller catches this knowing the swap is committed (the
+      // returned event was already published) and decides whether to
+      // tolerate the unaudited transition or trigger a rollback.
+      const aggregate = new Error(
+        `ContextEngineSwapController: ${failures.length} subscriber(s) threw on swap delivery; swap is committed but at least one observer did not record it. Pass SwapControllerOptions.onListenerError to opt into best-effort delivery.`,
+      );
+      (aggregate as Error & { causes?: readonly unknown[] }).causes = Object.freeze(
+        failures.map((f) => f.err),
+      );
+      throw aggregate;
     }
   };
 

@@ -216,6 +216,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // engine forever after a swap.
     const proxyResult = createContextEngineProxyProvider((tid) => ctrlRef.current(tid), {
       priority: COMPONENT_PRIORITY.BUNDLED,
+      getPinnedEngines: () => ctrlRef.pinnedEngines(),
     });
     contextEngineProxy = proxyResult.proxy;
     contextEngineProviders.push(proxyResult.provider);
