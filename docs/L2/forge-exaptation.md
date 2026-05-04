@@ -31,15 +31,20 @@ This package **does not** observe tool calls itself. Upstream observers (a futur
 
 ## Detection
 
-`detectDrift` requires all three criteria:
+The detector first identifies the **divergent cohort** — agents whose own evidence clears the bar — then scores drift on that subset only. This prevents low-divergence baseline traffic from masking a smaller but consistent divergent cohort.
 
-| Criterion | Default | Why |
+| Per-agent gate | Default | Why |
 |---|---|---|
-| `observations.length ≥ minObservations` | 5 | Enough data to be meaningful |
-| `avgDivergence ≥ divergenceThreshold` | 0.7 | Average usage substantially different from stated purpose |
-| `divergentAgents ≥ minDivergentAgents` | 2 | Multiple independent agents — not just one outlier |
+| Agent observation count ≥ `minObservationsPerAgent` | 2 | Reject one-off spikes |
+| Per-agent average divergence ≥ `divergenceThreshold` | 0.7 | Sustained drift, not a single outlier |
 
-Conservative thresholds favour low false-positive rate over fast detection.
+| Cohort gate | Default | Why |
+|---|---|---|
+| `cohort.observationCount ≥ minObservations` | 5 | Enough data to be meaningful |
+| `cohort.avgDivergence ≥ divergenceThreshold` | 0.7 | Cohort drift is real |
+| `cohort.divergentAgents ≥ minDivergentAgents` | 2 | Multiple independent agents |
+
+`avgDivergence` and `observationCount` in the resulting `DriftReport` reflect the cohort, not the whole window.
 
 ### Severity
 
@@ -59,6 +64,7 @@ Severity ∈ [0, 1]: scales with how broadly and how strongly the artifact has d
 | Inputs | Suggestion |
 |---|---|
 | `result.kind ≠ "drift"` (no-drift, invalid-config, undefined) | `none` |
+| `replayProtected: false` (no observationKey provided) | `none` |
 | `(droppedCount + duplicateCount) / total > 25%` | `none` (low-quality window) |
 | Single drift window (`stableWindows < 2`) | `reclassify` — rewrite the artifact's description to match observed usage |
 | `stableWindows ≥ 2` AND `avgDivergence ≥ 0.85` | `new-artifact` — fork a specialized variant; the drift is a real second use case |

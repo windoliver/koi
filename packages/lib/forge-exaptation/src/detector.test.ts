@@ -43,7 +43,13 @@ function expectNoDrift(result: DetectionResult): {
 }
 
 function asResult(report: DriftReport): DetectionResult {
-  return { kind: "drift", report, droppedCount: 0, duplicateCount: 0 };
+  return {
+    kind: "drift",
+    report,
+    droppedCount: 0,
+    duplicateCount: 0,
+    replayProtected: true,
+  };
 }
 
 describe("detectDrift", () => {
@@ -192,6 +198,30 @@ describe("detectDrift", () => {
     expect(result.kind).toBe("invalid-config");
   });
 
+  test("mixed traffic: divergent cohort surfaces even when baseline traffic dominates the window", () => {
+    // Regression: previously the global avgDivergence gate hid drift when
+    // most observations were normal-purpose. Now the detector scores drift
+    // on the divergent cohort only.
+    const observations = [
+      // Baseline traffic: 6 agents, 1 obs each, very low divergence.
+      obs("baseline-1", 0.05),
+      obs("baseline-2", 0.05),
+      obs("baseline-3", 0.05),
+      obs("baseline-4", 0.05),
+      obs("baseline-5", 0.05),
+      obs("baseline-6", 0.05),
+      // Divergent cohort: 2 agents, 2 obs each at 0.9.
+      obs("d1", 0.9),
+      obs("d1", 0.92),
+      obs("d2", 0.9),
+      obs("d2", 0.91),
+    ];
+    const report = expectDrift(detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS));
+    expect(report.divergentAgents).toBe(2);
+    expect(report.observationCount).toBe(4); // cohort only
+    expect(report.avgDivergence).toBeGreaterThan(0.85);
+  });
+
   test("empty agentId observation is dropped, surviving subset evaluated", () => {
     const observations = [
       obs("", 0.9),
@@ -214,7 +244,13 @@ describe("suggestAction", () => {
   test("no-drift result → no suggestion", () => {
     expect(
       suggestAction(
-        { kind: "no-drift", observationCount: 3, droppedCount: 0, duplicateCount: 0 },
+        {
+          kind: "no-drift",
+          observationCount: 3,
+          droppedCount: 0,
+          duplicateCount: 0,
+          replayProtected: true,
+        },
         5,
       ),
     ).toEqual({ kind: "none" });
@@ -283,8 +319,53 @@ describe("suggestAction", () => {
       report,
       droppedCount: 0,
       duplicateCount: 0,
+      replayProtected: true,
     };
     expect(suggestAction(result, 3).kind).toBe("new-artifact");
+  });
+});
+
+describe("suggestAction replay-protection gate", () => {
+  test("unprotected drift result (no observationKey) → none", () => {
+    // Detector run without observationKey produces replayProtected: false.
+    const result: DetectionResult = {
+      kind: "drift",
+      droppedCount: 0,
+      duplicateCount: 0,
+      replayProtected: false,
+      report: {
+        kind: "purpose_drift",
+        severity: 0.95,
+        avgDivergence: 0.92,
+        divergentAgents: 4,
+        observationCount: 5,
+      },
+    };
+    expect(suggestAction(result, 5)).toEqual({ kind: "none" });
+  });
+});
+
+describe("detectDrift throwing observationKey", () => {
+  test("a throwing keyFn drops the offending sample, not the whole window", () => {
+    const a1: UsagePurposeObservation = {
+      agentId: "a1",
+      observedAt: 1,
+      contextText: "ctx",
+      divergenceScore: 0.9,
+    };
+    const a2: UsagePurposeObservation = { ...a1, agentId: "a2" };
+    const observations = [a1, { ...a1, contextText: "throw-me" }, a1, a2, a2, a2];
+    const result = detectDrift(observations, {
+      ...DEFAULT_EXAPTATION_THRESHOLDS,
+      observationKey: (o) => {
+        if (o.contextText === "throw-me") throw new Error("boom");
+        return `${o.agentId}|${o.contextText}`;
+      },
+    });
+    expect(result.kind).not.toBe("invalid-config");
+    if (result.kind === "drift" || result.kind === "no-drift") {
+      expect(result.droppedCount).toBe(1);
+    }
   });
 });
 
@@ -416,6 +497,7 @@ describe("suggestAction quality gate", () => {
       kind: "drift",
       droppedCount: 3,
       duplicateCount: 0,
+      replayProtected: true,
       report: {
         kind: "purpose_drift",
         severity: 0.95,
@@ -433,6 +515,7 @@ describe("suggestAction quality gate", () => {
       kind: "drift",
       droppedCount: 1,
       duplicateCount: 0,
+      replayProtected: true,
       report: {
         kind: "purpose_drift",
         severity: 0.95,
@@ -449,6 +532,7 @@ describe("suggestAction quality gate", () => {
       kind: "drift",
       droppedCount: 0,
       duplicateCount: 4,
+      replayProtected: true,
       report: {
         kind: "purpose_drift",
         severity: 0.95,

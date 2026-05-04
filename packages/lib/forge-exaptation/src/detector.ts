@@ -31,14 +31,18 @@ export interface ExaptationThresholds {
   /** Severity multiplier weight applied to scaled drift score (in [0, 1]). */
   readonly confidenceWeight: number;
   /**
-   * Optional caller-supplied identity function for replay protection.
+   * Optional identity function for replay protection.
    *
-   * When supplied, observations sharing a return value are collapsed before
-   * scoring (first occurrence wins). Without it, no dedup runs — the
-   * detector trusts the input. This is opt-in by design: a default key like
-   * `(agentId, observedAt, contextText)` is unsafe because legitimate repeat
-   * tool calls in a busy workflow can collide on those fields and be
-   * silently discarded as "duplicates".
+   * When supplied, the detector dedupes per-agent (`(agentId, keyFn(o))`)
+   * before scoring so at-least-once delivery cannot fabricate drift evidence.
+   * A throwing `keyFn` is treated as a malformed observation — that sample
+   * is dropped, never the whole window.
+   *
+   * Without this, no dedup runs and the resulting `DetectionResult` is
+   * marked `replayProtected: false`. `suggestAction` will refuse to emit
+   * `reclassify` or `new-artifact` for unprotected results: a retried
+   * high-divergence event could otherwise satisfy `minObservations` AND
+   * `minDivergentAgents` purely from transport replays.
    */
   readonly observationKey?: ((o: UsagePurposeObservation) => string) | undefined;
 }
@@ -90,12 +94,15 @@ export type DetectionResult =
       readonly report: DriftReport;
       readonly droppedCount: number;
       readonly duplicateCount: number;
+      /** False when no `observationKey` was provided — `suggestAction` will refuse. */
+      readonly replayProtected: boolean;
     }
   | {
       readonly kind: "no-drift";
       readonly observationCount: number;
       readonly droppedCount: number;
       readonly duplicateCount: number;
+      readonly replayProtected: boolean;
     }
   | { readonly kind: "invalid-config"; readonly reason: string };
 
@@ -157,48 +164,62 @@ export function detectDrift(
     return { kind: "invalid-config", reason: configError };
   }
 
-  const valid = observations.filter(isObservationValid);
-  const droppedCount = observations.length - valid.length;
+  // Validate observations. A throwing `observationKey` callback is treated
+  // as malformed input — that sample is dropped, never the whole window.
+  const keyFn = thresholds.observationKey;
+  const validWithMaybeKey: UsagePurposeObservation[] = [];
+  for (const o of observations) {
+    if (!isObservationValid(o)) continue;
+    if (keyFn !== undefined && !canKey(o, keyFn)) continue;
+    validWithMaybeKey.push(o);
+  }
+  const droppedCount = observations.length - validWithMaybeKey.length;
 
-  // Dedup is opt-in AND scoped per-agent. The detector's whole job is to
-  // count agents who *independently* converge on the same repurposing, so a
-  // global dedup keyed on payload alone (e.g. `contextText`) would collapse
-  // identical outputs from different agents and erase exactly the cross-
-  // agent evidence the detector requires. Bucketing by agentId before dedup
-  // makes that misuse impossible regardless of which key the caller picks.
-  const unique =
-    thresholds.observationKey === undefined
-      ? valid
-      : dedupePerAgent(valid, thresholds.observationKey);
-  const duplicateCount = valid.length - unique.length;
+  // Dedup is opt-in AND scoped per-agent. Bucketing by agentId before dedup
+  // makes payload-only keys safe — identical outputs from different agents
+  // always survive.
+  const unique = keyFn === undefined ? validWithMaybeKey : dedupePerAgent(validWithMaybeKey, keyFn);
+  const duplicateCount = validWithMaybeKey.length - unique.length;
+  const replayProtected = keyFn !== undefined;
 
   const noDrift = (): DetectionResult => ({
     kind: "no-drift",
     observationCount: unique.length,
     droppedCount,
     duplicateCount,
+    replayProtected,
   });
 
   if (unique.length < thresholds.minObservations) return noDrift();
 
-  const avgDivergence = computeAverageDivergence(unique);
-  if (avgDivergence < thresholds.divergenceThreshold) return noDrift();
+  // Identify the divergent cohort first, then score drift on *their*
+  // observations only. The earlier "global avgDivergence ≥ threshold" gate
+  // hid real drift whenever low-divergence baseline traffic dominated the
+  // window — exactly the mixed-workload case this package must surface.
+  const cohort = computeDivergentCohort(unique, thresholds);
+  if (cohort.agentCount < thresholds.minDivergentAgents) return noDrift();
 
-  const divergentAgents = countDivergentAgents(unique, thresholds);
-  if (divergentAgents < thresholds.minDivergentAgents) return noDrift();
+  const cohortAvgDivergence = cohort.totalDivergence / cohort.observationCount;
+  if (cohortAvgDivergence < thresholds.divergenceThreshold) return noDrift();
 
-  const severity = computeSeverity(avgDivergence, divergentAgents, unique.length, thresholds);
+  const severity = computeSeverity(
+    cohortAvgDivergence,
+    cohort.agentCount,
+    cohort.observationCount,
+    thresholds,
+  );
 
   return {
     kind: "drift",
     droppedCount,
     duplicateCount,
+    replayProtected,
     report: {
       kind: "purpose_drift",
       severity,
-      avgDivergence,
-      divergentAgents,
-      observationCount: unique.length,
+      avgDivergence: cohortAvgDivergence,
+      divergentAgents: cohort.agentCount,
+      observationCount: cohort.observationCount,
     },
   };
 }
@@ -225,6 +246,11 @@ export function suggestAction(
   stableWindows: number,
 ): ExaptationSuggestion {
   if (input === undefined || input.kind !== "drift") return { kind: "none" };
+
+  // Replay protection is mandatory for action-bearing results. A
+  // detector run without `observationKey` could have scored retried
+  // events as independent evidence; refuse to recommend action.
+  if (!input.replayProtected) return { kind: "none" };
 
   // Quality gate is mandatory: refuse to act on a window where most
   // observations were dropped or collapsed as duplicates.
@@ -318,25 +344,41 @@ function isObservationValid(o: UsagePurposeObservation): boolean {
   return true;
 }
 
-function computeAverageDivergence(observations: readonly UsagePurposeObservation[]): number {
-  // let: sum accumulator
-  let sum = 0;
-  for (const o of observations) sum += o.divergenceScore;
-  return sum / observations.length;
+function canKey(
+  o: UsagePurposeObservation,
+  keyFn: (o: UsagePurposeObservation) => string,
+): boolean {
+  try {
+    keyFn(o);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+interface DivergentCohort {
+  /** Number of agents whose own drift evidence cleared the bar. */
+  readonly agentCount: number;
+  /** Total observations attributed to those agents. */
+  readonly observationCount: number;
+  /** Sum of divergence scores across those observations. */
+  readonly totalDivergence: number;
 }
 
 /**
- * Count agents whose *own* drift evidence clears the bar:
+ * Identify the cohort of agents whose *own* drift evidence clears the bar:
  *   - at least `minObservationsPerAgent` observations attributed to them, AND
  *   - their personal average divergence ≥ `divergenceThreshold`.
  *
- * Rejects the "one-off spike from a second agent fakes multi-agent drift"
- * failure mode: a single borderline observation no longer counts as evidence.
+ * Returns the count and the aggregate divergence/observation totals for that
+ * cohort only. Drift is then scored on this subset, NOT on the whole window —
+ * preventing low-divergence baseline traffic from masking a smaller but
+ * consistent divergent cohort.
  */
-function countDivergentAgents(
+function computeDivergentCohort(
   observations: readonly UsagePurposeObservation[],
   thresholds: ExaptationThresholds,
-): number {
+): DivergentCohort {
   const sums = new Map<string, number>();
   const counts = new Map<string, number>();
   for (const o of observations) {
@@ -344,14 +386,19 @@ function countDivergentAgents(
     counts.set(o.agentId, (counts.get(o.agentId) ?? 0) + 1);
   }
 
-  // let: divergent agent counter
-  let divergent = 0;
+  // let: cohort accumulators
+  let agentCount = 0;
+  let observationCount = 0;
+  let totalDivergence = 0;
   for (const [agentId, count] of counts) {
     if (count < thresholds.minObservationsPerAgent) continue;
     const sum = sums.get(agentId) ?? 0;
-    if (sum / count >= thresholds.divergenceThreshold) divergent++;
+    if (sum / count < thresholds.divergenceThreshold) continue;
+    agentCount++;
+    observationCount += count;
+    totalDivergence += sum;
   }
-  return divergent;
+  return { agentCount, observationCount, totalDivergence };
 }
 
 function computeSeverity(
