@@ -298,8 +298,11 @@ interface BgSessionRow {
    * `timeout`     — heartbeat opt-in, heartbeat past 2× deadline interval.
    * `unmonitored` — heartbeat NOT opted in (permanent: heartbeat fields
    *                 absent from the supervisor's published health snapshot).
-   *                 Renders neutral. NEVER colored as a failure — absence
-   *                 of heartbeat ≠ unhealthy.
+   *                 Renders neutral. NEVER colored as a failure.
+   * `foreign`     — registry row exists but worker is not owned by the
+   *                 local supervisor. `health()` lookup intentionally
+   *                 misses; freshness is unknowable from this process.
+   *                 Renders neutral with "foreign" label. NEVER red.
    * `terminating` — record status is `terminating`; yellow "kill in
    *                 flight" with `signaledAt` age.
    * `detached`    — record status is `detached`; freshness neutral.
@@ -311,6 +314,7 @@ interface BgSessionRow {
     | "stale"
     | "timeout"
     | "unmonitored"
+    | "foreign"
     | "terminating"
     | "detached"
     | "terminal";
@@ -476,8 +480,17 @@ This rules out the failure mode where a dead bridge silently presents as
 | `health.status` ok→degraded | health diff | `⚠ supervisor degraded: <first reason>` |
 | `health.status` ok→unhealthy | health diff | `⚠ supervisor unhealthy: <first reason>` |
 
-Dedup key: `${workerId}:${signalKind}`. TTL 30s. Reuses existing
-governance dedup helper if extractable; otherwise a tiny local map.
+Dedup key: `${workerId}:${incarnation}:${signalKind}` where
+`incarnation = startedAt` (the per-process start timestamp from
+`WorkerEvent.started.at`, persisted in `BackgroundSessionRecord.startedAt`).
+TTL 30s. The incarnation component ensures rapid crash loops (a worker
+that respawns under the same `workerId` and crashes again) emit a fresh
+toast per process incarnation. Without it, a transient-restart storm
+inside the 30s window collapses into a single toast — exactly when
+operators most need to see each crash.
+
+Reuses existing governance dedup helper if extractable; otherwise a tiny
+local map.
 
 Health-diff inference rule: bridge keeps the previous `SupervisorHealth`
 snapshot in memory and computes per-worker state transitions on each
@@ -502,11 +515,29 @@ if (status === "exited" || status === "crashed") return "terminal";
 if (status === "detached")    return "detached";
 if (status === "terminating") return "terminating";
 
-// status is "starting" or "running" → derive from per-worker health snapshot
+// status is "starting" or "running" → ownership FIRST, then health.
+const localOwnedIds = new Set(supervisor.list().map(p => p.workerId));
+const isLocallyOwned = localOwnedIds.has(row.workerId);
+
 const workerSnap = health.workers.find(w => w.workerId === row.workerId);
+
+// Foreign row: registry has a record from another supervisor process.
+// We do NOT have authoritative health for it; absence of workerSnap is
+// EXPECTED, never a schema mismatch. Render neutral, never red.
+if (!isLocallyOwned) return "foreign";
+
+// Locally owned but missing from health snapshot — THAT is a contract
+// mismatch. Fail-closed: pending within grace, then timeout.
+if (workerSnap === undefined) {
+  warnSchemaMismatchOnce();
+  const PENDING_GRACE_MS = 30_000;
+  if (now - row.startedAt < PENDING_GRACE_MS) return "pending";
+  return "timeout";
+}
+
 // `health.workers` items are of type `WorkerHealth` (per @koi/core/daemon
-// — `SupervisorHealth.workers: readonly WorkerHealth[]`). NOT
-// `WorkerSnapshot`. The PR extends `WorkerHealth` with one new boolean.
+// — `SupervisorHealth.workers: readonly WorkerHealth[]`).
+// The PR extends `WorkerHealth` with one new boolean.
 
 // Heartbeat opt-in classification — fail closed.
 // Required L0 addition: `WorkerHealth.heartbeatOptedIn: boolean`. Until
@@ -576,6 +607,7 @@ Render mapping in `BgView`:
 | `stale` | yellow | heartbeat lagging |
 | `timeout` | red | heartbeat past 2× deadline (live worker, dead-or-stuck) |
 | `unmonitored` | neutral (gray, italic) | heartbeat not opted in — health not knowable from telemetry |
+| `foreign` | neutral (gray, italic) + "foreign" label | row owned by another supervisor process; not killable from this TUI |
 | `terminating` | yellow + spinner | kill in flight (`signaledAt` age in tooltip) |
 | `detached` | blue | tmux/remote backend let go; needs reattach |
 | `terminal` | gray | `exited`/`crashed`; row kept until retention sweep |
@@ -660,6 +692,12 @@ For supported rows (`running`/`starting`):
 5a. **Phase 1 — terminating claim (no signaledAt yet)**:
 
 ```typescript
+// Capture pre-claim status so a failed stop can revert to the EXACT
+// prior status (not assume "running"). Action gate already proved
+// status ∈ {running, starting}, but a worker mid-startup may have
+// any of those.
+const preClaimStatus = current.status;  // "running" | "starting"
+
 const claim = await registry.update(workerId as WorkerId, {
   status: "terminating",
   clearSignaledAt: true,                   // wipe any stale prior stamp
@@ -690,7 +728,7 @@ if (!stopResult.ok) {
   // strand. CAS-guarded; if the bridge already advanced state past
   // our claim, leave it.
   await registry.update(workerId as WorkerId, {
-    status: "running",
+    status: preClaimStatus,                 // EXACT prior status, not "running"
     expectedVersion: claimedVersion,
     expectedPid: current.pid,
   });
@@ -796,6 +834,12 @@ on the right side: governance segment, then supervisor segment, separator
   stale, timeout, **unmonitored**, terminating, detached, terminal):
   - heartbeat-opt-out worker (`heartbeatOptedIn: false`) → `unmonitored`
     (never `timeout`).
+  - Foreign row (workerId not in `supervisor.list()`) → `foreign`
+    (never `timeout`, no schema-mismatch warn). Test fixture: a
+    BackgroundSessionRecord present in registry but absent from
+    supervisor.list AND absent from health.workers.
+  - Locally-owned row missing from health.workers → schema-mismatch
+    warn fires once, freshness pending → timeout (fail-closed).
   - heartbeat-opt-in pre-first-beat → `pending` for 30s grace, then
     `timeout`.
   - **Fail-closed**: `heartbeatOptedIn` field missing from snapshot
@@ -831,6 +875,10 @@ on the right side: governance segment, then supervisor segment, separator
 - **`daemon-bridge.test.ts`** —
   - `WorkerEvent.crashed` triggers `push_toast` + `push_supervisor_event`;
     same crash within 30s deduped to 1 toast.
+  - **Incarnation-aware dedup**: a worker that crashes, restarts under
+    same `workerId` with new `startedAt`, and crashes again within 30s
+    fires TWO toasts (one per incarnation). Verified via
+    `${workerId}:${startedAt}:${signalKind}` key.
   - `WorkerHealth.state` `running→quarantined` (health diff) fires toast
     once per transition; subsequent polls in `quarantined` do not retoast.
   - `running→restarting` (health diff) fires info toast (not warning).
@@ -845,9 +893,11 @@ on the right side: governance segment, then supervisor segment, separator
     Asserted via call-order spy on registry.update + supervisor.stop.
   - `requestKill` aborts on Phase 1 CAS conflict — never calls
     `supervisor.stop` if registry update returns `CONFLICT`.
-  - `requestKill` reverts `terminating → running` (CAS-guarded) when
-    `supervisor.stop` returns `Result.ok: false`. `signaledAt` is never
-    written in this case (preserves crash-classification accuracy).
+  - `requestKill` reverts `terminating → preClaimStatus` (EXACT prior
+    status, CAS-guarded) when `supervisor.stop` returns `Result.ok:
+    false`. Covers both `running → terminating → running` and
+    `starting → terminating → starting`. `signaledAt` is never written
+    in this case (preserves crash-classification accuracy).
   - `requestKill` refuses for foreign rows: when row's `workerId` is
     NOT in `supervisor.list().map(p => p.workerId)`, the action is
     gated off in BgView (no `k` available). Bridge `requestKill` also
