@@ -500,6 +500,28 @@ describe("suggestAction quality gate", () => {
   });
 });
 
+describe("deep-freeze tamper resistance", () => {
+  test("nested report fields are frozen — mutation cannot escalate suggestion", () => {
+    // Build a sub-fork-threshold drift result. Without deep freeze, mutating
+    // result.report.avgDivergence to push it above 0.85 would let suggestAction
+    // return new-artifact on tampered data.
+    const result = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.75 });
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      expect(() => {
+        // Strict mode (TS modules are strict) throws on writes to frozen.
+        (result.report as { avgDivergence: number }).avgDivergence = 0.99;
+      }).toThrow();
+      expect(() => {
+        (result.report as { severity: number }).severity = 1;
+      }).toThrow();
+      // Genuine value was not overwritten.
+      expect(result.report.avgDivergence).toBeLessThan(0.85);
+      expect(suggestAction(result, 5).kind).toBe("reclassify");
+    }
+  });
+});
+
 describe("deterministic dedup conflict resolution", () => {
   test("conflicting (agentId, eventId) duplicates resolve by max divergenceScore (not by arrival order)", () => {
     // Same (agentId, eventId) twice with different scores. Old first-write-

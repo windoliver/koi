@@ -28,6 +28,42 @@ const STOPWORDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Explicit allowlist of 2-letter tokens to keep. Without this, every
+ * 2-character segment survives — including common short English words like
+ * `to`, `of`, `in`, `on`, `is`, `it`, `at`, `by` — which then count toward
+ * Jaccard overlap and silently reduce divergence between unrelated texts,
+ * masking real drift on ordinary prose. Allowlisting recognised technical
+ * acronyms keeps the signal we wanted (`db`, `ui`, `ml`, `ci`, …) without
+ * pulling in noise.
+ */
+const TWO_LETTER_ALLOWLIST: ReadonlySet<string> = new Set([
+  "ai",
+  "ci",
+  "cd",
+  "cs",
+  "db",
+  "dx",
+  "fs",
+  "go",
+  "hr",
+  "io",
+  "ip",
+  "js",
+  "ml",
+  "ms",
+  "os",
+  "py",
+  "qa",
+  "rs",
+  "sh",
+  "sql",
+  "ts",
+  "ui",
+  "ux",
+  "vm",
+]);
+
+/**
  * Split identifier-shaped text into lowercase keyword tokens.
  *
  * Splits on:
@@ -35,10 +71,11 @@ const STOPWORDS: ReadonlySet<string> = new Set([
  *   - camelCase / PascalCase boundaries (`readFile` → `read`, `file`),
  *   - acronym↔word boundaries (`HTTPRequest` → `http`, `request`).
  *
- * Drops stopwords and tokens shorter than 3 chars. Without this, function
- * names and file paths like `read_file`, `readFile`, or `parse_json_config`
- * survive as single opaque tokens and inflate Jaccard divergence between
- * semantically related descriptions.
+ * Drops stopwords and tokens shorter than 3 chars by default. 2-letter
+ * tokens survive only when allowlisted (`db`, `ui`, `ml`, `ci`, …) — without
+ * the allowlist, common 2-char English words like `to`, `of`, `in`, `on`,
+ * `is`, `it` would slip through and dilute Jaccard divergence between
+ * unrelated descriptions, masking real drift.
  */
 export function tokenize(text: string): ReadonlySet<string> {
   const tokens = new Set<string>();
@@ -48,10 +85,10 @@ export function tokenize(text: string): ReadonlySet<string> {
     .flatMap((seg) => seg.split(/(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/));
   for (const segment of segments) {
     const word = segment.toLowerCase();
-    // Length 2 is kept so 2-letter acronyms (`db`, `ui`, `ml`, `ci`) survive —
-    // dropping them used to give acronym-heavy descriptions zero lexical
-    // signal, which the detector then misread as "no drift".
-    if (word.length >= 2 && !STOPWORDS.has(word)) {
+    if (STOPWORDS.has(word)) continue;
+    if (word.length >= 3) {
+      tokens.add(word);
+    } else if (word.length === 2 && TWO_LETTER_ALLOWLIST.has(word)) {
       tokens.add(word);
     }
   }

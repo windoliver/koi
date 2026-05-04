@@ -31,6 +31,20 @@ describe("tokenize", () => {
     expect([...tokenize("db ui ml ci tool")].sort()).toEqual(["ci", "db", "ml", "tool", "ui"]);
   });
 
+  test("drops common 2-letter English words (to, of, in, on, is, it)", () => {
+    // These would silently reduce Jaccard divergence on ordinary prose.
+    expect([...tokenize("to of in on is it at by tool")].sort()).toEqual(["tool"]);
+  });
+
+  test("unrelated short prose still scores as fully divergent", () => {
+    // Regression: when 2-char filler words slipped through, two semantically
+    // unrelated short sentences could overlap on `to`, `of`, `is`, etc., and
+    // produce divergence well below 1, masking real drift.
+    const a = tokenize("read configuration files in the project root");
+    const b = tokenize("send notifications to slack on incident");
+    expect(computeJaccardDistance(a, b)).toBe(1);
+  });
+
   test("snake_case and camelCase tokenize identically", () => {
     expect([...tokenize("parse_json_config")].sort()).toEqual(
       [...tokenize("parseJsonConfig")].sort(),

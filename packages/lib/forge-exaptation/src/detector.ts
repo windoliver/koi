@@ -69,8 +69,20 @@ export const DEFAULT_EXAPTATION_THRESHOLDS: ExaptationThresholds = {
 const DETECTION_BRAND = Symbol("forge-exaptation/DetectionResult");
 type Branded<T> = T & { readonly [DETECTION_BRAND]: true };
 
+function deepFreeze<T>(value: T): T {
+  if (value === null || typeof value !== "object") return value;
+  for (const key of Object.keys(value as object)) {
+    deepFreeze((value as Record<string, unknown>)[key]);
+  }
+  return Object.freeze(value);
+}
+
 function brand<T>(result: T): Branded<T> {
-  return Object.freeze({ ...(result as object), [DETECTION_BRAND]: true }) as Branded<T>;
+  // Deep-freeze the entire object graph. Shallow freezing leaves nested
+  // fields (e.g. result.report.avgDivergence) mutable, so a caller could
+  // tamper with cohort numbers after detectDrift returned and cause
+  // suggestAction to recommend irreversible actions on tampered data.
+  return deepFreeze({ ...(result as object), [DETECTION_BRAND]: true }) as Branded<T>;
 }
 
 function isBranded(input: unknown): boolean {
