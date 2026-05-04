@@ -10,6 +10,28 @@ describe("tokenize", () => {
   test("returns empty set for empty input", () => {
     expect(tokenize("").size).toBe(0);
   });
+
+  test("splits snake_case into individual words", () => {
+    expect([...tokenize("read_file_contents")].sort()).toEqual(["contents", "file", "read"]);
+  });
+
+  test("splits camelCase into individual words", () => {
+    expect([...tokenize("readFileContents")].sort()).toEqual(["contents", "file", "read"]);
+  });
+
+  test("splits PascalCase + acronyms cleanly", () => {
+    expect([...tokenize("HTTPRequestHandler")].sort()).toEqual(["handler", "http", "request"]);
+  });
+
+  test("splits hyphenated identifiers", () => {
+    expect([...tokenize("parse-json-config")].sort()).toEqual(["config", "json", "parse"]);
+  });
+
+  test("snake_case and camelCase tokenize identically", () => {
+    expect([...tokenize("parse_json_config")].sort()).toEqual(
+      [...tokenize("parseJsonConfig")].sort(),
+    );
+  });
 });
 
 describe("computeJaccardDistance", () => {

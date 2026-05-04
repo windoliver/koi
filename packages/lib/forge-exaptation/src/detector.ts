@@ -99,23 +99,27 @@ export function detectDrift(
   thresholds: ExaptationThresholds,
 ): DriftReport | undefined {
   if (!areThresholdsValid(thresholds)) return undefined;
-  if (!areObservationsValid(observations)) return undefined;
-  if (observations.length < thresholds.minObservations) return undefined;
 
-  const avgDivergence = computeAverageDivergence(observations);
+  // Filter, don't fail-closed: a single malformed observation must not
+  // suppress the whole drift window. Bad inputs are dropped, the rest
+  // are scored against the same thresholds.
+  const valid = observations.filter(isObservationValid);
+  if (valid.length < thresholds.minObservations) return undefined;
+
+  const avgDivergence = computeAverageDivergence(valid);
   if (avgDivergence < thresholds.divergenceThreshold) return undefined;
 
-  const divergentAgents = countDivergentAgents(observations, thresholds);
+  const divergentAgents = countDivergentAgents(valid, thresholds);
   if (divergentAgents < thresholds.minDivergentAgents) return undefined;
 
-  const severity = computeSeverity(avgDivergence, divergentAgents, observations.length, thresholds);
+  const severity = computeSeverity(avgDivergence, divergentAgents, valid.length, thresholds);
 
   return {
     kind: "purpose_drift",
     severity,
     avgDivergence,
     divergentAgents,
-    observationCount: observations.length,
+    observationCount: valid.length,
   };
 }
 
@@ -158,11 +162,9 @@ function areThresholdsValid(t: ExaptationThresholds): boolean {
   );
 }
 
-function areObservationsValid(observations: readonly UsagePurposeObservation[]): boolean {
-  for (const o of observations) {
-    if (!isUnitInterval(o.divergenceScore)) return false;
-    if (typeof o.agentId !== "string" || o.agentId.length === 0) return false;
-  }
+function isObservationValid(o: UsagePurposeObservation): boolean {
+  if (!isUnitInterval(o.divergenceScore)) return false;
+  if (typeof o.agentId !== "string" || o.agentId.length === 0) return false;
   return true;
 }
 

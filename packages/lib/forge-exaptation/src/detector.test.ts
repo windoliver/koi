@@ -82,24 +82,43 @@ describe("detectDrift", () => {
     expect(detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS)).toBeUndefined();
   });
 
-  test("non-finite divergence score → no drift (no NaN report)", () => {
+  test("non-finite observation is dropped, valid subset still scored", () => {
+    // Regression: a single malformed sample must not suppress the whole
+    // window. The remaining 5 valid observations clear all thresholds.
     const observations = [
       obs("a1", Number.NaN),
-      obs("a2", 0.9),
+      obs("a1", 0.9),
       obs("a1", 0.9),
       obs("a2", 0.9),
-      obs("a1", 0.9),
+      obs("a2", 0.9),
+      obs("a2", 0.9),
     ];
-    expect(detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS)).toBeUndefined();
+    const report = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(report).toBeDefined();
+    expect(report?.observationCount).toBe(5);
+    expect(report?.divergentAgents).toBe(2);
   });
 
-  test("out-of-range divergence score → no drift", () => {
+  test("out-of-range observation is dropped, valid subset still scored", () => {
     const observations = [
       obs("a1", 1.5),
       obs("a1", 0.9),
-      obs("a2", 0.9),
-      obs("a2", 0.9),
       obs("a1", 0.9),
+      obs("a2", 0.9),
+      obs("a2", 0.9),
+      obs("a2", 0.9),
+    ];
+    const report = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(report).toBeDefined();
+    expect(report?.observationCount).toBe(5);
+  });
+
+  test("after dropping invalid observations, fewer than minObservations → no drift", () => {
+    const observations = [
+      obs("a1", Number.NaN),
+      obs("a2", Number.POSITIVE_INFINITY),
+      obs("a1", 0.9),
+      obs("a2", 0.9),
     ];
     expect(detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS)).toBeUndefined();
   });
@@ -150,15 +169,18 @@ describe("detectDrift", () => {
     ).toBeUndefined();
   });
 
-  test("empty agentId → no drift", () => {
+  test("empty agentId observation is dropped, surviving subset evaluated", () => {
     const observations = [
       obs("", 0.9),
-      obs("a2", 0.9),
+      obs("a1", 0.9),
       obs("a1", 0.9),
       obs("a2", 0.9),
-      obs("a1", 0.9),
+      obs("a2", 0.9),
+      obs("a2", 0.9),
     ];
-    expect(detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS)).toBeUndefined();
+    const report = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(report).toBeDefined();
+    expect(report?.observationCount).toBe(5);
   });
 });
 
