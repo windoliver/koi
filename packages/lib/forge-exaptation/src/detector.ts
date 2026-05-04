@@ -64,13 +64,27 @@ export interface DriftReport {
  * leaving too few valid samples). Callers that previously treated `undefined`
  * as "no drift" silently masked detector failures — the explicit shape lets
  * them branch on `kind` and emit telemetry / fail closed.
+ *
+ * Both `drift` and `no-drift` carry sample-quality telemetry:
+ *   - `droppedCount`     — observations rejected as malformed.
+ *   - `duplicateCount`   — observations collapsed by dedup (replay protection).
+ *   - `observationCount` — distinct, valid observations actually scored.
+ *
+ * A `drift` result with a high `droppedCount` or `duplicateCount` relative to
+ * the input length is a quality red flag — callers can refuse to act on it.
  */
 export type DetectionResult =
-  | { readonly kind: "drift"; readonly report: DriftReport }
+  | {
+      readonly kind: "drift";
+      readonly report: DriftReport;
+      readonly droppedCount: number;
+      readonly duplicateCount: number;
+    }
   | {
       readonly kind: "no-drift";
       readonly observationCount: number;
       readonly droppedCount: number;
+      readonly duplicateCount: number;
     }
   | { readonly kind: "invalid-config"; readonly reason: string };
 
@@ -133,35 +147,45 @@ export function detectDrift(
   }
 
   // Filter, don't fail-closed: a single malformed observation must not
-  // suppress the whole drift window. Bad inputs are dropped, the rest
-  // are scored against the same thresholds.
+  // suppress the whole drift window.
   const valid = observations.filter(isObservationValid);
   const droppedCount = observations.length - valid.length;
 
+  // Dedup by (agentId, observedAt, contextText). At-least-once ingestion or
+  // retried event delivery would otherwise let the same underlying tool call
+  // be counted multiple times, manufacturing drift evidence and stable-window
+  // gates from transport replays. Callers that need a different identity key
+  // should pre-collapse before calling.
+  const unique = dedupeObservations(valid);
+  const duplicateCount = valid.length - unique.length;
+
   const noDrift = (): DetectionResult => ({
     kind: "no-drift",
-    observationCount: valid.length,
+    observationCount: unique.length,
     droppedCount,
+    duplicateCount,
   });
 
-  if (valid.length < thresholds.minObservations) return noDrift();
+  if (unique.length < thresholds.minObservations) return noDrift();
 
-  const avgDivergence = computeAverageDivergence(valid);
+  const avgDivergence = computeAverageDivergence(unique);
   if (avgDivergence < thresholds.divergenceThreshold) return noDrift();
 
-  const divergentAgents = countDivergentAgents(valid, thresholds);
+  const divergentAgents = countDivergentAgents(unique, thresholds);
   if (divergentAgents < thresholds.minDivergentAgents) return noDrift();
 
-  const severity = computeSeverity(avgDivergence, divergentAgents, valid.length, thresholds);
+  const severity = computeSeverity(avgDivergence, divergentAgents, unique.length, thresholds);
 
   return {
     kind: "drift",
+    droppedCount,
+    duplicateCount,
     report: {
       kind: "purpose_drift",
       severity,
       avgDivergence,
       divergentAgents,
-      observationCount: valid.length,
+      observationCount: unique.length,
     },
   };
 }
@@ -230,6 +254,26 @@ function isObservationValid(o: UsagePurposeObservation): boolean {
   if (!isUnitInterval(o.divergenceScore)) return false;
   if (typeof o.agentId !== "string" || o.agentId.length === 0) return false;
   return true;
+}
+
+/**
+ * Collapse observations that share `(agentId, observedAt, contextText)`. This
+ * is the smallest identity key that resists at-least-once delivery without
+ * requiring upstream observers to mint a stable observation ID. Order is
+ * preserved (first occurrence wins).
+ */
+function dedupeObservations(
+  observations: readonly UsagePurposeObservation[],
+): readonly UsagePurposeObservation[] {
+  const seen = new Set<string>();
+  const out: UsagePurposeObservation[] = [];
+  for (const o of observations) {
+    const key = `${o.agentId} ${String(o.observedAt)} ${o.contextText}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(o);
+  }
+  return out;
 }
 
 function computeAverageDivergence(observations: readonly UsagePurposeObservation[]): number {

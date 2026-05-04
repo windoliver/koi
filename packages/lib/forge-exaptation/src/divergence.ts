@@ -57,10 +57,20 @@ export function tokenize(text: string): ReadonlySet<string> {
 
 /**
  * Jaccard distance between two token sets.
- * 0 = identical, 1 = disjoint. Two empty sets return 0 (no signal when no data).
+ *
+ * Returns:
+ *   - `0`   when sets are identical and non-empty,
+ *   - `1`   when sets are fully disjoint,
+ *   - `NaN` when either side is empty (no lexical signal).
+ *
+ * Returning `NaN` for empty input is deliberate: previously the empty/empty
+ * case returned `0`, which the detector then read as "perfect match" and
+ * suppressed real drift on terse or acronym-heavy descriptions. Callers
+ * should treat `NaN` as "insufficient signal — quarantine this observation"
+ * rather than as drift evidence.
  */
 export function computeJaccardDistance(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
-  if (a.size === 0 && b.size === 0) return 0;
+  if (a.size === 0 || b.size === 0) return Number.NaN;
 
   // let: intersection accumulator
   let intersection = 0;
@@ -69,6 +79,5 @@ export function computeJaccardDistance(a: ReadonlySet<string>, b: ReadonlySet<st
     if (larger.has(token)) intersection++;
   }
   const union = a.size + b.size - intersection;
-  if (union === 0) return 0;
   return 1 - intersection / union;
 }

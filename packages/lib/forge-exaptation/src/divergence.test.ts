@@ -47,8 +47,10 @@ describe("computeJaccardDistance", () => {
     expect(computeJaccardDistance(a, b)).toBe(1);
   });
 
-  test("returns 0 for two empty sets (no signal)", () => {
-    expect(computeJaccardDistance(new Set(), new Set())).toBe(0);
+  test("returns NaN when either set is empty (no lexical signal)", () => {
+    expect(computeJaccardDistance(new Set(), new Set())).toBeNaN();
+    expect(computeJaccardDistance(new Set(["a", "b"]), new Set())).toBeNaN();
+    expect(computeJaccardDistance(new Set(), new Set(["a", "b"]))).toBeNaN();
   });
 
   test("partial overlap is between 0 and 1", () => {

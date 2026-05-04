@@ -8,12 +8,22 @@ import {
   suggestAction,
 } from "./detector.js";
 
+// Each obs() call gets a unique observedAt so dedup never collapses
+// independently-fed observations in tests. Real callers either control
+// observedAt themselves or rely on monotonic clocks.
+let obsClock = 0;
 function obs(
   agentId: string,
   divergenceScore: number,
-  contextText = `ctx-${agentId}-${divergenceScore.toFixed(2)}`,
+  contextText?: string,
 ): UsagePurposeObservation {
-  return { agentId, divergenceScore, contextText, observedAt: 1 };
+  obsClock += 1;
+  return {
+    agentId,
+    divergenceScore,
+    contextText: contextText ?? `ctx-${agentId}-${String(obsClock)}`,
+    observedAt: obsClock,
+  };
 }
 
 function expectDrift(result: DetectionResult): DriftReport {
@@ -197,9 +207,12 @@ describe("suggestAction", () => {
   });
 
   test("no-drift result → no suggestion", () => {
-    expect(suggestAction({ kind: "no-drift", observationCount: 3, droppedCount: 0 }, 5)).toEqual({
-      kind: "none",
-    });
+    expect(
+      suggestAction(
+        { kind: "no-drift", observationCount: 3, droppedCount: 0, duplicateCount: 0 },
+        5,
+      ),
+    ).toEqual({ kind: "none" });
   });
 
   test("invalid-config result → no suggestion", () => {
@@ -260,7 +273,68 @@ describe("suggestAction", () => {
       divergentAgents: 3,
       observationCount: 8,
     };
-    const result: DetectionResult = { kind: "drift", report };
+    const result: DetectionResult = {
+      kind: "drift",
+      report,
+      droppedCount: 0,
+      duplicateCount: 0,
+    };
     expect(suggestAction(result, 3).kind).toBe("new-artifact");
+  });
+});
+
+describe("detectDrift dedup + telemetry", () => {
+  test("duplicate observations are collapsed (replay protection)", () => {
+    // The same (agentId, observedAt, contextText) tuple repeated 5 times
+    // must not satisfy minObservations.
+    const dup: UsagePurposeObservation = {
+      agentId: "a1",
+      observedAt: 1234,
+      contextText: "ctx",
+      divergenceScore: 0.95,
+    };
+    const result = detectDrift([dup, dup, dup, dup, dup], DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("no-drift");
+    if (result.kind === "no-drift") {
+      expect(result.observationCount).toBe(1);
+      expect(result.duplicateCount).toBe(4);
+    }
+  });
+
+  test("duplicateCount is reported on the drift branch too", () => {
+    const observations: UsagePurposeObservation[] = [
+      { agentId: "a1", observedAt: 1, contextText: "x", divergenceScore: 0.9 },
+      { agentId: "a1", observedAt: 1, contextText: "x", divergenceScore: 0.9 }, // dup
+      { agentId: "a1", observedAt: 2, contextText: "y", divergenceScore: 0.9 },
+      { agentId: "a2", observedAt: 3, contextText: "z", divergenceScore: 0.9 },
+      { agentId: "a2", observedAt: 4, contextText: "w", divergenceScore: 0.9 },
+      { agentId: "a2", observedAt: 4, contextText: "w", divergenceScore: 0.9 }, // dup
+      { agentId: "a3", observedAt: 5, contextText: "v", divergenceScore: 0.9 },
+      { agentId: "a3", observedAt: 6, contextText: "u", divergenceScore: 0.9 },
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      expect(result.duplicateCount).toBe(2);
+      expect(result.droppedCount).toBe(0);
+      expect(result.report.observationCount).toBe(6);
+    }
+  });
+
+  test("droppedCount is reported on the drift branch too", () => {
+    const observations: UsagePurposeObservation[] = [
+      { agentId: "a1", observedAt: 1, contextText: "x", divergenceScore: Number.NaN },
+      { agentId: "a1", observedAt: 2, contextText: "y", divergenceScore: 0.9 },
+      { agentId: "a1", observedAt: 3, contextText: "z", divergenceScore: 0.9 },
+      { agentId: "a2", observedAt: 4, contextText: "w", divergenceScore: 0.9 },
+      { agentId: "a2", observedAt: 5, contextText: "v", divergenceScore: 0.9 },
+      { agentId: "a2", observedAt: 6, contextText: "u", divergenceScore: 0.9 },
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      expect(result.droppedCount).toBe(1);
+      expect(result.duplicateCount).toBe(0);
+    }
   });
 });
