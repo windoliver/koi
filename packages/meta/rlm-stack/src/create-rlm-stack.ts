@@ -5,6 +5,7 @@
  * Composition only — no new processing algorithms (per issue #1359 scope).
  */
 
+import { resolveThresholds } from "@koi/context-manager";
 import { createRlmMiddleware, type RlmConfig } from "@koi/middleware-rlm";
 import {
   CHUNK_CHARS_BY_TIER,
@@ -27,15 +28,41 @@ function resolveTier(tier: RlmStackTier | undefined): RlmStackTier {
   return tier;
 }
 
+/**
+ * Resolve the effective context window using `@koi/context-manager`'s
+ * `resolveThresholds` so RLM and context-manager agree byte-for-byte on the
+ * window size for a given `(modelId, modelWindowOverrides, contextWindowTokens)`
+ * triple. The resolver applies its own precedence (overrides → registry →
+ * `contextWindowSize` → default) — `@koi/rlm-stack` does not second-guess it.
+ *
+ * `contextWindowTokens` is fed in as `contextWindowSize`, which is the same
+ * field the rest of the system uses for explicit overrides.
+ */
 function resolveContextWindow(config: RlmStackConfig | undefined): number {
-  const requested = config?.contextWindowTokens;
-  if (requested === undefined) return DEFAULT_CONTEXT_WINDOW_TOKENS;
-  if (!Number.isFinite(requested) || requested <= 0) {
+  const explicit = config?.contextWindowTokens;
+  if (explicit !== undefined && (!Number.isFinite(explicit) || explicit <= 0)) {
     throw new Error(
-      `@koi/rlm-stack: contextWindowTokens must be a positive finite number (got ${String(requested)})`,
+      `@koi/rlm-stack: contextWindowTokens must be a positive finite number (got ${String(explicit)})`,
     );
   }
-  return requested;
+  const policy = resolveThresholds(
+    {
+      ...(config?.modelId !== undefined ? { modelId: config.modelId } : {}),
+      ...(config?.modelWindowOverrides !== undefined
+        ? { modelWindowOverrides: config.modelWindowOverrides }
+        : {}),
+      ...(explicit !== undefined ? { contextWindowSize: explicit } : {}),
+    },
+    config?.modelId,
+  );
+  const resolved = policy.contextWindow ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
+  if (!Number.isFinite(resolved) || resolved <= 0) {
+    throw new Error(
+      `@koi/rlm-stack: resolved contextWindow is not a positive finite number (got ${String(resolved)}). ` +
+        `Check modelWindowOverrides for invalid values.`,
+    );
+  }
+  return resolved;
 }
 
 function buildThresholds(contextWindowTokens: number, tier: RlmStackTier): RlmStackThresholds {

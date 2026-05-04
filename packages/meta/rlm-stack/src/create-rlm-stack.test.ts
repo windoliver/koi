@@ -43,6 +43,57 @@ describe("createRlmStack", () => {
     expect(stack.thresholds.maxInputTokens).toBe(DEFAULT_CONTEXT_WINDOW_TOKENS);
   });
 
+  it("resolves the context window from modelId via @koi/model-registry when contextWindowTokens is omitted", () => {
+    // claude-opus-4-6 advertises a 1M token window in the registry
+    const stack = createRlmStack({ modelId: "claude-opus-4-6" });
+    expect(stack.thresholds.contextWindowTokens).toBe(1_000_000);
+    expect(stack.thresholds.maxInputTokens).toBe(1_000_000);
+  });
+
+  it("matches @koi/context-manager precedence: registry hit on modelId wins over contextWindowTokens", () => {
+    // Aligned with @koi/context-manager so RLM and context-manager cannot disagree about
+    // the same (modelId, contextWindowTokens) pair. resolveThresholds resolves modelId
+    // through the registry first; contextWindowTokens only takes effect when the registry
+    // misses (i.e. modelId is undefined or unknown without a matching override).
+    const stack = createRlmStack({
+      modelId: "claude-opus-4-6",
+      contextWindowTokens: 64_000,
+    });
+    expect(stack.thresholds.contextWindowTokens).toBe(1_000_000);
+  });
+
+  it("uses contextWindowTokens when no modelId is supplied", () => {
+    const stack = createRlmStack({ contextWindowTokens: 64_000 });
+    expect(stack.thresholds.contextWindowTokens).toBe(64_000);
+  });
+
+  it("falls back to the model-registry default for unknown modelIds", () => {
+    // resolveModelWindow returns DEFAULT_MODEL_WINDOW (128K) for unknown ids
+    const stack = createRlmStack({ modelId: "unknown/model-9000" });
+    expect(stack.thresholds.contextWindowTokens).toBe(128_000);
+  });
+
+  it("delegates prefixed modelIds to context-manager's resolveThresholds (does NOT strip prefixes)", () => {
+    // We must NOT canonicalize the modelId here — context-manager does not
+    // strip prefixes either, so doing so in @koi/rlm-stack would desynchronize
+    // the two layers. For a prefixed id that misses the registry, both layers
+    // fall back to the registry default (128K). Callers should pass the bare
+    // id (or supply contextWindowTokens / modelWindowOverrides) to get the
+    // intended window.
+    const prefixed = createRlmStack({ modelId: "anthropic:claude-opus-4-6" });
+    expect(prefixed.thresholds.contextWindowTokens).toBe(128_000);
+    const bare = createRlmStack({ modelId: "claude-opus-4-6" });
+    expect(bare.thresholds.contextWindowTokens).toBe(1_000_000);
+  });
+
+  it("honors modelWindowOverrides ahead of registry data, matching context-manager semantics", () => {
+    const stack = createRlmStack({
+      modelId: "claude-opus-4-6",
+      modelWindowOverrides: { "claude-opus-4-6": 32_000 },
+    });
+    expect(stack.thresholds.contextWindowTokens).toBe(32_000);
+  });
+
   it("propagates the priority forwarded to RLM middleware", () => {
     const stack = createRlmStack({ priority: 950 });
     expect(stack.middleware.priority).toBe(950);
@@ -74,6 +125,27 @@ describe("createRlmStack", () => {
   it("rejects non-positive contextWindowTokens", () => {
     expect(() => createRlmStack({ contextWindowTokens: 0 })).toThrow(/contextWindowTokens/);
     expect(() => createRlmStack({ contextWindowTokens: -1 })).toThrow(/contextWindowTokens/);
+  });
+
+  it("rejects modelWindowOverrides values that resolve to non-positive or non-finite windows", () => {
+    expect(() =>
+      createRlmStack({
+        modelId: "claude-opus-4-6",
+        modelWindowOverrides: { "claude-opus-4-6": 0 },
+      }),
+    ).toThrow(/positive finite/i);
+    expect(() =>
+      createRlmStack({
+        modelId: "claude-opus-4-6",
+        modelWindowOverrides: { "claude-opus-4-6": Number.NaN },
+      }),
+    ).toThrow(/positive finite/i);
+    expect(() =>
+      createRlmStack({
+        modelId: "claude-opus-4-6",
+        modelWindowOverrides: { "claude-opus-4-6": -1 },
+      }),
+    ).toThrow(/positive finite/i);
   });
 });
 

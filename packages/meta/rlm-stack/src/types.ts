@@ -39,8 +39,20 @@ export const CHUNK_CHARS_BY_TIER: Readonly<Record<RlmStackTier, number>> = {
 export interface RlmStackConfig {
   /** Total context window of the target model in tokens. */
   readonly contextWindowTokens?: number;
-  /** Optional model id (currently informational; reserved for model-registry lookup). */
+  /**
+   * Optional model id. When provided and `contextWindowTokens` is omitted, the
+   * window is resolved via `@koi/model-registry`'s `resolveModelWindow`. The
+   * id is normalized to its canonical bare form before lookup
+   * (e.g. `"anthropic:claude-opus-4-6"` → `"claude-opus-4-6"`).
+   */
   readonly modelId?: string;
+  /**
+   * Optional per-model context-window overrides forwarded to
+   * `resolveModelWindow`. Mirrors `@koi/context-manager`'s
+   * `modelWindowOverrides` so the two systems resolve the same window for
+   * overridden models. Keys must be canonical bare ids.
+   */
+  readonly modelWindowOverrides?: Readonly<Record<string, number>>;
   /** Preset chunk-size profile. Defaults to `"standard"`. */
   readonly tier?: RlmStackTier;
   /** Forwarded to `RlmConfig.priority`. Default: 800. */

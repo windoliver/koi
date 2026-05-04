@@ -84,8 +84,9 @@ const middlewares = [stack.middleware /* ... other middleware */];
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `contextWindowTokens` | `number` | from `modelId` lookup, else `200_000` | Total context window of the target model. |
-| `modelId` | `string` | `undefined` | Optional model id. When provided, `@koi/context-manager`'s `resolveThresholds` looks up the window via `@koi/model-registry`. `contextWindowTokens` overrides the lookup. |
+| `contextWindowTokens` | `number` | `undefined` (falls back to `DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000` when no `modelId` resolves) | Explicit context window. Forwarded to `resolveThresholds` as `contextWindowSize`. Used only when `modelId` is omitted **or** misses both the registry and the override map. |
+| `modelId` | `string` | `undefined` | Optional model id. Forwarded as-is to `@koi/context-manager`'s `resolveThresholds`, which looks up `modelWindowOverrides` then `@koi/model-registry`. **No prefix stripping** — pass the bare id (or supply `modelWindowOverrides` for the prefixed form) so RLM and context-manager resolve the same window. Unknown ids fall back to the registry default (`128_000`). |
+| `modelWindowOverrides` | `Record<string, number>` | `undefined` | Optional per-model window overrides forwarded to `resolveThresholds`. Mirrors `@koi/context-manager`'s field of the same name so the two systems resolve the same window for overridden models. |
 | `tier` | `"light" \| "standard" \| "aggressive"` | `"standard"` | Preset chunk-size profile. See [Tiers](#tiers). |
 | `priority` | `number` | `800` | Forwarded to `RlmConfig.priority`. Must remain higher than tool-injecting `intercept` middleware. |
 | `acknowledgeSegmentLocalContract` | `boolean` | `false` | Forwarded to `RlmConfig`. **Required** to actually enable virtualization — when absent, RLM fails closed on every oversized request. |
