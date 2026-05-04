@@ -35,7 +35,7 @@ import { isAbsolute, join } from "node:path";
 import type { SummaryOk } from "@koi/agent-summary";
 import { createAgentSummary } from "@koi/agent-summary";
 import { type ArtifactStore, createArtifactStore } from "@koi/artifacts";
-import { microcompact } from "@koi/context-manager";
+import { formatContextEngineSwapNotice, microcompact } from "@koi/context-manager";
 import type {
   Agent,
   AuditEntry,
@@ -2911,10 +2911,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // turns. Notices flow through `add_info` like plugin-load banners:
     // not in the JSONL transcript, not pushed back into model context.
     handle.runtime.contextEngineSwapController?.subscribe((swap) => {
-      store.dispatch({
-        kind: "add_info",
-        message: `↔ context engine: ${swap.from.name}@${swap.from.version} → ${swap.to.name}@${swap.to.version} (${swap.reason})`,
-      });
+      const notice = formatContextEngineSwapNotice(swap);
+      store.dispatch({ kind: "add_info", message: notice.message });
     });
     // Resolve lazy skill agent ref so the injector middleware can query
     // skill components on every subsequent model call.

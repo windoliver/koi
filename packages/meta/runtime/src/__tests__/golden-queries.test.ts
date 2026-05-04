@@ -730,6 +730,7 @@ import {
   createPassthroughContextEngine,
   DEFAULT_CONTEXT_ENGINE_IDENTITY,
   enforceBudget,
+  formatContextEngineSwapNotice,
   PASSTHROUGH_CONTEXT_ENGINE_IDENTITY,
   resolveConfig,
 } from "@koi/context-manager";
@@ -1243,6 +1244,204 @@ describe("Golden: @koi/context-manager", () => {
         (e) => e.kind === "custom" && e.type === "context-engine-swap",
       );
       expect(swapEvents.length).toBe(0);
+    });
+
+    // -------------------------------------------------------------------
+    // TUI swap-notice bridge corner cases (#1767 Phase 6)
+    //
+    // The TUI subscribes to runtime.contextEngineSwapController and
+    // dispatches the formatted notice as an `add_info` block. These
+    // cases simulate that bridge with a spy dispatcher and exercise the
+    // edges that an interactive TUI would otherwise trip on at runtime.
+    // -------------------------------------------------------------------
+    type DispatchSpy = ReturnType<typeof createDispatchSpy>;
+    function createDispatchSpy(): {
+      readonly dispatched: { readonly kind: string; readonly message: string }[];
+      readonly dispatch: (a: { readonly kind: string; readonly message: string }) => void;
+    } {
+      const dispatched: { kind: string; message: string }[] = [];
+      return {
+        get dispatched() {
+          return dispatched;
+        },
+        dispatch(action) {
+          dispatched.push({ kind: action.kind, message: action.message });
+        },
+      };
+    }
+
+    function wireBridge(
+      controller: NonNullable<
+        Awaited<ReturnType<typeof import("@koi/engine").createKoi>>["contextEngineSwapController"]
+      >,
+      spy: DispatchSpy,
+    ): () => void {
+      return controller.subscribe((swap) => {
+        const notice = formatContextEngineSwapNotice(swap);
+        spy.dispatch({ kind: "add_info", message: notice.message });
+      });
+    }
+
+    async function makeBridgedRuntime(
+      spy: DispatchSpy,
+    ): Promise<Awaited<ReturnType<typeof import("@koi/engine").createKoi>>> {
+      const { createKoi } = await import("@koi/engine");
+      const runtime = await createKoi({
+        manifest: { name: "agent", version: "1.0.0", model: { name: "test" } },
+        adapter: buildMockAdapter(),
+        contextEngineFactory: createContextEngine,
+      });
+      const ctrl = runtime.contextEngineSwapController;
+      if (ctrl !== undefined) wireBridge(ctrl, spy);
+      return runtime;
+    }
+
+    test("TUI bridge: out-of-run swap dispatches a notice (closes the round-1 review gap)", async () => {
+      type TurnId = import("@koi/core").TurnId;
+      const spy = createDispatchSpy();
+      const runtime = await makeBridgedRuntime(spy);
+      runtime.contextEngineSwapController?.swap(createPassthroughContextEngine(), {
+        turnId: "out-of-run" as TurnId,
+        reason: "operator-driven",
+        force: true,
+      });
+      expect(spy.dispatched.length).toBe(1);
+      expect(spy.dispatched[0]?.kind).toBe("add_info");
+      expect(spy.dispatched[0]?.message).toContain("Context engine swapped");
+      expect(spy.dispatched[0]?.message).toContain("operator-driven");
+    });
+
+    test("TUI bridge: same-identity swap is a controller no-op — no notice", async () => {
+      type ContextEngine = import("@koi/core").ContextEngine;
+      type TurnId = import("@koi/core").TurnId;
+      const spy = createDispatchSpy();
+      const runtime = await makeBridgedRuntime(spy);
+      const same: ContextEngine = {
+        identity: { ...DEFAULT_CONTEXT_ENGINE_IDENTITY },
+        prepare: (_c, m) => m,
+      };
+      runtime.contextEngineSwapController?.swap(same, {
+        turnId: "noop" as TurnId,
+        reason: "ghost",
+        force: true,
+      });
+      expect(spy.dispatched.length).toBe(0);
+    });
+
+    test("TUI bridge: rollback emits a reversed-direction notice", async () => {
+      type TurnId = import("@koi/core").TurnId;
+      const spy = createDispatchSpy();
+      const runtime = await makeBridgedRuntime(spy);
+      const passthrough = createPassthroughContextEngine();
+      runtime.contextEngineSwapController?.swap(passthrough, {
+        turnId: "fwd" as TurnId,
+        reason: "go-forward",
+        force: true,
+      });
+      runtime.contextEngineSwapController?.rollback({
+        turnId: "back" as TurnId,
+        reason: "rolling-back",
+      });
+      expect(spy.dispatched.length).toBe(2);
+      const fwd = spy.dispatched[0]?.message ?? "";
+      const back = spy.dispatched[1]?.message ?? "";
+      expect(fwd).toContain(`${DEFAULT_CONTEXT_ENGINE_IDENTITY.name}@`);
+      expect(fwd).toContain(`${PASSTHROUGH_CONTEXT_ENGINE_IDENTITY.name}@`);
+      // Rollback flips the arrow: passthrough → bundled.
+      expect(back).toContain(`${PASSTHROUGH_CONTEXT_ENGINE_IDENTITY.name}@`);
+      expect(back).toContain(`${DEFAULT_CONTEXT_ENGINE_IDENTITY.name}@`);
+      expect(back).toContain("rolling-back");
+    });
+
+    test("TUI bridge: multiple distinct swaps in one turn produce distinct notice ids", async () => {
+      type ContextEngine = import("@koi/core").ContextEngine;
+      type TurnId = import("@koi/core").TurnId;
+      const spy = createDispatchSpy();
+      const runtime = await makeBridgedRuntime(spy);
+      const observed: import("@koi/core").ContextEngineSwapEvent[] = [];
+      runtime.contextEngineSwapController?.subscribe((evt) => observed.push(evt));
+      const a: ContextEngine = {
+        identity: { name: "engine-a", version: "1.0.0" },
+        prepare: (_c, m) => m,
+      };
+      const b: ContextEngine = {
+        identity: { name: "engine-b", version: "1.0.0" },
+        prepare: (_c, m) => m,
+      };
+      // bundled → A → B → A: three distinct transitions; each gets a
+      // unique formatter id so the TUI store cannot dedupe legitimate
+      // churn into a single notice.
+      runtime.contextEngineSwapController?.swap(a, {
+        turnId: "t1" as TurnId,
+        reason: "ab",
+        force: true,
+      });
+      runtime.contextEngineSwapController?.swap(b, {
+        turnId: "t1" as TurnId,
+        reason: "ab",
+        force: true,
+      });
+      runtime.contextEngineSwapController?.swap(a, {
+        turnId: "t1" as TurnId,
+        reason: "ab",
+        force: true,
+      });
+      expect(spy.dispatched.length).toBe(3);
+      const ids = observed.map((e) => formatContextEngineSwapNotice(e).id);
+      expect(new Set(ids).size).toBe(3);
+    });
+
+    test("TUI bridge: idempotent re-dispatch of the same event yields a stable id (TUI dedupe key)", () => {
+      type TurnId = import("@koi/core").TurnId;
+      const event: import("@koi/core").ContextEngineSwapEvent = {
+        kind: "context-engine-swap",
+        turnId: "t-stable" as TurnId,
+        from: { name: "x", version: "1.0.0" },
+        to: { name: "y", version: "2.0.0" },
+        reason: "stable",
+        timestamp: "2026-01-01T00:00:00.000Z",
+      };
+      const a = formatContextEngineSwapNotice(event);
+      const b = formatContextEngineSwapNotice(event);
+      expect(a.id).toBe(b.id);
+      expect(a.message).toBe(b.message);
+    });
+
+    test("TUI bridge: subscriber throw is captured by onListenerError; bridge still dispatches", async () => {
+      type TurnId = import("@koi/core").TurnId;
+      const spy = createDispatchSpy();
+      const errors: unknown[] = [];
+      // Build a runtime with onContextEngineSwap undefined so we control
+      // both the noisy listener and the bridge.
+      const { createKoi } = await import("@koi/engine");
+      const runtime = await createKoi({
+        manifest: { name: "agent", version: "1.0.0", model: { name: "test" } },
+        adapter: buildMockAdapter(),
+        contextEngineFactory: createContextEngine,
+      });
+      // Bare controller-level subscription doesn't have an
+      // onListenerError option, so this case validates the
+      // current fail-loud behaviour: a thrown bridge subscriber
+      // surfaces as an aggregated error, AFTER the other
+      // subscribers (including the spy) ran.
+      const ctrl = runtime.contextEngineSwapController;
+      if (ctrl === undefined) throw new Error("controller missing");
+      ctrl.subscribe(() => {
+        throw new Error("noisy");
+      });
+      wireBridge(ctrl, spy);
+      try {
+        ctrl.swap(createPassthroughContextEngine(), {
+          turnId: "throw" as TurnId,
+          reason: "with-throw",
+          force: true,
+        });
+      } catch (e: unknown) {
+        errors.push(e);
+      }
+      expect(spy.dispatched.length).toBe(1);
+      expect(errors.length).toBe(1);
+      expect(String(errors[0])).toContain("subscriber");
     });
 
     test("manifest version that does not match the bundled artifact is rejected", async () => {
