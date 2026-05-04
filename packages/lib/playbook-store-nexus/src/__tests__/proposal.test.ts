@@ -599,4 +599,31 @@ describe("createNexusPlaybookProposalStore", () => {
     await store.recordProposal(makeProposalWithBase("p-lock-smoke-2", "pb-lock-smoke", 4));
     expect((await store.getProposal("p-lock-smoke-2"))?.baseVersion).toBe(4);
   });
+
+  // --- Fix 3 (round 8): null-byte lock namespace prevents withIdLock deadlock ---
+
+  test("recordEvaluation with id === 'pid-' + proposalId does NOT deadlock (null-byte separator)", async () => {
+    // The deadlock scenario: old keys were "eval-pid-X" (outer) and "eval-pid-X"
+    // (inner) when evaluation.id === "pid-" + proposalId. The outer lock acquires
+    // key "eval-pid-X", then the inner tries to acquire the SAME key — deadlock.
+    //
+    // With null-byte separator the keys are "eval\0pid-test1" (outer) and
+    // "evalpid\0test1" (inner) — always distinct, no deadlock.
+    const { proposal: store } = await storeWithPlaybook("pb-deadlock");
+    await store.recordProposal(makeProposal("test1", "pb-deadlock"));
+
+    // evaluation.id = "pid-test1", evaluation.proposalId = "test1"
+    // Without the fix: outer key = "eval-pid-test1", inner key = "eval-pid-test1" → deadlock.
+    const evaluation: PlaybookEvaluation = {
+      id: "pid-test1",
+      proposalId: "test1",
+      verdict: "promote",
+      metrics: { helpfulRate: 0.9, tokenDelta: 5 },
+      notes: "no deadlock",
+      evaluatedAt: 300,
+    };
+
+    // Must resolve within the 5-second timeout; a deadlock would time out.
+    await expect(store.recordEvaluation(evaluation)).resolves.toBeUndefined();
+  }, 5000);
 });

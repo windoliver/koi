@@ -136,8 +136,14 @@ export function createNexusPlaybookProposalStore(
 
       // Lock order: evalId first (global uniqueness key), then proposalId namespace.
       // Consistent ordering prevents deadlock between concurrent recordEvaluation calls.
-      return withIdLock(`eval-${evaluation.id}`, async () => {
-        return withIdLock(`eval-pid-${evaluation.proposalId}`, async () => {
+      //
+      // Null-byte separator: validateAceId rejects '\0', so these keys can never
+      // collide — even if evaluation.id === "pid-" + evaluation.proposalId, the
+      // resulting keys "eval\0<id>" and "evalpid\0<proposalId>" are always distinct.
+      // Without the null-byte separator, the old scheme "eval-pid-X" (outer) and
+      // "eval-pid-X" (inner) would deadlock when evaluation.id === "pid-" + proposalId.
+      return withIdLock(`eval\0${evaluation.id}`, async () => {
+        return withIdLock(`evalpid\0${evaluation.proposalId}`, async () => {
           // Require the proposal to exist before recording an evaluation.
           const pPath = proposalPath(evaluation.proposalId);
           const pEx = await exists(transport, pPath);
