@@ -160,13 +160,16 @@ export function detectDrift(
   const valid = observations.filter(isObservationValid);
   const droppedCount = observations.length - valid.length;
 
-  // Dedup is opt-in: only when the caller supplied a stable identity key.
-  // Defaulting to (agentId, observedAt, contextText) would silently discard
-  // legitimate repeat tool calls in bursty traffic.
+  // Dedup is opt-in AND scoped per-agent. The detector's whole job is to
+  // count agents who *independently* converge on the same repurposing, so a
+  // global dedup keyed on payload alone (e.g. `contextText`) would collapse
+  // identical outputs from different agents and erase exactly the cross-
+  // agent evidence the detector requires. Bucketing by agentId before dedup
+  // makes that misuse impossible regardless of which key the caller picks.
   const unique =
     thresholds.observationKey === undefined
       ? valid
-      : dedupeObservations(valid, thresholds.observationKey);
+      : dedupePerAgent(valid, thresholds.observationKey);
   const duplicateCount = valid.length - unique.length;
 
   const noDrift = (): DetectionResult => ({
@@ -201,37 +204,37 @@ export function detectDrift(
 }
 
 /**
- * Map a detection result (or a bare `DriftReport`) to a recommended action.
+ * Map a detection result to a recommended action.
+ *
+ * Only `DetectionResult` is accepted (NOT a bare `DriftReport`), so the
+ * dropped/duplicate quality gate is mandatory and cannot be bypassed by
+ * persisting just the report and replaying it later. Callers that hand off
+ * a positive recommendation must hand off the full `DetectionResult`.
  *
  * Behaviour:
  *   - `none` for `no-drift`, `invalid-config`, or `undefined`.
  *   - `none` for `drift` results whose dropped + duplicate fraction exceeds
- *     `MAX_QUALITY_DEGRADATION_RATIO` (default 25%) — refusing to act on
- *     low-quality windows.
+ *     `MAX_QUALITY_DEGRADATION_RATIO` (default 25%).
  *   - `new-artifact` requires `stableWindows ≥ 2` AND raw `avgDivergence ≥
  *     NEW_ARTIFACT_DIVERGENCE_THRESHOLD` (0.85). Gated on raw divergence,
  *     not on saturated `severity`, so traffic volume alone cannot escalate.
  *   - `reclassify` otherwise.
  */
 export function suggestAction(
-  input: DetectionResult | DriftReport | undefined,
+  input: DetectionResult | undefined,
   stableWindows: number,
 ): ExaptationSuggestion {
-  if (input === undefined) return { kind: "none" };
+  if (input === undefined || input.kind !== "drift") return { kind: "none" };
 
-  // Quality gate: refuse to act on a drift window where most observations
-  // were dropped or collapsed as duplicates.
-  if (isDetectionResult(input) && input.kind === "drift") {
-    const total = input.report.observationCount + input.droppedCount + input.duplicateCount;
-    const lowQuality = input.droppedCount + input.duplicateCount;
-    if (total > 0 && lowQuality / total > MAX_QUALITY_DEGRADATION_RATIO) {
-      return { kind: "none" };
-    }
+  // Quality gate is mandatory: refuse to act on a window where most
+  // observations were dropped or collapsed as duplicates.
+  const total = input.report.observationCount + input.droppedCount + input.duplicateCount;
+  const lowQuality = input.droppedCount + input.duplicateCount;
+  if (total > 0 && lowQuality / total > MAX_QUALITY_DEGRADATION_RATIO) {
+    return { kind: "none" };
   }
 
-  const report = extractReport(input);
-  if (report === undefined) return { kind: "none" };
-
+  const report = input.report;
   if (
     stableWindows >= STABLE_WINDOW_COUNT &&
     report.avgDivergence >= NEW_ARTIFACT_DIVERGENCE_THRESHOLD
@@ -239,19 +242,6 @@ export function suggestAction(
     return { kind: "new-artifact", severity: report.severity };
   }
   return { kind: "reclassify", severity: report.severity };
-}
-
-function isDetectionResult(input: DetectionResult | DriftReport): input is DetectionResult {
-  return (
-    "kind" in input &&
-    (input.kind === "drift" || input.kind === "no-drift" || input.kind === "invalid-config")
-  );
-}
-
-function extractReport(input: DetectionResult | DriftReport): DriftReport | undefined {
-  if (isDetectionResult(input)) return input.kind === "drift" ? input.report : undefined;
-  if (input.kind === "purpose_drift") return input;
-  return undefined;
 }
 
 /**
@@ -270,6 +260,26 @@ export function dedupeObservations(
     const key = keyFn(o);
     if (seen.has(key)) continue;
     seen.add(key);
+    out.push(o);
+  }
+  return out;
+}
+
+/**
+ * Dedup observations per agent. The dedup namespace is `(agentId, keyFn(o))`,
+ * so identical payloads from different agents survive — preserving the
+ * cross-agent evidence the detector needs to count divergent agents.
+ */
+function dedupePerAgent(
+  observations: readonly UsagePurposeObservation[],
+  keyFn: (o: UsagePurposeObservation) => string,
+): readonly UsagePurposeObservation[] {
+  const seen = new Set<string>();
+  const out: UsagePurposeObservation[] = [];
+  for (const o of observations) {
+    const scopedKey = `${o.agentId}${keyFn(o)}`;
+    if (seen.has(scopedKey)) continue;
+    seen.add(scopedKey);
     out.push(o);
   }
   return out;

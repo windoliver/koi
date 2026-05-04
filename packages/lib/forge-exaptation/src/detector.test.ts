@@ -42,6 +42,10 @@ function expectNoDrift(result: DetectionResult): {
   return { observationCount: result.observationCount, droppedCount: result.droppedCount };
 }
 
+function asResult(report: DriftReport): DetectionResult {
+  return { kind: "drift", report, droppedCount: 0, duplicateCount: 0 };
+}
+
 describe("detectDrift", () => {
   test("artifact used as intended → no drift flag", () => {
     const observations = [
@@ -228,7 +232,7 @@ describe("suggestAction", () => {
       divergentAgents: 2,
       observationCount: 5,
     };
-    expect(suggestAction(report, 5).kind).toBe("reclassify");
+    expect(suggestAction(asResult(report), 5).kind).toBe("reclassify");
   });
 
   test("stable + raw divergence ≥ 0.85 → new-artifact", () => {
@@ -239,7 +243,7 @@ describe("suggestAction", () => {
       divergentAgents: 4,
       observationCount: 12,
     };
-    expect(suggestAction(report, 3)).toEqual({ kind: "new-artifact", severity: 0.85 });
+    expect(suggestAction(asResult(report), 3)).toEqual({ kind: "new-artifact", severity: 0.85 });
   });
 
   test("strong drift but unstable (single window) → reclassify", () => {
@@ -250,7 +254,7 @@ describe("suggestAction", () => {
       divergentAgents: 4,
       observationCount: 10,
     };
-    expect(suggestAction(report, 1).kind).toBe("reclassify");
+    expect(suggestAction(asResult(report), 1).kind).toBe("reclassify");
   });
 
   test("regression: minimum-threshold drift cannot escalate to new-artifact via volume", () => {
@@ -263,7 +267,7 @@ describe("suggestAction", () => {
       observationCount: 50,
     };
     // Despite saturated severity and many windows, raw divergence is 0.7 < 0.85.
-    expect(suggestAction(report, 10).kind).toBe("reclassify");
+    expect(suggestAction(asResult(report), 10).kind).toBe("reclassify");
   });
 
   test("accepts DetectionResult of kind drift", () => {
@@ -301,6 +305,46 @@ describe("detectDrift dedup (opt-in) + telemetry", () => {
     if (result.kind === "drift") {
       expect(result.duplicateCount).toBe(0);
       expect(result.report.observationCount).toBe(6);
+    }
+  });
+
+  test("opt-in dedup is scoped per-agent: identical payload across agents survives", () => {
+    // Regression: an observationKey that ignores agentId (e.g. payload-only)
+    // must not collapse identical observations from different agents — that
+    // would erase the cross-agent evidence detectDrift requires.
+    const a1: UsagePurposeObservation = {
+      agentId: "a1",
+      observedAt: 1,
+      contextText: "same-payload",
+      divergenceScore: 0.95,
+    };
+    const a2: UsagePurposeObservation = { ...a1, agentId: "a2", observedAt: 2 };
+    const a3: UsagePurposeObservation = { ...a1, agentId: "a3", observedAt: 3 };
+    // Caller's keyFn deliberately ignores agentId. Per-agent dedup still
+    // keeps one observation per agent (3 agents × 1 obs each = 3).
+    const observations = [
+      a1,
+      a1, // intra-agent replay → collapsed
+      a2,
+      a2, // intra-agent replay → collapsed
+      a3,
+      a3, // intra-agent replay → collapsed
+      a1,
+      a2,
+      a3, // more cross-agent dupes → collapsed within each agent
+    ];
+    const result = detectDrift(observations, {
+      ...DEFAULT_EXAPTATION_THRESHOLDS,
+      minObservationsPerAgent: 1,
+      observationKey: (o) => o.contextText, // payload-only key
+    });
+    // 3 agents, all divergent → drift would be detected if minObs were 3.
+    // With default minObservations=5 we only need to confirm the surviving
+    // count after dedup is 3 (one per agent), not 1.
+    expect(result.kind).toBe("no-drift");
+    if (result.kind === "no-drift") {
+      expect(result.observationCount).toBe(3);
+      expect(result.duplicateCount).toBe(6);
     }
   });
 
@@ -424,7 +468,7 @@ describe("suggestAction quality gate", () => {
       divergentAgents: 4,
       observationCount: 5,
     };
-    expect(suggestAction(report, 5).kind).toBe("new-artifact");
+    expect(suggestAction(asResult(report), 5).kind).toBe("new-artifact");
   });
 });
 

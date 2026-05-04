@@ -70,9 +70,17 @@ The quality gate (default 25%) refuses to recommend irreversible action when mos
 
 ## Replay Protection
 
-Dedup is **opt-in**. Pass `thresholds.observationKey: (o) => string` to collapse observations sharing a return value. Without it, observations are scored as-is. The default is "no dedup" because a synthetic key like `(agentId, observedAt, contextText)` would silently discard legitimate repeat tool calls in bursty traffic.
+Dedup is **opt-in and per-agent-scoped**.
 
-`dedupeObservations(observations, keyFn)` is also exported as a standalone helper for callers that prefer to dedupe up front.
+- Pass `thresholds.observationKey: (o) => string` to collapse intra-agent replays.
+- The dedup namespace is `(agentId, keyFn(o))`, so identical payloads from different agents always survive — preserving the cross-agent evidence the detector requires. Even a payload-only `keyFn` is safe.
+- Without `observationKey`, no dedup runs.
+
+`dedupeObservations(observations, keyFn)` is also exported as a standalone helper (global, not per-agent) for callers that prefer to dedupe up front using their own scoping rules.
+
+## suggestAction Contract
+
+`suggestAction` accepts only a `DetectionResult` (or `undefined`) — not a bare `DriftReport`. Persisting just the report and replaying it later would bypass the quality gate; this restriction keeps the gate sticky across serialization boundaries.
 
 ---
 
