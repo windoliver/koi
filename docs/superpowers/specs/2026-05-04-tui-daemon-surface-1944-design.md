@@ -18,6 +18,46 @@ clarification" below.
 
 Single PR. Two halves:
 
+### Restart ownership (architectural decision)
+
+Two restart authorities exist in the codebase:
+
+1. **Reconciler** — `wireSupervision`'s `SupervisionReconciler` observes
+   `terminated` agent-registry transitions and respawns via
+   `SpawnChildFn`. `createDaemonSpawnChildFn` mints a fresh
+   `workerId`/`agentId` per restart.
+2. **Supervisor's own restart policy** — `createSupervisor`'s
+   `WorkerRestartPolicy` (`transient`/`permanent`) respawns under the
+   **same** `workerId` and surfaces `restarting`/`quarantined` via
+   `WorkerHealth.state`.
+
+If both fire, the same crash produces two replacement workers
+(reconciler spawns a new one; supervisor restarts the old `workerId`).
+This PR resolves the ownership: **the reconciler is the sole restart
+authority** for daemon-spawned children. The supervisor is configured
+with `restart: { restart: "temporary", maxRestarts: 0 }` for any
+worker spawned via `createDaemonSpawnChildFn`. Consequences:
+
+- `WorkerHealth.state` will never be `restarting` or `quarantined`
+  for these workers — the supervisor doesn't auto-restart them. The
+  freshness states `restarting`/`quarantined` in the design remain in
+  the L0 union for completeness (other supervisor configurations may
+  still produce them) but are documented as "won't fire for
+  daemon-spawned children under this PR".
+- A crash drives the reconciler path: `crashed` → `attachRegistry`
+  writes registry `crashed` → `attachAgentRegistry` flips the agent
+  registry to `terminated` → reconciler spawns a NEW workerId/agentId.
+  The TUI sees this as a new row appearing in `/bg`, not an in-place
+  restart.
+- The on-path TUI kill targets the current incarnation only —
+  there is no concurrent supervisor-driven restart that could swap
+  the workerId mapping between confirm and stop.
+
+This decision is reversible later (e.g. when remote/tmux backends
+prefer supervisor-owned restart) by flipping the policy and
+deactivating reconciler-driven respawn for that backend kind. The
+design just requires picking one; this PR picks the reconciler.
+
 ### Half A — Runtime wiring (prerequisite)
 
 Issue #1866 closed with an in-process stub (`wire-manifest-supervision.ts`).
@@ -679,21 +719,30 @@ never be attempted):
 | Locally-owned `terminating` (kill already in flight) | ❌ | hint: "kill in flight; wait" |
 | Locally-owned but bridge already reading terminal status (`exited`/`crashed` AND no live health override) | ❌ | hint: "already terminal" |
 | `detached` (any) | ❌ | hint: "use `koi bg kill <id>` from a separate shell, or `koi bg attach`" |
-| `starting` (any — by L0 contract no `WorkerHealth` entry exists yet) | ❌ | hint: "starting…; wait or use `koi bg kill <id>` if hung" |
+| `starting` (any) | ❌ | hint: "starting…; supervisor will fault hung spawns at `spawnTimeoutMs` (default 30s)" — no kill path until `started` |
 
-**Includes `quarantined` and `stopping`**: locally-owned workers in
-those `WorkerHealth.state` values ARE killable from the TUI. The
-supervisor holds an `activeIds` reservation until `stop()` is retried
-to completion, so calling `supervisor.stop()` again is the canonical
-recovery path that releases the reservation and lets the workerId be
-reused. Not surfacing `k` for these states would strand them.
+**`quarantined`/`stopping` (defensive coverage)**: under this PR's
+restart-ownership decision (`temporary`, `maxRestarts: 0` for
+daemon-spawned children), these states should not fire. They remain
+killable for forward-compat: any locally-owned worker in those
+states can be terminated via `supervisor.stop()`, which releases the
+`activeIds` reservation. Test coverage simulates the states with a
+fixture-built supervisor configured for `transient` to verify the
+recovery path works if the restart-ownership decision is later
+flipped.
 
 **Why `starting` is not killable from the TUI**: `WorkerHealth.state`
 only takes values `running | restarting | quarantined | stopping`. A
 worker in registry status `starting` has not yet emitted a `started`
 event and therefore has no `health.workers[]` entry — local ownership
-cannot be proven via the health snapshot. Recovery for hung-startup
-workers is the off-path `koi bg kill <id>` flow.
+cannot be proven via the health snapshot. **Off-path `koi bg kill`
+also does NOT work for `starting` rows**: `createDaemonSpawnChildFn`
+pre-registers them with `pid: 0`, and `runKill` refuses records with
+`pid <= 0`. Recovery is therefore handled by the supervisor's own
+`spawnTimeoutMs` (`SupervisorConfig.spawnTimeoutMs`, default 30s) —
+a hung spawn faults automatically and surfaces as a normal
+`crashed`/`exited` event the operator can act on. The `starting`
+hint surfaces this so operators don't expect manual recovery.
 
 Ownership is determined by intersecting the registry record's `workerId`
 with `supervisor.health().workers.map(w => w.workerId)`. The per-worker
@@ -731,36 +780,38 @@ atomically — the TUI does.
    `onCommand("system:bg-kill", { workerId, expectedVersion, expectedPid })`.
 3. `tui-root` routes to
    `bridge.requestKill({ workerId, expectedVersion, expectedPid })`.
-4. **Mandatory respawn-race check** — identity must be proven before
-   any `supervisor.stop` call. Worker IDs ARE reusable across
-   restarts; without the version+pid CAS, an outage that respawns the
-   worker between confirm and stop would terminate the *replacement*
-   process, not the one the operator picked. Fail-closed:
-   - `result = await registry.describe(workerId as WorkerId)`.
-   - **`result.ok: false`** — registry unreadable; cannot verify
-     identity. Toast `"⚠ registry unreadable; cannot verify worker
-     identity. Fix the state dir and retry, or use \`koi bg kill <id>\`
-     from a separate shell."` and return. NEVER call `supervisor.stop`
-     without a successful identity check — killing the wrong
-     incarnation during an outage is worse than refusing to kill.
-   - **`result.value === undefined`** — record was unregistered
-     (e.g. retention sweep finalized). Toast `"⚠ worker <id> already
-     gone"` and return.
-   - **`result.value.version !== expectedVersion ||
-     result.value.pid !== expectedPid`** — worker was respawned under
-     the same `workerId` since the operator selected the row. Toast
-     `"⚠ worker <id> respawned; refresh and try again"` and return.
-     **No `supervisor.stop` call** — never kill a process the operator
-     did not pick.
-   - **Identity verified** (record present, version+pid match) →
-     proceed to step 5.
+4. **Best-effort sanity check; never blocks supervisor.stop** —
+   under the restart-ownership decision (reconciler-only restart, no
+   supervisor auto-restart for daemon-spawned children), the
+   in-process supervisor cannot swap the `workerId → process` mapping
+   between confirm and stop. `supervisor.stop(workerId)` therefore
+   always targets the worker the operator selected. The registry
+   identity check is reduced to a UX courtesy (catches retention-sweep
+   races and stale UI state) and MUST NOT block the kill on registry
+   I/O failure — that would prevent operators from clearing wedged
+   local workers exactly when the state dir is degraded.
 
-   The local-vs-foreign ownership question is *separately* answered
-   by `supervisor.health().workers` (which gates `k` in BgView before
-   the modal opens). Step 4 is the *incarnation* check, which has no
-   in-memory equivalent — `health()` snapshots don't carry version,
-   so the registry's `version` field is the only authoritative
-   incarnation marker.
+   - `result = await registry.describe(workerId as WorkerId)`.
+   - **`result.ok: false`** — registry unreadable. Log + best-effort
+     toast `"ℹ registry unreadable; proceeding with local stop"` and
+     proceed to step 5. Local supervisor is the source of truth for
+     the in-process `workerId → process` mapping.
+   - **`result.value === undefined`** — record was unregistered. Log
+     and proceed (supervisor may still own the worker; if it does
+     not, `supervisor.stop` returns `NOT_FOUND` and surfaces in
+     step 5).
+   - **`result.value.version !== expectedVersion ||
+     result.value.pid !== expectedPid`** — registry shows a fresher
+     incarnation than the row the operator selected. With
+     reconciler-only restart, this happens when a crash + reconciler
+     respawn landed in the time between row selection and confirm,
+     under a NEW workerId. The operator's `workerId` therefore
+     points to the prior process which the supervisor has already
+     released. Toast `"⚠ row stale; the worker has restarted under a
+     new id — refresh and pick the new row"` and return without
+     calling `supervisor.stop`.
+   - **Identity verified or registry unavailable but supervisor owns
+     the worker** → proceed to step 5.
 5. `await supervisor.stop(workerId, "user-requested")`.
    - `Result.ok: true` → supervisor emits `exited` (NOT `crashed`,
      per the regression test). `attachRegistry` flips the registry row
@@ -946,16 +997,22 @@ on the right side: governance segment, then supervisor segment, separator
     pre-stop registry mutation. The supervisor's existing
     `exited`-classification regression test (`supervisor.test.ts:1227`)
     covers the registry transition end-to-end via `attachRegistry`.
-  - `requestKill` performs a **mandatory** identity check via
+  - `requestKill` performs a best-effort identity check via
     `registry.describe()` BEFORE calling `supervisor.stop`. Mismatched
-    `version` or `pid` aborts with the "respawned" toast.
-  - **Registry-unreadable BLOCKS kill** (fail-closed): when
-    `registry.describe()` returns `Result.ok: false`, the bridge
-    surfaces a "registry unreadable; cannot verify identity" toast
-    and does NOT call `supervisor.stop`. Test fixture: stub describe
-    to fail with PERMISSION_DENIED; assert supervisor.stop is NEVER
-    invoked. Killing the wrong incarnation during an outage is worse
-    than refusing to kill.
+    `version` or `pid` aborts with the "row stale; refresh" toast
+    (under reconciler-only restart, this means the prior worker
+    crashed + was respawned under a new workerId since selection).
+  - **Registry-unreadable does NOT block kill**: when
+    `registry.describe()` returns `Result.ok: false`, bridge surfaces
+    an info toast and proceeds to call `supervisor.stop`. Local
+    supervisor is the source of truth for in-process workerId
+    mapping; restart-ownership decision (reconciler-only) means there
+    is no concurrent in-process incarnation swap to fear.
+  - **Restart ownership invariant**: daemon-spawned workers are
+    created with `restart: { restart: "temporary", maxRestarts: 0 }`.
+    Test asserts `WorkerHealth.state` for a daemon-spawned worker
+    never enters `restarting` or `quarantined` after a crash; the
+    reconciler instead spawns a NEW row.
   - `supervisor.stop` returning `Result.ok: false` (NOT_FOUND,
     INVALID_STATE) surfaces as a toast; bridge does not mutate the
     registry. A subsequent legitimate event still flows through
@@ -1090,12 +1147,16 @@ calls. Existing daemon golden queries cover supervisor lifecycle.
       registry mutation. `supervisor.stop()` emits `exited` (per
       `supervisor.test.ts:1227`), so `attachRegistry` writes
       `running → exited` without any TUI-side claim.
-- [ ] On-path kill performs a MANDATORY identity check via
-      `registry.describe()` (version + pid match expected). Registry
-      unreadable, missing record, or mismatched version/pid all
-      fail-close: `supervisor.stop` is NEVER called without a verified
-      identity. Killing the wrong incarnation during a state-dir
-      outage is worse than refusing to kill.
+- [ ] On-path kill performs a best-effort identity check via
+      `registry.describe()`. Mismatched version/pid (operator's row is
+      stale) aborts with the "refresh" toast. Registry unreadable
+      does NOT block — local supervisor is authoritative for the
+      in-process `workerId → process` mapping under the
+      reconciler-only restart-ownership decision.
+- [ ] Daemon-spawned workers configured with `restart: temporary`,
+      `maxRestarts: 0`. Reconciler is the sole restart authority for
+      these workers. `WorkerHealth.state` of `restarting`/`quarantined`
+      never fires for them.
 - [ ] Locally-owned `quarantined` and `stopping` rows expose `k` and
       route through `supervisor.stop()`, releasing the `activeIds`
       reservation so the workerId can be reused.
