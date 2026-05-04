@@ -6,7 +6,9 @@ import type {
   StructuredPlaybook,
   TrajectoryRange,
 } from "@koi/ace-types";
+import type { KoiError, Result } from "@koi/core";
 import { createFakeNexusTransport } from "@koi/fs-nexus/testing";
+import type { NexusTransport } from "@koi/nexus-client";
 
 import { createNexusPlaybookProposalStore } from "../proposal.js";
 import { createNexusStructuredPlaybookStore } from "../structured.js";
@@ -383,5 +385,51 @@ describe("createNexusPlaybookProposalStore", () => {
     if (err?.status === "rejected") {
       expect(String(err.reason)).toContain("already recorded with different content");
     }
+  });
+
+  // --- Fix 3: listProposals propagates non-NOT_FOUND errors ---
+
+  test("listProposals propagates EXTERNAL error from proposal file read", async () => {
+    // Scenario: proposal is written normally, then a transport wrapper injects
+    // EXTERNAL on the read call during listProposals. The loop must throw.
+    const baseTransport = createFakeNexusTransport();
+    const spbStore = createNexusStructuredPlaybookStore({ transport: baseTransport });
+    const proposalStoreBase = createNexusPlaybookProposalStore({ transport: baseTransport });
+    await spbStore.save(makeStructuredPlaybook("pb-lp-err", 1));
+    await proposalStoreBase.recordProposal(makeProposal("p-lp-err", "pb-lp-err"));
+
+    // Wrap the transport so that reads of proposal files return EXTERNAL.
+    // We allow list and the structured-playbook reads (which don't match proposals/).
+    let listCallDone = false;
+    const wrappedTransport: NexusTransport = {
+      call: async <T>(
+        method: string,
+        params: Record<string, unknown>,
+      ): Promise<Result<T, KoiError>> => {
+        const path = params.path as string | undefined;
+        // Fail reads of proposal files with EXTERNAL after the list is done.
+        if (
+          listCallDone &&
+          method === "read" &&
+          typeof path === "string" &&
+          path.includes("/proposals/")
+        ) {
+          return {
+            ok: false,
+            error: { code: "EXTERNAL", message: "simulated backend failure", retryable: true },
+          } as Result<T, KoiError>;
+        }
+        if (method === "list") listCallDone = true;
+        return baseTransport.call<T>(method, params);
+      },
+      subscribe: baseTransport.subscribe.bind(baseTransport),
+      submitAuthCode: baseTransport.submitAuthCode.bind(baseTransport),
+      close: baseTransport.close.bind(baseTransport),
+    };
+
+    const proposalStoreWrapped = createNexusPlaybookProposalStore({ transport: wrappedTransport });
+    await expect(proposalStoreWrapped.listProposals("pb-lp-err")).rejects.toThrow(
+      "simulated backend failure",
+    );
   });
 });

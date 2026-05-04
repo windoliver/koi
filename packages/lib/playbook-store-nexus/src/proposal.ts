@@ -183,7 +183,15 @@ export function createNexusPlaybookProposalStore(
       const out: PlaybookProposal[] = [];
       for (const p of lr.value) {
         const r = await readJson<PlaybookProposal>(transport, p);
-        if (!r.ok || r.value === undefined) continue;
+        if (!r.ok) {
+          // Tolerate NOT_FOUND: file existed at list time but is gone at read time (race).
+          if (r.error.code === "NOT_FOUND") continue;
+          // All other errors (EXTERNAL, INTERNAL, etc.) indicate a real failure.
+          throw new Error(r.error.message);
+        }
+        // r.value is undefined only when NOT_FOUND, which is handled above via ok:false
+        // after Fix 4. This branch is unreachable in normal operation.
+        if (r.value === undefined) continue;
         if (r.value.playbookId === playbookId) {
           out.push(r.value);
         }
