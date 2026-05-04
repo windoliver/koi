@@ -201,7 +201,8 @@ describe("detectDrift", () => {
   test("mixed traffic: divergent cohort surfaces even when baseline traffic dominates the window", () => {
     // Regression: previously the global avgDivergence gate hid drift when
     // most observations were normal-purpose. Now the detector scores drift
-    // on the divergent cohort only.
+    // on the divergent cohort only — but the cohort itself must clear
+    // minObservations.
     const observations = [
       // Baseline traffic: 6 agents, 1 obs each, very low divergence.
       obs("baseline-1", 0.05),
@@ -210,16 +211,36 @@ describe("detectDrift", () => {
       obs("baseline-4", 0.05),
       obs("baseline-5", 0.05),
       obs("baseline-6", 0.05),
-      // Divergent cohort: 2 agents, 2 obs each at 0.9.
+      // Divergent cohort: 2 agents, ≥3 obs each at 0.9 — cohort.observationCount = 6 ≥ 5.
+      obs("d1", 0.9),
+      obs("d1", 0.92),
+      obs("d1", 0.91),
+      obs("d2", 0.9),
+      obs("d2", 0.91),
+      obs("d2", 0.93),
+    ];
+    const report = expectDrift(detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS));
+    expect(report.divergentAgents).toBe(2);
+    expect(report.observationCount).toBe(6); // cohort only
+    expect(report.avgDivergence).toBeGreaterThan(0.85);
+  });
+
+  test("mixed traffic: too-small divergent cohort → no drift (cohort minObservations gate)", () => {
+    // Regression: a 4-observation cohort no longer triggers drift just
+    // because baseline traffic pads the total window above minObservations.
+    const observations = [
+      obs("baseline-1", 0.05),
+      obs("baseline-2", 0.05),
+      obs("baseline-3", 0.05),
+      obs("baseline-4", 0.05),
+      obs("baseline-5", 0.05),
+      obs("baseline-6", 0.05),
       obs("d1", 0.9),
       obs("d1", 0.92),
       obs("d2", 0.9),
       obs("d2", 0.91),
     ];
-    const report = expectDrift(detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS));
-    expect(report.divergentAgents).toBe(2);
-    expect(report.observationCount).toBe(4); // cohort only
-    expect(report.avgDivergence).toBeGreaterThan(0.85);
+    expectNoDrift(detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS));
   });
 
   test("empty agentId observation is dropped, surviving subset evaluated", () => {

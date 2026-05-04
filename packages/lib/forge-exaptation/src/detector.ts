@@ -198,6 +198,11 @@ export function detectDrift(
   // window — exactly the mixed-workload case this package must surface.
   const cohort = computeDivergentCohort(unique, thresholds);
   if (cohort.agentCount < thresholds.minDivergentAgents) return noDrift();
+  // Cohort-level minObservations gate: the *cohort* must have at least
+  // minObservations samples — not just the whole window. Otherwise unrelated
+  // baseline traffic could pad the window past the threshold and let a
+  // tiny cohort trigger drift.
+  if (cohort.observationCount < thresholds.minObservations) return noDrift();
 
   const cohortAvgDivergence = cohort.totalDivergence / cohort.observationCount;
   if (cohortAvgDivergence < thresholds.divergenceThreshold) return noDrift();

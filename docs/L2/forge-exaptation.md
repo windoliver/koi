@@ -40,7 +40,7 @@ The detector first identifies the **divergent cohort** — agents whose own evid
 
 | Cohort gate | Default | Why |
 |---|---|---|
-| `cohort.observationCount ≥ minObservations` | 5 | Enough data to be meaningful |
+| `cohort.observationCount ≥ minObservations` | 5 | Enough cohort data to be meaningful — baseline traffic in the window doesn't count toward this |
 | `cohort.avgDivergence ≥ divergenceThreshold` | 0.7 | Cohort drift is real |
 | `cohort.divergentAgents ≥ minDivergentAgents` | 2 | Multiple independent agents |
 
