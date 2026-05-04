@@ -515,7 +515,23 @@ if (status === "exited" || status === "crashed") return "terminal";
 if (status === "detached")    return "detached";
 if (status === "terminating") return "terminating";
 
-// status is "starting" or "running" → derive ownership from health snapshot.
+// status is "starting" or "running" → ownership + freshness from health.
+// `WorkerHealth.state` is `running | restarting | quarantined | stopping`
+// (no `starting` entry — pre-`started` workers don't appear in
+// health.workers[]). Use the registry status as the discriminator.
+//
+// For `running`: workerSnap absent ⇒ foreign; present ⇒ derive from heartbeat.
+// For `starting`: there is no health entry by definition. Render `pending`
+// (no health to red-flag); kill is gated off in BgView regardless.
+if (row.status === "starting") {
+  const PENDING_GRACE_MS = 30_000;
+  if (now - row.startedAt < PENDING_GRACE_MS) return "pending";
+  // Lingering "starting" past grace = backend never produced `started`.
+  // Visible signal so operator can off-path kill if hung.
+  return "timeout";
+}
+
+// row.status === "running"
 // `Supervisor.list()` returns ProcessDescriptor[] which has agentId only,
 // NOT workerId. The authoritative source for "this supervisor owns these
 // workerIds" is `SupervisorHealth.workers[].workerId` — the per-worker
@@ -609,11 +625,22 @@ must NEVER be attempted):
 
 | Row status | Owned locally? | `k` available? | Action |
 |------------|:--:|:--:|--------|
-| `running`, `starting` | yes | ✅ | confirm → on-path supervisor.stop |
-| `running`, `starting` | no (foreign) | ❌ | hint: "foreign worker; use `koi bg kill <id>` from a separate shell" |
+| `running` | yes | ✅ | confirm → on-path supervisor.stop |
+| `starting` | yes | ❌ | hint: "starting…; wait or use `koi bg kill <id>` if hung" — see note |
+| `running` | no (foreign) | ❌ | hint: "foreign worker; use `koi bg kill <id>` from a separate shell" |
 | `terminating` | any | ❌ | hint: "kill in flight; wait" |
 | `detached` | any | ❌ | hint: "use `koi bg kill <id>` from a separate shell, or `koi bg attach`" |
 | `exited`, `crashed` | any | ❌ | hint: "already terminal" |
+
+**Why `starting` is not killable from the TUI**: `WorkerHealth.state`
+only takes values `running | restarting | quarantined | stopping`. A
+worker in registry status `starting` has not yet emitted a `started`
+event and therefore has no `health.workers[]` entry — local ownership
+cannot be proven via the health snapshot. Falsely allowing kill could
+target a worker the local supervisor never spawned, or race a not-yet-
+registered worker. Recovery for hung-startup workers is the off-path
+`koi bg kill <id>` flow, which handles PID-by-fingerprint without
+requiring health-snapshot membership.
 
 Ownership is determined by intersecting the registry record's `workerId`
 with `supervisor.health().workers.map(w => w.workerId)`. The per-worker
@@ -639,10 +666,20 @@ For supported rows (`running`/`starting`):
    `onCommand("system:bg-kill", { workerId, expectedVersion, expectedPid })`.
 3. `tui-root` routes to
    `bridge.requestKill({ workerId, expectedVersion, expectedPid })`.
-4. Bridge re-reads the live record:
-   `current = await registry.get(workerId as WorkerId)`.
-   - **`current === undefined`** — record was unregistered (e.g. retention
-     sweep finalized). Toast `"⚠ worker <id> already gone"`, return.
+4. Bridge re-reads the live record using the **strict** read so I/O
+   faults cannot collapse to a false "already gone":
+   `result = await registry.describe(workerId as WorkerId)`.
+   - **`result.ok: false`** — registry is unreadable (permission denied,
+     corruption, transient I/O fault). Toast
+     `"⚠ registry unavailable: ${err.message}; aborting kill"` and
+     return without calling `supervisor.stop`. NEVER attempt to kill on
+     unreadable registry state — recovery requires fixing the registry
+     first.
+   - From here, `current = result.value` — typed
+     `BackgroundSessionRecord | undefined`.
+   - **`current === undefined`** — successful empty read. Record was
+     unregistered (retention sweep finalized). Toast
+     `"⚠ worker <id> already gone"`, return.
    - **`current.status === "exited" | "crashed"`** — already terminal.
      Toast `"⚠ worker <id> is ${status}"`, return.
    - **`current.status === "terminating"`** — kill already in flight from
@@ -813,13 +850,18 @@ on the right side: governance segment, then supervisor segment, separator
   at 50; bg row freshness boundaries cover all 9 outcomes (pending, ok,
   stale, timeout, **unmonitored**, **foreign**, terminating, detached,
   terminal):
-  - Foreign row: workerId not in `supervisor.health().workers` →
-    `foreign` (never `timeout`). Test fixture: BackgroundSessionRecord
-    present in registry but no matching entry in local health snapshot.
-  - Locally-owned + `heartbeatDeadlineAt: undefined` → `unmonitored`
-    (existing contract: undefined timestamps = opt-out).
-  - Locally-owned + `heartbeatDeadlineAt` present, `lastHeartbeatAt
-    undefined` → `pending` for 30s grace from `startedAt`, then `timeout`.
+  - **Registry status discriminates first**:
+    - `status: "starting"` row → `pending` within 30s grace, then
+      `timeout`. Never `foreign` even with no matching health entry —
+      L0 `WorkerHealth.state` excludes `starting` so absence is
+      expected.
+    - `status: "running"` row not in `supervisor.health().workers` →
+      `foreign` (never `timeout`).
+  - Locally-owned `running` + `heartbeatDeadlineAt: undefined` →
+    `unmonitored` (existing contract: undefined timestamps = opt-out).
+  - Locally-owned `running` + `heartbeatDeadlineAt` present,
+    `lastHeartbeatAt undefined` → `pending` for 30s grace from
+    `startedAt`, then `timeout`.
   - Locally-owned + both present, `now <= deadlineAt` → `ok`.
   - Locally-owned + both present, `now - deadlineAt < interval` →
     `stale`; greater → `timeout`.
@@ -831,9 +873,11 @@ on the right side: governance segment, then supervisor segment, separator
   when `detached`; format `"3/5 workers"`.
 - **`SupervisorView.test.tsx`** — worker table columns; reasons section
   hidden when empty; event feed last-N order.
-- **`BgView.test.tsx`** — registry rows merged with health workers + the
-  ownership set from `supervisor.list()`; kill modal flow only opens for
-  locally-owned `running`/`starting` rows; foreign-owned rows render `k`
+- **`BgView.test.tsx`** — registry rows merged with health workers; kill
+  modal flow opens **only** for locally-owned `running` rows (`status ===
+  "running"` AND `workerId` present in `health.workers`); `starting`
+  rows always render `k` disabled with the "starting…/off-path recovery"
+  hint regardless of ownership; foreign `running` rows render `k`
   disabled with hint pointing at `koi bg kill <id>`; `terminating`,
   `detached`, `exited`, `crashed` rows render `k` disabled with
   status-specific hint; Enter dispatches `set_bg_tailing({ workerId })`
@@ -869,6 +913,11 @@ on the right side: governance segment, then supervisor segment, separator
     bridge processes the event.
   - `requestKill` aborts on Phase 1 CAS conflict — never calls
     `supervisor.stop` if registry update returns `CONFLICT`.
+  - `requestKill` uses `registry.describe()` for the pre-kill re-read,
+    NOT `registry.get()`. A `Result.ok: false` from `describe()`
+    surfaces as a registry-unavailable toast; `supervisor.stop` is
+    never called. A successful `Result.ok: true` with `value: undefined`
+    is the only path that toasts "already gone".
   - **Atomic rollback**: when `supervisor.stop` returns `Result.ok:
     false`, the rollback CAS writes `{ status: preClaimStatus,
     clearSignaledAt: true }` together — restoring EXACT prior status
@@ -995,16 +1044,22 @@ calls. Existing daemon golden queries cover supervisor lifecycle.
       TUI status line within 1s of startup.
 - [ ] Killing a supervised worker via `os.kill` produces a toast within
       heartbeat deadline + 1s.
-- [ ] `/bg` `k` flow terminates a `running` worker and updates the row to
-      `exited`.
-- [ ] `/bg` `k` is disabled for `detached`/`terminating`/`exited`/`crashed`
-      rows AND for foreign-owned rows (workerId not in
-      `supervisor.list()`); each disabled state shows the correct hint.
-- [ ] On-path kill writes `status: terminating` (no `signaledAt`) BEFORE
-      calling supervisor.stop, then stamps `signaledAt` only after stop
-      returns `ok: true`. A failed stop reverts `terminating → running`
-      and leaves `signaledAt` unwritten so a follow-up genuine crash
-      classifies correctly.
+- [ ] `/bg` `k` flow terminates a locally-owned `running` worker and
+      updates the row to `exited`.
+- [ ] `/bg` `k` is disabled for `starting` rows (regardless of
+      ownership), `detached`/`terminating`/`exited`/`crashed` rows, and
+      foreign-owned `running` rows (workerId not in
+      `supervisor.health().workers`); each disabled state shows the
+      correct hint.
+- [ ] On-path kill performs a single atomic CAS write of
+      `{ status: "terminating", signaledAt }` BEFORE calling
+      `supervisor.stop`. On `Result.ok: false`, an atomic rollback CAS
+      writes `{ status: preClaimStatus, clearSignaledAt: true }` —
+      restoring the EXACT prior status AND wiping the intent marker
+      together so a follow-up genuine crash classifies as `crashed`,
+      not `exited`. A delayed/post-stop `signaledAt` write is NOT
+      acceptable: it races the terminal event and misclassifies clean
+      stops as crashes.
 - [ ] Manifest without `supervision:` and in-process-only `supervision:`
       both render no badge; in-process supervision keeps showing in
       `/agents` Supervised section as before.
