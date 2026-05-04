@@ -15,18 +15,29 @@ with `@koi/forge-optimizer` (#1350) and `@koi/forge-exaptation` (#1351).
 
 ## Surface (exact `src/index.ts` exports)
 
-- `evaluatePolicy(candidate, config, options?): ForgePolicyVerdict` — pure,
+- `evaluatePolicy(candidate, config, options?): PolicyEvaluation` — pure,
   synchronous evaluator. Runs cheapest checks first (allowed kinds →
   forbidden namespace → max complexity → scope ceiling → approval
   threshold). The first failing check produces the verdict; remaining
   checks are not evaluated. Deterministic: same inputs always produce the
-  same verdict.
+  same verdict. Returns `{ verdict, baseVerdict, overrideApplied }` so an
+  audit caller can record both the post-override verdict (the one to act
+  on) and the pre-override `baseVerdict` (what was actually bypassed).
+  Fails closed (`deny`) when `config.maxComplexity` is set but
+  `options.spec` is missing, and when `spec` cannot be canonicalized
+  (cycle, `BigInt`, function, or `Symbol`).
 - `ForgePolicyConfig` — operator-tunable rules. Extends L0 `ForgePolicy`
   with two L2-only fields:
   - `maxComplexity?: number` — reject candidates whose
-    `spec`-derived complexity score exceeds this ceiling. Complexity is
-    `JSON.stringify(spec).length` (bytes of canonical-ish form). Omit to
-    skip the check.
+    `spec`-derived complexity score exceeds this ceiling. The default
+    metric is the **UTF-8 byte length** of a canonical (sorted-keys) JSON
+    serialization, so multi-byte Unicode is counted accurately. Omit to
+    skip the check; when set, the caller MUST supply `options.spec` or
+    the call fails closed. **`spec` must be plain JSON-safe data** — the
+    evaluator validates without invoking any user code (getters, setters,
+    `toJSON`, custom prototypes such as `Date` / `Map` / class instances,
+    `BigInt`, function, and `symbol` values are rejected). Pre-serialize
+    such fields before handing the spec to the policy gate.
   - `forbiddenNamespaces?: readonly string[]` — reject candidates whose
     `name` starts with any listed prefix. Use to wall off reserved names
     (`system.`, `koi.`, `internal.`). Matched as case-sensitive prefix.
@@ -50,10 +61,13 @@ with `@koi/forge-optimizer` (#1350) and `@koi/forge-exaptation` (#1351).
   bounded by `options.maxEntries` (default `10_000`) — once the cap is
   reached, the oldest entry is dropped (FIFO) so a long-running session
   cannot exhaust memory.
-- `PolicyAuditEntry` — `{ candidateId, verdict, evaluatedAt,
-  override?, configFingerprint }`. `configFingerprint` is a stable hash
-  of the config inputs that produced the verdict so a forensic reader can
-  tell which policy version made the decision.
+- `PolicyAuditEntry` — `{ candidateId, verdict, baseVerdict,
+  evaluatedAt, override?, configFingerprint }`. `verdict` is the
+  post-override decision (what the caller acted on); `baseVerdict` is the
+  pre-override decision (what was bypassed when an override was granted).
+  When no override is applied the two are equal. `configFingerprint` is
+  a stable hash of the config inputs that produced the verdict so a
+  forensic reader can tell which policy version made the decision.
 
 ## Why these knobs
 

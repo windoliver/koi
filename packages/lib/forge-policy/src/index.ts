@@ -8,6 +8,6 @@
 export type { PolicyAuditEntry, PolicyAuditLog, PolicyAuditLogOptions } from "./audit.js";
 export { createPolicyAuditLog } from "./audit.js";
 export type { ForgePolicyConfig, PolicyOverride } from "./config.js";
-export type { EvaluatePolicyOptions } from "./evaluate.js";
+export type { EvaluatePolicyOptions, PolicyEvaluation } from "./evaluate.js";
 export { evaluatePolicy } from "./evaluate.js";
 export { computeConfigFingerprint } from "./fingerprint.js";
