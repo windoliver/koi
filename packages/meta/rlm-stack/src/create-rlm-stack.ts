@@ -29,14 +29,18 @@ function resolveTier(tier: RlmStackTier | undefined): RlmStackTier {
 }
 
 /**
- * Resolve the effective context window using `@koi/context-manager`'s
- * `resolveThresholds` so RLM and context-manager agree byte-for-byte on the
- * window size for a given `(modelId, modelWindowOverrides, contextWindowTokens)`
- * triple. The resolver applies its own precedence (overrides → registry →
- * `contextWindowSize` → default) — `@koi/rlm-stack` does not second-guess it.
+ * Resolve the effective context window via `@koi/context-manager`'s
+ * `resolveThresholds`. This is the single source of truth — `@koi/rlm-stack`
+ * does not second-guess the resolver, so RLM and context-manager always agree
+ * on the window for the same `(modelId, modelWindowOverrides, contextWindowTokens)`
+ * triple.
  *
- * `contextWindowTokens` is fed in as `contextWindowSize`, which is the same
- * field the rest of the system uses for explicit overrides.
+ * Caveat (tracked in a follow-up issue): `resolveThresholds` does not strip
+ * provider prefixes from `modelId` and treats unknown ids as the registry
+ * default (`128_000`) rather than letting `contextWindowTokens` take effect.
+ * Until that resolver is generalized, callers using prefixed or private
+ * model ids must supply `modelWindowOverrides` (matched to whatever form they
+ * pass elsewhere) to control the window in BOTH layers in lock-step.
  */
 function resolveContextWindow(config: RlmStackConfig | undefined): number {
   const explicit = config?.contextWindowTokens;

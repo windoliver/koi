@@ -50,11 +50,10 @@ describe("createRlmStack", () => {
     expect(stack.thresholds.maxInputTokens).toBe(1_000_000);
   });
 
-  it("matches @koi/context-manager precedence: registry hit on modelId wins over contextWindowTokens", () => {
-    // Aligned with @koi/context-manager so RLM and context-manager cannot disagree about
-    // the same (modelId, contextWindowTokens) pair. resolveThresholds resolves modelId
-    // through the registry first; contextWindowTokens only takes effect when the registry
-    // misses (i.e. modelId is undefined or unknown without a matching override).
+  it("for known modelIds, registry/override window wins over contextWindowTokens (matches @koi/context-manager precedence)", () => {
+    // Known model: registry says 1M, caller passes 64k contextWindowTokens — registry wins
+    // so RLM stays in sync with @koi/context-manager. Use modelWindowOverrides to override
+    // both layers in lock-step.
     const stack = createRlmStack({
       modelId: "claude-opus-4-6",
       contextWindowTokens: 64_000,
@@ -67,21 +66,26 @@ describe("createRlmStack", () => {
     expect(stack.thresholds.contextWindowTokens).toBe(64_000);
   });
 
-  it("falls back to the model-registry default for unknown modelIds", () => {
-    // resolveModelWindow returns DEFAULT_MODEL_WINDOW (128K) for unknown ids
-    const stack = createRlmStack({ modelId: "unknown/model-9000" });
+  it("delegates unknown modelIds to context-manager's resolveThresholds (returns the model-registry default)", () => {
+    // Pure delegation — RLM and context-manager agree byte-for-byte on the
+    // window for unknown ids. Callers needing a different window for private
+    // models must supply modelWindowOverrides for both layers in lock-step.
+    const stack = createRlmStack({ modelId: "my-private-model" });
     expect(stack.thresholds.contextWindowTokens).toBe(128_000);
   });
 
-  it("delegates prefixed modelIds to context-manager's resolveThresholds (does NOT strip prefixes)", () => {
-    // We must NOT canonicalize the modelId here — context-manager does not
-    // strip prefixes either, so doing so in @koi/rlm-stack would desynchronize
-    // the two layers. For a prefixed id that misses the registry, both layers
-    // fall back to the registry default (128K). Callers should pass the bare
-    // id (or supply contextWindowTokens / modelWindowOverrides) to get the
-    // intended window.
-    const prefixed = createRlmStack({ modelId: "anthropic:claude-opus-4-6" });
-    expect(prefixed.thresholds.contextWindowTokens).toBe(128_000);
+  it("treats prefixed modelIds the same way @koi/context-manager does (no normalization)", () => {
+    // Both layers see the prefixed id as unknown and fall back to the registry
+    // default. Callers using prefixed ids must either pre-normalize at the call
+    // site or supply modelWindowOverrides (keyed identically in both layers).
+    const stack = createRlmStack({ modelId: "anthropic:claude-opus-4-6" });
+    expect(stack.thresholds.contextWindowTokens).toBe(128_000);
+  });
+
+  it("uses the bare modelId verbatim — does NOT auto-strip provider prefixes", () => {
+    // Pure delegation to @koi/context-manager which does not strip prefixes.
+    // Callers must use bare ids (or supply modelWindowOverrides in matching form)
+    // so RLM and context-manager resolve the same window.
     const bare = createRlmStack({ modelId: "claude-opus-4-6" });
     expect(bare.thresholds.contextWindowTokens).toBe(1_000_000);
   });
@@ -92,6 +96,16 @@ describe("createRlmStack", () => {
       modelWindowOverrides: { "claude-opus-4-6": 32_000 },
     });
     expect(stack.thresholds.contextWindowTokens).toBe(32_000);
+  });
+
+  it("honors a prefixed modelWindowOverrides key against the same prefixed modelId", () => {
+    // Both layers honor the override map keyed by whatever form the caller
+    // uses, as long as the same key shape is used everywhere.
+    const stack = createRlmStack({
+      modelId: "anthropic:claude-opus-4-6",
+      modelWindowOverrides: { "anthropic:claude-opus-4-6": 48_000 },
+    });
+    expect(stack.thresholds.contextWindowTokens).toBe(48_000);
   });
 
   it("propagates the priority forwarded to RLM middleware", () => {
