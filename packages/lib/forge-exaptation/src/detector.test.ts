@@ -382,9 +382,10 @@ describe("eventId-based dedup + replay protection", () => {
     }
   });
 
-  test("every observation carrying eventId enables replay protection + global dedup", () => {
-    // Same eventId across agents collapses too — see "cross-agent fan-out
-    // regression" below for why this is required.
+  test("every observation carrying eventId enables replay protection + per-agent dedup", () => {
+    // Same eventId from same agent collapses (replay). The L0 contract
+    // requires eventId to be per-observation unique, so cross-agent
+    // collisions are accidental and per-agent dedup keeps them independent.
     const sharedId = "shared-eid";
     const a1: UsagePurposeObservation = {
       agentId: "a1",
@@ -398,9 +399,9 @@ describe("eventId-based dedup + replay protection", () => {
     expect(result.kind).toBe("no-drift");
     if (result.kind === "no-drift") {
       expect(result.replayProtected).toBe(true);
-      // Global dedup collapses to 1 — same eventId regardless of agent.
-      expect(result.observationCount).toBe(1);
-      expect(result.duplicateCount).toBe(5);
+      // Per-agent: each agent collapses 3 → 1, so 2 survive.
+      expect(result.observationCount).toBe(2);
+      expect(result.duplicateCount).toBe(4);
     }
   });
 
@@ -609,53 +610,11 @@ describe("deterministic dedup conflict resolution", () => {
   });
 });
 
-describe("cross-agent fan-out regression", () => {
-  test("same causal eventId fanned out to multiple agents counts as ONE observation, not multi-agent evidence", () => {
-    // One upstream event was processed by 3 agents (e.g. retry fan-out).
-    // Without global dedup, this would have satisfied minDivergentAgents=2
-    // and triggered drift even though there is no genuinely-independent
-    // evidence — just one logical event multiplied across executors.
-    const fannedOut: UsagePurposeObservation[] = [
-      {
-        agentId: "a1",
-        eventId: "shared-causal-evt",
-        divergenceScore: 0.95,
-        observedAt: 1,
-        contextText: "x",
-      },
-      {
-        agentId: "a2",
-        eventId: "shared-causal-evt",
-        divergenceScore: 0.95,
-        observedAt: 2,
-        contextText: "x",
-      },
-      {
-        agentId: "a3",
-        eventId: "shared-causal-evt",
-        divergenceScore: 0.95,
-        observedAt: 3,
-        contextText: "x",
-      },
-      {
-        agentId: "a4",
-        eventId: "shared-causal-evt",
-        divergenceScore: 0.95,
-        observedAt: 4,
-        contextText: "x",
-      },
-    ];
-    const result = detectDrift(fannedOut, DEFAULT_EXAPTATION_THRESHOLDS);
-    expect(result.kind).toBe("no-drift");
-    if (result.kind === "no-drift") {
-      // Global dedup leaves exactly 1 observation; cohort empty.
-      expect(result.observationCount).toBe(1);
-      expect(result.duplicateCount).toBe(3);
-    }
-  });
-
-  test("genuinely independent agents (distinct eventIds) still register as multi-agent drift", () => {
-    // Each agent has its own causal events — no fan-out. Drift surfaces.
+describe("eventId contract regressions", () => {
+  test("multiple distinct tool calls in one request (each with its own eventId) all count as evidence", () => {
+    // L0 contract: eventId is per-observation unique, not request-level.
+    // Three tool calls within the same request from one agent produce three
+    // distinct eventIds and three observations — none collapse.
     const obsList: UsagePurposeObservation[] = [
       ...[0.95, 0.95, 0.95].map((s) => obs("a1", s)),
       ...[0.95, 0.95, 0.95].map((s) => obs("a2", s)),
@@ -663,8 +622,72 @@ describe("cross-agent fan-out regression", () => {
     const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
     if (result.kind === "drift") {
-      expect(result.report.divergentAgents).toBe(2);
       expect(result.report.observationCount).toBe(6);
+      expect(result.duplicateCount).toBe(0);
+    }
+  });
+
+  test("accidental cross-tenant eventId collision keeps observations independent (per-agent scope)", () => {
+    // Two tenants happen to mint the same eventId string. Per-agent scope
+    // (tenant-prefixed agentIds) keeps them as independent evidence rather
+    // than collapsing them as duplicates. Earlier global-dedup attempt
+    // would have erased real evidence here.
+    const collidingId = "happens-to-collide";
+    const observations: UsagePurposeObservation[] = [
+      // tenantA — 2 distinct (legitimate) eventIds, plus a colliding-id replay.
+      {
+        agentId: "tenantA/agent-x",
+        eventId: "a-evt-1",
+        divergenceScore: 0.95,
+        observedAt: 1,
+        contextText: "x",
+      },
+      {
+        agentId: "tenantA/agent-x",
+        eventId: "a-evt-2",
+        divergenceScore: 0.95,
+        observedAt: 2,
+        contextText: "x",
+      },
+      {
+        agentId: "tenantA/agent-x",
+        eventId: collidingId,
+        divergenceScore: 0.95,
+        observedAt: 3,
+        contextText: "x",
+      },
+      // tenantB — also has a hit on the colliding eventId. Per-agent scope
+      // keeps tenantB's evidence independent of tenantA's despite the collision.
+      {
+        agentId: "tenantB/agent-y",
+        eventId: "b-evt-1",
+        divergenceScore: 0.95,
+        observedAt: 4,
+        contextText: "x",
+      },
+      {
+        agentId: "tenantB/agent-y",
+        eventId: "b-evt-2",
+        divergenceScore: 0.95,
+        observedAt: 5,
+        contextText: "x",
+      },
+      {
+        agentId: "tenantB/agent-y",
+        eventId: collidingId,
+        divergenceScore: 0.95,
+        observedAt: 6,
+        contextText: "x",
+      },
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      // Each tenant: 3 distinct eventIds in their per-agent scope. Both
+      // tenants' evidence survives — global dedup would have collapsed
+      // collidingId across tenants and undercount cohort.
+      expect(result.report.observationCount).toBe(6);
+      expect(result.report.divergentAgents).toBe(2);
     }
   });
 });

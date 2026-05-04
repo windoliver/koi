@@ -967,13 +967,25 @@ interface UsagePurposeObservation {
     readonly divergenceScore: number;
     readonly observedAt: number;
     /**
-     * Optional stable upstream event identity (correlation ID, idempotency
-     * key, monotonic sequence number). When every observation in a window
-     * carries a non-empty \`eventId\`, the exaptation detector treats the
-     * window as replay-protected and is allowed to recommend irreversible
-     * actions (\`reclassify\` / \`new-artifact\`); otherwise such suggestions
-     * are refused. Unlike a free-form key function, this field is a
-     * data-shape contract the detector can validate at runtime.
+     * Optional **per-observation idempotency key**. Must be unique to *this
+     * specific observation* — NOT a request-level correlation ID, NOT an
+     * upstream causal event ID shared by multiple agents handling the same
+     * fan-out, NOT an account-level identifier. Generate it at the moment of
+     * observation (e.g. \`\${agentId}:\${observedAt}:\${nonce}\`) so that:
+     *
+     *   - Retries of the same observation re-emit the same \`eventId\` (replay
+     *     dedup collapses them).
+     *   - Distinct tool calls inside one request, multiple agents recording
+     *     the same upstream event, and observations from different tenants
+     *     all produce DIFFERENT \`eventId\`s and survive as independent
+     *     evidence.
+     *
+     * When every observation in a window carries a non-empty \`eventId\` the
+     * exaptation detector treats the window as \`replayProtected: true\` and
+     * allows action-bearing suggestions (\`reclassify\` / \`new-artifact\`).
+     * Otherwise such suggestions are refused. Unlike a free-form key
+     * function, this field is a data-shape contract the detector validates
+     * at runtime.
      */
     readonly eventId?: string;
 }

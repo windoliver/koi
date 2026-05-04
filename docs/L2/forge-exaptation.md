@@ -87,11 +87,19 @@ Replay protection is a **per-observation data contract**, not a config knob.
 
 `suggestAction` accepts any `DetectionResult` whose data fields satisfy the gates: `kind: "drift"`, `replayProtected: true`, and `(droppedCount + duplicateCount) / (validObservationCount + dropped + duplicate) ≤ 25%`. The fields ARE the contract — results survive JSON / `structuredClone` / cross-package handoff. Earlier rounds gated on a hidden module-local symbol, but that silently broke serialization paths and any cross-package usage of the library, so the brand was removed in favour of trusting the data. Honest callers preserving the fields keep their recommendations; callers that fabricate results take the responsibility on themselves.
 
+## eventId Contract
+
+`eventId` is a **per-observation idempotency key**. The L0 docstring on `UsagePurposeObservation.eventId` is the authoritative spec; the short version:
+
+- Generate at the moment of observation (e.g. `${agentId}:${observedAt}:${nonce}`) — NOT a request-level correlation ID, NOT an upstream causal event ID shared across agents, NOT an account/tenant identifier.
+- Retries of the same observation must re-emit the same `eventId` so replay dedup collapses them.
+- Distinct tool calls within one request, multiple agents recording the same upstream event, and observations from different tenants must all generate **different** `eventId`s.
+
 ## Dedup Conflict Resolution
 
-`eventId` dedup is **global** across agents, not just within an agent. A single causal upstream event fanned out to N executors arrives N times with the same eventId — without global dedup, those copies would satisfy `minDivergentAgents` and manufacture "multi-agent drift" out of one logical event. Distinct `agentId`s only count as independent evidence when their `eventId`s also differ.
+Dedup is scoped per-agent (`(agentId, eventId)`). The contract above guarantees per-observation `eventId` uniqueness, so per-agent scope is what catches retries; cross-agent collisions (which under a tighter contract should never happen, but can occur accidentally between tenants) keep their evidence independent rather than collapsing it.
 
-When the same `eventId` arrives more than once with different payloads, the winner is picked deterministically — highest `divergenceScore`, then highest finite `observedAt` (NaN normalized to −∞), then lexicographic `contextText` — instead of first-write-wins. Reordering the same logical event set produces the same `DriftReport`.
+When the same `(agentId, eventId)` arrives more than once with different payloads, the winner is picked deterministically — highest `divergenceScore`, then highest finite `observedAt` (NaN normalized to −∞), then lexicographic `contextText` — instead of first-write-wins. Reordering the same logical event set produces the same `DriftReport`.
 
 ---
 

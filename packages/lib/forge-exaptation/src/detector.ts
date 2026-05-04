@@ -211,7 +211,7 @@ export function detectDrift(
     if (typeof o.eventId === "string" && o.eventId.length > 0) withEventId.push(o);
     else withoutEventId.push(o);
   }
-  const dedupedWithEventId = dedupeByEventId(withEventId);
+  const dedupedWithEventId = dedupePerAgentByEventId(withEventId);
   const unique: readonly UsagePurposeObservation[] = [...dedupedWithEventId, ...withoutEventId];
   const duplicateCount = withEventId.length - dedupedWithEventId.length;
   const replayProtected = valid.length > 0 && withoutEventId.length === 0;
@@ -358,36 +358,50 @@ function isObservationValid(o: UsagePurposeObservation): boolean {
 }
 
 /**
- * Dedup observations **globally** by `eventId` — across agents, not just
- * within them. Caller has already verified that every input has a non-empty
- * string `eventId`, so the field reads here are safe.
+ * Dedup observations per agent using each observation's `eventId`. Caller has
+ * already verified that every input has a non-empty string `eventId`. The
+ * dedup namespace is `(agentId, eventId)`.
  *
- * Why globally and not per-agent: a single causal upstream event fanned out
- * to multiple executors arrives once per agent with the same eventId. If the
- * detector kept those copies, `minDivergentAgents` would be satisfied by
- * one logical event multiplied across agents — manufacturing "multi-agent
- * drift" out of cross-agent duplication. Global dedup separates replay
- * identity from independence identity: distinct agentIds count as
- * independent evidence ONLY when their eventIds also differ.
+ * The L0 contract for `eventId` requires it to be a **per-observation**
+ * idempotency key (NOT a shared upstream correlation ID), so:
+ *
+ *   - Retries of the same observation re-emit the same `eventId` and
+ *     collapse here as duplicates (the desired replay protection).
+ *   - Distinct tool calls within a request, multiple agents recording the
+ *     same upstream causal event, and independent observations from
+ *     different tenants all generate DIFFERENT `eventId`s and survive.
+ *
+ * Per-agent scope (vs global) is what protects against accidental
+ * cross-tenant `eventId` collisions: if `agentId` already isolates tenants
+ * (a typical assumption since agentIds tend to be tenant-prefixed), two
+ * tenants that happen to produce the same `eventId` string still get their
+ * own dedup buckets and survive as independent evidence.
  *
  * Conflict resolution is deterministic, content-based — NOT first-write-wins:
  *   1. highest `divergenceScore`        — score conflict resolution
  *   2. highest finite `observedAt`      — order tiebreak (NaN normalized)
  *   3. lexicographic `contextText`      — final deterministic tiebreak
  */
-function dedupeByEventId(
+function dedupePerAgentByEventId(
   observations: readonly UsagePurposeObservation[],
 ): readonly UsagePurposeObservation[] {
-  const winners = new Map<string, UsagePurposeObservation>();
+  const winners = new Map<string, Map<string, UsagePurposeObservation>>();
   for (const o of observations) {
     const eventId = o.eventId;
     if (eventId === undefined) continue;
-    const incumbent = winners.get(eventId);
+    let bucket = winners.get(o.agentId);
+    if (bucket === undefined) {
+      bucket = new Map<string, UsagePurposeObservation>();
+      winners.set(o.agentId, bucket);
+    }
+    const incumbent = bucket.get(eventId);
     if (incumbent === undefined || prefersChallenger(incumbent, o)) {
-      winners.set(eventId, o);
+      bucket.set(eventId, o);
     }
   }
-  return [...winners.values()];
+  const out: UsagePurposeObservation[] = [];
+  for (const bucket of winners.values()) for (const o of bucket.values()) out.push(o);
+  return out;
 }
 
 function prefersChallenger(
