@@ -197,11 +197,33 @@ import type {
 
 const SUPERVISOR_EVENT_BUFFER_CAP = 50;
 
+/**
+ * Per-channel liveness tracked independently. Composite UI status is
+ * derived from the worst dimension — never optimistic.
+ */
+interface ChannelLiveness {
+  readonly health: "live" | "stale";       // supervisor.health() poll
+  readonly registryList: "live" | "stale"; // registry.list() poll
+  readonly workerEvents: "live" | "stale"; // supervisor.watchAll() iter
+  readonly registryEvents: "live" | "stale"; // registry.watch() iter
+}
+
+/**
+ * UI surface status — derived from ChannelLiveness, never set directly:
+ *
+ *   detached  ⇔ no supervisor attached this session
+ *   live      ⇔ ALL four channels live
+ *   degraded  ⇔ at least one push channel (workerEvents/registryEvents)
+ *               stale, but polls live — surface still functions in
+ *               poll-only mode; toasts/inline events lag or miss
+ *   stale     ⇔ at least one poll channel stale — primary state may be
+ *               wrong; preserve last snapshot, do not blink empty
+ */
 type BridgeStatus =
-  | { readonly kind: "detached" }   // no supervisor in this session
-  | { readonly kind: "live" }       // last poll succeeded
+  | { readonly kind: "detached" }
+  | { readonly kind: "live" }
+  | { readonly kind: "degraded"; readonly missing: readonly ("workerEvents" | "registryEvents")[]; readonly since: number }
   | { readonly kind: "stale"; readonly since: number; readonly reason: string };
-                                    // bridge attached but data plane failing
 
 interface SupervisorSlice {
   readonly attached: boolean;       // false ⇔ status.kind === "detached"
@@ -366,12 +388,20 @@ last-known snapshot and flags the surface as stale.
 | `registry.list()` rejects | Same 3-strike → `stale` status; keep last `rows`. Toast once per stale transition: `"⚠ background session registry unavailable"`. |
 | `watchAll()` iterator throws or ends `done: true` | Iterator pattern means a thrown error surfaces in the `for await` `catch`. Dispatch stale; **reacquire indefinitely** with capped exponential backoff `1s, 2s, 5s, 10s, 30s, 60s` (cap), each attempt jittered ±20% to avoid lockstep retry storms. While stream is down, `health()` + `registry.list()` polling continue (degraded poll-only mode); the surface remains functional, just without push events. |
 | `registry.watch()` iterator throws or ends | Same indefinite-reacquire policy as `watchAll`. Independent counter — a flaky FS watcher does not cancel the supervisor stream. `registry.list()` polling backstops row freshness. |
-| Recovery (any successful poll/event after a failure) | Reset failure counter; dispatch `set_supervisor_status({ kind: "live" })`; toast `"✓ supervisor connection restored"` only if previously stale. |
+| Recovery (any successful operation) | Reset that channel's failure counter; mark its `ChannelLiveness` slot back to `live`. **Recompute composite status from the full liveness map** — only flip back to `kind: "live"` when ALL four channels are live. If push channels are still down, status remains `degraded`. Toast on transitions: `"✓ supervisor stream restored"` when both push channels recover; `"✓ supervisor connection restored"` only on `degraded → live` or `stale → live` transitions. |
 | `bridge.close()` during reconnect backoff | The closed-sentinel race exits the backoff sleep immediately; no leaked timers. |
+
+The composite-status rule rules out a known anti-pattern: a flapping
+`watchAll()` would otherwise keep the badge looking healthy while crash
+toasts silently never fire. Push-channel outage is **always** at least
+`degraded` — operators see `◐` plus a tooltip naming which streams are
+out, never `◎`.
 
 Status-line rendering uses `status.kind`:
 - `detached` → segment hidden (current behavior).
 - `live` → badge ◎/◑/● per `health.status`.
+- `degraded` → badge `◐` plus tooltip listing missing push channels;
+  worker counts still rendered from polled `health()`.
 - `stale` → badge `◌` (open circle) plus `"stale Ns"` countdown — explicit
   signal that observability is broken, not that everything is healthy.
 
@@ -499,14 +529,49 @@ For supported rows (`running`/`starting`):
 
 ### Log tail
 
-`Enter` on row → dispatch `set_bg_tailing({ sessionId })` → `BgLogTail`
-mounts.
+Selection identity is `workerId` end-to-end — `sessionId` is optional
+display-only metadata and is never the row key. `Enter` on row → dispatch
+`set_bg_tailing({ workerId })` → `BgLogTail` resolves the matching row
+from `state.bg.rows` and reads `logPath` from there.
 
-- Initial: read last 1000 lines from `logPath`.
-- Watch: `fs.watch(logPath)` on Bun; on `change` event, read appended bytes.
-- Fallback: if no events fire within 5s, switch to `setInterval(stat+read)`
-  at 500ms.
-- Component-local ring buffer (cap 1000 lines). Esc returns to row list.
+Tail behavior must survive **truncation, rotation, and recreation**
+across worker restarts (a transient/permanent restart policy spawns a new
+process which often opens a fresh log file under the same path; the tailer
+must follow it without losing or duplicating output).
+
+State the tailer tracks:
+
+```typescript
+interface TailerState {
+  readonly path: string;
+  readonly inode: number | null;     // bigint stat ino, narrowed to number safely
+  readonly device: number | null;    // (inode, dev) tuple is the file identity
+  readonly readOffset: number;       // bytes read so far from current file
+  readonly buffer: readonly string[]; // ring buffer cap 1000 lines
+}
+```
+
+Loop:
+
+1. **Initial open** — `stat(logPath)`; record `(ino, dev, size)`. Read last
+   1000 lines via reverse-chunked read; set `readOffset = size`.
+2. **Watch** — `fs.watch(logPath)`. On any event:
+   - `stat(logPath)` again. Three cases:
+     | Condition | Meaning | Action |
+     |-----------|---------|--------|
+     | `(ino, dev)` unchanged AND `size >= readOffset` | normal append | read `[readOffset, size)`; advance offset |
+     | `(ino, dev)` unchanged AND `size < readOffset` | truncation in place | reset `readOffset = 0`, render banner `--- log truncated ---`, read from start |
+     | `(ino, dev)` changed | file replaced (rotation or restart) | close prior fd, reopen, render banner `--- log rotated ---`, reset offset to 0, read full new file |
+     | `stat` ENOENT | file deleted; await recreate | poll every 250ms for up to 5s; on recreate go to "file replaced" branch |
+3. **Fallback** — if `fs.watch` fires no events within 5s of opening,
+   switch to `setInterval(stat+read)` at 500ms using the same three-case
+   resolution above.
+4. **Cleanup on Esc / unmount** — close fd; clear `fs.watch` handle; clear
+   fallback interval. Component-local ring buffer (cap 1000 lines) is
+   discarded with the component.
+
+Banners (`--- log truncated ---`, `--- log rotated ---`) render inline so
+operators see the discontinuity rather than a silent gap or duplicate.
 
 ## Hidden status-line
 
@@ -533,7 +598,14 @@ on the right side: governance segment, then supervisor segment, separator
 - **`BgView.test.tsx`** — registry rows merged with health workers; kill
   modal flow only opens for `running`/`starting` rows; `terminating`,
   `detached`, `exited`, `crashed` rows render `k` disabled with
-  status-specific hint; Enter triggers tailing dispatch.
+  status-specific hint; Enter dispatches `set_bg_tailing({ workerId })`
+  using the row's workerId (never sessionId).
+- **`BgLogTail.test.tsx`** — initial reverse-tail produces last 1000 lines;
+  appended write extends buffer; truncation resets offset and renders
+  `--- log truncated ---`; inode change renders `--- log rotated ---` and
+  reads new file from start; `stat` ENOENT then recreate within 5s
+  resumes tail from new file; fs.watch silence for 5s switches to poll
+  fallback; unmount closes fd + clears watcher.
 - **`daemon-bridge.test.ts`** —
   - `WorkerEvent.crashed` triggers `push_toast` + `push_supervisor_event`;
     same crash within 30s deduped to 1 toast.
@@ -549,8 +621,15 @@ on the right side: governance segment, then supervisor segment, separator
   - `supervisor.stop` returning `Result.ok: false` surfaces as toast
     without crashing the bridge.
   - 3 consecutive `health()` failures flip status to `stale` while
-    preserving last snapshot; recovery flips back to `live` with
-    restored toast.
+    preserving last snapshot.
+  - `watchAll()` failure flips status to `degraded` with
+    `missing: ["workerEvents"]` while polls keep working; rows + badge
+    still update from `health()` + `list()`.
+  - Recovery composite rule: `degraded → live` requires the failed push
+    channel to actually reattach; a successful poll alone does NOT clear
+    `degraded`.
+  - Restored toast fires only on `degraded → live` or `stale → live`
+    transition, not on intermediate steps.
   - `watchAll()` iterator throwing triggers indefinite reacquire with
     backoff `1s → 60s` (verified via fake timers): 6th failure schedules
     next attempt, never gives up; `bridge.close()` during a backoff sleep
@@ -641,6 +720,9 @@ calls. Existing daemon golden queries cover supervisor lifecycle.
       both render no badge; in-process supervision keeps showing in
       `/agents` Supervised section as before.
 - [ ] Killing the supervisor `watchAll()` mid-session (induced fault)
-      flips badge to `◌ stale`, polling continues to refresh rows, and
-      a successful reacquire toast restores `live` status without
-      operator action.
+      flips badge to `◐ degraded` (push channel down, polls live);
+      successful reacquire restores `◎ live` automatically, with the
+      restoration toast firing exactly once on `degraded → live`.
+- [ ] Restarting a supervised worker rotates its log file; `BgLogTail`
+      renders `--- log rotated ---` and continues following the new file
+      without losing or duplicating lines (E2E case).
