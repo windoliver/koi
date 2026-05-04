@@ -387,6 +387,42 @@ describe("createNexusPlaybookProposalStore", () => {
     }
   });
 
+  // --- Fix 1: proposal idempotency takes precedence over baseVersion check ---
+
+  test("retry of already-recorded proposal succeeds after playbook head advances (idempotency over baseVersion)", async () => {
+    // Step 1: save playbook v1, record proposal p with baseVersion=1.
+    const { proposal: store, structured } = newStores();
+    await structured.save(makeStructuredPlaybook("pb-retry", 1));
+    const p = makeProposalWithBase("p-retry", "pb-retry", 1);
+    await store.recordProposal(p);
+    // Step 2: advance playbook to v2.
+    await structured.save(makeStructuredPlaybook("pb-retry", 2));
+    // Step 3: retry same proposal (same id, same content, baseVersion still 1).
+    // Must succeed — the audit record is already stored and byte-identical.
+    await expect(store.recordProposal(p)).resolves.toBeUndefined();
+    // Proposal still retrievable and unmodified.
+    expect((await store.getProposal("p-retry"))?.baseVersion).toBe(1);
+  });
+
+  test("re-recording same proposal id with DIFFERENT content after head advances throws immutability error", async () => {
+    // Immutability must not be bypassed even if baseVersion is now stale.
+    const { proposal: store, structured } = newStores();
+    await structured.save(makeStructuredPlaybook("pb-immut2", 1));
+    await store.recordProposal(makeProposalWithBase("p-immut2", "pb-immut2", 1));
+    await structured.save(makeStructuredPlaybook("pb-immut2", 2));
+    // Different content, same id — must still throw immutability error.
+    const changed = {
+      ...makeProposalWithBase("p-immut2", "pb-immut2", 1),
+      reflection: {
+        ...makeProposal("p-immut2", "pb-immut2").reflection,
+        rootCause: "tampered content",
+      },
+    };
+    await expect(store.recordProposal(changed)).rejects.toThrow(
+      "already recorded with different content",
+    );
+  });
+
   // --- Fix 3: listProposals propagates non-NOT_FOUND errors ---
 
   test("listProposals propagates EXTERNAL error from proposal file read", async () => {

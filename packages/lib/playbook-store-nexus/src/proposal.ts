@@ -79,6 +79,27 @@ export function createNexusPlaybookProposalStore(
       if (!vPb.ok) throw new Error(vPb.error.message);
 
       return withIdLock(proposal.id, async () => {
+        // Idempotency check FIRST: if a proposal with this id already exists,
+        // compare content before doing anything else. This allows a successful
+        // recordProposal to be safely retried even after the playbook head has
+        // advanced (baseVersion would mismatch, but the audit record is already
+        // durably stored and byte-identical).
+        const pPath = proposalPath(proposal.id);
+        const ex = await exists(transport, pPath);
+        if (!ex.ok) throw new Error(ex.error.message);
+        if (ex.value) {
+          const existing = await readJson<PlaybookProposal>(transport, pPath);
+          if (!existing.ok) throw new Error(existing.error.message);
+          if (existing.value !== undefined) {
+            if (canonicalJson(existing.value) !== canonicalJson(proposal)) {
+              throw new Error(`Proposal id ${proposal.id} already recorded with different content`);
+            }
+            // Byte-identical: idempotent success — skip baseVersion re-check.
+            return;
+          }
+        }
+
+        // New proposal: validate baseVersion against the current playbook.
         // Existence + version check: structured playbook MUST exist and its version
         // MUST match proposal.baseVersion. Matches sqlite sibling behaviour —
         // proposals against a never-saved playbook are rejected.
@@ -96,23 +117,6 @@ export function createNexusPlaybookProposalStore(
           throw new Error(
             `Proposal baseVersion ${proposal.baseVersion} does not match current structured playbook version ${spb.value.version}`,
           );
-        }
-
-        // Immutable audit record contract: if a proposal with the same id already
-        // exists, it must be byte-identical. If it differs, reject the write.
-        const pPath = proposalPath(proposal.id);
-        const ex = await exists(transport, pPath);
-        if (!ex.ok) throw new Error(ex.error.message);
-        if (ex.value) {
-          const existing = await readJson<PlaybookProposal>(transport, pPath);
-          if (!existing.ok) throw new Error(existing.error.message);
-          if (existing.value !== undefined) {
-            if (canonicalJson(existing.value) !== canonicalJson(proposal)) {
-              throw new Error(`Proposal id ${proposal.id} already recorded with different content`);
-            }
-            // Byte-identical: idempotent success
-            return;
-          }
         }
 
         // Write proposal payload — it is the source of truth.
