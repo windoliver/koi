@@ -731,21 +731,36 @@ atomically — the TUI does.
    `onCommand("system:bg-kill", { workerId, expectedVersion, expectedPid })`.
 3. `tui-root` routes to
    `bridge.requestKill({ workerId, expectedVersion, expectedPid })`.
-4. **Best-effort respawn-race check** (does NOT block kill on registry
-   unreadability — local stop authority must work even when state-dir
-   is degraded):
+4. **Mandatory respawn-race check** — identity must be proven before
+   any `supervisor.stop` call. Worker IDs ARE reusable across
+   restarts; without the version+pid CAS, an outage that respawns the
+   worker between confirm and stop would terminate the *replacement*
+   process, not the one the operator picked. Fail-closed:
    - `result = await registry.describe(workerId as WorkerId)`.
-   - `result.ok: true, value !== undefined` AND
-     `(value.version !== expectedVersion || value.pid !== expectedPid)`
-     — worker was respawned under the same `workerId` since the
-     operator selected the row. Toast `"⚠ worker <id> respawned;
-     refresh and try again"` and return. **No `supervisor.stop` call**
-     — never kill a process the operator did not pick.
-   - Any other outcome (Result.ok: false, undefined record, version+pid
-     match) → proceed to step 5. If the registry is unreadable we log
-     the fault but trust the supervisor's own ownership signal (we
-     already proved local ownership via `supervisor.health().workers`
-     before opening the modal).
+   - **`result.ok: false`** — registry unreadable; cannot verify
+     identity. Toast `"⚠ registry unreadable; cannot verify worker
+     identity. Fix the state dir and retry, or use \`koi bg kill <id>\`
+     from a separate shell."` and return. NEVER call `supervisor.stop`
+     without a successful identity check — killing the wrong
+     incarnation during an outage is worse than refusing to kill.
+   - **`result.value === undefined`** — record was unregistered
+     (e.g. retention sweep finalized). Toast `"⚠ worker <id> already
+     gone"` and return.
+   - **`result.value.version !== expectedVersion ||
+     result.value.pid !== expectedPid`** — worker was respawned under
+     the same `workerId` since the operator selected the row. Toast
+     `"⚠ worker <id> respawned; refresh and try again"` and return.
+     **No `supervisor.stop` call** — never kill a process the operator
+     did not pick.
+   - **Identity verified** (record present, version+pid match) →
+     proceed to step 5.
+
+   The local-vs-foreign ownership question is *separately* answered
+   by `supervisor.health().workers` (which gates `k` in BgView before
+   the modal opens). Step 4 is the *incarnation* check, which has no
+   in-memory equivalent — `health()` snapshots don't carry version,
+   so the registry's `version` field is the only authoritative
+   incarnation marker.
 5. `await supervisor.stop(workerId, "user-requested")`.
    - `Result.ok: true` → supervisor emits `exited` (NOT `crashed`,
      per the regression test). `attachRegistry` flips the registry row
@@ -775,10 +790,27 @@ display-only metadata and is never the row key. `Enter` on row → dispatch
 `set_bg_tailing({ workerId })` → `BgLogTail` resolves the matching row
 from `state.bg.rows` and reads `logPath` from there.
 
+The mounted `BgLogTail` subscribes to the row in the store (selector
+keyed by `workerId`). On every store update it inspects the row's
+**current** `logPath`. Backend implementations are not required to
+reuse the same path across restarts — a respawned worker may open a
+new log file under the same `workerId`. When the selector observes a
+changed `logPath`, the tailer treats it as a forced rotation:
+
+1. Close the current fd and `fs.watch` handle.
+2. Render an inline `--- log path changed ---` banner showing the new
+   path.
+3. Reset `(ino, dev, readOffset, buffer)` and reopen against the new
+   path via the standard initial-open path (including ENOENT-tolerant
+   wait if the new file isn't there yet).
+
+This is in addition to inode-tracking rotation (same path, new file)
+covered below. The two cases are distinct: same-path-new-inode is a
+filesystem rename; new-path-entirely is a backend choice.
+
 Tail behavior must survive **truncation, rotation, and recreation**
 across worker restarts (a transient/permanent restart policy spawns a new
-process which often opens a fresh log file under the same path; the tailer
-must follow it without losing or duplicating output).
+process; the tailer must follow it without losing or duplicating output).
 
 State the tailer tracks:
 
@@ -885,13 +917,17 @@ on the right side: governance segment, then supervisor segment, separator
   using the row's workerId (never sessionId).
 - **`BgLogTail.test.tsx`** — initial reverse-tail produces last 1000 lines;
   appended write extends buffer; truncation resets offset + renders
-  `--- log truncated ---`; inode change renders `--- log rotated ---`,
-  reads new file from start, **rebinds `fs.watch` to the new inode**;
-  `stat` ENOENT at startup enters `waiting` state (no time limit), then
-  resumes on first successful stat with `--- log opened ---` banner;
-  watchdog 1s `stat` sweep detects writes when fs.watch silently drops
-  (verified via spy on `fs.watch.close()` mid-stream); unmount closes
-  fd + clears watcher + clears watchdog interval + clears ENOENT poll.
+  `--- log truncated ---`; inode change (same path) renders
+  `--- log rotated ---`, reads new file from start, rebinds
+  `fs.watch` to the new inode; **logPath change** (row's `logPath`
+  field changes mid-tail to a different path; respawned worker
+  scenario) closes prior fd, renders `--- log path changed ---`
+  banner, opens against the new path; `stat` ENOENT at startup enters
+  `waiting` state (no time limit), then resumes on first successful
+  stat with `--- log opened ---` banner; watchdog 1s `stat` sweep
+  detects writes when fs.watch silently drops (verified via spy on
+  `fs.watch.close()` mid-stream); unmount closes fd + clears watcher
+  + clears watchdog interval + clears ENOENT poll.
 - **`daemon-bridge.test.ts`** —
   - `WorkerEvent.crashed` triggers `push_toast` + `push_supervisor_event`;
     same crash within 30s deduped to 1 toast.
@@ -910,15 +946,16 @@ on the right side: governance segment, then supervisor segment, separator
     pre-stop registry mutation. The supervisor's existing
     `exited`-classification regression test (`supervisor.test.ts:1227`)
     covers the registry transition end-to-end via `attachRegistry`.
-  - `requestKill` performs a best-effort respawn-race check via
+  - `requestKill` performs a **mandatory** identity check via
     `registry.describe()` BEFORE calling `supervisor.stop`. Mismatched
-    `version` or `pid` aborts the kill with the "respawned" toast.
-  - **Registry-unreadable does NOT block kill**: when
-    `registry.describe()` returns `Result.ok: false`, the bridge logs
-    the fault but proceeds to call `supervisor.stop` because local
-    ownership was already proven via `supervisor.health().workers`.
-    Test fixture: stub describe to fail with PERMISSION_DENIED;
-    assert supervisor.stop is still invoked.
+    `version` or `pid` aborts with the "respawned" toast.
+  - **Registry-unreadable BLOCKS kill** (fail-closed): when
+    `registry.describe()` returns `Result.ok: false`, the bridge
+    surfaces a "registry unreadable; cannot verify identity" toast
+    and does NOT call `supervisor.stop`. Test fixture: stub describe
+    to fail with PERMISSION_DENIED; assert supervisor.stop is NEVER
+    invoked. Killing the wrong incarnation during an outage is worse
+    than refusing to kill.
   - `supervisor.stop` returning `Result.ok: false` (NOT_FOUND,
     INVALID_STATE) surfaces as a toast; bridge does not mutate the
     registry. A subsequent legitimate event still flows through
@@ -1050,12 +1087,15 @@ calls. Existing daemon golden queries cover supervisor lifecycle.
       `supervisor.health().workers`); each disabled state shows the
       correct hint.
 - [ ] On-path kill calls `supervisor.stop()` directly with NO pre-stop
-      registry mutation. `supervisor.stop()` already emits `exited`
-      (per `supervisor.test.ts:1227`), so `attachRegistry` writes
-      `running → exited` without any TUI-side claim. A registry-read
-      failure from `describe()` MUST NOT block the stop call — local
-      ownership comes from `supervisor.health().workers`, not registry
-      readability.
+      registry mutation. `supervisor.stop()` emits `exited` (per
+      `supervisor.test.ts:1227`), so `attachRegistry` writes
+      `running → exited` without any TUI-side claim.
+- [ ] On-path kill performs a MANDATORY identity check via
+      `registry.describe()` (version + pid match expected). Registry
+      unreadable, missing record, or mismatched version/pid all
+      fail-close: `supervisor.stop` is NEVER called without a verified
+      identity. Killing the wrong incarnation during a state-dir
+      outage is worse than refusing to kill.
 - [ ] Locally-owned `quarantined` and `stopping` rows expose `k` and
       route through `supervisor.stop()`, releasing the `activeIds`
       reservation so the workerId can be reused.
@@ -1066,6 +1106,10 @@ calls. Existing daemon golden queries cover supervisor lifecycle.
       flips badge to `◐ degraded` (push channel down, polls live);
       successful reacquire restores `◎ live` automatically, with the
       restoration toast firing exactly once on `degraded → live`.
-- [ ] Restarting a supervised worker rotates its log file; `BgLogTail`
-      renders `--- log rotated ---` and continues following the new file
-      without losing or duplicating lines (E2E case).
+- [ ] Restarting a supervised worker rotates its log file (same path,
+      new inode); `BgLogTail` renders `--- log rotated ---` and
+      continues following the new file without losing or duplicating
+      lines (E2E case).
+- [ ] Restarted worker with a NEW logPath: `BgLogTail` observes the
+      row's logPath change, closes the prior fd, renders
+      `--- log path changed ---`, and resumes against the new path.
