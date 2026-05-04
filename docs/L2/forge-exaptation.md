@@ -76,12 +76,13 @@ The quality gate (default 25%) refuses to recommend irreversible action when mos
 
 ## Replay Protection
 
-Dedup is **per-agent-scoped** and **on by default**.
+Dedup is **per-agent-scoped** and **on by default**, but the default key is best-effort telemetry only.
 
-- `DEFAULT_EXAPTATION_THRESHOLDS` includes `DEFAULT_OBSERVATION_KEY` — `${observedAt}|${contextText}`. Combined with per-agent scoping (`(agentId, key)`), identical payloads from different agents always survive — preserving the cross-agent evidence the detector requires.
-- Pass your own `observationKey` (e.g. an upstream correlation/event ID) for stronger replay protection.
-- Pass `observationKey: undefined` to disable dedup entirely; `result.replayProtected` will be `false` and `suggestAction` will refuse to recommend any action.
+- `DEFAULT_EXAPTATION_THRESHOLDS` includes `DEFAULT_OBSERVATION_KEY` — `${observedAt}|${contextText}`. It collapses obvious within-tick duplicates but `observedAt` is **not** a stable event identity: at-least-once retries with fresh timestamps slip through, and two distinct same-tick events with identical context collide. So the default-key path returns `replayProtected: false` and `suggestAction` will refuse to act on it. Action-bearing callers MUST supply their own `observationKey`.
+- Pass your own `observationKey` (e.g. an upstream correlation/event ID) — any function not identity-equal to `DEFAULT_OBSERVATION_KEY` is treated as a caller-supplied stable key and the result is marked `replayProtected: true`.
+- Pass `observationKey: undefined` to disable dedup entirely; `result.replayProtected` will be `false`.
 - A throwing `keyFn` only drops the offending sample; the rest of the window is still scored. Keys are computed exactly once during validation, so non-deterministic key functions can't crash detection between calls.
+- Observations with non-finite `observedAt` or non-string `contextText` are dropped during validation — they would otherwise stringify into a poisoned default-key bucket and silently merge unrelated samples.
 
 Dedup is intentionally only available through `thresholds.observationKey`. There is no externally-deduped path, because a result that wasn't deduped *inside* `detectDrift` cannot honestly carry `replayProtected: true` and `suggestAction` would refuse to act on it anyway.
 

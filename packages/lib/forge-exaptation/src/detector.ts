@@ -48,11 +48,16 @@ export interface ExaptationThresholds {
 }
 
 /**
- * Default `observationKey`. Returns `${observedAt}|${contextText}` (the
- * agentId is added by per-agent dedup scoping, so the key need only be
- * unique within an agent). Suitable when upstream observers control
- * `observedAt` per tool call and don't replay events with identical
- * timestamps; callers with a stronger event ID should pass their own.
+ * Default `observationKey`. Returns `${observedAt}|${contextText}` and is
+ * **best-effort telemetry only** — `observedAt` is not a stable event ID, so
+ * an at-least-once pipeline that re-emits with a fresh timestamp will pass
+ * the duplicate through, and two distinct same-tick events will collapse.
+ *
+ * Result: `detectDrift` still dedupes with this key, but reports
+ * `replayProtected: false` and `suggestAction` will refuse to recommend
+ * `reclassify` or `new-artifact`. Callers that need action-bearing results
+ * MUST supply their own `observationKey` derived from a stable upstream
+ * event/correlation ID.
  */
 export const DEFAULT_OBSERVATION_KEY = (o: UsagePurposeObservation): string =>
   `${String(o.observedAt)}|${o.contextText}`;
@@ -214,7 +219,11 @@ export function detectDrift(
   const unique =
     keyFn === undefined ? validWithMaybeKey : dedupePerAgentByKey(validWithMaybeKey, keys);
   const duplicateCount = validWithMaybeKey.length - unique.length;
-  const replayProtected = keyFn !== undefined;
+  // The default key is best-effort telemetry — observedAt is not a stable
+  // event ID, so retries with fresh timestamps slip through and same-tick
+  // distinct events collide. Mark only caller-supplied keys as replay-
+  // protected; suggestAction then refuses to act on default-key results.
+  const replayProtected = keyFn !== undefined && keyFn !== DEFAULT_OBSERVATION_KEY;
 
   const noDrift = (): DetectionResult => ({
     kind: "no-drift",
@@ -344,6 +353,11 @@ function describeInvalidThresholds(t: ExaptationThresholds): string | undefined 
 function isObservationValid(o: UsagePurposeObservation): boolean {
   if (!isUnitInterval(o.divergenceScore)) return false;
   if (typeof o.agentId !== "string" || o.agentId.length === 0) return false;
+  // observedAt and contextText feed the default dedup key. Reject malformed
+  // values up front rather than letting them stringify into a poisoned key
+  // and silently bucket unrelated samples together.
+  if (typeof o.observedAt !== "number" || !Number.isFinite(o.observedAt)) return false;
+  if (typeof o.contextText !== "string") return false;
   return true;
 }
 

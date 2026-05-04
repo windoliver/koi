@@ -394,9 +394,11 @@ describe("detectDrift throwing observationKey", () => {
 });
 
 describe("detectDrift dedup (opt-in) + telemetry", () => {
-  test("default thresholds include DEFAULT_OBSERVATION_KEY (per-agent observedAt|contextText)", () => {
-    // Identical (agentId, observedAt, contextText) tuples within an agent
-    // collapse; identical payload from a different agent survives.
+  test("default key dedupes but is NOT replay-protected (best-effort telemetry only)", () => {
+    // observedAt is not a stable event ID — at-least-once retries with fresh
+    // timestamps would slip through. Default key still suppresses obvious
+    // duplicates within a tick, but result.replayProtected stays false so
+    // suggestAction will refuse to recommend irreversible actions.
     const dup: UsagePurposeObservation = {
       agentId: "a1",
       observedAt: 1234,
@@ -409,7 +411,7 @@ describe("detectDrift dedup (opt-in) + telemetry", () => {
     if (result.kind === "no-drift") {
       expect(result.observationCount).toBe(2);
       expect(result.duplicateCount).toBe(4);
-      expect(result.replayProtected).toBe(true);
+      expect(result.replayProtected).toBe(false);
     }
   });
 
@@ -644,6 +646,71 @@ describe("dedup key isolation regression", () => {
       expect(result.observationCount).toBe(2);
       expect(result.duplicateCount).toBe(4);
     }
+  });
+});
+
+describe("default-key replay-protection downgrade", () => {
+  test("default key dedupes but suggestAction refuses to act on the result", () => {
+    // Build a strong-drift window using the default config — would otherwise
+    // recommend new-artifact. With the default key downgraded to best-effort,
+    // suggestAction must return `none`.
+    const obsList: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => obs("a", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("b", s)),
+    ];
+    const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") expect(result.replayProtected).toBe(false);
+    expect(suggestAction(result, 5)).toEqual({ kind: "none" });
+  });
+
+  test("caller-supplied stable key restores replay protection and unlocks actions", () => {
+    // Caller derives a stable per-event ID from observedAt+agentId — any
+    // function not identity-equal to DEFAULT_OBSERVATION_KEY counts as a
+    // caller-supplied key.
+    const obsList: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => obs("a", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("b", s)),
+    ];
+    const result = detectDrift(obsList, {
+      ...DEFAULT_EXAPTATION_THRESHOLDS,
+      observationKey: (o) => `${o.agentId}@${String(o.observedAt)}`,
+    });
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") expect(result.replayProtected).toBe(true);
+    expect(suggestAction(result, 5).kind).toBe("new-artifact");
+  });
+});
+
+describe("observation-field validation", () => {
+  test("non-finite observedAt is dropped (would otherwise poison default dedup key)", () => {
+    const bad: UsagePurposeObservation = {
+      agentId: "a",
+      divergenceScore: 0.95,
+      contextText: "ctx",
+      observedAt: Number.NaN,
+    };
+    const result = detectDrift(
+      [bad, bad, bad, bad, bad, bad, bad, bad],
+      DEFAULT_EXAPTATION_THRESHOLDS,
+    );
+    expect(result.kind).toBe("no-drift");
+    if (result.kind === "no-drift") {
+      expect(result.droppedCount).toBe(8);
+      expect(result.observationCount).toBe(0);
+    }
+  });
+
+  test("non-string contextText is dropped", () => {
+    const bad = {
+      agentId: "a",
+      divergenceScore: 0.95,
+      contextText: undefined,
+      observedAt: 1,
+    } as unknown as UsagePurposeObservation;
+    const result = detectDrift([bad, bad, bad], DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("no-drift");
+    if (result.kind === "no-drift") expect(result.droppedCount).toBe(3);
   });
 });
 
