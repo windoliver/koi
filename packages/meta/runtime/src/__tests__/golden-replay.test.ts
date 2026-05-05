@@ -17123,16 +17123,22 @@ describe("Golden: @koi/channel-mobile", () => {
     expect(ch.capabilities.images).toBe(true);
     expect(ch.capabilities.files).toBe(true);
     expect(ch.capabilities.buttons).toBe(true);
-    expect(ch.capabilities.threads).toBe(true);
+    expect(ch.capabilities.threads).toBe(false);
   });
 
-  test("offline queue buffers outbound when no client connected", async () => {
+  test("no in-process buffer: outbound while disconnected goes to pushNotifier", async () => {
     const { createMobileChannel } = await import("@koi/channel-mobile");
-    const ch = createMobileChannel({ port: 0, maxOfflineQueue: 5 });
+    const seen: number[] = [];
+    const ch = createMobileChannel({
+      port: 0,
+      pushNotifier: async (m) => {
+        seen.push(m.content.length);
+      },
+    });
     await ch.connect();
     await ch.send({ content: [{ kind: "text", text: "a" }] });
     await ch.send({ content: [{ kind: "text", text: "b" }] });
-    expect(ch.queueDepth()).toBe(2);
+    expect(seen).toEqual([1, 1]);
     await ch.disconnect();
   });
 });
