@@ -316,6 +316,63 @@ describe("wireDaemonSupervisor", () => {
     expect(orderLog.indexOf("supervisor.shutdown")).toBeLessThan(orderLog.indexOf("bridge.close"));
   });
 
+  it("dispose surfaces shutdown failure as toast + thrown error; keeps bridge open", async () => {
+    // Regression: shutdown() can fail (deadline exceeded, backend teardown
+    // error). The previous dispose() awaited the result without checking ok
+    // and tore down the bridge anyway, hiding orphaned workers from the TUI.
+    const daemonModule = await import("@koi/daemon");
+    const originalCreate = daemonModule.createSupervisor;
+    const createSpy = spyOn(daemonModule, "createSupervisor").mockImplementation((config) => {
+      const result = originalCreate(config);
+      if (!result.ok) return result;
+      const realSup = result.value;
+      const failingError: KoiError = {
+        code: "TIMEOUT",
+        message: "deadline exceeded",
+        retryable: false,
+      };
+      const instrumented = {
+        ...realSup,
+        shutdown: async (_reason: string): Promise<Result<void, KoiError>> => ({
+          ok: false,
+          error: failingError,
+        }),
+      };
+      return { ok: true, value: instrumented };
+    });
+
+    const backend = makeFakeSubprocessBackend();
+    const toasts: { kind: string; message: string }[] = [];
+    const opts: WireDaemonSupervisorOptions = {
+      stateDir: tmpDir,
+      manifest: MINIMAL_MANIFEST,
+      dispatch: makeNullDispatch(),
+      pushToast: (t) => {
+        toasts.push(t);
+      },
+      backends: { subprocess: backend },
+    };
+
+    const handle = await wireDaemonSupervisor(opts);
+    createSpy.mockRestore();
+
+    let bridgeClosed = false;
+    const origBridgeClose = handle.bridge.close;
+    // biome-ignore lint/suspicious/noExplicitAny: test instrumentation requires mutation of readonly
+    (handle.bridge as any).close = async () => {
+      bridgeClosed = true;
+      return origBridgeClose();
+    };
+
+    await expect(handle.dispose()).rejects.toThrow("supervisor.shutdown failed");
+    expect(bridgeClosed).toBe(false);
+    const warnToast = toasts.find((t) => t.message.includes("supervisor shutdown failed"));
+    expect(warnToast).toBeDefined();
+
+    // Cleanup: actually close the bridge so the test doesn't leak loops.
+    await origBridgeClose();
+  });
+
   it("createSupervisor failure throws with cause chaining", async () => {
     // Pass empty backends to trigger the validateSupervisorConfig error
     const opts: WireDaemonSupervisorOptions = {

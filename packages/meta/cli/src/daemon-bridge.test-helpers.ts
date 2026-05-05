@@ -135,6 +135,8 @@ export interface FakeSupervisor extends Supervisor {
   pushWorkerEvent(event: WorkerEvent): void;
   /** Cause the next watchAll() consumer to throw on its next next(). */
   triggerWatchAllError(err: Error): void;
+  /** Cleanly end the watchAll() stream (yields done:true). */
+  closeWatchAllStream(): void;
   /** Inspect stop() call history. */
   readonly stopCalls: () => ReadonlyArray<{ id: string; reason: string }>;
   /** Override stop() return value for next call. */
@@ -216,6 +218,12 @@ export function makeFakeSupervisor(initialHealth?: SupervisorHealth): FakeSuperv
         listener("error");
       } else {
         watchAllErrorPending = err;
+      }
+    },
+    closeWatchAllStream(): void {
+      const listener = watchAllListeners.shift();
+      if (listener !== undefined) {
+        listener("close");
       }
     },
     stopCalls: () => _stopCalls,

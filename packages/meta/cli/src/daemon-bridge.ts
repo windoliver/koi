@@ -403,12 +403,21 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
         return pendingNext;
       };
 
+      // streamEnded: true if the iterator yielded done:true (clean EOS) —
+      // we treat it the same as a thrown error: mark the channel stale,
+      // backoff, then re-acquire. Without this branch a backend that
+      // closes its iterable cleanly would silently disable observability
+      // until the bridge is rebuilt.
+      let streamEnded = false;
       try {
         while (!closed) {
           const result = await Promise.race([getNext(), closedPromise]);
           if (result === "closed") return;
           pendingNext = undefined;
-          if (result.done) break;
+          if (result.done) {
+            streamEnded = true;
+            break;
+          }
 
           if (!closed) {
             await runOnePoll();
@@ -427,30 +436,37 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
           }
           attempt = 0;
         }
-        if (!closed) break;
       } catch (_e: unknown) {
-        if (closed) return;
-        if (!watchDegraded) {
-          watchDegraded = true;
-          watchDegradedSince = clock();
-          if (mode.kind === "live") {
-            channels.registryEvents = "stale";
-            dispatchBridgeStatus();
-          } else if (registryStatusKind !== "stale") {
-            registryStatusKind = "degraded";
-            dispatchRegistryStatus({ kind: "degraded", since: watchDegradedSince });
-          }
+        if (closed) {
+          activeIterators.delete(iter as AsyncIterator<unknown>);
+          return;
         }
-
-        const backoffMs = computeBackoff(attempt);
-        attempt++;
-        await Promise.race([
-          new Promise<void>((resolve) => setTimeoutFn(resolve, backoffMs)),
-          closedPromise,
-        ]);
+        streamEnded = true;
       } finally {
         activeIterators.delete(iter as AsyncIterator<unknown>);
       }
+
+      if (closed) return;
+      if (!streamEnded) break;
+
+      if (!watchDegraded) {
+        watchDegraded = true;
+        watchDegradedSince = clock();
+        if (mode.kind === "live") {
+          channels.registryEvents = "stale";
+          dispatchBridgeStatus();
+        } else if (registryStatusKind !== "stale") {
+          registryStatusKind = "degraded";
+          dispatchRegistryStatus({ kind: "degraded", since: watchDegradedSince });
+        }
+      }
+
+      const backoffMs = computeBackoff(attempt);
+      attempt++;
+      await Promise.race([
+        new Promise<void>((resolve) => setTimeoutFn(resolve, backoffMs)),
+        closedPromise,
+      ]);
     }
   }
 
@@ -595,12 +611,20 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
         return pendingNext;
       };
 
+      // streamEnded: clean EOS (done:true) is treated identically to a
+      // thrown error — mark workerEvents stale, clear locallySpawnedIds,
+      // backoff, then re-acquire. A backend that closes its iterable
+      // cleanly would otherwise silently disable lifecycle observability.
+      let streamEnded = false;
       try {
         while (!closed) {
           const result = await Promise.race([getNext(), closedPromise]);
           if (result === "closed") return;
           pendingNext = undefined;
-          if (result.done) break;
+          if (result.done) {
+            streamEnded = true;
+            break;
+          }
 
           // Successful event — restore if previously stale
           if (channels.workerEvents === "stale" && !closed) {
@@ -616,27 +640,33 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
 
           processWorkerEvent(result.value);
         }
-        if (!closed) break;
       } catch (_e: unknown) {
-        if (closed) return;
-        // Mark workerEvents stale; clear locallySpawnedIds
-        if (channels.workerEvents === "live") {
-          channels.workerEvents = "stale";
-          // Self-heal: clear locallySpawnedIds when push channel goes stale
-          locallySpawnedIds.clear();
-          dispatchBridgeStatus();
-          watchAllRestoredToastSent = false;
+        if (closed) {
+          activeIterators.delete(iter as AsyncIterator<unknown>);
+          return;
         }
-
-        const backoffMs = computeBackoff(attempt);
-        attempt++;
-        await Promise.race([
-          new Promise<void>((resolve) => setTimeoutFn(resolve, backoffMs)),
-          closedPromise,
-        ]);
+        streamEnded = true;
       } finally {
         activeIterators.delete(iter as AsyncIterator<unknown>);
       }
+
+      if (closed) return;
+      if (!streamEnded) break;
+
+      // Mark workerEvents stale; clear locallySpawnedIds
+      if (channels.workerEvents === "live") {
+        channels.workerEvents = "stale";
+        locallySpawnedIds.clear();
+        dispatchBridgeStatus();
+        watchAllRestoredToastSent = false;
+      }
+
+      const backoffMs = computeBackoff(attempt);
+      attempt++;
+      await Promise.race([
+        new Promise<void>((resolve) => setTimeoutFn(resolve, backoffMs)),
+        closedPromise,
+      ]);
     }
   }
 

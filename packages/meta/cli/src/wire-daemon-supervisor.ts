@@ -133,8 +133,22 @@ export async function wireDaemonSupervisor(
 
   const dispose = async (): Promise<void> => {
     // 1. Stop the supervisor first so all in-flight workers terminate
-    //    and emit `exited` events through `watchAll()`.
-    await realSupervisor.shutdown("wire-daemon-supervisor dispose");
+    //    and emit `exited` events through `watchAll()`. shutdown() can
+    //    legitimately fail (deadline exceeded, backend teardown error) —
+    //    if it does, surface it via toast and skip the bridge teardown
+    //    so the operator still has live observability into the bad state
+    //    and can run `koi bg kill` to clean up orphans.
+    const shutdownResult = await realSupervisor.shutdown("wire-daemon-supervisor dispose");
+    if (!shutdownResult.ok) {
+      opts.pushToast({
+        kind: "warn",
+        message: `⚠ supervisor shutdown failed: ${shutdownResult.error.message} — workers may still be running; bridge kept open`,
+      });
+      throw new Error(
+        `wireDaemonSupervisor dispose: supervisor.shutdown failed: ${shutdownResult.error.message}`,
+        { cause: shutdownResult.error },
+      );
+    }
     // 2. Then close the bridge so terminal events drain into the store
     //    BEFORE the bridge stops consuming.
     await bridge.close();

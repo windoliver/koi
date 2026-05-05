@@ -865,6 +865,36 @@ describe("createDaemonBridge — live mode", () => {
     await bridge.close();
   });
 
+  test("watchAll clean done:true → marks workerEvents stale (treated as stream loss, not silent exit)", async () => {
+    // Regression: a backend that closes its iterable cleanly (yields done:true
+    // instead of throwing) must NOT silently disable observability. The bridge
+    // must mark workerEvents stale, clear locallySpawnedIds, and re-acquire.
+    const { bridge, actions } = makeLiveBridge(fake, fakeSupervisor, {
+      intervals: { registryPollMs: 100_000, healthPollMs: 100_000 },
+    });
+
+    bridge.markLocallySpawned("worker-clean-eos");
+
+    // Let the watch loop attach
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    // End the stream cleanly (done:true)
+    fakeSupervisor.closeWatchAllStream();
+
+    for (let i = 0; i < 10; i++) {
+      await pumpMicrotasks();
+    }
+
+    const degradedStatuses = actions.filter(
+      (a) => a.kind === "set_supervisor_status" && a.status.kind === "degraded",
+    );
+    expect(degradedStatuses.length).toBeGreaterThan(0);
+
+    await bridge.close();
+  });
+
   test("watchAll backoff cancelled by close() via closed sentinel", async () => {
     fakeSupervisor.triggerWatchAllError(new Error("initial error"));
 
