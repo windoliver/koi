@@ -31,8 +31,18 @@ export interface SignalChannelConfig {
  * Default `SpawnFn` backed by `Bun.spawn`. Wires the subprocess's stdout,
  * stdin (writable FileSink), exited promise, and kill into the
  * `SignalChildProcess` shape the manager expects.
+ *
+ * Bun-only: the koi monorepo targets Bun 1.3+ (see project CLAUDE.md). On
+ * Node or other runtimes, callers must inject their own `SpawnFn`. We fail
+ * fast at construction with a clear message rather than crashing later when
+ * a `Bun` global is dereferenced.
  */
 export const defaultSignalSpawn: SpawnFn = (cmd) => {
+  if (typeof globalThis.Bun === "undefined") {
+    throw new Error(
+      "[channel-signal] defaultSignalSpawn requires the Bun runtime. Pass a Node-compatible SpawnFn (e.g. child_process.spawn-based) via SignalChannelConfig.spawn.",
+    );
+  }
   const proc = Bun.spawn([...cmd], { stdin: "pipe", stdout: "pipe" });
   const stdin = proc.stdin;
   if (stdin === undefined) {

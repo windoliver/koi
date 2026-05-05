@@ -37,7 +37,11 @@ const DEFAULT_INTENTS: readonly DiscordIntent[] = [
 /** Shape we need from a discord.js Client (Like-typed for test injection). */
 export interface DiscordClientLike {
   readonly user: { readonly id: string } | null;
-  readonly channels: { readonly cache: ReadonlyMap<string, DiscordSendTargetLike> };
+  readonly channels: {
+    readonly cache: ReadonlyMap<string, DiscordSendTargetLike>;
+    /** Falls back to a REST fetch when the channel is not cached. */
+    fetch?(id: string): Promise<DiscordSendTargetLike | null>;
+  };
   login(token: string): Promise<unknown>;
   destroy(): Promise<unknown> | unknown;
   on(event: string, listener: (...args: readonly unknown[]) => void): unknown;
@@ -127,6 +131,51 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
 
   const normalize = createNormalizer(() => botUserId);
 
+  // let requires justification: the dispatch handler is set by onPlatformEvent
+  // after platformConnect has already attached gateway listeners. We register
+  // listeners BEFORE client.login() to close the race window where Discord
+  // delivers events between login completion and listener attachment; events
+  // arriving before onPlatformEvent installs the dispatcher are dropped, which
+  // matches the previous behavior (no handler => no delivery).
+  let dispatch: ((event: DiscordEvent) => void) | undefined;
+
+  const onMessageCreate = (...args: readonly unknown[]): void => {
+    const m = toMessageLike(args[0]);
+    if (m !== null && dispatch !== undefined) dispatch({ kind: "message", message: m });
+  };
+  const onInteractionCreate = (...args: readonly unknown[]): void => {
+    const raw = args[0];
+    // Eagerly acknowledge the interaction so the Discord client does not
+    // show "This interaction failed" while the agent works. Fire-and-forget;
+    // ack errors are non-fatal (e.g., already-acked).
+    ackInteraction(raw);
+    // Sweep expired entries every time a new interaction arrives. This
+    // bounds memory under traffic for slash commands the agent never
+    // replies to (handler dropped the event, decided not to answer,
+    // crashed, etc.) without scheduling a separate timer.
+    sweepExpiredInteractions(pendingInteractions);
+    // Only stash slash-command interactions. For buttons we use
+    // deferUpdate() (keeps the source message intact); calling editReply
+    // on a deferred-update interaction would mutate the original message
+    // that contained the button — exactly what users do not want.
+    // Button replies fall through to channel.send via the channelId
+    // suffix in the threadId.
+    if (
+      isPlainObject(raw) &&
+      typeof raw.id === "string" &&
+      typeof raw.isChatInputCommand === "function" &&
+      raw.isChatInputCommand() === true &&
+      isInteractionResponseLike(raw)
+    ) {
+      pendingInteractions.set(raw.id, {
+        interaction: raw,
+        expiresAt: Date.now() + INTERACTION_TTL_MS,
+      });
+    }
+    const ev = toInteractionEvent(raw);
+    if (ev !== null && dispatch !== undefined) dispatch(ev);
+  };
+
   const base = createChannelAdapter<DiscordEvent>({
     name: "discord",
     capabilities: DISCORD_CAPABILITIES,
@@ -135,6 +184,10 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
       if (client === undefined) {
         client = await instantiateClient(config.intents ?? DEFAULT_INTENTS);
       }
+      // Attach gateway listeners BEFORE login so we don't miss the first
+      // events the WebSocket delivers right after READY.
+      client.on("messageCreate", onMessageCreate);
+      client.on("interactionCreate", onInteractionCreate);
       await client.login(config.token);
       botUserId = client.user?.id;
     },
@@ -145,6 +198,7 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
       await client.destroy();
       client = undefined;
       botUserId = undefined;
+      dispatch = undefined;
       pendingInteractions.clear();
     },
 
@@ -153,47 +207,9 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
     },
 
     onPlatformEvent: (handler): (() => void) => {
-      const c = getClient();
-      const onMessageCreate = (...args: readonly unknown[]): void => {
-        const m = toMessageLike(args[0]);
-        if (m !== null) handler({ kind: "message", message: m });
-      };
-      const onInteractionCreate = (...args: readonly unknown[]): void => {
-        const raw = args[0];
-        // Eagerly acknowledge the interaction so the Discord client does not
-        // show "This interaction failed" while the agent works. Fire-and-forget;
-        // ack errors are non-fatal (e.g., already-acked).
-        ackInteraction(raw);
-        // Sweep expired entries every time a new interaction arrives. This
-        // bounds memory under traffic for slash commands the agent never
-        // replies to (handler dropped the event, decided not to answer,
-        // crashed, etc.) without scheduling a separate timer.
-        sweepExpiredInteractions(pendingInteractions);
-        // Only stash slash-command interactions. For buttons we use
-        // deferUpdate() (keeps the source message intact); calling editReply
-        // on a deferred-update interaction would mutate the original message
-        // that contained the button — exactly what users do not want.
-        // Button replies fall through to channel.send via the channelId
-        // suffix in the threadId.
-        if (
-          isPlainObject(raw) &&
-          typeof raw.id === "string" &&
-          typeof raw.isChatInputCommand === "function" &&
-          raw.isChatInputCommand() === true &&
-          isInteractionResponseLike(raw)
-        ) {
-          pendingInteractions.set(raw.id, {
-            interaction: raw,
-            expiresAt: Date.now() + INTERACTION_TTL_MS,
-          });
-        }
-        const ev = toInteractionEvent(raw);
-        if (ev !== null) handler(ev);
-      };
-      c.on("messageCreate", onMessageCreate);
-      c.on("interactionCreate", onInteractionCreate);
+      dispatch = handler;
       return (): void => {
-        c.removeAllListeners();
+        dispatch = undefined;
       };
     },
 
@@ -254,7 +270,9 @@ async function sendOutbound(
   // Interaction-response path: when the inbound threadId is
   // "interaction:<id>:<channelId>", the first payload edits the deferred
   // reply on the original interaction (so the slash-command's "thinking..."
-  // state resolves cleanly). Overflow payloads spill into the channel.
+  // state resolves cleanly). Overflow payloads spill into the channel; the
+  // overflow channel must resolve, otherwise the agent's reply would be
+  // silently truncated.
   const interactionId = parseInteractionIdFromThreadId(message.threadId);
   if (interactionId !== undefined) {
     const entry = pendingInteractions.get(interactionId);
@@ -262,12 +280,17 @@ async function sendOutbound(
       pendingInteractions.delete(interactionId);
       const first = payloads[0];
       if (first !== undefined) await entry.interaction.editReply(first);
-      const channelIdFallback = parseChannelIdFromThreadId(message.threadId);
-      const channel = client.channels.cache.get(channelIdFallback);
-      for (let i = 1; i < payloads.length; i++) {
-        const p = payloads[i];
-        if (p !== undefined && channel !== undefined) {
-          await channel.send(p);
+      if (payloads.length > 1) {
+        const channelIdFallback = parseChannelIdFromThreadId(message.threadId);
+        const channel = await resolveChannel(client, channelIdFallback);
+        if (channel === null) {
+          throw new Error(
+            `[channel-discord] interaction overflow channel not found for "${message.threadId}" — refusing to silently drop ${payloads.length - 1} payload(s)`,
+          );
+        }
+        for (let i = 1; i < payloads.length; i++) {
+          const p = payloads[i];
+          if (p !== undefined) await channel.send(p);
         }
       }
       return;
@@ -276,13 +299,31 @@ async function sendOutbound(
   }
 
   const channelId = parseChannelIdFromThreadId(message.threadId);
-  const channel = client.channels.cache.get(channelId);
-  if (channel === undefined) {
+  const channel = await resolveChannel(client, channelId);
+  if (channel === null) {
     throw new Error(`[channel-discord] channel not found for threadId "${message.threadId}"`);
   }
   for (const payload of payloads) {
     await channel.send(payload);
   }
+}
+
+/** Resolves a channel id through the cache, falling back to a REST fetch. */
+async function resolveChannel(
+  client: DiscordClientLike,
+  channelId: string,
+): Promise<DiscordSendTargetLike | null> {
+  const cached = client.channels.cache.get(channelId);
+  if (cached !== undefined) return cached;
+  if (typeof client.channels.fetch === "function") {
+    try {
+      const fetched = await client.channels.fetch(channelId);
+      return fetched ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 function parseChannelIdFromThreadId(threadId: string): string {

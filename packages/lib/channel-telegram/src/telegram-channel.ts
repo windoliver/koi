@@ -327,9 +327,22 @@ function partitionContent(blocks: readonly ContentBlock[]): PartitionedContent {
   return { text, images, files, buttons };
 }
 
+/** Bot API callback_data limit: 64 bytes (UTF-8) per Telegram docs. */
+const TELEGRAM_CALLBACK_DATA_LIMIT = 64;
+
 function encodeCallbackData(action: string, payload: unknown): string {
-  if (payload === undefined) return action;
-  return `${action}:${JSON.stringify(payload)}`;
+  const encoded = payload === undefined ? action : `${action}:${JSON.stringify(payload)}`;
+  // Fail closed: Telegram rejects sendMessage entirely when any callback_data
+  // exceeds the limit, so a normal-looking response with a too-large payload
+  // would silently drop the whole message (and any preceding media we already
+  // sent in the same logical reply). Throw clearly instead.
+  const byteLen = new TextEncoder().encode(encoded).length;
+  if (byteLen > TELEGRAM_CALLBACK_DATA_LIMIT) {
+    throw new Error(
+      `[channel-telegram] button callback_data exceeds ${TELEGRAM_CALLBACK_DATA_LIMIT}-byte limit (got ${byteLen} bytes for action "${action}"). Store the payload behind an opaque token instead.`,
+    );
+  }
+  return encoded;
 }
 
 function parseThreadId(threadId: string): {
