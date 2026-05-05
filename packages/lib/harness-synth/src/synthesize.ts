@@ -10,6 +10,7 @@
  */
 
 import type { ForgeVerificationSummary, ToolDescriptor } from "@koi/core";
+import type { ForgeCandidate } from "@koi/forge-types";
 import { parseSynthesisOutput } from "./parser.js";
 import { buildRefinementPrompt } from "./prompts/refinement.js";
 import { buildSynthesisPrompt } from "./prompts/synthesis.js";
@@ -59,6 +60,21 @@ export async function synthesize(
   // We still force maxAttempts=1 so the loop never STARTS another attempt
   // while a prior one may be in flight.
   const attemptTimeoutMs = config.attemptTimeoutMs ?? DEFAULT_SYNTHESIS_CONFIG.attemptTimeoutMs;
+  // Validate attemptTimeoutMs explicitly. NaN slips past Number.isFinite()
+  // checks downstream and would silently disable every deadline; 0 / negative
+  // would fail every attempt instantly. Only positive finite numbers and
+  // explicit Infinity (timeouts disabled by design) are accepted.
+  if (
+    typeof attemptTimeoutMs !== "number" ||
+    Number.isNaN(attemptTimeoutMs) ||
+    attemptTimeoutMs <= 0
+  ) {
+    return {
+      ok: false,
+      reason: "attemptTimeoutMs must be a positive finite number or Infinity",
+      attempts: 0,
+    };
+  }
 
   // Validate that targetToolSchema is JSON-plain (no undefined / Infinity /
   // NaN / Date / class instances / cycles / BigInt / throwing getters).
@@ -69,7 +85,16 @@ export async function synthesize(
   if (!schemaCheck.ok) {
     return { ok: false, reason: schemaCheck.reason, attempts: 0 };
   }
-  const safeInput: SynthesisInput = input;
+  // Defensively read the candidate fields we serialize into prompts. A
+  // throwing getter, BigInt, or other non-JSON-safe value here would crash
+  // buildSynthesisPrompt() and escape past the typed-result contract.
+  // Snapshot into a frozen plain object up-front so prompt construction
+  // never touches the original (potentially hostile) value again.
+  const candidateSnapshot = snapshotCandidate(input.candidate);
+  if (!candidateSnapshot.ok) {
+    return { ok: false, reason: candidateSnapshot.reason, attempts: 0 };
+  }
+  const safeInput: SynthesisInput = { ...input, candidate: candidateSnapshot.value };
 
   let priorCode = "";
   let priorReason = "";
@@ -228,6 +253,47 @@ function safeSanitize(sanitize: (reason: string) => string, reason: string): str
   } catch {
     return "verification failed (reason omitted)";
   }
+}
+
+/**
+ * Read the prompt-relevant candidate fields behind a try/catch and validate
+ * each one is JSON-plain before they reach the prompt builders. Returns a
+ * frozen snapshot so prompt construction never re-reads a hostile value.
+ */
+function snapshotCandidate(
+  candidate: ForgeCandidate,
+):
+  | { readonly ok: true; readonly value: ForgeCandidate }
+  | { readonly ok: false; readonly reason: string } {
+  let snap: ForgeCandidate;
+  try {
+    snap = {
+      id: candidate.id,
+      kind: candidate.kind,
+      name: candidate.name,
+      description: candidate.description,
+      priority: candidate.priority,
+      proposedScope: candidate.proposedScope,
+      createdAt: candidate.createdAt,
+    } as ForgeCandidate;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, reason: `candidate field access threw: ${message}` };
+  }
+  for (const [key, value] of [
+    ["id", snap.id],
+    ["kind", snap.kind],
+    ["name", snap.name],
+    ["description", snap.description],
+    ["proposedScope", snap.proposedScope],
+  ] as const) {
+    if (typeof value !== "string") {
+      return { ok: false, reason: `candidate.${key} must be a string` };
+    }
+  }
+  const plain = ensureJsonPlain(snap, "candidate");
+  if (!plain.ok) return plain;
+  return { ok: true, value: Object.freeze(snap) };
 }
 
 function redactReason(reason: string): string {

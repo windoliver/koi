@@ -714,6 +714,61 @@ describe("synthesize", () => {
     expect(seenPrompts[1] ?? "").toContain("verification failed");
   });
 
+  test("rejects NaN attemptTimeoutMs (no silent timeout disable)", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify: ALWAYS_OK,
+      attemptTimeoutMs: Number.NaN,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/attemptTimeoutMs/);
+    expect(result.attempts).toBe(0);
+  });
+
+  test("rejects negative attemptTimeoutMs", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify: ALWAYS_OK,
+      attemptTimeoutMs: -1,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/attemptTimeoutMs/);
+  });
+
+  test("hostile candidate.name (throwing getter) returns typed failure, not exception", async () => {
+    const hostile: ForgeCandidate = Object.create(CANDIDATE, {
+      name: {
+        get: () => {
+          throw new Error("hostile candidate getter");
+        },
+        enumerable: true,
+      },
+    }) as ForgeCandidate;
+    const result = await synthesize(
+      { ...INPUT, candidate: hostile },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/candidate/);
+    expect(result.attempts).toBe(0);
+  });
+
+  test("candidate field of wrong type returns typed failure", async () => {
+    const bad = { ...CANDIDATE, name: 123 as unknown as string };
+    const result = await synthesize(
+      { ...INPUT, candidate: bad },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/candidate\.name/);
+  });
+
   test("zero remaining budget short-circuits — verify is never invoked", async () => {
     let now = 0;
     const clock = (): number => now;
