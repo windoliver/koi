@@ -8,14 +8,14 @@
 
 import { testRender } from "@opentui/solid";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdtemp, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { watch as nodeWatch } from "node:fs";
 import type { FSWatcher } from "node:fs";
 import { open as fsOpen, stat as fsStat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BgSessionRow } from "../state/types.js";
-import { BgLogTail, startTailer, type TailerFs, type TailerHandle, type TailerIntervalHandle } from "./BgLogTail.js";
+import { BgLogTail, startTailer, type TailerFs, type TailerIntervalHandle } from "./BgLogTail.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
