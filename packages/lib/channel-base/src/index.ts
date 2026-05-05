@@ -11,6 +11,11 @@ export type { ChannelAdapterConfig, MessageNormalizer } from "./channel-adapter-
 export { createChannelAdapter } from "./channel-adapter-factory.js";
 export type { ChannelFactory, ChannelRegistry } from "./channel-registry.js";
 export { createChannelRegistry } from "./channel-registry.js";
+export type {
+  ConversationAddress,
+  ConversationAddressStore,
+} from "./conversation-address-store.js";
+export { InMemoryConversationAddressStore } from "./conversation-address-store.js";
 export type { ChannelErrorOutput } from "./format-error.js";
 export { classifyErrorForChannel, formatErrorForChannel } from "./format-error.js";
 export type { HandlerInput, HandlerWorkerOptions } from "./handler-worker.js";
@@ -31,6 +36,10 @@ export type {
   QueueItem,
 } from "./ingress-queue.js";
 export { InMemoryIngressQueue } from "./ingress-queue.js";
+export type { OutboxRecord, OutboxStatus, OutboxStore } from "./outbox-store.js";
+export { InMemoryOutboxStore } from "./outbox-store.js";
 export type { RateLimiter, RateLimiterConfig, SendFn } from "./rate-limit.js";
 export { createRateLimiter } from "./rate-limit.js";
 export { renderBlocks } from "./render-blocks.js";
+export type { ThreadState, ThreadStore } from "./thread-store.js";
+export { InMemoryThreadStore } from "./thread-store.js";
