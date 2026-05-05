@@ -124,6 +124,18 @@ describe("parseSynthesisOutput", () => {
     expect(result.value.code).toBe("x();");
   });
 
+  test("rejects ambiguous output containing two claimant payloads", () => {
+    const example = rawWith(VALID_DESCRIPTOR, "old();");
+    const real = rawWith(VALID_DESCRIPTOR, "fixed();");
+    const result = parseSynthesisOutput(
+      `Earlier example: ${example}\n\nReal answer: ${real}`,
+      "echo_tool",
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/2 claimant payloads/);
+  });
+
   test("rejects non-object descriptor", () => {
     const result = parseSynthesisOutput(
       JSON.stringify({ descriptor: "nope", code: "x" }),

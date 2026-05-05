@@ -312,6 +312,51 @@ function guardAttempt<T>(
 }
 
 /**
+ * Validate `ForgeVerificationSummary` shape so downstream forge integrity
+ * (`createForgeProvenance`) receives evidence with the contractual fields.
+ * A malformed summary surfaces as a verifier failure here rather than as a
+ * delayed error during publication, after the artifact has already been
+ * treated as verified.
+ */
+function coerceVerificationSummary(
+  value: unknown,
+):
+  | { readonly ok: true; readonly value: ForgeVerificationSummary }
+  | { readonly ok: false; readonly reason: string } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, reason: "summary must be a JSON object" };
+  }
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.passed !== "boolean")
+    return { ok: false, reason: "summary.passed must be boolean" };
+  if (typeof obj.sandbox !== "boolean")
+    return { ok: false, reason: "summary.sandbox must be boolean" };
+  if (typeof obj.totalDurationMs !== "number" || !Number.isFinite(obj.totalDurationMs)) {
+    return { ok: false, reason: "summary.totalDurationMs must be a finite number" };
+  }
+  if (!Array.isArray(obj.stageResults)) {
+    return { ok: false, reason: "summary.stageResults must be an array" };
+  }
+  for (let i = 0; i < obj.stageResults.length; i += 1) {
+    const stage = obj.stageResults[i];
+    if (stage === null || typeof stage !== "object" || Array.isArray(stage)) {
+      return { ok: false, reason: `summary.stageResults[${i}] must be an object` };
+    }
+    const s = stage as Record<string, unknown>;
+    if (typeof s.stage !== "string") {
+      return { ok: false, reason: `summary.stageResults[${i}].stage must be a string` };
+    }
+    if (typeof s.passed !== "boolean") {
+      return { ok: false, reason: `summary.stageResults[${i}].passed must be boolean` };
+    }
+    if (typeof s.durationMs !== "number" || !Number.isFinite(s.durationMs)) {
+      return { ok: false, reason: `summary.stageResults[${i}].durationMs must be a finite number` };
+    }
+  }
+  return { ok: true, value: value as ForgeVerificationSummary };
+}
+
+/**
  * Validate the shape of a value returned by an injected verifier. A
  * version-skewed or buggy adapter that resolves to `undefined`, `null`, or
  * an object missing the discriminator must not crash the synthesis loop —
@@ -326,10 +371,15 @@ function coerceVerifyResult(value: unknown): VerifyResult {
   }
   const obj = value as Record<string, unknown>;
   if (obj.ok === true) {
-    // Pass through any summary the verifier supplied. Shape is not validated
-    // here; downstream forge audit treats it as opaque evidence.
-    const summary = obj.summary as ForgeVerificationSummary | undefined;
-    return summary !== undefined ? { ok: true, summary } : { ok: true };
+    if (obj.summary === undefined) return { ok: true };
+    const summary = coerceVerificationSummary(obj.summary);
+    if (!summary.ok) {
+      return {
+        ok: false,
+        reason: `Verifier returned ok:true with malformed summary: ${summary.reason}`,
+      };
+    }
+    return { ok: true, summary: summary.value };
   }
   if (obj.ok === false) {
     const reason = typeof obj.reason === "string" ? obj.reason : "(no reason supplied)";

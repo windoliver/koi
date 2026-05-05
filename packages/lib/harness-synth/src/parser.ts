@@ -51,12 +51,15 @@ export function parseSynthesisOutput(raw: string, targetToolName: string): Parse
 }
 
 /**
- * Iterate `{` candidate spans until one parses as a JSON object claiming to
- * be the synthesis payload (has both `descriptor` and `code` keys). Once we
- * find a claimant, return it for full validation by the caller — even if
- * its inner shape is wrong, so the caller can emit a precise error. Spans
- * that fail to parse, or parse but lack the claim keys, are skipped: this
- * tolerates prose containing earlier `{...}` fragments before the payload.
+ * Find exactly one claimant — a JSON object with both `descriptor` and
+ * `code` keys — in the response. Multiple claimants are rejected as
+ * ambiguous: a model that quotes an earlier example/attempt followed by
+ * the real answer would otherwise let the parser pick the wrong one,
+ * which is a trust-boundary failure (verifier runs against stale code,
+ * an earlier passing object ships instead of the corrected answer).
+ *
+ * Spans that fail to parse or lack the claim keys are skipped — this
+ * still tolerates prose framing around the single intended payload.
  */
 function findParseableJsonObject(
   raw: string,
@@ -64,6 +67,7 @@ function findParseableJsonObject(
   | { readonly ok: true; readonly value: Record<string, unknown> }
   | { readonly ok: false; readonly reason: string } {
   let lastParseReason: string | null = null;
+  const claimants: Record<string, unknown>[] = [];
   let cursor = 0;
   while (cursor < raw.length) {
     const start = raw.indexOf("{", cursor);
@@ -90,8 +94,17 @@ function findParseableJsonObject(
     }
     const obj = parsed as Record<string, unknown>;
     if (claimsToBeSynthesisPayload(obj)) {
-      return { ok: true, value: obj };
+      claimants.push(obj);
     }
+  }
+  if (claimants.length === 1) {
+    return { ok: true, value: claimants[0] as Record<string, unknown> };
+  }
+  if (claimants.length > 1) {
+    return {
+      ok: false,
+      reason: `Output contains ${claimants.length} claimant payloads (expected exactly 1)`,
+    };
   }
   if (lastParseReason !== null) {
     return { ok: false, reason: lastParseReason };

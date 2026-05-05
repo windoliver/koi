@@ -342,6 +342,18 @@ describe("synthesize", () => {
     expect(observedAborts).toContain(true);
   });
 
+  test("rejects ok:true with malformed verification summary", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify = (() => ({
+      ok: true,
+      summary: { passed: true /* missing required fields */ },
+    })) as unknown as VerifyCallback;
+    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 1 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/malformed summary/);
+  });
+
   test("propagates verification summary into SynthesisOutput", async () => {
     const summary = {
       passed: true as const,
