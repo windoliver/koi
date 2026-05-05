@@ -263,10 +263,10 @@ Mapping is built against the actual fields in `packages/kernel/core/src/sandbox-
 | `resources.timeoutMs` | accept iff `<= 30_000` | CF Workers Unbound CPU limit. Reject above. |
 | `resources.maxPids` | accept iff `=== 1` or omitted | Workers run a single isolate; multi-process not available. Reject `> 1`. |
 | `resources.maxOpenFiles` | accept (vacuously) | No host FDs in Workers. |
-| `env` | mapped | Forwarded as Worker secrets via `PUT /workers/scripts/{name}/secrets` per key (typed) before deploy. |
+| `env` | mapped | Forwarded as Worker secrets via `PUT /workers/scripts/{name}/secrets` per key (typed) **after** the deploy step succeeds and **before** the instance transitions to `ready` (see Create-failure state machine — secrets-uploading phase). The instance does NOT accept `invoke()` calls until `ready`; the host-side mutex is held in `secrets-uploading` so any concurrent invoke attempt waits or fails the create flow. |
 | `nexusMounts` | REJECT | Requires FUSE; not available on edge. |
 | `ssh` | **ignore** | Per `SandboxProfile.ssh` doc comment: "Other adapters MUST ignore this field." Treating it as a validation error would break profile portability when a profile carries an SSH stanza for a different backend. |
-| `required` (capabilities) | inspected by router, not by this adapter | Router rejects upstream; adapter ignores. |
+| `required` (capabilities) | **enforced by adapter** (and additionally by router) | The adapter calls `validateRequiredCapabilities(profile.required, SUPPORTED)` at the top of `create()` and rejects unsupported capabilities with `UNSUPPORTED_PROFILE` before any remote call. The router does the same upstream as a fast-path; the adapter never assumes the router pre-filtered. Single source of safety for direct callers. |
 | Unknown future fields | REJECT (default-deny) | TypeScript catches at compile time; runtime exhaustive check guards against type-erasure bugs. |
 
 Vercel applies the same template, but since runtime selection is deferred (see Out of scope) and the adapter always deploys to **Edge**, validation caps are **Edge-only**: `maxMemoryMb <= 128` and `timeoutMs <= 30_000`. Serverless caps (3008MB / 900_000ms) are NOT accepted — admitting them would let the router commit to this backend with a profile the actual runtime cannot satisfy. When a follow-up PR adds runtime selection, the adapter will accept a `runtime: "edge" | "serverless"` config field and validate against that runtime's caps.
@@ -285,7 +285,7 @@ Mirrors cloudflare's per-instance isolation pattern:
 - Auth: `vercelToken` + `teamId?` from config.
 - **Per-instance deployment:** each `create()` produces a fresh deployment with its own `id` returned by Vercel. Instance owns the `id` and only deletes that id in `destroy()`. Concurrent creates cannot collide because Vercel allocates ids server-side.
 - `destroy()` is idempotent — 404 on re-destroy treated as success.
-- Function shim ≤80 LOC, same protocol as CF shim (POST `/exec`, `/read`, `/write`).
+- Function shim ≤80 LOC, same protocol as CF shim: `POST /invoke` (single endpoint) + `POST /cancel`. There is no `/exec`, `/read`, or `/write` — the wire protocol matches the `invoke()`-only contract exactly. A negative test in the cloud unit suites asserts that a `POST /exec` against the deployed shim returns 404, proving the deprecated surface does not exist.
 
 ## Sharing strategy
 
@@ -300,8 +300,8 @@ The two cloud adapters share ~150 LOC of pattern (HTTP fetch with timeout, error
 - `wasm-executor.test.ts`: real `WebAssembly` modules built inline (e.g., `add(i32,i32)` from a small wat→wasm fixture committed under `__fixtures__/`). Tests: success, trap, OOM, timeout, invalid module bytes.
 - `async-executor.test.ts`: same + abort signal, async host imports.
 - `module-loader.test.ts`: bytes loader + URL loader (mocked fetch).
-- `adapter.test.ts` (cloud): `createXAdapter` returns `Result.ok` on valid config, `Result.err UNAVAILABLE` on probe failure (mocked fetch).
-- `instance.test.ts` (cloud): `exec` happy path, non-200 → KoiError, timeout via AbortSignal, `destroy` deletes script.
+- `adapter.test.ts` (cloud): `createXAdapter` returns `Result.ok` on valid config and `Result.err UNAVAILABLE` on probe failure (mocked fetch); `create(profile)` rejects every unsupported `profile.required` capability and every unsupported `profile.filesystem`/`network`/`resources` shape per the mapping table; rejects `WebAssembly.Module` for wasm input (negative).
+- `instance.test.ts` (cloud): `invoke` happy path, non-200 → KoiError, timeout via AbortSignal poisons instance, subsequent `invoke` returns `POISONED`, `destroy` deletes script and rejects in-flight invoke with `DESTROYED`, concurrent `invoke` calls serialize FIFO, deployed shim returns 404 for `POST /exec` / `POST /read` / `POST /write` (proving deprecated surface absent).
 
 Coverage threshold: 80% per `bunfig.toml`.
 
