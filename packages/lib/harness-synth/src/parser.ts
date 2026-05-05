@@ -90,6 +90,17 @@ function findParseableJsonObject(
   let escaped = false;
   for (let i = 0; i < raw.length; i += 1) {
     const ch = raw[i];
+    // Quote tracking only matters INSIDE a candidate JSON object — outside
+    // any `{`, double quotes are just prose. Treating them as JSON-string
+    // delimiters in arbitrary prose let an unmatched `"` swallow the rest
+    // of the response and discard a valid payload that followed.
+    if (opens.length === 0) {
+      inString = false;
+      escaped = false;
+      if (ch === "{") opens.push(i);
+      // Stray `}` in prose at top-level: ignore.
+      continue;
+    }
     if (inString) {
       if (escaped) {
         escaped = false;
@@ -108,7 +119,7 @@ function findParseableJsonObject(
       opens.push(i);
     } else if (ch === "}") {
       const start = opens.pop();
-      if (start === undefined) continue; // stray `}` in prose
+      if (start === undefined) continue; // unreachable: opens.length > 0 above
       matched.push({ start, end: i, afterDepth: opens.length });
     }
   }

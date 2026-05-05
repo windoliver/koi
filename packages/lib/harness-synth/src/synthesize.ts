@@ -765,6 +765,22 @@ function coerceVerificationSummary(
       return { ok: false, reason: `summary.stageResults[${i}].durationMs must be a finite number` };
     }
   }
+  // Cross-field invariant: summary.passed:true cannot coexist with any
+  // stageResults[i].passed:false. A buggy / version-skewed verifier whose
+  // top-level verdict disagrees with its own stage evidence must not ship
+  // as a verified artifact — fail closed so downstream audit cannot get
+  // an internally contradictory success signal.
+  if (obj.passed === true) {
+    for (let i = 0; i < obj.stageResults.length; i += 1) {
+      const s = obj.stageResults[i] as Record<string, unknown>;
+      if (s.passed !== true) {
+        return {
+          ok: false,
+          reason: `summary.passed:true conflicts with summary.stageResults[${i}].passed:false`,
+        };
+      }
+    }
+  }
   // Validate JSON-plainness on every additional field so downstream
   // provenance (which rejects non-plain values) receives a safe payload,
   // but DO preserve verifier-supplied evidence — digests, attestation

@@ -758,6 +758,28 @@ describe("synthesize", () => {
     expect(result.reason).toMatch(/candidate\.description exceeds/);
   });
 
+  test("rejects ok:true verifier result whose stages contradict (passed but stage failed)", async () => {
+    const summary = {
+      passed: true as const,
+      sandbox: false,
+      totalDurationMs: 10,
+      stageResults: [
+        { stage: "syntax", passed: true, durationMs: 3 },
+        { stage: "exec", passed: false, durationMs: 7 },
+      ],
+    };
+    const verify: VerifyCallback = () => ({ ok: true, summary });
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/conflicts with.*passed:false/);
+  });
+
   test("verification summary is snapshotted (verifier cannot mutate audit data post-success)", async () => {
     const live: {
       passed: true;
