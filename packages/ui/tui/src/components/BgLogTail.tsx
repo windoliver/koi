@@ -6,7 +6,7 @@
  * a real filesystem.
  */
 
-import { For, Show, onCleanup, onMount, createSignal } from "solid-js";
+import { For, Show, createEffect, onCleanup, onMount, createSignal } from "solid-js";
 import { open as fsOpen, stat as fsStat } from "node:fs/promises";
 import { watch as fsWatch } from "node:fs";
 import type { FSWatcher } from "node:fs";
@@ -420,14 +420,16 @@ export function BgLogTail(props: BgLogTailProps): unknown {
     });
   });
 
-  // Detect logPath changes reactively (props are reactive in Solid)
-  const checkPathChange = (): void => {
+  // Detect logPath changes reactively. Runs unconditionally — must work
+  // even when lines() is empty (e.g. ENOENT/restart paths swap to a new
+  // logPath before any output flushes).
+  createEffect(() => {
     const newPath = props.row.logPath;
     if (newPath !== prevLogPath && tailerRef !== null) {
       prevLogPath = newPath;
       tailerRef.updateLogPath(newPath);
     }
-  };
+  });
 
   return (
     <box flexDirection="column" flexGrow={1}>
@@ -435,8 +437,6 @@ export function BgLogTail(props: BgLogTailProps): unknown {
         <text fg={COLORS.textMuted}>{"--- waiting for log ---"}</text>
       </Show>
       <Show when={lines().length > 0}>
-        {/* Side-effect: check path change each render */}
-        {checkPathChange()}
         <For each={lines()}>
           {(line: string): unknown => {
             const isBanner = line.startsWith("---") && line.endsWith("---");

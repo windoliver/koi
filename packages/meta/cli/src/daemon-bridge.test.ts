@@ -658,6 +658,45 @@ describe("createDaemonBridge — live mode", () => {
     await bridge.close();
   });
 
+  test("set_bg_rows populates lastHeartbeatAt + heartbeatDeadlineAt from SupervisorHealth.workers", async () => {
+    // Regression: previously hardcoded null; freshness was computed from
+    // live health but rows lost the underlying timestamps, hiding the
+    // data that explains stale/timeout classifications.
+    const rec = makeRecord("worker-hb", "agent-hb", "running");
+    fake.setRecords([rec]);
+
+    fakeSupervisor.setHealth(
+      makeHealth([
+        {
+          workerId: "worker-hb" as never,
+          agentId: "agent-hb" as never,
+          state: "running",
+          lastHeartbeatAt: 12_345_678,
+          heartbeatDeadlineAt: 12_400_000,
+        },
+      ]),
+    );
+
+    const { bridge, actions } = makeLiveBridge(fake, fakeSupervisor, {
+      intervals: { registryPollMs: 1, healthPollMs: 1 },
+    });
+
+    for (let i = 0; i < 10; i++) {
+      await pumpMicrotasks();
+    }
+
+    const rowActions = actions.filter((a) => a.kind === "set_bg_rows");
+    expect(rowActions.length).toBeGreaterThan(0);
+    const last = rowActions[rowActions.length - 1];
+    if (last?.kind === "set_bg_rows") {
+      const row = last.rows.find((r) => r.workerId === "worker-hb");
+      expect(row?.lastHeartbeatAt).toBe(12_345_678);
+      expect(row?.heartbeatDeadlineAt).toBe(12_400_000);
+    }
+
+    await bridge.close();
+  });
+
   test("health.state running→quarantined emits toast once per transition", async () => {
     const runningWorker: SupervisorHealth["workers"][number] = {
       workerId: "worker-q" as never,

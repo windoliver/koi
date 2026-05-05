@@ -273,7 +273,10 @@ export const BgView: Component<BgViewProps> = (props) => {
       key.preventDefault();
       const row = selectedRow();
       if (row === undefined) return;
-      if (row.logPath !== "" && row.freshness !== "terminal") {
+      // Allow tailing for any row with a logPath, including terminal rows —
+      // operators most need post-crash/exit log access. Only `k` (kill) is
+      // gated by row state.
+      if (row.logPath !== "") {
         dispatch({ kind: "set_bg_tailing", workerId: row.workerId });
       }
       return;

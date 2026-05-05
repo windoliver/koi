@@ -103,6 +103,7 @@ function computeBackoff(attempt: number): number {
 function recordToRow(
   rec: BackgroundSessionRecord,
   freshness: BgSessionRow["freshness"],
+  workerHealth?: SupervisorHealth["workers"][number],
 ): BgSessionRow {
   return {
     workerId: String(rec.workerId),
@@ -113,14 +114,22 @@ function recordToRow(
     startedAt: rec.startedAt,
     endedAt: rec.endedAt ?? null,
     exitCode: rec.exitCode ?? null,
-    lastHeartbeatAt: null,
-    heartbeatDeadlineAt: null,
+    lastHeartbeatAt: workerHealth?.lastHeartbeatAt ?? null,
+    heartbeatDeadlineAt: workerHealth?.heartbeatDeadlineAt ?? null,
     logPath: rec.logPath,
     backendKind: rec.backendKind,
     version: rec.version ?? 0,
     signaledAt: rec.signaledAt ?? null,
     freshness,
   };
+}
+
+function findWorkerHealth(
+  workerId: string,
+  health: SupervisorHealth | null,
+): SupervisorHealth["workers"][number] | undefined {
+  if (health === null) return undefined;
+  return health.workers.find((w) => String(w.workerId) === workerId);
 }
 
 function mapRecordsToRows(
@@ -130,13 +139,14 @@ function mapRecordsToRows(
   locallySpawnedIds: ReadonlySet<string>,
 ): readonly BgSessionRow[] {
   return records.map((rec) => {
+    const workerHealth = findWorkerHealth(String(rec.workerId), health);
     const freshness = computeFreshness({
-      row: recordToRow(rec, "foreign"), // temporary row for freshness input
+      row: recordToRow(rec, "foreign", workerHealth), // temporary row for freshness input
       health,
       locallySpawnedIds,
       now,
     });
-    return recordToRow(rec, freshness);
+    return recordToRow(rec, freshness, workerHealth);
   });
 }
 
