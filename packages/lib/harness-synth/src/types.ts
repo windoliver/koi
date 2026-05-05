@@ -18,13 +18,15 @@ export const FORGED_BY = "harness-synth";
 
 /**
  * Discriminated verification result returned by the injected `verify`
- * callback. Success carries an optional `summary` so the verifier's
- * stage-level evidence (durations, sandbox bit, per-stage digests) can
- * flow into `SynthesisOutput` and on into forge publication/audit paths.
- * `summary` is optional to keep ad-hoc / test verifiers ergonomic.
+ * callback. Success MUST carry a populated `ForgeVerificationSummary` —
+ * downstream provenance / publication / audit need per-stage evidence
+ * for the winning attempt, and a missing summary leaves nothing to
+ * triage when a bad artifact slips through. Test verifiers can supply
+ * a minimal stub summary; the package treats summary-less success as
+ * a typed verifier failure.
  */
 export type VerifyResult =
-  | { readonly ok: true; readonly summary?: ForgeVerificationSummary | undefined }
+  | { readonly ok: true; readonly summary: ForgeVerificationSummary }
   | { readonly ok: false; readonly reason: string };
 
 /**
@@ -83,13 +85,13 @@ export interface SynthesisOutput {
   /** Wall-clock timestamp from `clock()`. */
   readonly synthesizedAt: number;
   /**
-   * Verification evidence produced by the verifier on the passing attempt.
-   * Forwarded so downstream forge publication / audit can record the exact
-   * verification result that succeeded, instead of re-running the verifier
-   * (which can diverge). `undefined` when the verifier opted not to supply
-   * a summary (typical for ad-hoc / test verifiers).
+   * Verification evidence produced by the verifier on the passing
+   * attempt. Required (see `VerifyResult`); forwarded so downstream
+   * forge publication / audit records the exact verification result
+   * that succeeded instead of re-running the verifier (which can
+   * diverge).
    */
-  readonly verification?: ForgeVerificationSummary | undefined;
+  readonly verification: ForgeVerificationSummary;
 }
 
 /** Discriminated result of a synthesis attempt. */

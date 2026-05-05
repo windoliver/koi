@@ -254,7 +254,7 @@ export async function synthesize(
         priorReason = redactReason(safeSanitize(sanitizeVerifierReason, generated.reason));
         priorCode = "";
         if (generated.aborted) {
-          return { ok: false, reason: generated.reason, attempts: attempt };
+          return { ok: false, reason: lastReason, attempts: attempt };
         }
         continue;
       }
@@ -320,7 +320,7 @@ export async function synthesize(
         priorReason = redactReason(safeSanitize(sanitizeVerifierReason, verified.reason));
         priorCode = capPriorCode(parsed.value.code);
         if (verified.aborted) {
-          return { ok: false, reason: verified.reason, attempts: attempt };
+          return { ok: false, reason: lastReason, attempts: attempt };
         }
         continue;
       }

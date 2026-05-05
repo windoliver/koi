@@ -139,7 +139,7 @@ describe("synthesize", () => {
     const verify: VerifyCallback = (_c, _d, signal) =>
       new Promise<VerifyResult>((resolve) => {
         const onAbort = (): void => {
-          setTimeout(() => resolve({ ok: true }), 50);
+          setTimeout(() => resolve({ ok: true, summary: STUB_SUMMARY }), 50);
         };
         if (signal.aborted) {
           onAbort();
@@ -437,8 +437,7 @@ describe("synthesize", () => {
     const result = await synthesize(INPUT, { generate, verify, ...ABORT_HONORED });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    const v = result.value.verification as Record<string, unknown> | undefined;
-    if (v === undefined) throw new Error("verification missing");
+    const v = result.value.verification as unknown as Record<string, unknown>;
     expect(v.attestationId).toBe("att-123");
     expect(v.digest).toBe("sha256:abc");
   });
@@ -1025,6 +1024,22 @@ describe("synthesize", () => {
     expect(result.reason).toMatch(/candidate\.description exceeds/);
   });
 
+  test("best-effort caller-abort failure discloses 'adapter may still be running'", async () => {
+    const controller = new AbortController();
+    const generate: GenerateCallback = () => new Promise<string>(() => undefined);
+    setTimeout(() => controller.abort(), 5);
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      signal: controller.signal,
+      adapterHonorsAbort: false,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/adapter may still be running/);
+  });
+
   test("best-effort timeout failure discloses 'adapter may still be running'", async () => {
     const generate: GenerateCallback = () => new Promise<string>(() => undefined);
     const result = await synthesize(INPUT, {
@@ -1040,7 +1055,9 @@ describe("synthesize", () => {
   });
 
   test("rejects ok:true verifier result without ForgeVerificationSummary", async () => {
-    const verify: VerifyCallback = () => ({ ok: true });
+    // Cast through unknown to bypass the type guard — we're testing
+    // the runtime defense for callers ignoring or skewed past the type.
+    const verify = (() => ({ ok: true })) as unknown as VerifyCallback;
     const result = await synthesize(INPUT, {
       generate: async () => validRaw(),
       verify,
@@ -1099,8 +1116,8 @@ describe("synthesize", () => {
     live.totalDurationMs = 9999;
     live.stageResults[0]!.passed = false;
     // Returned value must be unaffected.
-    expect(result.value.verification?.totalDurationMs).toBe(17);
-    expect(result.value.verification?.stageResults[0]?.passed).toBe(true);
+    expect(result.value.verification.totalDurationMs).toBe(17);
+    expect(result.value.verification.stageResults[0]?.passed).toBe(true);
     expect(Object.isFrozen(result.value.verification)).toBe(true);
   });
 
