@@ -114,6 +114,24 @@ const UNAVAILABLE_FINGERPRINT = "<unavailable>";
  * Bun-only monorepo (`linker = "isolated"` ensures a single instance
  * of `@koi/forge-policy` is loaded).
  */
+/*
+ * KNOWN LIMITATION: `AUTHENTIC_EVALUATIONS` is closure-private to this
+ * module instance. If the same package is loaded twice in one process
+ * (e.g. multiple bundles, a separate Worker thread, two `require`
+ * trees), evaluations from one copy are not recognized by the other
+ * — `recordEvaluation` will reject them as fabricated. Bun's
+ * `linker = "isolated"` setting ensures a single instance of
+ * `@koi/forge-policy` is loaded inside one process; cross-Worker /
+ * cross-bundle deployments must serialize evaluations across the
+ * boundary and re-evaluate at the persistence-process boundary, or
+ * use the same factory instance for both `evaluatePolicy` and
+ * `createPolicyAuditLog`. A signed payload + verifying secret is
+ * deliberately not used because either (a) the secret is process-
+ * local (same constraint as the WeakSet) or (b) the secret is
+ * shared across instances (then the signature is forgeable by any
+ * holder of the secret). This is a fundamental trust-boundary
+ * choice, not a bug.
+ */
 const AUTHENTIC_EVALUATIONS = new WeakSet<object>();
 
 export function isAuthenticEvaluation(value: unknown): value is PolicyEvaluation {
@@ -570,7 +588,7 @@ function evaluateChecks(
         reason: `config.maxComplexity must be a finite non-negative number, got ${String(config.maxComplexity)}`,
       };
     }
-    const complexity = computeComplexity(options.spec, options.complexityOf, config.maxComplexity);
+    const complexity = computeComplexity(options.spec, options.complexityOf);
     if (!complexity.ok) {
       return { decision: "deny", reason: complexity.reason };
     }
@@ -640,7 +658,6 @@ type ComplexityResult =
 function computeComplexity(
   spec: Readonly<Record<string, unknown>> | undefined,
   custom: ((spec: Readonly<Record<string, unknown>>) => number) | undefined,
-  maxComplexity: number,
 ): ComplexityResult {
   if (spec === undefined) {
     return {
@@ -648,29 +665,18 @@ function computeComplexity(
       reason: "spec is required when maxComplexity is configured",
     };
   }
-  // Default path uses `maxComplexity` as the lower-bound budget. The
-  // custom-scorer path opts out of byte-length scoring but still keeps
-  // a generous *structural* budget (`STRUCTURAL_BUDGET_BYTES`) so a
-  // hostile caller cannot use a tiny `complexityOf` to amplify
-  // validation/cloning cost on a multi-MB spec. Honest specs are well
-  // below this ceiling.
-  const useStructuralCap = custom !== undefined;
-  const lowerBoundBudget = useStructuralCap ? STRUCTURAL_BUDGET_BYTES : maxComplexity;
-  const budgetLabel = useStructuralCap ? "structuralBudgetBytes" : "maxComplexity";
-  // Validate AND detach the spec in a single pass. The walker reads via
-  // descriptor `.value` only (never through getters or Proxy traps) and
-  // builds a fully-detached plain-data clone. Canonicalization then runs
-  // against the clone, so the original `spec` is never touched again
-  // after validation — no user code can fire during scoring.
-  //
-  // The walker also accumulates a *lower-bound* JSON byte count against
-  // `lowerBoundBudget` and bails out as soon as that bound is exceeded,
-  // so an attacker who packs many sparse arrays — each under the
-  // per-array cap but summing past the budget — cannot force the gate
-  // to materialize a multi-MB canonical string before denying. When a
-  // custom scorer is in play we skip the budget short-circuit (no
-  // serialization cost on that path).
-  const validation = validatePlainSpec(spec, lowerBoundBudget, budgetLabel);
+  // The validator's per-walk budget is the FIXED structural ceiling —
+  // never the operator's `maxComplexity`. The validator charges work
+  // bytes that don't always correspond to canonical JSON bytes (e.g.
+  // it charges UTF-8 bytes for keys whose values are `undefined`,
+  // which canonical JSON omits). Using `maxComplexity` as the
+  // validator budget made the policy gate deny small canonical specs
+  // based on validator work — a compatibility regression. The actual
+  // `maxComplexity` ceiling is enforced separately AFTER
+  // canonicalization on the canonical-byte score below. The
+  // structural cap still defends against multi-MB hostile inputs
+  // forcing cloning/serialization cost before the gate denies.
+  const validation = validatePlainSpec(spec, STRUCTURAL_BUDGET_BYTES, "structuralBudgetBytes");
   if (!validation.ok) {
     return { ok: false, reason: `spec is not plain JSON data: ${validation.reason}` };
   }
