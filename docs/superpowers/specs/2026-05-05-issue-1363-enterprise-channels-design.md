@@ -114,18 +114,29 @@ auth failure, 409 on in-flight, 500 on handler throw, 503 on capacity.
 #### channel-email
 
 - **Inbound**: IMAP IDLE on configured folder. New `EXISTS` event → fetch UID → parse MIME → `normalize()` → emit `KoiMessage`.
-- **Outbound**: SMTP via injected `smtp.sendMail` with a **persistent outbox** and **per-thread serialization** for both correctness and crash safety:
-  1. Pre-generate a stable outbound `Message-ID` (`<uuid@configured-from-domain>`).
-  2. **Reserve the thread**: read `ThreadStore.get(threadKey)` and CAS-advance it to a new tentative version that includes this outbound `Message-ID` *before* SMTP. This is the serialization point — losers retry the read-modify-write loop and re-derive headers from the now-current thread state. Only the CAS winner proceeds to step 3 with valid `In-Reply-To`/`References`. (CAS conflict ⇒ re-read ⇒ re-derive headers ⇒ retry CAS.)
-  3. CAS-write an `outbox` record `{ messageId, threadKey, threadVersion, payloadHash, status: "pending", awaitingRecovery: false }` via `OutboxStore` (injected; durable).
-  4. Call `smtp.sendMail` setting that `Message-ID`, `In-Reply-To`, and `References`. Set `awaitingRecovery: true` in the outbox row immediately before the SMTP DATA write.
-  5. On SMTP success: CAS-update outbox `status: "sent"`, clear `awaitingRecovery`. Thread state is **already advanced** (step 2), so no further `ThreadStore` write is needed.
-  6. On SMTP failure *before* DATA acceptance: CAS-update outbox `status: "failed"` AND CAS-rollback `ThreadStore` to the prior version (best-effort; if a concurrent sender has already advanced past us, the rollback is skipped and our reserved entry becomes a benign no-op since no email carries that ID). Safe to retry from step 2 with a fresh ID.
-  5. On SMTP failure *before* the relay accepted the DATA (e.g., connection refused, 4xx/5xx pre-DATA): outbox stays `pending`; safe to retry — no duplicate is possible. After bounded retries it transitions to `failed`.
-  7. On SMTP failure *after* DATA accepted but before our local state lands (e.g., process crash between server `250 OK` and outbox update): outbox stays `pending` with `awaitingRecovery: true`. On recovery the channel does **not** auto-resend such rows — instead it surfaces them via `getPendingSends(): Promise<PendingSend[]>` for operator review, because SMTP `Message-ID` is **not** a protocol-level idempotency key (RFC 5321 does not require relays to collapse duplicates by message-id; many do not). The reserved thread version stands and is cleared up by operator action.
-- **Delivery guarantee**: the channel promises **at-most-once acknowledged delivery** plus **at-least-once intent persistence**. Crash recovery after DATA-acked is operator-resolved (mark `sent` if confirmed by mailbox/MTA logs, or `failed` and let the user retry through the agent loop). The contract and the README both state that automated SMTP retry can produce duplicate user-visible mail and is therefore opt-in via an explicit `autoRetryAfterDataAck: true` config flag (default `false`).
-- **Threading**: state is only advanced on confirmed-sent (status `sent`), so a crashed-mid-send never leaves stale `In-Reply-To` pointers. `awaiting-recovery` rows do not contribute to outbound threading.
-- **Threading**: keyed by root `Message-ID` of the chain. **Durable + concurrency-safe**: outbound `In-Reply-To`/`References` derive from persisted message metadata, not from in-process state. The channel exposes a `ThreadStore` interface with CAS semantics:
+- **Outbound**: explicit state machine with **per-thread serialization** for header-derivation correctness and **outbox persistence** for crash safety. Each outbound send transitions through exactly one of these states:
+
+  | State | Meaning | Allowed transitions |
+  |-------|---------|---------------------|
+  | `reserved` | Thread CAS-advanced (tentative `Message-ID` in chain); outbox row written; SMTP not yet attempted. | → `sending`, → `aborted` |
+  | `sending` | SMTP DATA write in progress. | → `sent`, → `aborted` (pre-DATA only), → `awaiting-recovery` (post-DATA crash) |
+  | `sent` | Relay returned `250 OK`; outbox status durable. | terminal |
+  | `aborted` | **Pre-DATA** SMTP failure (connection refused, 4xx/5xx pre-DATA, validation reject). Tentative thread reservation rolled back. | terminal — caller may retry as a fresh send (new `Message-ID`) |
+  | `awaiting-recovery` | Process crash or socket drop **after** DATA write started but before our `sent` write. | terminal until operator resolves via `resolvePending(messageId, "sent" \| "failed")` |
+
+  **Transitions** (each is an atomic CAS write; no two transitions overlap):
+
+  1. **`(none) → reserved`**: pre-generate `Message-ID = <uuid@from-domain>`. Loop: read `ThreadStore.get(threadKey)` → derive headers → CAS-advance to a new tentative version that includes this `Message-ID`. On CAS conflict, re-read and re-derive headers (this is the only point where headers can be re-derived). On CAS success, write `OutboxStore` row `{ messageId, threadKey, threadVersion, payloadHash, status: "reserved" }`.
+  2. **`reserved → sending`**: single CAS write to outbox flipping `status: "sending"` immediately before invoking `smtp.sendMail`.
+  3. **`sending → sent`**: relay returned `250 OK`. CAS outbox to `status: "sent"`. Thread state was already advanced in step 1 — no further `ThreadStore` write.
+  4. **`reserved → aborted` OR `sending → aborted`** (pre-DATA failure only — see classification below): CAS outbox to `status: "aborted"`. Best-effort CAS-rollback `ThreadStore` to the prior version (skip silently if a concurrent sender advanced past us — the reserved chain entry becomes a benign hole since no email carrying that `Message-ID` exists). Caller may retry as a fresh send.
+  5. **`sending → awaiting-recovery`**: process crash or socket drop after the SMTP DATA octet stream began but before `250 OK` was acknowledged into our outbox. Detected at startup by scanning outbox for `status: "sending"`. Channel does **not** auto-resend (SMTP `Message-ID` is not a protocol idempotency key per RFC 5321). `getPendingSends()` exposes the row; operator calls `resolvePending(messageId, outcome)`. Thread reservation stands until then; outbound threading skips `awaiting-recovery` rows when deriving future headers.
+
+  **Pre-DATA vs post-DATA classification**: the SMTP transport adapter exposes `await smtp.sendMail(...)` which resolves with `{ phase: "pre-data" | "post-data", ok: boolean, error? }`. The state machine reads `phase` to choose `aborted` (pre-DATA) vs `awaiting-recovery` (post-DATA crash). nodemailer's events expose enough information to populate `phase`; the wrapper lives in `platform-send.ts`.
+
+- **Delivery guarantee**: **at-most-once acknowledged delivery** (no automated post-DATA retry by default) + **at-least-once intent persistence** (outbox is durable; nothing is dropped silently). Operators may opt into automated post-DATA retry via `autoRetryAfterDataAck: true` (default `false`), accepting the risk of duplicate user-visible mail.
+
+- **Threading**: state advances exactly once per send, in transition 1. Header derivation is locked at that point. `aborted` triggers rollback; `awaiting-recovery` holds the reservation until operator resolution. No code path can ever advance the thread *after* SMTP success because step 1 already did so. The channel exposes a `ThreadStore` interface with CAS semantics:
 
   ```ts
   interface ThreadStore {
@@ -218,7 +229,7 @@ interface IdempotencyStore {
 1. `auth/verify` → on failure return 401/403, no idempotency interaction.
 2. `tryBegin(key, leaseMs)`:
    - `committed`: 200 OK, silently drop (true duplicate).
-   - `in-flight`: 409 — provider retries (Teams + WhatsApp both retry 4xx other than 4xx-final).
+   - `in-flight`: short bounded wait (default 2s, ≤ provider socket timeout) polling for `committed`. If observed → 200 OK. Otherwise → **503 Service Unavailable**. Both Teams (per Microsoft Learn retry table — 502/503/504) and WhatsApp (Meta Cloud API retries 5xx) explicitly retry 503; this maps duplicate races to documented retryable behavior. **409 is not used** because Teams does not retry 409.
    - `capacity-exhausted`: 503 — provider retries; emit operator alert.
    - `ok`: continue.
 3. `await normalize(payload)` → `await handler(message)` (the user's async `onMessage`). The lease is the *only* state that exists during handler execution; no durable suppression record is written before the handler completes.
@@ -241,7 +252,7 @@ Email is **IMAP-backed, not webhook-backed**, so it has no HTTP response to bind
 |---------|-----------------------|-----------|
 | teams | 24h | Bot Framework retry budget is hours; 24h covers all observed retries with margin. |
 | whatsapp | 7 days | Meta Cloud API may retry within minutes, but full WAMID dedupe survives tenant moves and disaster recovery for a week. |
-| email | no in-process default — **a durable `IdempotencyStore` is mandatory at construction**; factory throws `INVALID_CONFIG` otherwise | IMAP can re-deliver the same UIDVALIDITY+UID weeks/months later via reconnect, mailbox rescan, replication failover, or backup restore, so committed records must outlive any in-memory cap. Pairing the in-memory `maxCommittedRecords` cap with `Infinity` retention would silently fail-closed on routine mailbox volume; the spec rules that combination out by *requiring* a durable store. The injected store's retention must cover the mailbox retention horizon (operator-configured, typically 90d–`Infinity`). A bundled filesystem-backed `FileIdempotencyStore` (append-only log + in-memory index) ships in the package as the no-extra-infra default for single-node deployments. |
+| email | no in-process default — **a durable `IdempotencyStore` is mandatory at construction**; factory throws `INVALID_CONFIG` otherwise | IMAP can re-deliver the same UIDVALIDITY+UID weeks/months later via reconnect, mailbox rescan, replication failover, or backup restore, so committed records must outlive any in-memory cap. Pairing the in-memory `maxCommittedRecords` cap with `Infinity` retention would silently fail-closed on routine mailbox volume; the spec rules that combination out by *requiring* a durable store. The injected store's retention must cover the mailbox retention horizon (operator-configured, typically 90d–`Infinity`). The package does **not** ship a bundled "default" filesystem store, because any single-node store with `Infinity` retention either grows resident memory unboundedly (in-memory index over append-only log) or trades that for unindexed disk seeks. The package documents two operator-supplied options: (a) external KV/SQL with native TTL/range queries, or (b) a sharded filesystem store with explicit on-disk index files (e.g., one segment per UTC week, segments older than retention window are dropped). The `IdempotencyStore` interface is the contract; concrete implementations are the operator's choice and not part of this PR. |
 
 Tests cover: concurrent `tryBegin` (exactly one `ok`), transient handler failure (`abort` releases key, retry succeeds), commit (retry after commit is a true no-op duplicate), and email replay 30+ days later still suppressed (with the default `Infinity` TTL).
 
