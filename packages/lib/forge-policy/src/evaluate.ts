@@ -283,6 +283,20 @@ export function evaluatePolicy(
   // Reflection never touches caller-owned live objects.
   let resolvedSpec: Readonly<Record<string, unknown>> | undefined = optionSpec;
   if (optionSpecJson !== undefined) {
+    // Cap input size BEFORE JSON.parse. A multi-GB caller-controlled
+    // JSON string would otherwise burn CPU and exhaust memory inside
+    // the parser before any later size guard could fire. Cap matches
+    // STRUCTURAL_BUDGET_BYTES so honest inputs that fit the post-
+    // parse validator also fit the pre-parse limit.
+    if (optionSpecJson.length > STRUCTURAL_BUDGET_BYTES) {
+      return makeFailClosedEvaluation({
+        reason: `options.specJson exceeds MAX_SPEC_JSON_BYTES (${STRUCTURAL_BUDGET_BYTES})`,
+        candidateId: candidateSnapshot.id,
+        override: overrideSnapshot,
+        kind: "config",
+        configFingerprint: UNAVAILABLE_FINGERPRINT,
+      });
+    }
     try {
       const parsed = JSON.parse(optionSpecJson);
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {

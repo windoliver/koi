@@ -19,7 +19,7 @@ const baseEntry = {
 
 describe("createPolicyAuditLog (storage behavior — _createPolicyAuditLogForTesting)", () => {
   test("records all decisions in insertion order", () => {
-    const log = _createPolicyAuditLogForTesting();
+    const log = _createPolicyAuditLogForTesting({ failClosedOnOverflowSinkError: false });
     log.record({ ...baseEntry, candidateId: "a" });
     log.record({
       ...baseEntry,
@@ -43,7 +43,7 @@ describe("createPolicyAuditLog (storage behavior — _createPolicyAuditLogForTes
   });
 
   test("recorded entries are deep-frozen", () => {
-    const log = _createPolicyAuditLogForTesting();
+    const log = _createPolicyAuditLogForTesting({ failClosedOnOverflowSinkError: false });
     log.record({ ...baseEntry });
     const entries = log.entries();
     const first = entries[0];
@@ -54,7 +54,7 @@ describe("createPolicyAuditLog (storage behavior — _createPolicyAuditLogForTes
   });
 
   test("override is preserved on the entry when present", () => {
-    const log = _createPolicyAuditLogForTesting();
+    const log = _createPolicyAuditLogForTesting({ failClosedOnOverflowSinkError: false });
     log.record({
       ...baseEntry,
       verdict: { decision: "allow" },
@@ -69,7 +69,7 @@ describe("createPolicyAuditLog (storage behavior — _createPolicyAuditLogForTes
   });
 
   test("baseVerdict is recorded so an override audit retains the bypassed reason", () => {
-    const log = _createPolicyAuditLogForTesting();
+    const log = _createPolicyAuditLogForTesting({ failClosedOnOverflowSinkError: false });
     log.record({
       ...baseEntry,
       verdict: { decision: "allow" },
@@ -120,7 +120,7 @@ describe("createPolicyAuditLog (storage behavior — _createPolicyAuditLogForTes
   });
 
   test("entries() returns a snapshot — later mutations to the log do not affect prior reads", () => {
-    const log = _createPolicyAuditLogForTesting();
+    const log = _createPolicyAuditLogForTesting({ failClosedOnOverflowSinkError: false });
     log.record({ ...baseEntry, candidateId: "a" });
     const snap = log.entries();
     log.record({ ...baseEntry, candidateId: "b" });
@@ -128,11 +128,24 @@ describe("createPolicyAuditLog (storage behavior — _createPolicyAuditLogForTes
     expect(log.size()).toBe(2);
   });
 
-  test("DEFAULT mode is fail-closed on overflow with no sink", () => {
-    // The default deployment must not silently truncate audit history.
-    const log = _createPolicyAuditLogForTesting({ maxEntries: 1 });
+  test("DEFAULT construction (no sink, no opt-in) throws — caller MUST choose retention strategy", () => {
+    // Fail-closed mode without a sink would brick authorization once
+    // maxEntries is reached, and silent lossy mode would erase
+    // forensic evidence. Construction throws so the operator MUST
+    // make an explicit choice.
+    expect(() => _createPolicyAuditLogForTesting()).toThrow(/onOverflow|opt-in/);
+    expect(() => createPolicyAuditLog()).toThrow(/onOverflow|opt-in/);
+  });
+
+  test("fail-closed mode WITH onOverflow sink: throws on overflow when sink fails", () => {
+    const log = _createPolicyAuditLogForTesting({
+      maxEntries: 1,
+      onOverflow: () => {
+        throw new Error("sink down");
+      },
+    });
     log.record({ ...baseEntry, candidateId: "a" });
-    expect(() => log.record({ ...baseEntry, candidateId: "b" })).toThrow(/overflow/);
+    expect(() => log.record({ ...baseEntry, candidateId: "b" })).toThrow(/sink failed/);
     expect(log.size()).toBe(1);
     expect(log.entries()[0]?.candidateId).toBe("a");
   });
@@ -150,7 +163,7 @@ describe("createPolicyAuditLog (storage behavior — _createPolicyAuditLogForTes
   });
 
   test("recordedAt and sequence are bound by the log, not by callers", () => {
-    const log = _createPolicyAuditLogForTesting();
+    const log = _createPolicyAuditLogForTesting({ failClosedOnOverflowSinkError: false });
     const before = Date.now();
     const a = log.record({ ...baseEntry, candidateId: "a", evaluatedAt: 1 });
     const b = log.record({ ...baseEntry, candidateId: "b", evaluatedAt: 2 });
@@ -203,16 +216,13 @@ describe("createPolicyAuditLog (storage behavior — _createPolicyAuditLogForTes
     expect(log.droppedCount()).toBe(0);
   });
 
-  test("failClosedOnOverflowSinkError + no sink: throws and preserves the original entry", () => {
-    const log = _createPolicyAuditLogForTesting({
-      maxEntries: 1,
-      failClosedOnOverflowSinkError: true,
-    });
-    log.record({ ...baseEntry, candidateId: "a" });
-    expect(() => log.record({ ...baseEntry, candidateId: "b" })).toThrow(/no onOverflow sink/);
-    expect(log.size()).toBe(1);
-    expect(log.entries()[0]?.candidateId).toBe("a");
-    expect(log.droppedCount()).toBe(0);
+  test("failClosedOnOverflowSinkError + no sink: rejected at construction (no DoS path)", () => {
+    expect(() =>
+      _createPolicyAuditLogForTesting({
+        maxEntries: 1,
+        failClosedOnOverflowSinkError: true,
+      }),
+    ).toThrow(/onOverflow|opt-in/);
   });
 
   test("a throwing onOverflow callback does not crash the policy gate (lossy mode)", () => {
@@ -252,7 +262,7 @@ describe("createPolicyAuditLog (storage behavior — _createPolicyAuditLogForTes
   });
 
   test("public PolicyAuditLog has no record() method (only recordEvaluation)", () => {
-    const log = createPolicyAuditLog();
+    const log = createPolicyAuditLog({ failClosedOnOverflowSinkError: false });
     expect((log as { record?: unknown }).record).toBeUndefined();
   });
 });
@@ -338,7 +348,7 @@ describe("createPolicyAuditLog — cross-field invariants", () => {
     expect(() => _validatePolicyAuditEntry(entry)).not.toThrow();
     // Round-trip through the test factory to check the entry is preserved
     // verbatim with override metadata intact.
-    const log = _createPolicyAuditLogForTesting();
+    const log = _createPolicyAuditLogForTesting({ failClosedOnOverflowSinkError: false });
     log.record(entry);
     expect(log.entries()[0]?.override?.grantedBy).toBe("op");
     expect(log.entries()[0]?.overrideApplied).toBe(false);
@@ -357,7 +367,7 @@ describe("createPolicyAuditLog — cross-field invariants", () => {
 
 describe("createPolicyAuditLog — recordEvaluation", () => {
   test("persists configFingerprint from evaluation (bound at decision time)", () => {
-    const log = createPolicyAuditLog();
+    const log = createPolicyAuditLog({ failClosedOnOverflowSinkError: false });
     const config = makeConfig({ allowedKinds: ["tool"] });
     const evaluation = evaluatePolicy(makeCandidate(), config);
     const entry = log.recordEvaluation({
@@ -369,7 +379,7 @@ describe("createPolicyAuditLog — recordEvaluation", () => {
   });
 
   test("audit candidateId is bound to the evaluated candidate (no replay across ids)", () => {
-    const log = createPolicyAuditLog();
+    const log = createPolicyAuditLog({ failClosedOnOverflowSinkError: false });
     const config = makeConfig({ allowedKinds: ["tool"] });
     const evaluation = evaluatePolicy(makeCandidate({ id: "cand-real" }), config);
     const entry = log.recordEvaluation({
@@ -383,7 +393,7 @@ describe("createPolicyAuditLog — recordEvaluation", () => {
   });
 
   test("post-evaluation config mutation cannot rewrite the recorded fingerprint", () => {
-    const log = createPolicyAuditLog();
+    const log = createPolicyAuditLog({ failClosedOnOverflowSinkError: false });
     const config = makeConfig({ allowedKinds: ["tool"] });
     const fingerprintAtEval = computeConfigFingerprint(config);
     const evaluation = evaluatePolicy(makeCandidate(), config);
@@ -399,7 +409,7 @@ describe("createPolicyAuditLog — recordEvaluation", () => {
   });
 
   test("captures verdict, baseVerdict, AND override from the evaluation", () => {
-    const log = createPolicyAuditLog();
+    const log = createPolicyAuditLog({ failClosedOnOverflowSinkError: false });
     const config = makeConfig({ allowedKinds: ["tool"] });
     const evaluation = evaluatePolicy(makeCandidate({ kind: "channel" }), config, {
       override: { granted: true, reason: "ops #1", grantedBy: "alice" },
@@ -415,7 +425,7 @@ describe("createPolicyAuditLog — recordEvaluation", () => {
   });
 
   test("preserves no-op granted override metadata (overrideApplied:false) for observability", () => {
-    const log = createPolicyAuditLog();
+    const log = createPolicyAuditLog({ failClosedOnOverflowSinkError: false });
     const config = makeConfig();
     const evaluation = evaluatePolicy(makeCandidate(), config, {
       override: { granted: true, reason: "noop", grantedBy: "ops" },
@@ -431,7 +441,7 @@ describe("createPolicyAuditLog — recordEvaluation", () => {
   });
 
   test("malformed-override fail-closed evaluations are recordable with the real config fingerprint", () => {
-    const log = createPolicyAuditLog();
+    const log = createPolicyAuditLog({ failClosedOnOverflowSinkError: false });
     type Override = NonNullable<Parameters<typeof evaluatePolicy>[2]>["override"];
     const config = makeConfig();
     const evaluation = evaluatePolicy(makeCandidate(), config, {
@@ -460,7 +470,7 @@ describe("createPolicyAuditLog — recordEvaluation", () => {
   });
 
   test("rejects a fabricated PolicyEvaluation literal (must come from evaluatePolicy)", () => {
-    const log = createPolicyAuditLog();
+    const log = createPolicyAuditLog({ failClosedOnOverflowSinkError: false });
     const fabricated = {
       verdict: { decision: "allow" } as const,
       baseVerdict: { decision: "deny", reason: "x" } as const,

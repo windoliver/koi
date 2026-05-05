@@ -186,6 +186,24 @@ function createPolicyAuditLogInternal(
   if (!Number.isInteger(maxEntries) || maxEntries < 1) {
     throw new Error(`maxEntries must be a positive integer, got ${maxEntries}`);
   }
+  // Force the caller to make an explicit retention decision at
+  // construction time. Fail-closed mode without a durable sink would
+  // brick authorization after `maxEntries` decisions; lossy mode
+  // without a sink silently truncates audit history. Neither default
+  // is acceptable — require either an onOverflow sink (which makes
+  // fail-closed safe and surfaces eviction in lossy mode) OR an
+  // explicit `failClosedOnOverflowSinkError: false` opt-in.
+  const failClosedConfigured =
+    options.failClosedOnOverflowSinkError === undefined ||
+    options.failClosedOnOverflowSinkError === true;
+  if (failClosedConfigured && options.onOverflow === undefined) {
+    throw new Error(
+      "createPolicyAuditLog requires either an onOverflow sink or " +
+        "failClosedOnOverflowSinkError: false (explicit lossy opt-in). " +
+        "Fail-closed mode without a sink would brick authorization once " +
+        "maxEntries is reached.",
+    );
+  }
 
   const buffer: PolicyAuditEntry[] = [];
   let dropped = 0;

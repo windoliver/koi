@@ -341,6 +341,15 @@ describe("evaluatePolicy — scope and approval", () => {
     expect(result.failureReason).toMatch(/mutually exclusive/);
   });
 
+  test("oversized specJson is rejected before JSON.parse (pre-parse DoS guard)", () => {
+    const cfg = makeConfig({ maxComplexity: 100 });
+    // 11MB string — exceeds STRUCTURAL_BUDGET_BYTES (10MB) cap.
+    const oversized = "a".repeat(11_000_000);
+    const result = evaluatePolicy(makeCandidate(), cfg, { specJson: oversized });
+    expect(result.verdict.decision).toBe("deny");
+    expect(result.failureReason).toMatch(/MAX_SPEC_JSON_BYTES|exceeds/);
+  });
+
   test("invalid specJson fails closed", () => {
     const cfg = makeConfig({ maxComplexity: 10_000 });
     const result = evaluatePolicy(makeCandidate(), cfg, { specJson: "{not-valid-json" });
@@ -443,7 +452,7 @@ describe("evaluatePolicy — scope and approval", () => {
     expect(result.failureKind).toBe("override");
     // The fail-closed evaluation must itself be recordable.
     const { createPolicyAuditLog } = await import("./audit.js");
-    const log = createPolicyAuditLog();
+    const log = createPolicyAuditLog({ failClosedOnOverflowSinkError: false });
     expect(() =>
       log.recordEvaluation({ evaluation: result, evaluatedAt: 1_700_000_000_000 }),
     ).not.toThrow();
@@ -503,7 +512,7 @@ describe("evaluatePolicy — scope and approval", () => {
     expect(result.failureKind).toBe("candidate");
     // The fail-closed evaluation must remain recordable — caller cannot
     // be left with an actionable verdict that the audit layer rejects.
-    const log = createPolicyAuditLog();
+    const log = createPolicyAuditLog({ failClosedOnOverflowSinkError: false });
     expect(() =>
       log.recordEvaluation({ evaluation: result, evaluatedAt: 1_700_000_000_000 }),
     ).not.toThrow();
