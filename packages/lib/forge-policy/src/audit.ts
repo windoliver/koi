@@ -68,6 +68,17 @@ export interface PolicyAuditLog {
   readonly recordEvaluation: (params: RecordEvaluationParams) => PolicyAuditEntry;
   readonly entries: () => readonly PolicyAuditEntry[];
   readonly size: () => number;
+  /**
+   * Number of entries that have been evicted by FIFO truncation since
+   * the log was created. A non-zero value means at least that many
+   * security-relevant decisions are no longer in `entries()` — callers
+   * MUST surface this to operators (alert, page, persist to durable
+   * sink, etc.) before relying on the in-memory log as a forensic
+   * source. Silent eviction would let a flood of benign decisions
+   * erase earlier override/deny records; this counter makes that
+   * loss observable.
+   */
+  readonly droppedCount: () => number;
 }
 
 /**
@@ -129,12 +140,16 @@ function createPolicyAuditLogInternal(
   }
 
   const buffer: PolicyAuditEntry[] = [];
+  let dropped = 0;
 
   function record(entry: PolicyAuditEntry): void {
     validateEntry(entry);
     const frozen = freezeEntry(entry);
     buffer.push(frozen);
-    if (buffer.length > maxEntries) buffer.shift();
+    if (buffer.length > maxEntries) {
+      buffer.shift();
+      dropped += 1;
+    }
   }
 
   function recordEvaluation(params: RecordEvaluationParams): PolicyAuditEntry {
@@ -174,10 +189,14 @@ function createPolicyAuditLogInternal(
     return buffer.length;
   }
 
+  function droppedCount(): number {
+    return dropped;
+  }
+
   return Object.freeze(
     exposeUnsafeRecord
-      ? { recordEvaluation, entries, size, record }
-      : { recordEvaluation, entries, size },
+      ? { recordEvaluation, entries, size, droppedCount, record }
+      : { recordEvaluation, entries, size, droppedCount },
   );
 }
 

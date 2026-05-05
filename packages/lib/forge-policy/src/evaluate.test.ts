@@ -362,6 +362,36 @@ describe("evaluatePolicy — scope and approval", () => {
     }
   });
 
+  test("cyclic candidate fails closed (no stack exhaustion)", () => {
+    type Cand = Parameters<typeof evaluatePolicy>[0];
+    const hostile: Record<string, unknown> = { ...makeCandidate() };
+    hostile.self = hostile;
+    const result = evaluatePolicy(hostile as unknown as Cand, makeConfig());
+    expect(result.verdict.decision).toBe("deny");
+    expect(result.failureKind).toBe("candidate");
+  });
+
+  test("deeply nested candidate input fails closed before stack exhaustion", () => {
+    type Cand = Parameters<typeof evaluatePolicy>[0];
+    let nested: Record<string, unknown> = {};
+    for (let i = 0; i < 200; i++) nested = { inner: nested };
+    const hostile = { ...makeCandidate(), extra: nested } as unknown as Cand;
+    const result = evaluatePolicy(hostile, makeConfig());
+    expect(result.verdict.decision).toBe("deny");
+    expect(result.failureKind).toBe("candidate");
+    expect(result.failureReason).toMatch(/depth|MAX_INPUT_DEPTH/i);
+  });
+
+  test("excessive field count on candidate fails closed (intake DoS guard)", () => {
+    type Cand = Parameters<typeof evaluatePolicy>[0];
+    const wide: Record<string, unknown> = { ...makeCandidate() };
+    for (let i = 0; i < 2000; i++) wide[`field${i}`] = i;
+    const result = evaluatePolicy(wide as unknown as Cand, makeConfig());
+    expect(result.verdict.decision).toBe("deny");
+    expect(result.failureKind).toBe("candidate");
+    expect(result.failureReason).toMatch(/field count|MAX_INPUT_FIELDS/i);
+  });
+
   test("malformed maxComplexity (NaN/Infinity/negative) fails closed", () => {
     type Cfg = Parameters<typeof evaluatePolicy>[1];
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {

@@ -137,6 +137,21 @@ describe("createPolicyAuditLog (storage behavior — _createPolicyAuditLogForTes
     expect(log.entries().map((e) => e.candidateId)).toEqual(["b", "c"]);
   });
 
+  test("droppedCount reports FIFO evictions (overflow is observable, not silent)", () => {
+    const log = _createPolicyAuditLogForTesting({ maxEntries: 2 });
+    expect(log.droppedCount()).toBe(0);
+    log.record({ ...baseEntry, candidateId: "a" });
+    log.record({ ...baseEntry, candidateId: "b" });
+    expect(log.droppedCount()).toBe(0);
+    log.record({ ...baseEntry, candidateId: "c" });
+    expect(log.droppedCount()).toBe(1);
+    log.record({ ...baseEntry, candidateId: "d" });
+    log.record({ ...baseEntry, candidateId: "e" });
+    expect(log.droppedCount()).toBe(3);
+    // entries() still returns the freshest survivors
+    expect(log.entries().map((e) => e.candidateId)).toEqual(["d", "e"]);
+  });
+
   test("rejects non-positive maxEntries", () => {
     expect(() => createPolicyAuditLog({ maxEntries: 0 })).toThrow(/maxEntries/);
     expect(() => createPolicyAuditLog({ maxEntries: -1 })).toThrow(/maxEntries/);

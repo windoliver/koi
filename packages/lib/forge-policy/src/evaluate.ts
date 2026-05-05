@@ -292,7 +292,42 @@ function snapshotConfig(
   };
 }
 
+/**
+ * Hard depth ceiling for `descriptorClone`. Honest candidate/config/
+ * override inputs are flat (id/name/kind/scope/budget object). Anything
+ * deeper than this is either a bug or a hostile graph attempting to
+ * exhaust the call stack — fail closed before recursing further.
+ */
+const MAX_INPUT_DEPTH = 32;
+
+/**
+ * Hard ceiling for total descriptor visits across one
+ * `descriptorClone` invocation. Stops a hostile candidate/config from
+ * stuffing thousands of extra unused fields to force pathological work
+ * on the intake path before any verdict is produced. Honest inputs
+ * have well under this many fields.
+ */
+const MAX_INPUT_FIELDS = 1024;
+
+interface CloneState {
+  /** Cycle detection — input objects already seen on the current path. */
+  readonly seen: WeakSet<object>;
+  /** Total descriptor visits so far across the whole walk. */
+  count: { value: number };
+}
+
 function descriptorClone(value: unknown): unknown {
+  return descriptorCloneInner(value, 0, { seen: new WeakSet(), count: { value: 0 } });
+}
+
+function descriptorCloneInner(value: unknown, depth: number, state: CloneState): unknown {
+  if (depth > MAX_INPUT_DEPTH) {
+    throw new Error(`input depth exceeds MAX_INPUT_DEPTH (${MAX_INPUT_DEPTH})`);
+  }
+  state.count.value += 1;
+  if (state.count.value > MAX_INPUT_FIELDS) {
+    throw new Error(`input field count exceeds MAX_INPUT_FIELDS (${MAX_INPUT_FIELDS})`);
+  }
   if (value === null) return null;
   const t = typeof value;
   if (t === "string" || t === "boolean" || t === "undefined") return value;
@@ -306,6 +341,12 @@ function descriptorClone(value: unknown): unknown {
     // BigInt, Symbol, Function — not JSON-safe, not allowed in policy config.
     throw new Error(`unsupported config value type: ${t}`);
   }
+  // Cycle detection — a self-referential candidate/config would
+  // otherwise recurse until depth-limit or stack overflow.
+  if (state.seen.has(value as object)) {
+    throw new Error("cyclic reference in policy input");
+  }
+  state.seen.add(value as object);
   if (Array.isArray(value)) {
     const out: unknown[] = [];
     const len = value.length;
@@ -318,8 +359,9 @@ function descriptorClone(value: unknown): unknown {
       if (desc.get !== undefined || desc.set !== undefined) {
         throw new Error(`accessor on array index ${i}`);
       }
-      out.push(descriptorClone(desc.value));
+      out.push(descriptorCloneInner(desc.value, depth + 1, state));
     }
+    state.seen.delete(value as object);
     return out;
   }
   // Reject non-plain prototypes (Date, Map, custom class, Proxy with
@@ -341,12 +383,13 @@ function descriptorClone(value: unknown): unknown {
       throw new Error(`accessor on key '${k}'`);
     }
     Object.defineProperty(out, k, {
-      value: descriptorClone(desc.value),
+      value: descriptorCloneInner(desc.value, depth + 1, state),
       enumerable: true,
       writable: true,
       configurable: true,
     });
   }
+  state.seen.delete(value as object);
   return out;
 }
 
