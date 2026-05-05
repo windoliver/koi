@@ -237,6 +237,17 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
+  test("send: malformed forum-topic suffix is rejected (fails closed, no leak to parent chat)", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({ token: "T", bot: f.bot });
+    await adapter.connect();
+    await expect(
+      adapter.send({ content: [{ kind: "text", text: "x" }], threadId: "200:not-a-number" }),
+    ).rejects.toThrow(/forum-topic suffix/);
+    expect(f.calls).toHaveLength(0);
+    await adapter.disconnect();
+  });
+
   test("send: invalid threadId throws", async () => {
     const f = fakeBot();
     const adapter = createTelegramChannel({ token: "T", bot: f.bot });

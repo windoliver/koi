@@ -225,6 +225,69 @@ describe("@koi/channel-signal createSignalProcess", () => {
     );
   });
 
+  test("stop() does not fire onUnexpectedExit (intentional shutdown is not a crash)", async () => {
+    const f = makeFake();
+    const spawn: SpawnFn = () => f.proc;
+    let died = 0;
+    const p = createSignalProcess(
+      "+15551234567",
+      "signal-cli",
+      undefined,
+      spawn,
+      undefined,
+      () => died++,
+    );
+    await p.start();
+    // Resolve `exited` before stop() awaits it — simulates a SIGTERM that the
+    // child honors quickly. The exited handler runs while stopping=true, so
+    // onUnexpectedExit must NOT fire.
+    f.finishExit();
+    await p.stop();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(died).toBe(0);
+  });
+
+  test("stdout EOF without trailing newline still dispatches the residual JSON", async () => {
+    // Inline fake that lets us push raw bytes and close the stream.
+    let writeRaw: (bytes: Uint8Array) => void = () => undefined;
+    let closeStdout: () => void = () => undefined;
+    const stdout = new ReadableStream<Uint8Array>({
+      start(c): void {
+        writeRaw = (b) => c.enqueue(b);
+        closeStdout = () => c.close();
+      },
+    });
+    let resolveExit: () => void = () => undefined;
+    const exited = new Promise<void>((r) => {
+      resolveExit = r;
+    });
+    const proc: SignalChildProcess = {
+      stdout,
+      stdin: { write: () => undefined },
+      exited,
+      kill: () => undefined,
+    };
+    const spawn: SpawnFn = () => proc;
+    const p = createSignalProcess("+15551234567", "signal-cli", undefined, spawn);
+    const seen: SignalEvent[] = [];
+    p.onEvent((e) => seen.push(e));
+    await p.start();
+    // Emit ONLY the JSON bytes — no trailing "\n". This is the partial-line
+    // case the fix targets.
+    const partial = JSON.stringify({
+      params: {
+        envelope: { source: "+15551234567", dataMessage: { message: "tail", timestamp: 1 } },
+      },
+    });
+    writeRaw(new TextEncoder().encode(partial));
+    closeStdout();
+    resolveExit();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.kind).toBe("message");
+    if (seen[0]?.kind === "message") expect(seen[0].body).toBe("tail");
+  });
+
   test("isRunning reflects start/stop", async () => {
     const f = makeFake();
     const spawn: SpawnFn = () => f.proc;

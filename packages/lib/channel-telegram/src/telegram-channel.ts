@@ -330,8 +330,13 @@ function parseThreadId(threadId: string): {
     throw new Error(`[channel-telegram] invalid threadId "${threadId}"`);
   }
   if (parts.length < 2) return { chatId };
+  // Fail closed: a malformed forum-topic suffix (anything non-numeric) must
+  // not silently route to the parent chat, or thread-isolated replies could
+  // leak into the broader group.
   const sub = Number(parts[1]);
-  if (!Number.isFinite(sub)) return { chatId };
+  if (!Number.isFinite(sub)) {
+    throw new Error(`[channel-telegram] invalid forum-topic suffix in threadId "${threadId}"`);
+  }
   return { chatId, threadId: sub };
 }
 

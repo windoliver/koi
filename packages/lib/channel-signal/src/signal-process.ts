@@ -63,6 +63,10 @@ export function createSignalProcess(
   let running = false;
   // let requires justification: cancels stdout reader during stop()
   let cancelReader: (() => void) | undefined;
+  // let requires justification: set true at the start of stop() so the
+  // child.exited handler can distinguish an intentional shutdown (suppress
+  // onUnexpectedExit) from a crash / external kill (fire onUnexpectedExit).
+  let stopping = false;
 
   async function readStdout(stream: ReadableStream<Uint8Array>): Promise<void> {
     const reader = stream.getReader();
@@ -85,6 +89,12 @@ export function createSignalProcess(
           dispatchLine(trimmed);
         }
       }
+      // EOF: flush whatever is left in the buffer. signal-cli flushes its
+      // last JSON-RPC envelope on a clean exit but does not always emit a
+      // trailing newline, so without this the final inbound message would
+      // be silently dropped.
+      const tail = (buffer + decoder.decode()).trim();
+      if (tail.length > 0) dispatchLine(tail);
     } catch {
       // expected on shutdown / closed stream
     } finally {
@@ -117,7 +127,8 @@ export function createSignalProcess(
       // out-of-band, etc.). Without this the adapter would keep reporting
       // running=true and silently drop sends to a dead stdin handle.
       void child.exited.then(() => {
-        if (proc !== child) return; // already replaced or torn down by stop()
+        if (proc !== child) return; // already replaced
+        if (stopping) return; // intentional shutdown — stop() owns cleanup
         running = false;
         cancelReader?.();
         cancelReader = undefined;
@@ -129,6 +140,7 @@ export function createSignalProcess(
 
     stop: async (): Promise<void> => {
       if (!running || proc === undefined) return;
+      stopping = true;
       running = false;
       cancelReader?.();
       cancelReader = undefined;
@@ -142,6 +154,7 @@ export function createSignalProcess(
       ]);
       if (result === "timeout") child.kill(9);
       proc = undefined;
+      stopping = false;
     },
 
     send: async (command: SignalCommand): Promise<void> => {
