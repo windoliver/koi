@@ -18,12 +18,13 @@ const TEMPLATE_HEADER = [
   "You are a code-synthesis assistant for the Koi forge subsystem.",
   "Produce a JavaScript implementation that satisfies the candidate below.",
   "",
-  "Respond with exactly two tagged sections:",
-  '  <descriptor>{ "name": "...", "description": "...", "inputSchema": { ... } }</descriptor>',
-  "  <code>// JavaScript source</code>",
+  "Respond with a single JSON object — no prose, no fences:",
+  '  { "descriptor": { "name": "...", "description": "...", "inputSchema": {...} },',
+  '    "code": "...JavaScript source as a JSON string..." }',
   "",
-  "The descriptor MUST be a single-line JSON object whose `name` field equals",
-  "the target tool name. Do not emit any other text outside the tags.",
+  "The `descriptor.name` field MUST equal the target tool name. The `code`",
+  "field is a JSON string, so escape inner quotes and backslashes per JSON",
+  "rules — do not wrap source in tags or fences.",
 ].join("\n");
 
 export function buildSynthesisPrompt(ctx: SynthesisPromptContext): string {

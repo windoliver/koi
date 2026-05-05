@@ -18,9 +18,9 @@ export interface RefinementPromptContext {
 
 const TEMPLATE_HEADER = [
   "Your previous attempt failed verification. Produce a corrected",
-  "implementation, keeping the same response format:",
-  '  <descriptor>{ "name": "...", "description": "...", "inputSchema": { ... } }</descriptor>',
-  "  <code>// JavaScript source</code>",
+  "implementation. Respond with the same single-JSON-object format:",
+  '  { "descriptor": { "name": "...", "description": "...", "inputSchema": {...} },',
+  '    "code": "...JavaScript source as a JSON string..." }',
 ].join("\n");
 
 export function buildRefinementPrompt(ctx: RefinementPromptContext): string {
@@ -43,8 +43,6 @@ export function buildRefinementPrompt(ctx: RefinementPromptContext): string {
     `  ${ctx.priorReason}`,
     "",
     "Previous code (for reference — fix or replace):",
-    "<prior>",
-    ctx.priorCode,
-    "</prior>",
+    JSON.stringify(ctx.priorCode),
   ].join("\n");
 }

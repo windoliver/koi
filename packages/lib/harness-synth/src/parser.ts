@@ -2,10 +2,18 @@
  * Parse LLM synthesis output into a `(code, ToolDescriptor)` pair.
  *
  * Format expected (matches `prompts/synthesis.ts`):
- *   <descriptor>{...JSON...}</descriptor>
- *   <code>...source...</code>
  *
- * Returns a discriminated `ParseResult` — never throws on malformed input.
+ *   ```json
+ *   { "descriptor": { "name": "...", "description": "...", "inputSchema": {...} },
+ *     "code": "...source code..." }
+ *   ```
+ *
+ * A single JSON object is the entire payload. Code travels as a JSON string,
+ * so any character (including `"`, backslashes, or HTML-like tag fragments)
+ * is naturally escapedd — no sentinel-collision class of bug is reachable from
+ * the model's source-code output. Surrounding fenced-code markers, prose, or
+ * whitespace are tolerated; the parser locates the outermost JSON object and
+ * rejects anything else.
  */
 
 import type { JsonObject, ToolDescriptor } from "@koi/core";
@@ -19,38 +27,80 @@ export type ParseResult =
   | { readonly ok: true; readonly value: ParsedOutput }
   | { readonly ok: false; readonly reason: string };
 
-const DESCRIPTOR_RE = /<descriptor>([\s\S]*?)<\/descriptor>/;
-const CODE_RE = /<code>([\s\S]*?)<\/code>/;
-
 export function parseSynthesisOutput(raw: string, targetToolName: string): ParseResult {
-  const descriptorMatch = DESCRIPTOR_RE.exec(raw);
-  if (!descriptorMatch || descriptorMatch[1] === undefined) {
-    return { ok: false, reason: "Missing <descriptor> section in model output" };
-  }
-  const codeMatch = CODE_RE.exec(raw);
-  if (!codeMatch || codeMatch[1] === undefined) {
-    return { ok: false, reason: "Missing <code> section in model output" };
-  }
-
-  const code = codeMatch[1].trim();
-  if (code.length === 0) {
-    return { ok: false, reason: "<code> section is empty" };
+  const jsonText = extractOuterJsonObject(raw);
+  if (jsonText === null) {
+    return { ok: false, reason: "No JSON object found in model output" };
   }
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(descriptorMatch[1].trim());
+    parsed = JSON.parse(jsonText);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: `Descriptor JSON parse failed: ${message}` };
+    return { ok: false, reason: `Output JSON parse failed: ${message}` };
   }
 
-  const descriptorResult = coerceDescriptor(parsed, targetToolName);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ok: false, reason: "Output must be a JSON object" };
+  }
+  const obj = parsed as Record<string, unknown>;
+
+  if (typeof obj.code !== "string") {
+    return { ok: false, reason: "Output.code must be a string" };
+  }
+  const code = obj.code.trim();
+  if (code.length === 0) {
+    return { ok: false, reason: "Output.code is empty" };
+  }
+
+  const descriptorResult = coerceDescriptor(obj.descriptor, targetToolName);
   if (!descriptorResult.ok) {
     return descriptorResult;
   }
 
   return { ok: true, value: { code, descriptor: descriptorResult.value } };
+}
+
+/**
+ * Locate the first balanced top-level `{ ... }` block, ignoring braces inside
+ * JSON strings (with backslash-escaped awareness). Returns the substring or
+ * `null` if no balanced object is found. We do not attempt to parse Markdown
+ * code fences explicitly — finding a balanced JSON object is sufficient and
+ * tolerates whatever framing the model adds around it.
+ */
+function extractOuterJsonObject(raw: string): string | null {
+  const start = raw.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < raw.length; i += 1) {
+    const ch = raw[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return raw.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
 }
 
 function coerceDescriptor(

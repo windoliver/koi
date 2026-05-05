@@ -19,10 +19,10 @@ const INPUT: SynthesisInput = {
 };
 
 function validRaw(name = "echo_tool", code = "export const run = (x) => x;"): string {
-  return [
-    `<descriptor>{ "name": "${name}", "description": "Echoes input", "inputSchema": { "type": "object" } }</descriptor>`,
-    `<code>${code}</code>`,
-  ].join("\n");
+  return JSON.stringify({
+    descriptor: { name, description: "Echoes input", inputSchema: { type: "object" } },
+    code,
+  });
 }
 
 const ALWAYS_OK: VerifyCallback = () => ({ ok: true });
@@ -93,6 +93,37 @@ describe("synthesize", () => {
     if (result.ok) return;
     expect(result.attempts).toBe(0);
     expect(result.reason).toMatch(/maxAttempts/);
+  });
+
+  test("recovers from verify-throwing on first attempt", async () => {
+    const prompts: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      prompts.push(p);
+      return validRaw();
+    };
+    let n = 0;
+    const verify: VerifyCallback = () => {
+      n += 1;
+      if (n === 1) throw new Error("verifier crashed");
+      return { ok: true };
+    };
+    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 3 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.attempts).toBe(2);
+    expect(prompts[1] ?? "").toContain("Verifier threw");
+  });
+
+  test("returns typed failure when verify throws on every attempt", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify: VerifyCallback = () => {
+      throw new Error("flaky");
+    };
+    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 2 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/Verifier threw/);
+    expect(result.attempts).toBe(2);
   });
 
   test("recovers from generate-throwing on first attempt", async () => {

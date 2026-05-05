@@ -9,6 +9,7 @@
  * No I/O: both `generate` and `verify` are caller-injected callbacks.
  */
 
+import type { ToolDescriptor } from "@koi/core";
 import { parseSynthesisOutput } from "./parser.js";
 import { buildRefinementPrompt } from "./prompts/refinement.js";
 import { buildSynthesisPrompt } from "./prompts/synthesis.js";
@@ -18,6 +19,7 @@ import {
   type SynthesisConfig,
   type SynthesisInput,
   type SynthesisResult,
+  type VerifyResult,
 } from "./types.js";
 
 export type SynthesisInitConfig = Partial<SynthesisConfig> &
@@ -70,9 +72,7 @@ export async function synthesize(
       continue;
     }
 
-    const verified = await Promise.resolve(
-      config.verify(parsed.value.code, parsed.value.descriptor),
-    );
+    const verified = await safeVerify(config.verify, parsed.value.code, parsed.value.descriptor);
     if (!verified.ok) {
       lastReason = verified.reason;
       priorReason = verified.reason;
@@ -105,5 +105,18 @@ async function safeGenerate(
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, reason: `LLM generation failed: ${message}` };
+  }
+}
+
+async function safeVerify(
+  verify: SynthesisConfig["verify"],
+  code: string,
+  descriptor: ToolDescriptor,
+): Promise<VerifyResult> {
+  try {
+    return await Promise.resolve(verify(code, descriptor));
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, reason: `Verifier threw: ${message}` };
   }
 }
