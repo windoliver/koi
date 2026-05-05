@@ -43,3 +43,5 @@ export { createRateLimiter } from "./rate-limit.js";
 export { renderBlocks } from "./render-blocks.js";
 export type { ThreadState, ThreadStore } from "./thread-store.js";
 export { InMemoryThreadStore } from "./thread-store.js";
+export type { VerifyResult, WebhookIngressOptions } from "./webhook-handler.js";
+export { handleWebhookIngress } from "./webhook-handler.js";
