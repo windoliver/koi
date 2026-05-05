@@ -718,8 +718,31 @@ jobs:
         #   single-flight teardown — splitting would scatter related state.
         # Extracting helpers for line-count alone adds indirection without
         # behavioral gain. Bumped 708 → 712 → 723 (#1371: @koi/handoff +
-        # @koi/task-spawn factory functions).
-        run: bun run check:complexity --max-violations 723
+        # @koi/task-spawn factory functions) → 728 (#1361: @koi/channel-web
+        # + @koi/channel-slack — Bun.serve HTTP/WS adapter and Slack
+        # Bolt-style adapter both keep the lifecycle/handler/dispatch
+        # state colocated; splitting would scatter related state across
+        # files. Five additions: 1 hard-limit on slack-channel.ts +
+        # 4 soft-limit/function violations across the two factories.
+        # → 736 (#1405: @koi/snapshot-store-nexus + @koi/playbook-store-nexus —
+        # store-adapter factories keep contract methods colocated with the
+        # path/lock helpers they use; splitting would scatter cohesive ACE
+        # contract logic across files. Eight additions across the two factories.
+        # → 742 (#1349 PR #2128: @koi/forge-policy — security-critical
+        # deterministic policy evaluator + audit log. evaluate.ts colocates
+        # the trust boundary (descriptorClone reflection guards,
+        # validatePlainValue/Container hostile-input walkers, computeComplexity,
+        # canonicalize, and the evaluatePolicy entry point) so the closure-
+        # private authenticity brand and the WeakSet-bound clone state never
+        # escape the adversarial-review surface; splitting these into peer
+        # files would force the brand WeakSet through a public seam and
+        # scatter the post-Round 8/9/10 hardening (UTF-8 specJson cap, scorer
+        # fail-closed, sequence-rollback) across modules that must share
+        # closure-private state. Six additions: 1 hard-limit on evaluate.ts,
+        # 3 fn-length violations on the validation walkers, 1 soft-limit on
+        # audit.ts, 1 fn-length on audit record() (extended for sequence-
+        # rollback bookkeeping in PR #2128 Round 10).
+        run: bun run check:complexity --max-violations 742
 
       - name: Check TUI single-writer output policy
         run: bun run check:tui-single-writer

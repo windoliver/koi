@@ -70,6 +70,7 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set([
 
 export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/artifacts-s3",
+  "@koi/forge-policy",
   "@koi/forge-tools",
   "@koi/gateway",
   "@koi/gateway-canvas",
@@ -101,6 +102,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/middleware-strict-agentic",
   "@koi/middleware-turn-prelude",
   "@koi/nexus-delegation",
+  "@koi/nexus-sandbox",
   "@koi/permissions-nexus",
   "@koi/plugins",
   "@koi/sandbox-conformance",
@@ -116,7 +118,9 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/skill-tool",
   "@koi/skills-runtime",
   "@koi/scratchpad-local",
+  "@koi/playbook-store-nexus",
   "@koi/playbook-store-sqlite",
+  "@koi/snapshot-store-nexus",
   "@koi/snapshot-store-sqlite",
   "@koi/task-spawn",
   "@koi/task-tools",
@@ -134,6 +138,7 @@ export const L3_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/cli",
   "@koi-agent/cli",
   "@koi/gateway-stack",
+  "@koi/rlm-stack",
   "@koi/runtime",
 ]);
 

@@ -299,4 +299,43 @@ export interface AgentManifest {
         readonly tools?: readonly string[];
       }
     | undefined;
+  /**
+   * Context-engine slot configuration (issue #1767). Selects which
+   * `ContextEngine` implementation fills the `CONTEXT_ENGINE` subsystem
+   * token. The runtime does NOT install a default — hosts must pass
+   * `contextEngineFactory` to `createKoi()` to wire an engine. When this
+   * field is absent and no factory is provided, the slot stays empty
+   * and turns run without a compaction layer.
+   */
+  readonly context?: ContextManifestConfig | undefined;
+}
+
+/**
+ * Manifest fragment that selects and configures the active `ContextEngine`.
+ *
+ * Setting `manifest.context` requires the host to pass
+ * `contextEngineFactory` to `createKoi()` — the runtime needs the factory
+ * to own slot wiring, the swap controller, and the slot middleware that
+ * drives `prepare()`/`onAfterTurn`. A `ComponentProvider` may attach an
+ * engine to `CONTEXT_ENGINE` for ECS-only observability, but cannot
+ * satisfy a manifest pin (no slot middleware would run, so the pin would
+ * have no effect on real model calls).
+ *
+ * - `engine` pins the engine identity name. The factory is the resolver;
+ *   the runtime then strictly compares the returned engine's
+ *   `identity.name` against this field and rejects assembly on drift.
+ *   Use the engine's canonical package name (e.g. `"@koi/context-manager"`,
+ *   `"@koi/context-manager/passthrough"`, `"@my-org/custom"`); aliases
+ *   are not resolved by the runtime.
+ * - `version` optionally pins the engine's reported `identity.version`.
+ *   On drift, the runtime rejects assembly so manifest-pinned rollbacks
+ *   and audit trails stay trustworthy.
+ * - `config` is an opaque engine-specific bag forwarded to the factory.
+ *   The bundled `@koi/context-manager` factory validates numeric/string
+ *   keys against `BudgetConfig`; other engines define their own schema.
+ */
+export interface ContextManifestConfig {
+  readonly engine?: string;
+  readonly version?: string;
+  readonly config?: JsonObject;
 }
