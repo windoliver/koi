@@ -43,6 +43,20 @@ function obsNoId(
   };
 }
 
+/**
+ * Build a single observation window known to produce strong drift
+ * (avgDivergence ≥ 0.85, replay-protected, 4 cohort agents). Use as a
+ * "prior window" in suggestAction tests that want stability satisfied.
+ */
+function strongPriorWindow(): readonly UsagePurposeObservation[] {
+  return [
+    ...[0.95, 0.95, 0.95].map((s) => obs("prior-a", s)),
+    ...[0.95, 0.95, 0.95].map((s) => obs("prior-b", s)),
+    ...[0.95, 0.95, 0.95].map((s) => obs("prior-c", s)),
+    ...[0.95, 0.95, 0.95].map((s) => obs("prior-d", s)),
+  ];
+}
+
 function expectDrift(result: DetectionResult): DriftReport {
   expect(result.kind).toBe("drift");
   if (result.kind !== "drift") throw new Error("expected drift");
@@ -306,57 +320,82 @@ describe("detectDrift", () => {
 
 describe("suggestAction", () => {
   test("empty observations → no suggestion", () => {
-    expect(suggestAction([], DEFAULT_EXAPTATION_THRESHOLDS, 1)).toEqual({ kind: "none" });
+    expect(suggestAction([], DEFAULT_EXAPTATION_THRESHOLDS, [])).toEqual({ kind: "none" });
   });
 
   test("observations producing no-drift → no suggestion", () => {
     expect(
-      suggestAction([obs("a", 0.95), obs("b", 0.95)], DEFAULT_EXAPTATION_THRESHOLDS, 5),
+      suggestAction([obs("a", 0.95), obs("b", 0.95)], DEFAULT_EXAPTATION_THRESHOLDS, []),
     ).toEqual({ kind: "none" });
   });
 
   test("invalid thresholds → no suggestion", () => {
-    expect(suggestAction([], { ...DEFAULT_EXAPTATION_THRESHOLDS, minObservations: 0 }, 5)).toEqual({
-      kind: "none",
-    });
+    expect(suggestAction([], { ...DEFAULT_EXAPTATION_THRESHOLDS, minObservations: 0 }, [])).toEqual(
+      { kind: "none" },
+    );
   });
 
-  test("borderline drift → reclassify (not new-artifact, even when stable)", () => {
-    // avgDivergence=0.75 < 0.85 fork threshold.
+  test("borderline drift → reclassify (not new-artifact, even when stable priors exist)", () => {
+    // avgDivergence=0.75 < 0.85 fork threshold — stays reclassify even with
+    // a stable strong-drift prior, because the current window itself is below
+    // the fork bar.
     const { observations } = buildDrift({ agents: 2, obsPerAgent: 3, score: 0.75 });
-    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 5).kind).toBe("reclassify");
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [strongPriorWindow()]).kind,
+    ).toBe("reclassify");
   });
 
-  test("stable + raw divergence ≥ 0.85 → new-artifact", () => {
+  test("strong current + strong prior → new-artifact", () => {
     const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92 });
-    const action = suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 3);
+    const action = suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [
+      strongPriorWindow(),
+    ]);
     expect(action.kind).toBe("new-artifact");
   });
 
-  test("strong drift but unstable (single window) → reclassify", () => {
+  test("strong drift but no prior windows (single window) → reclassify", () => {
     const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
-    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 1).kind).toBe("reclassify");
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, []).kind).toBe("reclassify");
   });
 
   test("regression: minimum-threshold drift cannot escalate to new-artifact via volume", () => {
     // avgDivergence at the detection floor (0.7), saturating severity by
-    // volume — must NOT escalate to new-artifact regardless of stableWindows.
+    // volume — must NOT escalate to new-artifact even with stable strong priors.
     const { observations } = buildDrift({ agents: 8, obsPerAgent: 6, score: 0.7 });
-    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 10).kind).toBe("reclassify");
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [
+        strongPriorWindow(),
+        strongPriorWindow(),
+      ]).kind,
+    ).toBe("reclassify");
   });
 
   test("real drift observations → new-artifact when stable+strong", () => {
     const { observations } = buildDrift({ agents: 3, obsPerAgent: 3, score: 0.92 });
-    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 3).kind).toBe("new-artifact");
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [strongPriorWindow()]).kind,
+    ).toBe("new-artifact");
   });
 
-  test("spoofed DetectionResult-shaped object cannot drive suggestAction", () => {
-    // Trust-boundary regression: suggestAction now takes raw observations and
-    // recomputes detection internally. A buggy or untrusted caller cannot
-    // fabricate `{ kind: "drift", replayProtected: true, ... }` and obtain
-    // an action recommendation without observations behind it. Two empty
-    // observations + bad thresholds + arbitrary stableWindows → none.
-    expect(suggestAction([], DEFAULT_EXAPTATION_THRESHOLDS, 99)).toEqual({ kind: "none" });
+  test("trust-boundary: spoofed stable counter cannot unlock new-artifact", () => {
+    // Earlier rounds accepted `stableWindows: number`. A buggy caller could
+    // pass `99` to a fresh window with no prior evidence and trigger fork.
+    // The new API takes raw prior windows, so empty current obs + empty
+    // priors → no detection state can satisfy stability.
+    expect(suggestAction([], DEFAULT_EXAPTATION_THRESHOLDS, [])).toEqual({ kind: "none" });
+  });
+
+  test("trust-boundary: priorWindows that don't actually contain drift do NOT count as stable", () => {
+    // A caller passing weak / non-drifting prior windows must not unlock
+    // new-artifact even when current window is strong.
+    const weakPrior: UsagePurposeObservation[] = [
+      ...[0.05, 0.05, 0.05].map((s) => obs("noisy-a", s)),
+      ...[0.05, 0.05, 0.05].map((s) => obs("noisy-b", s)),
+    ];
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [weakPrior]).kind).toBe(
+      "reclassify",
+    );
   });
 });
 
@@ -366,7 +405,7 @@ describe("suggestAction replay-protection gate", () => {
       ...[0.95, 0.95, 0.95].map((s) => obsNoId("a", s)),
       ...[0.95, 0.95, 0.95].map((s) => obsNoId("b", s)),
     ];
-    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, 5)).toEqual({
+    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, [])).toEqual({
       kind: "none",
     });
   });
@@ -470,15 +509,17 @@ describe("suggestAction quality gate", () => {
   test("low-quality drift (>25% dropped) → none", () => {
     // 12 valid (4 agents × 3 obs at 0.92) + 5 dropped → 5/17 ≈ 29% > 25%.
     const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92, drops: 5 });
-    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 5)).toEqual({
-      kind: "none",
-    });
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [strongPriorWindow()]),
+    ).toEqual({ kind: "none" });
   });
 
   test("acceptable-quality drift (<=25% dropped) → action", () => {
     // 12 valid + 2 dropped → 2/14 ≈ 14% < 25%.
     const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92, drops: 2 });
-    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 5).kind).toBe("new-artifact");
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [strongPriorWindow()]).kind,
+    ).toBe("new-artifact");
   });
 
   test("low-quality drift (>25% duplicates) → none", () => {
@@ -490,14 +531,16 @@ describe("suggestAction quality gate", () => {
       dups: 10,
     });
     if (result.kind === "drift") expect(result.duplicateCount).toBeGreaterThan(0);
-    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 5)).toEqual({
-      kind: "none",
-    });
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [strongPriorWindow()]),
+    ).toEqual({ kind: "none" });
   });
 
   test("clean drift with no drops/dups passes quality gate", () => {
     const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92 });
-    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 5).kind).toBe("new-artifact");
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [strongPriorWindow()]).kind,
+    ).toBe("new-artifact");
   });
 });
 
@@ -578,12 +621,16 @@ describe("deep-freeze tamper resistance", () => {
   });
 });
 
-describe("deterministic dedup conflict resolution", () => {
-  test("conflicting (agentId, eventId) duplicates resolve by max divergenceScore (not by arrival order)", () => {
-    // Same (agentId, eventId) twice with different scores. Old first-write-
-    // wins behaviour would let outcome depend on ingestion order. Deterministic
-    // resolution picks the higher divergenceScore — so reordering inputs gives
-    // the same DriftReport.observationCount and avgDivergence.
+describe("dedup conflict quarantine", () => {
+  test("conflicting (scope, agentId, eventId) retries with different payloads quarantine the bucket", () => {
+    // Two retries on the same key with different divergenceScore is a sign
+    // of a corrupted replay. Earlier rounds picked the max-divergence sample
+    // as the deterministic winner, but that systematically biases the system
+    // toward the most alarming payload — one corrupted retry could push a
+    // benign observation into drift territory. The detector now refuses to
+    // pick a winner: every observation that touched the bucket counts in
+    // `conflictCount`, none flow through to cohort scoring, and the quality
+    // gate folds the count into its low-quality denominator.
     const sharedEid = "evt-shared";
     const lo: UsagePurposeObservation = {
       scope: "default",
@@ -602,19 +649,74 @@ describe("deterministic dedup conflict resolution", () => {
       obs("a3", 0.95),
       obs("a3", 0.95),
     ];
-    // Two ingestion orders for the same logical event set.
     const ordered = [lo, hi, ...otherAgents];
     const reverseOrdered = [hi, lo, ...otherAgents];
     const r1 = detectDrift(ordered, DEFAULT_EXAPTATION_THRESHOLDS);
     const r2 = detectDrift(reverseOrdered, DEFAULT_EXAPTATION_THRESHOLDS);
-    expect(r1.kind).toBe("drift");
-    expect(r2.kind).toBe("drift");
+    // Outcome is identical regardless of arrival order: the conflicting bucket
+    // is quarantined either way.
+    expect(r1.kind).toBe(r2.kind);
     if (r1.kind === "drift" && r2.kind === "drift") {
-      // Both runs win the same conflict (the high-score sample), so the
-      // resulting DriftReport is identical.
-      expect(r1.report.avgDivergence).toBeCloseTo(r2.report.avgDivergence, 10);
-      expect(r1.report.observationCount).toBe(r2.report.observationCount);
+      expect(r1.conflictCount).toBe(2);
+      expect(r2.conflictCount).toBe(2);
+      // a1's evidence is gone; only a2 + a3 remain in cohort.
+      expect(r1.report.divergentAgents).toBe(2);
+      expect(r1.report.observationCount).toBe(6);
     }
+  });
+
+  test("identical-payload retries still collapse as duplicates (replay protection)", () => {
+    // Replay of the same logical event with same payload — the desired and
+    // safe collapse. duplicateCount tracks these; conflictCount stays 0.
+    const seed = obs("a1", 0.95);
+    const observations: UsagePurposeObservation[] = [
+      seed,
+      seed,
+      seed,
+      ...[0.95, 0.95, 0.95].map((s) => obs("a2", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("a3", s)),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    if (result.kind === "drift") {
+      expect(result.duplicateCount).toBe(2);
+      expect(result.conflictCount).toBe(0);
+    }
+  });
+
+  test("conflict above 25% blocks action-bearing suggestions (quality gate)", () => {
+    // A corrupted-replay attack tries to inject a high-divergence retry to
+    // tip the bucket. The quality gate now counts conflictCount as
+    // low-quality and refuses action-bearing recommendations.
+    const conflicts: UsagePurposeObservation[] = [];
+    // 4 conflicting buckets × 2 obs each = 8 quarantined observations
+    for (let i = 0; i < 4; i++) {
+      const eid = `conflict-${String(i)}`;
+      conflicts.push({
+        scope: "default",
+        agentId: "victim",
+        eventId: eid,
+        divergenceScore: 0.4,
+        contextText: "benign",
+        observedAt: i,
+      });
+      conflicts.push({
+        scope: "default",
+        agentId: "victim",
+        eventId: eid,
+        divergenceScore: 0.95,
+        contextText: "benign",
+        observedAt: i,
+      });
+    }
+    const goodCohort: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => obs("good-a", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("good-b", s)),
+    ];
+    const observations = [...conflicts, ...goodCohort];
+    // 8 conflict + 6 valid = 14 total; 8/14 ≈ 57% > 25%.
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [strongPriorWindow()]),
+    ).toEqual({ kind: "none" });
   });
 });
 
@@ -728,7 +830,7 @@ describe("whitespace-only eventId is treated as missing", () => {
     if (result.kind === "drift" || result.kind === "no-drift") {
       expect(result.replayProtected).toBe(false);
     }
-    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 5)).toEqual({
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [])).toEqual({
       kind: "none",
     });
   });
@@ -860,7 +962,7 @@ describe("eventId contract — actions only when replay-protected", () => {
     const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
     if (result.kind === "drift") expect(result.replayProtected).toBe(false);
-    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, 5)).toEqual({
+    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, [])).toEqual({
       kind: "none",
     });
   });
@@ -873,7 +975,9 @@ describe("eventId contract — actions only when replay-protected", () => {
     const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
     if (result.kind === "drift") expect(result.replayProtected).toBe(true);
-    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, 5).kind).toBe("new-artifact");
+    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, [strongPriorWindow()]).kind).toBe(
+      "new-artifact",
+    );
   });
 });
 
@@ -890,7 +994,7 @@ describe("cohort-share guard", () => {
     ];
     const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
-    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, 1)).toEqual({
+    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, [])).toEqual({
       kind: "none",
     });
   });
@@ -903,7 +1007,9 @@ describe("cohort-share guard", () => {
     ];
     const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
-    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, 3).kind).toBe("new-artifact");
+    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, [strongPriorWindow()]).kind).toBe(
+      "new-artifact",
+    );
   });
 
   test("majority drift cohort → reclassify allowed", () => {
@@ -914,7 +1020,7 @@ describe("cohort-share guard", () => {
     ];
     const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
-    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, 1).kind).toBe("reclassify");
+    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, []).kind).toBe("reclassify");
   });
 });
 
@@ -974,6 +1080,8 @@ describe("mixed-traffic regressions", () => {
       baseline: 4,
       drops: 2,
     });
-    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 5).kind).toBe("new-artifact");
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [strongPriorWindow()]).kind,
+    ).toBe("new-artifact");
   });
 });

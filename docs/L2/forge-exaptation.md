@@ -61,14 +61,14 @@ Severity ∈ [0, 1]: scales with how broadly and how strongly the artifact has d
 
 ## Suggestion Policy
 
-`suggestAction(observations, thresholds, stableWindows)` runs `detectDrift` internally and applies the policy below to that fresh result:
+`suggestAction(observations, thresholds, priorWindows)` runs `detectDrift` on the current window AND on every prior window. Both inputs that gate `new-artifact` are observation-grounded — there is no caller-supplied integer counter and no caller-supplied `DetectionResult` value.
 
 | Internal detection state | Suggestion |
 |---|---|
 | `kind ≠ "drift"` (no-drift, invalid-config) | `none` |
 | `replayProtected: false` (any valid observation lacks `eventId`) | `none` |
-| `(droppedCount + duplicateCount) / (validObservationCount + dropped + duplicate) > 25%` | `none` (low-quality window — denominator is the *full* validated window, not just the cohort, so clean baseline-heavy traffic isn't punished for the cohort being a small slice) |
-| `stableWindows ≥ 2` AND `avgDivergence ≥ 0.85` | `new-artifact` — fork a specialized variant |
+| `(droppedCount + duplicateCount + conflictCount) / (validObservationCount + dropped + duplicate + conflict) > 25%` | `none` (low-quality window — denominator is the *full* validated window, so clean baseline-heavy traffic isn't punished for the cohort being a small slice; conflicts count as low-quality so a corrupted-replay attack cannot bias the window past the threshold) |
+| `≥ STABLE_WINDOW_COUNT - 1` prior windows ALSO produced strong drift AND current `avgDivergence ≥ 0.85` | `new-artifact` — fork a specialized variant |
 | Cohort share `< 50%` of validated window AND not stable+strong | `none` — minority drift should NOT overwrite the canonical purpose the baseline majority depends on |
 | Otherwise (cohort majority, single window or sub-fork divergence) | `reclassify` — rewrite the artifact's description to match observed usage |
 
@@ -109,11 +109,13 @@ Tenant isolation is a runtime data contract, enforced by required fields — not
 - Distinct tool calls within one request, multiple agents recording the same upstream event, and observations from different tenants must all derive **different** `eventId`s.
 - Cross-tenant `(agentId, eventId)` collisions are absorbed by `scope` (see Tenant Isolation), so a tenant whose telemetry happens to overlap with a peer's identifiers still keeps independent evidence.
 
-## Dedup Conflict Resolution
+## Dedup Conflict Quarantine
 
 Dedup is keyed on `(scope, agentId, eventId)`. The contract above guarantees per-observation `eventId` uniqueness within a `(scope, agentId)`, so the bucket is what catches retries; cross-tenant `(agentId, eventId)` collisions stay in distinct buckets via `scope`.
 
-When the same `(scope, agentId, eventId)` arrives more than once with different payloads, the winner is picked deterministically — highest `divergenceScore`, then highest finite `observedAt` (NaN normalized to −∞), then lexicographic `contextText` — instead of first-write-wins. Reordering the same logical event set produces the same `DriftReport`.
+When the same `(scope, agentId, eventId)` arrives more than once with **non-identical** payloads (`divergenceScore` or `contextText` mismatch), the entire bucket is **quarantined** — every observation that touched it is counted in `conflictCount` and dropped from cohort scoring. Earlier rounds picked max-divergence as a "deterministic" winner, but that systematically biases the system toward the most alarming sample: one corrupted replay could push a benign observation into drift territory and unlock irreversible action recommendations. Quarantine is the safe-by-default response, and `suggestAction`'s quality gate folds `conflictCount` into its low-quality denominator so a high-conflict window cannot drive `reclassify` / `new-artifact`.
+
+Identical-payload retries (same `divergenceScore` AND same `contextText`) still collapse normally as duplicates — those are the safe replays that replay protection is designed to handle.
 
 ---
 
@@ -154,9 +156,12 @@ switch (result.kind) {
   case "drift":          /* result is observability state */; break;
 }
 
-// 4. Decide. suggestAction recomputes detection internally — pass observations,
-//    not a DetectionResult. `stableWindows` is incremented by the caller across cycles.
-const action = suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, stableWindows);
+// 4. Decide. suggestAction recomputes detection on the current window AND on
+//    every priorWindow internally. The caller maintains a sliding history of
+//    recent observation windows; suggestAction derives stability from that
+//    history instead of trusting a caller-supplied integer counter.
+const priorWindows = recentWindows; // readonly UsagePurposeObservation[][]
+const action = suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, priorWindows);
 switch (action.kind) {
   case "none":         break;
   case "reclassify":   /* update artifact description */ break;

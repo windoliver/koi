@@ -112,6 +112,14 @@ export type DetectionResult =
       readonly droppedCount: number;
       readonly duplicateCount: number;
       /**
+       * Number of observations quarantined because two retries on the same
+       * `(scope, agentId, eventId)` arrived with non-identical payloads. The
+       * detector treats such conflicts as low-quality evidence and refuses
+       * to pick a "winner" — both samples are dropped from cohort scoring,
+       * and the count is folded into `suggestAction`'s quality gate.
+       */
+      readonly conflictCount: number;
+      /**
        * Total post-dedup valid observations in the window — including baseline
        * traffic outside the divergent cohort. Used by `suggestAction`'s quality
        * gate so that clean baseline-heavy windows aren't punished for the
@@ -127,6 +135,7 @@ export type DetectionResult =
       readonly validObservationCount: number;
       readonly droppedCount: number;
       readonly duplicateCount: number;
+      readonly conflictCount: number;
       readonly replayProtected: boolean;
     }
   | { readonly kind: "invalid-config"; readonly reason: string };
@@ -235,9 +244,10 @@ export function detectDrift(
     if (typeof o.eventId === "string" && o.eventId.trim().length > 0) withEventId.push(o);
     else withoutEventId.push(o);
   }
-  const dedupedWithEventId = dedupeByScopeAgentEvent(withEventId);
-  const unique: readonly UsagePurposeObservation[] = [...dedupedWithEventId, ...withoutEventId];
-  const duplicateCount = withEventId.length - dedupedWithEventId.length;
+  const dedup = dedupeByScopeAgentEvent(withEventId);
+  const unique: readonly UsagePurposeObservation[] = [...dedup.winners, ...withoutEventId];
+  const duplicateCount = dedup.duplicateCount;
+  const conflictCount = dedup.conflictCount;
   const replayProtected = valid.length > 0 && withoutEventId.length === 0;
 
   const noDrift = (): DetectionResult =>
@@ -247,6 +257,7 @@ export function detectDrift(
       validObservationCount: unique.length,
       droppedCount,
       duplicateCount,
+      conflictCount,
       replayProtected,
     });
 
@@ -278,6 +289,7 @@ export function detectDrift(
     kind: "drift" as const,
     droppedCount,
     duplicateCount,
+    conflictCount,
     validObservationCount: unique.length,
     replayProtected,
     report: {
@@ -292,42 +304,58 @@ export function detectDrift(
 
 /**
  * Recommend an action from raw observations. Internally re-runs `detectDrift`
- * so the verdict is always grounded in a fresh, detector-produced result —
- * not a caller-supplied `DetectionResult` value. Closes the trust boundary:
- * a buggy or untrusted caller cannot fabricate `{ kind: "drift", ... }` and
- * obtain `reclassify` / `new-artifact` without real observations behind it.
+ * on the current window AND on every prior window, so every input that drives
+ * the verdict is observation-grounded:
+ *
+ *   - The current `DetectionResult` is recomputed from `observations`.
+ *   - The "stability" signal that gates `new-artifact` is recomputed from
+ *     `priorWindows` — NOT taken as a caller-supplied integer. Earlier
+ *     rounds accepted `stableWindows: number`; a buggy caller, stale cache,
+ *     or cross-artifact counter mixup could have unlocked irreversible
+ *     `new-artifact` on the first strong drift window.
+ *
+ * `priorWindows` is ordered chronologically (oldest → most recent prior; does
+ * NOT include the current window). Stability is the count of prior windows
+ * whose own `detectDrift` produced `kind: "drift"`, `replayProtected: true`,
+ * AND `avgDivergence ≥ NEW_ARTIFACT_DIVERGENCE_THRESHOLD`.
  *
  * Behaviour:
- *   - `none` when the fresh detection is `no-drift`, `invalid-config`, or
- *     not replay-protected (any valid observation lacked `eventId`).
- *   - `none` when the dropped + duplicate fraction exceeds
- *     `MAX_QUALITY_DEGRADATION_RATIO` (default 25%) — refuse to act on
- *     low-quality windows.
- *   - `new-artifact` when `stableWindows ≥ 2` AND raw `avgDivergence ≥
- *     NEW_ARTIFACT_DIVERGENCE_THRESHOLD` (0.85). Gated on raw divergence,
- *     not on saturated `severity`, so traffic volume alone cannot escalate.
+ *   - `none` when fresh detection is `no-drift`, `invalid-config`, or not
+ *     replay-protected.
+ *   - `none` when (`droppedCount + duplicateCount + conflictCount`) /
+ *     (`validObservationCount + dropped + duplicate + conflict`) > 25%.
+ *     Conflicts now count as low-quality so a corrupted-replay attack
+ *     cannot bias the window past the threshold.
+ *   - `new-artifact` when at least `STABLE_WINDOW_COUNT - 1` prior windows
+ *     ALSO produced strong drift AND the current window's `avgDivergence ≥
+ *     NEW_ARTIFACT_DIVERGENCE_THRESHOLD`. Gated on raw divergence and on
+ *     observation-grounded stability.
  *   - `reclassify` when the divergent cohort is a majority of validated
- *     traffic; otherwise `none` (minority drift shouldn't overwrite the
- *     canonical description that baseline majority depends on).
+ *     traffic; otherwise `none`.
  */
 export function suggestAction(
   observations: readonly UsagePurposeObservation[],
   thresholds: ExaptationThresholds,
-  stableWindows: number,
+  priorWindows: readonly (readonly UsagePurposeObservation[])[] = [],
 ): ExaptationSuggestion {
   const result = detectDrift(observations, thresholds);
   if (result.kind !== "drift") return { kind: "none" };
   if (!result.replayProtected) return { kind: "none" };
 
-  const total = result.validObservationCount + result.droppedCount + result.duplicateCount;
-  const lowQuality = result.droppedCount + result.duplicateCount;
+  const total =
+    result.validObservationCount +
+    result.droppedCount +
+    result.duplicateCount +
+    result.conflictCount;
+  const lowQuality = result.droppedCount + result.duplicateCount + result.conflictCount;
   if (total > 0 && lowQuality / total > MAX_QUALITY_DEGRADATION_RATIO) {
     return { kind: "none" };
   }
 
   const report = result.report;
+  const priorStrongDrift = countStrongDriftPriors(priorWindows, thresholds);
   const stableAndStrong =
-    stableWindows >= STABLE_WINDOW_COUNT &&
+    priorStrongDrift >= STABLE_WINDOW_COUNT - 1 &&
     report.avgDivergence >= NEW_ARTIFACT_DIVERGENCE_THRESHOLD;
   if (stableAndStrong) {
     return { kind: "new-artifact", severity: report.severity };
@@ -336,6 +364,22 @@ export function suggestAction(
     result.validObservationCount > 0 ? report.observationCount / result.validObservationCount : 0;
   if (cohortShare < RECLASSIFY_MIN_COHORT_SHARE) return { kind: "none" };
   return { kind: "reclassify", severity: report.severity };
+}
+
+function countStrongDriftPriors(
+  priorWindows: readonly (readonly UsagePurposeObservation[])[],
+  thresholds: ExaptationThresholds,
+): number {
+  // let: prior-window stability accumulator
+  let strong = 0;
+  for (const window of priorWindows) {
+    const r = detectDrift(window, thresholds);
+    if (r.kind !== "drift") continue;
+    if (!r.replayProtected) continue;
+    if (r.report.avgDivergence < NEW_ARTIFACT_DIVERGENCE_THRESHOLD) continue;
+    strong++;
+  }
+  return strong;
 }
 
 // ---------------------------------------------------------------------------
@@ -383,6 +427,15 @@ function scopeAgentKey(scope: string, agentId: string): string {
   return `${String(scope.length)}:${scope}:${agentId}`;
 }
 
+interface DedupOutcome {
+  /** Observations that survived dedup (one per `(scope, agentId, eventId)` bucket). */
+  readonly winners: readonly UsagePurposeObservation[];
+  /** Observations dropped as identical-payload retries (replay protection). */
+  readonly duplicateCount: number;
+  /** Observations dropped from quarantined conflict buckets (suspect retries). */
+  readonly conflictCount: number;
+}
+
 /**
  * Dedup observations using `(scope, agentId, eventId)`. Caller has already
  * verified that every input has non-empty `scope`, `agentId`, and `eventId`.
@@ -400,49 +453,69 @@ function scopeAgentKey(scope: string, agentId: string): string {
  * same `(agentId, eventId)` pair stay in separate buckets because their
  * `scope` differs.
  *
- * Conflict resolution is deterministic, content-based — NOT first-write-wins:
- *   1. highest `divergenceScore`        — score conflict resolution
- *   2. highest finite `observedAt`      — order tiebreak (NaN normalized)
- *   3. lexicographic `contextText`      — final deterministic tiebreak
+ * Conflict handling: when two retries on the same key carry **different**
+ * payloads (`divergenceScore` or `contextText` mismatch), the detector
+ * refuses to pick a winner. Earlier rounds chose max-divergence + observedAt
+ * + contextText for "deterministic" resolution, but that systematically
+ * biases the system toward the most alarming sample — one corrupted replay
+ * could push a benign observation into drift territory. Now the entire
+ * bucket is quarantined: every observation that touched it is counted in
+ * `conflictCount`, none flow through to cohort scoring, and the quality
+ * gate folds the count into its low-quality denominator. Identical
+ * payloads still collapse normally as duplicates.
  */
-function dedupeByScopeAgentEvent(
-  observations: readonly UsagePurposeObservation[],
-): readonly UsagePurposeObservation[] {
+function dedupeByScopeAgentEvent(observations: readonly UsagePurposeObservation[]): DedupOutcome {
   // Outer key: scopeAgentKey(scope, agentId). Inner key: eventId.
-  const winners = new Map<string, Map<string, UsagePurposeObservation>>();
+  // Each leaf: list of all observations seen for that key (may grow when
+  // payloads conflict — that's what triggers quarantine below).
+  const buckets = new Map<string, Map<string, UsagePurposeObservation[]>>();
   for (const o of observations) {
     if (typeof o.eventId !== "string") continue;
     const eventId = o.eventId.trim();
     if (eventId.length === 0) continue;
     const key = scopeAgentKey(o.scope, o.agentId);
-    let bucket = winners.get(key);
-    if (bucket === undefined) {
-      bucket = new Map<string, UsagePurposeObservation>();
-      winners.set(key, bucket);
+    let inner = buckets.get(key);
+    if (inner === undefined) {
+      inner = new Map<string, UsagePurposeObservation[]>();
+      buckets.set(key, inner);
     }
-    const incumbent = bucket.get(eventId);
-    if (incumbent === undefined || prefersChallenger(incumbent, o)) {
-      bucket.set(eventId, o);
+    const list = inner.get(eventId);
+    if (list === undefined) inner.set(eventId, [o]);
+    else list.push(o);
+  }
+
+  const winners: UsagePurposeObservation[] = [];
+  let duplicateCount = 0;
+  let conflictCount = 0;
+  for (const inner of buckets.values()) {
+    for (const list of inner.values()) {
+      if (list.length === 1) {
+        const only = list[0];
+        if (only !== undefined) winners.push(only);
+        continue;
+      }
+      const head = list[0];
+      if (head === undefined) continue;
+      // Conflict iff any pair has non-identical (divergenceScore, contextText).
+      // observedAt is descriptive metadata, not part of the conflict check.
+      const consistent = list.every((o) => samePayload(o, head));
+      if (consistent) {
+        // True replay: keep one canonical sample (head), count the rest as duplicates.
+        winners.push(head);
+        duplicateCount += list.length - 1;
+      } else {
+        // Quarantine the whole bucket — including the seed observation.
+        conflictCount += list.length;
+      }
     }
   }
-  const out: UsagePurposeObservation[] = [];
-  for (const bucket of winners.values()) for (const o of bucket.values()) out.push(o);
-  return out;
+  return { winners, duplicateCount, conflictCount };
 }
 
-function prefersChallenger(
-  incumbent: UsagePurposeObservation,
-  challenger: UsagePurposeObservation,
-): boolean {
-  if (challenger.divergenceScore !== incumbent.divergenceScore)
-    return challenger.divergenceScore > incumbent.divergenceScore;
-  // Normalize non-finite observedAt to -Infinity so NaN-vs-NaN comparisons
-  // fall through to contextText instead of reintroducing first-write-wins
-  // (NaN > anything is always false in raw comparison).
-  const a = Number.isFinite(challenger.observedAt) ? challenger.observedAt : -Infinity;
-  const b = Number.isFinite(incumbent.observedAt) ? incumbent.observedAt : -Infinity;
-  if (a !== b) return a > b;
-  return challenger.contextText > incumbent.contextText;
+function samePayload(a: UsagePurposeObservation, b: UsagePurposeObservation): boolean {
+  if (a.divergenceScore !== b.divergenceScore) return false;
+  if (a.contextText !== b.contextText) return false;
+  return true;
 }
 
 interface DivergentCohort {
