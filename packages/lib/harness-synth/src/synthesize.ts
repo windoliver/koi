@@ -94,52 +94,34 @@ export async function synthesize(
     };
   }
 
-  // Snapshot first, then validate the snapshot. A single boundary read
-  // is critical: ensureJsonPlain walks getters once, JSON.stringify would
-  // walk them again, so a non-deterministic / hostile schema could pass
-  // validation and then serialize a different value into the prompt and
-  // equality check. Serializing once (via JSON.stringify) and re-parsing
-  // produces a single-read snapshot whose contents are immutable plain
-  // values; ensureJsonPlain on that snapshot then enforces the contract
-  // (cycles cannot survive serialization, but undefined/non-finite/etc.
-  // all silently drop or stringify to invalid JSON, so we still need the
-  // walker to detect them on the cloned value).
-  let serializedSchema: string;
-  try {
-    serializedSchema = JSON.stringify(input.targetToolSchema);
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: `targetToolSchema serialize failed: ${message}`, attempts: 0 };
-  }
-  if (typeof serializedSchema !== "string") {
-    // JSON.stringify can return undefined for top-level non-JSON values
-    // (functions, symbols). We require a JSON object at the top level.
-    return { ok: false, reason: "targetToolSchema must serialize to JSON", attempts: 0 };
-  }
-  let schemaSnapshot: Record<string, unknown>;
-  try {
-    schemaSnapshot = JSON.parse(serializedSchema) as Record<string, unknown>;
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: `targetToolSchema parse failed: ${message}`, attempts: 0 };
+  // Snapshot AND validate in a single pass: read each property exactly
+  // once and either reject (undefined / NaN / Infinity / BigInt / cycles
+  // / non-plain prototype) or build a deep clone of plain values. This
+  // is critical because:
+  //  - JSON.stringify silently drops `undefined` keys and rewrites
+  //    NaN/Infinity to `null`, which would let an invalid schema pass
+  //    validation as a normalized but DIFFERENT schema.
+  //  - A two-pass approach (validate-then-clone) reads getters twice,
+  //    so a non-deterministic schema could pass validation and then
+  //    serialize a different value into the prompt / equality check.
+  // Single-read + reject-on-violation gives us both invariants at once.
+  const schemaSnapshot = snapshotJsonPlain(input.targetToolSchema, "targetToolSchema");
+  if (!schemaSnapshot.ok) {
+    return { ok: false, reason: schemaSnapshot.reason, attempts: 0 };
   }
   if (
-    schemaSnapshot === null ||
-    typeof schemaSnapshot !== "object" ||
-    Array.isArray(schemaSnapshot)
+    schemaSnapshot.value === null ||
+    typeof schemaSnapshot.value !== "object" ||
+    Array.isArray(schemaSnapshot.value)
   ) {
     return { ok: false, reason: "targetToolSchema must be a JSON object", attempts: 0 };
   }
-  const schemaCheck = ensureJsonPlain(schemaSnapshot, "targetToolSchema");
-  if (!schemaCheck.ok) {
-    return { ok: false, reason: schemaCheck.reason, attempts: 0 };
-  }
-  const frozenSchema = deepFreeze(schemaSnapshot) as Readonly<Record<string, unknown>>;
-  // Cap prompt-bound inputs BEFORE prompt construction. Without this, a
-  // large or adversarial targetToolSchema or candidate.description would
-  // produce an oversized prompt that the model provider rejects, times
-  // out on, or charges for at extreme cost — defeating the per-attempt
-  // wall-clock cap and making bad inputs amplify across retries.
+  const frozenSchema = deepFreeze(schemaSnapshot.value as Record<string, unknown>) as Readonly<
+    Record<string, unknown>
+  >;
+  // Size cap. Compute via JSON.stringify on the trusted snapshot (not
+  // the original input) so getters are not invoked again.
+  const serializedSchema = JSON.stringify(frozenSchema);
   if (serializedSchema.length > MAX_SCHEMA_BYTES) {
     return {
       ok: false,
@@ -591,6 +573,86 @@ function checkSchemaMatch(
  */
 const MAX_JSON_DEPTH = 64;
 
+/**
+ * Single-pass clone-and-validate. Reads each property exactly once and
+ * either returns a deep-cloned JSON-plain value or a typed failure
+ * naming the first violation. Used at trust boundaries where two-pass
+ * validate-then-snapshot would let a non-deterministic getter diverge
+ * across reads, and where JSON.stringify+parse would silently normalize
+ * undefined/NaN/Infinity instead of rejecting them.
+ */
+function snapshotJsonPlain(
+  value: unknown,
+  label: string,
+):
+  | { readonly ok: true; readonly value: unknown }
+  | { readonly ok: false; readonly reason: string } {
+  const seen = new WeakSet<object>();
+  return walk(value, label, 0);
+
+  function walk(
+    v: unknown,
+    path: string,
+    depth: number,
+  ):
+    | { readonly ok: true; readonly value: unknown }
+    | { readonly ok: false; readonly reason: string } {
+    if (depth > MAX_JSON_DEPTH) {
+      return { ok: false, reason: `${path} exceeds max nesting depth ${MAX_JSON_DEPTH}` };
+    }
+    if (v === null) return { ok: true, value: null };
+    const t = typeof v;
+    if (t === "string" || t === "boolean") return { ok: true, value: v };
+    if (t === "number") {
+      if (!Number.isFinite(v)) {
+        return { ok: false, reason: `${path} contains non-finite number` };
+      }
+      return { ok: true, value: v };
+    }
+    if (t === "bigint") return { ok: false, reason: `${path} contains bigint` };
+    if (t === "function") return { ok: false, reason: `${path} contains function` };
+    if (t === "symbol") return { ok: false, reason: `${path} contains symbol` };
+    if (t === "undefined") return { ok: false, reason: `${path} contains undefined` };
+    if (t !== "object") return { ok: false, reason: `${path} contains non-JSON value` };
+    const obj = v as object;
+    if (seen.has(obj)) return { ok: false, reason: `${path} contains a cycle` };
+    seen.add(obj);
+    if (Array.isArray(obj)) {
+      const out: unknown[] = [];
+      for (let i = 0; i < obj.length; i += 1) {
+        const r = walk(obj[i], `${path}[${i}]`, depth + 1);
+        if (!r.ok) return r;
+        out.push(r.value);
+      }
+      return { ok: true, value: out };
+    }
+    if (Object.getPrototypeOf(obj) !== Object.prototype) {
+      return { ok: false, reason: `${path} is not a plain object literal` };
+    }
+    let keys: string[];
+    try {
+      keys = Object.keys(obj);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, reason: `${path} key access threw: ${message}` };
+    }
+    const out: Record<string, unknown> = {};
+    for (const k of keys) {
+      let child: unknown;
+      try {
+        child = (obj as Record<string, unknown>)[k];
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { ok: false, reason: `${path}.${k} getter threw: ${message}` };
+      }
+      const r = walk(child, `${path}.${k}`, depth + 1);
+      if (!r.ok) return r;
+      out[k] = r.value;
+    }
+    return { ok: true, value: out };
+  }
+}
+
 function ensureJsonPlain(
   value: unknown,
   label: string,
@@ -790,15 +852,14 @@ function guardAttempt<T>(
     let timer: ReturnType<typeof setTimeout> | null = null;
     let timedOut = false;
     if (Number.isFinite(timeoutMs)) {
-      // Reserve graceMs (= min(1000, timeoutMs/2)) for unwind so the
-      // total attempt cost stays inside attemptTimeoutMs. timeoutMs/2 is
-      // already used for graceMs above, so workMs is also at least half.
-      const workMs = Math.max(0, timeoutMs - Math.min(1000, Math.floor(timeoutMs * 0.5)));
+      // Healthy work gets the FULL configured timeoutMs. The unwind grace
+      // is only consumed AFTER a timeout has actually fired, so a
+      // non-timed-out generate/verify is never starved by reserved slack.
       timer = setTimeout(() => {
         timedOut = true;
         attempt.abort(); // signal the callback so it can stop its work
         settleAfterUnwind({ ok: false, reason: `${label} timed out after ${timeoutMs}ms` });
-      }, workMs);
+      }, timeoutMs);
     }
 
     const onAbort = (): void => {

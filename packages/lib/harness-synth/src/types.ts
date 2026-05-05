@@ -115,14 +115,15 @@ export interface SynthesisConfig {
    */
   readonly signal?: AbortSignal | undefined;
   /**
-   * Per-attempt hard timeout in ms. Default 30_000. End-to-end cap that
-   * covers BOTH the generate/verify work AND any post-abort unwind grace —
-   * after this window, synthesize() will not still be inside the attempt.
-   * Internally split as `workMs = timeoutMs - graceMs`, where
-   * `graceMs = min(1000, timeoutMs / 2)`; the timer fires after workMs and
-   * the loop waits up to graceMs more for the aborted callback to settle
-   * before starting the next attempt. Set to `Infinity` to disable; never
-   * set to 0 (would fail every attempt).
+   * Per-attempt timeout in ms. Default 30_000. Healthy work is given the
+   * FULL configured budget; the timer fires after `attemptTimeoutMs`
+   * without reserving any slack. Only AFTER a timeout actually fires
+   * does the loop wait up to `graceMs = min(1000, timeoutMs/2)` for the
+   * aborted callback to unwind before starting the next attempt — so a
+   * timed-out attempt's wall-clock cost is `attemptTimeoutMs + graceMs`
+   * in the worst case, but a non-timed-out attempt sees no overhead at
+   * all. Set to `Infinity` to disable; never set to 0 (would fail every
+   * attempt).
    */
   readonly attemptTimeoutMs: number;
   /**

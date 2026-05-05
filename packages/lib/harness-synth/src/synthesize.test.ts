@@ -881,6 +881,46 @@ describe("synthesize", () => {
     expect(result.reason).toMatch(/targetToolSchema exceeds/);
   });
 
+  test("rejects targetToolSchema with undefined value (no silent JSON normalization)", async () => {
+    // JSON.stringify drops undefined keys; old two-pass code would have
+    // accepted this as a normalized {type:"object"} schema. Single-pass
+    // snapshotter must reject the original violation.
+    const schema = { type: "object", drop: undefined };
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: schema },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/undefined/);
+  });
+
+  test("rejects targetToolSchema with NaN value (no silent normalization to null)", async () => {
+    const schema = { type: "object", val: Number.NaN };
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: schema },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/non-finite/);
+  });
+
+  test("healthy work gets the full attemptTimeoutMs budget (no reserved slack)", async () => {
+    // Generate takes 80ms inside a 100ms budget. Old code reserved up to
+    // 50% as grace, so generate would get only 50ms and time out.
+    const generate: GenerateCallback = () =>
+      new Promise<string>((resolve) => setTimeout(() => resolve(validRaw()), 80));
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      attemptTimeoutMs: 100,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+  });
+
   test("rejects non-boolean adapterHonorsAbort (truthy strings, numbers, objects)", async () => {
     const cases: Array<unknown> = ["false", 1, 0, {}, null, undefined];
     for (const v of cases) {
@@ -897,15 +937,14 @@ describe("synthesize", () => {
 
   test("non-deterministic schema getter cannot diverge across boundary", async () => {
     let reads = 0;
-    const schema = Object.create(null, {
-      type: {
-        get: () => {
-          reads += 1;
-          return reads <= 2 ? "object" : "drift";
-        },
-        enumerable: true,
+    const schema: Record<string, unknown> = {};
+    Object.defineProperty(schema, "type", {
+      get: () => {
+        reads += 1;
+        return reads <= 2 ? "object" : "drift";
       },
-    }) as Record<string, unknown>;
+      enumerable: true,
+    });
     const seenPrompts: string[] = [];
     const generate: GenerateCallback = async (p) => {
       seenPrompts.push(p);
