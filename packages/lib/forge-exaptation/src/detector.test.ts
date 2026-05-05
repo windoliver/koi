@@ -610,130 +610,32 @@ describe("deterministic dedup conflict resolution", () => {
   });
 });
 
-describe("tenant scope isolation", () => {
-  test("same (agentId, eventId) across distinct tenant scopes does NOT collapse in dedup", () => {
-    // Two tenants happen to reuse the same agentId AND eventId strings.
-    // Without scope isolation in dedup, one tenant's evidence would have
-    // disappeared into the other's bucket. Cohort still uses canonical
-    // agentId only (scope diversity is NOT a measure of agent independence),
-    // so we add a second per-tenant agent to satisfy minDivergentAgents.
-    const sharedEid = "evt-shared";
+describe("tenant isolation via globally-unique agentId", () => {
+  test("same logical agent in two tenants stays separate when prefixed in agentId", () => {
+    // L0 contract: agentId must be globally unique across the deployment.
+    // Multi-tenant deployments prefix upstream (e.g. `${tenant}/${agent}`).
+    // Same logical agent in 2 tenants → 2 distinct agentIds → 2 cohort agents.
     const observations: UsagePurposeObservation[] = [
-      // tenant-A
-      {
-        agentId: "agent-shared",
-        scope: "tenant-A",
-        eventId: sharedEid,
-        divergenceScore: 0.95,
-        observedAt: 1,
-        contextText: "x",
-      },
-      {
-        agentId: "agent-shared",
-        scope: "tenant-A",
-        eventId: "evt-a-2",
-        divergenceScore: 0.95,
-        observedAt: 2,
-        contextText: "x",
-      },
-      {
-        agentId: "agent-shared",
-        scope: "tenant-A",
-        eventId: "evt-a-3",
-        divergenceScore: 0.95,
-        observedAt: 3,
-        contextText: "x",
-      },
-      // tenant-B — same agentId AND eventId as tenant-A's first obs
-      {
-        agentId: "agent-shared",
-        scope: "tenant-B",
-        eventId: sharedEid,
-        divergenceScore: 0.95,
-        observedAt: 4,
-        contextText: "x",
-      },
-      {
-        agentId: "agent-shared",
-        scope: "tenant-B",
-        eventId: "evt-b-2",
-        divergenceScore: 0.95,
-        observedAt: 5,
-        contextText: "x",
-      },
-      {
-        agentId: "agent-shared",
-        scope: "tenant-B",
-        eventId: "evt-b-3",
-        divergenceScore: 0.95,
-        observedAt: 6,
-        contextText: "x",
-      },
-      // a second canonical agent so minDivergentAgents is satisfied
-      ...[0.95, 0.95, 0.95].map((s) => obs("agent-other", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("tenant-A/agent-shared", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("tenant-B/agent-shared", s)),
     ];
     const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
     if (result.kind === "drift") {
-      // Without scope isolation, one of the sharedEid copies would have
-      // collapsed into the other → only 5 observations. With it, all 9
-      // unique-eventId observations survive, then cohort attribution by
-      // canonical agentId aggregates "agent-shared" to 6 + "agent-other" to 3.
-      expect(result.report.observationCount).toBe(9);
+      expect(result.report.observationCount).toBe(6);
       expect(result.report.divergentAgents).toBe(2);
     }
   });
 
-  test("cohort accounting: same agentId across different scopes counts as ONE agent", () => {
-    // Regression: scope is a replay-dedup boundary, NOT a measure of agent
-    // independence. One logical agent in 3 tenants must NOT satisfy
-    // minDivergentAgents=2 by itself.
+  test("same agentId across multiple tenants (upstream did NOT prefix) counts as one agent", () => {
+    // Regression: if the upstream observer fails to prefix per the L0 contract,
+    // the detector cannot know two tenants are involved — it sees one agent.
+    // No drift triggers because minDivergentAgents=2 is unmet.
     const observations: UsagePurposeObservation[] = [
-      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("solo-agent", s), scope: "tenant-A" })),
-      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("solo-agent", s), scope: "tenant-B" })),
-      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("solo-agent", s), scope: "tenant-C" })),
+      ...Array.from({ length: 9 }, () => obs("solo-agent", 0.95)),
     ];
     const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("no-drift");
-  });
-
-  test("retries within one scope still collapse (replay protection still works)", () => {
-    const eid = "evt-1";
-    const observations: UsagePurposeObservation[] = [
-      {
-        agentId: "a",
-        scope: "tenant-A",
-        eventId: eid,
-        divergenceScore: 0.95,
-        observedAt: 1,
-        contextText: "x",
-      },
-      {
-        agentId: "a",
-        scope: "tenant-A",
-        eventId: eid,
-        divergenceScore: 0.95,
-        observedAt: 2,
-        contextText: "x",
-      },
-      {
-        agentId: "a",
-        scope: "tenant-A",
-        eventId: eid,
-        divergenceScore: 0.95,
-        observedAt: 3,
-        contextText: "x",
-      },
-      ...[0.95, 0.95, 0.95].map((s) => obs("b", s)),
-      ...[0.95, 0.95, 0.95].map((s) => obs("c", s)),
-    ];
-    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
-    expect(result.kind).toBe("drift");
-    if (result.kind === "drift") {
-      // a collapses 3 → 1 (fails minObsPerAgent so excluded). b + c contribute.
-      expect(result.report.observationCount).toBe(6);
-      expect(result.duplicateCount).toBe(2);
-    }
   });
 });
 

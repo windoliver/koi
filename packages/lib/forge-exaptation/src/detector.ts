@@ -42,10 +42,12 @@ export interface ExaptationThresholds {
  * NOT a freshly-minted nonce). See the L0 `UsagePurposeObservation.eventId`
  * docstring for the full contract; the requirement is identical here.
  *
- * Dedup namespace is `(scope, agentId, eventId)`. The optional `scope`
- * field on the observation provides explicit tenant/account isolation —
- * without it, two tenants reusing the same `agentId` and `eventId` strings
- * would collapse one tenant's evidence into the other.
+ * Dedup namespace is `(agentId, eventId)`. The L0 contract for `agentId`
+ * requires it to be **globally unique across the deployment** (multi-tenant
+ * systems must prefix, e.g. `${tenant}/${agent}`), so tenant isolation is
+ * already encoded in the agent identity — no separate scope field is
+ * needed. Same logical agent in two tenants → two distinct `agentId`s →
+ * neither dedup nor cohort attribution merges them.
  *
  * If even one valid observation lacks `eventId` the window is
  * `replayProtected: false`, no dedup runs, and `suggestAction` refuses to
@@ -389,12 +391,10 @@ function isObservationValid(o: UsagePurposeObservation): boolean {
  *     same upstream causal event, and independent observations from
  *     different tenants all generate DIFFERENT `eventId`s and survive.
  *
- * Tenant isolation is explicit via the optional `scope` field on each
- * observation (see L0 `UsagePurposeObservation.scope`). Two tenants that
- * happen to reuse the same `agentId` and `eventId` keep their evidence
- * independent because their dedup buckets are keyed by the full
- * `(scope, agentId, eventId)` triple. Whitespace-only / missing scope
- * normalizes to a single implicit namespace (single-tenant deployments).
+ * Tenant isolation is encoded in `agentId` itself: the L0 contract requires
+ * `agentId` to be globally unique across the deployment, so multi-tenant
+ * deployments must prefix (e.g. `${tenant}/${agent}`) upstream. Same logical
+ * agent in two tenants → two distinct `agentId`s → buckets stay separate.
  *
  * Conflict resolution is deterministic, content-based — NOT first-write-wins:
  *   1. highest `divergenceScore`        — score conflict resolution
@@ -404,22 +404,16 @@ function isObservationValid(o: UsagePurposeObservation): boolean {
 function dedupePerAgentByEventId(
   observations: readonly UsagePurposeObservation[],
 ): readonly UsagePurposeObservation[] {
-  // Outer key: scope || implicit. Inner key: agentId. Innermost: eventId.
-  const winners = new Map<string, Map<string, Map<string, UsagePurposeObservation>>>();
+  // Outer key: agentId. Inner key: eventId.
+  const winners = new Map<string, Map<string, UsagePurposeObservation>>();
   for (const o of observations) {
     if (typeof o.eventId !== "string") continue;
     const eventId = o.eventId.trim();
     if (eventId.length === 0) continue;
-    const scopeKey = typeof o.scope === "string" && o.scope.trim().length > 0 ? o.scope.trim() : "";
-    let scopeBucket = winners.get(scopeKey);
-    if (scopeBucket === undefined) {
-      scopeBucket = new Map<string, Map<string, UsagePurposeObservation>>();
-      winners.set(scopeKey, scopeBucket);
-    }
-    let agentBucket = scopeBucket.get(o.agentId);
+    let agentBucket = winners.get(o.agentId);
     if (agentBucket === undefined) {
       agentBucket = new Map<string, UsagePurposeObservation>();
-      scopeBucket.set(o.agentId, agentBucket);
+      winners.set(o.agentId, agentBucket);
     }
     const incumbent = agentBucket.get(eventId);
     if (incumbent === undefined || prefersChallenger(incumbent, o)) {
@@ -427,9 +421,7 @@ function dedupePerAgentByEventId(
     }
   }
   const out: UsagePurposeObservation[] = [];
-  for (const scopeBucket of winners.values())
-    for (const agentBucket of scopeBucket.values())
-      for (const o of agentBucket.values()) out.push(o);
+  for (const agentBucket of winners.values()) for (const o of agentBucket.values()) out.push(o);
   return out;
 }
 
@@ -479,10 +471,10 @@ function computeDivergentCohort(
   const divergentCounts = new Map<string, number>();
   for (const o of observations) {
     if (o.divergenceScore < thresholds.divergenceThreshold) continue;
-    // Cohort attribution uses canonical agentId ONLY — not (scope, agentId).
-    // Tenant scope is a replay-dedup boundary, not a measure of agent
-    // independence. Counting one logical agent deployed across N tenants as
-    // N divergent agents would let scope diversity manufacture drift.
+    // Cohort attribution uses agentId. The L0 contract requires `agentId`
+    // to be globally unique across the deployment, so two distinct agents
+    // (including the same logical agent prefixed for two tenants) cannot
+    // collide here.
     divergentSums.set(o.agentId, (divergentSums.get(o.agentId) ?? 0) + o.divergenceScore);
     divergentCounts.set(o.agentId, (divergentCounts.get(o.agentId) ?? 0) + 1);
   }
