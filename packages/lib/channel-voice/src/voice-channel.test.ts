@@ -186,6 +186,35 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("STT failures surface via onSttError callback (not silently dropped)", async () => {
+    const sttErr = new Error("transcribe failed");
+    const h = harness();
+    const errors: unknown[] = [];
+    const failingStt: Stt = {
+      transcribe: async () => {
+        throw sttErr;
+      },
+    };
+    const ch = createVoiceChannel({
+      transport: h.transport,
+      stt: failingStt,
+      tts: h.tts,
+      onSttError: (e) => {
+        errors.push(e);
+      },
+    });
+    const received: InboundMessage[] = [];
+    ch.onMessage(async (m) => {
+      received.push(m);
+    });
+    await ch.connect();
+    h.emitAudio(new Uint8Array([1]));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(received).toHaveLength(0);
+    expect(errors).toEqual([sttErr]);
+    await ch.disconnect();
+  });
+
   test("custom senderId honored", async () => {
     const h = harness();
     const ch = createVoiceChannel({

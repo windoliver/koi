@@ -26,6 +26,13 @@ export interface VoiceChannelConfig {
   readonly tts: Tts;
   readonly senderId?: string;
   readonly maxTtsChars?: number;
+  /**
+   * Invoked when STT transcription throws/rejects on an inbound audio frame.
+   * The default (no callback) silently drops the frame, which makes a transient
+   * STT outage look like the user said nothing. Hosts SHOULD provide this
+   * callback to surface failures via logging / metrics / status events.
+   */
+  readonly onSttError?: (error: unknown, frame: Uint8Array) => void;
 }
 
 const VOICE_CAPABILITIES: ChannelCapabilities = {
@@ -59,6 +66,7 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
   return createChannelAdapter<Uint8Array>({
     name: "voice",
     capabilities: VOICE_CAPABILITIES,
+    ...(config.onSttError !== undefined ? { onNormalizationError: config.onSttError } : {}),
     platformConnect: () => config.transport.connect(),
     platformDisconnect: () => config.transport.disconnect(),
     platformSend: async (message: OutboundMessage) => {

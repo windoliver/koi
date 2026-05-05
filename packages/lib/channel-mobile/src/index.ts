@@ -7,4 +7,8 @@
  */
 
 export type { MobileChannelAdapter, MobileChannelConfig } from "./mobile-channel.js";
-export { createMobileChannel, MobileNoDeliveryTargetError } from "./mobile-channel.js";
+export {
+  createMobileChannel,
+  MobileNoDeliveryTargetError,
+  replyToInbound,
+} from "./mobile-channel.js";
