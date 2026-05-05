@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { HookConfig } from "@koi/core";
+import { type ComponentProvider, type HookConfig, isAttachResult, type Tool } from "@koi/core";
 import type { McpServerConfig } from "@koi/mcp";
 import {
   __setUserHooksConfigPathForTests,
@@ -30,6 +30,22 @@ function commandHook(name: string): HookConfig {
 
 function agentHook(name: string): HookConfig {
   return { kind: "agent", name, prompt: "verify" };
+}
+
+async function getToolFromProvider(
+  providers: readonly ComponentProvider[],
+  providerName: string,
+  toolName: string,
+): Promise<Tool> {
+  const provider = providers.find((p) => p.name === providerName);
+  if (provider === undefined) throw new Error(`provider ${providerName} missing`);
+  const attachResult = await provider.attach({} as Parameters<typeof provider.attach>[0]);
+  const components = isAttachResult(attachResult) ? attachResult.components : attachResult;
+  const tool = components.get(`tool:${toolName}`);
+  if (tool === undefined || tool === null || typeof tool !== "object" || !("execute" in tool)) {
+    throw new Error(`tool ${toolName} missing`);
+  }
+  return tool as Tool;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +260,15 @@ describe("buildCoreProviders: filesystem operation gating", () => {
     expect(names).toContain("fs-read");
     expect(names).toContain("fs-write");
     expect(names).toContain("fs-edit");
+  });
+
+  test("default filesystem tools block credential paths", async () => {
+    const providers = buildCoreProviders({ cwd: mkTempCwd(), includeWebFetch: false });
+    const readTool = await getToolFromProvider(providers, "fs-read", "fs_read");
+    const result = (await readTool.execute({
+      path: join(homedir(), ".ssh", "id_rsa"),
+    })) as { readonly code?: string };
+    expect(result.code).toBe("CREDENTIAL_PATH_DENIED");
   });
 });
 

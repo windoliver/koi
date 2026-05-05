@@ -1,0 +1,251 @@
+import { describe, expect, test } from "bun:test";
+
+import type { PlaybookProposal, StructuredPlaybook, TrajectoryRange } from "@koi/ace-types";
+import type { KoiError, Result } from "@koi/core";
+import type { NexusTransport as FsNexusTransport } from "@koi/fs-nexus";
+import { createFakeNexusTransport } from "@koi/fs-nexus/testing";
+
+import { createNexusPlaybookProposalStore } from "../proposal.js";
+import { createNexusStructuredPlaybookStore } from "../structured.js";
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+function spb(id: string, tags: readonly string[] = []): StructuredPlaybook {
+  return {
+    id,
+    title: "t",
+    sections: [
+      {
+        name: "Errors",
+        slug: "errors",
+        bullets: [
+          {
+            id: "b1",
+            content: "always check existence",
+            helpful: 1,
+            harmful: 0,
+            createdAt: 0,
+            updatedAt: 0,
+          },
+        ],
+      },
+    ],
+    tags,
+    source: "curated",
+    createdAt: 0,
+    updatedAt: 0,
+    sessionCount: 1,
+    version: 1,
+  };
+}
+
+function newStore() {
+  return createNexusStructuredPlaybookStore({ transport: createFakeNexusTransport() });
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe("createNexusStructuredPlaybookStore", () => {
+  test("save → get round-trip", async () => {
+    const store = newStore();
+    await store.save(spb("a"));
+    const got = await store.get("a");
+    expect(got?.id).toBe("a");
+    expect(got?.sections[0]?.slug).toBe("errors");
+  });
+
+  test("missing returns undefined", async () => {
+    const store = newStore();
+    expect(await store.get("missing")).toBeUndefined();
+  });
+
+  test("list filters by tag", async () => {
+    const store = newStore();
+    await store.save(spb("a", ["x", "y"]));
+    await store.save(spb("b", ["z"]));
+    await store.save(spb("c", ["x"]));
+    const tagged = await store.list({ tags: ["y"] });
+    expect(tagged.map((p) => p.id).sort()).toEqual(["a"]);
+  });
+
+  test("remove deletes", async () => {
+    const store = newStore();
+    await store.save(spb("r"));
+    expect(await store.remove("r")).toBe(true);
+    expect(await store.get("r")).toBeUndefined();
+  });
+
+  test("remove of missing returns false", async () => {
+    const store = newStore();
+    expect(await store.remove("nope")).toBe(false);
+  });
+
+  test("getVersion returns undefined (lineage not stored)", async () => {
+    const store = newStore();
+    await store.save(spb("v"));
+    expect(await store.getVersion?.("v", 1)).toBeUndefined();
+  });
+
+  // --- contract parity tests (ported from sqlite sibling) ---
+
+  test("list filters by multiple tags with AND semantics", async () => {
+    // Verifies that when multiple tags are requested, ALL must match (AND),
+    // not just any one of them (OR). Mirrors sqlite filterByTags behaviour.
+    const store = newStore();
+    await store.save(spb("one-tag", ["x"]));
+    await store.save(spb("two-tags", ["x", "y"]));
+    await store.save(spb("other", ["z"]));
+
+    // tags=["x","y"] → only "two-tags" has both; "one-tag" has only "x"
+    const filtered = await store.list({ tags: ["x", "y"] });
+    expect(filtered.map((p) => p.id)).toEqual(["two-tags"]);
+  });
+
+  test("save with same id and different version is last-write-wins", async () => {
+    // DIVERGENCE vs sqlite: sqlite enforces version-CAS (same-version different content
+    // throws; lower-version save is rejected). Nexus is last-write-wins — any save
+    // overwrites the current file regardless of version. Documented in
+    // docs/L2/playbook-store-nexus.md.
+    const store = newStore();
+    await store.save({ ...spb("p"), version: 2, title: "v2" });
+    await store.save({ ...spb("p"), version: 3, title: "v3" });
+    expect((await store.get("p"))?.version).toBe(3);
+    expect((await store.get("p"))?.title).toBe("v3");
+    // sqlite would throw here if v2 were re-saved after v3 (out-of-order);
+    // nexus allows it (last-write-wins).
+    await store.save({ ...spb("p"), version: 2, title: "rollback" });
+    expect((await store.get("p"))?.version).toBe(2);
+  });
+
+  // --- ACE ID path-safety regression tests (Finding 1) ---
+
+  test("save with id containing '/' is rejected with validation error", async () => {
+    const store = newStore();
+    await expect(store.save(spb("a/b"))).rejects.toThrow("Structured Playbook ID");
+  });
+
+  test("save with id containing '..' is rejected", async () => {
+    const store = newStore();
+    await expect(store.save(spb("a..b"))).rejects.toThrow("Structured Playbook ID");
+  });
+
+  test("save 'a:b' and 'a_b' produce distinct files — no collision", async () => {
+    const store = newStore();
+    await store.save({ ...spb("a:b"), version: 1 });
+    await store.save({ ...spb("a_b"), version: 2 });
+    expect((await store.get("a:b"))?.version).toBe(1);
+    expect((await store.get("a_b"))?.version).toBe(2);
+    const all = await store.list();
+    expect(all.map((p) => p.id).sort()).toEqual(["a:b", "a_b"]);
+  });
+
+  // --- Fix 5 (round 5): list propagates non-NOT_FOUND errors ---
+
+  test("list propagates EXTERNAL error from mid-list file read", async () => {
+    // Scenario: one structured playbook is written normally. Then a transport
+    // wrapper injects EXTERNAL on the read of that file during list(). Must throw.
+    const baseTransport = createFakeNexusTransport();
+    const baseStore = createNexusStructuredPlaybookStore({ transport: baseTransport });
+    await baseStore.save(spb("spb-list-err"));
+
+    let listCallDone = false;
+    const wrappedTransport: FsNexusTransport = {
+      call: async <T>(
+        method: string,
+        params: Record<string, unknown>,
+      ): Promise<Result<T, KoiError>> => {
+        const path = params.path as string | undefined;
+        if (
+          listCallDone &&
+          method === "read" &&
+          typeof path === "string" &&
+          path.includes("/structured/")
+        ) {
+          return {
+            ok: false,
+            error: { code: "EXTERNAL", message: "simulated backend failure", retryable: true },
+          } as Result<T, KoiError>;
+        }
+        if (method === "list") listCallDone = true;
+        return baseTransport.call<T>(method, params);
+      },
+      subscribe: baseTransport.subscribe.bind(baseTransport),
+      submitAuthCode: baseTransport.submitAuthCode.bind(baseTransport),
+      close: baseTransport.close.bind(baseTransport),
+    };
+
+    const wrappedStore = createNexusStructuredPlaybookStore({ transport: wrappedTransport });
+    await expect(wrappedStore.list()).rejects.toThrow("simulated backend failure");
+  });
+
+  // --- Fix 1 (round 9): lockScope-keyed registry — wrapper-transport race tests ---
+
+  test("wrapper-transport: structured.save + recordProposal from wrapper stores with same lockScope serialize", async () => {
+    // Two stores (one structured, one proposal) over wrapper transports of the
+    // SAME backend, SAME lockScope. Concurrent save(v=2) + recordProposal(baseVersion=1)
+    // must serialize through the shared playbook lock — same invariant as the
+    // single-transport concurrent test in proposal.test.ts but verified here with
+    // wrapper transports to confirm the lockScope fix propagates correctly.
+    const trajRange: TrajectoryRange = { sessionId: "s1", fromStepIndex: 0, toStepIndex: 1 };
+    function makeProposal(id: string, playbookId: string, baseVersion: number): PlaybookProposal {
+      return {
+        id,
+        playbookId,
+        baseVersion,
+        operations: [{ kind: "add", section: "errors", content: "check first" }],
+        sourceTrajectoryRange: trajRange,
+        reflection: {
+          rootCause: "missed precondition",
+          keyInsight: "verify state first",
+          bulletTags: [{ id: "b1", tag: "helpful" }],
+        },
+        createdAt: 100,
+      };
+    }
+
+    const baseTransport = createFakeNexusTransport();
+
+    function wrapTransport(t: typeof baseTransport): typeof baseTransport {
+      return {
+        call: (m, p, opts) => t.call(m, p, opts),
+        subscribe: t.subscribe.bind(t),
+        submitAuthCode: t.submitAuthCode.bind(t),
+        close: () => t.close(),
+      };
+    }
+
+    const structuredStore = createNexusStructuredPlaybookStore({
+      transport: wrapTransport(baseTransport),
+      lockScope: "shared-structured-backend",
+    });
+    const proposalStore = createNexusPlaybookProposalStore({
+      transport: wrapTransport(baseTransport),
+      lockScope: "shared-structured-backend",
+    });
+
+    // Bootstrap: save v1 so recordProposal has a starting point.
+    await structuredStore.save({ ...spb("pb-wrapper-lock"), version: 1 });
+
+    // Race: bump to v2 while simultaneously recording a proposal against v1.
+    const [saveResult, recordResult] = await Promise.allSettled([
+      structuredStore.save({ ...spb("pb-wrapper-lock"), version: 2 }),
+      proposalStore.recordProposal(makeProposal("p-wrapper-lock", "pb-wrapper-lock", 1)),
+    ]);
+
+    // save must always succeed (last-write-wins).
+    expect(saveResult.status).toBe("fulfilled");
+
+    if (recordResult.status === "rejected") {
+      // Proposal lost the lock (save ran first, bumped to v=2, proposal saw v=2).
+      expect(String(recordResult.reason)).toContain("version");
+    } else {
+      // Proposal won the lock (read v=1, wrote proposal, save ran after).
+      const got = await proposalStore.getProposal("p-wrapper-lock");
+      expect(got?.baseVersion).toBe(1);
+    }
+  });
+});

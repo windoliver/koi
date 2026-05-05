@@ -6,6 +6,12 @@ Wraps HTTP fetching and web search as 2 Koi Tool components: `web_fetch` and `we
 
 ## Recent updates
 
+Review-finding cancellation sync: `web_fetch` and `web_search` now receive the
+tool execution options object and forward `ToolExecuteOptions.signal` to
+`WebExecutor.fetch()` / `WebExecutor.search()`. Cancelled turns can therefore
+abort slow fetch/search providers instead of waiting for the provider timeout or
+leaking in-flight work.
+
 gov-15 scope integration: `preflightBlockReason(url: string): string | undefined`
 is now exported as a public API. It performs the DNS-free SSRF preflight check
 inline — returns a human-readable reason string if the URL is definitively blocked
@@ -125,7 +131,8 @@ LLM decides: "call web_fetch
   ┌────────────────────────────────────┐
   │ executor.fetch(url, {              │
   │   method: "GET",                   │
-  │   timeoutMs: 15000                 │
+  │   timeoutMs: 15000,                │
+  │   signal: execution signal         │
   │ })                                 │
   └───────┬────────────────────────────┘
           │

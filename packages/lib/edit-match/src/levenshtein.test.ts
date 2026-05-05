@@ -63,4 +63,22 @@ describe("computeSlidingWindowMatch", () => {
     expect(result).toBeDefined();
     expect(source.slice(result?.startIndex, result?.endIndex)).toBe("bbb");
   });
+
+  test("does not allocate candidate windows with Array.prototype.slice", () => {
+    const source = Array.from({ length: 250 }, (_, i) => `line ${i}`).join("\n");
+    const search = "line 249";
+    const originalSlice = Array.prototype.slice;
+    let sliceCalls = 0;
+    Array.prototype.slice = function patchedSlice<T>(this: T[], ...args: [number?, number?]): T[] {
+      sliceCalls++;
+      return originalSlice.apply(this, args) as T[];
+    };
+    try {
+      const result = computeSlidingWindowMatch(source, search, FUZZY_THRESHOLD);
+      expect(result).toBeDefined();
+    } finally {
+      Array.prototype.slice = originalSlice;
+    }
+    expect(sliceCalls).toBe(0);
+  });
 });

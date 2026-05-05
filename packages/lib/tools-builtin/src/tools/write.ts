@@ -70,8 +70,8 @@ export function createFsWriteTool(
       }
 
       const options: FileWriteOptions = {
+        createDirectories: createDirsResult.value ?? false,
         overwrite: overwriteResult.value ?? false,
-        ...(createDirsResult.value !== undefined && { createDirectories: createDirsResult.value }),
       };
       const result = await backend.write(pathResult.value, contentResult.value, options);
       // No post-write cancellation check: if the backend committed, report
