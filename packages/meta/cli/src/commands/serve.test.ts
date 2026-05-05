@@ -248,6 +248,7 @@ function minimalManifestConfig(overrides: Partial<ManifestConfig> = {}): Manifes
     supervision: undefined,
     audit: undefined,
     delegation: undefined,
+    nexus: undefined,
     network: undefined,
     credentials: undefined,
     ace: undefined,

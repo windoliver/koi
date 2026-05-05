@@ -66,6 +66,12 @@ export interface TuiFlags extends BaseFlags {
    * pre-gov-10 "0 disables the cap" semantics at the call site.
    */
   readonly governance: GovernanceFlags;
+  /**
+   * Optional Nexus URL override (Issue #1403). Wins over manifest.nexus.url
+   * and NEXUS_URL env. When omitted, manifest + env determine the endpoint;
+   * `mode: sandbox` (or `auto` with no URL) auto-spawns @koi/nexus-sandbox.
+   */
+  readonly nexusUrl: string | undefined;
 }
 
 export function parseTuiFlags(rest: readonly string[]): TuiFlags {
@@ -88,6 +94,7 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     readonly "policy-file": string | undefined;
     readonly "alert-threshold": string[] | undefined;
     readonly "no-governance": boolean | undefined;
+    readonly "nexus-url": string | undefined;
     readonly help: boolean | undefined;
     readonly version: boolean | undefined;
   };
@@ -113,6 +120,7 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
         "policy-file": { type: "string" },
         "alert-threshold": { type: "string", multiple: true },
         "no-governance": { type: "boolean", default: false },
+        "nexus-url": { type: "string" },
         help: { type: "boolean", short: "h", default: false },
         version: { type: "boolean", short: "V", default: false },
       },
@@ -193,6 +201,7 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     verifierInheritEnv: values["verifier-inherit-env"] ?? false,
     yolo: (values.yolo ?? false) || (values["dangerously-skip-permissions"] ?? false),
     governance,
+    nexusUrl: values["nexus-url"],
   };
 }
 
