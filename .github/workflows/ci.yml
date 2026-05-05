@@ -724,7 +724,11 @@ jobs:
         # state colocated; splitting would scatter related state across
         # files. Five additions: 1 hard-limit on slack-channel.ts +
         # 4 soft-limit/function violations across the two factories.
-        run: bun run check:complexity --max-violations 728
+        # → 736 (#1405: @koi/snapshot-store-nexus + @koi/playbook-store-nexus —
+        # store-adapter factories keep contract methods colocated with the
+        # path/lock helpers they use; splitting would scatter cohesive ACE
+        # contract logic across files. Eight additions across the two factories.
+        run: bun run check:complexity --max-violations 736
 
       - name: Check TUI single-writer output policy
         run: bun run check:tui-single-writer

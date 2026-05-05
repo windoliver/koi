@@ -808,6 +808,18 @@
         "@koi/token-estimator": "workspace:*",
       },
     },
+    "packages/lib/playbook-store-nexus": {
+      "name": "@koi/playbook-store-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/ace-types": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/fs-nexus": "workspace:*",
+      },
+    },
     "packages/lib/playbook-store-sqlite": {
       "name": "@koi/playbook-store-sqlite",
       "version": "0.0.0",
@@ -919,6 +931,18 @@
         "@koi/skill-scanner": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
+      },
+    },
+    "packages/lib/snapshot-store-nexus": {
+      "name": "@koi/snapshot-store-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/fs-nexus": "workspace:*",
       },
     },
     "packages/lib/snapshot-store-sqlite": {
@@ -2497,6 +2521,8 @@
 
     "@koi/permissions-nexus": ["@koi/permissions-nexus@workspace:packages/security/permissions-nexus"],
 
+    "@koi/playbook-store-nexus": ["@koi/playbook-store-nexus@workspace:packages/lib/playbook-store-nexus"],
+
     "@koi/playbook-store-sqlite": ["@koi/playbook-store-sqlite@workspace:packages/lib/playbook-store-sqlite"],
 
     "@koi/plugins": ["@koi/plugins@workspace:packages/lib/plugins"],
@@ -2554,6 +2580,8 @@
     "@koi/skill-tool": ["@koi/skill-tool@workspace:packages/lib/skill-tool"],
 
     "@koi/skills-runtime": ["@koi/skills-runtime@workspace:packages/lib/skills-runtime"],
+
+    "@koi/snapshot-store-nexus": ["@koi/snapshot-store-nexus@workspace:packages/lib/snapshot-store-nexus"],
 
     "@koi/snapshot-store-sqlite": ["@koi/snapshot-store-sqlite@workspace:packages/lib/snapshot-store-sqlite"],
 
