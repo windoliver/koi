@@ -237,7 +237,16 @@ export async function synthesize(
         attemptController,
       );
       if (!generated.ok) {
-        lastReason = generated.reason;
+        // In best-effort mode, the adapter may still be running after a
+        // timeout/abort. Surface that to the caller in the failure reason
+        // so any retry/cleanup logic upstream knows side effects may
+        // still land. Already-disclosed via adapterHonorsAbort=false but
+        // making it loud at the failure boundary makes triage easier.
+        const extra =
+          !adapterHonorsAbort && /timed out|aborted by caller/.test(generated.reason)
+            ? " (adapter may still be running)"
+            : "";
+        lastReason = generated.reason + extra;
         // Generator failures wrap adapter/provider exception messages —
         // request metadata, tenant data, or stack traces can flow through.
         // Apply the same default-deny sanitizer policy as verifier reasons
@@ -299,7 +308,11 @@ export async function synthesize(
         attemptController,
       );
       if (!verified.ok) {
-        lastReason = verified.reason;
+        const verifyExtra =
+          !adapterHonorsAbort && /timed out|aborted by caller/.test(verified.reason)
+            ? " (adapter may still be running)"
+            : "";
+        lastReason = verified.reason + verifyExtra;
         // Verifier reason crosses the trust boundary back into the LLM —
         // sanitize via caller-supplied hook (default replaces with a fixed
         // generic string), then apply redactReason as a defense-in-depth
@@ -998,7 +1011,16 @@ function coerceVerifyResult(value: unknown): VerifyResult {
   }
   const obj = value as Record<string, unknown>;
   if (obj.ok === true) {
-    if (obj.summary === undefined) return { ok: true };
+    if (obj.summary === undefined) {
+      // ok:true without a summary leaves downstream provenance / audit
+      // with no per-stage evidence for the winning attempt. Require it
+      // so a misconfigured verifier cannot silently drop verification
+      // evidence while artifacts still ship as verified.
+      return {
+        ok: false,
+        reason: "Verifier returned ok:true without ForgeVerificationSummary",
+      };
+    }
     const summary = coerceVerificationSummary(obj.summary);
     if (!summary.ok) {
       return {

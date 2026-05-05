@@ -29,7 +29,13 @@ function validRaw(name = "echo_tool", code = "export const run = (x) => x;"): st
   });
 }
 
-const ALWAYS_OK: VerifyCallback = () => ({ ok: true });
+const STUB_SUMMARY = {
+  passed: true as const,
+  sandbox: false,
+  totalDurationMs: 1,
+  stageResults: [{ stage: "stub", passed: true, durationMs: 1 }],
+};
+const ALWAYS_OK: VerifyCallback = () => ({ ok: true, summary: STUB_SUMMARY });
 
 describe("synthesize", () => {
   test("returns success on first attempt when generate + verify both succeed", async () => {
@@ -54,7 +60,9 @@ describe("synthesize", () => {
     let calls = 0;
     const verify: VerifyCallback = () => {
       calls += 1;
-      return calls === 1 ? { ok: false, reason: "syntax check failed" } : { ok: true };
+      return calls === 1
+        ? { ok: false, reason: "syntax check failed" }
+        : { ok: true, summary: STUB_SUMMARY };
     };
     const result = await synthesize(INPUT, {
       generate,
@@ -254,7 +262,7 @@ describe("synthesize", () => {
     const verify: VerifyCallback = () => {
       n += 1;
       if (n === 1) throw new Error("verifier crashed");
-      return { ok: true };
+      return { ok: true, summary: STUB_SUMMARY };
     };
     const result = await synthesize(INPUT, {
       generate,
@@ -306,7 +314,7 @@ describe("synthesize", () => {
 
   test("uses synchronous verify return value", async () => {
     const generate: GenerateCallback = async () => validRaw();
-    const verify: VerifyCallback = () => ({ ok: true });
+    const verify: VerifyCallback = () => ({ ok: true, summary: STUB_SUMMARY });
     const result = await synthesize(INPUT, { generate, verify, ...ABORT_HONORED });
     expect(result.ok).toBe(true);
   });
@@ -645,7 +653,7 @@ describe("synthesize", () => {
     };
     const verify: VerifyCallback = (_c, _d, signal) => {
       verSignal = signal;
-      return { ok: true };
+      return { ok: true, summary: STUB_SUMMARY };
     };
     const result = await synthesize(INPUT, { generate, verify, ...ABORT_HONORED });
     expect(result.ok).toBe(true);
@@ -783,7 +791,7 @@ describe("synthesize", () => {
     const verify: VerifyCallback = () => {
       attempt += 1;
       if (attempt === 1) return { ok: false, reason: secret };
-      return { ok: true };
+      return { ok: true, summary: STUB_SUMMARY };
     };
     const result = await synthesize(INPUT, {
       generate,
@@ -808,7 +816,7 @@ describe("synthesize", () => {
     const verify: VerifyCallback = () => {
       attempt += 1;
       if (attempt === 1) return { ok: false, reason: noisy };
-      return { ok: true };
+      return { ok: true, summary: STUB_SUMMARY };
     };
     const result = await synthesize(INPUT, {
       generate,
@@ -828,7 +836,7 @@ describe("synthesize", () => {
     const verify: VerifyCallback = () => {
       attempt += 1;
       if (attempt === 1) return { ok: false, reason: "boom" };
-      return { ok: true };
+      return { ok: true, summary: STUB_SUMMARY };
     };
     const seenPrompts: string[] = [];
     const generate: GenerateCallback = async (p) => {
@@ -1017,6 +1025,33 @@ describe("synthesize", () => {
     expect(result.reason).toMatch(/candidate\.description exceeds/);
   });
 
+  test("best-effort timeout failure discloses 'adapter may still be running'", async () => {
+    const generate: GenerateCallback = () => new Promise<string>(() => undefined);
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      attemptTimeoutMs: 30,
+      adapterHonorsAbort: false,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/adapter may still be running/);
+  });
+
+  test("rejects ok:true verifier result without ForgeVerificationSummary", async () => {
+    const verify: VerifyCallback = () => ({ ok: true });
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/ForgeVerificationSummary/);
+  });
+
   test("rejects ok:true verifier result whose stages contradict (passed but stage failed)", async () => {
     const summary = {
       passed: true as const,
@@ -1116,7 +1151,7 @@ describe("synthesize", () => {
       } catch {
         /* descriptor is frozen */
       }
-      return { ok: true };
+      return { ok: true, summary: STUB_SUMMARY };
     };
     const generate: GenerateCallback = async () => validRaw();
     const result = await synthesize(INPUT, {
@@ -1178,7 +1213,7 @@ describe("synthesize", () => {
     let n = 0;
     const verify: VerifyCallback = () => {
       n += 1;
-      return n === 1 ? { ok: false, reason: "nope" } : { ok: true };
+      return n === 1 ? { ok: false, reason: "nope" } : { ok: true, summary: STUB_SUMMARY };
     };
     const result = await synthesize(INPUT, {
       generate,
@@ -1260,7 +1295,7 @@ describe("synthesize", () => {
       });
     const verify: VerifyCallback = () => {
       verifyCalls += 1;
-      return { ok: true };
+      return { ok: true, summary: STUB_SUMMARY };
     };
     const result = await synthesize(INPUT, {
       generate,
@@ -1285,7 +1320,7 @@ describe("synthesize", () => {
     let n = 0;
     const verify: VerifyCallback = () => {
       n += 1;
-      return n === 1 ? { ok: false, reason: "nope" } : { ok: true };
+      return n === 1 ? { ok: false, reason: "nope" } : { ok: true, summary: STUB_SUMMARY };
     };
     const candidate: ForgeCandidate = { ...CANDIDATE, proposedScope: "global" };
     const result = await synthesize(
