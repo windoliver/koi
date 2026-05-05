@@ -445,13 +445,19 @@ function countStrongDriftPriors(
   priorWindows: readonly (readonly UsagePurposeObservation[])[],
   thresholds: ExaptationThresholds,
 ): number {
-  // Pair each window with its max observedAt; sort ascending (oldest →
-  // newest) so we can walk from the end and reproduce the trailing-run
-  // semantics over the timestamp-derived order.
+  // Pair each window with its max observedAt drawn ONLY from observations
+  // that pass the same validity check `detectDrift` applies. Otherwise an
+  // invalid sample (missing scope, malformed agentId, non-string
+  // contextText) carrying a high `observedAt` could win the recency race
+  // and reorder priors — letting an attacker plant a "fresh-looking"
+  // junk timestamp on top of a stale strong-drift window. Computing
+  // recency from the same validated samples that detection itself trusts
+  // closes that path.
   const indexed = priorWindows.map((window, originalIndex) => {
-    // let: per-window max-observedAt accumulator
+    // let: per-window max-observedAt accumulator (validated samples only)
     let maxAt = Number.NEGATIVE_INFINITY;
     for (const o of window) {
+      if (!isObservationValid(o)) continue;
       if (Number.isFinite(o.observedAt) && o.observedAt > maxAt) maxAt = o.observedAt;
     }
     return { window, maxAt, originalIndex };

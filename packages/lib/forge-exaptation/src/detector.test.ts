@@ -458,6 +458,54 @@ describe("suggestAction", () => {
     );
   });
 
+  test("invalid observations cannot influence prior-window recency ordering", () => {
+    // Trust-boundary: an attacker (or buggy emitter) might attach a
+    // far-future `observedAt` to an OTHERWISE-INVALID observation (missing
+    // scope, blank agentId) and graft it into a stale strong-drift window
+    // to make that window look like the most recent prior. If recency were
+    // computed from raw observations the stale window would jump to the
+    // trailing slot and unlock `new-artifact`. Recency must be derived
+    // from the same validated samples the detector trusts, so this junk
+    // timestamp has zero influence.
+    const staleStrongWithJunkFutureStamp: UsagePurposeObservation[] = [
+      ...strongPriorWindow(),
+      // Junk: blank scope makes the observation invalid; the future
+      // timestamp must NOT be used for recency.
+      {
+        scope: "",
+        agentId: "ghost",
+        divergenceScore: 0.99,
+        contextText: "junk",
+        observedAt: Number.MAX_SAFE_INTEGER,
+        eventId: "junk",
+      },
+    ];
+    // Build a genuinely-recent weak window AFTER (so its timestamps are
+    // higher than the strong window's real samples).
+    const trulyRecentWeak: UsagePurposeObservation[] = [
+      ...[0.05, 0.05, 0.05].map((s) => obs("noisy-late-a", s)),
+      ...[0.05, 0.05, 0.05].map((s) => obs("noisy-late-b", s)),
+    ];
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    // Without the validity filter, the junk MAX_SAFE_INTEGER stamp would
+    // sort the stale strong window into the trailing slot → new-artifact.
+    // With the filter, the trulyRecentWeak window is correctly trailing →
+    // reclassify (run length 0).
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [
+        staleStrongWithJunkFutureStamp,
+        trulyRecentWeak,
+      ]).kind,
+    ).toBe("reclassify");
+    // Same result regardless of array order — recency is observation-derived.
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [
+        trulyRecentWeak,
+        staleStrongWithJunkFutureStamp,
+      ]).kind,
+    ).toBe("reclassify");
+  });
+
   test("priorWindows with no finite observedAt cannot satisfy stability", () => {
     // Degraded telemetry: a prior window where every observation lacks a
     // usable observedAt sorts to the bottom (oldest) and breaks the
