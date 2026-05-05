@@ -222,14 +222,16 @@ describe("parseSynthesisOutput", () => {
     expect(result.value.code).toBe("x();");
   });
 
-  test("accepts valid payload followed by trailing unmatched `{`", () => {
+  test("rejects valid payload followed by trailing unmatched `{` (likely truncated retry)", () => {
+    // A trailing unmatched `{` AFTER a complete claimant likely opens a
+    // truncated second claimant — accepting the earlier object would
+    // ship stale code as verified. Fail closed.
     const real = rawWith(VALID_DESCRIPTOR, "x();");
-    // Truncated LLM output: real answer then a stray opening brace.
     const wrapped = `${real}\n{ partial`;
     const result = parseSynthesisOutput(wrapped, "echo_tool");
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.code).toBe("x();");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/truncated retry/);
   });
 
   test("recovers when prose has single-quoted braces before real payload", () => {

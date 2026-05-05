@@ -888,6 +888,18 @@ describe("synthesize", () => {
     expect(result.reason).toMatch(/targetToolSchema exceeds/);
   });
 
+  test("accepts null-prototype targetToolSchema (sanitized wire-format)", async () => {
+    // Object.create(null) is a common pattern for prototype-pollution-safe
+    // decoded JSON. The walker must accept null as well as Object.prototype.
+    const schema = Object.create(null) as Record<string, unknown>;
+    schema.type = "object";
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: schema },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(true);
+  });
+
   test("rejects targetToolSchema with undefined value (no silent JSON normalization)", async () => {
     // JSON.stringify drops undefined keys; old two-pass code would have
     // accepted this as a normalized {type:"object"} schema. Single-pass

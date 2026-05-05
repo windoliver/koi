@@ -75,7 +75,7 @@ function findParseableJsonObject(
   | { readonly ok: true; readonly value: Record<string, unknown> }
   | { readonly ok: false; readonly reason: string } {
   let lastParseReason: string | null = null;
-  const claimants: Record<string, unknown>[] = [];
+  const claimants: Array<{ obj: Record<string, unknown>; end: number }> = [];
   // Two-phase linear scan. Phase 1: walk once, push every `{` onto a
   // stack and pop on `}`, recording (start, end, afterDepth) for each
   // matched pair. Each char is touched once and stack ops are O(1).
@@ -179,11 +179,26 @@ function findParseableJsonObject(
     }
     const obj = parsed as Record<string, unknown>;
     if (claimsToBeSynthesisPayload(obj)) {
-      claimants.push(obj);
+      claimants.push({ obj, end });
     }
   }
+  // Fail closed if a single claimant is followed by an unmatched `{`
+  // later in the stream. That brace likely opens a TRUNCATED second
+  // claimant (e.g. the model started a corrected answer and was cut
+  // off). Accepting the earlier object would ship stale code as the
+  // verified artifact.
   if (claimants.length === 1) {
-    return { ok: true, value: claimants[0] as Record<string, unknown> };
+    const sole = claimants[0];
+    if (sole !== undefined) {
+      const trailingUnclosed = opens.some((idx) => idx > sole.end);
+      if (trailingUnclosed) {
+        return {
+          ok: false,
+          reason: "Output has an unmatched `{` after the claimant payload (likely truncated retry)",
+        };
+      }
+      return { ok: true, value: sole.obj };
+    }
   }
   if (claimants.length > 1) {
     return {

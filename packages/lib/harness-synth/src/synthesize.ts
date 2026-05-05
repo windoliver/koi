@@ -237,11 +237,13 @@ export async function synthesize(
         attemptController,
       );
       if (!generated.ok) {
-        // In best-effort mode, the adapter may still be running after a
-        // timeout/abort. Surface that to the caller in the failure reason
-        // so any retry/cleanup logic upstream knows side effects may
-        // still land. Already-disclosed via adapterHonorsAbort=false but
-        // making it loud at the failure boundary makes triage easier.
+        // The public-facing `lastReason` keeps the raw failure text so
+        // callers retain debugging fidelity at their logging boundary —
+        // production callers that persist failures are responsible for
+        // their own redaction layer. The LLM-bound `priorReason` IS
+        // sanitized via the default-deny `sanitizeVerifierReason` hook
+        // a few lines below; that boundary is non-negotiable since the
+        // text crosses into the model provider on retry.
         const extra =
           !adapterHonorsAbort && /timed out|aborted by caller/.test(generated.reason)
             ? " (adapter may still be running)"
@@ -639,7 +641,8 @@ function snapshotJsonPlain(
       }
       return { ok: true, value: out };
     }
-    if (Object.getPrototypeOf(obj) !== Object.prototype) {
+    const proto = Object.getPrototypeOf(obj);
+    if (proto !== Object.prototype && proto !== null) {
       return { ok: false, reason: `${path} is not a plain object literal` };
     }
     let keys: string[];
@@ -705,7 +708,8 @@ function ensureJsonPlain(
       }
       return { ok: true };
     }
-    if (Object.getPrototypeOf(obj) !== Object.prototype) {
+    const proto = Object.getPrototypeOf(obj);
+    if (proto !== Object.prototype && proto !== null) {
       return { ok: false, reason: `${path} is not a plain object literal` };
     }
     let keys: string[];
