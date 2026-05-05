@@ -2,8 +2,13 @@
 
 `@koi/federation` is an L2 package that enables agents in different zones to
 discover each other, delegate tasks cross-zone, and sync state. Edge deployments
-sync back to cloud when connected via event-sourced replication with vector
-clocks.
+sync back to cloud when connected via event-sourced replication keyed on a
+monotonic per-zone sequence number.
+
+> **Phase 3 baseline (this doc):** zone registry, fixed-poll sync engine,
+> sequence-cursor deduplication, and cross-zone tool routing. Vector clocks,
+> LWW conflict resolution, adaptive polling, snapshot truncation, and clock
+> pruning are **deferred to #1410 (Phase 4e)**.
 
 ---
 
@@ -20,7 +25,7 @@ Before                              After
 zone: string (raw, untyped)         ZoneId (branded, typed)
 no zone registry                    ZoneRegistry (L0 interface)
 no cross-zone communication         FederationMiddleware (wrapToolCall)
-no state sync                       SyncEngine (event-sourced, vector clocks)
+no state sync                       SyncEngine (sequence-cursor delta poll)
 zone scope = passthrough             zone scope = tag-based enforcement
 ```
 
@@ -47,20 +52,16 @@ L2  @koi/forge               ─ consumer (zone scope enforcement)
 ```
 index.ts                  ← public re-exports
 │
-├── types.ts              ← VectorClock, SyncCursor, FederationSyncEvent,
+├── types.ts              ← SyncCursor, FederationSyncEvent,
 │                            FederationConfig, DEFAULT_FEDERATION_CONFIG
-│
-├── vector-clock.ts       ← incrementClock(), mergeClock(), compareClock(),
-│                            isAfterCursor(), pruneClock()
 │
 ├── config.ts             ← validateFederationConfig()
 │
 ├── sync-protocol.ts      ← SyncClient interface, createNexusSyncClient(),
-│                            resolveConflict(), advanceCursor(),
-│                            deduplicateEvents()
+│                            advanceCursor(), deduplicateEvents()
 │
-├── sync-engine.ts        ← createSyncEngine() — adaptive polling,
-│                            snapshot truncation, clock pruning
+├── sync-engine.ts        ← createSyncEngine() — fixed-interval polling,
+│                            health monitor, graceful disconnect
 │
 ├── zone-registry-nexus.ts ← createZoneRegistryNexus() — Nexus-backed
 │                             ZoneRegistry with in-memory projection
@@ -139,46 +140,35 @@ Agent in Zone B → bash("ls") with targetZoneId: "zone-a"
 ```
 Zone A publishes events     Zone B syncs
 ────────────────────────    ───────────────────
-event { seq: 1, vc: {a:1} }
-event { seq: 2, vc: {a:2} }    ← fetchDelta(cursor)
-event { seq: 3, vc: {a:3} }    ← deduplicateEvents
-                                ← advanceCursor
+event { seq: 1 }
+event { seq: 2 }               ← fetchDelta(cursor.lastSequence)
+event { seq: 3 }               ← deduplicateEvents (seq > lastSequence)
+                                ← advanceCursor (lastSequence = max)
                                 ← notifyHandlers
 ```
 
-Each zone maintains a **vector clock** for causal ordering. The sync engine
-uses **adaptive polling**:
+Each remote-zone cursor tracks a **monotonic `lastSequence`**; sync polls at a
+**fixed interval** (`pollIntervalMs`).
 
-```
-Events found?    Poll interval change
-─────────────    ────────────────────
-YES              halve interval (floor = minPollIntervalMs)
-NO               double interval (cap = maxPollIntervalMs)
-```
+### Health monitor
 
-### Conflict resolution: Last-Writer-Wins (LWW)
+The sync engine tracks consecutive fetch failures per remote zone. After
+`offlineAfterFailures` consecutive errors a zone is marked **offline** locally;
+a subsequent successful fetch flips it back to **active**. Disposing the engine
+sends a `federation.zone_disconnect` notification (best-effort, errors swallowed)
+so the Nexus hub can mark the zone `draining` immediately rather than waiting
+for the heartbeat timeout.
 
-When two zones concurrently modify the same resource:
+### Deferred to #1410 (Phase 4e)
 
-```
-Zone A: event { emittedAt: 1000 }
-Zone B: event { emittedAt: 2000 }
+The following sub-systems are **out of scope** for this Phase 3 baseline:
 
-resolveConflict(A, B) → B wins (later timestamp)
-```
-
-Tie-breaker: lexicographically higher zone ID wins (deterministic).
-
-### Event log bounding
-
-When the event log exceeds `snapshotThreshold`, it is truncated to
-`threshold / 2`, keeping the newest events. This prevents unbounded memory
-growth in long-running deployments.
-
-### Vector clock pruning
-
-Zones inactive longer than `clockPruneAfterMs` are removed from vector
-clocks to prevent clock size from growing unboundedly as zones join and leave.
+- **Vector clocks** — replaced by monotonic `SyncCursor.lastSequence`.
+- **LWW conflict resolution** — Phase 3 events are append-only; conflicts are
+  not yet observable.
+- **Adaptive polling** — fixed `pollIntervalMs` only.
+- **Snapshot + truncation** — event log retained in full for the session.
+- **Vector-clock pruning** — N/A without vector clocks.
 
 ---
 
@@ -253,8 +243,8 @@ RPC methods called: `federation.zone_register`, `federation.zone_deregister`.
 
 ### `createSyncEngine(config)`
 
-Event-sourced sync engine with adaptive polling, snapshot truncation, and
-vector clock pruning.
+Event-sourced sync engine with **fixed-interval polling** and a health monitor.
+(Adaptive polling and snapshot truncation are deferred to Phase 4e — see #1410.)
 
 ```typescript
 import { createSyncEngine } from "@koi/federation";
@@ -265,10 +255,7 @@ const engine = createSyncEngine({
     ["us-west-2", syncClient],
   ]),
   pollIntervalMs: 5000,
-  minPollIntervalMs: 1000,
-  maxPollIntervalMs: 30000,
-  snapshotThreshold: 1000,
-  clockPruneAfterMs: 86_400_000,
+  offlineAfterFailures: 3,
 });
 
 // Manual sync
@@ -315,36 +302,22 @@ const mw = createFederationMiddleware({
 
 ---
 
-## Vector clock operations
+## Sync cursor
 
-Pure functions, no I/O:
+Phase 3 uses a **monotonic per-zone sequence cursor**. Vector-clock based causal
+ordering is deferred to #1410.
 
 ```typescript
-import {
-  incrementClock,
-  mergeClock,
-  compareClock,
-  pruneClock,
-} from "@koi/federation";
-
-// Increment local zone's clock component
-const clock = incrementClock({ "zone-a": 3 }, "zone-a");
-// → { "zone-a": 4 }
-
-// Merge two clocks (component-wise max)
-const merged = mergeClock(
-  { "zone-a": 3, "zone-b": 1 },
-  { "zone-a": 1, "zone-b": 5 },
-);
-// → { "zone-a": 3, "zone-b": 5 }
-
-// Compare causal ordering
-compareClock(a, b);
-// → "before" | "after" | "concurrent" | "equal"
-
-// Prune idle zones
-const pruned = pruneClock(clock, lastActiveTimes, cutoffTimestamp);
+interface SyncCursor {
+  readonly zoneId: ZoneId;
+  readonly lastSequence: number;
+  readonly lastSyncAt: number;
+}
 ```
+
+`advanceCursor(cursor, events)` updates `lastSequence` to the max sequence
+across the batch. `deduplicateEvents(events, cursor)` keeps only events with
+`sequence > cursor.lastSequence`.
 
 ---
 
@@ -357,12 +330,8 @@ const result = validateFederationConfig({
   localZoneId: zoneId("us-east-1"),
   remoteZones: [zoneId("us-west-2"), zoneId("eu-west-1")],
   // All optional — defaults applied:
-  pollIntervalMs: 5000,      // default: 5000
-  minPollIntervalMs: 1000,   // default: 1000
-  maxPollIntervalMs: 30000,  // default: 30000
-  snapshotThreshold: 1000,   // default: 1000
-  clockPruneAfterMs: 86400000, // default: 24h
-  conflictResolution: "lww", // default: "lww"
+  pollIntervalMs: 5000,           // default: 5000
+  offlineAfterFailures: 3,        // default: 3
 });
 
 if (!result.ok) {
@@ -403,12 +372,12 @@ isVisibleToAgent(brick, "agent-1", "us-east-1");
 | Scenario | Behavior |
 |----------|----------|
 | Partition recovery | Zone catches up on all missed events after reconnect |
-| Concurrent writes | LWW picks higher `emittedAt`; tie-breaks by zone ID |
+| Concurrent writes | Phase 3 baseline: append-only; LWW deferred to #1410 |
 | Duplicate delivery | `deduplicateEvents` filters by `sequence > cursor.lastSequence` |
-| Large replay | Event log truncated to `threshold/2` when exceeding `snapshotThreshold` |
 | Out-of-order events | Only events with `sequence > cursor.lastSequence` processed |
 | Zone joins mid-sync | New zone starts from sequence 0, catches up fully |
 | Empty zone | Empty delta, cursor stays at 0 |
+| Persistent fetch failure | After `offlineAfterFailures` consecutive errors, zone marked offline locally |
 
 ---
 
@@ -428,14 +397,12 @@ isVisibleToAgent(brick, "agent-1", "us-east-1");
 
 | Function | Description |
 |----------|-------------|
-| `incrementClock(clock, zoneId)` | Increment zone's clock component |
-| `mergeClock(a, b)` | Component-wise maximum |
-| `compareClock(a, b)` | `"before" \| "after" \| "concurrent" \| "equal"` |
-| `isAfterCursor(event, cursor, zoneId)` | Check if event is newer than cursor |
-| `pruneClock(clock, lastActiveTimes, cutoffAt)` | Remove idle zones |
-| `advanceCursor(cursor, events)` | Update cursor after processing events |
-| `deduplicateEvents(events, cursor)` | Filter already-seen events |
-| `resolveConflict(local, remote)` | LWW conflict resolution |
+| `advanceCursor(cursor, events)` | Update cursor `lastSequence` to max across batch |
+| `deduplicateEvents(events, cursor)` | Filter already-seen events (seq > lastSequence) |
+
+> Vector-clock helpers (`incrementClock`, `mergeClock`, `compareClock`,
+> `isAfterCursor`, `pruneClock`) and `resolveConflict` are **deferred to #1410
+> (Phase 4e)**.
 
 ### Exported constants
 
