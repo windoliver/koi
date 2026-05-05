@@ -616,6 +616,98 @@ describe("suggestAction", () => {
     if (result.kind === "invalid-config") expect(result.reason).toContain("6");
   });
 
+  test("sub-precision score skew (0.69996 vs 0.70004) does not flip the verdict", () => {
+    // Replays whose scores differ only at sub-precision must be
+    // canonicalized BEFORE threshold comparisons. Otherwise samePayload
+    // collapses them as "same" yet they straddle divergenceThreshold,
+    // so verdict depends on which retry arrived first. Validation
+    // rounds to PAYLOAD_SCORE_PRECISION decimals so all downstream
+    // logic sees the same value.
+    const eid1 = "evt-skew-A";
+    const eid2 = "evt-skew-B";
+    function mk(eid: string, score: number): UsagePurposeObservation {
+      return {
+        artifactId: "artifact-1",
+        scope: "default",
+        agentId: "drift-agent",
+        eventId: eid,
+        divergenceScore: score,
+        contextText: "x",
+        observedAt: 1,
+      };
+    }
+    // Each event has a sub-precision retry pair straddling 0.70.
+    const earlyArrival: UsagePurposeObservation[] = [
+      mk(eid1, 0.69996),
+      mk(eid1, 0.70004),
+      mk(eid2, 0.69996),
+      mk(eid2, 0.70004),
+      ...Array.from({ length: 6 }, () => obs("baseline-a", 0.95)),
+      ...Array.from({ length: 6 }, () => obs("baseline-b", 0.95)),
+    ];
+    const lateArrival: UsagePurposeObservation[] = [
+      mk(eid1, 0.70004),
+      mk(eid1, 0.69996),
+      mk(eid2, 0.70004),
+      mk(eid2, 0.69996),
+      ...Array.from({ length: 6 }, () => obs("baseline-a", 0.95)),
+      ...Array.from({ length: 6 }, () => obs("baseline-b", 0.95)),
+    ];
+    // Verdict must be identical regardless of arrival order.
+    const a = detectDrift(earlyArrival, DEFAULT_EXAPTATION_THRESHOLDS);
+    const b = detectDrift(lateArrival, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(a.kind).toBe(b.kind);
+    if (a.kind === "drift" && b.kind === "drift") {
+      expect(a.report.observationCount).toBe(b.report.observationCount);
+    }
+  });
+
+  test("legacy + explicit observations sharing an eventId do not collapse (artifactId in dedup key)", () => {
+    // Mid-migration, a legacy emitter (artifactId omitted → LEGACY_ARTIFACT)
+    // and a new emitter (explicit artifactId) might happen to mint the
+    // same eventId. Without artifactId in the dedup key they would
+    // collapse, contaminating one artifact's evidence with the other's.
+    // With artifactId in the key, they stay separate.
+    const sharedEvent = "shared-event-x";
+    const legacyObs: UsagePurposeObservation = {
+      artifactId: undefined as unknown as string, // omitted by emitter
+      scope: "default",
+      agentId: "agent-1",
+      eventId: sharedEvent,
+      divergenceScore: 0.95,
+      contextText: "legacy-text",
+      observedAt: 1,
+    };
+    // Strip artifactId so it's truly missing on the wire.
+    const { artifactId: _legacy, ...legacy } = legacyObs;
+    const explicit: UsagePurposeObservation = {
+      artifactId: "artifact-1",
+      scope: "default",
+      agentId: "agent-1",
+      eventId: sharedEvent,
+      divergenceScore: 0.95,
+      contextText: "explicit-text-different",
+      observedAt: 1,
+    };
+    // Without artifactId in dedup, these would either collapse or
+    // quarantine as a "conflict" since payloads differ. With it, they
+    // are independent buckets.
+    const observations: UsagePurposeObservation[] = [
+      legacy,
+      explicit,
+      // Pad cohort so the gate could fire if the two collided
+      // (just to exercise the path).
+      ...Array.from({ length: 6 }, () => obs("a2", 0.95)),
+      ...Array.from({ length: 6 }, () => obs("a3", 0.95)),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      // No conflict was raised — distinct buckets, no quarantine.
+      expect(result.conflictCount).toBe(0);
+    }
+  });
+
   test("partially overlapping prior is scored on the disjoint remainder (sliding history)", () => {
     // The documented usage pattern is a sliding history of recent
     // windows. Adjacent windows naturally share observations. Earlier

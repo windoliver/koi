@@ -261,10 +261,29 @@ export function detectDrift(
     if (!isObservationValid(o)) continue;
     const normalizedScope = normalizeScope(o.scope);
     const trimmedAgent = o.agentId.trim();
-    if (normalizedScope === o.scope && trimmedAgent === o.agentId) {
+    // Canonicalize divergenceScore at validation so all downstream
+    // logic — threshold comparisons, dedup equivalence, cohort scoring —
+    // operates on the same value. Otherwise replays whose scores differ
+    // only at sub-precision (0.69996 vs 0.70004) get treated as equal
+    // payloads by samePayload yet straddle `divergenceThreshold`,
+    // making the verdict depend on which retry arrived first. The
+    // canonicalization rounds to PAYLOAD_SCORE_PRECISION decimals — the
+    // same precision samePayload uses.
+    const canonicalScore =
+      Math.round(o.divergenceScore * PAYLOAD_SCORE_FACTOR) / PAYLOAD_SCORE_FACTOR;
+    if (
+      normalizedScope === o.scope &&
+      trimmedAgent === o.agentId &&
+      canonicalScore === o.divergenceScore
+    ) {
       valid.push(o);
     } else {
-      valid.push({ ...o, scope: normalizedScope, agentId: trimmedAgent });
+      valid.push({
+        ...o,
+        scope: normalizedScope,
+        agentId: trimmedAgent,
+        divergenceScore: canonicalScore,
+      });
     }
   }
   const droppedCount = observations.length - valid.length;
@@ -794,9 +813,13 @@ function windowMaxAtAfterDedup(window: readonly UsagePurposeObservation[]): numb
       noKeyTimes.push(o.observedAt);
       continue;
     }
-    const scope = normalizeScope(o.scope);
-    const agent = o.agentId.trim();
-    const key = `${String(scope.length)}:${scope}|${String(agent.length)}:${agent}|${eid}`;
+    // Recency dedup mirrors the structural dedup key:
+    // `(artifactId, scope, agentId, eventId)`. Without artifactId, a
+    // legacy observation from artifact B sharing an eventId with
+    // artifact A's observation would collapse here and influence A's
+    // recency — exactly the cross-artifact contamination path the
+    // migration tolerance is supposed to forbid.
+    const key = `${artifactScopeAgentKey(o.artifactId, o.scope, o.agentId)}|${eid}`;
     const prev = minByKey.get(key);
     if (prev === undefined || o.observedAt < prev) minByKey.set(key, o.observedAt);
   }
@@ -902,6 +925,26 @@ function scopeAgentKey(scope: string | undefined, agentId: string): string {
   return `${String(s.length)}:${s}:${agentId}`;
 }
 
+/**
+ * `(artifactId, scope, agentId)` composite key. Used wherever per-
+ * artifact isolation must hold under the legacy-artifact migration
+ * path: dedup, recency, and any structural bucketing where mixing
+ * traffic from two artifacts via a shared `(scope, agentId, eventId)`
+ * tuple would silently violate per-artifact semantics.
+ *
+ * We bind `artifactId` into the same length-prefixed scheme as scope
+ * to prevent boundary collisions between adjacent fields.
+ */
+function artifactScopeAgentKey(
+  artifactId: string | undefined,
+  scope: string | undefined,
+  agentId: string,
+): string {
+  const a = normalizeArtifactId(artifactId);
+  const s = normalizeScope(scope);
+  return `${String(a.length)}:${a}|${String(s.length)}:${s}|${agentId}`;
+}
+
 interface DedupOutcome {
   /** Observations that survived dedup (one per `(scope, agentId, eventId)` bucket). */
   readonly winners: readonly UsagePurposeObservation[];
@@ -948,7 +991,13 @@ function dedupeByScopeAgentEvent(observations: readonly UsagePurposeObservation[
     if (typeof o.eventId !== "string") continue;
     const eventId = o.eventId.trim();
     if (eventId.length === 0) continue;
-    const key = scopeAgentKey(o.scope, o.agentId);
+    // Dedup keys on `(artifactId, scope, agentId, eventId)`. Including
+    // artifactId is what preserves per-artifact isolation during the
+    // mid-migration window: an unmigrated observation from artifact B
+    // (artifactId normalized to LEGACY_ARTIFACT) cannot collapse with
+    // artifact A's observation just because their eventIds happened to
+    // match — the artifact prefix already differs.
+    const key = artifactScopeAgentKey(o.artifactId, o.scope, o.agentId);
     let inner = buckets.get(key);
     if (inner === undefined) {
       inner = new Map<string, UsagePurposeObservation[]>();
