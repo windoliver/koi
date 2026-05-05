@@ -742,7 +742,20 @@ function coerceVerificationSummary(
       return { ok: false, reason: stagePlain.reason };
     }
   }
-  return { ok: true, value: value as ForgeVerificationSummary };
+  // Snapshot via JSON round-trip and freeze. Returning the verifier's live
+  // object would let a hostile / buggy verifier mutate audit data after
+  // synthesize() resolves, or expose accessor properties whose values
+  // change between reads — corrupting downstream provenance after the
+  // success path has already committed. JSON-plainness was just validated,
+  // so the round-trip is lossless.
+  let snapshot: ForgeVerificationSummary;
+  try {
+    snapshot = JSON.parse(JSON.stringify(value)) as ForgeVerificationSummary;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, reason: `summary snapshot failed: ${message}` };
+  }
+  return { ok: true, value: deepFreeze(snapshot) };
 }
 
 /**

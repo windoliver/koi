@@ -112,9 +112,29 @@ function findParseableJsonObject(
       matched.push({ start, end: i, afterDepth: opens.length });
     }
   }
-  const abandoned = opens.length;
-  for (const { start, end, afterDepth } of matched) {
-    if (afterDepth !== abandoned) continue; // skip nested spans (O(n) total)
+  // A matched span S is "outermost" iff no LATER matched span has a
+  // strictly smaller afterDepth — that would mean a later `}` closed a
+  // `{` deeper in the stack than S's, i.e. S is itself enclosed by a
+  // wider matched span. Walk right-to-left tracking the running minimum
+  // afterDepth and accept spans with afterDepth <= minRight. This both
+  // (a) rejects nested spans inside a still-matched outer scope and
+  // (b) accepts spans that complete BEFORE a trailing unmatched `{`,
+  // which the previous "afterDepth == abandoned" rule discarded.
+  const outermost = new Array<boolean>(matched.length).fill(false);
+  let minRight = Number.POSITIVE_INFINITY;
+  for (let i = matched.length - 1; i >= 0; i -= 1) {
+    const m = matched[i];
+    if (m === undefined) continue;
+    if (m.afterDepth <= minRight) {
+      outermost[i] = true;
+      minRight = m.afterDepth;
+    }
+  }
+  for (let i = 0; i < matched.length; i += 1) {
+    if (!outermost[i]) continue;
+    const m = matched[i];
+    if (m === undefined) continue;
+    const { start, end } = m;
     const span = raw.slice(start, end + 1);
     let parsed: unknown;
     try {

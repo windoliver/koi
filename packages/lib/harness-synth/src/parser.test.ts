@@ -204,6 +204,16 @@ describe("parseSynthesisOutput", () => {
     expect(elapsed).toBeLessThan(1000);
   });
 
+  test("accepts valid payload followed by trailing unmatched `{`", () => {
+    const real = rawWith(VALID_DESCRIPTOR, "x();");
+    // Truncated LLM output: real answer then a stray opening brace.
+    const wrapped = `${real}\n{ partial`;
+    const result = parseSynthesisOutput(wrapped, "echo_tool");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.code).toBe("x();");
+  });
+
   test("recovers when prose has single-quoted braces before real payload", () => {
     const real = JSON.stringify({
       descriptor: VALID_DESCRIPTOR,

@@ -714,6 +714,36 @@ describe("synthesize", () => {
     expect(seenPrompts[1] ?? "").toContain("verification failed");
   });
 
+  test("verification summary is snapshotted (verifier cannot mutate audit data post-success)", async () => {
+    const live: {
+      passed: true;
+      sandbox: boolean;
+      totalDurationMs: number;
+      stageResults: Array<{ stage: string; passed: boolean; durationMs: number }>;
+    } = {
+      passed: true,
+      sandbox: false,
+      totalDurationMs: 17,
+      stageResults: [{ stage: "syntax", passed: true, durationMs: 5 }],
+    };
+    const verify: VerifyCallback = () => ({ ok: true, summary: live });
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Verifier mutates its live reference AFTER synthesize() resolved.
+    live.totalDurationMs = 9999;
+    live.stageResults[0]!.passed = false;
+    // Returned value must be unaffected.
+    expect(result.value.verification?.totalDurationMs).toBe(17);
+    expect(result.value.verification?.stageResults[0]?.passed).toBe(true);
+    expect(Object.isFrozen(result.value.verification)).toBe(true);
+  });
+
   test("targetToolSchema is snapshotted (caller mutation post-call has no effect)", async () => {
     const original: Record<string, unknown> = { type: "object", v: 1 };
     const generate: GenerateCallback = async () => {
