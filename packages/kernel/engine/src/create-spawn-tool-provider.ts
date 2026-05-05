@@ -330,7 +330,15 @@ export function createSpawnExecutor(
         description,
         status: "complete",
       });
-      return { output: result.output };
+      return {
+        agentName,
+        output: result.output,
+        // workerId is a daemon-supervisor concept (subprocess path only).
+        // In-process spawn has no OS-level worker identity; use a sentinel.
+        workerId: "—",
+        isolation: "in-process",
+        backendKind: "in-process",
+      };
     } catch (e: unknown) {
       // Unexpected error (not a SpawnResult.error) — also emit failed status
       if (!(e instanceof KoiRuntimeError)) {

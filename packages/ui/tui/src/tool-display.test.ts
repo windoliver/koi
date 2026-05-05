@@ -50,10 +50,63 @@ describe("getToolDisplay — ToolSearch", () => {
 });
 
 describe("getToolDisplay — Spawn", () => {
-  test("returns title 'Spawn' with name as subtitle", () => {
-    const d = getToolDisplay("Spawn", { name: "researcher", prompt: "Find bugs" });
+  test("returns title 'Spawn' with agentName as subtitle", () => {
+    const d = getToolDisplay("Spawn", { agentName: "researcher", description: "Find bugs" });
     expect(d.title).toBe("Spawn");
     expect(d.subtitle).toBe("researcher");
+  });
+
+  test("falls back to description when agentName is absent", () => {
+    const d = getToolDisplay("Spawn", { description: "Find bugs" });
+    expect(d.title).toBe("Spawn");
+    expect(d.subtitle).toBe("Find bugs");
+  });
+});
+
+describe("getResultDisplay — Spawn result", () => {
+  test("shows agentName, workerId, isolation as chips", () => {
+    const r = getResultDisplay(
+      toolResult({
+        agentName: "researcher",
+        output: "Research complete.",
+        workerId: "—",
+        isolation: "in-process",
+        backendKind: "in-process",
+      }),
+    );
+    expect(r.chips).toContain("agentName=researcher");
+    expect(r.chips).toContain("workerId=—");
+    expect(r.chips).toContain("isolation=in-process");
+  });
+
+  test("uses output field as result body", () => {
+    const r = getResultDisplay(
+      toolResult({
+        agentName: "coder",
+        output: "Code written successfully.",
+        workerId: "—",
+        isolation: "in-process",
+        backendKind: "in-process",
+      }),
+    );
+    expect(r.body).toBe("Code written successfully.");
+  });
+
+  test("chips capped at 3 — backendKind falls off when all spawn fields present", () => {
+    const r = getResultDisplay(
+      toolResult({
+        agentName: "reviewer",
+        workerId: "—",
+        isolation: "in-process",
+        backendKind: "in-process",
+        output: "Done.",
+      }),
+    );
+    expect(r.chips).toHaveLength(3);
+    expect(r.chips).toContain("agentName=reviewer");
+    expect(r.chips).toContain("workerId=—");
+    expect(r.chips).toContain("isolation=in-process");
+    expect(r.chips).not.toContain("backendKind=in-process");
   });
 });
 
