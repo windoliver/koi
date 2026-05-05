@@ -266,6 +266,15 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
   // Dedup cache: key → expiry ms
   const dedupCache = new Map<string, number>();
 
+  // Single-flight guard for runOnePoll: coalesces concurrent calls so that
+  // poll-loop and watch-loop refreshes never publish out-of-order rows.
+  let pollInFlight: Promise<void> | null = null;
+  // Tracks live async iterators (registry.watch / supervisor.watchAll) so
+  // close() can release them — racing iter.next() vs closedPromise leaves
+  // them parked otherwise, and a second bridge in the same process would
+  // create a second watcher on top of the abandoned one.
+  const activeIterators = new Set<AsyncIterator<unknown>>();
+
   // ---------------------------------------------------------------------------
   // Poll helpers
   // ---------------------------------------------------------------------------
@@ -291,6 +300,14 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
   }
 
   async function runOnePoll(): Promise<void> {
+    if (pollInFlight !== null) return pollInFlight;
+    pollInFlight = runOnePollInner().finally(() => {
+      pollInFlight = null;
+    });
+    return pollInFlight;
+  }
+
+  async function runOnePollInner(): Promise<void> {
     const result = await registry.describeList();
     if (closed) return;
 
@@ -369,6 +386,7 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
 
     while (!closed) {
       const iter = registry.watch()[Symbol.asyncIterator]();
+      activeIterators.add(iter as AsyncIterator<unknown>);
       let pendingNext: Promise<IteratorResult<BackgroundSessionEvent>> | undefined;
 
       const getNext = (): Promise<IteratorResult<BackgroundSessionEvent>> => {
@@ -423,6 +441,8 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
           new Promise<void>((resolve) => setTimeoutFn(resolve, backoffMs)),
           closedPromise,
         ]);
+      } finally {
+        activeIterators.delete(iter as AsyncIterator<unknown>);
       }
     }
   }
@@ -558,6 +578,7 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
 
     while (!closed) {
       const iter = supervisor.watchAll()[Symbol.asyncIterator]();
+      activeIterators.add(iter as AsyncIterator<unknown>);
       let pendingNext: Promise<IteratorResult<WorkerEvent>> | undefined;
 
       const getNext = (): Promise<IteratorResult<WorkerEvent>> => {
@@ -606,6 +627,8 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
           new Promise<void>((resolve) => setTimeoutFn(resolve, backoffMs)),
           closedPromise,
         ]);
+      } finally {
+        activeIterators.delete(iter as AsyncIterator<unknown>);
       }
     }
   }
@@ -716,6 +739,18 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
     if (closed) return;
     closed = true;
     resolveClosed?.();
+    // Best-effort release of parked async iterators. We never await the result —
+    // races against closedPromise have already unblocked the loops, and some
+    // iterators (e.g. registry.watch backed by file events) may not implement
+    // return(); throwing or hanging here would block teardown.
+    for (const iter of activeIterators) {
+      try {
+        void iter.return?.(undefined);
+      } catch (_e: unknown) {
+        // ignore — best-effort cleanup
+      }
+    }
+    activeIterators.clear();
     await Promise.all([pollLoopDone, watchLoopDone, healthLoopDone, watchAllLoopDone]);
   };
 

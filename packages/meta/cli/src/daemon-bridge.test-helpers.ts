@@ -27,6 +27,8 @@ export interface FakeRegistry extends FileSessionRegistry {
   triggerWatchError(err: Error): void;
   /** Incremented on every describeList() call. Test-only inspection. */
   readonly describeListCallCount: () => number;
+  /** Number of watch() generators currently parked (started but not exited). */
+  readonly activeWatchCount: () => number;
 }
 
 export function makeFakeRegistry(): FakeRegistry {
@@ -36,6 +38,7 @@ export function makeFakeRegistry(): FakeRegistry {
   const watchListeners: Array<(event: BackgroundSessionEvent | "error", err?: Error) => void> = [];
   let watchErrorPending: Error | undefined;
   let _describeListCallCount = 0;
+  let _activeWatchCount = 0;
 
   const describeList = async (): Promise<Result<readonly BackgroundSessionRecord[], KoiError>> => {
     _describeListCallCount++;
@@ -46,25 +49,30 @@ export function makeFakeRegistry(): FakeRegistry {
   };
 
   async function* watchGen(): AsyncGenerator<BackgroundSessionEvent> {
-    // If there's already a pending error, throw immediately
-    if (watchErrorPending !== undefined) {
-      const err = watchErrorPending;
-      watchErrorPending = undefined;
-      throw err;
-    }
-    // Park on a promise that the test can resolve by pushing events/errors
-    while (true) {
-      const event = await new Promise<BackgroundSessionEvent | "error" | "close">((resolve) => {
-        const listener = (e: BackgroundSessionEvent | "error"): void => {
-          resolve(e);
-        };
-        watchListeners.push(listener);
-      });
-      if (event === "close") return;
-      if (event === "error") {
-        throw new Error("watch error injected by test");
+    _activeWatchCount++;
+    try {
+      // If there's already a pending error, throw immediately
+      if (watchErrorPending !== undefined) {
+        const err = watchErrorPending;
+        watchErrorPending = undefined;
+        throw err;
       }
-      yield event;
+      // Park on a promise that the test can resolve by pushing events/errors
+      while (true) {
+        const event = await new Promise<BackgroundSessionEvent | "error" | "close">((resolve) => {
+          const listener = (e: BackgroundSessionEvent | "error"): void => {
+            resolve(e);
+          };
+          watchListeners.push(listener);
+        });
+        if (event === "close") return;
+        if (event === "error") {
+          throw new Error("watch error injected by test");
+        }
+        yield event;
+      }
+    } finally {
+      _activeWatchCount--;
     }
   }
 
@@ -100,6 +108,7 @@ export function makeFakeRegistry(): FakeRegistry {
       }
     },
     describeListCallCount: () => _describeListCallCount,
+    activeWatchCount: () => _activeWatchCount,
     triggerWatchError(_err: Error): void {
       // Signal the next waiting listener as "error"
       const listener = watchListeners.shift();

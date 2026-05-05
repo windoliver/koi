@@ -353,6 +353,92 @@ describe("createDaemonBridge — registry-only mode", () => {
 
     await bridge.close();
   });
+
+  test("close() invokes registry.watch() iterator.return() — releases parked watcher", async () => {
+    let returnCalls = 0;
+    let nextResolve: ((v: IteratorResult<BackgroundSessionEvent>) => void) | undefined;
+    const watchable: AsyncIterable<BackgroundSessionEvent> = {
+      [Symbol.asyncIterator](): AsyncIterator<BackgroundSessionEvent> {
+        return {
+          next: (): Promise<IteratorResult<BackgroundSessionEvent>> =>
+            new Promise((resolve) => {
+              nextResolve = resolve;
+            }),
+          return: (): Promise<IteratorResult<BackgroundSessionEvent>> => {
+            returnCalls++;
+            // Unblock the parked next() so the loop can exit cleanly
+            nextResolve?.({ value: undefined, done: true });
+            return Promise.resolve({ value: undefined, done: true });
+          },
+        };
+      },
+    };
+    const fakeWithWatch = { ...fake, watch: () => watchable };
+
+    const { dispatch, pushToast } = collectActions();
+    const bridge = createDaemonBridge({
+      mode: { kind: "registry-only", registry: fakeWithWatch },
+      dispatch,
+      pushToast,
+      clock: () => 1_000_000,
+      intervals: { registryPollMs: 1000 },
+    });
+
+    await pumpMicrotasks();
+    await pumpMicrotasks();
+    expect(returnCalls).toBe(0);
+
+    await bridge.close();
+    expect(returnCalls).toBeGreaterThanOrEqual(1);
+  });
+
+  test("concurrent runOnePoll triggers coalesce — describeList calls do not fan out", async () => {
+    // Hold describeList responses so we can issue concurrent requests
+    // before the first resolves, simulating poll + watch-event races.
+    let releaseFirst: (() => void) | undefined;
+    let firstHeld = false;
+    const slowDescribe = async (): Promise<
+      Result<readonly BackgroundSessionRecord[], KoiError>
+    > => {
+      if (!firstHeld) {
+        firstHeld = true;
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        });
+      }
+      return { ok: true, value: [] };
+    };
+
+    let describeCalls = 0;
+    const wrappedDescribe = (): Promise<Result<readonly BackgroundSessionRecord[], KoiError>> => {
+      describeCalls++;
+      return slowDescribe();
+    };
+    const fakeWithSlow = { ...fake, describeList: wrappedDescribe };
+
+    const { dispatch, pushToast } = collectActions();
+    const bridge = createDaemonBridge({
+      mode: { kind: "registry-only", registry: fakeWithSlow },
+      dispatch,
+      pushToast,
+      clock: () => 1_000_000,
+      intervals: { registryPollMs: 1 },
+    });
+
+    // Let initial poll start (parked on slowDescribe), then push watch events
+    // that would otherwise trigger additional concurrent runOnePoll() calls.
+    await pumpMicrotasks();
+    fake.pushWatchEvent({ kind: "updated", record: makeRecord("w1", "a1") });
+    fake.pushWatchEvent({ kind: "updated", record: makeRecord("w2", "a2") });
+    await pumpMicrotasks();
+
+    // Single-flight: only the first describeList is in flight; concurrent
+    // calls were coalesced and waited on the same promise.
+    expect(describeCalls).toBe(1);
+    releaseFirst?.();
+
+    await bridge.close();
+  });
 });
 
 // ---------------------------------------------------------------------------
