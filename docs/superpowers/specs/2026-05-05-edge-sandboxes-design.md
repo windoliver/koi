@@ -66,10 +66,12 @@ src/
   - **`wasm-executor` (sync)** — TRUSTED CODE ONLY. Runs `WebAssembly.Instance.exports.<fn>(...)` on the host event loop. A hostile or buggy guest with a tight loop pins the host thread; `AbortSignal` cannot interrupt synchronous WASM. Documented limitation: `timeoutMs` is advisory for sync executor and is enforced only at boundaries (pre-call, post-call). Caller MUST treat sync executor as same trust boundary as the host.
   - **`async-executor` (untrusted-safe)** — runs the module inside a `Worker` (Bun worker thread). The worker is `terminate()`d when `AbortSignal` fires or `timeoutMs` elapses, providing real preemption for hostile code. This is the default for any code-injection or third-party brick scenario.
 - `index.ts` exports both with explicit names (`createTrustedWasmExecutor`, `createWasmExecutor`); `createWasmExecutor` is the worker-backed default.
-- Resource limits: memory pages cap (`WebAssembly.Memory({ maximum })`), CPU cap = worker termination (async) / advisory only (sync). No instruction metering — explicitly out of scope.
-- Code input: caller passes WASM bytes (base64 or `Uint8Array`) plus the exported function name and args via `input`.
+- **Memory enforcement is real, not advertised:** the executor accepts a module only if its memory section is **imported**, not internal. This is checked before instantiation by parsing the module's import section (using `WebAssembly.Module.imports(module)`) and rejecting any module whose memory is declared in its own memory section. The host then passes a `WebAssembly.Memory({ initial, maximum })` of its choosing as the imported memory. A module that defines its own memory (`(memory $m 1)`) cannot be retroactively clamped, so it is rejected with `KoiError { code: "PERMISSION", reason: "module-defines-internal-memory" }`. This rejection is enforced symmetrically in both the trusted-sync and untrusted-async executors.
+- **Imports allowlist:** by default `imports` config is empty (`{}`); the executor injects only the host-controlled memory. Any module import not satisfied by the allowlist (other than the memory) causes `WebAssembly.Module.imports` validation to surface a `LinkError` → mapped to `PERMISSION`.
+- CPU cap = worker termination (async) / advisory only (sync — trusted code only). No instruction metering — explicitly out of scope.
+- Code input: caller passes WASM bytes (`Uint8Array`) or a pre-validated `WebAssembly.Module` plus the exported function name and args.
 - `output`: serialized return value of the called export.
-- Error mapping: trap → `CRASH`, OOM (memory.grow fail) → `OOM`, worker terminated by deadline → `TIMEOUT`, validate fail → `PERMISSION`.
+- Error mapping: trap → `CRASH`, OOM (memory.grow fails against the imported maximum) → `OOM`, worker terminated by deadline → `TIMEOUT`, module-defines-internal-memory or unknown import → `PERMISSION`.
 
 ### `@koi/sandbox-cloudflare` (~350 LOC src + tests)
 
@@ -93,8 +95,17 @@ src/
 - Instance:
   - Owns its own `scriptName` (private field, set at create time, never reused).
   - `exec(cmd, args, opts)` posts a JSON-only subset of `opts` (cwd, env, stdin, timeoutMs, maxOutputBytes) to its own worker URL → translates JSON response to `SandboxAdapterResult`.
-  - `readFile`/`writeFile` → POST control endpoints implemented by the deployed worker shim.
+  - `readFile`/`writeFile` → **fail-closed** with `KoiError { code: "UNSUPPORTED" }`. Edge runtimes have no persistent host filesystem across requests, and request handling is not guaranteed to hit the same warm isolate, so honoring these methods would produce nondeterministic data loss. The contract is documented as **stateless single-request execution**: every `exec()` is independent; there is no instance-local state that survives between calls. Callers needing file state must use a different adapter (docker/e2b/local) or model storage explicitly via tool calls inside `exec()` payloads.
   - `destroy()` → DELETE only this instance's script. Idempotent (404 on re-destroy is success).
+
+#### Stateless instance contract
+
+The `SandboxInstance` contract suggests instance-local coherent state (`readFile` after `writeFile` returning the same bytes). Cloud edge adapters cannot honor that without a backing store, so they advertise stateless semantics explicitly:
+
+- Capability declaration: `capabilities.supports = Set(["exec"])` only — NOT `"filesystem-rw"`. The router will not pick this adapter for profiles that require persistence.
+- `readFile`/`writeFile` always throw `UNSUPPORTED` — they are present on the type only because the kernel `SandboxInstance` interface requires them. Implementations are honest stubs.
+- Multiple `exec()` calls on the same instance are independent: no shared `cwd`, no shared in-memory state, no guarantee of hitting the same isolate. Documented in `docs/L2/sandbox-cloudflare.md` and `sandbox-vercel.md`.
+- A future PR can add a `sandbox-cloudflare-kv` package that backs files with KV/Durable Objects; that is out of scope here and explicitly listed in "Out of scope" below.
 
 #### `SandboxExecOptions` enforcement (fail-closed)
 
@@ -118,29 +129,36 @@ This is documented behavior — never silently retry on the same instance after 
 - **Concurrency safety:** the adapter does not maintain a shared mutable resource; each instance is fully independent. No lease/refcount needed because there is no shared state.
 - Worker shim is a small string template colocated in `client.ts` (the JS that runs inside CF Workers and accepts the protocol). Kept ≤80 LOC.
 
-#### `SandboxProfile` enforcement (fail-closed)
+#### `SandboxProfile` enforcement (fail-closed, against real core shape)
 
-`create(profile)` MUST refuse profiles whose policy fields cannot be enforced by the provider. Two-tier strategy:
+Mapping is built against the actual fields in `packages/kernel/core/src/sandbox-profile.ts` (`FilesystemPolicy`, `NetworkPolicy`, `ResourceLimits`, `env`, `nexusMounts`, `required`, `ssh`). Every field has a defined disposition; defaults are fail-closed.
 
-| Profile field | Cloudflare disposition | Mechanism |
-|---------------|------------------------|-----------|
-| `network.allow = false` | **REJECT** with `KoiError { code: "UNSUPPORTED_PROFILE", field: "network.allow" }` | Workers always have egress fetch; CF does not expose a network-disable knob. Cannot enforce → refuse. |
-| `network.allowedHosts` | REJECT | Same reason: no enforceable allowlist. |
-| `filesystem.readOnly = true` | accept | Workers have no host filesystem; readOnly is trivially true. |
-| `filesystem.binds` (any non-empty) | REJECT | No host bind support. |
-| `resources.maxMemoryMb` | accept iff `<= 128` | CF Workers free tier: 128MB. Reject above; bound is provider-fixed, not configurable. |
-| `resources.maxCpuMs` | accept iff `<= 30_000` | CF Workers Unbound limit. Reject above. |
-| `resources.maxPids` | REJECT | No process model in Workers. |
-| `capabilities.runUntrustedCode = true` | accept | Workers v8 isolate is the isolation boundary. |
-| Unknown fields | REJECT | Default-deny — surface as `UNSUPPORTED_PROFILE`. |
+| Profile field | Cloudflare disposition | Reason |
+|---------------|------------------------|--------|
+| `filesystem.defaultReadAccess` | accept iff `"closed"`; **REJECT** `"open"` | Workers have no host filesystem — `closed` is trivially satisfied. `open` cannot be honored (there is no host FS to open) so refuse rather than silently lie. |
+| `filesystem.allowRead` (any) | **REJECT** `UNSUPPORTED_PROFILE field=filesystem.allowRead` | No host FS → cannot grant read access to host paths. |
+| `filesystem.denyRead` (any) | accept (vacuously satisfied) | No host FS → no reads possible. |
+| `filesystem.allowWrite` (any) | REJECT | Same as allowRead. |
+| `filesystem.denyWrite` (any) | accept (vacuously satisfied) | Same as denyRead. |
+| `network.allow = true` | accept | Workers always allow egress fetch. |
+| `network.allow = false` | **REJECT** | CF does not expose a network-disable knob; cannot enforce → refuse. |
+| `resources.maxMemoryMb` | accept iff `<= 128` | CF Workers cap. Reject above. |
+| `resources.timeoutMs` | accept iff `<= 30_000` | CF Workers Unbound CPU limit. Reject above. |
+| `resources.maxPids` | accept iff `=== 1` or omitted | Workers run a single isolate; multi-process not available. Reject `> 1`. |
+| `resources.maxOpenFiles` | accept (vacuously) | No host FDs in Workers. |
+| `env` | mapped | Forwarded as Worker secrets via `PUT /workers/scripts/{name}/secrets` per key (typed) before deploy. |
+| `nexusMounts` | REJECT | Requires FUSE; not available on edge. |
+| `ssh` | REJECT | SSH-specific, not relevant to edge. |
+| `required` (capabilities) | inspected by router, not by this adapter | Router rejects upstream; adapter ignores. |
+| Unknown future fields | REJECT (default-deny) | TypeScript catches at compile time; runtime exhaustive check guards against type-erasure bugs. |
 
-Vercel applies the same template with provider-appropriate caps (memory: up to 3008MB on Pro, CPU: 60s Edge / 900s Serverless).
+Vercel applies the same template with provider-appropriate numeric caps (memory: 1024MB Edge / 3008MB Serverless Pro; CPU: 30_000ms Edge / 900_000ms Serverless).
 
-The mapping lives in `validate.ts` as a pure function `mapProfileToCloudflare(profile): Result<CloudflareDeployConfig, KoiError>`. Adapter `create()` calls it first and short-circuits on error before any fetch.
+The mapping lives in `validate.ts` as a pure function `mapProfileToCloudflare(profile): Result<CloudflareDeployConfig, KoiError>`. Adapter `create()` calls it first and short-circuits on error before any fetch. The function uses an exhaustive switch over a discriminated union derived from the profile so adding a new core field without updating this mapper is a TypeScript error.
 
 #### Profile conformance tests
 
-`packages/sandbox/sandbox-conformance` provides a profile-rejection harness. Each cloud package adds a conformance test that walks every field above and asserts the documented accept/reject behavior. CI fails if a new `SandboxProfile` field lands in core without a matching conformance entry per cloud adapter.
+`packages/sandbox/sandbox-conformance` provides a profile-rejection harness. Each cloud package adds a conformance test that walks every documented profile field and asserts the accept/reject behavior above. A separate gate test imports `SandboxProfile` reflectively and fails if any top-level key is missing from the cloud mapping table — this prevents new core fields from landing without an explicit edge-adapter decision.
 
 ### `@koi/sandbox-vercel` (~350 LOC src + tests)
 
