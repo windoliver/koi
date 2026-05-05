@@ -222,10 +222,16 @@ describe("malformed inputs", () => {
 // D. SSE behaviour
 // ---------------------------------------------------------------------------
 
-// `r.body.getReader()` resolves to Bun's stream/web reader, which is not
-// assignable to the global `ReadableStreamDefaultReader`. Capture the actual
-// returned type so signatures line up regardless of which lib defines it.
-type StreamReader = NonNullable<ReturnType<NonNullable<Response["body"]>["getReader"]>>;
+// Cross-runtime structural reader: Bun's local typings resolve `getReader()`
+// to a `stream/web` reader (no `readMany`), CI's typings resolve it to the
+// DOM lib reader (has `readMany`). Both share these two methods, so a
+// minimal duck-typed shape satisfies both without `as Type` casts. Using an
+// explicit `value: T | undefined` (not optional) sidesteps
+// `exactOptionalPropertyTypes` rejecting compatibility with library readers.
+interface StreamReader {
+  read(): Promise<{ readonly done: boolean; readonly value?: Uint8Array | undefined }>;
+  cancel(reason?: unknown): Promise<void>;
+}
 
 /**
  * Read from a streaming response until `until(received)` returns true or the
