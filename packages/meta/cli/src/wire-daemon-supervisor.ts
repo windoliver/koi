@@ -134,26 +134,27 @@ export async function wireDaemonSupervisor(
   const dispose = async (): Promise<void> => {
     // 1. Stop the supervisor first so all in-flight workers terminate
     //    and emit `exited` events through `watchAll()`. shutdown() can
-    //    legitimately fail (deadline exceeded, backend teardown error) —
-    //    if it does, surface it via toast and skip the bridge teardown
-    //    so the operator still has live observability into the bad state
-    //    and can run `koi bg kill` to clean up orphans.
+    //    legitimately fail (deadline exceeded, backend teardown error).
+    //    Whether it succeeds or fails, we still tear down the bridge and
+    //    registry attachment so background loops do not outlive the
+    //    renderer teardown — leaving them running would prevent a clean
+    //    process exit and let stale state continue to mutate.
     const shutdownResult = await realSupervisor.shutdown("wire-daemon-supervisor dispose");
+    // 2. Close the bridge so terminal events drain into the store BEFORE
+    //    the bridge stops consuming. 3. Drop the attachRegistry consumer.
+    //    Done unconditionally so loops never outlive renderer teardown.
+    await bridge.close();
+    await attachHandle.close();
     if (!shutdownResult.ok) {
       opts.pushToast({
         kind: "warn",
-        message: `⚠ supervisor shutdown failed: ${shutdownResult.error.message} — workers may still be running; bridge kept open`,
+        message: `⚠ supervisor shutdown failed: ${shutdownResult.error.message} — workers may still be running`,
       });
       throw new Error(
         `wireDaemonSupervisor dispose: supervisor.shutdown failed: ${shutdownResult.error.message}`,
         { cause: shutdownResult.error },
       );
     }
-    // 2. Then close the bridge so terminal events drain into the store
-    //    BEFORE the bridge stops consuming.
-    await bridge.close();
-    // 3. Drop the attachRegistry consumer so it stops writing.
-    await attachHandle.close();
   };
 
   return { supervisor: proxiedSupervisor, registry, bridge, dispose };

@@ -1237,6 +1237,44 @@ describe("createDaemonBridge — live mode", () => {
     await bridge.close();
   });
 
+  test("requestKill expectedPid=0 + stale + describe returns ok:true value:undefined → refused, no supervisor.stop", async () => {
+    // Regression: when the only ownership signal is the degraded-stream
+    // fallback (workerEvents stale + not in health.workers + locallySpawnedIds
+    // cleared) and registry.describe() returns ok:true with value:undefined
+    // (e.g. workerId not in registry), the kill MUST be refused — without a
+    // present record we have no evidence of ownership.
+    const fakeWithDescribe: FakeRegistry = {
+      ...fake,
+      describe: async (): Promise<{ ok: true; value: undefined }> => ({
+        ok: true,
+        value: undefined,
+      }),
+    };
+
+    fakeSupervisor.setHealth(makeHealth([])); // not in health.workers
+    fakeSupervisor.triggerWatchAllError(new Error("stream broke")); // workerEvents stale + clears locallySpawnedIds
+
+    const { bridge } = makeLiveBridge(fakeWithDescribe, fakeSupervisor, {
+      intervals: { registryPollMs: 100_000, healthPollMs: 100_000 },
+    });
+
+    bridge.markLocallySpawned("worker-ghost");
+    for (let i = 0; i < 15; i++) {
+      await pumpMicrotasks();
+    }
+
+    const result = await bridge.requestKill({
+      workerId: "worker-ghost",
+      expectedVersion: 1,
+      expectedPid: 0,
+    });
+
+    expect(result.kind).toBe("refused");
+    expect(fakeSupervisor.stopCalls().length).toBe(0);
+
+    await bridge.close();
+  });
+
   test("requestKill expectedPid=0 + workerEvents stale + locallySpawnedIds cleared → registry CAS still authorizes kill", async () => {
     // Regression: when workerEvents goes stale, the bridge clears
     // locallySpawnedIds. A `starting` row never appears in health.workers

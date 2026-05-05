@@ -737,6 +737,23 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
       pushToast({ kind: "info", message: "ℹ registry unreadable; proceeding with local stop" });
     }
 
+    // Degraded-fallback safety: when the only ownership signal we relied
+    // on was startingRowDegradedFallback (expectedPid === 0 + workerEvents
+    // stale, and the worker was NOT in health.workers and NOT in the
+    // (already-cleared) locallySpawnedIds), we MUST positively confirm via
+    // the registry that this is in fact a still-starting local row before
+    // calling supervisor.stop(). Without a present record we have no
+    // evidence of ownership and refuse.
+    if (startingRowDegradedFallback && !inHealthWorkers && !inLocallySpawned) {
+      if (!registryReadable || record === undefined) {
+        return { kind: "refused", reason: "stale stream; cannot verify ownership" };
+      }
+      if (record.status !== "starting" || record.version !== expectedVersion) {
+        pushToast({ kind: "warn", message: "⚠ row stale; refresh and try again" });
+        return { kind: "refused", reason: "row stale" };
+      }
+    }
+
     if (registryReadable && record !== undefined) {
       // Check terminal status
       if (record.status === "exited" || record.status === "crashed") {

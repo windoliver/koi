@@ -316,7 +316,7 @@ describe("wireDaemonSupervisor", () => {
     expect(orderLog.indexOf("supervisor.shutdown")).toBeLessThan(orderLog.indexOf("bridge.close"));
   });
 
-  it("dispose surfaces shutdown failure as toast + thrown error; keeps bridge open", async () => {
+  it("dispose surfaces shutdown failure as toast + thrown error; still tears down bridge + registry", async () => {
     // Regression: shutdown() can fail (deadline exceeded, backend teardown
     // error). The previous dispose() awaited the result without checking ok
     // and tore down the bridge anyway, hiding orphaned workers from the TUI.
@@ -365,12 +365,9 @@ describe("wireDaemonSupervisor", () => {
     };
 
     await expect(handle.dispose()).rejects.toThrow("supervisor.shutdown failed");
-    expect(bridgeClosed).toBe(false);
+    expect(bridgeClosed).toBe(true);
     const warnToast = toasts.find((t) => t.message.includes("supervisor shutdown failed"));
     expect(warnToast).toBeDefined();
-
-    // Cleanup: actually close the bridge so the test doesn't leak loops.
-    await origBridgeClose();
   });
 
   it("createSupervisor failure throws with cause chaining", async () => {
