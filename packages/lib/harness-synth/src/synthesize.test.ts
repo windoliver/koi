@@ -354,6 +354,40 @@ describe("synthesize", () => {
     expect(result.reason).toMatch(/malformed summary/);
   });
 
+  test("rejects ok:true with empty stage name (downstream provenance invariant)", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify = (() => ({
+      ok: true,
+      summary: {
+        passed: true,
+        sandbox: false,
+        totalDurationMs: 1,
+        stageResults: [{ stage: "", passed: true, durationMs: 1 }],
+      },
+    })) as unknown as VerifyCallback;
+    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 1 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/non-empty string/);
+  });
+
+  test("rejects ok:true with passed:false summary (cross-field invariant)", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify = (() => ({
+      ok: true,
+      summary: {
+        passed: false,
+        sandbox: false,
+        totalDurationMs: 1,
+        stageResults: [{ stage: "syntax", passed: false, durationMs: 1 }],
+      },
+    })) as unknown as VerifyCallback;
+    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 1 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/passed:false/);
+  });
+
   test("propagates verification summary into SynthesisOutput", async () => {
     const summary = {
       passed: true as const,

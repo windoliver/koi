@@ -343,8 +343,8 @@ function coerceVerificationSummary(
       return { ok: false, reason: `summary.stageResults[${i}] must be an object` };
     }
     const s = stage as Record<string, unknown>;
-    if (typeof s.stage !== "string") {
-      return { ok: false, reason: `summary.stageResults[${i}].stage must be a string` };
+    if (typeof s.stage !== "string" || s.stage.length === 0) {
+      return { ok: false, reason: `summary.stageResults[${i}].stage must be a non-empty string` };
     }
     if (typeof s.passed !== "boolean") {
       return { ok: false, reason: `summary.stageResults[${i}].passed must be boolean` };
@@ -377,6 +377,16 @@ function coerceVerifyResult(value: unknown): VerifyResult {
       return {
         ok: false,
         reason: `Verifier returned ok:true with malformed summary: ${summary.reason}`,
+      };
+    }
+    if (!summary.value.passed) {
+      // Cross-field invariant: ok:true cannot coexist with passed:false. A
+      // verifier whose discriminator and evidence disagree is buggy; we fail
+      // closed so callers don't promote artifacts whose own evidence says
+      // verification failed.
+      return {
+        ok: false,
+        reason: "Verifier returned ok:true with summary.passed:false",
       };
     }
     return { ok: true, summary: summary.value };
