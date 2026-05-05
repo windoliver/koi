@@ -66,7 +66,14 @@ src/
   - **`wasm-executor` (sync)** — TRUSTED CODE ONLY. Runs `WebAssembly.Instance.exports.<fn>(...)` on the host event loop. A hostile or buggy guest with a tight loop pins the host thread; `AbortSignal` cannot interrupt synchronous WASM. Documented limitation: `timeoutMs` is advisory for sync executor and is enforced only at boundaries (pre-call, post-call). Caller MUST treat sync executor as same trust boundary as the host.
   - **`async-executor` (untrusted-safe)** — runs the module inside a `Worker` (Bun worker thread). The worker is `terminate()`d when `AbortSignal` fires or `timeoutMs` elapses, providing real preemption for hostile code. This is the default for any code-injection or third-party brick scenario.
 - `index.ts` exports both with explicit names (`createTrustedWasmExecutor`, `createWasmExecutor`); `createWasmExecutor` is the worker-backed default.
-- **Memory enforcement is real, not advertised:** the executor accepts a module only if its memory section is **imported**, not internal. This is checked before instantiation by parsing the module's import section (using `WebAssembly.Module.imports(module)`) and rejecting any module whose memory is declared in its own memory section. The host then passes a `WebAssembly.Memory({ initial, maximum })` of its choosing as the imported memory. A module that defines its own memory (`(memory $m 1)`) cannot be retroactively clamped, so it is rejected with `KoiError { code: "PERMISSION", reason: "module-defines-internal-memory" }`. This rejection is enforced symmetrically in both the trusted-sync and untrusted-async executors.
+- **Memory enforcement is real, not advertised — direct binary parse, not `Module.imports()`:** `WebAssembly.Module.imports()` only reports imports, not the presence of an internal memory section, so it is insufficient on its own. The executor includes a small WASM binary scanner (`module-loader.ts::scanMemorySections`) that walks the module bytes once before compilation:
+  - Verifies the magic bytes (`\0asm`) and version.
+  - Iterates section headers (LEB128-decoded length-prefixed sections).
+  - Inspects section ID `5` (Memory) and section ID `2` (Import).
+  - **Rejects** any module where section 5 is non-empty (declares an internal memory) — `KoiError { code: "PERMISSION", reason: "module-defines-internal-memory" }`.
+  - **Requires** at least one `(import "env" "memory" memory ...)` entry in section 2 — `KoiError { code: "PERMISSION", reason: "module-missing-memory-import" }` for memoryless modules. Memoryless modules are NOT silently accepted: every accepted module imports its memory from the host, so the host's `WebAssembly.Memory({ initial, maximum })` is the only memory the instance can address.
+- **Why we don't accept memoryless modules:** if a module imports nothing, a follow-up edit could add an internal memory section and the same rejection logic would catch it. Forcing every accepted module to declare an explicit memory import keeps the check uniform and avoids a "no memory at all is fine" edge case that complicates the rule.
+- The scanner is hostile-input-safe: bounded iteration, fails on malformed LEB128 with `PERMISSION`, never allocates beyond a small fixed cursor. This is enforced symmetrically in both the trusted-sync and untrusted-async executors and is covered by adversarial fixtures (modules with internal memory, modules with both internal+imported memory, malformed LEB128, oversized section length claims).
 - **Imports allowlist:** by default `imports` config is empty (`{}`); the executor injects only the host-controlled memory. Any module import not satisfied by the allowlist (other than the memory) causes `WebAssembly.Module.imports` validation to surface a `LinkError` → mapped to `PERMISSION`.
 - CPU cap = worker termination (async) / advisory only (sync — trusted code only). No instruction metering — explicitly out of scope.
 - Code input: caller passes WASM bytes (`Uint8Array`) or a pre-validated `WebAssembly.Module` plus the exported function name and args.
@@ -127,8 +134,21 @@ The `SandboxInstance` contract suggests instance-local coherent state (`readFile
 
 - Capability declaration: `capabilities.supports = Set(["exec"])` only — NOT `"filesystem-rw"`. The router will not pick this adapter for profiles that require persistence.
 - `readFile`/`writeFile` always throw `UNSUPPORTED` — they are present on the type only because the kernel `SandboxInstance` interface requires them. Implementations are honest stubs.
-- Multiple `exec()` calls on the same instance are independent: no shared `cwd`, no shared in-memory state, no guarantee of hitting the same isolate. Documented in `docs/L2/sandbox-cloudflare.md` and `sandbox-vercel.md`.
 - A future PR can add a `sandbox-cloudflare-kv` package that backs files with KV/Durable Objects; that is out of scope here and explicitly listed in "Out of scope" below.
+
+#### Per-instance `exec()` concurrency (serialized)
+
+The instance's deployed worker is a shared remote resource. If a caller fires two `exec()` calls concurrently and the first times out → poisons the instance, the second is already in flight against an instance the host now considers terminal, with possibly-overlapping side effects on the same provider artifact. Worse, `destroy()` could race against an in-flight `exec`.
+
+To avoid this entire class of hazard, **`exec()` is serialized per instance**:
+
+- Each instance owns an internal FIFO mutex. Every `exec()` awaits the mutex, runs to completion (or timeout / abort), then releases.
+- Concurrent callers see fair FIFO ordering, not provider-side races.
+- A timeout on call N transitions the instance to POISONED before the mutex is released; subsequent queued calls (N+1, N+2, ...) all reject immediately with `POISONED` when they acquire it. They never reach the provider.
+- `destroy()` acquires the mutex with priority (a separate `destroyPending` flag is checked at mutex-acquire time so queued execs short-circuit to `POISONED` once destroy is requested), then issues the DELETE.
+- Caller-visible: `exec()` is awaited as usual; the only behavioral change vs. an OS sandbox is that calls are not parallel within an instance. Callers that need parallelism create multiple instances.
+
+This is documented prominently in `docs/L2/sandbox-cloudflare.md` and tested in unit suites (concurrent-exec serialization, poison-after-timeout-rejects-queued, destroy-cancels-queued).
 
 #### `SandboxExecOptions` enforcement (fail-closed)
 
@@ -220,14 +240,23 @@ Coverage threshold: 80% per `bunfig.toml`.
 
 ### Provider smoke (mandatory pre-merge gate)
 
-Mocked fetch is insufficient evidence for auth, header shape, endpoint correctness, response parsing, and cleanup. A separate **required** workflow `provider-smoke.yml` runs against shared sandbox accounts (CF + Vercel) on every PR that touches `packages/sandbox/sandbox-cloudflare/**` or `packages/sandbox/sandbox-vercel/**`:
+Mocked fetch is insufficient evidence for auth, header shape, endpoint correctness, response parsing, and cleanup. A separate **required** workflow `provider-smoke.yml` runs against shared sandbox accounts (CF + Vercel) on every PR that touches `packages/sandbox/sandbox-cloudflare/**` or `packages/sandbox/sandbox-vercel/**`. It exercises the **safety-critical failure paths**, not just the happy path:
 
-1. **create** — deploy a tagged sandbox (`scriptPrefix: koi-ci-${runId}`)
-2. **invoke** — execute a hello-world tool call, assert response
-3. **destroy** — DELETE; assert 200/204 on first call, then 404 on second (idempotency)
-4. **leak check** — list scripts/deployments by `koi-ci-` prefix older than 1h; fail the job if any are found
+**Lifecycle scenarios:**
 
-Tokens stored in repo secrets (`CF_CI_API_TOKEN`, `VERCEL_CI_TOKEN`), scoped to a sandbox account with billing alarm. The workflow blocks merge if any step (especially destroy + leak check) fails. Forks without secret access skip the gate; CODEOWNERS approval required for fork PRs that touch these paths.
+1. **happy-path** — create → invoke (hello-world) → destroy (200/204 first call, 404 second, idempotency proven)
+2. **mid-create failure** — inject a fault after the deploy step succeeds but before secrets upload (test hook: pass an env var with a forced 4xx-trigger key). Assert the adapter returns `CREATE_FAILED` with `cleanedUp: true`, then list scripts by attempt prefix and assert zero remain.
+3. **create timeout** — set `createTimeoutMs: 1` so the create flow times out after deploy initiation. Assert `CREATE_FAILED_INDETERMINATE` is returned with the leaked `scriptName` populated, then a janitor sweep deletes it and the assertion passes.
+4. **exec timeout poisons instance** — create a sandbox whose shim deliberately sleeps longer than `exec(opts.timeoutMs)`. Assert (a) caller's promise rejects with `TIMEOUT`, (b) a subsequent `exec` call rejects with `POISONED`, (c) `readFile`/`writeFile` reject with `UNSUPPORTED` (already always true), (d) `destroy()` succeeds, (e) post-destroy script list shows zero artifacts.
+5. **abort-signal poisons instance** — caller passes `AbortSignal` and aborts mid-exec; same assertions as (4).
+6. **leak sweep (final)** — list all scripts/deployments matching `koi-ci-${runId}-*`; fail the job if any remain. This catches escapes from any of the above scenarios that destroy() failed to clean up.
+
+**Configuration:**
+
+- Tokens stored in repo secrets (`CF_CI_API_TOKEN`, `VERCEL_CI_TOKEN`), scoped to a dedicated sandbox account with a billing alarm.
+- The workflow blocks merge if any scenario fails — especially the leak sweep and the poison-after-timeout assertion, which are the regressions the design relies on for safety.
+- Forks without secret access skip the gate; CODEOWNERS approval required for fork PRs that touch these paths.
+- A nightly cron runs the same workflow against `main` to catch provider-side drift between merges.
 
 ### Golden queries (CI gate per CLAUDE.md)
 
