@@ -431,24 +431,107 @@ describe("suggestAction", () => {
     ).toBe("reclassify");
   });
 
-  test("stability requires the trailing CONSECUTIVE run to be strong-drift", () => {
-    // The trailing run starts at the most-recent prior. A non-strong window
-    // anywhere in the trailing position breaks the run, so an old outlier
-    // cannot satisfy stability for an unrelated current window.
-    const weakWindow: UsagePurposeObservation[] = [
+  test("priorWindows recency derived from observedAt, not caller-supplied array order", () => {
+    // Trust-boundary: a buggy or malicious caller must not be able to flip
+    // the verdict by shuffling priorWindows. Recency comes from each
+    // window's max observedAt — the same observations laid down on the
+    // wire — so any permutation of the same windows produces the same
+    // verdict.
+    //
+    // Here `strong` is built first (lower timestamps) and `weak` second
+    // (higher timestamps), so the **observed** trailing window is `weak`.
+    // Both array orderings must therefore land on `reclassify` (weak
+    // trailing → run length 0). Earlier code trusted array position and
+    // would have promoted `[weak, strong]` to `new-artifact` — which is
+    // exactly the spoofing path we close.
+    const strong = strongPriorWindow();
+    const weak: UsagePurposeObservation[] = [
       ...[0.05, 0.05, 0.05].map((s) => obs("noisy-a", s)),
       ...[0.05, 0.05, 0.05].map((s) => obs("noisy-b", s)),
     ];
     const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
-    // [strong, weak]: trailing weak → run length 0 → reclassify.
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [strong, weak]).kind).toBe(
+      "reclassify",
+    );
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [weak, strong]).kind).toBe(
+      "reclassify",
+    );
+  });
+
+  test("priorWindows with no finite observedAt cannot satisfy stability", () => {
+    // Degraded telemetry: a prior window where every observation lacks a
+    // usable observedAt sorts to the bottom (oldest) and breaks the
+    // trailing-consecutive-run check before it can be counted. Otherwise
+    // a caller could elide timestamps to avoid the recency check while
+    // still claiming "stable" history.
+    const undatedStrong: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s, i) => ({
+        scope: "default",
+        agentId: "u-a",
+        divergenceScore: s,
+        contextText: `u-a-${String(i)}`,
+        observedAt: Number.NaN,
+        eventId: `u-a-${String(i)}`,
+      })),
+      ...[0.95, 0.95, 0.95].map((s, i) => ({
+        scope: "default",
+        agentId: "u-b",
+        divergenceScore: s,
+        contextText: `u-b-${String(i)}`,
+        observedAt: Number.NaN,
+        eventId: `u-b-${String(i)}`,
+      })),
+      ...[0.95, 0.95, 0.95].map((s, i) => ({
+        scope: "default",
+        agentId: "u-c",
+        divergenceScore: s,
+        contextText: `u-c-${String(i)}`,
+        observedAt: Number.NaN,
+        eventId: `u-c-${String(i)}`,
+      })),
+      ...[0.95, 0.95, 0.95].map((s, i) => ({
+        scope: "default",
+        agentId: "u-d",
+        divergenceScore: s,
+        contextText: `u-d-${String(i)}`,
+        observedAt: Number.NaN,
+        eventId: `u-d-${String(i)}`,
+      })),
+    ];
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [undatedStrong]).kind).toBe(
+      "reclassify",
+    );
+  });
+
+  test("stability requires the trailing CONSECUTIVE run to be strong-drift", () => {
+    // The trailing run starts at the prior with the highest observedAt.
+    // A non-strong window in that trailing position breaks the run, so an
+    // old outlier cannot satisfy stability for an unrelated current window.
+    // Recency is timestamp-derived (NOT array-position-derived), so we
+    // construct windows in a deterministic temporal order.
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+
+    // Case 1: weak window most-recent → trailing weak → run length 0 →
+    // reclassify. Build strong first (earlier timestamps), weak second.
+    const strongOlder = strongPriorWindow();
+    const weakNewer: UsagePurposeObservation[] = [
+      ...[0.05, 0.05, 0.05].map((s) => obs("noisy-a", s)),
+      ...[0.05, 0.05, 0.05].map((s) => obs("noisy-b", s)),
+    ];
     expect(
-      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [strongPriorWindow(), weakWindow])
-        .kind,
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [strongOlder, weakNewer]).kind,
     ).toBe("reclassify");
-    // [weak, strong]: trailing strong → run length 1 → new-artifact.
+
+    // Case 2: strong window most-recent → trailing strong → run length 1 →
+    // new-artifact. Build weak first (earlier timestamps), strong second.
+    const weakOlder: UsagePurposeObservation[] = [
+      ...[0.05, 0.05, 0.05].map((s) => obs("noisy-c", s)),
+      ...[0.05, 0.05, 0.05].map((s) => obs("noisy-d", s)),
+    ];
+    const strongNewer = strongPriorWindow();
     expect(
-      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [weakWindow, strongPriorWindow()])
-        .kind,
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [weakOlder, strongNewer]).kind,
     ).toBe("new-artifact");
   });
 });
@@ -928,8 +1011,11 @@ describe("tenant isolation via required scope field", () => {
       })),
     ];
     const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
-    expect(result.kind).toBe("no-drift");
-    if (result.kind === "no-drift") expect(result.droppedCount).toBe(9);
+    // Total telemetry loss: every observation dropped at validation surfaces
+    // as `invalid-config` so callers branch into a degraded-input alarm
+    // path instead of confusing it with a healthy "no-drift" signal.
+    expect(result.kind).toBe("invalid-config");
+    if (result.kind === "invalid-config") expect(result.reason).toContain("9");
   });
 
   test("retries within a single (scope, agentId) collapse via dedup", () => {
@@ -980,8 +1066,9 @@ describe("agentId normalization", () => {
       ...Array.from({ length: 4 }, () => ({ ...obs("\t", 0.95), agentId: "\t" })),
     ];
     const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
-    expect(result.kind).toBe("no-drift");
-    if (result.kind === "no-drift") expect(result.droppedCount).toBe(12);
+    // All observations dropped → invalid-config (degraded telemetry).
+    expect(result.kind).toBe("invalid-config");
+    if (result.kind === "invalid-config") expect(result.reason).toContain("12");
   });
 
   test("agentIds varying only in surrounding whitespace bucket as one agent", () => {
@@ -1224,8 +1311,9 @@ describe("observation-field validation (relaxed)", () => {
   test("missing agentId is still dropped (required for cohort attribution)", () => {
     const bad = { ...obs("", 0.9), agentId: "" };
     const result = detectDrift([bad, bad, bad], DEFAULT_EXAPTATION_THRESHOLDS);
-    expect(result.kind).toBe("no-drift");
-    if (result.kind === "no-drift") expect(result.droppedCount).toBe(3);
+    // All 3 dropped at validation → invalid-config (degraded telemetry).
+    expect(result.kind).toBe("invalid-config");
+    if (result.kind === "invalid-config") expect(result.reason).toContain("3");
   });
 
   test("non-string contextText is dropped (would crash conflict dedup with .trim())", () => {

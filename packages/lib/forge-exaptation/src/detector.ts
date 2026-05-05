@@ -237,6 +237,18 @@ export function detectDrift(
   }
   const droppedCount = observations.length - valid.length;
 
+  // Total telemetry loss: every observation dropped at validation. This is a
+  // detector failure, not a healthy "no-drift" signal — surface it as
+  // invalid-config so callers can branch into a degraded-input alarm path
+  // instead of confusing it with absence of drift. Only triggers when input
+  // was non-empty (caller actually had data to analyze).
+  if (observations.length > 0 && valid.length === 0) {
+    return deepFreeze({
+      kind: "invalid-config" as const,
+      reason: `all ${String(observations.length)} observations dropped at validation (degraded telemetry)`,
+    });
+  }
+
   // Partition by eventId presence. The replay-protectable subset is always
   // deduped — even when other samples in the window lack eventId — so a
   // partial telemetry failure cannot inflate evidence by passing through
@@ -340,9 +352,15 @@ export function detectDrift(
  *     or cross-artifact counter mixup could have unlocked irreversible
  *     `new-artifact` on the first strong drift window.
  *
- * `priorWindows` is ordered chronologically (oldest → most recent prior; does
- * NOT include the current window). Stability is the count of prior windows
- * whose own `detectDrift` produced `kind: "drift"`, `replayProtected: true`,
+ * `priorWindows` may arrive in any order. Recency is derived from each
+ * window's **maximum `observedAt`** across its valid observations — the
+ * caller cannot manufacture stability by reordering the array. Windows
+ * whose observations have no finite `observedAt` (degraded telemetry) are
+ * treated as oldest and cannot satisfy the trailing-run requirement. The
+ * current window is NOT included.
+ *
+ * Stability is the count of consecutive most-recent prior windows whose
+ * own `detectDrift` produced `kind: "drift"`, `replayProtected: true`,
  * AND `avgDivergence ≥ NEW_ARTIFACT_DIVERGENCE_THRESHOLD`.
  *
  * Behaviour:
@@ -403,11 +421,20 @@ export function suggestAction(
  * window that fails any criterion — so an old outlier far back in history
  * cannot satisfy stability for an unrelated current window.
  *
+ * Recency is derived from each window's **maximum `observedAt`** across its
+ * valid observations, NOT from caller-supplied array position. A buggy or
+ * malicious caller can no longer manufacture stability by reordering the
+ * array — the timestamps in the observations themselves drive the order.
+ * Windows whose observations carry no finite `observedAt` (degraded
+ * telemetry) sort to the bottom and break the trailing run before they can
+ * be counted.
+ *
  * Each prior must clear the SAME bar that the current window has to clear
  * to be action-safe:
  *   - `kind: "drift"` AND `replayProtected: true`
  *   - `avgDivergence ≥ NEW_ARTIFACT_DIVERGENCE_THRESHOLD` (0.85)
- *   - quality-gate pass: (dropped + duplicate + conflict) / total ≤ 25%
+ *   - quality-gate pass: (dropped + duplicate + conflict + missingEventId)
+ *     / total ≤ 25%
  *
  * Without the quality gate on priors, one replay-heavy / conflict-heavy
  * prior window — evidence the detector itself would refuse to act on — could
@@ -418,12 +445,33 @@ function countStrongDriftPriors(
   priorWindows: readonly (readonly UsagePurposeObservation[])[],
   thresholds: ExaptationThresholds,
 ): number {
+  // Pair each window with its max observedAt; sort ascending (oldest →
+  // newest) so we can walk from the end and reproduce the trailing-run
+  // semantics over the timestamp-derived order.
+  const indexed = priorWindows.map((window, originalIndex) => {
+    // let: per-window max-observedAt accumulator
+    let maxAt = Number.NEGATIVE_INFINITY;
+    for (const o of window) {
+      if (Number.isFinite(o.observedAt) && o.observedAt > maxAt) maxAt = o.observedAt;
+    }
+    return { window, maxAt, originalIndex };
+  });
+  // Sort by maxAt ascending; tie-break on originalIndex so the order is
+  // deterministic when timestamps collide. Windows with no finite
+  // observedAt sort to the bottom (oldest), so they break the trailing run
+  // before the loop can count them.
+  indexed.sort((a, b) => {
+    if (a.maxAt !== b.maxAt) return a.maxAt - b.maxAt;
+    return a.originalIndex - b.originalIndex;
+  });
+
   // let: prior-window stability accumulator (trailing consecutive run)
   let strong = 0;
-  for (let i = priorWindows.length - 1; i >= 0; i--) {
-    const window = priorWindows[i];
-    if (window === undefined) break;
-    const r = detectDrift(window, thresholds);
+  for (let i = indexed.length - 1; i >= 0; i--) {
+    const entry = indexed[i];
+    if (entry === undefined) break;
+    if (!Number.isFinite(entry.maxAt)) break;
+    const r = detectDrift(entry.window, thresholds);
     if (r.kind !== "drift") break;
     if (!r.replayProtected) break;
     if (r.report.avgDivergence < NEW_ARTIFACT_DIVERGENCE_THRESHOLD) break;
