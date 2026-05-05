@@ -16882,3 +16882,68 @@ describe("Golden: @koi/middleware-user-model", () => {
     expect(text).toContain("typescript");
   });
 });
+
+describe("Golden: @koi/forge-policy", () => {
+  test("evaluatePolicy denies a disallowed brick kind and binds candidateId + configFingerprint", async () => {
+    const { evaluatePolicy } = await import("@koi/forge-policy");
+    const { DEFAULT_FORGE_BUDGET } = await import("@koi/core");
+    const candidate = {
+      id: "cand-policy-1",
+      kind: "tool",
+      name: "user.add",
+      description: "adds",
+      priority: 0.5,
+      proposedScope: "agent",
+      createdAt: 1_700_000_000_000,
+    } as const;
+    const config = {
+      allowedKinds: ["middleware"],
+      maxScope: "zone",
+      budget: DEFAULT_FORGE_BUDGET,
+      requireApprovalAtOrAbove: "global",
+    } as const;
+    const result = evaluatePolicy(candidate, config);
+    expect(result.verdict.decision).toBe("deny");
+    expect(result.candidateId).toBe("cand-policy-1");
+    expect(result.configFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.baseVerdict.decision).toBe("deny");
+    expect(result.overrideApplied).toBe(false);
+  });
+
+  test("createPolicyEvaluator + evaluateAndRecord persist same-instance audit entries with monotonic sequence", async () => {
+    const { createPolicyEvaluator } = await import("@koi/forge-policy");
+    const { DEFAULT_FORGE_BUDGET } = await import("@koi/core");
+    const { evaluateAndRecord, log } = createPolicyEvaluator();
+    const baseCandidate = {
+      kind: "tool",
+      name: "user.add",
+      description: "adds",
+      priority: 0.5,
+      proposedScope: "agent",
+      createdAt: 1_700_000_000_000,
+    } as const;
+    const config = {
+      allowedKinds: ["tool", "skill"],
+      maxScope: "zone",
+      budget: DEFAULT_FORGE_BUDGET,
+      requireApprovalAtOrAbove: "global",
+    } as const;
+    const first = evaluateAndRecord({
+      candidate: { id: "cand-policy-2", ...baseCandidate },
+      config,
+      evaluatedAt: 1_700_000_000_000,
+    });
+    const second = evaluateAndRecord({
+      candidate: { id: "cand-policy-3", ...baseCandidate },
+      config,
+      evaluatedAt: 1_700_000_000_001,
+    });
+    expect(first.evaluation.verdict.decision).toBe("allow");
+    expect(first.entry.sequence).toBe(0);
+    expect(second.entry.sequence).toBe(1);
+    expect(log.size()).toBe(2);
+    // configFingerprint is bound by the evaluator at decision time —
+    // both entries against the same config must agree on the digest.
+    expect(first.entry.configFingerprint).toBe(second.entry.configFingerprint);
+  });
+});

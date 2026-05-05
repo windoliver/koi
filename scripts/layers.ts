@@ -70,6 +70,7 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set([
 
 export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/artifacts-s3",
+  "@koi/forge-policy",
   "@koi/forge-tools",
   "@koi/gateway",
   "@koi/gateway-canvas",
