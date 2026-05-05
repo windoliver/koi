@@ -27,9 +27,11 @@ const result = await synthesize(input, {
   verify,               // (code, descriptor, signal) => Promise<VerifyResult>
   maxAttempts: 3,
   attemptTimeoutMs: 30_000,
-  // Required: assert that BOTH callbacks honor the signal arg. When false
-  // (default), the loop forces single-shot — a timed-out attempt cannot
-  // safely overlap a retry if its side effects are still in flight.
+  // Required: assert that BOTH callbacks honor the signal arg. When false,
+  // the loop forces single-shot (no retries) but still honors timeouts and
+  // the external signal — synthesize() resolves promptly even if the
+  // callback keeps running. The caller accepts that background work may
+  // continue past the API boundary as the cost of a non-abort-aware adapter.
   adapterHonorsAbort: true,
   signal,               // optional caller cancellation
   clock: Date.now,

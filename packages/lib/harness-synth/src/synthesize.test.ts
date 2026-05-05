@@ -227,22 +227,20 @@ describe("synthesize", () => {
     expect(result.reason).toMatch(/targetToolSchema/);
   });
 
-  test("ignores external signal in best-effort mode (no early-return race)", async () => {
-    // In best-effort mode (adapterHonorsAbort:false), an external abort
-    // mid-flight must NOT cut the attempt short — the callback may not
-    // honor the signal, and returning early would let the caller move on
-    // while side effects are still running.
+  test("honors external signal in best-effort mode (synthesize() resolves promptly)", async () => {
+    // In best-effort mode the callback may not honor abort, but synthesize()
+    // itself MUST still resolve when the caller cancels — otherwise a stuck
+    // adapter pins the request indefinitely. The caller accepts that the
+    // background callback may keep running; what they need is a prompt
+    // typed failure so they can move on.
     const controller = new AbortController();
-    let resolved = false;
     const generate: GenerateCallback = () =>
       new Promise<string>((resolve) => {
-        // Abort the external signal almost immediately, then resolve later.
         setTimeout(() => controller.abort(), 5);
-        setTimeout(() => {
-          resolved = true;
-          resolve(validRaw());
-        }, 30);
+        // Resolves long after the abort — synthesize() must not wait for it.
+        setTimeout(() => resolve(validRaw()), 1000);
       });
+    const start = Date.now();
     const result = await synthesize(INPUT, {
       generate,
       verify: ALWAYS_OK,
@@ -250,8 +248,11 @@ describe("synthesize", () => {
       signal: controller.signal,
       adapterHonorsAbort: false,
     });
-    expect(result.ok).toBe(true);
-    expect(resolved).toBe(true);
+    const elapsed = Date.now() - start;
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/aborted by caller/);
+    expect(elapsed).toBeLessThan(500);
   });
 
   test("rejects verifier summary with non-JSON-plain extras (Date)", async () => {
@@ -436,26 +437,28 @@ describe("synthesize", () => {
     expect(result.reason).toMatch(/timed out/);
   });
 
-  test("disables attemptTimeoutMs when adapterHonorsAbort is false", async () => {
-    // In best-effort mode the timer must NOT fire — otherwise a non-abort-
-    // aware adapter keeps running after the API has reported failure.
-    let resolved = false;
-    const generate: GenerateCallback = () =>
-      new Promise<string>((resolve) => {
-        setTimeout(() => {
-          resolved = true;
-          resolve(validRaw());
-        }, 50);
-      });
+  test("enforces attemptTimeoutMs in best-effort mode (forces maxAttempts=1, no retry)", async () => {
+    // Timeouts are honored even in best-effort mode so synthesize() cannot
+    // hang on a stuck adapter — but maxAttempts is still forced to 1 so the
+    // loop never starts a second attempt while the first may still be in
+    // flight.
+    let calls = 0;
+    const generate: GenerateCallback = () => {
+      calls += 1;
+      return new Promise<string>(() => undefined); // never settles
+    };
     const result = await synthesize(INPUT, {
       generate,
       verify: ALWAYS_OK,
-      maxAttempts: 1,
-      attemptTimeoutMs: 5, // would have fired before resolve
+      maxAttempts: 5, // ignored in best-effort
+      attemptTimeoutMs: 10,
       adapterHonorsAbort: false,
     });
-    expect(result.ok).toBe(true);
-    expect(resolved).toBe(true);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/timed out/);
+    expect(result.attempts).toBe(1);
+    expect(calls).toBe(1);
   });
 
   test("respects an external AbortSignal mid-flight", async () => {
@@ -629,5 +632,36 @@ describe("synthesize", () => {
     };
     await synthesize(INPUT, { generate, verify: ALWAYS_OK, ...ABORT_HONORED });
     expect(seen[0] ?? "").not.toContain("Previous failure reason");
+  });
+
+  test("redacts verifier reason before forwarding into refinement prompt", async () => {
+    // Verifier output is caller-controlled and may contain control characters
+    // (sandbox stderr) or be arbitrarily long. The refinement prompt must
+    // strip controls and cap length so unbounded / non-printable diagnostics
+    // do not flow verbatim to the LLM provider on retry.
+    const noisyReason = `secret ctrlchars${"X".repeat(500)}`;
+    let attempt = 0;
+    const seenPrompts: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      seenPrompts.push(p);
+      return validRaw();
+    };
+    const verify: VerifyCallback = () => {
+      attempt += 1;
+      if (attempt === 1) return { ok: false, reason: noisyReason };
+      return { ok: true };
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 2,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    const refinementPrompt = seenPrompts[1] ?? "";
+    expect(refinementPrompt).not.toContain(" ");
+    expect(refinementPrompt).not.toContain("");
+    expect(refinementPrompt).toContain("truncated");
+    expect(refinementPrompt.length).toBeLessThan(noisyReason.length + 2000);
   });
 });

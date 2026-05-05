@@ -46,15 +46,17 @@ export async function synthesize(
   // effects (sandboxed exec, network calls). Force single-shot in that
   // case — the caller can opt in to retries by setting adapterHonorsAbort.
   const maxAttempts = adapterHonorsAbort ? requestedAttempts : 1;
-  // Attempt timeouts are also unsafe under best-effort cancellation: a timer
-  // can resolve the promise as failed while the underlying callback keeps
-  // running, and the caller may move on / start cleanup while side effects
-  // are still in flight. Disable timeouts unless the adapter promises to
-  // honor abort. Callers that need wall-clock bounds in best-effort mode
-  // must apply them externally via `signal`.
-  const attemptTimeoutMs = adapterHonorsAbort
-    ? (config.attemptTimeoutMs ?? DEFAULT_SYNTHESIS_CONFIG.attemptTimeoutMs)
-    : Number.POSITIVE_INFINITY;
+  // Always enforce attemptTimeoutMs and external signal — even in best-effort
+  // mode. Without a hard timer the loop can hang forever on a stuck adapter
+  // (synthesize() never resolves), which is a worse availability failure than
+  // the leaked-side-effects problem the timer was originally avoiding. In
+  // best-effort mode the caller has explicitly accepted that a timed-out or
+  // cancelled callback may keep running in the background — that is the cost
+  // of using a non-abort-aware adapter — but the synthesize() call itself
+  // resolves promptly so the request can be retried/abandoned at the caller.
+  // We still force maxAttempts=1 so the loop never STARTS another attempt
+  // while a prior one may be in flight.
+  const attemptTimeoutMs = config.attemptTimeoutMs ?? DEFAULT_SYNTHESIS_CONFIG.attemptTimeoutMs;
 
   // Validate that targetToolSchema is JSON-plain (no undefined / Infinity /
   // NaN / Date / class instances / cycles / BigInt / throwing getters).
@@ -95,12 +97,12 @@ export async function synthesize(
           });
 
     const attemptController = new AbortController();
-    // In best-effort mode we DO NOT link the external signal: a signal
-    // abort would resolve the attempt early while a non-abort-aware
-    // callback may still be running, recreating the orphan-side-effect
-    // race that single-shot mode is supposed to prevent. Callers needing
-    // mid-flight cancellation must opt into adapterHonorsAbort:true.
-    const detach = adapterHonorsAbort ? linkSignal(signal, attemptController) : () => undefined;
+    // Always link the external signal so synthesize() resolves promptly when
+    // the caller cancels — even in best-effort mode. A non-abort-aware
+    // callback may keep running after we resolve; that is the documented
+    // cost of `adapterHonorsAbort: false`. The alternative (ignoring the
+    // signal) lets a stuck adapter pin the call indefinitely.
+    const detach = linkSignal(signal, attemptController);
     try {
       const generated = await safeGenerate(
         config.generate,
@@ -110,7 +112,7 @@ export async function synthesize(
       );
       if (!generated.ok) {
         lastReason = generated.reason;
-        priorReason = generated.reason;
+        priorReason = redactReason(generated.reason);
         priorCode = "";
         if (generated.aborted) {
           return { ok: false, reason: generated.reason, attempts: attempt };
@@ -121,7 +123,7 @@ export async function synthesize(
       const parsed = parseSynthesisOutput(generated.value, safeInput.targetToolName);
       if (!parsed.ok) {
         lastReason = parsed.reason;
-        priorReason = parsed.reason;
+        priorReason = redactReason(parsed.reason);
         priorCode = generated.value;
         continue;
       }
@@ -132,7 +134,7 @@ export async function synthesize(
       );
       if (!schemaCheck.ok) {
         lastReason = schemaCheck.reason;
-        priorReason = schemaCheck.reason;
+        priorReason = redactReason(schemaCheck.reason);
         priorCode = parsed.value.code;
         continue;
       }
@@ -146,7 +148,7 @@ export async function synthesize(
       );
       if (!verified.ok) {
         lastReason = verified.reason;
-        priorReason = verified.reason;
+        priorReason = redactReason(verified.reason);
         priorCode = parsed.value.code;
         if (verified.aborted) {
           return { ok: false, reason: verified.reason, attempts: attempt };
@@ -184,6 +186,25 @@ export async function synthesize(
  * which side fired. Returns a detach function that the caller invokes when
  * the attempt resolves successfully (avoids dangling listeners).
  */
+/**
+ * Sanitize a failure reason before it is forwarded to the LLM in the
+ * refinement prompt. Verifier callbacks are caller-injected and may return
+ * arbitrary diagnostic text — sandbox stderr, stack traces, fixture values —
+ * that the synthesis loop would otherwise retransmit verbatim to the model
+ * provider on retry. We strip control characters (which model tokenizers
+ * either drop or render as garbage anyway) and cap length so a single
+ * verbose failure cannot blow out the next prompt's token budget. Callers
+ * that want stricter redaction should sanitize inside their `verify`
+ * implementation before returning the reason string.
+ */
+function redactReason(reason: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping is the point
+  const cleaned = reason.replace(/[\x00-\x08\x0B-\x1F\x7F]/g, "");
+  const MAX = 240;
+  if (cleaned.length <= MAX) return cleaned;
+  return `${cleaned.slice(0, MAX)}… [truncated ${cleaned.length - MAX} chars]`;
+}
+
 function linkSignal(external: AbortSignal | undefined, attempt: AbortController): () => void {
   if (!external) return () => undefined;
   if (external.aborted) {
