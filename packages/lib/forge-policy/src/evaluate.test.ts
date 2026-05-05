@@ -362,6 +362,43 @@ describe("evaluatePolicy — scope and approval", () => {
     }
   });
 
+  test("throwing getter on options.complexityOf fails closed instead of escaping", () => {
+    const cfg = makeConfig({ maxComplexity: 10_000 });
+    const hostileOptions: Parameters<typeof evaluatePolicy>[2] = {} as Parameters<
+      typeof evaluatePolicy
+    >[2];
+    Object.defineProperty(hostileOptions, "complexityOf", {
+      get: () => {
+        throw new Error("hostile getter fired");
+      },
+      enumerable: true,
+    });
+    let result: ReturnType<typeof evaluatePolicy>;
+    expect(() => {
+      result = evaluatePolicy(makeCandidate(), cfg, hostileOptions);
+    }).not.toThrow();
+    // biome-ignore lint/style/noNonNullAssertion: assigned in not.toThrow above
+    expect(result!.verdict.decision).toBe("deny");
+    // biome-ignore lint/style/noNonNullAssertion: see above
+    expect(result!.failureReason).toMatch(/options getter threw/);
+  });
+
+  test("two scorers with same id but different source produce different fingerprints", () => {
+    const cfg = makeConfig({ maxComplexity: 10_000 });
+    const a = evaluatePolicy(makeCandidate(), cfg, {
+      spec: { x: 1 },
+      complexityOf: (s) => Object.keys(s).length,
+      complexityScorerId: "scorer-v1",
+    });
+    const b = evaluatePolicy(makeCandidate(), cfg, {
+      spec: { x: 1 },
+      // Same id, different implementation — must not collide.
+      complexityOf: (s) => Object.keys(s).length * 2,
+      complexityScorerId: "scorer-v1",
+    });
+    expect(a.configFingerprint).not.toBe(b.configFingerprint);
+  });
+
   test("cyclic candidate fails closed (no stack exhaustion)", () => {
     type Cand = Parameters<typeof evaluatePolicy>[0];
     const hostile: Record<string, unknown> = { ...makeCandidate() };

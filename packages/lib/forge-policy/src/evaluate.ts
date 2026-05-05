@@ -171,12 +171,37 @@ export function evaluatePolicy(
       configFingerprint: UNAVAILABLE_FINGERPRINT,
     });
   }
+  // Read every `options.*` field ONCE inside a fail-closed try/catch
+  // so a hostile getter / Proxy trap cannot escape as an uncaught
+  // exception and turn the policy gate into a DoS. Subsequent code
+  // reads from these locals only — the live `options` object is never
+  // touched again. Function values (`complexityOf`) cannot be
+  // descriptor-cloned, so we capture the reference and let
+  // `computeComplexity` defend against a throwing call separately.
+  let optionOverride: PolicyOverride | undefined;
+  let optionSpec: Readonly<Record<string, unknown>> | undefined;
+  let optionComplexityOf: ((spec: Readonly<Record<string, unknown>>) => number) | undefined;
+  let optionComplexityScorerId: string | undefined;
+  try {
+    optionOverride = options.override;
+    optionSpec = options.spec;
+    optionComplexityOf = options.complexityOf;
+    optionComplexityScorerId = options.complexityScorerId;
+  } catch (e) {
+    return makeFailClosedEvaluation({
+      reason: `options getter threw: ${e instanceof Error ? e.message : String(e)}`,
+      candidateId: candidateSnapshot.id,
+      override: undefined,
+      kind: "config",
+      configFingerprint: UNAVAILABLE_FINGERPRINT,
+    });
+  }
   let overrideSnapshot: PolicyOverride | undefined;
   try {
     overrideSnapshot =
-      options.override === undefined
+      optionOverride === undefined
         ? undefined
-        : (descriptorClone(options.override) as PolicyOverride);
+        : (descriptorClone(optionOverride) as PolicyOverride);
     if (overrideSnapshot !== undefined) deepFreeze(overrideSnapshot);
   } catch (e) {
     return makeFailClosedEvaluation({
@@ -187,18 +212,14 @@ export function evaluatePolicy(
       configFingerprint: UNAVAILABLE_FINGERPRINT,
     });
   }
-  // Snapshot the config NOW (before override pre-validation) so that an
-  // override-validation failure can still record the real policy
-  // fingerprint — audit consumers must be able to join malformed-override
-  // denials back to the policy version that evaluated them.
   // A custom complexity scorer changes verdict semantics — refuse to
   // emit an audited evaluation under one without a stable scorer id
   // bound into the fingerprint. Otherwise two evaluations that used
   // different scoring semantics could record the same `configFingerprint`,
   // breaking forensic reproducibility.
   if (
-    options.complexityOf !== undefined &&
-    (typeof options.complexityScorerId !== "string" || options.complexityScorerId.length === 0)
+    optionComplexityOf !== undefined &&
+    (typeof optionComplexityScorerId !== "string" || optionComplexityScorerId.length === 0)
   ) {
     return makeFailClosedEvaluation({
       reason: "complexityOf requires a non-empty complexityScorerId for audit binding",
@@ -208,10 +229,14 @@ export function evaluatePolicy(
       configFingerprint: UNAVAILABLE_FINGERPRINT,
     });
   }
+  // Snapshot the config NOW (before override pre-validation) so that an
+  // override-validation failure can still record the real policy
+  // fingerprint — audit consumers must be able to join malformed-override
+  // denials back to the policy version that evaluated them.
   let configSnapshot: ForgePolicyConfig;
   let configFingerprint: string;
   try {
-    const result = snapshotConfig(config, options.complexityScorerId);
+    const result = snapshotConfig(config, optionComplexityScorerId, optionComplexityOf);
     configSnapshot = result.snapshot;
     configFingerprint = result.fingerprint;
   } catch (e) {
@@ -251,7 +276,13 @@ export function evaluatePolicy(
       });
     }
   }
-  const baseVerdict = evaluateChecks(candidateSnapshot, configSnapshot, options);
+  // Pass the trapped option values to evaluateChecks — never the live
+  // `options` object — so no further `options.*` getter can fire.
+  const baseVerdict = evaluateChecks(candidateSnapshot, configSnapshot, {
+    spec: optionSpec,
+    complexityOf: optionComplexityOf,
+    override: overrideSnapshot,
+  });
   const verdict = applyOverride(baseVerdict, overrideSnapshot);
   const overrideApplied = verdict !== baseVerdict;
   const evaluation: PolicyEvaluation = Object.freeze({
@@ -284,11 +315,12 @@ interface ConfigSnapshotResult {
 function snapshotConfig(
   config: ForgePolicyConfig,
   complexityScorerId: string | undefined,
+  complexityOf: ((spec: Readonly<Record<string, unknown>>) => number) | undefined,
 ): ConfigSnapshotResult {
   const cloned = descriptorClone(config) as ForgePolicyConfig;
   return {
     snapshot: deepFreeze(cloned),
-    fingerprint: computeConfigFingerprint(cloned, complexityScorerId),
+    fingerprint: computeConfigFingerprint(cloned, complexityScorerId, complexityOf),
   };
 }
 
