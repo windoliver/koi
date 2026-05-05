@@ -508,6 +508,90 @@ describe("suggestAction", () => {
     ).toBe("reclassify");
   });
 
+  test("equal-recency priorWindows are evaluated as a tied group (caller order does not matter)", () => {
+    // Trust-boundary: when two prior windows share the same max observedAt
+    // (coarsened-to-the-second batches, same-frame producers), array order
+    // must NOT decide the verdict. The detector treats tied windows
+    // atomically: every window in the trailing tie group must clear the
+    // strong-drift bar, otherwise the whole tied group breaks the run.
+    const sharedTime = 100;
+    function tieWindow(strong: boolean, agentPrefix: string): UsagePurposeObservation[] {
+      const score = strong ? 0.95 : 0.05;
+      return ["a", "b", "c", "d"].flatMap((suffix) =>
+        [score, score, score].map((s, i) => ({
+          scope: "default",
+          agentId: `${agentPrefix}-${suffix}`,
+          divergenceScore: s,
+          contextText: `${agentPrefix}-${suffix}-${String(i)}`,
+          observedAt: sharedTime,
+          eventId: `${agentPrefix}-${suffix}-${String(i)}`,
+        })),
+      );
+    }
+    const tiedStrong = tieWindow(true, "tie-strong");
+    const tiedWeak = tieWindow(false, "tie-weak");
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    // Both orderings must produce the same verdict — `reclassify`, because
+    // the tied group contains a weak window that breaks the run.
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [tiedStrong, tiedWeak]).kind,
+    ).toBe("reclassify");
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [tiedWeak, tiedStrong]).kind,
+    ).toBe("reclassify");
+  });
+
+  test("legacy-scope cohort is denied action-bearing suggestions (rolling-migration safety)", () => {
+    // During a rolling scope migration, observations missing scope all
+    // bucket into LEGACY_SCOPE — possibly mixing tenants. detectDrift
+    // still surfaces the signal (telemetry), but suggestAction must
+    // refuse `reclassify` / `new-artifact` so cross-tenant evidence
+    // cannot drive irreversible artifact rewrites or forks.
+    function omitScope(o: UsagePurposeObservation): UsagePurposeObservation {
+      const { scope: _scope, ...rest } = o;
+      return rest;
+    }
+    const legacyObservations: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => omitScope(obs("legacy-a", s))),
+      ...[0.95, 0.95, 0.95].map((s) => omitScope(obs("legacy-b", s))),
+      ...[0.95, 0.95, 0.95].map((s) => omitScope(obs("legacy-c", s))),
+      ...[0.95, 0.95, 0.95].map((s) => omitScope(obs("legacy-d", s))),
+    ];
+    // detectDrift still reports drift (signal preserved for dashboards)
+    // and exposes cohortHasLegacyScope so callers can branch.
+    const result = detectDrift(legacyObservations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") expect(result.cohortHasLegacyScope).toBe(true);
+    // suggestAction refuses action-bearing suggestions.
+    expect(suggestAction(legacyObservations, DEFAULT_EXAPTATION_THRESHOLDS).kind).toBe("none");
+    // Even with strong stable priors, action stays denied because the
+    // *current* cohort itself is legacy-contaminated.
+    expect(
+      suggestAction(legacyObservations, DEFAULT_EXAPTATION_THRESHOLDS, [strongPriorWindow()]).kind,
+    ).toBe("none");
+  });
+
+  test("legacy-scope prior windows do not count toward stability", () => {
+    // A prior window whose cohort is legacy-contaminated is itself unsafe
+    // to act on, so it must not bump stability for a fresh strong current
+    // window. Otherwise a caller could launder cross-tenant legacy
+    // history through the priorWindows path to unlock `new-artifact`.
+    function omitScope(o: UsagePurposeObservation): UsagePurposeObservation {
+      const { scope: _scope, ...rest } = o;
+      return rest;
+    }
+    const legacyStrongPrior: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => omitScope(obs("lp-a", s))),
+      ...[0.95, 0.95, 0.95].map((s) => omitScope(obs("lp-b", s))),
+      ...[0.95, 0.95, 0.95].map((s) => omitScope(obs("lp-c", s))),
+      ...[0.95, 0.95, 0.95].map((s) => omitScope(obs("lp-d", s))),
+    ];
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [legacyStrongPrior]).kind,
+    ).toBe("reclassify");
+  });
+
   test("priorWindows with no finite observedAt cannot satisfy stability", () => {
     // Degraded telemetry: a prior window where every observation lacks a
     // usable observedAt sorts to the bottom (oldest) and breaks the

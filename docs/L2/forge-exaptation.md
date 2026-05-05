@@ -101,6 +101,7 @@ Tenant isolation is a runtime data contract, enforced by required fields — not
 - Cohort attribution is keyed on `(scope, agentId)`. The same logical agent in two tenants counts as two cohort members — different tenants are different observers.
 - **New emitters MUST set `scope`** explicitly. Single-tenant deployments may use a constant value (e.g. `"default"`); multi-tenant deployments MUST derive it from authenticated identity at the boundary. Any deployment that lets multi-tenant traffic fall into `__legacy__` will mix tenants in that bucket — the sentinel is a migration aid, not a default tenant.
 - Emitters can be migrated incrementally: ship the new `scope`-aware producer alongside legacy producers; observe `__legacy__` in dashboards/alerts; swap producers tenant-by-tenant; deprecate `__legacy__` once it is empty.
+- **Action-bearing safety during migration:** when any cohort observation is in `__legacy__`, `detectDrift` sets `cohortHasLegacyScope: true` on the result and `suggestAction` refuses to emit `reclassify` / `new-artifact`. The drift signal is still surfaced for dashboards/telemetry, but irreversible actions stay blocked until producers are migrated to explicit scope. Legacy-contaminated prior windows likewise do not count toward stability.
 
 ## eventId Contract
 

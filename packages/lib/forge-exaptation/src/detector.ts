@@ -136,6 +136,15 @@ export type DetectionResult =
       readonly validObservationCount: number;
       /** True iff every cohort observation had `eventId` (cohort-scoped). */
       readonly replayProtected: boolean;
+      /**
+       * True iff any cohort observation was normalized to `LEGACY_SCOPE`
+       * (missing/blank `scope`). Such cohorts may merge multiple tenants
+       * during a rolling migration, so `suggestAction` refuses to emit
+       * `reclassify` / `new-artifact` when this is set — irreversible
+       * actions must NOT be driven by potentially cross-tenant evidence.
+       * The drift signal itself is still reported as observability data.
+       */
+      readonly cohortHasLegacyScope: boolean;
     }
   | {
       readonly kind: "no-drift";
@@ -332,6 +341,7 @@ export function detectDrift(
     missingEventIdCount,
     validObservationCount: unique.length,
     replayProtected,
+    cohortHasLegacyScope: cohort.hasLegacyScope,
     report: {
       kind: "purpose_drift" as const,
       severity,
@@ -387,6 +397,14 @@ export function suggestAction(
   const result = detectDrift(observations, thresholds);
   if (result.kind !== "drift") return { kind: "none" };
   if (!result.replayProtected) return { kind: "none" };
+  // Refuse irreversible action when any cohort observation lives in
+  // LEGACY_SCOPE (the missing-/blank-scope compat bucket). Different
+  // tenants that have not yet been migrated to explicit scope all share
+  // that bucket, so a cohort drawn from it can mix unrelated tenants.
+  // The drift signal is still surfaced via `detectDrift` for telemetry —
+  // only the action recommendation is suppressed until producers are
+  // migrated off the sentinel.
+  if (result.cohortHasLegacyScope) return { kind: "none" };
 
   const total =
     result.validObservationCount +
@@ -455,38 +473,69 @@ function countStrongDriftPriors(
   // junk timestamp on top of a stale strong-drift window. Computing
   // recency from the same validated samples that detection itself trusts
   // closes that path.
-  const indexed = priorWindows.map((window, originalIndex) => {
+  const indexed = priorWindows.map((window) => {
     // let: per-window max-observedAt accumulator (validated samples only)
     let maxAt = Number.NEGATIVE_INFINITY;
     for (const o of window) {
       if (!isObservationValid(o)) continue;
       if (Number.isFinite(o.observedAt) && o.observedAt > maxAt) maxAt = o.observedAt;
     }
-    return { window, maxAt, originalIndex };
+    return { window, maxAt };
   });
-  // Sort by maxAt ascending; tie-break on originalIndex so the order is
-  // deterministic when timestamps collide. Windows with no finite
-  // observedAt sort to the bottom (oldest), so they break the trailing run
-  // before the loop can count them.
-  indexed.sort((a, b) => {
-    if (a.maxAt !== b.maxAt) return a.maxAt - b.maxAt;
-    return a.originalIndex - b.originalIndex;
-  });
+  // Group windows by maxAt and walk groups from newest to oldest. Within a
+  // tied group, EVERY window must clear the strong-drift bar — otherwise
+  // the whole tied group breaks the run. This removes caller-steerability
+  // when multiple windows share a timestamp (coarsened-to-the-second
+  // batches, same-frame producers): the verdict no longer depends on
+  // array order, because any failing window in the trailing tie group
+  // halts the count regardless of where it sits in the array. Windows
+  // with no finite maxAt sort to the bottom and immediately break the run.
+  const groups = new Map<number, (typeof indexed)[number][]>();
+  for (const entry of indexed) {
+    if (!Number.isFinite(entry.maxAt)) continue;
+    const list = groups.get(entry.maxAt);
+    if (list === undefined) groups.set(entry.maxAt, [entry]);
+    else list.push(entry);
+  }
+  const sortedGroups = [...groups.entries()].sort(([a], [b]) => b - a); // desc
 
   // let: prior-window stability accumulator (trailing consecutive run)
   let strong = 0;
-  for (let i = indexed.length - 1; i >= 0; i--) {
-    const entry = indexed[i];
-    if (entry === undefined) break;
-    if (!Number.isFinite(entry.maxAt)) break;
-    const r = detectDrift(entry.window, thresholds);
-    if (r.kind !== "drift") break;
-    if (!r.replayProtected) break;
-    if (r.report.avgDivergence < NEW_ARTIFACT_DIVERGENCE_THRESHOLD) break;
-    const total = r.validObservationCount + r.droppedCount + r.duplicateCount + r.conflictCount;
-    const lowQuality = r.droppedCount + r.duplicateCount + r.conflictCount + r.missingEventIdCount;
-    if (total > 0 && lowQuality / total > MAX_QUALITY_DEGRADATION_RATIO) break;
-    strong++;
+  for (const [, windowsAtThisRecency] of sortedGroups) {
+    // let: per-tie-group accumulator — must add atomically (all-or-nothing).
+    let groupContribution = 0;
+    let groupOk = true;
+    for (const entry of windowsAtThisRecency) {
+      const r = detectDrift(entry.window, thresholds);
+      if (r.kind !== "drift") {
+        groupOk = false;
+        break;
+      }
+      if (!r.replayProtected) {
+        groupOk = false;
+        break;
+      }
+      if (r.report.avgDivergence < NEW_ARTIFACT_DIVERGENCE_THRESHOLD) {
+        groupOk = false;
+        break;
+      }
+      const total = r.validObservationCount + r.droppedCount + r.duplicateCount + r.conflictCount;
+      const lowQuality =
+        r.droppedCount + r.duplicateCount + r.conflictCount + r.missingEventIdCount;
+      if (total > 0 && lowQuality / total > MAX_QUALITY_DEGRADATION_RATIO) {
+        groupOk = false;
+        break;
+      }
+      // Legacy-scope contamination disqualifies a prior the same way it
+      // disqualifies the current window — keep the bar consistent end-to-end.
+      if (r.cohortHasLegacyScope) {
+        groupOk = false;
+        break;
+      }
+      groupContribution++;
+    }
+    if (!groupOk) break;
+    strong += groupContribution;
   }
   return strong;
 }
@@ -694,6 +743,12 @@ interface DivergentCohort {
    * sample missing eventId outside the cohort does NOT flip this to false.
    */
   readonly allCohortHadEventId: boolean;
+  /**
+   * True iff any agent contributing to the cohort lives in `LEGACY_SCOPE`.
+   * Set so the suggestAction layer can refuse irreversible actions on
+   * potentially cross-tenant evidence during a rolling scope migration.
+   */
+  readonly hasLegacyScope: boolean;
 }
 
 /**
@@ -719,6 +774,10 @@ function computeDivergentCohort(
   const divergentCounts = new Map<string, number>();
   // Per-agent: true while every divergent observation seen so far had eventId.
   const agentHadEventId = new Map<string, boolean>();
+  // Per-agent: scope normalized at validation time. Used to detect cohort
+  // members that fall into the LEGACY_SCOPE compat bucket so suggestAction
+  // can refuse irreversible actions on potentially cross-tenant evidence.
+  const agentScope = new Map<string, string>();
   for (const o of observations) {
     if (o.divergenceScore < thresholds.divergenceThreshold) continue;
     // Cohort attribution keys on `(scope, agentId)` — the same logical
@@ -730,6 +789,7 @@ function computeDivergentCohort(
     divergentCounts.set(key, (divergentCounts.get(key) ?? 0) + 1);
     const hadEid = !noEventIdSet.has(o);
     agentHadEventId.set(key, (agentHadEventId.get(key) ?? true) && hadEid);
+    if (!agentScope.has(key)) agentScope.set(key, normalizeScope(o.scope));
   }
 
   // let: cohort accumulators
@@ -737,14 +797,16 @@ function computeDivergentCohort(
   let observationCount = 0;
   let totalDivergence = 0;
   let allCohortHadEventId = true;
+  let hasLegacyScope = false;
   for (const [key, count] of divergentCounts) {
     if (count < thresholds.minObservationsPerAgent) continue;
     agentCount++;
     observationCount += count;
     totalDivergence += divergentSums.get(key) ?? 0;
     if (!(agentHadEventId.get(key) ?? false)) allCohortHadEventId = false;
+    if (agentScope.get(key) === LEGACY_SCOPE) hasLegacyScope = true;
   }
-  return { agentCount, observationCount, totalDivergence, allCohortHadEventId };
+  return { agentCount, observationCount, totalDivergence, allCohortHadEventId, hasLegacyScope };
 }
 
 function computeSeverity(
