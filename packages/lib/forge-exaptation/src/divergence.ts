@@ -55,6 +55,7 @@ const TWO_LETTER_ALLOWLIST: ReadonlySet<string> = new Set([
   "py",
   "qa",
   "rs",
+  "s3", // common infra shorthand (object storage)
   "sh",
   "sql",
   "ts",
@@ -127,9 +128,12 @@ function isRuntimeIdentifier(word: string): boolean {
   if (/^\p{N}+$/u.test(word)) return true;
   // No digits → not an identifier blob.
   if (!/\p{N}/u.test(word)) return false;
-  // Mixed alphanumeric: reject if at least 4 chars AND no run of ≥3
-  // consecutive letters (UUID fragments, hex digests, base32 IDs).
-  if (word.length < 4) return false;
+  // Mixed alphanumeric: reject only if at least 6 chars AND no run of ≥3
+  // consecutive letters. UUID fragments, hex digests, and base32 IDs are
+  // typically ≥ 6 chars; real domain shorthand (`i18n`, `l10n`, `k8s`,
+  // `2fa`, `h2x`) is shorter and stays. The 3-letter-run check still keeps
+  // `oauth2`, `sha256`, `utf8`, etc. — those have a real letter run.
+  if (word.length < 6) return false;
   return !/\p{L}{3,}/u.test(word);
 }
 

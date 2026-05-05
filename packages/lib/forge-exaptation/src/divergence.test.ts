@@ -109,6 +109,31 @@ describe("tokenize", () => {
     expect(t.has("配置")).toBe(true);
   });
 
+  test("common infra/code shorthand survives (s3, k8s, 2fa, i18n, l10n, oauth2, sha256, utf8)", () => {
+    // Regression: a previous length-4-runtime-identifier rule dropped i18n,
+    // l10n, etc. as if they were UUID fragments, creating a silent
+    // observability gap on abbreviation-heavy descriptions.
+    const tokens = tokenize("s3 k8s 2fa i18n l10n oauth2 sha256 utf8 parser");
+    expect(tokens.has("s3")).toBe(true);
+    expect(tokens.has("k8s")).toBe(true);
+    expect(tokens.has("2fa")).toBe(true);
+    expect(tokens.has("i18n")).toBe(true);
+    expect(tokens.has("l10n")).toBe(true);
+    expect(tokens.has("oauth2")).toBe(true);
+    expect(tokens.has("sha256")).toBe(true);
+    expect(tokens.has("utf8")).toBe(true);
+    expect(tokens.has("parser")).toBe(true);
+  });
+
+  test("abbreviation-heavy descriptions still produce a usable token set (no silent NaN)", () => {
+    const desc = tokenize("k8s i18n l10n s3 parser");
+    const usage = tokenize("k8s s3 deploy");
+    const dist = computeJaccardDistance(desc, usage);
+    expect(Number.isFinite(dist)).toBe(true);
+    expect(dist).toBeGreaterThan(0);
+    expect(dist).toBeLessThan(1);
+  });
+
   test("Unicode-only descriptions are NOT fully disjoint from themselves", () => {
     // Regression of the silent-drop bug: same CJK string against itself must
     // give Jaccard distance 0, not NaN.
