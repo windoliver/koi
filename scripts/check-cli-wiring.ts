@@ -123,6 +123,14 @@ const EXEMPT: ReadonlySet<string> = new Set([
   "@koi/workspace",
   // Temporal adapter — optional durable execution backend, not default local TUI.
   "@koi/temporal",
+  // Specialized channels require external transports (audio device, IDE socket,
+  // mobile WebSocket clients) and host-supplied vendor wiring; they are not part
+  // of the default interactive TUI assembly.
+  "@koi/channel-voice",
+  "@koi/channel-ide",
+  "@koi/channel-mobile",
+  // Channel decorator wraps another adapter at host assembly time, not standalone.
+  "@koi/channel-fallback",
 ]);
 
 /**

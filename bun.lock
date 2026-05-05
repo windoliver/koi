@@ -228,6 +228,30 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/channel-fallback": {
+      "name": "@koi/channel-fallback",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/channel-ide": {
+      "name": "@koi/channel-ide",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/channel-mobile": {
+      "name": "@koi/channel-mobile",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/channel-slack": {
       "name": "@koi/channel-slack",
       "version": "0.0.0",
@@ -236,6 +260,14 @@
         "@koi/core": "workspace:*",
         "@slack/socket-mode": "2.0.3",
         "@slack/web-api": "7.9.1",
+      },
+    },
+    "packages/lib/channel-voice": {
+      "name": "@koi/channel-voice",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
       },
     },
     "packages/lib/channel-web": {
@@ -1324,7 +1356,11 @@
         "@koi/browser-ext": "workspace:*",
         "@koi/browser-playwright": "workspace:*",
         "@koi/channel-cli": "workspace:*",
+        "@koi/channel-fallback": "workspace:*",
+        "@koi/channel-ide": "workspace:*",
+        "@koi/channel-mobile": "workspace:*",
         "@koi/channel-slack": "workspace:*",
+        "@koi/channel-voice": "workspace:*",
         "@koi/channel-web": "workspace:*",
         "@koi/checkpoint": "workspace:*",
         "@koi/context-manager": "workspace:*",
@@ -2356,7 +2392,15 @@
 
     "@koi/channel-cli": ["@koi/channel-cli@workspace:packages/lib/channel-cli"],
 
+    "@koi/channel-fallback": ["@koi/channel-fallback@workspace:packages/lib/channel-fallback"],
+
+    "@koi/channel-ide": ["@koi/channel-ide@workspace:packages/lib/channel-ide"],
+
+    "@koi/channel-mobile": ["@koi/channel-mobile@workspace:packages/lib/channel-mobile"],
+
     "@koi/channel-slack": ["@koi/channel-slack@workspace:packages/lib/channel-slack"],
+
+    "@koi/channel-voice": ["@koi/channel-voice@workspace:packages/lib/channel-voice"],
 
     "@koi/channel-web": ["@koi/channel-web@workspace:packages/lib/channel-web"],
 
