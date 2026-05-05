@@ -39,8 +39,11 @@ export interface EvaluatePolicyOptions {
 
   /**
    * Caller-supplied complexity metric that replaces the default
-   * UTF-8-byte-length heuristic. Returned values that are not finite,
-   * non-negative numbers are treated as `0`.
+   * UTF-8-byte-length heuristic. Must return a finite non-negative
+   * number. Any other return value (NaN, Infinity, negative number,
+   * non-number) fails closed with a deterministic deny — a broken
+   * scorer must NOT silently disable the operator's `maxComplexity`
+   * ceiling.
    */
   readonly complexityOf?: ((spec: Readonly<Record<string, unknown>>) => number) | undefined;
 
