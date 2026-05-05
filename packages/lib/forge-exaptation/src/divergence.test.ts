@@ -74,6 +74,48 @@ describe("tokenize", () => {
       [...tokenize("parseJsonConfig")].sort(),
     );
   });
+
+  test("CJK text produces tokens (ASCII-only split was a silent observation drop)", () => {
+    // Regression: the old [A-Za-z0-9] split returned empty segments for
+    // non-Latin scripts, so computeJaccardDistance(...) returned NaN and the
+    // detector dropped the whole observation. Unicode-aware split keeps the
+    // tokens.
+    expect([...tokenize("工具读取配置")]).toEqual(["工具读取配置"]);
+    const tokens = tokenize("工具 读取 配置");
+    expect(tokens.size).toBe(3);
+    expect(tokens.has("工具")).toBe(true);
+    expect(tokens.has("读取")).toBe(true);
+    expect(tokens.has("配置")).toBe(true);
+  });
+
+  test("Cyrillic and Arabic tokens survive", () => {
+    const ru = tokenize("читать файл");
+    expect(ru.size).toBe(2);
+    expect(ru.has("читать")).toBe(true);
+    expect(ru.has("файл")).toBe(true);
+    const ar = tokenize("قراءة الملف");
+    expect(ar.size).toBe(2);
+    expect(ar.has("قراءة")).toBe(true);
+    expect(ar.has("الملف")).toBe(true);
+  });
+
+  test("non-ASCII tokens of length 2 survive (no English-stopword equivalent)", () => {
+    // 2-letter ASCII tokens go through TWO_LETTER_ALLOWLIST; CJK 2-char words
+    // are normal morphemes and must not be filtered by that English-specific
+    // rule.
+    const t = tokenize("工具 配置");
+    expect(t.size).toBe(2);
+    expect(t.has("工具")).toBe(true);
+    expect(t.has("配置")).toBe(true);
+  });
+
+  test("Unicode-only descriptions are NOT fully disjoint from themselves", () => {
+    // Regression of the silent-drop bug: same CJK string against itself must
+    // give Jaccard distance 0, not NaN.
+    const a = tokenize("工具读取配置文件");
+    const b = tokenize("工具读取配置文件");
+    expect(computeJaccardDistance(a, b)).toBe(0);
+  });
 });
 
 describe("computeJaccardDistance", () => {

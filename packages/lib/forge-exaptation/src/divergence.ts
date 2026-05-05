@@ -67,33 +67,48 @@ const TWO_LETTER_ALLOWLIST: ReadonlySet<string> = new Set([
  * Split identifier-shaped text into lowercase keyword tokens.
  *
  * Splits on:
- *   - non-word/underscore boundaries (whitespace, punctuation, `_`),
+ *   - non-letter / non-number boundaries (whitespace, punctuation, `_`),
  *   - camelCase / PascalCase boundaries (`readFile` → `read`, `file`),
  *   - acronym↔word boundaries (`HTTPRequest` → `http`, `request`).
  *
+ * Unicode-aware: uses `\p{L}` / `\p{N}` so CJK, Cyrillic, Arabic, and other
+ * non-Latin scripts produce tokens instead of being silently dropped (the
+ * old `[A-Za-z0-9]` split returned empty segments for non-ASCII text and
+ * `computeJaccardDistance` returned `NaN`, hiding all such observations).
+ *
  * Drops stopwords and tokens shorter than 3 chars by default. 2-letter
- * tokens survive only when allowlisted (`db`, `ui`, `ml`, `ci`, …) — without
- * the allowlist, common 2-char English words like `to`, `of`, `in`, `on`,
- * `is`, `it` would slip through and dilute Jaccard divergence between
- * unrelated descriptions, masking real drift.
+ * Latin tokens survive only when allowlisted (`db`, `ui`, `ml`, `ci`, …) —
+ * without the allowlist, common 2-char English words like `to`, `of`, `in`,
+ * `on`, `is`, `it` would slip through and dilute Jaccard divergence,
+ * masking real drift. Length-2 NON-ASCII tokens always survive: in CJK and
+ * similar scripts a 2-character word is a normal morpheme, and there is
+ * no equivalent stopword problem to suppress.
  */
 export function tokenize(text: string): ReadonlySet<string> {
   const tokens = new Set<string>();
-  // Separate at non-word and underscore, then at camelCase / acronym seams.
+  // Separate at non-letter / non-number and underscore, then at
+  // camelCase / acronym seams. The `u` flag makes `\p{L}` / `\p{N}` work.
   const segments = text
-    .split(/[^A-Za-z0-9]+|_+/)
-    .flatMap((seg) => seg.split(/(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/));
+    .split(/[^\p{L}\p{N}]+|_+/u)
+    .flatMap((seg) => seg.split(/(?<=[\p{Ll}\p{N}])(?=\p{Lu})|(?<=\p{Lu})(?=\p{Lu}\p{Ll})/u));
   for (const segment of segments) {
     const word = segment.toLowerCase();
+    if (word.length === 0) continue;
     if (STOPWORDS.has(word)) continue;
     if (isRuntimeIdentifier(word)) continue;
     if (word.length >= 3) {
       tokens.add(word);
-    } else if (word.length === 2 && TWO_LETTER_ALLOWLIST.has(word)) {
-      tokens.add(word);
+    } else if (word.length === 2) {
+      if (TWO_LETTER_ALLOWLIST.has(word)) tokens.add(word);
+      else if (!isAsciiLatin(word)) tokens.add(word);
     }
   }
   return tokens;
+}
+
+/** True when every char is ASCII Latin / digit (no \p{L} outside [a-z0-9]). */
+function isAsciiLatin(word: string): boolean {
+  return /^[a-z0-9]+$/.test(word);
 }
 
 /**
@@ -108,14 +123,14 @@ export function tokenize(text: string): ReadonlySet<string> {
  */
 function isRuntimeIdentifier(word: string): boolean {
   if (word.length === 0) return false;
-  // Digits-only — timestamps, ports, HTTP codes, ticket numbers.
-  if (/^[0-9]+$/.test(word)) return true;
+  // Digits-only — timestamps, ports, HTTP codes, ticket numbers (Unicode-aware).
+  if (/^\p{N}+$/u.test(word)) return true;
   // No digits → not an identifier blob.
-  if (!/[0-9]/.test(word)) return false;
+  if (!/\p{N}/u.test(word)) return false;
   // Mixed alphanumeric: reject if at least 4 chars AND no run of ≥3
   // consecutive letters (UUID fragments, hex digests, base32 IDs).
   if (word.length < 4) return false;
-  return !/[a-z]{3,}/.test(word);
+  return !/\p{L}{3,}/u.test(word);
 }
 
 /**
