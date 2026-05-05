@@ -61,13 +61,15 @@ Severity ∈ [0, 1]: scales with how broadly and how strongly the artifact has d
 
 ## Suggestion Policy
 
-| Inputs | Suggestion |
+`suggestAction(observations, thresholds, stableWindows)` runs `detectDrift` internally and applies the policy below to that fresh result:
+
+| Internal detection state | Suggestion |
 |---|---|
-| `result.kind ≠ "drift"` (no-drift, invalid-config, undefined) | `none` |
+| `kind ≠ "drift"` (no-drift, invalid-config) | `none` |
 | `replayProtected: false` (any valid observation lacks `eventId`) | `none` |
-| `(droppedCount + duplicateCount) / (validObservationCount + dropped + duplicate) > 25%` | `none` (low-quality window — the denominator is the *full* validated window, not just the divergent cohort, so clean baseline-heavy traffic isn't punished for the cohort being a small slice) |
-| `stableWindows ≥ 2` AND `avgDivergence ≥ 0.85` | `new-artifact` — fork a specialized variant; the drift is a real second use case |
-| Cohort share `< 50%` of validated window AND not stable+strong | `none` — minority drift should NOT overwrite the canonical purpose the baseline majority depends on; wait for it to grow into majority or qualify for `new-artifact` |
+| `(droppedCount + duplicateCount) / (validObservationCount + dropped + duplicate) > 25%` | `none` (low-quality window — denominator is the *full* validated window, not just the cohort, so clean baseline-heavy traffic isn't punished for the cohort being a small slice) |
+| `stableWindows ≥ 2` AND `avgDivergence ≥ 0.85` | `new-artifact` — fork a specialized variant |
+| Cohort share `< 50%` of validated window AND not stable+strong | `none` — minority drift should NOT overwrite the canonical purpose the baseline majority depends on |
 | Otherwise (cohort majority, single window or sub-fork divergence) | `reclassify` — rewrite the artifact's description to match observed usage |
 
 `new-artifact` is gated on **raw `avgDivergence`**, not on saturated `severity`. With detection threshold `0.7` and fork threshold `0.85`, drift that barely clears detection cannot escalate to "fork" purely by accumulating more observations or agents over time.
@@ -78,14 +80,25 @@ The quality gate (default 25%) refuses to recommend irreversible action when mos
 
 Replay protection is a **per-observation data contract**, not a config knob.
 
-- The detector marks a window `replayProtected: true` only when **every valid observation** carries a non-empty string `eventId` — a stable upstream event identity such as a gateway correlation ID, an idempotency key, or a monotonic sequence number. That same `eventId` is used as the dedup key, scoped per-agent.
+- The detector marks a window `replayProtected: true` only when **every valid observation** carries a non-empty string `eventId` — a stable upstream event identity such as a gateway correlation ID, an idempotency key, or a monotonic sequence number. That same `eventId` is used as the dedup key, scoped to `(scope, agentId)`.
 - If even one valid observation in the window lacks `eventId` (or has an empty string), the window is `replayProtected: false`, dedup does **not** run, and `suggestAction` refuses to recommend `reclassify` or `new-artifact`.
 - There is no caller-supplied dedup key function and no honor-system "trust me, this is stable" boolean — both were rejected because the detector cannot validate them at runtime. Putting the contract on the data shape lets `isObservationValid` enforce it.
 - `eventId` is optional in the L0 `UsagePurposeObservation` type, so upstream observers that only have best-effort telemetry can still feed the detector — they just can't unlock action-bearing suggestions until they propagate a stable event ID.
 
 ## suggestAction Contract
 
-`suggestAction` accepts any `DetectionResult` whose data fields satisfy the gates: `kind: "drift"`, `replayProtected: true`, and `(droppedCount + duplicateCount) / (validObservationCount + dropped + duplicate) ≤ 25%`. The fields ARE the contract — results survive JSON / `structuredClone` / cross-package handoff. Earlier rounds gated on a hidden module-local symbol, but that silently broke serialization paths and any cross-package usage of the library, so the brand was removed in favour of trusting the data. Honest callers preserving the fields keep their recommendations; callers that fabricate results take the responsibility on themselves.
+`suggestAction` takes raw observations (plus thresholds and `stableWindows`) and recomputes detection internally. There is **no** "trust this `DetectionResult`" path — that closes the trust boundary that earlier rounds left open: a buggy or untrusted caller cannot fabricate a `{ kind: "drift", replayProtected: true, ... }` literal and obtain `reclassify` / `new-artifact` without real observations behind it. Action recommendations are always grounded in detector-produced state.
+
+`detectDrift` is still exported separately as the telemetry surface — call it when you want the full `DetectionResult` for logs, dashboards, or alerts. The two functions are independent: `suggestAction` does not consume `DetectionResult`, and the action verdict cannot be skewed by a stale or mutated result.
+
+## Tenant Isolation
+
+Tenant isolation is a runtime data contract, enforced by required fields — not by upstream documentation.
+
+- Every observation carries `scope: string` (tenant / account / realm). It is **required**: `isObservationValid` drops observations with missing or whitespace-only `scope`, and there is no implicit "global" scope. That is the silent-merge failure mode the field exists to prevent.
+- Replay dedup is keyed on `(scope, agentId, eventId)`. Two tenants that happen to mint the same `(agentId, eventId)` keep their evidence independent.
+- Cohort attribution is keyed on `(scope, agentId)`. The same logical agent in two tenants counts as two cohort members — different tenants are different observers.
+- Single-tenant deployments may use a constant scope (e.g. `"default"`); the field still has to be set, so every emitter has to make a deliberate choice rather than rely on `agentId` formatting conventions.
 
 ## eventId Contract
 
@@ -94,13 +107,13 @@ Replay protection is a **per-observation data contract**, not a config knob.
 - Derive deterministically from a stable per-call identity — e.g. `sha256(agentId + ":" + toolCallId)` where `toolCallId` is an upstream identifier of the originating tool invocation. NOT a request-level correlation ID, NOT an upstream causal event ID shared across agents, NOT an account/tenant identifier, NOT a freshly-minted nonce/UUID (random values mint a new key per retry and defeat replay dedup).
 - Retries of the same observation MUST re-emit the same `eventId` — that is what idempotent derivation buys you.
 - Distinct tool calls within one request, multiple agents recording the same upstream event, and observations from different tenants must all derive **different** `eventId`s.
-- For multi-tenant deployments, encode the tenant/account/realm in `agentId` itself (e.g. `${tenant}/${agent}`). The L0 contract requires `agentId` to be globally unique across the deployment; this is what keeps tenants isolated for both dedup and cohort attribution. There is no separate `scope` field — keeping isolation in one identifier removes a class of "scope set, but agentId collides" footguns.
+- Cross-tenant `(agentId, eventId)` collisions are absorbed by `scope` (see Tenant Isolation), so a tenant whose telemetry happens to overlap with a peer's identifiers still keeps independent evidence.
 
 ## Dedup Conflict Resolution
 
-Dedup is scoped per-agent (`(agentId, eventId)`). The contract above guarantees per-observation `eventId` uniqueness, so per-agent scope is what catches retries; cross-agent collisions (which under a tighter contract should never happen, but can occur accidentally between tenants) keep their evidence independent rather than collapsing it.
+Dedup is keyed on `(scope, agentId, eventId)`. The contract above guarantees per-observation `eventId` uniqueness within a `(scope, agentId)`, so the bucket is what catches retries; cross-tenant `(agentId, eventId)` collisions stay in distinct buckets via `scope`.
 
-When the same `(agentId, eventId)` arrives more than once with different payloads, the winner is picked deterministically — highest `divergenceScore`, then highest finite `observedAt` (NaN normalized to −∞), then lexicographic `contextText` — instead of first-write-wins. Reordering the same logical event set produces the same `DriftReport`.
+When the same `(scope, agentId, eventId)` arrives more than once with different payloads, the winner is picked deterministically — highest `divergenceScore`, then highest finite `observedAt` (NaN normalized to −∞), then lexicographic `contextText` — instead of first-write-wins. Reordering the same logical event set produces the same `DriftReport`.
 
 ---
 
@@ -128,18 +141,22 @@ const usage = tokenize(modelContextText);
 const divergence = computeJaccardDistance(description, usage);
 
 // 2. Push observations into a per-artifact buffer (bounded by the caller).
-const observations = [/* { agentId, contextText, divergenceScore, observedAt } */];
+//    Every observation must carry { scope, agentId, divergenceScore, contextText, observedAt }
+//    and SHOULD carry eventId to unlock action-bearing suggestions.
+const observations = [/* UsagePurposeObservation */];
 
 // 3. Detect — branch on kind to distinguish detector failure from "no drift".
+//    Use this surface for telemetry / dashboards / alerts.
 const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
 switch (result.kind) {
   case "invalid-config": /* alert: thresholds rejected */; break;
   case "no-drift":       /* result.droppedCount > N → alert telemetry */; break;
-  case "drift":          /* see step 4 */; break;
+  case "drift":          /* result is observability state */; break;
 }
 
-// 4. Decide. `stableWindows` is incremented by the caller across detection cycles.
-const action = suggestAction(result, stableWindows);
+// 4. Decide. suggestAction recomputes detection internally — pass observations,
+//    not a DetectionResult. `stableWindows` is incremented by the caller across cycles.
+const action = suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, stableWindows);
 switch (action.kind) {
   case "none":         break;
   case "reclassify":   /* update artifact description */ break;

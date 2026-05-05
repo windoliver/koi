@@ -19,6 +19,7 @@ function obs(
 ): UsagePurposeObservation {
   obsClock += 1;
   return {
+    scope: "default",
     agentId,
     divergenceScore,
     contextText: contextText ?? `ctx-${agentId}-${String(obsClock)}`,
@@ -34,6 +35,7 @@ function obsNoId(
 ): UsagePurposeObservation {
   obsClock += 1;
   return {
+    scope: "default",
     agentId,
     divergenceScore,
     contextText: contextText ?? `ctx-${agentId}-${String(obsClock)}`,
@@ -57,10 +59,13 @@ function expectNoDrift(result: DetectionResult): {
 }
 
 /**
- * Build a real (branded) drift DetectionResult by calling `detectDrift` with
- * crafted inputs. Tests use this instead of structurally-constructed result
- * literals — those are now rejected by the authenticity gate inside
- * `suggestAction`, by design.
+ * Build crafted observations + the corresponding `detectDrift` result.
+ *
+ * Tests assert on `result.*` (telemetry) and pass `observations` to
+ * `suggestAction` (action path). `suggestAction` recomputes detection
+ * internally — the action verdict is always grounded in observations,
+ * not a caller-supplied DetectionResult, so spoofed/cloned/mutated
+ * results cannot drive action recommendations.
  *
  * `score` controls cohort divergence; `agents` × `obsPerAgent` builds the
  * cohort; optional `baseline`, `drops`, `dups` add baseline traffic, malformed
@@ -73,7 +78,10 @@ function buildDrift(opts: {
   readonly baseline?: number;
   readonly drops?: number;
   readonly dups?: number;
-}): DetectionResult {
+}): {
+  readonly observations: readonly UsagePurposeObservation[];
+  readonly result: DetectionResult;
+} {
   const list: UsagePurposeObservation[] = [];
   for (let a = 0; a < opts.agents; a++) {
     for (let i = 0; i < opts.obsPerAgent; i++) {
@@ -88,7 +96,7 @@ function buildDrift(opts: {
     const seed = obs("drift-0", opts.score);
     for (let i = 0; i < opts.dups; i++) list.push(seed);
   }
-  return detectDrift(list, DEFAULT_EXAPTATION_THRESHOLDS);
+  return { observations: list, result: detectDrift(list, DEFAULT_EXAPTATION_THRESHOLDS) };
 }
 
 describe("detectDrift", () => {
@@ -297,77 +305,70 @@ describe("detectDrift", () => {
 });
 
 describe("suggestAction", () => {
-  test("no report → no suggestion", () => {
-    expect(suggestAction(undefined, 1)).toEqual({ kind: "none" });
+  test("empty observations → no suggestion", () => {
+    expect(suggestAction([], DEFAULT_EXAPTATION_THRESHOLDS, 1)).toEqual({ kind: "none" });
   });
 
-  test("no-drift result → no suggestion", () => {
-    // Build a no-drift result via real detectDrift (branded); structurally-
-    // constructed objects are now rejected by the authenticity gate.
-    const noDriftResult = detectDrift(
-      [obs("a", 0.95), obs("b", 0.95)],
-      DEFAULT_EXAPTATION_THRESHOLDS,
-    );
-    expect(noDriftResult.kind).toBe("no-drift");
-    expect(suggestAction(noDriftResult, 5)).toEqual({ kind: "none" });
+  test("observations producing no-drift → no suggestion", () => {
+    expect(
+      suggestAction([obs("a", 0.95), obs("b", 0.95)], DEFAULT_EXAPTATION_THRESHOLDS, 5),
+    ).toEqual({ kind: "none" });
   });
 
-  test("invalid-config result → no suggestion", () => {
-    const invalid = detectDrift([], { ...DEFAULT_EXAPTATION_THRESHOLDS, minObservations: 0 });
-    expect(invalid.kind).toBe("invalid-config");
-    expect(suggestAction(invalid, 5)).toEqual({ kind: "none" });
+  test("invalid thresholds → no suggestion", () => {
+    expect(suggestAction([], { ...DEFAULT_EXAPTATION_THRESHOLDS, minObservations: 0 }, 5)).toEqual({
+      kind: "none",
+    });
   });
 
   test("borderline drift → reclassify (not new-artifact, even when stable)", () => {
     // avgDivergence=0.75 < 0.85 fork threshold.
-    const result = buildDrift({ agents: 2, obsPerAgent: 3, score: 0.75 });
-    expect(suggestAction(result, 5).kind).toBe("reclassify");
+    const { observations } = buildDrift({ agents: 2, obsPerAgent: 3, score: 0.75 });
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 5).kind).toBe("reclassify");
   });
 
   test("stable + raw divergence ≥ 0.85 → new-artifact", () => {
-    const result = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92 });
-    const action = suggestAction(result, 3);
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92 });
+    const action = suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 3);
     expect(action.kind).toBe("new-artifact");
   });
 
   test("strong drift but unstable (single window) → reclassify", () => {
-    const result = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
-    expect(suggestAction(result, 1).kind).toBe("reclassify");
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 1).kind).toBe("reclassify");
   });
 
   test("regression: minimum-threshold drift cannot escalate to new-artifact via volume", () => {
     // avgDivergence at the detection floor (0.7), saturating severity by
     // volume — must NOT escalate to new-artifact regardless of stableWindows.
-    const result = buildDrift({ agents: 8, obsPerAgent: 6, score: 0.7 });
-    expect(suggestAction(result, 10).kind).toBe("reclassify");
+    const { observations } = buildDrift({ agents: 8, obsPerAgent: 6, score: 0.7 });
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 10).kind).toBe("reclassify");
   });
 
-  test("accepts (real) DetectionResult of kind drift", () => {
-    const result = buildDrift({ agents: 3, obsPerAgent: 3, score: 0.92 });
-    expect(suggestAction(result, 3).kind).toBe("new-artifact");
+  test("real drift observations → new-artifact when stable+strong", () => {
+    const { observations } = buildDrift({ agents: 3, obsPerAgent: 3, score: 0.92 });
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 3).kind).toBe("new-artifact");
   });
 
-  test("DetectionResult survives JSON round-trip and still drives suggestAction", () => {
-    // Pure-data contract: clone/serialize boundaries (worker IPC, persistence,
-    // cross-package handoff) MUST NOT silently disable suggestions. The fields
-    // are the contract; honest callers preserving them keep their
-    // recommendations.
-    const result = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92 });
-    const cloned = JSON.parse(JSON.stringify(result)) as DetectionResult;
-    expect(suggestAction(cloned, 3).kind).toBe("new-artifact");
+  test("spoofed DetectionResult-shaped object cannot drive suggestAction", () => {
+    // Trust-boundary regression: suggestAction now takes raw observations and
+    // recomputes detection internally. A buggy or untrusted caller cannot
+    // fabricate `{ kind: "drift", replayProtected: true, ... }` and obtain
+    // an action recommendation without observations behind it. Two empty
+    // observations + bad thresholds + arbitrary stableWindows → none.
+    expect(suggestAction([], DEFAULT_EXAPTATION_THRESHOLDS, 99)).toEqual({ kind: "none" });
   });
 });
 
 describe("suggestAction replay-protection gate", () => {
-  test("unprotected drift result (observation without eventId) → none", () => {
+  test("any observation without eventId → none", () => {
     const obsList: UsagePurposeObservation[] = [
       ...[0.95, 0.95, 0.95].map((s) => obsNoId("a", s)),
       ...[0.95, 0.95, 0.95].map((s) => obsNoId("b", s)),
     ];
-    const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
-    expect(result.kind).toBe("drift");
-    if (result.kind === "drift") expect(result.replayProtected).toBe(false);
-    expect(suggestAction(result, 5)).toEqual({ kind: "none" });
+    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, 5)).toEqual({
+      kind: "none",
+    });
   });
 });
 
@@ -388,6 +389,7 @@ describe("eventId-based dedup + replay protection", () => {
     // collisions are accidental and per-agent dedup keeps them independent.
     const sharedId = "shared-eid";
     const a1: UsagePurposeObservation = {
+      scope: "default",
       agentId: "a1",
       divergenceScore: 0.95,
       contextText: "ctx",
@@ -418,6 +420,7 @@ describe("eventId-based dedup + replay protection", () => {
 
   test("duplicateCount reported on drift branch too", () => {
     const a1 = (eid: string, score = 0.9): UsagePurposeObservation => ({
+      scope: "default",
       agentId: "a1",
       divergenceScore: score,
       contextText: "x",
@@ -464,30 +467,37 @@ describe("eventId-based dedup + replay protection", () => {
 });
 
 describe("suggestAction quality gate", () => {
-  test("low-quality drift result (>25% dropped) → none", () => {
+  test("low-quality drift (>25% dropped) → none", () => {
     // 12 valid (4 agents × 3 obs at 0.92) + 5 dropped → 5/17 ≈ 29% > 25%.
-    const result = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92, drops: 5 });
-    expect(suggestAction(result, 5)).toEqual({ kind: "none" });
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92, drops: 5 });
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 5)).toEqual({
+      kind: "none",
+    });
   });
 
-  test("acceptable-quality drift result (<=25% dropped) → action", () => {
+  test("acceptable-quality drift (<=25% dropped) → action", () => {
     // 12 valid + 2 dropped → 2/14 ≈ 14% < 25%.
-    const result = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92, drops: 2 });
-    expect(suggestAction(result, 5).kind).toBe("new-artifact");
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92, drops: 2 });
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 5).kind).toBe("new-artifact");
   });
 
-  test("low-quality drift result (>25% duplicates) → none", () => {
+  test("low-quality drift (>25% duplicates) → none", () => {
     // 12 valid + 10 same-eventId duplicates that collapse → 10/22 ≈ 45% > 25%.
-    const result = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92, dups: 10 });
-    if (result.kind === "drift") {
-      expect(result.duplicateCount).toBeGreaterThan(0);
-      expect(suggestAction(result, 5)).toEqual({ kind: "none" });
-    }
+    const { observations, result } = buildDrift({
+      agents: 4,
+      obsPerAgent: 3,
+      score: 0.92,
+      dups: 10,
+    });
+    if (result.kind === "drift") expect(result.duplicateCount).toBeGreaterThan(0);
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 5)).toEqual({
+      kind: "none",
+    });
   });
 
-  test("real branded drift result with no drops/dups passes quality gate", () => {
-    const result = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92 });
-    expect(suggestAction(result, 5).kind).toBe("new-artifact");
+  test("clean drift with no drops/dups passes quality gate", () => {
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.92 });
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 5).kind).toBe("new-artifact");
   });
 });
 
@@ -521,6 +531,7 @@ describe("non-finite observedAt dedup tiebreak", () => {
   test("equal-score duplicates with NaN observedAt fall through to contextText (order-independent)", () => {
     const eid = "shared";
     const a: UsagePurposeObservation = {
+      scope: "default",
       agentId: "a1",
       eventId: eid,
       divergenceScore: 0.95,
@@ -550,23 +561,19 @@ describe("non-finite observedAt dedup tiebreak", () => {
 });
 
 describe("deep-freeze tamper resistance", () => {
-  test("nested report fields are frozen — mutation cannot escalate suggestion", () => {
-    // Build a sub-fork-threshold drift result. Without deep freeze, mutating
-    // result.report.avgDivergence to push it above 0.85 would let suggestAction
-    // return new-artifact on tampered data.
-    const result = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.75 });
+  test("nested report fields on detectDrift output are frozen", () => {
+    // Without deep freeze, telemetry consumers could mutate `result.report`
+    // before logging or persisting it, producing inconsistent observability.
+    const { result } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.75 });
     expect(result.kind).toBe("drift");
     if (result.kind === "drift") {
       expect(() => {
-        // Strict mode (TS modules are strict) throws on writes to frozen.
         (result.report as { avgDivergence: number }).avgDivergence = 0.99;
       }).toThrow();
       expect(() => {
         (result.report as { severity: number }).severity = 1;
       }).toThrow();
-      // Genuine value was not overwritten.
       expect(result.report.avgDivergence).toBeLessThan(0.85);
-      expect(suggestAction(result, 5).kind).toBe("reclassify");
     }
   });
 });
@@ -579,6 +586,7 @@ describe("deterministic dedup conflict resolution", () => {
     // the same DriftReport.observationCount and avgDivergence.
     const sharedEid = "evt-shared";
     const lo: UsagePurposeObservation = {
+      scope: "default",
       agentId: "a1",
       eventId: sharedEid,
       divergenceScore: 0.4,
@@ -610,14 +618,13 @@ describe("deterministic dedup conflict resolution", () => {
   });
 });
 
-describe("tenant isolation via globally-unique agentId", () => {
-  test("same logical agent in two tenants stays separate when prefixed in agentId", () => {
-    // L0 contract: agentId must be globally unique across the deployment.
-    // Multi-tenant deployments prefix upstream (e.g. `${tenant}/${agent}`).
-    // Same logical agent in 2 tenants → 2 distinct agentIds → 2 cohort agents.
+describe("tenant isolation via required scope field", () => {
+  test("same agentId in two tenant scopes counts as two cohort members", () => {
+    // Same logical agent in two tenants is two distinct observers — `(scope,
+    // agentId)` cohort key keeps them as independent evidence.
     const observations: UsagePurposeObservation[] = [
-      ...[0.95, 0.95, 0.95].map((s) => obs("tenant-A/agent-shared", s)),
-      ...[0.95, 0.95, 0.95].map((s) => obs("tenant-B/agent-shared", s)),
+      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("agent-shared", s), scope: "tenant-A" })),
+      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("agent-shared", s), scope: "tenant-B" })),
     ];
     const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
@@ -627,15 +634,57 @@ describe("tenant isolation via globally-unique agentId", () => {
     }
   });
 
-  test("same agentId across multiple tenants (upstream did NOT prefix) counts as one agent", () => {
-    // Regression: if the upstream observer fails to prefix per the L0 contract,
-    // the detector cannot know two tenants are involved — it sees one agent.
-    // No drift triggers because minDivergentAgents=2 is unmet.
+  test("missing/empty scope drops the observation (no implicit global scope)", () => {
+    // Required-field contract: omitting scope (or whitespace-only) is dropped
+    // rather than silently merging into an implicit global namespace.
     const observations: UsagePurposeObservation[] = [
-      ...Array.from({ length: 9 }, () => obs("solo-agent", 0.95)),
+      ...Array.from({ length: 9 }, (_, i) => ({
+        ...obs(`agent-${String(i)}`, 0.95),
+        scope: "  ",
+      })),
     ];
     const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("no-drift");
+    if (result.kind === "no-drift") expect(result.droppedCount).toBe(9);
+  });
+
+  test("retries within a single (scope, agentId) collapse via dedup", () => {
+    const eid = "evt-1";
+    const observations: UsagePurposeObservation[] = [
+      {
+        scope: "tenant-A",
+        agentId: "a",
+        eventId: eid,
+        divergenceScore: 0.95,
+        observedAt: 1,
+        contextText: "x",
+      },
+      {
+        scope: "tenant-A",
+        agentId: "a",
+        eventId: eid,
+        divergenceScore: 0.95,
+        observedAt: 2,
+        contextText: "x",
+      },
+      {
+        scope: "tenant-A",
+        agentId: "a",
+        eventId: eid,
+        divergenceScore: 0.95,
+        observedAt: 3,
+        contextText: "x",
+      },
+      ...[0.95, 0.95, 0.95].map((s) => obs("b", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("c", s)),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      // a collapses 3 → 1 (fails minObsPerAgent so excluded). b + c contribute.
+      expect(result.report.observationCount).toBe(6);
+      expect(result.duplicateCount).toBe(2);
+    }
   });
 });
 
@@ -679,13 +728,16 @@ describe("whitespace-only eventId is treated as missing", () => {
     if (result.kind === "drift" || result.kind === "no-drift") {
       expect(result.replayProtected).toBe(false);
     }
-    expect(suggestAction(result, 5)).toEqual({ kind: "none" });
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 5)).toEqual({
+      kind: "none",
+    });
   });
 
   test("eventIds varying only in surrounding whitespace still collapse", () => {
     // Upstream emitter sometimes pads keys; trim makes "foo" and "foo " the
     // same dedup bucket so retries still collapse.
     const make = (eventId: string, observedAt: number): UsagePurposeObservation => ({
+      scope: "default",
       agentId: "a1",
       eventId,
       divergenceScore: 0.95,
@@ -728,53 +780,59 @@ describe("eventId contract regressions", () => {
     }
   });
 
-  test("accidental cross-tenant eventId collision keeps observations independent (per-agent scope)", () => {
-    // Two tenants happen to mint the same eventId string. Per-agent scope
-    // (tenant-prefixed agentIds) keeps them as independent evidence rather
-    // than collapsing them as duplicates. Earlier global-dedup attempt
-    // would have erased real evidence here.
+  test("accidental cross-tenant (agentId, eventId) collision keeps observations independent (scoped dedup)", () => {
+    // Two tenants happen to mint the same agentId AND eventId strings.
+    // Scoped dedup `(scope, agentId, eventId)` keeps their evidence independent
+    // rather than collapsing them as duplicates. Without scope, real evidence
+    // here would be silently erased.
     const collidingId = "happens-to-collide";
     const observations: UsagePurposeObservation[] = [
-      // tenantA — 2 distinct (legitimate) eventIds, plus a colliding-id replay.
+      // tenantA — 2 distinct (legitimate) eventIds, plus a colliding-id event.
       {
-        agentId: "tenantA/agent-x",
-        eventId: "a-evt-1",
+        scope: "tenantA",
+        agentId: "agent-x",
+        eventId: "evt-1",
         divergenceScore: 0.95,
         observedAt: 1,
         contextText: "x",
       },
       {
-        agentId: "tenantA/agent-x",
-        eventId: "a-evt-2",
+        scope: "tenantA",
+        agentId: "agent-x",
+        eventId: "evt-2",
         divergenceScore: 0.95,
         observedAt: 2,
         contextText: "x",
       },
       {
-        agentId: "tenantA/agent-x",
+        scope: "tenantA",
+        agentId: "agent-x",
         eventId: collidingId,
         divergenceScore: 0.95,
         observedAt: 3,
         contextText: "x",
       },
-      // tenantB — also has a hit on the colliding eventId. Per-agent scope
-      // keeps tenantB's evidence independent of tenantA's despite the collision.
+      // tenantB — same agentId AND same colliding eventId. Scope keeps
+      // tenantB's evidence independent of tenantA's.
       {
-        agentId: "tenantB/agent-y",
-        eventId: "b-evt-1",
+        scope: "tenantB",
+        agentId: "agent-x",
+        eventId: "evt-1",
         divergenceScore: 0.95,
         observedAt: 4,
         contextText: "x",
       },
       {
-        agentId: "tenantB/agent-y",
-        eventId: "b-evt-2",
+        scope: "tenantB",
+        agentId: "agent-x",
+        eventId: "evt-2",
         divergenceScore: 0.95,
         observedAt: 5,
         contextText: "x",
       },
       {
-        agentId: "tenantB/agent-y",
+        scope: "tenantB",
+        agentId: "agent-x",
         eventId: collidingId,
         divergenceScore: 0.95,
         observedAt: 6,
@@ -802,7 +860,9 @@ describe("eventId contract — actions only when replay-protected", () => {
     const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
     if (result.kind === "drift") expect(result.replayProtected).toBe(false);
-    expect(suggestAction(result, 5)).toEqual({ kind: "none" });
+    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, 5)).toEqual({
+      kind: "none",
+    });
   });
 
   test("every-observation-has-eventId window unlocks actions", () => {
@@ -813,7 +873,7 @@ describe("eventId contract — actions only when replay-protected", () => {
     const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
     if (result.kind === "drift") expect(result.replayProtected).toBe(true);
-    expect(suggestAction(result, 5).kind).toBe("new-artifact");
+    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, 5).kind).toBe("new-artifact");
   });
 });
 
@@ -830,7 +890,9 @@ describe("cohort-share guard", () => {
     ];
     const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
-    expect(suggestAction(result, 1)).toEqual({ kind: "none" });
+    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, 1)).toEqual({
+      kind: "none",
+    });
   });
 
   test("minority drift cohort + stable + strong → new-artifact (fork specialized variant)", () => {
@@ -841,7 +903,7 @@ describe("cohort-share guard", () => {
     ];
     const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
-    expect(suggestAction(result, 3).kind).toBe("new-artifact");
+    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, 3).kind).toBe("new-artifact");
   });
 
   test("majority drift cohort → reclassify allowed", () => {
@@ -852,7 +914,7 @@ describe("cohort-share guard", () => {
     ];
     const result = detectDrift(obsList, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
-    expect(suggestAction(result, 1).kind).toBe("reclassify");
+    expect(suggestAction(obsList, DEFAULT_EXAPTATION_THRESHOLDS, 1).kind).toBe("reclassify");
   });
 });
 
@@ -905,13 +967,13 @@ describe("mixed-traffic regressions", () => {
     // 6-obs drift cohort + 4 baseline obs + 2 drops. Old denominator (cohort
     // only) would have computed 2/(6+2)=25%; new denominator uses
     // validObservationCount=10, giving 2/(10+2)≈17% — still acceptable.
-    const result = buildDrift({
+    const { observations } = buildDrift({
       agents: 2,
       obsPerAgent: 3,
       score: 0.92,
       baseline: 4,
       drops: 2,
     });
-    expect(suggestAction(result, 5).kind).toBe("new-artifact");
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, 5).kind).toBe("new-artifact");
   });
 });

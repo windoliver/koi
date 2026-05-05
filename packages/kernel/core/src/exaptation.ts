@@ -47,17 +47,19 @@ export interface UsagePurposeObservation {
   /** Truncated model response text preceding the tool call. */
   readonly contextText: string;
   /**
-   * Agent that made the observation.
+   * Tenant / account / realm namespace. Required, not optional — the
+   * exaptation detector keys both replay dedup and cohort attribution on
+   * `(scope, agentId, ...)`, so providing scope is what guarantees runtime
+   * tenant isolation. Single-tenant deployments may use a constant value
+   * (e.g. `"default"`); the field exists to force every emitter to make a
+   * conscious choice rather than rely on `agentId` formatting conventions.
    *
-   * **Must be globally unique across the deployment**, not per-tenant. In
-   * multi-tenant systems the upstream observer is responsible for prefixing
-   * (e.g. `${tenant}/${agent}`) so two tenants reusing the same logical
-   * `agent` value never produce identical `agentId` strings here. The
-   * exaptation detector uses `agentId` as the canonical agent identity for
-   * both replay-dedup scoping and `minDivergentAgents` cohort attribution;
-   * if tenant-local `agentId` collisions reach the detector, evidence is
-   * silently merged across tenants.
+   * Whitespace-only values are treated as missing and the observation is
+   * dropped. There is no implicit "global" scope — that is exactly the
+   * silent-merge failure mode this field exists to prevent.
    */
+  readonly scope: string;
+  /** Agent that made the observation, identified within `scope`. */
   readonly agentId: string;
   /** Jaccard distance vs the brick's stated purpose (0-1). */
   readonly divergenceScore: number;

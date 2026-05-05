@@ -42,12 +42,13 @@ export interface ExaptationThresholds {
  * NOT a freshly-minted nonce). See the L0 `UsagePurposeObservation.eventId`
  * docstring for the full contract; the requirement is identical here.
  *
- * Dedup namespace is `(agentId, eventId)`. The L0 contract for `agentId`
- * requires it to be **globally unique across the deployment** (multi-tenant
- * systems must prefix, e.g. `${tenant}/${agent}`), so tenant isolation is
- * already encoded in the agent identity — no separate scope field is
- * needed. Same logical agent in two tenants → two distinct `agentId`s →
- * neither dedup nor cohort attribution merges them.
+ * Tenant isolation is enforced at runtime via the required `scope` field on
+ * every observation. Dedup is keyed on `(scope, agentId, eventId)` and
+ * cohort attribution on `(scope, agentId)`, so two tenants that share the
+ * same logical `agentId` (or `eventId`) keep their evidence independent.
+ * Observations missing or whitespace-only `scope` are dropped at validation
+ * — there is no implicit "global" scope, exactly so a forgotten upstream
+ * scope cannot silently merge tenants.
  *
  * If even one valid observation lacks `eventId` the window is
  * `replayProtected: false`, no dedup runs, and `suggestAction` refuses to
@@ -197,17 +198,24 @@ export function detectDrift(
     return deepFreeze({ kind: "invalid-config", reason: configError });
   }
 
-  // Validate observations. agentId + divergenceScore are required for any
-  // scoring path. eventId is OPTIONAL data — its presence on every valid
-  // sample is what unlocks replay protection downstream.
+  // Validate observations. scope + agentId + divergenceScore are required.
+  // eventId is OPTIONAL data — its presence on every valid sample is what
+  // unlocks replay protection downstream.
   //
-  // Normalize agentId by trimming so all downstream bucketing (dedup,
-  // cohort attribution) sees one canonical form for an agent. Without
-  // this, "agent" and "agent " would bucket as two distinct agents.
+  // Normalize scope and agentId by trimming so all downstream bucketing
+  // (dedup, cohort attribution) sees one canonical form. Without this,
+  // "agent" and "agent " would bucket as two distinct agents, and
+  // "tenant-A" and " tenant-A " would bucket as two distinct tenants.
   const valid: UsagePurposeObservation[] = [];
   for (const o of observations) {
     if (!isObservationValid(o)) continue;
-    valid.push(o.agentId === o.agentId.trim() ? o : { ...o, agentId: o.agentId.trim() });
+    const trimmedScope = o.scope.trim();
+    const trimmedAgent = o.agentId.trim();
+    if (trimmedScope === o.scope && trimmedAgent === o.agentId) {
+      valid.push(o);
+    } else {
+      valid.push({ ...o, scope: trimmedScope, agentId: trimmedAgent });
+    }
   }
   const droppedCount = observations.length - valid.length;
 
@@ -227,7 +235,7 @@ export function detectDrift(
     if (typeof o.eventId === "string" && o.eventId.trim().length > 0) withEventId.push(o);
     else withoutEventId.push(o);
   }
-  const dedupedWithEventId = dedupePerAgentByEventId(withEventId);
+  const dedupedWithEventId = dedupeByScopeAgentEvent(withEventId);
   const unique: readonly UsagePurposeObservation[] = [...dedupedWithEventId, ...withoutEventId];
   const duplicateCount = withEventId.length - dedupedWithEventId.length;
   const replayProtected = valid.length > 0 && withoutEventId.length === 0;
@@ -283,59 +291,49 @@ export function detectDrift(
 }
 
 /**
- * Map a detection result to a recommended action.
- *
- * Only `DetectionResult` is accepted (NOT a bare `DriftReport`), so the
- * dropped/duplicate quality gate is mandatory and cannot be bypassed by
- * persisting just the report and replaying it later. Callers that hand off
- * a positive recommendation must hand off the full `DetectionResult`.
+ * Recommend an action from raw observations. Internally re-runs `detectDrift`
+ * so the verdict is always grounded in a fresh, detector-produced result —
+ * not a caller-supplied `DetectionResult` value. Closes the trust boundary:
+ * a buggy or untrusted caller cannot fabricate `{ kind: "drift", ... }` and
+ * obtain `reclassify` / `new-artifact` without real observations behind it.
  *
  * Behaviour:
- *   - `none` for `no-drift`, `invalid-config`, or `undefined`.
- *   - `none` for `drift` results whose dropped + duplicate fraction exceeds
- *     `MAX_QUALITY_DEGRADATION_RATIO` (default 25%).
- *   - `new-artifact` requires `stableWindows ≥ 2` AND raw `avgDivergence ≥
+ *   - `none` when the fresh detection is `no-drift`, `invalid-config`, or
+ *     not replay-protected (any valid observation lacked `eventId`).
+ *   - `none` when the dropped + duplicate fraction exceeds
+ *     `MAX_QUALITY_DEGRADATION_RATIO` (default 25%) — refuse to act on
+ *     low-quality windows.
+ *   - `new-artifact` when `stableWindows ≥ 2` AND raw `avgDivergence ≥
  *     NEW_ARTIFACT_DIVERGENCE_THRESHOLD` (0.85). Gated on raw divergence,
  *     not on saturated `severity`, so traffic volume alone cannot escalate.
- *   - `reclassify` otherwise.
+ *   - `reclassify` when the divergent cohort is a majority of validated
+ *     traffic; otherwise `none` (minority drift shouldn't overwrite the
+ *     canonical description that baseline majority depends on).
  */
 export function suggestAction(
-  input: DetectionResult | undefined,
+  observations: readonly UsagePurposeObservation[],
+  thresholds: ExaptationThresholds,
   stableWindows: number,
 ): ExaptationSuggestion {
-  if (input === undefined || input.kind !== "drift") return { kind: "none" };
+  const result = detectDrift(observations, thresholds);
+  if (result.kind !== "drift") return { kind: "none" };
+  if (!result.replayProtected) return { kind: "none" };
 
-  // Replay protection is mandatory for action-bearing results. A
-  // detector run without `observationKey` could have scored retried
-  // events as independent evidence; refuse to recommend action.
-  if (!input.replayProtected) return { kind: "none" };
-
-  // Quality gate is mandatory: refuse to act on a window where most
-  // observations were dropped or collapsed as duplicates. The denominator
-  // is the *full* validated window (not just the divergent cohort) so a
-  // clean baseline-heavy window isn't punished for the cohort being a
-  // small slice.
-  const total = input.validObservationCount + input.droppedCount + input.duplicateCount;
-  const lowQuality = input.droppedCount + input.duplicateCount;
+  const total = result.validObservationCount + result.droppedCount + result.duplicateCount;
+  const lowQuality = result.droppedCount + result.duplicateCount;
   if (total > 0 && lowQuality / total > MAX_QUALITY_DEGRADATION_RATIO) {
     return { kind: "none" };
   }
 
-  const report = input.report;
+  const report = result.report;
   const stableAndStrong =
     stableWindows >= STABLE_WINDOW_COUNT &&
     report.avgDivergence >= NEW_ARTIFACT_DIVERGENCE_THRESHOLD;
   if (stableAndStrong) {
     return { kind: "new-artifact", severity: report.severity };
   }
-  // Reclassify rewrites the canonical purpose — only safe when the drifting
-  // cohort is a majority of validated traffic. A minority cohort that isn't
-  // strong enough to fork should NOT overwrite the description that the
-  // baseline majority still depends on; return `none` and wait for either
-  // the cohort to grow or for stableWindows + divergence to qualify the
-  // result for `new-artifact`.
   const cohortShare =
-    input.validObservationCount > 0 ? report.observationCount / input.validObservationCount : 0;
+    result.validObservationCount > 0 ? report.observationCount / result.validObservationCount : 0;
   if (cohortShare < RECLASSIFY_MIN_COHORT_SHARE) return { kind: "none" };
   return { kind: "reclassify", severity: report.severity };
 }
@@ -369,18 +367,25 @@ function describeInvalidThresholds(t: ExaptationThresholds): string | undefined 
 
 function isObservationValid(o: UsagePurposeObservation): boolean {
   if (!isUnitInterval(o.divergenceScore)) return false;
-  // Trim agentId before checking emptiness, the same way eventId is handled.
-  // A blank-but-present string from a degraded serializer must not count as
-  // a distinct agent — otherwise one unattributable source can satisfy
-  // minDivergentAgents and unlock irreversible suggestions.
+  // Trim agentId / scope before checking emptiness, the same way eventId is
+  // handled. A blank-but-present string from a degraded serializer must not
+  // count as a real identity — otherwise an unattributable source could
+  // satisfy minDivergentAgents and unlock irreversible suggestions, or merge
+  // into an implicit "global" tenant scope (the silent-merge failure mode
+  // the required-`scope` contract exists to prevent).
+  if (typeof o.scope !== "string" || o.scope.trim().length === 0) return false;
   if (typeof o.agentId !== "string" || o.agentId.trim().length === 0) return false;
   return true;
 }
 
+/** Composite `(scope, agentId)` key. Length-prefix prevents `a:b` / `ab:` collisions. */
+function scopeAgentKey(scope: string, agentId: string): string {
+  return `${String(scope.length)}:${scope}:${agentId}`;
+}
+
 /**
- * Dedup observations per agent using each observation's `eventId`. Caller has
- * already verified that every input has a non-empty string `eventId`. The
- * dedup namespace is `(agentId, eventId)`.
+ * Dedup observations using `(scope, agentId, eventId)`. Caller has already
+ * verified that every input has non-empty `scope`, `agentId`, and `eventId`.
  *
  * The L0 contract for `eventId` requires it to be a **per-observation**
  * idempotency key (NOT a shared upstream correlation ID), so:
@@ -391,37 +396,37 @@ function isObservationValid(o: UsagePurposeObservation): boolean {
  *     same upstream causal event, and independent observations from
  *     different tenants all generate DIFFERENT `eventId`s and survive.
  *
- * Tenant isolation is encoded in `agentId` itself: the L0 contract requires
- * `agentId` to be globally unique across the deployment, so multi-tenant
- * deployments must prefix (e.g. `${tenant}/${agent}`) upstream. Same logical
- * agent in two tenants → two distinct `agentId`s → buckets stay separate.
+ * Scope keeps tenants isolated at runtime: two tenants happening to mint the
+ * same `(agentId, eventId)` pair stay in separate buckets because their
+ * `scope` differs.
  *
  * Conflict resolution is deterministic, content-based — NOT first-write-wins:
  *   1. highest `divergenceScore`        — score conflict resolution
  *   2. highest finite `observedAt`      — order tiebreak (NaN normalized)
  *   3. lexicographic `contextText`      — final deterministic tiebreak
  */
-function dedupePerAgentByEventId(
+function dedupeByScopeAgentEvent(
   observations: readonly UsagePurposeObservation[],
 ): readonly UsagePurposeObservation[] {
-  // Outer key: agentId. Inner key: eventId.
+  // Outer key: scopeAgentKey(scope, agentId). Inner key: eventId.
   const winners = new Map<string, Map<string, UsagePurposeObservation>>();
   for (const o of observations) {
     if (typeof o.eventId !== "string") continue;
     const eventId = o.eventId.trim();
     if (eventId.length === 0) continue;
-    let agentBucket = winners.get(o.agentId);
-    if (agentBucket === undefined) {
-      agentBucket = new Map<string, UsagePurposeObservation>();
-      winners.set(o.agentId, agentBucket);
+    const key = scopeAgentKey(o.scope, o.agentId);
+    let bucket = winners.get(key);
+    if (bucket === undefined) {
+      bucket = new Map<string, UsagePurposeObservation>();
+      winners.set(key, bucket);
     }
-    const incumbent = agentBucket.get(eventId);
+    const incumbent = bucket.get(eventId);
     if (incumbent === undefined || prefersChallenger(incumbent, o)) {
-      agentBucket.set(eventId, o);
+      bucket.set(eventId, o);
     }
   }
   const out: UsagePurposeObservation[] = [];
-  for (const agentBucket of winners.values()) for (const o of agentBucket.values()) out.push(o);
+  for (const bucket of winners.values()) for (const o of bucket.values()) out.push(o);
   return out;
 }
 
@@ -471,23 +476,24 @@ function computeDivergentCohort(
   const divergentCounts = new Map<string, number>();
   for (const o of observations) {
     if (o.divergenceScore < thresholds.divergenceThreshold) continue;
-    // Cohort attribution uses agentId. The L0 contract requires `agentId`
-    // to be globally unique across the deployment, so two distinct agents
-    // (including the same logical agent prefixed for two tenants) cannot
-    // collide here.
-    divergentSums.set(o.agentId, (divergentSums.get(o.agentId) ?? 0) + o.divergenceScore);
-    divergentCounts.set(o.agentId, (divergentCounts.get(o.agentId) ?? 0) + 1);
+    // Cohort attribution keys on `(scope, agentId)` — the same logical
+    // agent in two tenants is two independent observers, so they each
+    // count toward `minDivergentAgents`. Within one scope, an agent's
+    // observations aggregate as one cohort member.
+    const key = scopeAgentKey(o.scope, o.agentId);
+    divergentSums.set(key, (divergentSums.get(key) ?? 0) + o.divergenceScore);
+    divergentCounts.set(key, (divergentCounts.get(key) ?? 0) + 1);
   }
 
   // let: cohort accumulators
   let agentCount = 0;
   let observationCount = 0;
   let totalDivergence = 0;
-  for (const [agentId, count] of divergentCounts) {
+  for (const [key, count] of divergentCounts) {
     if (count < thresholds.minObservationsPerAgent) continue;
     agentCount++;
     observationCount += count;
-    totalDivergence += divergentSums.get(agentId) ?? 0;
+    totalDivergence += divergentSums.get(key) ?? 0;
   }
   return { agentCount, observationCount, totalDivergence };
 }
