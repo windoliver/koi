@@ -375,6 +375,14 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/federation": {
+      "name": "@koi/federation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+    },
     "packages/lib/file-resolution": {
       "name": "@koi/file-resolution",
       "version": "0.0.0",
@@ -1353,6 +1361,7 @@
         "@koi/eval": "workspace:*",
         "@koi/event-trace": "workspace:*",
         "@koi/execution-context": "workspace:*",
+        "@koi/federation": "workspace:*",
         "@koi/file-type": "workspace:*",
         "@koi/forge-demand": "workspace:*",
         "@koi/forge-optimizer": "workspace:*",
@@ -2414,6 +2423,8 @@
     "@koi/event-trace": ["@koi/event-trace@workspace:packages/lib/event-trace"],
 
     "@koi/execution-context": ["@koi/execution-context@workspace:packages/lib/execution-context"],
+
+    "@koi/federation": ["@koi/federation@workspace:packages/lib/federation"],
 
     "@koi/file-resolution": ["@koi/file-resolution@workspace:packages/lib/file-resolution"],
 

@@ -731,6 +731,113 @@ describe("Golden: @koi/middleware-task-anchor", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/federation (2 standalone queries)
+// Exercise the exported middleware surface directly from @koi/runtime's
+// consumer boundary. No LLM, no cassette — proves the cross-zone routing
+// contract is reachable through @koi/runtime's dependency graph.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/federation", () => {
+  test("routes tool call to remote zone when targetZoneId set", async () => {
+    const { createFederationMiddleware } = await import("@koi/federation");
+    const { zoneId } = await import("@koi/core");
+
+    const localZone = zoneId("zone-local");
+    const remoteZone = zoneId("zone-remote");
+
+    let calledMethod: string | undefined;
+    let calledParams: Record<string, unknown> | undefined;
+    const remoteTransport = {
+      call: async <T>(
+        method: string,
+        params: Record<string, unknown>,
+      ): Promise<{ readonly ok: true; readonly value: T }> => {
+        calledMethod = method;
+        calledParams = params;
+        const response = { output: "remote-ok", metadata: { zone: "zone-remote" } };
+        return { ok: true, value: response as T };
+      },
+      close: () => {},
+    };
+
+    const delegated: { zone: string; tool: string }[] = [];
+    const mw = createFederationMiddleware({
+      localZoneId: localZone,
+      remoteTransports: new Map([["zone-remote", remoteTransport]]),
+      onDelegated: (z, req) => delegated.push({ zone: z, tool: req.toolId }),
+    });
+
+    expect(mw.name).toBe("koi:federation");
+
+    const ctx: TurnContext = {
+      session: {
+        agentId: "fed-golden",
+        sessionId: sessionId("fed-golden"),
+        runId: runId("r-fed"),
+        metadata: {},
+      },
+      turnIndex: 0,
+      turnId: `${runId("r-fed")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: { targetZoneId: remoteZone },
+    };
+
+    const localHandler = async (): Promise<ToolResponse> => ({ output: "local" });
+    const result = await mw.wrapToolCall?.(
+      ctx,
+      { toolId: "bash", input: { cmd: "ls" } },
+      localHandler,
+    );
+
+    // mw_span equivalent: federation delegated to remote zone, not local handler
+    expect(result?.output).toBe("remote-ok");
+    expect(calledMethod).toBe("federation.zone_execute");
+    expect(calledParams?.targetZoneId).toBe(remoteZone);
+    expect(delegated).toEqual([{ zone: "zone-remote", tool: "bash" }]);
+  });
+
+  test("passes through when targetZoneId matches localZoneId", async () => {
+    const { createFederationMiddleware } = await import("@koi/federation");
+    const { zoneId } = await import("@koi/core");
+
+    const localZone = zoneId("zone-local");
+
+    const mw = createFederationMiddleware({
+      localZoneId: localZone,
+      remoteTransports: new Map(),
+    });
+
+    const ctx: TurnContext = {
+      session: {
+        agentId: "fed-golden-pass",
+        sessionId: sessionId("fed-pass"),
+        runId: runId("r-pass"),
+        metadata: {},
+      },
+      turnIndex: 0,
+      turnId: `${runId("r-pass")}-0` as TurnContext["turnId"],
+      messages: [],
+      metadata: { targetZoneId: localZone },
+    };
+
+    let nextCalled = false;
+    const localHandler = async (): Promise<ToolResponse> => {
+      nextCalled = true;
+      return { output: "local-result" };
+    };
+
+    const result = await mw.wrapToolCall?.(
+      ctx,
+      { toolId: "bash", input: { cmd: "pwd" } },
+      localHandler,
+    );
+
+    expect(result?.output).toBe("local-result");
+    expect(nextCalled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/middleware-tool-error-formatter
 // Standalone tests that exercise the exported middleware surface from
 // @koi/runtime's consumer boundary, plus a trajectory fixture assertion.
