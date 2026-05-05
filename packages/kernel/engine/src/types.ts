@@ -16,6 +16,8 @@ import type {
   ChannelStatus,
   ChildHandle,
   ComponentProvider,
+  ContextEngine,
+  ContextManifestConfig,
   DelegationId,
   DeliveryPolicy,
   EngineAdapter,
@@ -94,6 +96,41 @@ export interface CreateKoiOptions {
   readonly middleware?: readonly KoiMiddleware[];
   /** Component providers to attach during assembly. */
   readonly providers?: readonly ComponentProvider[];
+  /**
+   * Optional pluggable context-management pipeline (issue #1767).
+   *
+   * Hosts pass a **factory**, not an instance. The factory is invoked once
+   * per agent assembly so per-agent occupancy / per-run accumulators stay
+   * scoped to a single agent — a singleton instance shared across agents
+   * would leak occupancy state between unrelated turns under load.
+   *
+   * The factory receives the resolved `manifest.context` config bag so the
+   * engine can honor `version`/`config` selectors. The runtime then validates
+   * that the returned `engine.identity.name` matches `manifest.context.engine`
+   * and (when set) that `engine.identity.version === manifest.context.version`,
+   * rejecting any drift before assembly.
+   *
+   * When `createKoi` accepts a factory, it auto-injects a controller-backed
+   * middleware that calls `engine.prepare()` on every model call and bridges
+   * `engine.onAfterTurn` to the turn lifecycle — so the slot is never inert.
+   * Swap operations performed via the returned `swapController` take effect
+   * on the very next turn.
+   *
+   * When absent, no engine is attached and the runtime falls back to its
+   * existing per-turn behavior.
+   */
+  readonly contextEngineFactory?: (config?: ContextManifestConfig) => ContextEngine;
+  /**
+   * Observer for swap/rollback events emitted by the runtime's swap
+   * controller. When a `contextEngineFactory` is supplied, `createKoi`
+   * subscribes this listener for the runtime's lifetime so hosts can
+   * forward swaps onto their event bus / TUI / audit log without having
+   * to remember to call `runtime.contextEngineSwapController.subscribe`.
+   *
+   * Listener errors are caught and logged by the controller; they do
+   * not affect the active engine or history.
+   */
+  readonly onContextEngineSwap?: (event: import("@koi/core").ContextEngineSwapEvent) => void;
   /** Iteration guard limits. Defaults to DEFAULT_ITERATION_LIMITS. */
   readonly limits?: Partial<IterationLimits>;
   /** Loop detection configuration. Defaults to DEFAULT_LOOP_DETECTION. Set to false to disable. */
@@ -247,6 +284,12 @@ export interface RunHandle extends AsyncIterable<EngineEvent> {
 export interface KoiRuntime {
   /** The assembled agent entity. */
   readonly agent: Agent;
+  /**
+   * Swap controller for the active context engine (#1767). Defined only when
+   * `contextEngineFactory` was passed to `createKoi`. Auto-wired so swaps
+   * take effect on the very next model call without any host plumbing.
+   */
+  readonly contextEngineSwapController?: import("./context-engine-swap.js").ContextEngineSwapController;
   /** The session ID assigned to this runtime instance. */
   readonly sessionId: string;
   /** RunId of the active run, or `undefined` between runs. Callers can

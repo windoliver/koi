@@ -51,6 +51,7 @@ export type {
   CapabilityConfig,
   ChannelConfig,
   ChannelIdentity,
+  ContextManifestConfig,
   FileSystemConfig,
   FilesystemSkillSource,
   ForgedSkillSource,
@@ -257,6 +258,14 @@ export type {
 } from "./config.js";
 // context
 export type { CompactionResult, ContextCompactor, TokenEstimator } from "./context.js";
+// context-engine — pluggable ECS slot for context-management pipelines (issue #1767)
+export type {
+  ContextEngine,
+  ContextEngineIdentity,
+  ContextEngineSwapEvent,
+  ContextOccupancy,
+} from "./context-engine.js";
+export { CONTEXT_ENGINE } from "./context-engine.js";
 // correlation
 export type { CorrelationIds } from "./correlation.js";
 // cost tracker — per-session, per-tool, per-model cost transparency

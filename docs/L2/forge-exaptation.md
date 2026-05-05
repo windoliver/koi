@@ -1,286 +1,205 @@
-# @koi/forge-exaptation — Exaptation (Purpose Drift) Detection
+# @koi/forge-exaptation — Purpose-Drift Detection
 
-`@koi/forge-exaptation` is an L2 middleware package that detects when bricks (tools, skills, agents) are used beyond their original purpose. When multiple agents repurpose the same tool for divergent purposes, the middleware emits an `ExaptationSignal` — a cue to generalize the interface or forge a new specialized brick.
+`@koi/forge-exaptation` is an L2 package that detects when forge artifacts (tools, skills, agents) are used for purposes beyond their original demand. It is a **pure-function library** — no middleware, no state, no I/O — that takes usage observations as input and returns a drift report plus a recommended action.
+
+Issue: [#1351](https://github.com/windoliver/koi/issues/1351).
 
 ---
 
 ## Why It Exists
 
-Bricks are created with a stated purpose (their description), but real-world usage drifts. A "file-reader" tool starts being used for config parsing, log analysis, and data extraction. This latent generality goes undetected — the tool works, so nobody notices it's doing three jobs.
+Bricks are forged against a stated demand, but real-world usage drifts. A "file-reader" forged to parse configs ends up parsing logs, CSVs, and YAML manifests across many agents. The interface fossilizes while the actual usage spreads — and nobody notices because the tool keeps working.
 
-```
-Before:
-  tool "file-reader" described as "Read files from the filesystem"
-  agent-A uses it to parse config → works fine
-  agent-B uses it to analyze logs → works fine
-  agent-C uses it to extract CSV data → works fine
-  Problem: nobody knows this tool is 3 tools in a trench coat
-
-After (with exaptation detection):
-  middleware observes each usage context vs stated purpose
-  Jaccard distance shows persistent divergence across agents
-  ExaptationSignal emitted → forge pipeline can:
-    - generalize the tool's interface
-    - fork it into specialized variants
-    - update the description to match actual usage
-```
-
-The term **exaptation** comes from evolutionary biology: a trait that evolved for one purpose but gets co-opted for another (feathers evolved for warmth, then flight). Detecting this in bricks reveals where the system is organically adapting.
+**Exaptation** (biology) — a trait that evolved for one purpose and got co-opted for another (feathers → flight). Detecting it in bricks reveals where the system is organically adapting.
 
 ---
 
-## What This Feature Enables
+## Scope
 
-1. **Automatic interface evolution** — Signals when a tool's stated purpose no longer matches how agents actually use it. Without this, interfaces fossilize even as usage patterns change.
+This package provides:
 
-2. **Principled brick splitting** — Instead of guessing when to split a tool into specialized variants, the system provides evidence: which agents, how divergent, how often. Data-driven forging decisions.
+| Function | Returns | Role |
+|---|---|---|
+| `tokenize` | `ReadonlySet<string>` | Lowercased keyword set; drops stopwords + tokens shorter than 3 chars; splits snake_case / camelCase / acronym boundaries |
+| `computeJaccardDistance` | `number ∈ [0,1]` | Set distance between two token sets |
+| `detectDrift` | `DetectionResult` | Discriminated union: `drift` / `no-drift` / `invalid-config` |
+| `suggestAction` | `ExaptationSuggestion` | Maps a result (+ stable-window count) to `none` \| `reclassify` \| `new-artifact` |
 
-3. **Cross-agent pattern discovery** — A single agent repurposing a tool is noise. Multiple agents independently converging on the same repurposing is a pattern. The `minDivergentAgents` threshold (default: 2) separates signal from noise.
-
-4. **Self-describing system** — Each `ExaptationSignal` carries full evidence: the original description, observed contexts, divergence score, and agent count. The signal is fat and self-contained — consumers don't need to query back for context.
-
----
-
-## Architecture
-
-### Layer position
-
-```
-L0  @koi/core               ─ ExaptationKind, ExaptationSignal, UsagePurposeObservation
-L0u @koi/errors              ─ error types
-L0u @koi/validation          ─ validateWith for config validation
-L2  @koi/forge-exaptation    ─ this package (depends on L0 + L0u only)
-```
-
-### Signal flow
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                 Exaptation Detection Pipeline                 │
-│                                                               │
-│   wrapModelCall (priority 465):                               │
-│     ├── capture model response text (truncated to 200 words)  │
-│     └── cache tool descriptions from ModelRequest.tools       │
-│                                                               │
-│   wrapToolCall (priority 465):                                │
-│     ├── tokenize cached tool description + model context      │
-│     ├── compute Jaccard distance (divergence score)           │
-│     ├── store UsagePurposeObservation in ring buffer          │
-│     └── run detectPurposeDrift on accumulated observations    │
-│         └── all criteria met → emit ExaptationSignal          │
-│                                                               │
-│   Observation ring buffer (per brick, max 30):                │
-│     └── bounded memory, oldest observations evicted           │
-│                                                               │
-│   Signal queue (bounded, max 10):                             │
-│     ├── cooldown per brick (default: 60s)                     │
-│     ├── confidence scoring via computeExaptationConfidence    │
-│     └── dismiss(signalId) clears signal + cooldown            │
-│                                                               │
-│   Consumer (not yet wired):                                   │
-│     └── auto-forge-middleware could read signals to trigger    │
-│         interface generalization or brick splitting            │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### Module map
-
-```
-forge-exaptation/src/
-├── types.ts              ─ ExaptationConfig, ExaptationHandle, ExaptationThresholds
-├── divergence.ts         ─ Jaccard tokenization + distance scoring (pure)
-├── heuristics.ts         ─ detectPurposeDrift detection logic (pure)
-├── confidence.ts         ─ Confidence scoring algorithm (pure)
-├── exaptation-detector.ts ─ Middleware factory (createExaptationDetector)
-├── config.ts             ─ Zod validation, defaults, createDefaultExaptationConfig
-└── index.ts              ─ Public exports
-```
+This package **does not** observe tool calls itself. Upstream observers (a future middleware in `@koi/forge-tools` or `@koi/crystallize`) feed `UsagePurposeObservation`s and consume the report.
 
 ---
 
-## How Detection Works
+## Detection
 
-### Step 1: Observe
+The detector first identifies the **divergent cohort** — agents whose own evidence clears the bar — then scores drift on that subset only. This prevents low-divergence baseline traffic from masking a smaller but consistent divergent cohort.
 
-On every model call, the middleware captures the response text (what the model said before calling a tool) and caches tool descriptions from the request.
+| Per-agent gate | Default | Why |
+|---|---|---|
+| Per-agent **divergent** observation count ≥ `minObservationsPerAgent` | 2 | Reject one-off spikes |
+| Each cohort observation has `divergenceScore ≥ divergenceThreshold` | 0.7 | Baseline samples don't dilute the cohort — agents who *mix* baseline and drift still contribute their drift evidence |
 
-### Step 2: Measure divergence
+| Cohort gate | Default | Why |
+|---|---|---|
+| `cohort.observationCount ≥ minObservations` | 5 | Enough cohort data to be meaningful — baseline traffic in the window doesn't count toward this |
+| `cohort.avgDivergence ≥ divergenceThreshold` | 0.7 | Cohort drift is real |
+| `cohort.divergentAgents ≥ minDivergentAgents` | 2 | Multiple independent agents |
 
-On every tool call, it tokenizes both the tool's description and the captured context, then computes **Jaccard distance**:
+`avgDivergence` and `observationCount` in the resulting `DriftReport` reflect the cohort, not the whole window.
 
-```
-Tool description: "Read files from the filesystem and return contents"
-  → tokens: { read, files, filesystem, return, contents }
-
-Model context: "analyze network traffic patterns and detect anomalies"
-  → tokens: { analyze, network, traffic, patterns, detect, anomalies }
-
-Intersection: { }  (0 shared)
-Union: { read, files, filesystem, return, contents, analyze, network, traffic, patterns, detect, anomalies }  (11 total)
-
-Jaccard distance = 1 - 0/11 = 1.0  (maximum divergence)
-```
-
-### Step 3: Accumulate
-
-Each observation is stored in a per-brick ring buffer (max 30 entries). The observation records the context text, agent ID, divergence score, and timestamp.
-
-### Step 4: Detect
-
-`detectPurposeDrift` checks three criteria:
-
-| Criterion | Default threshold | Purpose |
-|-----------|------------------|---------|
-| Minimum observations | 5 | Enough data to be meaningful |
-| Average divergence | > 0.7 | Usage is substantially different from description |
-| Minimum divergent agents | 2 | Multiple agents show the pattern (not just one outlier) |
-
-All three must be met. This conservative approach minimizes false positives.
-
-### Step 5: Score and emit
-
-When drift is detected, confidence is computed:
+### Severity
 
 ```
-confidence = divergence × agentMultiplier × observationMultiplier × weight
-
-agentMultiplier = min(agentCount / minDivergentAgents, 2)     ─ caps at 2x
-observationMultiplier = min(observationCount / minObservations, 2)  ─ caps at 2x
-weight = 0.8 (default)
-
-Result clamped to [0, 1]
+severity = clamp(avgDivergence × agentMultiplier × observationMultiplier × confidenceWeight, 0, 1)
+agentMultiplier       = min(divergentAgents / minDivergentAgents, 2)
+observationMultiplier = min(observationCount / minObservations,   2)
+confidenceWeight      = 0.8 (default)
 ```
 
-The signal is emitted with full evidence (stated purpose, observed contexts, scores).
+Severity ∈ [0, 1]: scales with how broadly and how strongly the artifact has drifted.
 
 ---
 
-## API Reference
+## Suggestion Policy
 
-### `createExaptationDetector(config)`
+`suggestAction(observations, thresholds, priorWindows)` runs `detectDrift` on the current window AND on every prior window. Both inputs that gate `new-artifact` are observation-grounded — there is no caller-supplied integer counter and no caller-supplied `DetectionResult` value.
 
-Factory that returns an `ExaptationHandle` bundling the middleware and signal query API.
+| Internal detection state | Suggestion |
+|---|---|
+| `kind ≠ "drift"` (no-drift, invalid-config) | `none` |
+| `replayProtected: false` (any valid observation lacks `eventId`) | `none` |
+| `(droppedCount + duplicateCount + conflictCount + missingEventIdCount) / (validObservationCount + dropped + duplicate + conflict) > 25%` | `none` (low-quality window — `missingEventIdCount` folds partial telemetry outage into the gate even when those samples sit outside the cohort, so cohort-scoped replay protection cannot hide a wide outage; conflicts count too, blocking corrupted-replay attacks that try to bias the window past the threshold) |
+| ≥ `STABLE_WINDOW_COUNT - 1` *trailing consecutive* prior windows (recency derived from each window's max `observedAt` — caller-supplied array order is ignored, so a buggy/malicious caller cannot reorder old strong drift into the trailing slot) are strong-drift AND ALSO pass the action quality gate (`drift`, `replayProtected`, `avgDivergence ≥ 0.85`, `≤ 25%` low-quality), AND current `avgDivergence ≥ 0.85` | `new-artifact` — fork a specialized variant |
+| Cohort share `< 50%` of validated window AND not stable+strong | `none` — minority drift should NOT overwrite the canonical purpose the baseline majority depends on |
+| Otherwise (cohort majority, single window or sub-fork divergence) | `reclassify` — rewrite the artifact's description to match observed usage |
+
+`new-artifact` is gated on **raw `avgDivergence`**, not on saturated `severity`. With detection threshold `0.7` and fork threshold `0.85`, drift that barely clears detection cannot escalate to "fork" purely by accumulating more observations or agents over time.
+
+The quality gate (default 25%) refuses to recommend irreversible action when most of the input window was discarded as malformed or as duplicates.
+
+## Replay Protection
+
+Replay protection is a **per-observation data contract**, not a config knob.
+
+- The detector marks a `drift` result `replayProtected: true` when **every observation contributing to the divergent cohort** carries a non-empty string `eventId`. Replay protection is **cohort-scoped**, not window-scoped: a baseline sample missing `eventId` outside the cohort does NOT veto action for an otherwise replay-protected cohort. Earlier rounds gated on the whole window, which created an easy denial path — one bad emitter could keep the detector permanently non-actionable.
+- If a cohort observation lacks `eventId` (so dedup couldn't run on evidence the action depends on), `replayProtected: false`, and `suggestAction` refuses to recommend `reclassify` or `new-artifact`.
+- Dedup itself always runs on the eventId-bearing subset, regardless of the action gate; observations without `eventId` pass through unchanged so partial telemetry failure doesn't lose data.
+- There is no caller-supplied dedup key function and no honor-system "trust me, this is stable" boolean — both were rejected because the detector cannot validate them at runtime. Putting the contract on the data shape lets `isObservationValid` enforce it.
+- `eventId` is optional in the L0 `UsagePurposeObservation` type, so upstream observers that only have best-effort telemetry can still feed the detector — they just can't unlock action-bearing suggestions for a cohort whose evidence isn't fully replay-protected.
+
+## suggestAction Contract
+
+`suggestAction` takes raw observations (plus thresholds and `stableWindows`) and recomputes detection internally. There is **no** "trust this `DetectionResult`" path — that closes the trust boundary that earlier rounds left open: a buggy or untrusted caller cannot fabricate a `{ kind: "drift", replayProtected: true, ... }` literal and obtain `reclassify` / `new-artifact` without real observations behind it. Action recommendations are always grounded in detector-produced state.
+
+`detectDrift` is still exported separately as the telemetry surface — call it when you want the full `DetectionResult` for logs, dashboards, or alerts. The two functions are independent: `suggestAction` does not consume `DetectionResult`, and the action verdict cannot be skewed by a stale or mutated result.
+
+## Tenant Isolation
+
+Tenant isolation is a runtime data contract, enforced by required fields — not by upstream documentation.
+
+- Every observation carries `scope?: string` (tenant / account / realm). It is **optional only for backward compatibility**: missing or whitespace-only values normalize to a single explicit `__legacy__` sentinel inside the detector, so pre-multi-tenant emitters keep wire-compat (the silent-drop failure mode is avoided) without silently merging into an unnamed "global" namespace (the silent-merge failure mode is also avoided — the sentinel is itself a scope, observable in cohort keys, alertable, and grep-able).
+- Replay dedup is keyed on `(scope, agentId, eventId)`. Two tenants that happen to mint the same `(agentId, eventId)` keep their evidence independent.
+- Cohort attribution is keyed on `(scope, agentId)`. The same logical agent in two tenants counts as two cohort members — different tenants are different observers.
+- **New emitters MUST set `scope`** explicitly. Single-tenant deployments may use a constant value (e.g. `"default"`); multi-tenant deployments MUST derive it from authenticated identity at the boundary. Any deployment that lets multi-tenant traffic fall into `__legacy__` will mix tenants in that bucket — the sentinel is a migration aid, not a default tenant.
+- Emitters can be migrated incrementally: ship the new `scope`-aware producer alongside legacy producers; observe `__legacy__` in dashboards/alerts; swap producers tenant-by-tenant; deprecate `__legacy__` once it is empty.
+- **Action-bearing safety during migration:** when any cohort observation is in `__legacy__`, `detectDrift` sets `cohortHasLegacyScope: true` on the result and `suggestAction` refuses to emit `reclassify` / `new-artifact`. The drift signal is still surfaced for dashboards/telemetry, but irreversible actions stay blocked until producers are migrated to explicit scope. Legacy-contaminated prior windows likewise do not count toward stability.
+
+## Artifact Identity
+
+The detector is per-artifact: drift in one artifact (tool / skill / agent) is independent of drift in another. `UsagePurposeObservation.artifactId` is **optional only for backward compatibility** at the L0 contract; missing or whitespace-only values normalize to a single explicit `__legacy_artifact__` sentinel inside the detector (same shape as the `__legacy__` scope sentinel). New emitters MUST set `artifactId` explicitly.
+
+- A current window mixing two distinct artifactIds (after normalization) returns `invalid-config` — the detector is per-artifact and refuses to aggregate evidence across artifacts.
+- `suggestAction` requires each prior to be **single-artifact** AND to match the current window's artifactId. A multi-artifact prior is itself contaminated and is filtered out; a prior bound to a different artifact is unrelated history.
+- A current window whose cohort sits in the `__legacy_artifact__` bucket cannot drive action-bearing suggestions — the same fail-closed posture used for `__legacy__` scope.
+- A timestamp-skewed clone of the current window cannot pose as a "prior" — `observationIdentity` excludes `observedAt` and the prior-overlap check rejects any prior that shares even one validated observation identity with the current window.
+
+## Replay Integrity (action-stopping)
+
+Replay conflicts (same `(scope, agentId, eventId)` bucket producing inconsistent payloads) are integrity failures, not noise. Any `conflictCount > 0` in either the current window or in a contributing prior window hard-blocks `reclassify` / `new-artifact`. The detector still surfaces the drift signal for telemetry, but irreversible recommendations stay blocked until the source emitter is fixed.
+
+## eventId Contract
+
+`eventId` is a **per-observation idempotency key**. The L0 docstring on `UsagePurposeObservation.eventId` is the authoritative spec; the short version:
+
+- Derive deterministically from a stable per-call identity — e.g. `sha256(agentId + ":" + toolCallId)` where `toolCallId` is an upstream identifier of the originating tool invocation. NOT a request-level correlation ID, NOT an upstream causal event ID shared across agents, NOT an account/tenant identifier, NOT a freshly-minted nonce/UUID (random values mint a new key per retry and defeat replay dedup).
+- Retries of the same observation MUST re-emit the same `eventId` — that is what idempotent derivation buys you.
+- Distinct tool calls within one request, multiple agents recording the same upstream event, and observations from different tenants must all derive **different** `eventId`s.
+- Cross-tenant `(agentId, eventId)` collisions are absorbed by `scope` (see Tenant Isolation), so a tenant whose telemetry happens to overlap with a peer's identifiers still keeps independent evidence.
+
+## Dedup Conflict Quarantine
+
+Dedup is keyed on `(scope, agentId, eventId)`. The contract above guarantees per-observation `eventId` uniqueness within a `(scope, agentId)`, so the bucket is what catches retries; cross-tenant `(agentId, eventId)` collisions stay in distinct buckets via `scope`.
+
+When the same `(scope, agentId, eventId)` arrives more than once with **non-identical** payloads (`divergenceScore` or `contextText` mismatch), the entire bucket is **quarantined** — every observation that touched it is counted in `conflictCount` and dropped from cohort scoring. Earlier rounds picked max-divergence as a "deterministic" winner, but that systematically biases the system toward the most alarming sample: one corrupted replay could push a benign observation into drift territory and unlock irreversible action recommendations. Quarantine is the safe-by-default response, and `suggestAction`'s quality gate folds `conflictCount` into its low-quality denominator so a high-conflict window cannot drive `reclassify` / `new-artifact`.
+
+Identical-payload retries (same `divergenceScore` AND same `contextText`) still collapse normally as duplicates — those are the safe replays that replay protection is designed to handle.
+
+---
+
+## API
 
 ```typescript
-import { createExaptationDetector } from "@koi/forge-exaptation";
+import {
+  detectDrift,
+  suggestAction,
+  DEFAULT_EXAPTATION_THRESHOLDS,
+  type DriftReport,
+  type ExaptationSuggestion,
+  type ExaptationThresholds,
+  tokenize,
+  computeJaccardDistance,
+} from "@koi/forge-exaptation";
 
-const handle = createExaptationDetector({
-  cooldownMs: 60_000,
-  thresholds: {
-    minObservations: 5,
-    divergenceThreshold: 0.7,
-    minDivergentAgents: 2,
-    confidenceWeight: 0.8,
-  },
-  onSignal: (signal) => console.log("Exaptation:", signal.brickName, signal.divergenceScore),
-  onDismiss: (id) => console.log("Dismissed:", id),
-});
+// Observations must carry `eventId` (a stable upstream event identity) for
+// suggestAction to recommend any action. Without it, detection still runs
+// and you get telemetry, but suggestions return `none`.
 
-// Register the middleware
-agent.use(handle.middleware);
+// 1. Compute per-observation divergence upstream:
+const description = tokenize(artifact.description);
+const usage = tokenize(modelContextText);
+const divergence = computeJaccardDistance(description, usage);
 
-// Query pending signals
-const signals = handle.getSignals();
-handle.dismiss(signals[0]?.id ?? "");
-```
+// 2. Push observations into a per-artifact buffer (bounded by the caller).
+//    Every observation must carry { scope, agentId, divergenceScore, contextText, observedAt }
+//    and SHOULD carry eventId to unlock action-bearing suggestions.
+const observations = [/* UsagePurposeObservation */];
 
-### `ExaptationHandle`
+// 3. Detect — branch on kind to distinguish detector failure from "no drift".
+//    Use this surface for telemetry / dashboards / alerts.
+const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+switch (result.kind) {
+  case "invalid-config": /* alert: thresholds rejected */; break;
+  case "no-drift":       /* result.droppedCount > N → alert telemetry */; break;
+  case "drift":          /* result is observability state */; break;
+}
 
-```
-readonly middleware: KoiMiddleware                   ─ Register with the agent
-readonly getSignals: () => ExaptationSignal[]        ─ Current pending signals
-readonly dismiss: (signalId: string) => void         ─ Remove signal + reset cooldown
-readonly getActiveSignalCount: () => number          ─ Pending signal count
-```
-
-### `validateExaptationConfig(raw)`
-
-Validates unknown input into a fully resolved config with defaults.
-
-```typescript
-import { validateExaptationConfig } from "@koi/forge-exaptation";
-
-const result = validateExaptationConfig(rawInput);
-if (result.ok) {
-  const config = result.value; // ExaptationConfig with all defaults resolved
+// 4. Decide. suggestAction recomputes detection on the current window AND on
+//    every priorWindow internally. The caller maintains a sliding history of
+//    recent observation windows; suggestAction derives stability from that
+//    history instead of trusting a caller-supplied integer counter. Recency
+//    inside priorWindows is derived from each window's max `observedAt` —
+//    callers may supply windows in any array order without affecting the
+//    verdict.
+const priorWindows = recentWindows; // readonly UsagePurposeObservation[][]
+const action = suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, priorWindows);
+switch (action.kind) {
+  case "none":         break;
+  case "reclassify":   /* update artifact description */ break;
+  case "new-artifact": /* fork a specialized variant */ break;
 }
 ```
-
-### `createDefaultExaptationConfig(overrides?)`
-
-Creates a config with sensible defaults, optionally merged with overrides.
-
-### Pure functions (independently usable)
-
-```typescript
-import { tokenize, computeJaccardDistance, truncateToWords } from "@koi/forge-exaptation";
-import { detectPurposeDrift } from "@koi/forge-exaptation";
-import { computeExaptationConfidence } from "@koi/forge-exaptation";
-```
-
----
-
-## Configuration Reference
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `cooldownMs` | `number` | `60_000` | Cooldown between signals for the same brick (ms) |
-| `maxPendingSignals` | `number` | `10` | Bounded signal queue size |
-| `maxObservationsPerBrick` | `number` | `30` | Ring buffer size per brick |
-| `maxContextWords` | `number` | `200` | Max words kept from model response |
-| `thresholds.minObservations` | `number` | `5` | Minimum observations before detection |
-| `thresholds.divergenceThreshold` | `number` | `0.7` | Jaccard distance threshold (0–1) |
-| `thresholds.minDivergentAgents` | `number` | `2` | Minimum distinct agents showing drift |
-| `thresholds.confidenceWeight` | `number` | `0.8` | Weight applied to confidence score |
-| `onSignal` | `(signal) => void` | `undefined` | Callback when signal emitted |
-| `onDismiss` | `(id) => void` | `undefined` | Callback when signal dismissed |
-| `clock` | `() => number` | `Date.now` | Clock function (testable) |
-
----
-
-## Accuracy and Limitations
-
-Jaccard keyword overlap is a **coarse lexical measure** — deliberately chosen for Phase 1:
-
-| Strength | Limitation |
-|----------|-----------|
-| Zero dependencies (no model files) | No semantic understanding |
-| Sub-millisecond latency | Synonyms treated as different ("read" vs "load") |
-| Simple to reason about | Shared words mask different purposes ("search code" vs "search logs") |
-| Conservative thresholds reduce false positives | May miss subtle drift |
-
-The architecture supports swapping `computeJaccardDistance` for embedding-based cosine similarity in the future — the `divergenceScore` interface (0–1 number) stays the same.
-
----
-
-## Integration Status
-
-**Not yet wired to auto-forge.** The `ExaptationHandle` API mirrors `ForgeDemandHandle`, but `auto-forge-middleware` in `@koi/crystallize` doesn't consume exaptation signals yet. Future integration would add an `exaptationHandle` config field following the same pattern as `demandHandle`.
-
----
-
-## Design Decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| **Jaccard over embeddings** | Zero deps, sub-ms latency, good enough for obvious drift. Swap later if needed. |
-| **Separate L2 package** (not merged into forge-demand) | Different signal type, different detection mechanism. Rule of Three — share code only after 3rd occurrence. |
-| **Handle pattern** (middleware + query API) | Matches `ForgeDemandHandle` precedent. |
-| **Two-hook approach** (wrapModelCall + wrapToolCall) | Model response captured first, tool call observed second. Decouples context extraction from divergence measurement. |
-| **Ring buffer per brick** (max 30) | Bounded memory (~1.5MB worst case). Old observations age out naturally. |
-| **Cooldown per brick** (default 60s) | Prevents signal spam for continuously-drifting tools. |
-| **Fat signal with embedded evidence** | Self-contained — consumers don't need to query back. |
-| **Conservative thresholds** | 5 obs, 0.7 divergence, 2 agents — reduces false positives at the cost of slower detection. |
-| **Priority 465** | Between forge-demand (455) and middleware-degenerate (460). Close to forge-demand as a sibling forge-signal middleware. |
-| **Standalone L0 types** | `ExaptationSignal` defined independently. Will unify with `BrickAnnotation` when #254 lands. |
 
 ---
 
 ## Layer Compliance
 
-- [x] Imports only from `@koi/core` (L0) and L0u utilities (`@koi/errors`, `@koi/validation`)
-- [x] No imports from `@koi/engine` (L1) or peer L2 packages
-- [x] All interface properties are `readonly`
-- [x] No `any`, no `enum`, no `class`, no `as Type` assertions in production code
-- [x] ESM-only with `.js` extensions in all import paths
-- [x] `check:layers` passes with zero violations
+- L2 — depends on `@koi/core` (L0) + `@koi/forge-types` (L0u) only.
+- No `@koi/engine` (L1) or peer L2 imports.
+- All interface properties are `readonly`. No `any` / `enum` / `class` / `as Type`.
+- ESM-only with `.js` import paths.
+- Marked `koi.optional: true` — exempt from `check:orphans` until wired into a forge pipeline.
+
+## What This Package Is Not
+
+- **Not a middleware.** Observation collection lives upstream.
+- **Not semantic.** Jaccard is lexical; synonyms count as different. Sufficient for obvious drift; the divergence function can be swapped for embedding cosine without changing the detector contract.
+- **Not stateful.** No ring buffers, no cooldowns. Callers manage observation windows and stable-window counts.

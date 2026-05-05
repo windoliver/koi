@@ -11,6 +11,7 @@ export default defineConfig({
     "src/channel.ts",
     "src/common.ts",
     "src/context.ts",
+    "src/context-engine.ts",
     "src/delegation.ts",
     "src/daemon.ts",
     "src/ecs.ts",

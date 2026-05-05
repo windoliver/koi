@@ -10,7 +10,7 @@ Provides the core tools that every Koi agent needs:
 
 - **read** — Read file content with optional line offset/limit
 - **edit** — Search-and-replace with uniqueness preflight (oldText must exist exactly once)
-- **write** — Create or overwrite files with optional directory creation
+- **write** — Create or overwrite files with optional directory creation. Parent directory creation defaults to `false`; callers must opt in with `createDirectories: true`.
 
 These are "primordial" tools — bundled at build time, highest trust level. They delegate all I/O to a `FileSystemBackend` (L0 contract), keeping the tools themselves pure argument validation + dispatch.
 
@@ -53,7 +53,9 @@ L2  @koi/tools-builtin  ← this package
 
 ## Filesystem Tool API
 
-Each factory takes `(backend: FileSystemBackend, prefix: string, policy: ToolPolicy)` and returns a `Tool`.
+Each factory takes `(backend: FileSystemBackend, prefix: string, policy: ToolPolicy, fsToolOptions?)` and returns a `Tool`.
+
+`fsToolOptions.pathGuard` is an optional host-supplied guard that runs before backend I/O for `read`, `write`, and `edit`. Hosts use it to reject sensitive credential paths before permission policy or backend access can allow them.
 
 #### `createFsReadTool`
 
@@ -78,7 +80,7 @@ Each factory takes `(backend: FileSystemBackend, prefix: string, policy: ToolPol
 |-----------|------|----------|-------------|
 | `path` | `string` | yes | Absolute path to the file |
 | `content` | `string` | yes | Content to write |
-| `createDirectories` | `boolean` | no | Create parent dirs if missing |
+| `createDirectories` | `boolean` | no | Create parent dirs if missing (default: false) |
 | `overwrite` | `boolean` | no | Overwrite existing file (default: false — fails closed) |
 
 ### Argument Parsing
@@ -169,4 +171,5 @@ Omit from the tool set entirely (don't call the factory) when `elicit` is not av
 
 ## Changelog
 
+- **Filesystem guard/default hardening** — fs read/write/edit factories accept `FsToolOptions.pathGuard` so hosts can block credential paths before backend I/O. The write tool now passes `createDirectories: false` when the argument is omitted, matching the public schema instead of inheriting a backend default.
 - **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.

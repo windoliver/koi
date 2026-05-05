@@ -3,6 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { AgentManifest, ContextManifestConfig } from "./assembly.js";
 import { forgedSkill, fsSkill } from "./assembly.js";
 import { brickId } from "./brick-snapshot.js";
 
@@ -54,6 +55,51 @@ describe("forgedSkill", () => {
     const id = brickId("sha256:abc123");
     const result = forgedSkill("test", id);
     expect("options" in result).toBe(false);
+  });
+});
+
+describe("AgentManifest.context (issue #1767)", () => {
+  test("accepts a context engine selector with version pin and config", () => {
+    const ctx: ContextManifestConfig = {
+      engine: "@koi/context-manager",
+      version: "1.0.0",
+      config: { preset: "balanced" },
+    };
+    const manifest: AgentManifest = {
+      name: "agent",
+      version: "1.0.0",
+      model: { name: "sonnet" },
+      context: ctx,
+    };
+    expect(manifest.context?.engine).toBe("@koi/context-manager");
+    expect(manifest.context?.version).toBe("1.0.0");
+    expect(manifest.context?.config).toEqual({ preset: "balanced" });
+  });
+
+  test("empty selector type-checks but L1 runtime requires a contextEngineFactory", () => {
+    // L0 contract: `context: {}` is structurally valid (all fields are
+    // optional). L1 (`createKoi`) rejects the bare form at boot when no
+    // `contextEngineFactory` is supplied — the runtime does not install
+    // a default engine, so accepting `{}` would silently boot without
+    // compaction. This test pins the L0 type surface; the runtime
+    // enforcement is covered by `koi.test.ts`.
+    const manifest: AgentManifest = {
+      name: "agent",
+      version: "1.0.0",
+      model: { name: "sonnet" },
+      context: {},
+    };
+    expect(manifest.context).toBeDefined();
+    expect(manifest.context?.engine).toBeUndefined();
+  });
+
+  test("manifest without context field is also valid (backward compat)", () => {
+    const manifest: AgentManifest = {
+      name: "agent",
+      version: "1.0.0",
+      model: { name: "sonnet" },
+    };
+    expect(manifest.context).toBeUndefined();
   });
 });
 

@@ -338,6 +338,17 @@ export interface ManifestConfig {
    */
   readonly delegation: ManifestDelegationConfig | undefined;
   /**
+   * Optional Nexus runtime selector (Issue #1403). Determines whether the
+   * host connects to an external Nexus URL or auto-spawns a local
+   * `nexus-ai-fs[sandbox]` subprocess. Default: `mode: auto` — connect to
+   * `NEXUS_URL` if set, otherwise spawn sandbox.
+   *
+   *   nexus:
+   *     mode: sandbox
+   *     port: 2026
+   */
+  readonly nexus: ManifestNexusConfig | undefined;
+  /**
    * Optional outbound-network scope (gov-15). When set, the CLI wraps the
    * web tools' `fetch` with `@koi/governance-scope`'s `createScopedFetcher`
    * so any URL not matching one of the supplied URLPattern strings fails
@@ -405,6 +416,30 @@ export interface ManifestCredentialsConfig {
 /** Manifest-declared delegation backend selector. */
 export interface ManifestDelegationConfig {
   readonly backend: "memory" | "nexus";
+}
+
+/**
+ * Manifest-declared Nexus runtime selector (Issue #1403).
+ *
+ * Resolution rules (consumed by `resolveNexusEndpoint`):
+ *   - `mode: "external"` → use `url` (or `NEXUS_URL` env). Fail if missing.
+ *   - `mode: "sandbox"`  → always spawn `nexus-ai-fs[sandbox]` locally.
+ *   - `mode: "auto"` (default) → use external if set, else spawn sandbox.
+ *
+ *   nexus:
+ *     mode: sandbox
+ *     port: 2026
+ *     dataDir: ~/.nexus/sandbox
+ *     enableVectorSearch: false
+ *     # url: http://localhost:2026   # external mode only
+ */
+export interface ManifestNexusConfig {
+  readonly mode: "auto" | "sandbox" | "external";
+  readonly url: string | undefined;
+  readonly port: number | undefined;
+  readonly dataDir: string | undefined;
+  readonly enableVectorSearch: boolean | undefined;
+  readonly embeddingModel: string | undefined;
 }
 
 /**
@@ -650,6 +685,11 @@ export async function loadManifestConfig(
     return delegationResult;
   }
 
+  const nexusResult = parseManifestNexus(raw.nexus);
+  if (!nexusResult.ok) {
+    return { ok: false, error: nexusResult.error };
+  }
+
   const aceResult = parseManifestAce(raw.ace, manifestRootDir);
   if (!aceResult.ok) {
     return aceResult;
@@ -768,6 +808,7 @@ export async function loadManifestConfig(
       supervision: supervisionResult.value,
       audit: auditResult.value,
       delegation: delegationResult.value,
+      nexus: nexusResult.value,
       network: networkResult.value,
       credentials: credentialsResult.value,
       ace: aceResult.value,
@@ -1118,6 +1159,95 @@ function parseManifestDelegation(
     };
   }
   return { ok: true, value: { backend } };
+}
+
+const NEXUS_KNOWN_KEYS: ReadonlySet<string> = new Set([
+  "mode",
+  "url",
+  "port",
+  "dataDir",
+  "enableVectorSearch",
+  "embeddingModel",
+]);
+
+function parseManifestNexus(
+  raw: unknown,
+):
+  | { readonly ok: true; readonly value: ManifestNexusConfig | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error: 'manifest.nexus must be an object, e.g. nexus: { mode: "sandbox" }',
+    };
+  }
+  const obj = raw as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (!NEXUS_KNOWN_KEYS.has(key)) {
+      return {
+        ok: false,
+        error: `manifest.nexus.${key} is not a recognized field. Known fields: ${[...NEXUS_KNOWN_KEYS].join(", ")}`,
+      };
+    }
+  }
+  const modeRaw = obj.mode;
+  let mode: ManifestNexusConfig["mode"] = "auto";
+  if (modeRaw !== undefined) {
+    if (modeRaw !== "auto" && modeRaw !== "sandbox" && modeRaw !== "external") {
+      return {
+        ok: false,
+        error: `manifest.nexus.mode must be "auto", "sandbox", or "external" (got: ${JSON.stringify(modeRaw)})`,
+      };
+    }
+    mode = modeRaw;
+  }
+  const url = obj.url;
+  if (url !== undefined && (typeof url !== "string" || url.trim() === "")) {
+    return { ok: false, error: "manifest.nexus.url must be a non-empty string" };
+  }
+  const port = obj.port;
+  if (
+    port !== undefined &&
+    (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535)
+  ) {
+    return { ok: false, error: "manifest.nexus.port must be an integer in [1, 65535]" };
+  }
+  const dataDir = obj.dataDir;
+  if (dataDir !== undefined && (typeof dataDir !== "string" || dataDir.trim() === "")) {
+    return { ok: false, error: "manifest.nexus.dataDir must be a non-empty string" };
+  }
+  const enableVectorSearch = obj.enableVectorSearch;
+  if (enableVectorSearch !== undefined && typeof enableVectorSearch !== "boolean") {
+    return { ok: false, error: "manifest.nexus.enableVectorSearch must be a boolean" };
+  }
+  const embeddingModel = obj.embeddingModel;
+  if (
+    embeddingModel !== undefined &&
+    (typeof embeddingModel !== "string" || embeddingModel.trim() === "")
+  ) {
+    return { ok: false, error: "manifest.nexus.embeddingModel must be a non-empty string" };
+  }
+  if (mode === "sandbox" && url !== undefined) {
+    return {
+      ok: false,
+      error:
+        'manifest.nexus.url is only valid when mode: "external" or "auto" — sandbox mode always spawns locally',
+    };
+  }
+  return {
+    ok: true,
+    value: {
+      mode,
+      url: typeof url === "string" ? url : undefined,
+      port: typeof port === "number" ? port : undefined,
+      dataDir: typeof dataDir === "string" ? dataDir : undefined,
+      enableVectorSearch: typeof enableVectorSearch === "boolean" ? enableVectorSearch : undefined,
+      embeddingModel: typeof embeddingModel === "string" ? embeddingModel : undefined,
+    },
+  };
 }
 
 function parseManifestSupervision(

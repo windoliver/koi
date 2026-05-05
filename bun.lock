@@ -269,7 +269,7 @@
     },
     "packages/lib/context-manager": {
       "name": "@koi/context-manager",
-      "version": "0.0.0",
+      "version": "1.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
@@ -292,6 +292,14 @@
       },
       "devDependencies": {
         "@koi/test": "workspace:*",
+      },
+    },
+    "packages/lib/dashboard-api": {
+      "name": "@koi/dashboard-api",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/dashboard-types": "workspace:*",
       },
     },
     "packages/lib/dashboard-client": {
@@ -392,12 +400,42 @@
         "@koi/test": "workspace:*",
       },
     },
+    "packages/lib/forge-exaptation": {
+      "name": "@koi/forge-exaptation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test": "workspace:*",
+      },
+    },
     "packages/lib/forge-integrity": {
       "name": "@koi/forge-integrity",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/hash": "workspace:*",
+      },
+    },
+    "packages/lib/forge-optimizer": {
+      "name": "@koi/forge-optimizer",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+      },
+      "devDependencies": {
+        "fast-check": "4.3.0",
+      },
+    },
+    "packages/lib/forge-policy": {
+      "name": "@koi/forge-policy",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-types": "workspace:*",
       },
     },
     "packages/lib/forge-tools": {
@@ -481,6 +519,14 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/harness-synth": {
+      "name": "@koi/harness-synth",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-types": "workspace:*",
       },
     },
     "packages/lib/hash": {
@@ -808,6 +854,18 @@
         "@koi/token-estimator": "workspace:*",
       },
     },
+    "packages/lib/playbook-store-nexus": {
+      "name": "@koi/playbook-store-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/ace-types": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/fs-nexus": "workspace:*",
+      },
+    },
     "packages/lib/playbook-store-sqlite": {
       "name": "@koi/playbook-store-sqlite",
       "version": "0.0.0",
@@ -919,6 +977,18 @@
         "@koi/skill-scanner": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
+      },
+    },
+    "packages/lib/snapshot-store-nexus": {
+      "name": "@koi/snapshot-store-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/fs-nexus": "workspace:*",
       },
     },
     "packages/lib/snapshot-store-sqlite": {
@@ -1157,6 +1227,7 @@
         "@koi/model-router": "workspace:*",
         "@koi/nexus-client": "workspace:*",
         "@koi/nexus-delegation": "workspace:*",
+        "@koi/nexus-sandbox": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
         "@koi/playbook-store-sqlite": "workspace:*",
@@ -1219,6 +1290,20 @@
         "ssh2": "1.16.0",
       },
     },
+    "packages/meta/rlm-stack": {
+      "name": "@koi/rlm-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/context-manager": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/middleware-rlm": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine-compose": "workspace:*",
+        "@koi/middleware-tool-disclosure": "workspace:*",
+      },
+    },
     "packages/meta/runtime": {
       "name": "@koi/runtime",
       "version": "0.0.0",
@@ -1246,6 +1331,7 @@
         "@koi/core": "workspace:*",
         "@koi/cost-aggregator": "workspace:*",
         "@koi/daemon": "workspace:*",
+        "@koi/dashboard-api": "workspace:*",
         "@koi/dashboard-client": "workspace:*",
         "@koi/dashboard-types": "workspace:*",
         "@koi/debug": "workspace:*",
@@ -1258,6 +1344,8 @@
         "@koi/execution-context": "workspace:*",
         "@koi/file-type": "workspace:*",
         "@koi/forge-demand": "workspace:*",
+        "@koi/forge-optimizer": "workspace:*",
+        "@koi/forge-policy": "workspace:*",
         "@koi/forge-tools": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
@@ -1334,6 +1422,7 @@
         "@koi/query-engine": "workspace:*",
         "@koi/redaction": "workspace:*",
         "@koi/replay": "workspace:*",
+        "@koi/rlm-stack": "workspace:*",
         "@koi/rules-loader": "workspace:*",
         "@koi/sandbox-conformance": "workspace:*",
         "@koi/sandbox-docker": "workspace:*",
@@ -1569,6 +1658,14 @@
         "@koi/core": "workspace:*",
         "@koi/tools-core": "workspace:*",
         "@modelcontextprotocol/sdk": "1.12.1",
+      },
+    },
+    "packages/net/nexus-sandbox": {
+      "name": "@koi/nexus-sandbox",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
     },
     "packages/sandbox/sandbox-conformance": {
@@ -2277,6 +2374,8 @@
 
     "@koi/daemon": ["@koi/daemon@workspace:packages/net/daemon"],
 
+    "@koi/dashboard-api": ["@koi/dashboard-api@workspace:packages/lib/dashboard-api"],
+
     "@koi/dashboard-client": ["@koi/dashboard-client@workspace:packages/lib/dashboard-client"],
 
     "@koi/dashboard-types": ["@koi/dashboard-types@workspace:packages/lib/dashboard-types"],
@@ -2311,7 +2410,13 @@
 
     "@koi/forge-demand": ["@koi/forge-demand@workspace:packages/lib/forge-demand"],
 
+    "@koi/forge-exaptation": ["@koi/forge-exaptation@workspace:packages/lib/forge-exaptation"],
+
     "@koi/forge-integrity": ["@koi/forge-integrity@workspace:packages/lib/forge-integrity"],
+
+    "@koi/forge-optimizer": ["@koi/forge-optimizer@workspace:packages/lib/forge-optimizer"],
+
+    "@koi/forge-policy": ["@koi/forge-policy@workspace:packages/lib/forge-policy"],
 
     "@koi/forge-tools": ["@koi/forge-tools@workspace:packages/lib/forge-tools"],
 
@@ -2356,6 +2461,8 @@
     "@koi/handoff": ["@koi/handoff@workspace:packages/lib/handoff"],
 
     "@koi/harness": ["@koi/harness@workspace:packages/lib/harness"],
+
+    "@koi/harness-synth": ["@koi/harness-synth@workspace:packages/lib/harness-synth"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/lib/hash"],
 
@@ -2465,11 +2572,15 @@
 
     "@koi/nexus-delegation": ["@koi/nexus-delegation@workspace:packages/security/nexus-delegation"],
 
+    "@koi/nexus-sandbox": ["@koi/nexus-sandbox@workspace:packages/net/nexus-sandbox"],
+
     "@koi/outcome-evaluator": ["@koi/outcome-evaluator@workspace:packages/lib/outcome-evaluator"],
 
     "@koi/permissions": ["@koi/permissions@workspace:packages/security/permissions"],
 
     "@koi/permissions-nexus": ["@koi/permissions-nexus@workspace:packages/security/permissions-nexus"],
+
+    "@koi/playbook-store-nexus": ["@koi/playbook-store-nexus@workspace:packages/lib/playbook-store-nexus"],
 
     "@koi/playbook-store-sqlite": ["@koi/playbook-store-sqlite@workspace:packages/lib/playbook-store-sqlite"],
 
@@ -2482,6 +2593,8 @@
     "@koi/redaction": ["@koi/redaction@workspace:packages/security/redaction"],
 
     "@koi/replay": ["@koi/replay@workspace:packages/lib/replay"],
+
+    "@koi/rlm-stack": ["@koi/rlm-stack@workspace:packages/meta/rlm-stack"],
 
     "@koi/rules-loader": ["@koi/rules-loader@workspace:packages/lib/rules-loader"],
 
@@ -2526,6 +2639,8 @@
     "@koi/skill-tool": ["@koi/skill-tool@workspace:packages/lib/skill-tool"],
 
     "@koi/skills-runtime": ["@koi/skills-runtime@workspace:packages/lib/skills-runtime"],
+
+    "@koi/snapshot-store-nexus": ["@koi/snapshot-store-nexus@workspace:packages/lib/snapshot-store-nexus"],
 
     "@koi/snapshot-store-sqlite": ["@koi/snapshot-store-sqlite@workspace:packages/lib/snapshot-store-sqlite"],
 

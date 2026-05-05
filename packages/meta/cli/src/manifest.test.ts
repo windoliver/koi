@@ -1590,3 +1590,145 @@ describe("loadManifestConfig: credentials block (gov-15)", () => {
     expect(result.error).toContain("must be an array");
   });
 });
+
+describe("loadManifestConfig: nexus block (#1403)", () => {
+  let dir: string;
+  const writeManifest = (yaml: string): string => {
+    const p = join(dir, "koi.manifest.yaml");
+    writeFileSync(p, yaml);
+    return p;
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "koi-manifest-nexus-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("omits nexus when block absent", async () => {
+    const p = writeManifest(["model:", "  name: google/gemini-2.0-flash-001"].join("\n"));
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.nexus).toBeUndefined();
+  });
+
+  test("defaults mode to 'auto' when nexus block is empty", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "nexus: {}"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.nexus?.mode).toBe("auto");
+  });
+
+  test("parses sandbox mode with port + dataDir", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "nexus:",
+        "  mode: sandbox",
+        "  port: 2026",
+        "  dataDir: /tmp/nexus",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.nexus).toEqual({
+      mode: "sandbox",
+      url: undefined,
+      port: 2026,
+      dataDir: "/tmp/nexus",
+      enableVectorSearch: undefined,
+      embeddingModel: undefined,
+    });
+  });
+
+  test("parses external mode with url", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "nexus:",
+        "  mode: external",
+        "  url: http://nexus.example.com",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.nexus?.mode).toBe("external");
+    expect(result.value.nexus?.url).toBe("http://nexus.example.com");
+  });
+
+  test("rejects unknown mode", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "nexus:", "  mode: docker"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("auto");
+  });
+
+  test("rejects url with sandbox mode", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "nexus:",
+        "  mode: sandbox",
+        "  url: http://x",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("sandbox");
+  });
+
+  test("rejects unknown field", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "nexus:",
+        "  mode: sandbox",
+        "  bogus: 1",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("bogus");
+  });
+
+  test("rejects out-of-range port", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "nexus:", "  port: 70000"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("port");
+  });
+
+  test("rejects non-boolean enableVectorSearch", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "nexus:",
+        '  enableVectorSearch: "yes"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("enableVectorSearch");
+  });
+});
