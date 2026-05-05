@@ -13,10 +13,11 @@
 
 import type { KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
-import { For, Show, createSignal, type Component, useContext } from "solid-js";
+import { For, Show, createMemo, createSignal, type Component, useContext } from "solid-js";
 import type { BgSessionRow, BgSessionsSlice, RegistryStatus } from "../state/types.js";
 import { StoreContext } from "../store-context.js";
 import { COLORS } from "../theme.js";
+import { BgLogTail } from "./BgLogTail.js";
 
 // ---------------------------------------------------------------------------
 // Layout constants
@@ -195,6 +196,12 @@ export const BgView: Component<BgViewProps> = (props) => {
   const rows = (): readonly BgSessionRow[] => props.slice.rows;
   const selectedRow = (): BgSessionRow | undefined => rows()[cursor()];
 
+  const tailingRow = createMemo((): BgSessionRow | null => {
+    const id = props.slice.tailingWorkerId;
+    if (id === null) return null;
+    return rows().find((r) => r.workerId === id) ?? null;
+  });
+
   const banner = (): { readonly color: string; readonly text: string } | null =>
     formatRegistryBanner(props.slice.registryStatus, now());
 
@@ -295,13 +302,9 @@ export const BgView: Component<BgViewProps> = (props) => {
         )}
       </Show>
 
-      {/* Tailing placeholder (BgLogTail wired in Task 14) */}
-      <Show when={props.slice.tailingWorkerId !== null}>
-        <box paddingTop={1}>
-          <text fg={COLORS.textMuted}>
-            {`Tailing worker ${props.slice.tailingWorkerId ?? ""}… (log tail component mounts here)`}
-          </text>
-        </box>
+      {/* Log tail — shown when a worker is selected for tailing */}
+      <Show when={tailingRow()}>
+        {(rowAccessor: () => BgSessionRow) => <BgLogTail row={rowAccessor()} />}
       </Show>
 
       {/* Row table */}

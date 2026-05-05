@@ -181,7 +181,9 @@ export type TuiView =
   | "cost"
   | "mcp"
   | "plugins"
-  | "governance";
+  | "governance"
+  | "supervisor"
+  | "bg";
 
 /** MCP server status entry for the /mcp view. */
 export interface McpServerInfo {

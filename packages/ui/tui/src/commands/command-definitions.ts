@@ -81,6 +81,18 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     description: "View sensor readings, alerts, rules, and middleware capabilities",
     category: "navigation",
   },
+  {
+    id: "nav:supervisor",
+    label: "Supervisor",
+    description: "View the daemon supervisor: health, workers, events",
+    category: "navigation",
+  },
+  {
+    id: "nav:bg",
+    label: "Background sessions",
+    description: "View and manage background workers (logs, kill)",
+    category: "navigation",
+  },
 
   // ---- Agent ----
   {
@@ -205,6 +217,12 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     id: "system:governance-reset",
     label: "Governance reset",
     description: "Clear per-session alert dedup so re-crossings re-fire",
+    category: "system",
+  },
+  {
+    id: "system:bg-kill",
+    label: "Kill background worker",
+    description: "Signal a background worker via supervisor.stop",
     category: "system",
   },
   {
