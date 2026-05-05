@@ -237,23 +237,23 @@ export async function synthesize(
         attemptController,
       );
       if (!generated.ok) {
-        // The public-facing `lastReason` keeps the raw failure text so
-        // callers retain debugging fidelity at their logging boundary —
-        // production callers that persist failures are responsible for
-        // their own redaction layer. The LLM-bound `priorReason` IS
-        // sanitized via the default-deny `sanitizeVerifierReason` hook
-        // a few lines below; that boundary is non-negotiable since the
-        // text crosses into the model provider on retry.
+        // Tainted reasons (caller-thrown error messages, adapter stderr,
+        // request metadata, stack traces) cross a trust boundary back into
+        // BOTH the public `SynthesisResult.reason` channel AND the LLM
+        // retry prompt — sanitize once, use everywhere. Internal-only
+        // reasons ("timed out", "aborted by caller") are forwarded as-is
+        // since they contain no caller-controlled text. Default sanitizer
+        // is default-deny ("failure reason omitted"); callers wanting raw
+        // diagnostics opt in via `(s) => s` or a custom redactor.
+        const safeReason = generated.tainted
+          ? safeSanitize(sanitizeVerifierReason, generated.reason)
+          : generated.reason;
         const extra =
           !adapterHonorsAbort && /timed out|aborted by caller/.test(generated.reason)
             ? " (adapter may still be running)"
             : "";
-        lastReason = generated.reason + extra;
-        // Generator failures wrap adapter/provider exception messages —
-        // request metadata, tenant data, or stack traces can flow through.
-        // Apply the same default-deny sanitizer policy as verifier reasons
-        // (default drops the text; caller opts in to forwarding).
-        priorReason = redactReason(safeSanitize(sanitizeVerifierReason, generated.reason));
+        lastReason = safeReason + extra;
+        priorReason = redactReason(safeReason);
         priorCode = "";
         if (generated.aborted) {
           return { ok: false, reason: lastReason, attempts: attempt };
@@ -310,16 +310,19 @@ export async function synthesize(
         attemptController,
       );
       if (!verified.ok) {
+        // Same default-deny rule as the generator branch: tainted reasons
+        // (verifier-supplied text, caller-thrown error messages) get
+        // sanitized for BOTH public exposure and LLM retry; internal
+        // timeout/abort reasons forward as-is.
+        const safeReason = verified.tainted
+          ? safeSanitize(sanitizeVerifierReason, verified.reason)
+          : verified.reason;
         const verifyExtra =
           !adapterHonorsAbort && /timed out|aborted by caller/.test(verified.reason)
             ? " (adapter may still be running)"
             : "";
-        lastReason = verified.reason + verifyExtra;
-        // Verifier reason crosses the trust boundary back into the LLM —
-        // sanitize via caller-supplied hook (default replaces with a fixed
-        // generic string), then apply redactReason as a defense-in-depth
-        // length/control-char cap on whatever the sanitizer chose to emit.
-        priorReason = redactReason(safeSanitize(sanitizeVerifierReason, verified.reason));
+        lastReason = safeReason + verifyExtra;
+        priorReason = redactReason(safeReason);
         priorCode = capPriorCode(parsed.value.code);
         if (verified.aborted) {
           return { ok: false, reason: lastReason, attempts: attempt };
@@ -529,7 +532,21 @@ function linkSignal(external: AbortSignal | undefined, attempt: AbortController)
 
 type GuardedResult<T> =
   | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly reason: string; readonly aborted?: boolean };
+  | {
+      readonly ok: false;
+      readonly reason: string;
+      readonly aborted?: boolean;
+      /**
+       * `true` when `reason` contains caller-controlled text (a thrown error's
+       * message, or text returned by the verifier callback). The synthesis
+       * loop must run such reasons through `sanitizeVerifierReason` before
+       * exposing them — both on the public `SynthesisResult.reason` channel
+       * (which higher layers may log/persist) and the LLM retry prompt.
+       * Internal-only reasons (`timed out`, `aborted by caller`, etc.)
+       * leave this `undefined`/false and are forwarded as-is.
+       */
+      readonly tainted?: boolean;
+    };
 
 async function safeGenerate(
   generate: SynthesisConfig["generate"],
@@ -767,7 +784,7 @@ async function safeVerify(
   descriptor: ToolDescriptor,
   timeoutMs: number,
   attempt: AbortController,
-): Promise<VerifyResult & { readonly aborted?: boolean }> {
+): Promise<VerifyResult & { readonly aborted?: boolean; readonly tainted?: boolean }> {
   const guarded = await guardAttempt(
     (signal) => Promise.resolve(verify(code, descriptor, signal)),
     timeoutMs,
@@ -781,10 +798,18 @@ async function safeVerify(
   // loop, so we convert any such throw into a typed failure rather than let
   // it escape past the typed-result contract.
   try {
-    return coerceVerifyResult(guarded.value);
+    const coerced = coerceVerifyResult(guarded.value);
+    // Verifier-returned ok:false reasons always reflect caller-controlled
+    // text — either the verifier's own diagnostic string (line 1062) or
+    // an internal coercion message that interpolates caller-supplied data
+    // (malformed summary contents, etc.). Tag tainted so the loop runs
+    // them through sanitizeVerifierReason before exposing on either the
+    // public reason channel or the LLM retry prompt.
+    if (!coerced.ok) return { ...coerced, tainted: true };
+    return coerced;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: `Verifier returned hostile object: ${message}` };
+    return { ok: false, reason: `Verifier returned hostile object: ${message}`, tainted: true };
   }
 }
 
@@ -901,12 +926,12 @@ function guardAttempt<T>(
         (err: unknown) => {
           if (cancelled) return;
           const message = err instanceof Error ? err.message : String(err);
-          finish({ ok: false, reason: `${label} failed: ${message}` });
+          finish({ ok: false, reason: `${label} failed: ${message}`, tainted: true });
         },
       );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      finish({ ok: false, reason: `${label} failed: ${message}` });
+      finish({ ok: false, reason: `${label} failed: ${message}`, tainted: true });
     }
   });
 }
@@ -959,6 +984,18 @@ function coerceVerificationSummary(
   // as a verified artifact — fail closed so downstream audit cannot get
   // an internally contradictory success signal.
   if (obj.passed === true) {
+    // A passed:true verdict with zero stage evidence is contractually
+    // empty — downstream forge audit / provenance has nothing to record
+    // for the winning attempt. Fail closed: a verifier that publishes
+    // success without per-stage evidence is either misconfigured or
+    // skipping verification entirely, and either way the artifact must
+    // not ship as verified.
+    if (obj.stageResults.length === 0) {
+      return {
+        ok: false,
+        reason: "summary.passed:true requires at least one stageResults entry",
+      };
+    }
     for (let i = 0; i < obj.stageResults.length; i += 1) {
       const s = obj.stageResults[i] as Record<string, unknown>;
       if (s.passed !== true) {

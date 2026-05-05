@@ -21,6 +21,11 @@ const INPUT: SynthesisInput = {
 
 /** Most tests pass through retries; opt in by default. */
 const ABORT_HONORED = { adapterHonorsAbort: true } as const;
+// Most tests assert on raw verifier/generator failure text, so opt in to
+// passthrough sanitization. Production callers default to redacted text;
+// tests that exercise the redaction default override `sanitizeVerifierReason`
+// inline.
+const PASSTHROUGH_SANITIZE = { sanitizeVerifierReason: (s: string): string => s } as const;
 
 function validRaw(name = "echo_tool", code = "export const run = (x) => x;"): string {
   return JSON.stringify({
@@ -98,7 +103,8 @@ describe("synthesize", () => {
       generate,
       verify,
       maxAttempts: 3,
-      adapterHonorsAbort: true,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -286,7 +292,8 @@ describe("synthesize", () => {
       generate,
       verify,
       maxAttempts: 2,
-      adapterHonorsAbort: true,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -414,7 +421,12 @@ describe("synthesize", () => {
         leak: new Date() as any,
       },
     });
-    const result = await synthesize(INPUT, { generate, verify, ...ABORT_HONORED });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
+    });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/summary/);
@@ -514,7 +526,8 @@ describe("synthesize", () => {
       generate,
       verify,
       maxAttempts: 1,
-      adapterHonorsAbort: true,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -529,7 +542,8 @@ describe("synthesize", () => {
       generate,
       verify,
       maxAttempts: 1,
-      adapterHonorsAbort: true,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -700,7 +714,8 @@ describe("synthesize", () => {
       generate,
       verify,
       maxAttempts: 1,
-      adapterHonorsAbort: true,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -722,7 +737,8 @@ describe("synthesize", () => {
       generate,
       verify,
       maxAttempts: 1,
-      adapterHonorsAbort: true,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -744,7 +760,8 @@ describe("synthesize", () => {
       generate,
       verify,
       maxAttempts: 1,
-      adapterHonorsAbort: true,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -1075,6 +1092,7 @@ describe("synthesize", () => {
       verify,
       maxAttempts: 1,
       ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -1097,6 +1115,7 @@ describe("synthesize", () => {
       verify,
       maxAttempts: 1,
       ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -1407,9 +1426,97 @@ describe("synthesize", () => {
       verify: hostile,
       maxAttempts: 1,
       ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/hostile|Verifier/);
+  });
+
+  test("public reason redacts caller-supplied verifier text under default sanitizer", async () => {
+    // Trust-boundary regression: the default sanitizer must scrub
+    // caller-supplied verifier reasons from BOTH the LLM retry prompt AND
+    // the public SynthesisResult.reason. Higher layers may log/persist
+    // the public reason, so leaking sandbox stderr / tenant data / stack
+    // traces there is the same data-leak class as leaking into the prompt.
+    const verify: VerifyCallback = () => ({
+      ok: false,
+      reason: "tenant=acme secret=hunter2 stack: Error at /srv/secret/path",
+    });
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+      // default sanitizeVerifierReason — drops caller text.
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("failure reason omitted");
+    expect(result.reason).not.toContain("hunter2");
+    expect(result.reason).not.toContain("/srv/secret");
+  });
+
+  test("public reason redacts caller-thrown generator error message under default sanitizer", async () => {
+    const generate: GenerateCallback = async () => {
+      throw new Error("OPENAI_API_KEY=sk-XXXX leaked stack trace");
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("failure reason omitted");
+    expect(result.reason).not.toContain("sk-XXXX");
+  });
+
+  test("public reason preserves internal timeout/abort text (not tainted)", async () => {
+    // Internal-only reasons ("timed out", "aborted by caller") contain no
+    // caller-controlled data and must pass through default sanitization
+    // unchanged so operators retain failure-mode visibility on the public
+    // channel.
+    const generate: GenerateCallback = (_prompt, signal) =>
+      new Promise<string>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      attemptTimeoutMs: 30,
+      ...ABORT_HONORED,
+      // default sanitizer — internal reasons should still flow through.
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/timed out/);
+  });
+
+  test("rejects ok:true summary with empty stageResults (no audit evidence)", async () => {
+    // A passed:true summary with zero stageResults entries publishes an
+    // artifact as verified with no per-stage evidence — downstream forge
+    // audit/provenance has nothing to record. Fail closed.
+    const verify: VerifyCallback = () => ({
+      ok: true,
+      summary: {
+        passed: true,
+        sandbox: false,
+        totalDurationMs: 5,
+        stageResults: [],
+      },
+    });
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/at least one stageResults/);
   });
 });
