@@ -714,6 +714,51 @@ describe("synthesize", () => {
     expect(seenPrompts[1] ?? "").toContain("verification failed");
   });
 
+  test("rejects oversized model output before parsing (bounds parser cost)", async () => {
+    const oversized = `${"{".repeat(300_000)}{}`;
+    const generate: GenerateCallback = async () => oversized;
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/exceeds \d+ bytes/);
+  });
+
+  test("caps priorCode in refinement prompt (no oversized retry blowup)", async () => {
+    const seenPrompts: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      seenPrompts.push(p);
+      // first attempt: huge but valid JSON code field
+      if (seenPrompts.length === 1) {
+        return JSON.stringify({
+          descriptor: { name: "echo_tool", description: "ok", inputSchema: { type: "object" } },
+          code: "x".repeat(50_000),
+        });
+      }
+      return validRaw();
+    };
+    let n = 0;
+    const verify: VerifyCallback = () => {
+      n += 1;
+      return n === 1 ? { ok: false, reason: "nope" } : { ok: true };
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 2,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    const refinement = seenPrompts[1] ?? "";
+    expect(refinement).toContain("truncated");
+    // refinement prompt should not carry the full 50KB priorCode
+    expect(refinement.length).toBeLessThan(20_000);
+  });
+
   test("rejects NaN attemptTimeoutMs (no silent timeout disable)", async () => {
     const result = await synthesize(INPUT, {
       generate: async () => validRaw(),

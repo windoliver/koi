@@ -157,11 +157,25 @@ export async function synthesize(
         continue;
       }
 
+      // Reject oversized model output BEFORE parsing. The brace scanner is
+      // O(n) per `{` candidate in the worst case, so a multi-megabyte
+      // brace-heavy response could burn unbounded CPU on the main thread
+      // outside any timer-based budget. Capping ingestion both makes the
+      // parser cost provably bounded and avoids amplifying the next
+      // refinement prompt with a runaway prior output.
+      if (generated.value.length > MAX_GENERATED_BYTES) {
+        const reason = `Generated output exceeds ${MAX_GENERATED_BYTES} bytes (got ${generated.value.length})`;
+        lastReason = reason;
+        priorReason = redactReason(reason);
+        priorCode = "";
+        continue;
+      }
+
       const parsed = parseSynthesisOutput(generated.value, safeInput.targetToolName);
       if (!parsed.ok) {
         lastReason = parsed.reason;
         priorReason = redactReason(parsed.reason);
-        priorCode = generated.value;
+        priorCode = capPriorCode(generated.value);
         continue;
       }
 
@@ -172,7 +186,7 @@ export async function synthesize(
       if (!schemaCheck.ok) {
         lastReason = schemaCheck.reason;
         priorReason = redactReason(schemaCheck.reason);
-        priorCode = parsed.value.code;
+        priorCode = capPriorCode(parsed.value.code);
         continue;
       }
 
@@ -190,7 +204,7 @@ export async function synthesize(
         // generic string), then apply redactReason as a defense-in-depth
         // length/control-char cap on whatever the sanitizer chose to emit.
         priorReason = redactReason(safeSanitize(sanitizeVerifierReason, verified.reason));
-        priorCode = parsed.value.code;
+        priorCode = capPriorCode(parsed.value.code);
         if (verified.aborted) {
           return { ok: false, reason: verified.reason, attempts: attempt };
         }
@@ -294,6 +308,31 @@ function snapshotCandidate(
   const plain = ensureJsonPlain(snap, "candidate");
   if (!plain.ok) return plain;
   return { ok: true, value: Object.freeze(snap) };
+}
+
+/**
+ * Hard cap on a single LLM response. Generated outputs above this size are
+ * rejected before parsing so the brace scanner cost stays bounded and
+ * runaway responses cannot amplify retry prompts. 256 KB comfortably fits
+ * realistic synthesis artifacts (which are dozens of lines of code, not
+ * megabytes) while still rejecting pathological output.
+ */
+const MAX_GENERATED_BYTES = 256 * 1024;
+
+/** Hard cap on prior code carried into the next refinement prompt. */
+const MAX_PRIOR_CODE_BYTES = 8 * 1024;
+
+/**
+ * Truncate prior code before it is forwarded to the LLM in the refinement
+ * prompt. A failed attempt would otherwise replay its full code (or the
+ * full raw response, when parsing failed) into every subsequent attempt,
+ * blowing up token cost and risking context-window failures that turn a
+ * recoverable first failure into a guaranteed later-attempt failure.
+ */
+function capPriorCode(code: string): string {
+  if (code.length <= MAX_PRIOR_CODE_BYTES) return code;
+  const head = code.slice(0, MAX_PRIOR_CODE_BYTES);
+  return `${head}\n/* …truncated ${code.length - MAX_PRIOR_CODE_BYTES} bytes */`;
 }
 
 function redactReason(reason: string): string {
