@@ -248,7 +248,13 @@ export function detectDrift(
   const unique: readonly UsagePurposeObservation[] = [...dedup.winners, ...withoutEventId];
   const duplicateCount = dedup.duplicateCount;
   const conflictCount = dedup.conflictCount;
-  const replayProtected = valid.length > 0 && withoutEventId.length === 0;
+  // Track which observations bypassed dedup (no eventId). Object identity
+  // works because we never copy these references after partitioning.
+  const noEventIdSet = new Set<UsagePurposeObservation>(withoutEventId);
+  // Window-level replayProtected: every valid observation has eventId. Used
+  // for the "no-drift" branch (no cohort to scope to) and as a coarse
+  // telemetry signal.
+  const windowReplayProtected = valid.length > 0 && withoutEventId.length === 0;
 
   const noDrift = (): DetectionResult =>
     deepFreeze({
@@ -258,7 +264,7 @@ export function detectDrift(
       droppedCount,
       duplicateCount,
       conflictCount,
-      replayProtected,
+      replayProtected: windowReplayProtected,
     });
 
   if (unique.length < thresholds.minObservations) return noDrift();
@@ -267,7 +273,7 @@ export function detectDrift(
   // observations only. The earlier "global avgDivergence ≥ threshold" gate
   // hid real drift whenever low-divergence baseline traffic dominated the
   // window — exactly the mixed-workload case this package must surface.
-  const cohort = computeDivergentCohort(unique, thresholds);
+  const cohort = computeDivergentCohort(unique, thresholds, noEventIdSet);
   if (cohort.agentCount < thresholds.minDivergentAgents) return noDrift();
   // Cohort-level minObservations gate: the *cohort* must have at least
   // minObservations samples — not just the whole window. Otherwise unrelated
@@ -284,6 +290,14 @@ export function detectDrift(
     cohort.observationCount,
     thresholds,
   );
+
+  // Cohort-scoped replay protection: action-bearing decisions only need the
+  // observations that drive the cohort to be replay-protected. A baseline
+  // sample missing eventId in the same window is irrelevant to the verdict
+  // and must NOT veto action for an otherwise clean cohort. Earlier rounds
+  // gated on the whole window, which created an easy denial path: one bad
+  // emitter could keep the detector permanently non-actionable.
+  const replayProtected = cohort.allCohortHadEventId;
 
   return deepFreeze({
     kind: "drift" as const,
@@ -547,6 +561,12 @@ interface DivergentCohort {
   readonly observationCount: number;
   /** Sum of divergence scores across those observations. */
   readonly totalDivergence: number;
+  /**
+   * True iff every observation contributing to the cohort carried `eventId`
+   * (i.e. went through dedup). Cohort-scoped replay protection: a baseline
+   * sample missing eventId outside the cohort does NOT flip this to false.
+   */
+  readonly allCohortHadEventId: boolean;
 }
 
 /**
@@ -566,9 +586,12 @@ interface DivergentCohort {
 function computeDivergentCohort(
   observations: readonly UsagePurposeObservation[],
   thresholds: ExaptationThresholds,
+  noEventIdSet: ReadonlySet<UsagePurposeObservation>,
 ): DivergentCohort {
   const divergentSums = new Map<string, number>();
   const divergentCounts = new Map<string, number>();
+  // Per-agent: true while every divergent observation seen so far had eventId.
+  const agentHadEventId = new Map<string, boolean>();
   for (const o of observations) {
     if (o.divergenceScore < thresholds.divergenceThreshold) continue;
     // Cohort attribution keys on `(scope, agentId)` — the same logical
@@ -578,19 +601,23 @@ function computeDivergentCohort(
     const key = scopeAgentKey(o.scope, o.agentId);
     divergentSums.set(key, (divergentSums.get(key) ?? 0) + o.divergenceScore);
     divergentCounts.set(key, (divergentCounts.get(key) ?? 0) + 1);
+    const hadEid = !noEventIdSet.has(o);
+    agentHadEventId.set(key, (agentHadEventId.get(key) ?? true) && hadEid);
   }
 
   // let: cohort accumulators
   let agentCount = 0;
   let observationCount = 0;
   let totalDivergence = 0;
+  let allCohortHadEventId = true;
   for (const [key, count] of divergentCounts) {
     if (count < thresholds.minObservationsPerAgent) continue;
     agentCount++;
     observationCount += count;
     totalDivergence += divergentSums.get(key) ?? 0;
+    if (!(agentHadEventId.get(key) ?? false)) allCohortHadEventId = false;
   }
-  return { agentCount, observationCount, totalDivergence };
+  return { agentCount, observationCount, totalDivergence, allCohortHadEventId };
 }
 
 function computeSeverity(

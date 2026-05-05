@@ -80,10 +80,11 @@ The quality gate (default 25%) refuses to recommend irreversible action when mos
 
 Replay protection is a **per-observation data contract**, not a config knob.
 
-- The detector marks a window `replayProtected: true` only when **every valid observation** carries a non-empty string `eventId` — a stable upstream event identity such as a gateway correlation ID, an idempotency key, or a monotonic sequence number. That same `eventId` is used as the dedup key, scoped to `(scope, agentId)`.
-- If even one valid observation in the window lacks `eventId` (or has an empty string), the window is `replayProtected: false`, dedup does **not** run, and `suggestAction` refuses to recommend `reclassify` or `new-artifact`.
+- The detector marks a `drift` result `replayProtected: true` when **every observation contributing to the divergent cohort** carries a non-empty string `eventId`. Replay protection is **cohort-scoped**, not window-scoped: a baseline sample missing `eventId` outside the cohort does NOT veto action for an otherwise replay-protected cohort. Earlier rounds gated on the whole window, which created an easy denial path — one bad emitter could keep the detector permanently non-actionable.
+- If a cohort observation lacks `eventId` (so dedup couldn't run on evidence the action depends on), `replayProtected: false`, and `suggestAction` refuses to recommend `reclassify` or `new-artifact`.
+- Dedup itself always runs on the eventId-bearing subset, regardless of the action gate; observations without `eventId` pass through unchanged so partial telemetry failure doesn't lose data.
 - There is no caller-supplied dedup key function and no honor-system "trust me, this is stable" boolean — both were rejected because the detector cannot validate them at runtime. Putting the contract on the data shape lets `isObservationValid` enforce it.
-- `eventId` is optional in the L0 `UsagePurposeObservation` type, so upstream observers that only have best-effort telemetry can still feed the detector — they just can't unlock action-bearing suggestions until they propagate a stable event ID.
+- `eventId` is optional in the L0 `UsagePurposeObservation` type, so upstream observers that only have best-effort telemetry can still feed the detector — they just can't unlock action-bearing suggestions for a cohort whose evidence isn't fully replay-protected.
 
 ## suggestAction Contract
 
