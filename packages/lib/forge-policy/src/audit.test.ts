@@ -128,8 +128,20 @@ describe("createPolicyAuditLog (storage behavior — _createPolicyAuditLogForTes
     expect(log.size()).toBe(2);
   });
 
-  test("FIFO eviction once maxEntries is exceeded", () => {
-    const log = _createPolicyAuditLogForTesting({ maxEntries: 2 });
+  test("DEFAULT mode is fail-closed on overflow with no sink", () => {
+    // The default deployment must not silently truncate audit history.
+    const log = _createPolicyAuditLogForTesting({ maxEntries: 1 });
+    log.record({ ...baseEntry, candidateId: "a" });
+    expect(() => log.record({ ...baseEntry, candidateId: "b" })).toThrow(/overflow/);
+    expect(log.size()).toBe(1);
+    expect(log.entries()[0]?.candidateId).toBe("a");
+  });
+
+  test("FIFO eviction once maxEntries is exceeded (lossy mode opt-in)", () => {
+    const log = _createPolicyAuditLogForTesting({
+      maxEntries: 2,
+      failClosedOnOverflowSinkError: false,
+    });
     log.record({ ...baseEntry, candidateId: "a" });
     log.record({ ...baseEntry, candidateId: "b" });
     log.record({ ...baseEntry, candidateId: "c" });
@@ -203,9 +215,10 @@ describe("createPolicyAuditLog (storage behavior — _createPolicyAuditLogForTes
     expect(log.droppedCount()).toBe(0);
   });
 
-  test("a throwing onOverflow callback does not crash the policy gate", () => {
+  test("a throwing onOverflow callback does not crash the policy gate (lossy mode)", () => {
     const log = _createPolicyAuditLogForTesting({
       maxEntries: 1,
+      failClosedOnOverflowSinkError: false,
       onOverflow: () => {
         throw new Error("sink down");
       },
@@ -215,8 +228,11 @@ describe("createPolicyAuditLog (storage behavior — _createPolicyAuditLogForTes
     expect(log.droppedCount()).toBe(1);
   });
 
-  test("droppedCount reports FIFO evictions (overflow is observable, not silent)", () => {
-    const log = _createPolicyAuditLogForTesting({ maxEntries: 2 });
+  test("droppedCount reports FIFO evictions (overflow is observable, lossy mode)", () => {
+    const log = _createPolicyAuditLogForTesting({
+      maxEntries: 2,
+      failClosedOnOverflowSinkError: false,
+    });
     expect(log.droppedCount()).toBe(0);
     log.record({ ...baseEntry, candidateId: "a" });
     log.record({ ...baseEntry, candidateId: "b" });

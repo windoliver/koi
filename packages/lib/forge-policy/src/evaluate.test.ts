@@ -324,6 +324,37 @@ describe("evaluatePolicy — scope and approval", () => {
     expect(result!.configFingerprint).toBe("<unavailable>");
   });
 
+  test("specJson decodes safely without reflecting on caller objects", () => {
+    const cfg = makeConfig({ maxComplexity: 10_000 });
+    const specJson = JSON.stringify({ x: 1, items: [1, 2, 3] });
+    const { verdict } = evaluatePolicy(makeCandidate(), cfg, { specJson });
+    expect(verdict.decision).toBe("allow");
+  });
+
+  test("specJson and spec are mutually exclusive (caller bug fails closed)", () => {
+    const cfg = makeConfig({ maxComplexity: 10_000 });
+    const result = evaluatePolicy(makeCandidate(), cfg, {
+      spec: { x: 1 },
+      specJson: '{"x":1}',
+    });
+    expect(result.verdict.decision).toBe("deny");
+    expect(result.failureReason).toMatch(/mutually exclusive/);
+  });
+
+  test("invalid specJson fails closed", () => {
+    const cfg = makeConfig({ maxComplexity: 10_000 });
+    const result = evaluatePolicy(makeCandidate(), cfg, { specJson: "{not-valid-json" });
+    expect(result.verdict.decision).toBe("deny");
+    expect(result.failureReason).toMatch(/specJson is not valid JSON/);
+  });
+
+  test("specJson decoding to non-object fails closed", () => {
+    const cfg = makeConfig({ maxComplexity: 10_000 });
+    const result = evaluatePolicy(makeCandidate(), cfg, { specJson: "[1,2,3]" });
+    expect(result.verdict.decision).toBe("deny");
+    expect(result.failureReason).toMatch(/plain JSON object/);
+  });
+
   test("complexityOf without complexityScorer (id+version) fails closed (audit binding required)", () => {
     const cfg = makeConfig({ maxComplexity: 10_000 });
     const result = evaluatePolicy(makeCandidate(), cfg, {

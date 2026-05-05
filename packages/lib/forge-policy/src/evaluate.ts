@@ -10,7 +10,32 @@ export interface EvaluatePolicyOptions {
    * `config.maxComplexity` is set — `evaluatePolicy` fails closed (deny)
    * if the gate is configured but `spec` is absent.
    */
+  /**
+   * UNSAFE for adversarial input. Live object passed by reference —
+   * the validator walks it via reflection (`Object.getPrototypeOf`,
+   * `getOwnPropertyDescriptor`, `Object.keys`). On a Proxy or an
+   * object with hostile getters, those reflective ops fire trap
+   * callbacks during evaluation. The top-level `try/catch` in
+   * `validatePlainSpec` degrades trap throws to a deterministic
+   * deny, so the verdict is always correct, but trap side effects
+   * cannot be prevented when introspecting an attacker-owned
+   * object. For untrusted candidate input prefer `specJson`, which
+   * crosses a JSON serialization boundary before evaluation and
+   * never reflects on the original object.
+   */
   readonly spec?: Readonly<Record<string, unknown>> | undefined;
+
+  /**
+   * Pre-serialized JSON form of the candidate spec. SAFE for
+   * adversarial input: `evaluatePolicy` decodes it via `JSON.parse`
+   * inside a fail-closed `try/catch`, then evaluates the parsed
+   * plain-data graph. No reflection ever reaches a caller-owned
+   * object, so Proxy traps and getter callbacks cannot fire during
+   * evaluation. Mutually exclusive with `spec` — supplying both
+   * fails closed. Recommended for any deployment that treats the
+   * candidate spec as untrusted input.
+   */
+  readonly specJson?: string | undefined;
 
   /**
    * Caller-supplied complexity metric that replaces the default
@@ -202,11 +227,13 @@ export function evaluatePolicy(
   // `computeComplexity` defend against a throwing call separately.
   let optionOverride: PolicyOverride | undefined;
   let optionSpec: Readonly<Record<string, unknown>> | undefined;
+  let optionSpecJson: string | undefined;
   let optionComplexityOf: ((spec: Readonly<Record<string, unknown>>) => number) | undefined;
   let optionComplexityScorer: { id: string; version: string } | undefined;
   try {
     optionOverride = options.override;
     optionSpec = options.spec;
+    optionSpecJson = options.specJson;
     optionComplexityOf = options.complexityOf;
     // Snapshot scorer metadata (id+version) into plain locals so a
     // hostile getter on options.complexityScorer cannot fire later.
@@ -238,6 +265,45 @@ export function evaluatePolicy(
       kind: "override",
       configFingerprint: UNAVAILABLE_FINGERPRINT,
     });
+  }
+  // Reject ambiguous spec input. Supplying both `spec` (live object)
+  // and `specJson` (serialized) is a caller bug — there is no
+  // canonical resolution, and the safe path (`specJson`) must not
+  // be silently shadowed by the unsafe one.
+  if (optionSpec !== undefined && optionSpecJson !== undefined) {
+    return makeFailClosedEvaluation({
+      reason: "options.spec and options.specJson are mutually exclusive",
+      candidateId: candidateSnapshot.id,
+      override: overrideSnapshot,
+      kind: "config",
+      configFingerprint: UNAVAILABLE_FINGERPRINT,
+    });
+  }
+  // Safe path: decode pre-serialized JSON spec at the trust boundary.
+  // Reflection never touches caller-owned live objects.
+  let resolvedSpec: Readonly<Record<string, unknown>> | undefined = optionSpec;
+  if (optionSpecJson !== undefined) {
+    try {
+      const parsed = JSON.parse(optionSpecJson);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        return makeFailClosedEvaluation({
+          reason: "options.specJson must decode to a plain JSON object",
+          candidateId: candidateSnapshot.id,
+          override: overrideSnapshot,
+          kind: "config",
+          configFingerprint: UNAVAILABLE_FINGERPRINT,
+        });
+      }
+      resolvedSpec = parsed as Readonly<Record<string, unknown>>;
+    } catch (e) {
+      return makeFailClosedEvaluation({
+        reason: `options.specJson is not valid JSON: ${e instanceof Error ? e.message : String(e)}`,
+        candidateId: candidateSnapshot.id,
+        override: overrideSnapshot,
+        kind: "config",
+        configFingerprint: UNAVAILABLE_FINGERPRINT,
+      });
+    }
   }
   // A custom complexity scorer changes verdict semantics — refuse to
   // emit an audited evaluation under one without (id, version)
@@ -316,7 +382,7 @@ export function evaluatePolicy(
   // Pass the trapped option values to evaluateChecks — never the live
   // `options` object — so no further `options.*` getter can fire.
   const baseVerdict = evaluateChecks(candidateSnapshot, configSnapshot, {
-    spec: optionSpec,
+    spec: resolvedSpec,
     complexityOf: optionComplexityOf,
     override: overrideSnapshot,
   });

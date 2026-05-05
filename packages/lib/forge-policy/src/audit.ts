@@ -145,15 +145,16 @@ export interface PolicyAuditLogOptions {
    */
   readonly onOverflow?: (dropped: PolicyAuditEntry, droppedCount: number) => void;
   /**
-   * When `true`, an overflow situation in which there is no
-   * `onOverflow` sink (or the sink throws) causes `recordEvaluation`
-   * / `record` to throw — the caller MUST treat the throw as a
-   * fail-closed signal and stop authorizing decisions while audit
-   * retention is degraded. When `false` (default), overflow is
-   * best-effort: the entry is evicted and `droppedCount()`
-   * accumulates so callers can poll for retention loss. Choose
-   * `true` for security-critical deployments where audit trail
-   * loss is unacceptable.
+   * Controls audit-overflow behavior. DEFAULTS TO `true` (fail
+   * closed). When `true`, an overflow situation in which there is
+   * no `onOverflow` sink (or the sink throws) causes
+   * `recordEvaluation` / `record` to throw — the caller MUST treat
+   * the throw as a fail-closed signal and stop authorizing decisions
+   * while audit retention is degraded. Set explicitly to `false` to
+   * opt into best-effort lossy FIFO mode: the oldest entry is
+   * silently evicted and `droppedCount()` accumulates so callers
+   * can poll for retention loss. Lossy mode is appropriate for
+   * non-security workloads only.
    */
   readonly failClosedOnOverflowSinkError?: boolean;
 }
@@ -198,7 +199,10 @@ function createPolicyAuditLogInternal(
     const frozen = freezeEntry(full);
     buffer.push(frozen);
     if (buffer.length > maxEntries) {
-      const failClosed = options.failClosedOnOverflowSinkError === true;
+      // Default to fail-closed: overflow without an accepted sink
+      // throws. Operators must explicitly opt into lossy FIFO mode
+      // by setting failClosedOnOverflowSinkError: false.
+      const failClosed = options.failClosedOnOverflowSinkError !== false;
       const dropEntry = buffer[0];
       // Try the sink BEFORE evicting so a sink failure (or absent
       // sink in fail-closed mode) leaves both the new entry and the
