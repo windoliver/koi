@@ -616,6 +616,60 @@ describe("suggestAction", () => {
     if (result.kind === "invalid-config") expect(result.reason).toContain("6");
   });
 
+  test("partially overlapping prior is scored on the disjoint remainder (sliding history)", () => {
+    // The documented usage pattern is a sliding history of recent
+    // windows. Adjacent windows naturally share observations. Earlier
+    // rounds dropped any prior with even one shared observation, which
+    // made new-artifact unreachable under the documented pattern. The
+    // detector now subtracts overlap and scores the remainder.
+    function pinAt(o: UsagePurposeObservation, at: number): UsagePurposeObservation {
+      return { ...o, observedAt: at };
+    }
+    const strong = strongPriorWindow().map((o) => pinAt(o, -8_000_000));
+    const overlapping = strong.slice(0, 2);
+    const fresh = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    const current: UsagePurposeObservation[] = [...overlapping, ...fresh.observations];
+    // After subtracting the 2 overlapping observations, the prior still
+    // has 10 strong observations — enough to clear the bar and unlock
+    // new-artifact under the trailing-run check.
+    expect(suggestAction(current, DEFAULT_EXAPTATION_THRESHOLDS, [strong]).kind).toBe(
+      "new-artifact",
+    );
+  });
+
+  test("mixed legacy + explicit artifactId preserves telemetry, blocks action", () => {
+    // Mid-migration shape: some emitters still omit artifactId while
+    // others set it for the same artifact. detectDrift preserves
+    // signal; suggestAction blocks irreversible suggestions because
+    // the cohort touches LEGACY_ARTIFACT.
+    function omitArtifact(o: UsagePurposeObservation): UsagePurposeObservation {
+      const { artifactId: _id, ...rest } = o;
+      return rest;
+    }
+    const observations: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => obs("a1", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("a2", s)),
+      ...[0.95, 0.95, 0.95].map((s) => omitArtifact(obs("a3", s))),
+      ...[0.95, 0.95, 0.95].map((s) => omitArtifact(obs("a4", s))),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") expect(result.cohortHasLegacyArtifact).toBe(true);
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS).kind).toBe("none");
+  });
+
+  test("two distinct EXPLICIT artifactIds in one window still hard-fails", () => {
+    // Migration tolerance only applies when the multi-id case is
+    // {LEGACY_ARTIFACT, real-id}. Two genuine artifacts in one window
+    // is a routing bug and stays invalid-config.
+    const observations: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("a1", s), artifactId: "artifact-A" })),
+      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("a2", s), artifactId: "artifact-B" })),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("invalid-config");
+  });
+
   test("clone of current with same eventIds but mutated payload cannot pose as a prior", () => {
     // Trust-boundary: prior overlap detection keys on the dedup tuple
     // (artifactId, scope, agentId, eventId), NOT on payload. A caller

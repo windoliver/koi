@@ -150,6 +150,14 @@ export type DetectionResult =
        */
       readonly cohortReplayProtected: boolean;
       /**
+       * True iff any cohort observation was normalized to
+       * `LEGACY_ARTIFACT` (missing/blank `artifactId`). Such cohorts
+       * may merge multiple un-migrated artifacts during a rolling
+       * upgrade, so `suggestAction` refuses irreversible actions
+       * when it is set. The drift signal is still surfaced.
+       */
+      readonly cohortHasLegacyArtifact: boolean;
+      /**
        * True iff any cohort observation was normalized to `LEGACY_SCOPE`
        * (missing/blank `scope`). Such cohorts may merge multiple tenants
        * during a rolling migration, so `suggestAction` refuses to emit
@@ -273,17 +281,23 @@ export function detectDrift(
     });
   }
 
-  // Single-artifact invariant: every valid observation in one window
-  // must share an artifactId. The detector is per-artifact, and a
-  // window mixing artifacts A and B would let evidence aggregate
-  // across them — driving rewrites/forks for the wrong artifact. Fail
-  // closed when the caller hands us a contaminated window.
-  const distinctArtifactIds = new Set<string>();
-  for (const v of valid) distinctArtifactIds.add(normalizeArtifactId(v.artifactId));
-  if (distinctArtifactIds.size > 1) {
+  // Single-artifact invariant — but rolling-migration aware: a window
+  // mid-migration can legitimately mix LEGACY_ARTIFACT (from
+  // unmigrated emitters) with ONE explicit artifactId (from the
+  // migrated emitter for the same artifact). That is the same shape
+  // we tolerate for scope; the detector preserves drift telemetry and
+  // suggestAction blocks action via cohortHasLegacyArtifact. We only
+  // fail-closed when the window mixes more than one EXPLICIT artifactId
+  // (i.e. the caller actually routed two distinct artifacts through).
+  const explicitArtifactIds = new Set<string>();
+  for (const v of valid) {
+    const aid = normalizeArtifactId(v.artifactId);
+    if (aid !== LEGACY_ARTIFACT) explicitArtifactIds.add(aid);
+  }
+  if (explicitArtifactIds.size > 1) {
     return deepFreeze({
       kind: "invalid-config" as const,
-      reason: `window mixes ${String(distinctArtifactIds.size)} distinct artifactIds; detector is per-artifact`,
+      reason: `window mixes ${String(explicitArtifactIds.size)} distinct explicit artifactIds; detector is per-artifact`,
     });
   }
 
@@ -370,6 +384,7 @@ export function detectDrift(
     replayProtected: windowReplayProtected,
     cohortReplayProtected: cohort.allCohortHadEventId,
     cohortHasLegacyScope: cohort.hasLegacyScope,
+    cohortHasLegacyArtifact: cohort.hasLegacyArtifact,
     report: {
       kind: "purpose_drift" as const,
       severity,
@@ -438,15 +453,9 @@ export function suggestAction(
   // Same idea for legacy artifactId: a cohort that touches the
   // LEGACY_ARTIFACT sentinel may merge multiple un-migrated artifacts,
   // so action-bearing decisions stay blocked until producers ship
-  // explicit artifactIds.
-  const observationsByCurrentArtifact = (() => {
-    for (const o of observations) {
-      if (!isObservationValid(o)) continue;
-      return normalizeArtifactId(o.artifactId);
-    }
-    return undefined;
-  })();
-  if (observationsByCurrentArtifact === LEGACY_ARTIFACT) return { kind: "none" };
+  // explicit artifactIds. cohortHasLegacyArtifact is set when ANY
+  // cohort member's observations normalize to LEGACY_ARTIFACT.
+  if (result.cohortHasLegacyArtifact) return { kind: "none" };
   // Hard-block on detected replay conflicts. Even one
   // `(scope, agentId, eventId)` bucket that produced inconsistent
   // payloads means the system has *proven* its evidence is corrupted;
@@ -551,21 +560,44 @@ function countStrongDriftPriors(
     if (currentArtifactId === undefined) currentArtifactId = normalizeArtifactId(o.artifactId);
   }
   if (currentArtifactId === undefined) return 0;
-  const filteredPriors = priorWindows.filter((w) => {
-    if (w === current) return false;
-    // Each prior must be SINGLE-artifact AND match the current. A prior
-    // whose validated observations span multiple artifacts is itself
-    // contaminated and unsafe to use as historical evidence; a prior
-    // bound to a different artifact is unrelated history.
-    const priorArtifactIds = new Set<string>();
+  // Subtract overlapping observations from each prior rather than
+  // discarding the whole window on first overlap. The package's stated
+  // usage pattern is a sliding history of recent windows where adjacent
+  // windows naturally share observations; whole-window rejection would
+  // make `new-artifact` unreachable under that pattern. The remainder
+  // is still vetted by detectDrift, so a prior that loses its cohort
+  // to the subtraction simply fails the strong-drift bar later in the
+  // walk. Each prior remainder must additionally be SINGLE-artifact AND
+  // match the current — a prior that spans multiple explicit artifactIds
+  // is itself contaminated; a prior bound to a different artifact is
+  // unrelated history.
+  const filteredPriors: UsagePurposeObservation[][] = [];
+  for (const w of priorWindows) {
+    if (w === current) continue;
+    const remainder: UsagePurposeObservation[] = [];
     for (const o of w) {
       if (!isObservationValid(o)) continue;
-      if (currentIdentities.has(observationIdentity(o))) return false;
-      priorArtifactIds.add(normalizeArtifactId(o.artifactId));
+      if (currentIdentities.has(observationIdentity(o))) continue;
+      remainder.push(o);
     }
-    if (priorArtifactIds.size !== 1) return false;
-    return priorArtifactIds.has(currentArtifactId);
-  });
+    if (remainder.length === 0) continue;
+    const priorArtifactIds = new Set<string>();
+    for (const o of remainder) priorArtifactIds.add(normalizeArtifactId(o.artifactId));
+    // Drop LEGACY_ARTIFACT from the explicit-id set: a remainder mixing
+    // legacy-bucket samples with one explicit artifactId is the same
+    // mid-migration shape detectDrift tolerates on the current window,
+    // and the cohortHasLegacyArtifact check on the per-prior detectDrift
+    // will block action if it matters.
+    const explicitPriorArtifactIds = new Set<string>();
+    for (const id of priorArtifactIds) {
+      if (id !== LEGACY_ARTIFACT) explicitPriorArtifactIds.add(id);
+    }
+    if (explicitPriorArtifactIds.size > 1) continue;
+    if (explicitPriorArtifactIds.size === 1 && !explicitPriorArtifactIds.has(currentArtifactId)) {
+      continue;
+    }
+    filteredPriors.push(remainder);
+  }
   // Pair each window with its max observedAt drawn ONLY from observations
   // that pass the same validity check `detectDrift` applies AND that
   // survive same-key dedup (canonical replay collapses to MIN observedAt
@@ -648,6 +680,14 @@ function countStrongDriftPriors(
       // Any detected replay conflict in a prior is an integrity failure;
       // not safe historical evidence even if it cleared the percentage gate.
       if (r.conflictCount > 0) {
+        groupOk = false;
+        break;
+      }
+      // Legacy-artifact contamination disqualifies a prior the same way
+      // it disqualifies the current window — keep the bar consistent
+      // end-to-end so unmigrated emitters cannot launder historical
+      // evidence into action-bearing decisions.
+      if (r.cohortHasLegacyArtifact) {
         groupOk = false;
         break;
       }
@@ -998,6 +1038,12 @@ interface DivergentCohort {
    * potentially cross-tenant evidence during a rolling scope migration.
    */
   readonly hasLegacyScope: boolean;
+  /**
+   * True iff any agent contributing to the cohort lives in
+   * `LEGACY_ARTIFACT`. Same role as `hasLegacyScope` but for the
+   * artifactId migration path.
+   */
+  readonly hasLegacyArtifact: boolean;
 }
 
 /**
@@ -1023,10 +1069,12 @@ function computeDivergentCohort(
   const divergentCounts = new Map<string, number>();
   // Per-agent: true while every divergent observation seen so far had eventId.
   const agentHadEventId = new Map<string, boolean>();
-  // Per-agent: scope normalized at validation time. Used to detect cohort
-  // members that fall into the LEGACY_SCOPE compat bucket so suggestAction
-  // can refuse irreversible actions on potentially cross-tenant evidence.
+  // Per-agent: scope and artifactId normalized at validation time. Used
+  // to detect cohort members that fall into the LEGACY_SCOPE / LEGACY_ARTIFACT
+  // compat buckets so suggestAction can refuse irreversible actions on
+  // potentially cross-tenant or cross-artifact evidence.
   const agentScope = new Map<string, string>();
+  const agentArtifact = new Map<string, string>();
   for (const o of observations) {
     if (o.divergenceScore < thresholds.divergenceThreshold) continue;
     // Cohort attribution keys on `(scope, agentId)` — the same logical
@@ -1039,6 +1087,15 @@ function computeDivergentCohort(
     const hadEid = !noEventIdSet.has(o);
     agentHadEventId.set(key, (agentHadEventId.get(key) ?? true) && hadEid);
     if (!agentScope.has(key)) agentScope.set(key, normalizeScope(o.scope));
+    // Mark agent as legacy-artifact-contaminated if ANY of its
+    // observations normalize to LEGACY_ARTIFACT. Mid-migration the
+    // same agent might have one explicit + one legacy observation;
+    // either is enough to taint the cohort.
+    if (normalizeArtifactId(o.artifactId) === LEGACY_ARTIFACT) {
+      agentArtifact.set(key, LEGACY_ARTIFACT);
+    } else if (!agentArtifact.has(key)) {
+      agentArtifact.set(key, normalizeArtifactId(o.artifactId));
+    }
   }
 
   // let: cohort accumulators
@@ -1047,6 +1104,7 @@ function computeDivergentCohort(
   let totalDivergence = 0;
   let allCohortHadEventId = true;
   let hasLegacyScope = false;
+  let hasLegacyArtifact = false;
   for (const [key, count] of divergentCounts) {
     if (count < thresholds.minObservationsPerAgent) continue;
     agentCount++;
@@ -1054,8 +1112,16 @@ function computeDivergentCohort(
     totalDivergence += divergentSums.get(key) ?? 0;
     if (!(agentHadEventId.get(key) ?? false)) allCohortHadEventId = false;
     if (agentScope.get(key) === LEGACY_SCOPE) hasLegacyScope = true;
+    if (agentArtifact.get(key) === LEGACY_ARTIFACT) hasLegacyArtifact = true;
   }
-  return { agentCount, observationCount, totalDivergence, allCohortHadEventId, hasLegacyScope };
+  return {
+    agentCount,
+    observationCount,
+    totalDivergence,
+    allCohortHadEventId,
+    hasLegacyScope,
+    hasLegacyArtifact,
+  };
 }
 
 function computeSeverity(
