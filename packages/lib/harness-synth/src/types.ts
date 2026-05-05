@@ -134,18 +134,19 @@ export interface SynthesisConfig {
    */
   readonly adapterHonorsAbort: boolean;
   /**
-   * Caller-supplied sanitizer for verifier failure reasons before they are
-   * forwarded into the next refinement prompt. Verifier output is caller-
-   * controlled (sandbox stderr, stack traces, fixture values, tenant data)
-   * and crosses a trust boundary back into the LLM provider on retry —
-   * defaulting to forwarding raw text would leak whatever the verifier
-   * happened to print.
+   * Caller-supplied sanitizer for caller-injected failure reasons before
+   * they are forwarded into the next refinement prompt. Applied to BOTH
+   * generator and verifier failures because both wrap adapter-supplied
+   * exception messages (sandbox stderr, stack traces, request metadata,
+   * tenant data) that cross a trust boundary back into the LLM provider
+   * on retry. Internally-generated reasons (parse, schema, timeout) are
+   * forwarded as-is — they contain no caller-controlled data.
    *
-   * Default: replaces verifier text with the fixed string
-   * `"verification failed (reason omitted)"`. Callers that want the model
-   * to see the actual diagnostic must opt in with their own implementation
-   * — either pass-through (`(s) => s`) for trusted in-process verifiers, or
-   * a redactor that strips secrets/PII before returning.
+   * Default: replaces the text with `"failure reason omitted"`. Callers
+   * that want the model to see the actual diagnostic must opt in with
+   * their own implementation — either pass-through (`(s) => s`) for
+   * trusted in-process adapters, or a redactor that strips secrets/PII
+   * before returning.
    */
   readonly sanitizeVerifierReason: (reason: string) => string;
 }
@@ -162,5 +163,5 @@ export const DEFAULT_SYNTHESIS_CONFIG: Pick<
   maxAttempts: 3,
   clock: Date.now,
   attemptTimeoutMs: 30_000,
-  sanitizeVerifierReason: (_reason: string): string => "verification failed (reason omitted)",
+  sanitizeVerifierReason: (_reason: string): string => "failure reason omitted",
 });

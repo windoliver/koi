@@ -91,13 +91,25 @@ export async function synthesize(
   // attempts could prompt the model against schema A while equality is
   // checked against schema B, breaking the contract invariant.
   let frozenSchema: Readonly<Record<string, unknown>>;
+  let serializedSchema: string;
   try {
-    frozenSchema = deepFreeze(JSON.parse(JSON.stringify(input.targetToolSchema))) as Readonly<
-      Record<string, unknown>
-    >;
+    serializedSchema = JSON.stringify(input.targetToolSchema);
+    frozenSchema = deepFreeze(JSON.parse(serializedSchema)) as Readonly<Record<string, unknown>>;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, reason: `targetToolSchema snapshot failed: ${message}`, attempts: 0 };
+  }
+  // Cap prompt-bound inputs BEFORE prompt construction. Without this, a
+  // large or adversarial targetToolSchema or candidate.description would
+  // produce an oversized prompt that the model provider rejects, times
+  // out on, or charges for at extreme cost — defeating the per-attempt
+  // wall-clock cap and making bad inputs amplify across retries.
+  if (serializedSchema.length > MAX_SCHEMA_BYTES) {
+    return {
+      ok: false,
+      reason: `targetToolSchema exceeds ${MAX_SCHEMA_BYTES} bytes (got ${serializedSchema.length})`,
+      attempts: 0,
+    };
   }
   // Defensively read the candidate fields we serialize into prompts. A
   // throwing getter, BigInt, or other non-JSON-safe value here would crash
@@ -107,6 +119,22 @@ export async function synthesize(
   const candidateSnapshot = snapshotCandidate(input.candidate);
   if (!candidateSnapshot.ok) {
     return { ok: false, reason: candidateSnapshot.reason, attempts: 0 };
+  }
+  // Cap candidate prompt-bound string fields. Same rationale as schema:
+  // an oversized name/description blows up every attempt's prompt before
+  // the loop's own output-size guard can engage.
+  for (const [key, value] of [
+    ["name", candidateSnapshot.value.name],
+    ["description", candidateSnapshot.value.description],
+    ["id", candidateSnapshot.value.id],
+  ] as const) {
+    if (value.length > MAX_CANDIDATE_FIELD_BYTES) {
+      return {
+        ok: false,
+        reason: `candidate.${key} exceeds ${MAX_CANDIDATE_FIELD_BYTES} bytes (got ${value.length})`,
+        attempts: 0,
+      };
+    }
   }
   const safeInput: SynthesisInput = {
     ...input,
@@ -167,7 +195,11 @@ export async function synthesize(
       );
       if (!generated.ok) {
         lastReason = generated.reason;
-        priorReason = redactReason(generated.reason);
+        // Generator failures wrap adapter/provider exception messages —
+        // request metadata, tenant data, or stack traces can flow through.
+        // Apply the same default-deny sanitizer policy as verifier reasons
+        // (default drops the text; caller opts in to forwarding).
+        priorReason = redactReason(safeSanitize(sanitizeVerifierReason, generated.reason));
         priorCode = "";
         if (generated.aborted) {
           return { ok: false, reason: generated.reason, attempts: attempt };
@@ -311,10 +343,10 @@ export async function synthesize(
 function safeSanitize(sanitize: (reason: string) => string, reason: string): string {
   try {
     const out = sanitize(reason);
-    if (typeof out !== "string") return "verification failed (reason omitted)";
+    if (typeof out !== "string") return "failure reason omitted";
     return out;
   } catch {
-    return "verification failed (reason omitted)";
+    return "failure reason omitted";
   }
 }
 
@@ -370,6 +402,12 @@ const MAX_GENERATED_BYTES = 256 * 1024;
 
 /** Hard cap on prior code carried into the next refinement prompt. */
 const MAX_PRIOR_CODE_BYTES = 8 * 1024;
+
+/** Hard cap on the JSON-serialized targetToolSchema before prompt build. */
+const MAX_SCHEMA_BYTES = 32 * 1024;
+
+/** Hard cap on individual candidate prompt-bound string fields. */
+const MAX_CANDIDATE_FIELD_BYTES = 4 * 1024;
 
 /**
  * Deep-clone via JSON round-trip and recursively freeze. Used to isolate

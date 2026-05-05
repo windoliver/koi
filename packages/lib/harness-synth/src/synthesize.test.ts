@@ -660,7 +660,7 @@ describe("synthesize", () => {
     expect(result.ok).toBe(true);
     const refinementPrompt = seenPrompts[1] ?? "";
     expect(refinementPrompt).not.toContain(secret);
-    expect(refinementPrompt).toContain("verification failed");
+    expect(refinementPrompt).toContain("failure reason omitted");
   });
 
   test("opt-in sanitizer pass-through forwards verifier text (with redact cap)", async () => {
@@ -711,7 +711,51 @@ describe("synthesize", () => {
       ...ABORT_HONORED,
     });
     expect(result.ok).toBe(true);
-    expect(seenPrompts[1] ?? "").toContain("verification failed");
+    expect(seenPrompts[1] ?? "").toContain("failure reason omitted");
+  });
+
+  test("default sanitizer also drops generator failure text from refinement", async () => {
+    const adapterSecret = "ADAPTER_TOKEN=tok-leak";
+    let n = 0;
+    const seenPrompts: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      seenPrompts.push(p);
+      n += 1;
+      if (n === 1) throw new Error(adapterSecret);
+      return validRaw();
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 2,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    const refinement = seenPrompts[1] ?? "";
+    expect(refinement).not.toContain(adapterSecret);
+    expect(refinement).toContain("failure reason omitted");
+  });
+
+  test("rejects oversized targetToolSchema before prompt construction", async () => {
+    const huge = { type: "object", junk: "x".repeat(40_000) };
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: huge },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/targetToolSchema exceeds/);
+  });
+
+  test("rejects oversized candidate.description before prompt construction", async () => {
+    const candidate: ForgeCandidate = { ...CANDIDATE, description: "x".repeat(5_000) };
+    const result = await synthesize(
+      { ...INPUT, candidate },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/candidate\.description exceeds/);
   });
 
   test("verification summary is snapshotted (verifier cannot mutate audit data post-success)", async () => {
