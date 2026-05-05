@@ -23,7 +23,7 @@ import {
 } from "./types.js";
 
 export type SynthesisInitConfig = Partial<SynthesisConfig> &
-  Pick<SynthesisConfig, "generate" | "verify">;
+  Pick<SynthesisConfig, "generate" | "verify" | "adapterHonorsAbort">;
 
 export async function synthesize(
   input: SynthesisInput,
@@ -34,8 +34,12 @@ export async function synthesize(
     return { ok: false, reason: "maxAttempts must be >= 1", attempts: 0 };
   }
   const clock = config.clock ?? DEFAULT_SYNTHESIS_CONFIG.clock;
-  const adapterHonorsAbort =
-    config.adapterHonorsAbort ?? DEFAULT_SYNTHESIS_CONFIG.adapterHonorsAbort;
+  // adapterHonorsAbort is intentionally REQUIRED — callers must consciously
+  // pick between strict (timeouts + caller cancellation honored end-to-end)
+  // and best-effort (single-shot, timeouts disabled, mid-flight cancellation
+  // ignored) modes. There is no safe default: a missing assertion on a
+  // hanging adapter would otherwise pin the request indefinitely.
+  const adapterHonorsAbort = config.adapterHonorsAbort;
   const signal = config.signal;
   // Without a hard-cancel guarantee from the adapter, a timed-out attempt
   // may still be running when the next one starts, duplicating any side
@@ -450,25 +454,22 @@ function coerceVerificationSummary(
       return { ok: false, reason: `summary.stageResults[${i}].durationMs must be a finite number` };
     }
   }
-  // Construct a fresh JSON-plain summary so downstream forge publication
-  // (createForgeProvenance rejects non-plain values) gets exactly what it
-  // expects. Pass-through of the verifier's original object would let any
-  // extra non-plain fields (Date, class instance, throwing getter) leak
-  // through and fail later during persistence/audit.
-  const normalized: ForgeVerificationSummary = {
-    passed: obj.passed,
-    sandbox: obj.sandbox,
-    totalDurationMs: obj.totalDurationMs,
-    stageResults: obj.stageResults.map((s) => {
-      const stage = s as Record<string, unknown>;
-      return {
-        stage: stage.stage as string,
-        passed: stage.passed as boolean,
-        durationMs: stage.durationMs as number,
-      };
-    }),
-  };
-  return { ok: true, value: normalized };
+  // Validate JSON-plainness on every additional field so downstream
+  // provenance (which rejects non-plain values) receives a safe payload,
+  // but DO preserve verifier-supplied evidence — digests, attestation
+  // ids, etc. — instead of silently dropping fields. A non-plain extra
+  // is an error here, not a silent strip.
+  const plainCheck = ensureJsonPlain(value, "summary");
+  if (!plainCheck.ok) {
+    return { ok: false, reason: plainCheck.reason };
+  }
+  for (let i = 0; i < obj.stageResults.length; i += 1) {
+    const stagePlain = ensureJsonPlain(obj.stageResults[i], `summary.stageResults[${i}]`);
+    if (!stagePlain.ok) {
+      return { ok: false, reason: stagePlain.reason };
+    }
+  }
+  return { ok: true, value: value as ForgeVerificationSummary };
 }
 
 /**

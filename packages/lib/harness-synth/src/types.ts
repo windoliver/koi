@@ -135,13 +135,16 @@ export interface SynthesisConfig {
   readonly adapterHonorsAbort: boolean;
 }
 
-/** Defaults applied when fields are omitted from a partial config. */
+/**
+ * Defaults applied when fields are omitted from a partial config.
+ * `adapterHonorsAbort` is deliberately NOT defaulted — every caller must
+ * choose strict vs best-effort explicitly.
+ */
 export const DEFAULT_SYNTHESIS_CONFIG: Pick<
   SynthesisConfig,
-  "maxAttempts" | "clock" | "attemptTimeoutMs" | "adapterHonorsAbort"
+  "maxAttempts" | "clock" | "attemptTimeoutMs"
 > = Object.freeze({
   maxAttempts: 3,
   clock: Date.now,
   attemptTimeoutMs: 30_000,
-  adapterHonorsAbort: false,
 });

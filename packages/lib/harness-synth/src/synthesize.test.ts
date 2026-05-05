@@ -38,6 +38,7 @@ describe("synthesize", () => {
       generate,
       verify: ALWAYS_OK,
       clock: () => 42,
+      ...ABORT_HONORED,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -102,6 +103,7 @@ describe("synthesize", () => {
       generate: async () => "",
       verify: ALWAYS_OK,
       maxAttempts: 0,
+      ...ABORT_HONORED,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -171,7 +173,7 @@ describe("synthesize", () => {
   test("uses synchronous verify return value", async () => {
     const generate: GenerateCallback = async () => validRaw();
     const verify: VerifyCallback = () => ({ ok: true });
-    const result = await synthesize(INPUT, { generate, verify });
+    const result = await synthesize(INPUT, { generate, verify, ...ABORT_HONORED });
     expect(result.ok).toBe(true);
   });
 
@@ -246,15 +248,16 @@ describe("synthesize", () => {
       verify: ALWAYS_OK,
       maxAttempts: 1,
       signal: controller.signal,
+      adapterHonorsAbort: false,
     });
     expect(result.ok).toBe(true);
     expect(resolved).toBe(true);
   });
 
-  test("normalizes verification summary into a JSON-plain object on success", async () => {
-    // Verifier returns a summary with extra non-JSON-plain leak (Date) —
-    // the normalized value the caller observes must contain only the
-    // contractual fields so downstream provenance does not reject it.
+  test("rejects verifier summary with non-JSON-plain extras (Date)", async () => {
+    // A leaky verifier that includes a Date / class instance must be
+    // rejected, not silently dropped — downstream forge provenance
+    // requires JSON-plain values, and silent stripping hides drift.
     const generate: GenerateCallback = async () => validRaw();
     const verify: VerifyCallback = () => ({
       ok: true,
@@ -267,15 +270,33 @@ describe("synthesize", () => {
         leak: new Date() as any,
       },
     });
-    const result = await synthesize(INPUT, { generate, verify });
+    const result = await synthesize(INPUT, { generate, verify, ...ABORT_HONORED });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/summary/);
+  });
+
+  test("preserves verifier-supplied JSON-plain extras (digests, ids)", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify: VerifyCallback = () => ({
+      ok: true,
+      summary: {
+        passed: true,
+        sandbox: true,
+        totalDurationMs: 12,
+        stageResults: [{ stage: "syntax", passed: true, durationMs: 2 }],
+        // Extra JSON-plain fields (audit metadata) must flow through.
+        attestationId: "att-123",
+        digest: "sha256:abc",
+      } as never,
+    });
+    const result = await synthesize(INPUT, { generate, verify, ...ABORT_HONORED });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    const v = result.value.verification;
+    const v = result.value.verification as Record<string, unknown> | undefined;
     if (v === undefined) throw new Error("verification missing");
-    expect(Object.keys(v).sort()).toEqual(
-      ["passed", "sandbox", "stageResults", "totalDurationMs"].sort(),
-    );
-    expect(v.stageResults[0]?.stage).toBe("syntax");
+    expect(v.attestationId).toBe("att-123");
+    expect(v.digest).toBe("sha256:abc");
   });
 
   test("forces single-shot when adapterHonorsAbort is false (default)", async () => {
@@ -287,7 +308,12 @@ describe("synthesize", () => {
     const verify: VerifyCallback = () => ({ ok: false, reason: "no" });
     // Caller explicitly asks for 5 attempts but did not assert hard abort —
     // synthesize must clamp to 1 to avoid overlapping side effects on retry.
-    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 5 });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 5,
+      adapterHonorsAbort: false,
+    });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.attempts).toBe(1);
@@ -309,7 +335,7 @@ describe("synthesize", () => {
         ...INPUT,
         targetToolSchema: { type: "object", properties: { bar: { type: "number" } } },
       },
-      { generate, verify: ALWAYS_OK, maxAttempts: 1 },
+      { generate, verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
     );
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -332,7 +358,7 @@ describe("synthesize", () => {
         ...INPUT,
         targetToolSchema: { type: "object", properties: { foo: { type: "string" } } },
       },
-      { generate, verify: ALWAYS_OK, maxAttempts: 1 },
+      { generate, verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
     );
     expect(result.ok).toBe(true);
   });
@@ -426,6 +452,7 @@ describe("synthesize", () => {
       verify: ALWAYS_OK,
       maxAttempts: 1,
       attemptTimeoutMs: 5, // would have fired before resolve
+      adapterHonorsAbort: false,
     });
     expect(result.ok).toBe(true);
     expect(resolved).toBe(true);
@@ -482,7 +509,7 @@ describe("synthesize", () => {
       verSignal = signal;
       return { ok: true };
     };
-    const result = await synthesize(INPUT, { generate, verify });
+    const result = await synthesize(INPUT, { generate, verify, ...ABORT_HONORED });
     expect(result.ok).toBe(true);
     expect(genSignal).toBeInstanceOf(AbortSignal);
     expect(verSignal).toBeInstanceOf(AbortSignal);
@@ -588,7 +615,7 @@ describe("synthesize", () => {
     };
     const generate: GenerateCallback = async () => validRaw();
     const verify: VerifyCallback = () => ({ ok: true, summary });
-    const result = await synthesize(INPUT, { generate, verify });
+    const result = await synthesize(INPUT, { generate, verify, ...ABORT_HONORED });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.verification).toEqual(summary);
@@ -600,7 +627,7 @@ describe("synthesize", () => {
       seen.push(p);
       return validRaw();
     };
-    await synthesize(INPUT, { generate, verify: ALWAYS_OK });
+    await synthesize(INPUT, { generate, verify: ALWAYS_OK, ...ABORT_HONORED });
     expect(seen[0] ?? "").not.toContain("Previous failure reason");
   });
 });
