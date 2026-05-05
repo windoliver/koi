@@ -5866,6 +5866,43 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // re-crossings of the same threshold re-fire toasts.
           governanceBridge?.resetAlerts();
           break;
+        case "system:bg-kill": {
+          // #1944: TUI BgView confirm modal forwards `system:bg-kill` with a
+          // JSON payload `{ workerId, expectedVersion, expectedPid }`. Route
+          // to the daemon-bridge's on-path kill flow (CAS-aware, gated on
+          // workerEvents liveness for starting rows).
+          if (daemonSupervisorHandle === undefined) {
+            store.dispatch({
+              kind: "add_toast",
+              toast: {
+                id: crypto.randomUUID(),
+                kind: "warn",
+                key: "bg-kill-no-supervisor",
+                title: "no live supervisor",
+                body: "use `koi bg kill <id>` from a separate shell",
+                ts: Date.now(),
+              },
+            });
+            break;
+          }
+          void (async () => {
+            try {
+              const payload = JSON.parse(args) as {
+                readonly workerId: string;
+                readonly expectedVersion: number;
+                readonly expectedPid: number;
+              };
+              await daemonSupervisorHandle.bridge.requestKill({
+                workerId: payload.workerId,
+                expectedVersion: payload.expectedVersion,
+                expectedPid: payload.expectedPid,
+              });
+            } catch (err: unknown) {
+              console.warn("[tui-command] bg-kill failed:", err);
+            }
+          })();
+          break;
+        }
         default:
           // Surface unimplemented commands explicitly rather than silently no-oping.
           store.dispatch({
