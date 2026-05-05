@@ -85,6 +85,20 @@ export async function synthesize(
   if (!schemaCheck.ok) {
     return { ok: false, reason: schemaCheck.reason, attempts: 0 };
   }
+  // Snapshot targetToolSchema the same way as candidate: deep-clone (via
+  // JSON round-trip — JSON-plainness was just validated) and recursively
+  // freeze. Without this, a caller mutating the original object between
+  // attempts could prompt the model against schema A while equality is
+  // checked against schema B, breaking the contract invariant.
+  let frozenSchema: Readonly<Record<string, unknown>>;
+  try {
+    frozenSchema = deepFreeze(JSON.parse(JSON.stringify(input.targetToolSchema))) as Readonly<
+      Record<string, unknown>
+    >;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, reason: `targetToolSchema snapshot failed: ${message}`, attempts: 0 };
+  }
   // Defensively read the candidate fields we serialize into prompts. A
   // throwing getter, BigInt, or other non-JSON-safe value here would crash
   // buildSynthesisPrompt() and escape past the typed-result contract.
@@ -94,7 +108,11 @@ export async function synthesize(
   if (!candidateSnapshot.ok) {
     return { ok: false, reason: candidateSnapshot.reason, attempts: 0 };
   }
-  const safeInput: SynthesisInput = { ...input, candidate: candidateSnapshot.value };
+  const safeInput: SynthesisInput = {
+    ...input,
+    candidate: candidateSnapshot.value,
+    targetToolSchema: frozenSchema,
+  };
 
   let priorCode = "";
   let priorReason = "";
@@ -365,11 +383,17 @@ function freezeDescriptor(descriptor: ToolDescriptor): ToolDescriptor {
   return deepFreeze(cloned);
 }
 
-function deepFreeze<T>(value: T): T {
+function deepFreeze<T>(value: T, depth = 0): T {
   if (value === null || typeof value !== "object") return value;
+  if (depth > MAX_JSON_DEPTH) {
+    // Don't recurse further. Inputs to deepFreeze are pre-validated with
+    // ensureJsonPlain (same depth bound), so this path is defense-in-depth.
+    Object.freeze(value);
+    return value;
+  }
   for (const key of Object.keys(value as object)) {
     const child = (value as Record<string, unknown>)[key];
-    if (child !== null && typeof child === "object") deepFreeze(child);
+    if (child !== null && typeof child === "object") deepFreeze(child, depth + 1);
   }
   Object.freeze(value);
   return value;
@@ -459,14 +483,30 @@ function checkSchemaMatch(
  * and throwing getters. Used to enforce that public API inputs are exactly
  * the contract the caller supplied — no lossy normalization.
  */
+/**
+ * Maximum nesting depth accepted in any JSON-plain value. Values deeper
+ * than this are rejected so the recursive helpers (ensureJsonPlain,
+ * deepFreeze, jsonEqual) cannot blow the call stack on adversarial input.
+ * 64 is well past any realistic JSON Schema and below the engine's stack
+ * cliff in every host we target.
+ */
+const MAX_JSON_DEPTH = 64;
+
 function ensureJsonPlain(
   value: unknown,
   label: string,
 ): { ok: true } | { ok: false; reason: string } {
   const seen = new WeakSet<object>();
-  return walk(value, label);
+  return walk(value, label, 0);
 
-  function walk(v: unknown, path: string): { ok: true } | { ok: false; reason: string } {
+  function walk(
+    v: unknown,
+    path: string,
+    depth: number,
+  ): { ok: true } | { ok: false; reason: string } {
+    if (depth > MAX_JSON_DEPTH) {
+      return { ok: false, reason: `${path} exceeds max nesting depth ${MAX_JSON_DEPTH}` };
+    }
     if (v === null) return { ok: true };
     const t = typeof v;
     if (t === "string" || t === "boolean") return { ok: true };
@@ -486,7 +526,7 @@ function ensureJsonPlain(
     seen.add(obj);
     if (Array.isArray(obj)) {
       for (let i = 0; i < obj.length; i += 1) {
-        const r = walk(obj[i], `${path}[${i}]`);
+        const r = walk(obj[i], `${path}[${i}]`, depth + 1);
         if (!r.ok) return r;
       }
       return { ok: true };
@@ -509,14 +549,15 @@ function ensureJsonPlain(
         const message = err instanceof Error ? err.message : String(err);
         return { ok: false, reason: `${path}.${k} getter threw: ${message}` };
       }
-      const r = walk(child, `${path}.${k}`);
+      const r = walk(child, `${path}.${k}`, depth + 1);
       if (!r.ok) return r;
     }
     return { ok: true };
   }
 }
 
-function jsonEqual(a: unknown, b: unknown): boolean {
+function jsonEqual(a: unknown, b: unknown, depth = 0): boolean {
+  if (depth > MAX_JSON_DEPTH) return false; // bound stack; caller fails closed
   if (a === b) return true;
   if (typeof a !== typeof b) return false;
   if (a === null || b === null) return false;
@@ -525,7 +566,7 @@ function jsonEqual(a: unknown, b: unknown): boolean {
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i += 1) {
-      if (!jsonEqual(a[i], b[i])) return false;
+      if (!jsonEqual(a[i], b[i], depth + 1)) return false;
     }
     return true;
   }
@@ -537,7 +578,7 @@ function jsonEqual(a: unknown, b: unknown): boolean {
   for (let i = 0; i < aKeys.length; i += 1) {
     if (aKeys[i] !== bKeys[i]) return false;
     const k = aKeys[i] as string;
-    if (!jsonEqual(aObj[k], bObj[k])) return false;
+    if (!jsonEqual(aObj[k], bObj[k], depth + 1)) return false;
   }
   return true;
 }

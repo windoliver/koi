@@ -714,6 +714,42 @@ describe("synthesize", () => {
     expect(seenPrompts[1] ?? "").toContain("verification failed");
   });
 
+  test("targetToolSchema is snapshotted (caller mutation post-call has no effect)", async () => {
+    const original: Record<string, unknown> = { type: "object", v: 1 };
+    const generate: GenerateCallback = async () => {
+      // Mutate the caller's original after generation has been triggered.
+      // synthesize() should still equality-check against the snapshot,
+      // not against the now-changed object.
+      original.v = 2;
+      return JSON.stringify({
+        descriptor: {
+          name: "echo_tool",
+          description: "ok",
+          // matches the ORIGINAL (snapshot), not the mutated value
+          inputSchema: { type: "object", v: 1 },
+        },
+        code: "x();",
+      });
+    };
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: original },
+      { generate, verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects deeply nested targetToolSchema (depth bound, no stack overflow)", async () => {
+    let nested: Record<string, unknown> = {};
+    for (let i = 0; i < 200; i += 1) nested = { n: nested };
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: nested },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/max nesting depth|targetToolSchema/);
+  });
+
   test("verifier mutating descriptor.name is rejected post-verification", async () => {
     const verify: VerifyCallback = (_code, descriptor) => {
       // Hostile mutation attempt — the descriptor passed in is frozen, so
