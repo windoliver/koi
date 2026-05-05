@@ -9,7 +9,7 @@
  * No I/O: both `generate` and `verify` are caller-injected callbacks.
  */
 
-import type { ToolDescriptor } from "@koi/core";
+import type { ForgeVerificationSummary, ToolDescriptor } from "@koi/core";
 import { parseSynthesisOutput } from "./parser.js";
 import { buildRefinementPrompt } from "./prompts/refinement.js";
 import { buildSynthesisPrompt } from "./prompts/synthesis.js";
@@ -61,68 +61,102 @@ export async function synthesize(
             attempt,
           });
 
-    const generated = await safeGenerate(config.generate, prompt, attemptTimeoutMs, signal);
-    if (!generated.ok) {
-      lastReason = generated.reason;
-      priorReason = generated.reason;
-      priorCode = "";
-      if (generated.aborted) {
-        return { ok: false, reason: generated.reason, attempts: attempt };
-      }
-      continue;
-    }
-
-    const parsed = parseSynthesisOutput(generated.value, input.targetToolName);
-    if (!parsed.ok) {
-      lastReason = parsed.reason;
-      priorReason = parsed.reason;
-      priorCode = generated.value;
-      continue;
-    }
-
-    if (input.targetToolSchema !== undefined) {
-      const schemaCheck = checkSchemaMatch(
-        parsed.value.descriptor.inputSchema,
-        input.targetToolSchema,
+    const attemptController = new AbortController();
+    const detach = linkSignal(signal, attemptController);
+    try {
+      const generated = await safeGenerate(
+        config.generate,
+        prompt,
+        attemptTimeoutMs,
+        attemptController,
       );
-      if (!schemaCheck.ok) {
-        lastReason = schemaCheck.reason;
-        priorReason = schemaCheck.reason;
-        priorCode = parsed.value.code;
+      if (!generated.ok) {
+        lastReason = generated.reason;
+        priorReason = generated.reason;
+        priorCode = "";
+        if (generated.aborted) {
+          return { ok: false, reason: generated.reason, attempts: attempt };
+        }
         continue;
       }
-    }
 
-    const verified = await safeVerify(
-      config.verify,
-      parsed.value.code,
-      parsed.value.descriptor,
-      attemptTimeoutMs,
-      signal,
-    );
-    if (!verified.ok) {
-      lastReason = verified.reason;
-      priorReason = verified.reason;
-      priorCode = parsed.value.code;
-      if (verified.aborted) {
-        return { ok: false, reason: verified.reason, attempts: attempt };
+      const parsed = parseSynthesisOutput(generated.value, input.targetToolName);
+      if (!parsed.ok) {
+        lastReason = parsed.reason;
+        priorReason = parsed.reason;
+        priorCode = generated.value;
+        continue;
       }
-      continue;
-    }
 
-    return {
-      ok: true,
-      value: {
-        code: parsed.value.code,
-        descriptor: parsed.value.descriptor,
-        attempts: attempt,
-        forgedBy: FORGED_BY,
-        synthesizedAt: clock(),
-      },
-    };
+      if (input.targetToolSchema !== undefined) {
+        const schemaCheck = checkSchemaMatch(
+          parsed.value.descriptor.inputSchema,
+          input.targetToolSchema,
+        );
+        if (!schemaCheck.ok) {
+          lastReason = schemaCheck.reason;
+          priorReason = schemaCheck.reason;
+          priorCode = parsed.value.code;
+          continue;
+        }
+      }
+
+      const verified = await safeVerify(
+        config.verify,
+        parsed.value.code,
+        parsed.value.descriptor,
+        attemptTimeoutMs,
+        attemptController,
+      );
+      if (!verified.ok) {
+        lastReason = verified.reason;
+        priorReason = verified.reason;
+        priorCode = parsed.value.code;
+        if (verified.aborted) {
+          return { ok: false, reason: verified.reason, attempts: attempt };
+        }
+        continue;
+      }
+
+      return {
+        ok: true,
+        value: {
+          code: parsed.value.code,
+          descriptor: parsed.value.descriptor,
+          attempts: attempt,
+          forgedBy: FORGED_BY,
+          synthesizedAt: clock(),
+          verification: verified.summary,
+        },
+      };
+    } finally {
+      // Cancel the attempt so any still-running callback observes the abort
+      // (well-behaved adapters stop their work) and detach the linkSignal
+      // listener so it does not leak across iterations.
+      attemptController.abort();
+      detach();
+    }
   }
 
   return { ok: false, reason: lastReason, attempts: maxAttempts };
+}
+
+/**
+ * Wire an external `signal` to a per-attempt `AbortController` so that
+ * timeout, parent-cancel, or outer-loop completion all abort the same
+ * controller — and the callbacks see one cancellation event regardless of
+ * which side fired. Returns a detach function that the caller invokes when
+ * the attempt resolves successfully (avoids dangling listeners).
+ */
+function linkSignal(external: AbortSignal | undefined, attempt: AbortController): () => void {
+  if (!external) return () => undefined;
+  if (external.aborted) {
+    attempt.abort();
+    return () => undefined;
+  }
+  const onAbort = (): void => attempt.abort();
+  external.addEventListener("abort", onAbort, { once: true });
+  return () => external.removeEventListener("abort", onAbort);
 }
 
 type GuardedResult<T> =
@@ -133,12 +167,12 @@ async function safeGenerate(
   generate: SynthesisConfig["generate"],
   prompt: string,
   timeoutMs: number,
-  signal: AbortSignal | undefined,
+  attempt: AbortController,
 ): Promise<GuardedResult<string>> {
   const guarded = await guardAttempt(
-    () => Promise.resolve(generate(prompt)),
+    (signal) => Promise.resolve(generate(prompt, signal)),
     timeoutMs,
-    signal,
+    attempt,
     "LLM generation",
   );
   if (!guarded.ok) return guarded;
@@ -200,12 +234,12 @@ async function safeVerify(
   code: string,
   descriptor: ToolDescriptor,
   timeoutMs: number,
-  signal: AbortSignal | undefined,
+  attempt: AbortController,
 ): Promise<VerifyResult & { readonly aborted?: boolean }> {
   const guarded = await guardAttempt(
-    () => Promise.resolve(verify(code, descriptor)),
+    (signal) => Promise.resolve(verify(code, descriptor, signal)),
     timeoutMs,
-    signal,
+    attempt,
     "Verifier",
   );
   if (!guarded.ok) return guarded;
@@ -213,16 +247,21 @@ async function safeVerify(
 }
 
 /**
- * Race a callback against a timeout and an external `AbortSignal`. Whichever
- * settles first wins; the caller cannot stop the underlying work (the
- * callback signature has no signal arg today), but the loop is freed from a
- * hung dependency and reports a typed reason. `aborted: true` on the failure
- * variant tells the loop to stop iterating instead of retrying.
+ * Race a callback against a timeout and the per-attempt `AbortController`.
+ * On timeout, the controller is aborted so a well-behaved callback can stop
+ * its work and we never start a new attempt while the prior one runs. The
+ * external (caller) signal is wired to the attempt controller upstream
+ * (`linkSignal`), so the callback observes a single cancellation event
+ * regardless of which side fired.
+ *
+ * `aborted: true` on the failure variant tells the loop to stop iterating;
+ * timeouts return `aborted: undefined` so the loop continues to the next
+ * attempt up to `maxAttempts`.
  */
 function guardAttempt<T>(
-  run: () => Promise<T>,
+  run: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
-  signal: AbortSignal | undefined,
+  attempt: AbortController,
   label: string,
 ): Promise<GuardedResult<T>> {
   return new Promise<GuardedResult<T>>((resolve) => {
@@ -231,31 +270,34 @@ function guardAttempt<T>(
       if (settled) return;
       settled = true;
       if (timer !== null) clearTimeout(timer);
-      if (signal && abortListener) signal.removeEventListener("abort", abortListener);
+      attempt.signal.removeEventListener("abort", onAbort);
       resolve(result);
     };
 
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let timedOut = false;
     if (Number.isFinite(timeoutMs)) {
       timer = setTimeout(() => {
+        timedOut = true;
+        attempt.abort(); // signal the callback so it can stop its work
         finish({ ok: false, reason: `${label} timed out after ${timeoutMs}ms` });
       }, timeoutMs);
     }
 
-    let abortListener: (() => void) | null = null;
-    if (signal) {
-      if (signal.aborted) {
-        finish({ ok: false, reason: `${label} aborted by caller`, aborted: true });
-        return;
-      }
-      abortListener = (): void => {
-        finish({ ok: false, reason: `${label} aborted by caller`, aborted: true });
-      };
-      signal.addEventListener("abort", abortListener, { once: true });
+    const onAbort = (): void => {
+      // Only treat external-driven aborts as cancellation. A timeout we fired
+      // is reported separately above so the loop can continue retrying.
+      if (timedOut) return;
+      finish({ ok: false, reason: `${label} aborted by caller`, aborted: true });
+    };
+    if (attempt.signal.aborted) {
+      onAbort();
+      return;
     }
+    attempt.signal.addEventListener("abort", onAbort, { once: true });
 
     try {
-      run().then(
+      run(attempt.signal).then(
         (value) => finish({ ok: true, value }),
         (err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
@@ -283,7 +325,12 @@ function coerceVerifyResult(value: unknown): VerifyResult {
     };
   }
   const obj = value as Record<string, unknown>;
-  if (obj.ok === true) return { ok: true };
+  if (obj.ok === true) {
+    // Pass through any summary the verifier supplied. Shape is not validated
+    // here; downstream forge audit treats it as opaque evidence.
+    const summary = obj.summary as ForgeVerificationSummary | undefined;
+    return summary !== undefined ? { ok: true, summary } : { ok: true };
+  }
   if (obj.ok === false) {
     const reason = typeof obj.reason === "string" ? obj.reason : "(no reason supplied)";
     return { ok: false, reason };

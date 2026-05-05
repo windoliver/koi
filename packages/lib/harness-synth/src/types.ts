@@ -6,7 +6,7 @@
  * no I/O: callers wrap their LLM and verifier behind these signatures.
  */
 
-import type { ToolDescriptor } from "@koi/core";
+import type { ForgeVerificationSummary, ToolDescriptor } from "@koi/core";
 import type { ForgeCandidate } from "@koi/forge-types";
 
 /** Provenance tag stamped on every synthesized output. */
@@ -18,23 +18,38 @@ export const FORGED_BY = "harness-synth";
 
 /**
  * Discriminated verification result returned by the injected `verify`
- * callback. Kept narrower than `ForgeVerificationSummary` so callers can
- * adapt any verifier (forge-verifier, ad-hoc test runners, mocks).
+ * callback. Success carries an optional `summary` so the verifier's
+ * stage-level evidence (durations, sandbox bit, per-stage digests) can
+ * flow into `SynthesisOutput` and on into forge publication/audit paths.
+ * `summary` is optional to keep ad-hoc / test verifiers ergonomic.
  */
-export type VerifyResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
+export type VerifyResult =
+  | { readonly ok: true; readonly summary?: ForgeVerificationSummary | undefined }
+  | { readonly ok: false; readonly reason: string };
 
-/** Caller-supplied verifier. Receives parsed code + descriptor. */
+/**
+ * Caller-supplied verifier. Receives parsed code, descriptor, and an
+ * `AbortSignal` whose abort indicates the synthesis loop has timed out or
+ * been cancelled — implementations that wrap non-idempotent work (sandboxed
+ * execution, network calls) MUST honor the signal so retries do not leave
+ * orphaned attempts running in parallel.
+ */
 export type VerifyCallback = (
   code: string,
   descriptor: ToolDescriptor,
+  signal: AbortSignal,
 ) => Promise<VerifyResult> | VerifyResult;
 
 // ---------------------------------------------------------------------------
 // Generation
 // ---------------------------------------------------------------------------
 
-/** Caller-supplied LLM. Pure prompt-in / text-out so it is easy to fake. */
-export type GenerateCallback = (prompt: string) => Promise<string>;
+/**
+ * Caller-supplied LLM. The `signal` aborts when the synthesis loop times
+ * out or is cancelled by the caller; adapters that wrap network/streaming
+ * work MUST honor it so retries don't overlap orphaned generations.
+ */
+export type GenerateCallback = (prompt: string, signal: AbortSignal) => Promise<string>;
 
 // ---------------------------------------------------------------------------
 // Pipeline I/O
@@ -61,6 +76,14 @@ export interface SynthesisOutput {
   readonly forgedBy: typeof FORGED_BY;
   /** Wall-clock timestamp from `clock()`. */
   readonly synthesizedAt: number;
+  /**
+   * Verification evidence produced by the verifier on the passing attempt.
+   * Forwarded so downstream forge publication / audit can record the exact
+   * verification result that succeeded, instead of re-running the verifier
+   * (which can diverge). `undefined` when the verifier opted not to supply
+   * a summary (typical for ad-hoc / test verifiers).
+   */
+  readonly verification?: ForgeVerificationSummary | undefined;
 }
 
 /** Discriminated result of a synthesis attempt. */

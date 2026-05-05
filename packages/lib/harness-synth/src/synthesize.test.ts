@@ -296,6 +296,67 @@ describe("synthesize", () => {
     expect(calls).toBe(0);
   });
 
+  test("forwards an AbortSignal to generate + verify", async () => {
+    let genSignal: AbortSignal | undefined;
+    let verSignal: AbortSignal | undefined;
+    const generate: GenerateCallback = async (_p, signal) => {
+      genSignal = signal;
+      return validRaw();
+    };
+    const verify: VerifyCallback = (_c, _d, signal) => {
+      verSignal = signal;
+      return { ok: true };
+    };
+    const result = await synthesize(INPUT, { generate, verify });
+    expect(result.ok).toBe(true);
+    expect(genSignal).toBeInstanceOf(AbortSignal);
+    expect(verSignal).toBeInstanceOf(AbortSignal);
+  });
+
+  test("aborts the previous attempt before the next one starts (no overlap)", async () => {
+    const observedAborts: boolean[] = [];
+    let n = 0;
+    const generate: GenerateCallback = (_p, signal) =>
+      new Promise<string>((resolve) => {
+        n += 1;
+        const myAttempt = n;
+        signal.addEventListener("abort", () => {
+          observedAborts.push(myAttempt === 1);
+        });
+        if (myAttempt === 1) {
+          // never resolve — let timeout fire
+          return;
+        }
+        resolve(validRaw());
+      });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 2,
+      attemptTimeoutMs: 25,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.attempts).toBe(2);
+    // First attempt must have observed an abort before the second one resolved.
+    expect(observedAborts).toContain(true);
+  });
+
+  test("propagates verification summary into SynthesisOutput", async () => {
+    const summary = {
+      passed: true as const,
+      sandbox: false,
+      totalDurationMs: 17,
+      stageResults: [{ stage: "syntax", passed: true, durationMs: 5 }],
+    };
+    const generate: GenerateCallback = async () => validRaw();
+    const verify: VerifyCallback = () => ({ ok: true, summary });
+    const result = await synthesize(INPUT, { generate, verify });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.verification).toEqual(summary);
+  });
+
   test("first prompt does not contain refinement marker", async () => {
     const seen: string[] = [];
     const generate: GenerateCallback = async (p) => {
