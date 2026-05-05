@@ -67,9 +67,9 @@ explicit dependencies — never `new`-ing SDK clients internally. This mirrors
 
 | Channel | Injected Dependencies |
 |---------|------------------------|
-| email | `{ imap: ImapClient, smtp: SmtpTransport, parser: MimeParser, clock?: () => number }` |
-| teams | `{ tokenVerifier: JwtVerifier, fetch: typeof fetch, clock?: () => number }` |
-| whatsapp | `{ fetch: typeof fetch, clock?: () => number }` |
+| email | `{ imap: ImapClient, smtp: SmtpTransport, parser: MimeParser, threadStore: ThreadStore, idempotencyStore: IdempotencyStore, clock?: () => number }` |
+| teams | `{ tokenVerifier: JwtVerifier, fetch: typeof fetch, idempotencyStore: IdempotencyStore, clock?: () => number }` |
+| whatsapp | `{ fetch: typeof fetch, idempotencyStore: IdempotencyStore, clock?: () => number }` |
 
 `ImapClient`, `SmtpTransport`, `MimeParser`, `JwtVerifier` are **local interfaces**
 defined in each package. Default factory adapters wrap `imapflow`, `nodemailer`,
@@ -81,18 +81,25 @@ defined in each package. Default factory adapters wrap `imapflow`, `nodemailer`,
 
 - **Inbound**: IMAP IDLE on configured folder. New `EXISTS` event → fetch UID → parse MIME → `normalize()` → emit `KoiMessage`.
 - **Outbound**: SMTP via injected `smtp.sendMail`. Sets `In-Reply-To` and `References` headers from threading state.
-- **Threading**: keyed by root `Message-ID` of the chain. State lives in `Map<threadKey, lastMessageId>` per channel instance. Pure logic in `threading.ts`.
+- **Threading**: keyed by root `Message-ID` of the chain. **Durable**: outbound `In-Reply-To`/`References` derive from the persisted `Message-ID` of the inbound message being replied to, not from in-process state. The channel exposes a `ThreadStore` interface (`get(threadKey): Promise<ThreadState | null>`, `put(threadKey, state): Promise<void>`) injected at construction; default in-process `MapThreadStore` is for single-instance dev only and emits a startup warning. Production deployments inject a durable store (filesystem or external KV — out of scope for this PR but the interface is stable). Pure threading-key logic in `threading.ts` is store-agnostic.
 - **Config**: `{ imap: { host, port, user, pass, mailbox }, smtp: { host, port, user, pass, from }, pollInterval? }`.
 - **Errors**: `INVALID_CONFIG`, `AUTH_FAILED`, `CONNECTION_LOST`, `PARSE_FAILED`, `SEND_FAILED`.
 
 #### channel-teams
 
-- **Inbound**: HTTP webhook handler. POST `/api/messages` → verify Bot Framework JWT (issuer `https://api.botframework.com`) via `jose` JWKS → parse Activity → `normalize()`.
+- **Inbound**: HTTP webhook handler. POST `/api/messages` → verify Bot Framework JWT → parse Activity → `normalize()`.
 - **Outbound**: POST `{activity.serviceUrl}/v3/conversations/{id}/activities`. Bearer token from injected `tokenVerifier.appToken()`.
 - **Format**: text + Adaptive Card v1.5 in `format.ts`. Block kit-style mapper from `ContentBlock[]`.
 - **Threading**: `conversation.id` is the thread key.
-- **Config**: `{ appId, appPassword, tenantId?, jwksUri? }`.
-- **Errors**: `INVALID_JWT`, `AUTH_FAILED`, `INVALID_ACTIVITY`, `SEND_FAILED`.
+- **Config**: `{ appId, appPassword, tenantAllowlist: string[], jwksUri?, serviceUrlAllowlist: string[] }`. `tenantAllowlist` and `serviceUrlAllowlist` are required (use `["*"]` to opt into multi-tenant explicitly).
+- **Auth invariants** (verify in this exact order, reject with `AUTH_FAILED` on any failure):
+  1. JWT signature valid against Bot Framework JWKS (default issuer `https://api.botframework.com`, configurable for gov clouds via `jwksUri`).
+  2. `aud` claim equals configured `appId` — rejects forged-from-other-bot tokens.
+  3. `tid` claim is in `tenantAllowlist` (if not `["*"]`) — rejects cross-tenant activities.
+  4. `iss` claim matches the configured issuer.
+  5. `exp`/`nbf` within clock skew (60s).
+  6. Activity body's `serviceUrl` matches an entry in `serviceUrlAllowlist` (suffix match on host) — rejects bearer-token exfiltration via attacker-controlled `serviceUrl`.
+- **Errors**: `INVALID_JWT`, `AUDIENCE_MISMATCH`, `TENANT_NOT_ALLOWED`, `SERVICE_URL_NOT_ALLOWED`, `AUTH_FAILED`, `INVALID_ACTIVITY`, `SEND_FAILED`.
 
 #### channel-whatsapp
 
@@ -112,6 +119,32 @@ defined in each package. Default factory adapters wrap `imapflow`, `nodemailer`,
 - **Block rendering**: Slack-style `ContentBlock[]` → platform format via `@koi/channel-base/render-blocks` where applicable.
 - **Errors model**: expected failures return `Result<T, KoiError>`; infrastructure failures throw with ES2022 `cause`.
 
+### Inbound idempotency (required for all three channels)
+
+Webhooks are routinely retried on timeout/non-2xx, and IMAP can re-deliver on
+reconnect. Without dedupe the agent emits duplicate `KoiMessage` events,
+producing duplicate downstream actions and outbound replies. Each channel
+**must** dedupe before calling the user's `onMessage` handler.
+
+| Channel | Idempotency key | Notes |
+|---------|-----------------|-------|
+| email | `Message-ID` header (RFC 5322) | Falls back to `sha256(date \| from \| subject \| body)` if header missing or malformed. |
+| teams | `activity.id` (Bot Framework guarantees uniqueness per channel-account-conversation) | Combined with `channelId` to scope across multi-tenant. |
+| whatsapp | `messages[].id` (Meta-issued WAMID) | Per-business-phone, globally unique. |
+
+Each package exposes an `IdempotencyStore` interface
+(`has(key): Promise<boolean>`, `record(key, ttlMs): Promise<void>`) injected at
+construction. Default in-memory `LruIdempotencyStore` (size 10_000, TTL 24h) is
+acceptable for dev and survives webhook retry storms within a single process;
+production deployments inject a durable store. The lookup happens *after*
+auth/signature verification and *before* normalization, so rejected/duplicate
+deliveries do not reach handlers.
+
+Outbound retry is the caller's concern: `send()` is idempotent at the platform
+level only when the platform supports it (WhatsApp `messaging_product`/`to`+
+client-supplied `biz_opaque_callback_data`; Teams via `replyToId`); SMTP is not
+naturally idempotent and the spec does not promise it.
+
 ## Data flow
 
 ```
@@ -130,12 +163,18 @@ Per CLAUDE.md Doc → Tests → Code, every behavior gets a failing test before 
 - `format.test.ts` — every `ContentBlock` → expected platform payload.
 - `platform-send.test.ts` — success path, retryable failure, non-retryable failure, signature failures.
 - `threading.test.ts` (email only) — chain extension and root resolution.
-- `verify-jwt.test.ts` (teams) — valid/invalid/expired tokens.
+- `verify-jwt.test.ts` (teams) — valid/invalid/expired tokens, audience mismatch, tenant not allowed, service-URL not allowed, issuer mismatch, clock skew bounds.
 - `verify-signature.test.ts` (whatsapp) — HMAC pass/fail, missing header, replay window.
+- `idempotency.test.ts` (each channel) — first delivery emits `onMessage`; retried delivery with same key is silently dropped; key extraction handles missing/malformed headers; eviction after TTL allows re-delivery.
 
 ### Integration (`__tests__/integration.test.ts`)
 
 For each channel: build channel via factory with **fake** transports → handshake → receive a known message → assert `onMessage` payload → call `send()` → assert outbound transport call.
+
+Adversarial scenarios (also integration-level):
+- **Email**: IMAP reconnect re-delivers same UID — handler called once. Process-restart simulation: rebuild channel with same durable `ThreadStore`, send reply, assert `In-Reply-To` matches inbound `Message-ID`.
+- **Teams**: token with wrong `aud` rejected with `AUDIENCE_MISMATCH`; activity with `serviceUrl` outside allowlist rejected with `SERVICE_URL_NOT_ALLOWED` (no outbound bearer leak); duplicate `activity.id` only emits once.
+- **WhatsApp**: webhook retry with same `messages[].id` only emits once; signature replay outside window rejected.
 
 ### Coverage gate
 
