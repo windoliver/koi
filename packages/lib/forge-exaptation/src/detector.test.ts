@@ -616,6 +616,25 @@ describe("suggestAction", () => {
     if (result.kind === "invalid-config") expect(result.reason).toContain("6");
   });
 
+  test("clone of current with same eventIds but mutated payload cannot pose as a prior", () => {
+    // Trust-boundary: prior overlap detection keys on the dedup tuple
+    // (artifactId, scope, agentId, eventId), NOT on payload. A caller
+    // that clones the current window, keeps the same eventIds, but
+    // tweaks divergenceScore / contextText cannot manufacture a
+    // "different" prior — the dedup tuple still matches, so the clone
+    // is filtered out as overlapping.
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    const mutatedClone: UsagePurposeObservation[] = observations.map((o, i) => ({
+      ...o,
+      observedAt: -10_000_000 - i, // shift timestamps
+      divergenceScore: 0.94, // mutate payload
+      contextText: `${o.contextText}-mutated-${String(i)}`, // mutate payload
+    }));
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [mutatedClone]).kind).toBe(
+      "reclassify",
+    );
+  });
+
   test("timestamp-skewed clone of the current window cannot pose as a prior", () => {
     // Trust-boundary: a caller that clones the current window and shifts
     // every observedAt slightly earlier must NOT slip past the

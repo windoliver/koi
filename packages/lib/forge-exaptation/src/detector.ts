@@ -768,25 +768,51 @@ function windowMaxAtAfterDedup(window: readonly UsagePurposeObservation[]): numb
 }
 
 /**
- * Stable per-observation identity. Excludes `observedAt` deliberately —
- * a clone of the current window with the timestamps shifted is still
- * the same observation set and must not bypass the self-reference
- * check on its way through `priorWindows`. Includes the normalized
- * payload (rounded score, normalized contextText) plus the dedup key
- * so two replays of one event collapse to a single token.
+ * Stable per-observation identity for prior-window overlap detection.
+ *
+ * When `eventId` is present, identity is keyed ONLY on the dedup tuple
+ * `(artifactId, scope, agentId, eventId)`. The eventId contract says
+ * that tuple is a per-observation idempotency key — two retries of one
+ * observation share it. Including payload-derived fields (rounded
+ * score, normalized contextText) here would let a caller clone the
+ * current window with the same eventIds but mutated score/text and
+ * have the clone treated as an INDEPENDENT prior, manufacturing fake
+ * stability for an irreversible `new-artifact` recommendation. The
+ * fix: keep identity tied to the dedup tuple regardless of payload.
+ *
+ * For observations WITHOUT eventId there is no replay-protection
+ * tuple to lean on, so we fall back to a payload-derived signature
+ * (score + normalized text) to retain some overlap detection. This
+ * branch is action-irrelevant in practice — `cohortReplayProtected`
+ * already requires every cohort observation to carry eventId — but
+ * keeping it conservative still helps the no-eventId baseline path.
+ *
+ * In both cases `observedAt` is deliberately excluded so a
+ * timestamp-shifted clone cannot escape the overlap check.
  */
 function observationIdentity(o: UsagePurposeObservation): string {
+  const artifact = normalizeArtifactId(o.artifactId);
   const scope = normalizeScope(o.scope);
   const agent = o.agentId.trim();
   const eid = typeof o.eventId === "string" ? o.eventId.trim() : "";
-  const score = Math.round(o.divergenceScore * PAYLOAD_SCORE_FACTOR);
-  const ctx = normalizeContext(o.contextText);
   // Length-prefix each variable-width field so concatenation cannot
   // collide (e.g. scope="ab" + agent="c" vs scope="a" + agent="bc").
+  if (eid.length > 0) {
+    return [
+      "E",
+      `${String(artifact.length)}:${artifact}`,
+      `${String(scope.length)}:${scope}`,
+      `${String(agent.length)}:${agent}`,
+      `${String(eid.length)}:${eid}`,
+    ].join("|");
+  }
+  const score = Math.round(o.divergenceScore * PAYLOAD_SCORE_FACTOR);
+  const ctx = normalizeContext(o.contextText);
   return [
+    "P",
+    `${String(artifact.length)}:${artifact}`,
     `${String(scope.length)}:${scope}`,
     `${String(agent.length)}:${agent}`,
-    `${String(eid.length)}:${eid}`,
     String(score),
     `${String(ctx.length)}:${ctx}`,
   ].join("|");
