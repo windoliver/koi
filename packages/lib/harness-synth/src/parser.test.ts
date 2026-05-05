@@ -145,4 +145,16 @@ describe("parseSynthesisOutput", () => {
     if (result.ok) return;
     expect(result.reason).toMatch(/Descriptor must be a JSON object/);
   });
+
+  test("recovers when prose has single-quoted braces before real payload", () => {
+    const real = JSON.stringify({
+      descriptor: VALID_DESCRIPTOR,
+      code: "export const run = (x) => x;",
+    });
+    const raw = `Example: {'descriptor': stuff, 'code': '...'}\n\nActual:\n${real}`;
+    const result = parseSynthesisOutput(raw, "echo_tool");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.descriptor.name).toBe("echo_tool");
+  });
 });

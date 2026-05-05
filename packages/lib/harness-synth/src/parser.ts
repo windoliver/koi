@@ -81,14 +81,22 @@ function findParseableJsonObject(
       continue;
     }
     const span = raw.slice(start, end + 1);
-    cursor = end + 1;
     let parsed: unknown;
     try {
       parsed = JSON.parse(span);
     } catch (err: unknown) {
       lastParseReason = `Output JSON parse failed: ${err instanceof Error ? err.message : String(err)}`;
+      // The brace span we found is bounded by `findBalancedClose`, which
+      // only treats `"..."` as a string. Prose with single-quoted or
+      // backticked `{...}` before the real payload can fool that scan,
+      // producing an unparseable span that swallows a valid object that
+      // appears later. Advance past just this `{` instead of past the
+      // whole failed span so the next iteration can find inner / later
+      // candidates.
+      cursor = start + 1;
       continue;
     }
+    cursor = end + 1;
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
       continue;
     }

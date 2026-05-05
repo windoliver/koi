@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { ForgeCandidate } from "@koi/forge-types";
 import { synthesize } from "./synthesize.js";
-import type { GenerateCallback, SynthesisInput, VerifyCallback } from "./types.js";
+import type { GenerateCallback, SynthesisInput, VerifyCallback, VerifyResult } from "./types.js";
 
 const CANDIDATE: ForgeCandidate = {
   id: "cand-1",
@@ -712,6 +712,36 @@ describe("synthesize", () => {
     });
     expect(result.ok).toBe(true);
     expect(seenPrompts[1] ?? "").toContain("verification failed");
+  });
+
+  test("attemptTimeoutMs is one budget across generate+verify (not double)", async () => {
+    // generate consumes most of the budget; verify must inherit only what is
+    // left, so total wall-clock per attempt stays inside attemptTimeoutMs.
+    let now = 0;
+    const clock = (): number => now;
+    const generate: GenerateCallback = () =>
+      new Promise<string>((resolve) => {
+        // simulate generate taking 80ms inside an 100ms budget
+        now += 80;
+        resolve(validRaw());
+      });
+    const verify: VerifyCallback = () => new Promise<VerifyResult>(() => undefined); // never settles
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      attemptTimeoutMs: 100,
+      clock,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // verify should have been given at most 20ms (the budget remainder).
+    // Without the fix, it would have been given a fresh 100ms.
+    expect(result.reason).toMatch(/timed out after (\d+)ms/);
+    const match = result.reason.match(/timed out after (\d+)ms/);
+    const ms = match ? Number.parseInt(match[1] ?? "0", 10) : 0;
+    expect(ms).toBeLessThanOrEqual(30);
   });
 
   test("hostile verifier object with throwing getter converts to typed failure", async () => {

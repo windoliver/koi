@@ -105,11 +105,21 @@ export async function synthesize(
     // cost of `adapterHonorsAbort: false`. The alternative (ignoring the
     // signal) lets a stuck adapter pin the call indefinitely.
     const detach = linkSignal(signal, attemptController);
+    // Single per-attempt deadline that covers generate + verify combined.
+    // Without a shared budget, generate could consume attemptTimeoutMs and
+    // then verify could consume it AGAIN, blowing through the documented
+    // wall-clock cap by ~2x.
+    const attemptStart = clock();
+    const remainingMs = (): number => {
+      if (!Number.isFinite(attemptTimeoutMs)) return attemptTimeoutMs;
+      const used = clock() - attemptStart;
+      return Math.max(0, attemptTimeoutMs - used);
+    };
     try {
       const generated = await safeGenerate(
         config.generate,
         prompt,
-        attemptTimeoutMs,
+        remainingMs(),
         attemptController,
       );
       if (!generated.ok) {
@@ -145,7 +155,7 @@ export async function synthesize(
         config.verify,
         parsed.value.code,
         parsed.value.descriptor,
-        attemptTimeoutMs,
+        remainingMs(),
         attemptController,
       );
       if (!verified.ok) {
