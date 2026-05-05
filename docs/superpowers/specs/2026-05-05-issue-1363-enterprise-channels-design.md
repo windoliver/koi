@@ -86,32 +86,43 @@ implementable, both webhook channels expose the same optional surface that
 readonly handleHttpRequest?: (request: Request) => Promise<Response>;
 ```
 
-The runtime/host (gateway, dev server, `@koi/runtime`) is responsible for
-binding the channel's `handleHttpRequest` to the appropriate route
-(`POST /api/messages` for Teams, `GET|POST /webhook` for WhatsApp). The handler
-is what executes the auth → `tryBegin` → `await onMessage` → commit/abort flow
-described below; the HTTP `Response` reflects the handler's outcome
+This handler executes the auth → `tryBegin` → `await onMessage` → commit/abort
+flow described below; the HTTP `Response` reflects the handler's outcome
 deterministically. Email has no `handleHttpRequest` because it is IMAP-driven.
+
+**Host integration is out of scope for this PR.** Like `channel-slack` today, the
+host (a `Bun.serve` wrapper, an integration test, or a gateway) is responsible
+for binding `channel.handleHttpRequest` to the appropriate route
+(`POST /api/messages` for Teams, `GET|POST /webhook` for WhatsApp). `@koi/runtime`
+currently exposes the `ChannelAdapter` as-is and does not own HTTP ingress
+routing — adding generic webhook route registration to the runtime is a separate
+follow-up (tracked outside this issue). What this PR delivers in `@koi/runtime`
+is the same as for `channel-slack`: the package is a declared dependency, two
+standalone golden queries assert factory + descriptor + `handleHttpRequest`
+contract, and the channel can be constructed and exercised end-to-end via
+synthetic `Request` objects in tests.
 
 The package's `index.ts` re-exports `handleHttpRequest`-shaped types
 (`WebhookRequest`, `WebhookResponse` aliases of standard `Request`/`Response`)
-so hosts can integrate without depending on `@koi/channel-base` internals. The
-golden-replay tests for each webhook channel call `handleHttpRequest` directly
-with synthetic `Request` objects and assert: 200 on commit, 401/403 on auth
-failure, 409 on in-flight, 500 on handler throw, 503 on capacity.
+so future host integrations do not depend on `@koi/channel-base` internals.
+The golden-replay tests for each webhook channel call `handleHttpRequest`
+directly with synthetic `Request` objects and assert: 200 on commit, 401/403 on
+auth failure, 409 on in-flight, 500 on handler throw, 503 on capacity.
 
 ### Per-channel detail
 
 #### channel-email
 
 - **Inbound**: IMAP IDLE on configured folder. New `EXISTS` event → fetch UID → parse MIME → `normalize()` → emit `KoiMessage`.
-- **Outbound**: SMTP via injected `smtp.sendMail` with a **persistent outbox** for crash safety:
+- **Outbound**: SMTP via injected `smtp.sendMail` with a **persistent outbox** and **per-thread serialization** for both correctness and crash safety:
   1. Pre-generate a stable outbound `Message-ID` (`<uuid@configured-from-domain>`).
-  2. CAS-write an `outbox` record `{ messageId, threadKey, expectedThreadVersion, payloadHash, status: "pending" }` via `OutboxStore` (injected; default in-memory).
-  3. Call `smtp.sendMail` setting that `Message-ID`, `In-Reply-To`, and `References`.
-  4. On SMTP success: CAS-update outbox `status: "sent"` and CAS-advance `ThreadStore` with the new chain entry. Both updates use the version recorded at step 2 so concurrent senders cannot race.
+  2. **Reserve the thread**: read `ThreadStore.get(threadKey)` and CAS-advance it to a new tentative version that includes this outbound `Message-ID` *before* SMTP. This is the serialization point — losers retry the read-modify-write loop and re-derive headers from the now-current thread state. Only the CAS winner proceeds to step 3 with valid `In-Reply-To`/`References`. (CAS conflict ⇒ re-read ⇒ re-derive headers ⇒ retry CAS.)
+  3. CAS-write an `outbox` record `{ messageId, threadKey, threadVersion, payloadHash, status: "pending", awaitingRecovery: false }` via `OutboxStore` (injected; durable).
+  4. Call `smtp.sendMail` setting that `Message-ID`, `In-Reply-To`, and `References`. Set `awaitingRecovery: true` in the outbox row immediately before the SMTP DATA write.
+  5. On SMTP success: CAS-update outbox `status: "sent"`, clear `awaitingRecovery`. Thread state is **already advanced** (step 2), so no further `ThreadStore` write is needed.
+  6. On SMTP failure *before* DATA acceptance: CAS-update outbox `status: "failed"` AND CAS-rollback `ThreadStore` to the prior version (best-effort; if a concurrent sender has already advanced past us, the rollback is skipped and our reserved entry becomes a benign no-op since no email carries that ID). Safe to retry from step 2 with a fresh ID.
   5. On SMTP failure *before* the relay accepted the DATA (e.g., connection refused, 4xx/5xx pre-DATA): outbox stays `pending`; safe to retry — no duplicate is possible. After bounded retries it transitions to `failed`.
-  6. On SMTP failure *after* DATA accepted but before our local state lands (e.g., process crash between server `250 OK` and outbox update): outbox stays `pending` with an `awaiting-recovery` flag set just before the SMTP call. On recovery the channel does **not** auto-resend such rows — instead it surfaces them via a `getPendingSends(): Promise<PendingSend[]>` API for operator review, because SMTP `Message-ID` is **not** a protocol-level idempotency key (RFC 5321 does not require relays to collapse duplicates by message-id; many do not).
+  7. On SMTP failure *after* DATA accepted but before our local state lands (e.g., process crash between server `250 OK` and outbox update): outbox stays `pending` with `awaitingRecovery: true`. On recovery the channel does **not** auto-resend such rows — instead it surfaces them via `getPendingSends(): Promise<PendingSend[]>` for operator review, because SMTP `Message-ID` is **not** a protocol-level idempotency key (RFC 5321 does not require relays to collapse duplicates by message-id; many do not). The reserved thread version stands and is cleared up by operator action.
 - **Delivery guarantee**: the channel promises **at-most-once acknowledged delivery** plus **at-least-once intent persistence**. Crash recovery after DATA-acked is operator-resolved (mark `sent` if confirmed by mailbox/MTA logs, or `failed` and let the user retry through the agent loop). The contract and the README both state that automated SMTP retry can produce duplicate user-visible mail and is therefore opt-in via an explicit `autoRetryAfterDataAck: true` config flag (default `false`).
 - **Threading**: state is only advanced on confirmed-sent (status `sent`), so a crashed-mid-send never leaves stale `In-Reply-To` pointers. `awaiting-recovery` rows do not contribute to outbound threading.
 - **Threading**: keyed by root `Message-ID` of the chain. **Durable + concurrency-safe**: outbound `In-Reply-To`/`References` derive from persisted message metadata, not from in-process state. The channel exposes a `ThreadStore` interface with CAS semantics:
@@ -210,14 +221,15 @@ interface IdempotencyStore {
    - `in-flight`: 409 — provider retries (Teams + WhatsApp both retry 4xx other than 4xx-final).
    - `capacity-exhausted`: 503 — provider retries; emit operator alert.
    - `ok`: continue.
-3. `await normalize(payload)` → **before invoking the handler**, write a durable `processed` record (CAS, same store) tagged `pre-handler`. If this write fails, abort and return 500 — no side effects yet.
-4. `await handler(message)` (the user's async `onMessage`).
-5. On handler thrown error: `abort(lease)` (and clear `processed` if `pre-handler`-only) → 500, provider retries.
-6. On handler success: `commit(lease, commitTtlMs)` promotes the record to `committed`.
-   - If `commit()` itself fails after a successful handler, the record is *already* `pre-handler`-tagged for this key, so subsequent retries see `processed` on `tryBegin` lookup and short-circuit to 200 OK *without* re-running the handler. Operators see a non-fatal warning telemetry event (`commit-failed-but-processed`); the duplicate-suppression barrier is intact even though `commit()` did not complete cleanly. The `pre-handler` record is upgraded to fully-committed on the next successful `tryBegin` lookup that observes it (lazy promotion).
-   - 200 OK is returned to the provider in both the clean-commit and `commit-failed-but-processed` cases — they are observationally identical to the user.
+3. `await normalize(payload)` → `await handler(message)` (the user's async `onMessage`). The lease is the *only* state that exists during handler execution; no durable suppression record is written before the handler completes.
+4. On handler thrown error: `abort(lease)` → 500, provider retries (lease released; the next retry re-runs the handler).
+5. On handler success: `commit(lease, commitTtlMs)` writes the durable suppression record. If `commit()` succeeds → 200 OK.
+6. **`commit()` failure after successful handler** (the hard case): return 500 so the provider retries. The user's handler is therefore re-invoked on the retry — this is **at-least-once handler invocation across commit failures**, not at-most-once. The package README documents this explicitly: handlers must either be idempotent against the ingress key, or callers must layer their own per-message outbox keyed on the ingress key for exactly-once side effects. We do not write a pre-handler "processed" marker, because doing so would suppress retries for handlers that never ran (process killed mid-handler), which is a worse failure mode than at-least-once.
+7. **Lease expiration on worker crash**: if a worker dies during handler execution, the lease TTL elapses and `tryBegin` becomes available again to the next retry — handler re-runs (at-least-once), no permanent suppression. The lease is *not* a durable suppression barrier; only `commit` is.
 
-This makes the post-handler boundary effectively **at-most-once handler invocation** as long as the underlying store provides single-record CAS for the `processed` write. Side-effect bridges that need stricter exactly-once semantics layer their own outbox on top, with the ingress key as the dedupe seed (documented in the package README).
+Telemetry: each transition (`begin`, `commit`, `abort`, `commit-failure`) emits a structured event so operators can observe duplicate-handler runs in the rare commit-failure case.
+
+This is a **clean two-state machine: leased (in-flight, not a suppression barrier) → committed (durable suppression).** No "pre-handler" intermediate state, no orphaned markers on crash.
 
 Email is **IMAP-backed, not webhook-backed**, so it has no HTTP response to bind. Its loop instead awaits the handler, then `commit`s on success or `abort`s on failure, leaving the IMAP `\Seen` flag unset on abort so the next IMAP fetch re-delivers. Lease TTL is bounded so a crashed worker's lease expires and the next IMAP poll re-claims.
 
