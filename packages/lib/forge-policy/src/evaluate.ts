@@ -1,6 +1,7 @@
 import type { ForgeScope } from "@koi/core";
 import type { ForgeCandidate, ForgePolicyVerdict } from "@koi/forge-types";
 import type { ForgePolicyConfig, PolicyOverride } from "./config.js";
+import { computeConfigFingerprint } from "./fingerprint.js";
 
 /** Per-call inputs to `evaluatePolicy`. */
 export interface EvaluatePolicyOptions {
@@ -17,6 +18,16 @@ export interface EvaluatePolicyOptions {
    * non-negative numbers are treated as `0`.
    */
   readonly complexityOf?: ((spec: Readonly<Record<string, unknown>>) => number) | undefined;
+
+  /**
+   * Stable identifier for the `complexityOf` scorer (e.g. a name +
+   * semver, a content hash, or a deployed-image digest). Required
+   * whenever `complexityOf` is set — `evaluatePolicy` fails closed
+   * (deny) otherwise. Bound into `configFingerprint` so two
+   * evaluations that produced different verdicts under different
+   * scoring semantics never collide on the same audit fingerprint.
+   */
+  readonly complexityScorerId?: string | undefined;
 
   /**
    * Explicit operator override. `granted: true` rewrites a `deny` or
@@ -37,7 +48,47 @@ export interface PolicyEvaluation {
   readonly verdict: ForgePolicyVerdict;
   readonly baseVerdict: ForgePolicyVerdict;
   readonly overrideApplied: boolean;
+  /**
+   * The override that was supplied to `evaluatePolicy`, echoed back so
+   * audit logs can bind the recorded operator-attribution data to the
+   * exact evaluation that produced the verdict (preventing a caller
+   * from logging a different `grantedBy`/`reason` pair than the one
+   * that actually relaxed the verdict).
+   */
+  readonly override?: PolicyOverride | undefined;
+  /**
+   * SHA-256 fingerprint of the config that produced this evaluation,
+   * computed inside `evaluatePolicy` at decision time. Audit logs use
+   * this value (not the live config) so post-evaluation config
+   * mutations cannot rewrite the recorded policy identity.
+   */
+  readonly configFingerprint: string;
+  /**
+   * The `candidate.id` evaluated. `recordEvaluation` writes this value
+   * (not a caller-supplied id) into the audit entry so an authentic
+   * evaluation for one candidate cannot be replayed and logged under
+   * a different candidate id.
+   */
+  readonly candidateId: string;
+  /**
+   * Set on fail-closed evaluations only — names which input failed
+   * snapshot validation (or override pre-validation). `undefined` on
+   * successful evaluations. Kept separate from `configFingerprint` so
+   * audit consumers can join entries back to the real policy version
+   * even when the evaluation denied for a malformed override.
+   */
+  readonly failureKind?: "candidate" | "override" | "config";
+  /**
+   * Human-readable detail for `failureKind`. `undefined` on successful
+   * evaluations. Never embedded into `configFingerprint`.
+   */
+  readonly failureReason?: string;
 }
+
+/** Sentinel `configFingerprint` used when the real fingerprint cannot
+ *  be computed (i.e. candidate/override/config snapshot failed before
+ *  fingerprinting). Distinct from any real SHA-256 hex digest. */
+const UNAVAILABLE_FINGERPRINT = "<unavailable>";
 
 /**
  * Pure, synchronous, deterministic policy evaluator. Evaluates checks in
@@ -54,15 +105,298 @@ export interface PolicyEvaluation {
  *   - `options.spec` cannot be canonicalized (cyclic reference or
  *     non-JSON-safe value such as `BigInt` / function / `Symbol`).
  */
+/**
+ * Closure-private set of authentic `PolicyEvaluation` objects produced
+ * by `evaluatePolicy`. Unforgeable: no module-external code holds a
+ * reference to this WeakSet, so a caller cannot brand a fabricated
+ * literal as authentic. Garbage-collected automatically with the
+ * evaluation it brands. Module-duplication is not a concern in this
+ * Bun-only monorepo (`linker = "isolated"` ensures a single instance
+ * of `@koi/forge-policy` is loaded).
+ */
+const AUTHENTIC_EVALUATIONS = new WeakSet<object>();
+
+export function isAuthenticEvaluation(value: unknown): value is PolicyEvaluation {
+  return typeof value === "object" && value !== null && AUTHENTIC_EVALUATIONS.has(value);
+}
+
 export function evaluatePolicy(
   candidate: ForgeCandidate,
   config: ForgePolicyConfig,
   options: EvaluatePolicyOptions = {},
 ): PolicyEvaluation {
-  const baseVerdict = evaluateChecks(candidate, config, options);
-  const verdict = applyOverride(baseVerdict, options.override);
+  // Snapshot every caller-supplied input as deep-frozen plain data
+  // BEFORE any caller-controlled code runs. Order matters:
+  //   1. `candidate` — captures id/scope/kind/name so a later
+  //      `complexityOf` cannot mutate `candidate.id` to forge audit
+  //      attribution or `candidate.proposedScope` to bypass scope gates.
+  //   2. `override` — captures granted/reason/grantedBy so the same
+  //      callback cannot mutate `options.override.granted` to flip the
+  //      verdict.
+  //   3. `config` — same reasoning, plus the fingerprint is computed
+  //      against this snapshot to pin audit identity at decision time.
+  // Each snapshot uses a descriptor-only walk that rejects accessors,
+  // non-plain prototypes, and BigInt/Symbol/Function values. NOTE: we
+  // can't fully neutralize hostile `Proxy` inputs (`Object.keys` and
+  // `getOwnPropertyDescriptor` invoke traps) — `Proxy`-wrapped policy
+  // inputs are unsupported. Reflective traps that mutate external
+  // state during snapshotting are a caller bug; the verdict still
+  // depends only on the snapshots, never on the live inputs.
+  let candidateSnapshot: ForgeCandidate;
+  try {
+    candidateSnapshot = descriptorClone(candidate) as ForgeCandidate;
+    deepFreeze(candidateSnapshot);
+  } catch (e) {
+    // Do NOT read any field from the live `candidate` here — that would
+    // re-enter caller-controlled code after the snapshot failed.
+    return makeFailClosedEvaluation({
+      reason: `candidate is not serializable: ${e instanceof Error ? e.message : String(e)}`,
+      candidateId: "<invalid>",
+      override: undefined,
+      kind: "candidate",
+      configFingerprint: UNAVAILABLE_FINGERPRINT,
+    });
+  }
+  // Reject malformed candidate.id immediately — the audit writer
+  // requires a non-empty string id, and we must not return an authentic
+  // evaluation that the caller could act on but would then fail to
+  // persist. The fail-closed evaluation uses a sentinel id so the
+  // resulting audit entry is itself recordable.
+  if (typeof candidateSnapshot.id !== "string" || candidateSnapshot.id.length === 0) {
+    return makeFailClosedEvaluation({
+      reason: "candidate.id must be a non-empty string",
+      candidateId: "<invalid>",
+      override: undefined,
+      kind: "candidate",
+      configFingerprint: UNAVAILABLE_FINGERPRINT,
+    });
+  }
+  let overrideSnapshot: PolicyOverride | undefined;
+  try {
+    overrideSnapshot =
+      options.override === undefined
+        ? undefined
+        : (descriptorClone(options.override) as PolicyOverride);
+    if (overrideSnapshot !== undefined) deepFreeze(overrideSnapshot);
+  } catch (e) {
+    return makeFailClosedEvaluation({
+      reason: `override is not serializable: ${e instanceof Error ? e.message : String(e)}`,
+      candidateId: candidateSnapshot.id,
+      override: undefined,
+      kind: "override",
+      configFingerprint: UNAVAILABLE_FINGERPRINT,
+    });
+  }
+  // Snapshot the config NOW (before override pre-validation) so that an
+  // override-validation failure can still record the real policy
+  // fingerprint — audit consumers must be able to join malformed-override
+  // denials back to the policy version that evaluated them.
+  // A custom complexity scorer changes verdict semantics — refuse to
+  // emit an audited evaluation under one without a stable scorer id
+  // bound into the fingerprint. Otherwise two evaluations that used
+  // different scoring semantics could record the same `configFingerprint`,
+  // breaking forensic reproducibility.
+  if (
+    options.complexityOf !== undefined &&
+    (typeof options.complexityScorerId !== "string" || options.complexityScorerId.length === 0)
+  ) {
+    return makeFailClosedEvaluation({
+      reason: "complexityOf requires a non-empty complexityScorerId for audit binding",
+      candidateId: candidateSnapshot.id,
+      override: overrideSnapshot,
+      kind: "config",
+      configFingerprint: UNAVAILABLE_FINGERPRINT,
+    });
+  }
+  let configSnapshot: ForgePolicyConfig;
+  let configFingerprint: string;
+  try {
+    const result = snapshotConfig(config, options.complexityScorerId);
+    configSnapshot = result.snapshot;
+    configFingerprint = result.fingerprint;
+  } catch (e) {
+    return makeFailClosedEvaluation({
+      reason: `config is not serializable: ${e instanceof Error ? e.message : String(e)}`,
+      candidateId: candidateSnapshot.id,
+      override: overrideSnapshot,
+      kind: "config",
+      configFingerprint: UNAVAILABLE_FINGERPRINT,
+    });
+  }
+  // Validate override metadata BEFORE `applyOverride` could relax a
+  // verdict — otherwise a granted override with blank reason/grantedBy
+  // could authorize the action and then crash `recordEvaluation`,
+  // dropping the audit entry while leaving the action as `allow`.
+  if (overrideSnapshot !== undefined && overrideSnapshot.granted === true) {
+    const blankReason =
+      typeof overrideSnapshot.reason !== "string" || overrideSnapshot.reason.length === 0;
+    const blankGrantedBy =
+      typeof overrideSnapshot.grantedBy !== "string" || overrideSnapshot.grantedBy.length === 0;
+    if (blankReason || blankGrantedBy) {
+      // Build the failure reason with the attempted-override
+      // attribution (grantedBy if non-empty), so forensics can still
+      // see who tried even though the override is rejected. The audit
+      // entry itself drops the malformed override (it would otherwise
+      // crash `validateEntry`).
+      const attribution =
+        !blankGrantedBy && typeof overrideSnapshot.grantedBy === "string"
+          ? ` from grantedBy='${overrideSnapshot.grantedBy}'`
+          : "";
+      return makeFailClosedEvaluation({
+        reason: `granted override missing reason or grantedBy${attribution}`,
+        candidateId: candidateSnapshot.id,
+        override: undefined,
+        kind: "override",
+        configFingerprint,
+      });
+    }
+  }
+  const baseVerdict = evaluateChecks(candidateSnapshot, configSnapshot, options);
+  const verdict = applyOverride(baseVerdict, overrideSnapshot);
   const overrideApplied = verdict !== baseVerdict;
-  return { verdict, baseVerdict, overrideApplied };
+  const evaluation: PolicyEvaluation = Object.freeze({
+    verdict: Object.freeze({ ...verdict }),
+    baseVerdict: Object.freeze({ ...baseVerdict }),
+    overrideApplied,
+    override: overrideSnapshot,
+    configFingerprint,
+    candidateId: candidateSnapshot.id,
+  });
+  AUTHENTIC_EVALUATIONS.add(evaluation);
+  return evaluation;
+}
+
+interface ConfigSnapshotResult {
+  readonly snapshot: ForgePolicyConfig;
+  readonly fingerprint: string;
+}
+
+/**
+ * Deep-clones `config` to a frozen plain-data snapshot WITHOUT
+ * triggering caller-controlled code: every property read goes through
+ * `Object.getOwnPropertyDescriptor`, so getters / `toJSON` / Proxy
+ * traps never fire. Rejects accessors and non-plain prototypes by
+ * throwing — caller wraps the throw and fails closed. The snapshot is
+ * what the rest of `evaluatePolicy` reads, so a hostile `complexityOf`
+ * cannot mutate the live config mid-evaluation, and a hostile config
+ * cannot run side effects during snapshotting.
+ */
+function snapshotConfig(
+  config: ForgePolicyConfig,
+  complexityScorerId: string | undefined,
+): ConfigSnapshotResult {
+  const cloned = descriptorClone(config) as ForgePolicyConfig;
+  return {
+    snapshot: deepFreeze(cloned),
+    fingerprint: computeConfigFingerprint(cloned, complexityScorerId),
+  };
+}
+
+function descriptorClone(value: unknown): unknown {
+  if (value === null) return null;
+  const t = typeof value;
+  if (t === "string" || t === "boolean" || t === "undefined") return value;
+  if (t === "number") {
+    if (!Number.isFinite(value as number)) {
+      throw new Error("non-finite number");
+    }
+    return value;
+  }
+  if (t !== "object") {
+    // BigInt, Symbol, Function — not JSON-safe, not allowed in policy config.
+    throw new Error(`unsupported config value type: ${t}`);
+  }
+  if (Array.isArray(value)) {
+    const out: unknown[] = [];
+    const len = value.length;
+    for (let i = 0; i < len; i++) {
+      const desc = Object.getOwnPropertyDescriptor(value, i);
+      if (desc === undefined) {
+        out.push(null); // hole → null (matches JSON.stringify)
+        continue;
+      }
+      if (desc.get !== undefined || desc.set !== undefined) {
+        throw new Error(`accessor on array index ${i}`);
+      }
+      out.push(descriptorClone(desc.value));
+    }
+    return out;
+  }
+  // Reject non-plain prototypes (Date, Map, custom class, Proxy with
+  // hostile traps would have already failed the descriptor reads).
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) {
+    throw new Error("config contains non-plain object");
+  }
+  const out: Record<string, unknown> = {};
+  // `getOwnPropertyNames` (not `Object.keys`) so non-enumerable required
+  // fields on the config are preserved into the snapshot. Otherwise a
+  // structurally-valid config with `Object.defineProperty(cfg,
+  // "allowedKinds", { value: [...], enumerable: false })` would clone
+  // to `{}` and crash later in `evaluateChecks`.
+  for (const k of Object.getOwnPropertyNames(value as object)) {
+    const desc = Object.getOwnPropertyDescriptor(value, k);
+    if (desc === undefined) continue;
+    if (desc.get !== undefined || desc.set !== undefined) {
+      throw new Error(`accessor on key '${k}'`);
+    }
+    Object.defineProperty(out, k, {
+      value: descriptorClone(desc.value),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return out;
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value === null || typeof value !== "object") return value;
+  for (const k of Object.keys(value as Record<string, unknown>)) {
+    deepFreeze((value as Record<string, unknown>)[k]);
+  }
+  return Object.freeze(value);
+}
+
+interface FailClosedParams {
+  readonly reason: string;
+  readonly candidateId: string;
+  readonly override: PolicyOverride | undefined;
+  /** Which input failed snapshot/validation. Recorded as a separate
+   *  field on the evaluation so audit consumers can group/filter
+   *  failures without parsing the fingerprint. */
+  readonly kind: "candidate" | "override" | "config";
+  /** Real config fingerprint when the config snapshot already
+   *  succeeded (i.e. override-validation failures); else
+   *  `UNAVAILABLE_FINGERPRINT`. Kept distinct from `failureReason` so
+   *  the policy identity is never overwritten by free-form error text. */
+  readonly configFingerprint: string;
+}
+
+/**
+ * Builds a deterministic fail-closed evaluation when one of the
+ * inputs cannot be snapshotted (or override pre-validation rejected
+ * a malformed granted override). `configFingerprint` is preserved as
+ * the real SHA-256 digest whenever the config was already snapshotted
+ * — failure diagnostics live in `failureKind` / `failureReason` so an
+ * audit consumer can still join the entry back to the policy version.
+ */
+function makeFailClosedEvaluation(params: FailClosedParams): PolicyEvaluation {
+  const verdict: ForgePolicyVerdict = { decision: "deny", reason: params.reason };
+  const override =
+    params.override === undefined ? undefined : Object.freeze({ ...params.override });
+  const evaluation: PolicyEvaluation = Object.freeze({
+    verdict: Object.freeze({ ...verdict }),
+    baseVerdict: Object.freeze({ ...verdict }),
+    overrideApplied: false,
+    override,
+    configFingerprint: params.configFingerprint,
+    candidateId: params.candidateId,
+    failureKind: params.kind,
+    failureReason: params.reason,
+  });
+  AUTHENTIC_EVALUATIONS.add(evaluation);
+  return evaluation;
 }
 
 function evaluateChecks(
@@ -70,6 +404,64 @@ function evaluateChecks(
   config: ForgePolicyConfig,
   options: EvaluatePolicyOptions,
 ): ForgePolicyVerdict {
+  // Validate the runtime shape of the snapshotted inputs before any
+  // check that would otherwise call `.startsWith`/`.includes` on a
+  // non-string — TypeScript types do not survive runtime / cross-process
+  // input. Reject missing-or-malformed required fields with a
+  // deterministic deny rather than throwing or short-circuiting.
+  if (typeof candidate.name !== "string" || candidate.name.length === 0) {
+    return { decision: "deny", reason: "candidate.name must be a non-empty string" };
+  }
+  if (typeof candidate.kind !== "string" || candidate.kind.length === 0) {
+    return { decision: "deny", reason: "candidate.kind must be a non-empty string" };
+  }
+  if (!Array.isArray(config.allowedKinds) || config.allowedKinds.length === 0) {
+    return { decision: "deny", reason: "config.allowedKinds must be a non-empty array" };
+  }
+  for (const k of config.allowedKinds) {
+    if (typeof k !== "string") {
+      return { decision: "deny", reason: "config.allowedKinds entries must be strings" };
+    }
+  }
+  if (config.forbiddenNamespaces !== undefined) {
+    if (!Array.isArray(config.forbiddenNamespaces)) {
+      return {
+        decision: "deny",
+        reason: "config.forbiddenNamespaces must be an array when defined",
+      };
+    }
+    for (const p of config.forbiddenNamespaces) {
+      if (typeof p !== "string") {
+        return {
+          decision: "deny",
+          reason: "config.forbiddenNamespaces entries must be strings",
+        };
+      }
+    }
+  }
+  // Fail closed on unknown scope values from runtime/deserialized input
+  // before any rank comparison runs — otherwise an unrecognized scope
+  // would index `SCOPE_RANK` as `undefined` and silently pass both the
+  // `>` and `>=` checks below.
+  if (!isForgeScope(candidate.proposedScope)) {
+    return {
+      decision: "deny",
+      reason: `unknown proposedScope '${String(candidate.proposedScope)}'`,
+    };
+  }
+  if (!isForgeScope(config.maxScope)) {
+    return {
+      decision: "deny",
+      reason: `unknown config.maxScope '${String(config.maxScope)}'`,
+    };
+  }
+  if (!isForgeScope(config.requireApprovalAtOrAbove)) {
+    return {
+      decision: "deny",
+      reason: `unknown config.requireApprovalAtOrAbove '${String(config.requireApprovalAtOrAbove)}'`,
+    };
+  }
+
   if (!config.allowedKinds.includes(candidate.kind)) {
     return {
       decision: "deny",
@@ -86,6 +478,20 @@ function evaluateChecks(
   }
 
   if (config.maxComplexity !== undefined) {
+    // Reject malformed maxComplexity values (NaN/Infinity/negative). With
+    // NaN, every `score > maxComplexity` comparison is false → the
+    // ceiling is silently disabled. With Infinity, the ceiling is
+    // effectively removed. Both must fail closed instead.
+    if (
+      typeof config.maxComplexity !== "number" ||
+      !Number.isFinite(config.maxComplexity) ||
+      config.maxComplexity < 0
+    ) {
+      return {
+        decision: "deny",
+        reason: `config.maxComplexity must be a finite non-negative number, got ${String(config.maxComplexity)}`,
+      };
+    }
     const complexity = computeComplexity(options.spec, options.complexityOf, config.maxComplexity);
     if (!complexity.ok) {
       return { decision: "deny", reason: complexity.reason };
@@ -132,6 +538,10 @@ const SCOPE_RANK = {
 
 function scopeRank(scope: ForgeScope): number {
   return SCOPE_RANK[scope];
+}
+
+function isForgeScope(value: unknown): value is ForgeScope {
+  return value === "agent" || value === "zone" || value === "global";
 }
 
 function matchForbiddenNamespace(
@@ -378,11 +788,16 @@ function validatePlainValue(value: unknown, state: WalkState): ValidationResult 
     return ok(value);
   }
   if (type === "number") {
-    // Exact JSON-encoded byte length. Non-finite numbers (NaN, ±Infinity)
-    // serialize as `null` in JSON.stringify, which is the same form the
-    // canonicalize pass produces — charge 4 to stay consistent.
+    // Reject non-finite numbers (NaN, ±Infinity) outright. JSON.stringify
+    // collapses them to `null`, so the byte-length scoring path and a
+    // custom-scorer path would disagree about what the spec contains —
+    // the policy decision must not depend on values that are not
+    // JSON-stable. Fail closed instead.
     const n = value as number;
-    charge(state, Number.isFinite(n) ? String(n).length : 4);
+    if (!Number.isFinite(n)) {
+      return { ok: false, reason: "non-finite number is not JSON-safe (NaN/Infinity rejected)" };
+    }
+    charge(state, String(n).length);
     return ok(value);
   }
   if (type === "undefined") {

@@ -10,7 +10,7 @@ import { MAX_ARRAY_LENGTH, STRUCTURAL_BUDGET_BYTES } from "./evaluate.js";
  * different evaluator generations even when the operator config is
  * identical. Bump on every semantic change.
  */
-export const POLICY_EVALUATOR_VERSION = 1;
+export const POLICY_EVALUATOR_VERSION = 2;
 
 /**
  * Stable hash over the operator-controlled fields of a `ForgePolicyConfig`.
@@ -20,7 +20,18 @@ export const POLICY_EVALUATOR_VERSION = 1;
  * cryptographic digest so two distinct policy configs cannot collide on
  * the same fingerprint within the audit trail.
  */
-export function computeConfigFingerprint(config: ForgePolicyConfig): string {
+export function computeConfigFingerprint(
+  config: ForgePolicyConfig,
+  /**
+   * Stable identifier for a custom `complexityOf` scorer when one is in
+   * play. Bound into the fingerprint so two evaluations that used
+   * different scoring semantics never collide on the same audit
+   * fingerprint. Pass `undefined` (or omit) when no custom scorer was
+   * used — the default UTF-8 byte-length heuristic is implied by the
+   * embedded `evaluator.version`.
+   */
+  complexityScorerId?: string | undefined,
+): string {
   const normalized = {
     allowedKinds: [...config.allowedKinds].sort(),
     maxScope: config.maxScope,
@@ -38,6 +49,7 @@ export function computeConfigFingerprint(config: ForgePolicyConfig): string {
       version: POLICY_EVALUATOR_VERSION,
       structuralBudgetBytes: STRUCTURAL_BUDGET_BYTES,
       maxArrayLength: MAX_ARRAY_LENGTH,
+      complexityScorerId: complexityScorerId ?? null,
     },
   };
   return sha256Hex(JSON.stringify(normalized));

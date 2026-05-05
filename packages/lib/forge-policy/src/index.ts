@@ -5,7 +5,12 @@
  * Depends on @koi/core (L0) and @koi/forge-types (L0u) only.
  */
 
-export type { PolicyAuditEntry, PolicyAuditLog, PolicyAuditLogOptions } from "./audit.js";
+export type {
+  PolicyAuditEntry,
+  PolicyAuditLog,
+  PolicyAuditLogOptions,
+  RecordEvaluationParams,
+} from "./audit.js";
 export { createPolicyAuditLog } from "./audit.js";
 export type { ForgePolicyConfig, PolicyOverride } from "./config.js";
 export type { EvaluatePolicyOptions, PolicyEvaluation } from "./evaluate.js";

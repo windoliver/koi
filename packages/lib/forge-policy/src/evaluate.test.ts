@@ -76,6 +76,20 @@ describe("evaluatePolicy — required gating cases (issue #1349)", () => {
     expect(allowWithGrantedOverride.baseVerdict.decision).toBe("deny");
   });
 
+  test("returned override is a frozen snapshot (post-evaluation mutation cannot tamper audit)", () => {
+    type Mutable = { granted: boolean; reason: string; grantedBy: string };
+    const cfg = makeConfig({ allowedKinds: ["tool"] });
+    const candidate = makeCandidate({ kind: "channel" });
+    const live: Mutable = { granted: true, reason: "ops #42", grantedBy: "alice" };
+    const result = evaluatePolicy(candidate, cfg, { override: live });
+    // Mutate the caller's object after evaluation.
+    live.grantedBy = "mallory";
+    live.reason = "forged";
+    expect(result.override?.grantedBy).toBe("alice");
+    expect(result.override?.reason).toBe("ops #42");
+    expect(Object.isFrozen(result.override)).toBe(true);
+  });
+
   test("override cannot tighten an already-allow verdict", () => {
     const cfg = makeConfig();
     const candidate = makeCandidate();
@@ -104,6 +118,311 @@ describe("evaluatePolicy — scope and approval", () => {
     });
     const { verdict } = evaluatePolicy(makeCandidate({ proposedScope: "zone" }), cfg);
     expect(verdict.decision).toBe("require-approval");
+  });
+
+  test("complexityOf cannot mutate candidate.id to forge audit attribution", () => {
+    type Mut = {
+      -readonly [K in keyof Parameters<typeof evaluatePolicy>[0]]: Parameters<
+        typeof evaluatePolicy
+      >[0][K];
+    };
+    const cand = makeCandidate({ id: "cand-real" }) as Mut;
+    const cfg = makeConfig({ maxComplexity: 10_000 });
+    const result = evaluatePolicy(cand, cfg, {
+      spec: { x: 1 },
+      complexityScorerId: "test-scorer",
+      complexityOf: () => {
+        cand.id = "forged";
+        return 1;
+      },
+    });
+    expect(result.candidateId).toBe("cand-real");
+  });
+
+  test("complexityOf cannot mutate candidate.proposedScope to bypass scope gates", () => {
+    type Mut = {
+      -readonly [K in keyof Parameters<typeof evaluatePolicy>[0]]: Parameters<
+        typeof evaluatePolicy
+      >[0][K];
+    };
+    const cand = makeCandidate({ proposedScope: "global" }) as Mut;
+    const cfg = makeConfig({
+      maxComplexity: 10_000,
+      maxScope: "agent",
+      requireApprovalAtOrAbove: "global",
+    });
+    const result = evaluatePolicy(cand, cfg, {
+      spec: { x: 1 },
+      complexityScorerId: "test-scorer",
+      complexityOf: () => {
+        cand.proposedScope = "agent";
+        return 1;
+      },
+    });
+    // Scope check runs against the snapshot taken before complexityOf
+    // — proposedScope was 'global', so this is a deny.
+    expect(result.verdict.decision).toBe("deny");
+  });
+
+  test("complexityOf cannot mutate options.override.granted to relax verdict", () => {
+    const override = { granted: false, reason: "n/a", grantedBy: "op" };
+    const cfg = makeConfig({ allowedKinds: ["tool"], maxComplexity: 10_000 });
+    const cand = makeCandidate({ kind: "channel" });
+    const result = evaluatePolicy(cand, cfg, {
+      spec: { x: 1 },
+      override,
+      complexityScorerId: "test-scorer",
+      complexityOf: () => {
+        override.granted = true;
+        return 1;
+      },
+    });
+    // override.granted was false at decision time; the mutation does
+    // not promote a deny to allow.
+    expect(result.verdict.decision).toBe("deny");
+    expect(result.overrideApplied).toBe(false);
+  });
+
+  test("complexityOf cannot mutate config to flip the verdict (config is snapshotted)", () => {
+    type Mut = {
+      -readonly [K in keyof Parameters<typeof evaluatePolicy>[1]]: Parameters<
+        typeof evaluatePolicy
+      >[1][K];
+    };
+    const cfg = makeConfig({ maxComplexity: 10_000 }) as Mut;
+    const result = evaluatePolicy(makeCandidate({ proposedScope: "agent" }), cfg, {
+      spec: { x: 1 },
+      complexityScorerId: "test-scorer",
+      complexityOf: () => {
+        // Hostile mutation: try to push proposedScope above the gate
+        // by mutating the live config object.
+        cfg.requireApprovalAtOrAbove = "agent";
+        return 1;
+      },
+    });
+    // Verdict is decided against the SNAPSHOT (requireApprovalAtOrAbove
+    // came in as the default 'global'), so this stays `allow` — the
+    // mutation could not influence later checks.
+    expect(result.verdict.decision).toBe("allow");
+  });
+
+  test("snapshot failure does NOT re-read live candidate.id (no caller code on error path)", () => {
+    type Cand = Parameters<typeof evaluatePolicy>[0];
+    let getterFired = false;
+    const hostile = Object.defineProperty(makeCandidate(), "id", {
+      get() {
+        getterFired = true;
+        return "from-getter";
+      },
+      configurable: true,
+      enumerable: true,
+    }) as Cand;
+    const result = evaluatePolicy(hostile, makeConfig());
+    expect(result.verdict.decision).toBe("deny");
+    expect(result.candidateId).toBe("<invalid>");
+    // Stronger guarantee than expected: descriptorClone rejects the
+    // accessor without invoking it. The catch path also avoids reading
+    // candidate.id, so the getter never fires anywhere.
+    expect(getterFired).toBe(false);
+  });
+
+  test("non-enumerable required config fields are preserved through snapshot", () => {
+    const cfg = makeConfig();
+    // Make `allowedKinds` non-enumerable but still own + data property.
+    Object.defineProperty(cfg, "allowedKinds", {
+      value: ["tool"],
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+    const result = evaluatePolicy(makeCandidate({ kind: "tool" }), cfg);
+    expect(result.verdict.decision).toBe("allow");
+  });
+
+  test("config getters/toJSON do NOT fire during snapshotting (descriptor-only walk)", () => {
+    type Cfg = Parameters<typeof evaluatePolicy>[1];
+    const fired: string[] = [];
+    const baseCfg = makeConfig();
+    const hostile = {
+      ...baseCfg,
+      get maxComplexity() {
+        fired.push("maxComplexity");
+        return 10;
+      },
+      toJSON() {
+        fired.push("toJSON");
+        return baseCfg;
+      },
+    } as unknown as Cfg;
+    let result: ReturnType<typeof evaluatePolicy>;
+    expect(() => {
+      result = evaluatePolicy(makeCandidate(), hostile);
+    }).not.toThrow();
+    // biome-ignore lint/style/noNonNullAssertion: assigned in not.toThrow above
+    expect(result!.verdict.decision).toBe("deny");
+    // biome-ignore lint/style/noNonNullAssertion: see above
+    expect(result!.failureKind).toBe("config");
+    // biome-ignore lint/style/noNonNullAssertion: see above
+    expect(result!.configFingerprint).toBe("<unavailable>");
+    expect(fired).toEqual([]);
+  });
+
+  test("granted override with blank reason/grantedBy fails closed (no allow without auditable record)", () => {
+    type Override = NonNullable<Parameters<typeof evaluatePolicy>[2]>["override"];
+    const cfg = makeConfig({ allowedKinds: ["tool"] });
+    const cand = makeCandidate({ kind: "channel" });
+    const result = evaluatePolicy(cand, cfg, {
+      override: { granted: true, reason: "", grantedBy: "alice" } as unknown as Override,
+    });
+    // Without the early validation, applyOverride would have flipped
+    // this to allow and a downstream recordEvaluation would have
+    // thrown — leaving the action authorized but unaudited.
+    expect(result.verdict.decision).toBe("deny");
+    expect(result.failureKind).toBe("override");
+    expect(result.failureReason).toMatch(/granted override missing/);
+    // Override-validation failure runs AFTER config snapshot, so the
+    // real policy fingerprint is preserved (audit consumers can join
+    // the entry back to the policy version that evaluated it).
+    expect(result.configFingerprint).not.toBe("<unavailable>");
+    expect(result.configFingerprint).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("config-snapshot failure preserves the cloned candidateId and override", () => {
+    type Cfg = Parameters<typeof evaluatePolicy>[1];
+    const broken = {
+      ...makeConfig(),
+      budget: { ...makeConfig().budget, computeTimeBudgetMs: BigInt(1) },
+    } as unknown as Cfg;
+    const result = evaluatePolicy(makeCandidate({ id: "cand-real" }), broken, {
+      override: { granted: false, reason: "n/a", grantedBy: "ops" },
+    });
+    expect(result.verdict.decision).toBe("deny");
+    expect(result.candidateId).toBe("cand-real");
+    expect(result.override?.grantedBy).toBe("ops");
+    expect(result.failureKind).toBe("config");
+    expect(result.configFingerprint).toBe("<unavailable>");
+  });
+
+  test("malformed config (BigInt) fails closed instead of throwing", () => {
+    type Cfg = Parameters<typeof evaluatePolicy>[1];
+    const broken = {
+      ...makeConfig(),
+      budget: {
+        ...makeConfig().budget,
+        computeTimeBudgetMs: BigInt(1),
+      },
+    } as unknown as Cfg;
+    let result: ReturnType<typeof evaluatePolicy>;
+    expect(() => {
+      result = evaluatePolicy(makeCandidate(), broken);
+    }).not.toThrow();
+    // biome-ignore lint/style/noNonNullAssertion: assigned in the not.toThrow above
+    expect(result!.verdict.decision).toBe("deny");
+    // biome-ignore lint/style/noNonNullAssertion: see above
+    expect(result!.failureKind).toBe("config");
+    // biome-ignore lint/style/noNonNullAssertion: see above
+    expect(result!.configFingerprint).toBe("<unavailable>");
+  });
+
+  test("complexityOf without complexityScorerId fails closed (audit binding required)", () => {
+    const cfg = makeConfig({ maxComplexity: 10_000 });
+    const result = evaluatePolicy(makeCandidate(), cfg, {
+      spec: { x: 1 },
+      complexityOf: () => 1,
+      // complexityScorerId intentionally omitted
+    });
+    expect(result.verdict.decision).toBe("deny");
+    expect(result.failureKind).toBe("config");
+    expect(result.failureReason).toMatch(/complexityScorerId/);
+  });
+
+  test("different complexityScorerId values produce different configFingerprints", () => {
+    const cfg = makeConfig({ maxComplexity: 10_000 });
+    const a = evaluatePolicy(makeCandidate(), cfg, {
+      spec: { x: 1 },
+      complexityOf: () => 1,
+      complexityScorerId: "scorer-a-v1",
+    });
+    const b = evaluatePolicy(makeCandidate(), cfg, {
+      spec: { x: 1 },
+      complexityOf: () => 1,
+      complexityScorerId: "scorer-b-v1",
+    });
+    expect(a.configFingerprint).not.toBe(b.configFingerprint);
+  });
+
+  test("non-finite numbers in spec fail closed (NaN/Infinity not JSON-stable)", () => {
+    const cfg = makeConfig({ maxComplexity: 10_000 });
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const result = evaluatePolicy(makeCandidate(), cfg, { spec: { x: bad } });
+      expect(result.verdict.decision).toBe("deny");
+      if (result.verdict.decision === "deny") {
+        expect(result.verdict.reason).toMatch(/non-finite|JSON-safe|plain JSON/);
+      }
+    }
+  });
+
+  test("malformed maxComplexity (NaN/Infinity/negative) fails closed", () => {
+    type Cfg = Parameters<typeof evaluatePolicy>[1];
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      const cfg = { ...makeConfig(), maxComplexity: bad } as Cfg;
+      const { verdict } = evaluatePolicy(makeCandidate(), cfg, { spec: { x: 1 } });
+      expect(verdict.decision).toBe("deny");
+      if (verdict.decision === "deny") {
+        // Either caught at config-snapshot time (descriptorClone
+        // rejects non-finite numbers) or at the explicit maxComplexity
+        // validator inside evaluateChecks (for the negative case).
+        expect(verdict.reason).toMatch(/maxComplexity|non-finite|not serializable/);
+      }
+    }
+  });
+
+  test("empty candidate.id fails closed and is recordable in the audit log", async () => {
+    const { createPolicyAuditLog } = await import("./audit.js");
+    type Cand = Parameters<typeof evaluatePolicy>[0];
+    const hostile = { ...makeCandidate(), id: "" } as unknown as Cand;
+    const result = evaluatePolicy(hostile, makeConfig());
+    expect(result.verdict.decision).toBe("deny");
+    expect(result.failureKind).toBe("candidate");
+    // The fail-closed evaluation must remain recordable — caller cannot
+    // be left with an actionable verdict that the audit layer rejects.
+    const log = createPolicyAuditLog();
+    expect(() =>
+      log.recordEvaluation({ evaluation: result, evaluatedAt: 1_700_000_000_000 }),
+    ).not.toThrow();
+    expect(log.size()).toBe(1);
+  });
+
+  test("malformed candidate.name (non-string) denies instead of throwing", () => {
+    type Cand = Parameters<typeof evaluatePolicy>[0];
+    const hostile = { ...makeCandidate(), name: 42 } as unknown as Cand;
+    const { verdict } = evaluatePolicy(hostile, makeConfig());
+    expect(verdict.decision).toBe("deny");
+    if (verdict.decision === "deny") {
+      expect(verdict.reason).toMatch(/candidate\.name/);
+    }
+  });
+
+  test("denies on unknown candidate.proposedScope (fail closed, no silent allow)", () => {
+    type Cand = Parameters<typeof evaluatePolicy>[0];
+    const hostile = { ...makeCandidate(), proposedScope: "kernel" } as unknown as Cand;
+    const { verdict } = evaluatePolicy(hostile, makeConfig());
+    expect(verdict.decision).toBe("deny");
+    if (verdict.decision === "deny") {
+      expect(verdict.reason).toMatch(/unknown.*proposedScope/i);
+    }
+  });
+
+  test("denies on unknown config.maxScope (fail closed)", () => {
+    type Cfg = Parameters<typeof evaluatePolicy>[1];
+    const cfg = { ...makeConfig(), maxScope: "kernel" } as unknown as Cfg;
+    expect(evaluatePolicy(makeCandidate(), cfg).verdict.decision).toBe("deny");
+  });
+
+  test("denies on unknown config.requireApprovalAtOrAbove (fail closed)", () => {
+    type Cfg = Parameters<typeof evaluatePolicy>[1];
+    const cfg = { ...makeConfig(), requireApprovalAtOrAbove: "kernel" } as unknown as Cfg;
+    expect(evaluatePolicy(makeCandidate(), cfg).verdict.decision).toBe("deny");
   });
 });
 
@@ -157,6 +476,7 @@ describe("evaluatePolicy — fail-closed cases", () => {
     cyclic.self = cyclic;
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: cyclic,
+      complexityScorerId: "test-scorer",
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("deny");
@@ -169,6 +489,7 @@ describe("evaluatePolicy — fail-closed cases", () => {
     const cfg = makeConfig({ maxComplexity: 10_000 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { v: BigInt(1) } as Readonly<Record<string, unknown>>,
+      complexityScorerId: "test-scorer",
       complexityOf: () => 0,
     });
     expect(verdict.decision).toBe("deny");
@@ -202,7 +523,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     const cfg = makeConfig({ maxComplexity: 10 });
     const spec: Record<string, unknown> = {};
     for (let i = 0; i < 1_000; i++) spec[`empty${i}`] = undefined;
-    spec["a"] = 1;
+    spec.a = 1;
     // The budget is a *work* lower-bound, not strict canonical-JSON
     // byte parity: 1000 undefined keys cost ~6 bytes each → exceeds
     // the small operator-set budget. This is what blocks the
@@ -430,6 +751,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     for (let i = 0; i < 12_000; i++) spec[`k${i}`] = "x".repeat(1_000);
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec,
+      complexityScorerId: "test-scorer",
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("deny");
@@ -458,6 +780,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     };
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { a: 1 },
+      complexityScorerId: "test-scorer",
       complexityOf: scorer,
     });
     expect(verdict.decision).toBe("allow");
@@ -466,7 +789,6 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
   test("complexityOf scorer can use methods on the spec object directly", () => {
     const cfg = makeConfig({ maxComplexity: 100 });
     const scorer = (s: Readonly<Record<string, unknown>>): number => {
-      // biome-ignore lint/suspicious/noPrototypeBuiltins: deliberate: test that scorer can call hasOwnProperty as a method
       return Object.hasOwn(
         s as Record<string, unknown> & { hasOwnProperty: (k: string) => boolean },
         "a",
@@ -476,6 +798,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     };
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { a: 1 },
+      complexityScorerId: "test-scorer",
       complexityOf: scorer,
     });
     expect(verdict.decision).toBe("allow");
@@ -490,6 +813,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     const cfg = makeConfig({ maxComplexity: 1 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { s: big },
+      complexityScorerId: "test-scorer",
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("deny");
@@ -504,6 +828,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     const cfg = makeConfig({ maxComplexity: 1 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { s: lone },
+      complexityScorerId: "test-scorer",
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("deny");
@@ -517,6 +842,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     const cfg = makeConfig({ maxComplexity: 1 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { s: emoji },
+      complexityScorerId: "test-scorer",
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("allow");
@@ -528,6 +854,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     const cfg = makeConfig({ maxComplexity: 1 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { s: emoji },
+      complexityScorerId: "test-scorer",
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("deny");
@@ -543,6 +870,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     const cfg = makeConfig({ maxComplexity: 1 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { a: arr },
+      complexityScorerId: "test-scorer",
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("deny");
@@ -561,6 +889,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
       const cfg = makeConfig({ maxComplexity: 100 });
       const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
         spec: { a: arr },
+        complexityScorerId: "test-scorer",
         complexityOf: (s) => {
           const a = (s as { a: unknown[] }).a;
           observedAt0 = a[0];
@@ -595,11 +924,12 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     // structural cap must charge per-key bytes on this path so the
     // 10MB budget actually bounds clone effort.
     const spec: Record<string, unknown> = {};
-    const keyPrefix = "k".repeat(50); // ~52 chars charged per key
-    for (let i = 0; i < 250_000; i++) spec[`${keyPrefix}${i}`] = undefined;
+    const keyPrefix = "k".repeat(110); // ~112 chars charged per key
+    for (let i = 0; i < 100_000; i++) spec[`${keyPrefix}${i}`] = undefined;
     const cfg = makeConfig({ maxComplexity: 1 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec,
+      complexityScorerId: "test-scorer",
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("deny");
@@ -616,6 +946,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     const start = Date.now();
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec,
+      complexityScorerId: "test-scorer",
       complexityOf: () => 1,
     });
     const elapsed = Date.now() - start;
@@ -679,7 +1010,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
   test("array with a non-index enumerable own property is denied (JSON-mismatch)", () => {
     const cfg = makeConfig({ maxComplexity: 10_000 });
     const arr: unknown[] = [1, 2, 3];
-    (arr as unknown as Record<string, unknown>)["meta"] = { secret: "x".repeat(500) };
+    (arr as unknown as Record<string, unknown>).meta = { secret: "x".repeat(500) };
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { items: arr } as Readonly<Record<string, unknown>>,
     });
@@ -704,12 +1035,13 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     const custom = (s: Readonly<Record<string, unknown>>): number => {
       // If `s` is the original spec, this read fires the proxy trap. With
       // the detached-clone fix it should be a plain object.
-      const item = s["item"] as Readonly<Record<string, unknown>> | undefined;
-      const x = item?.["x"];
+      const item = s.item as Readonly<Record<string, unknown>> | undefined;
+      const x = item?.x;
       return typeof x === "number" ? x : 0;
     };
     evaluatePolicy(makeCandidate(), cfg, {
       spec: { item: inner } as Readonly<Record<string, unknown>>,
+      complexityScorerId: "test-scorer",
       complexityOf: custom,
     });
     expect(getCalls).toBe(0);
@@ -719,6 +1051,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     const cfg = makeConfig({ maxComplexity: 10 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { x: 1 },
+      complexityScorerId: "test-scorer",
       complexityOf: () => {
         throw new Error("scorer broken");
       },
@@ -763,6 +1096,7 @@ describe("evaluatePolicy — determinism and purity", () => {
     const cfg = makeConfig({ maxComplexity: 10 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { huge: "x".repeat(1000) },
+      complexityScorerId: "test-scorer",
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("allow");
@@ -772,6 +1106,7 @@ describe("evaluatePolicy — determinism and purity", () => {
     const cfg = makeConfig({ maxComplexity: 1 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { x: 1 },
+      complexityScorerId: "test-scorer",
       complexityOf: () => Number.NaN,
     });
     expect(verdict.decision).toBe("allow");
