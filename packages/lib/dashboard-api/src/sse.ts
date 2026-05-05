@@ -85,7 +85,21 @@ class SseStream {
       void this.#heartbeat();
     }, config.heartbeatMs);
 
+    // Send an initial comment line so HTTP servers flush response headers and
+    // proxies don't buffer waiting for body bytes. Without this, browsers and
+    // some HTTP clients block on `fetch()` until the first event arrives.
+    void this.#initialFlush();
+
     void this.#monitorClose();
+  }
+
+  async #initialFlush(): Promise<void> {
+    if (this.#closed) return;
+    try {
+      await this.#writable.write(this.#encoder.encode(": connected\n\n"));
+    } catch {
+      this.#close();
+    }
   }
 
   async #flush(): Promise<void> {
