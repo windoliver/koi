@@ -54,10 +54,21 @@ export interface UsagePurposeObservation {
    * unrelated history unlock irreversible actions for the wrong
    * artifact.
    *
-   * Whitespace-only values are treated as missing and the observation
-   * is dropped at validation. There is no implicit "global" artifact.
+   * Optional **only for backward compatibility** with pre-artifact-aware
+   * emitters: missing or whitespace-only values are normalized to a single
+   * explicit `"__legacy_artifact__"` sentinel inside the detector. That
+   * preserves wire-compat during a rolling upgrade — old data is bucketed
+   * compatibly rather than silently dropped — while still preventing the
+   * silent-merge failure mode (the sentinel is itself an artifactId,
+   * observable in cohort keys, and the detector refuses action-bearing
+   * suggestions when the cohort touches it).
+   *
+   * **New emitters MUST set this field.** A multi-artifact deployment
+   * that lets observations fall into `__legacy_artifact__` will mix
+   * artifacts in that bucket. The sentinel is a migration aid, not a
+   * default artifact.
    */
-  readonly artifactId: string;
+  readonly artifactId?: string;
   /** Truncated model response text preceding the tool call. */
   readonly contextText: string;
   /**

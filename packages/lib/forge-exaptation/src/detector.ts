@@ -279,7 +279,7 @@ export function detectDrift(
   // across them — driving rewrites/forks for the wrong artifact. Fail
   // closed when the caller hands us a contaminated window.
   const distinctArtifactIds = new Set<string>();
-  for (const v of valid) distinctArtifactIds.add(v.artifactId.trim());
+  for (const v of valid) distinctArtifactIds.add(normalizeArtifactId(v.artifactId));
   if (distinctArtifactIds.size > 1) {
     return deepFreeze({
       kind: "invalid-config" as const,
@@ -435,6 +435,25 @@ export function suggestAction(
   // only the action recommendation is suppressed until producers are
   // migrated off the sentinel.
   if (result.cohortHasLegacyScope) return { kind: "none" };
+  // Same idea for legacy artifactId: a cohort that touches the
+  // LEGACY_ARTIFACT sentinel may merge multiple un-migrated artifacts,
+  // so action-bearing decisions stay blocked until producers ship
+  // explicit artifactIds.
+  const observationsByCurrentArtifact = (() => {
+    for (const o of observations) {
+      if (!isObservationValid(o)) continue;
+      return normalizeArtifactId(o.artifactId);
+    }
+    return undefined;
+  })();
+  if (observationsByCurrentArtifact === LEGACY_ARTIFACT) return { kind: "none" };
+  // Hard-block on detected replay conflicts. Even one
+  // `(scope, agentId, eventId)` bucket that produced inconsistent
+  // payloads means the system has *proven* its evidence is corrupted;
+  // that's an integrity failure, not noise to be averaged into a
+  // percentage gate. Action-bearing suggestions stay blocked until
+  // the source emitter is fixed.
+  if (result.conflictCount > 0) return { kind: "none" };
 
   const total =
     result.validObservationCount +
@@ -529,7 +548,7 @@ function countStrongDriftPriors(
   for (const o of current) {
     if (!isObservationValid(o)) continue;
     currentIdentities.add(observationIdentity(o));
-    if (currentArtifactId === undefined) currentArtifactId = o.artifactId.trim();
+    if (currentArtifactId === undefined) currentArtifactId = normalizeArtifactId(o.artifactId);
   }
   if (currentArtifactId === undefined) return 0;
   const filteredPriors = priorWindows.filter((w) => {
@@ -542,7 +561,7 @@ function countStrongDriftPriors(
     for (const o of w) {
       if (!isObservationValid(o)) continue;
       if (currentIdentities.has(observationIdentity(o))) return false;
-      priorArtifactIds.add(o.artifactId.trim());
+      priorArtifactIds.add(normalizeArtifactId(o.artifactId));
     }
     if (priorArtifactIds.size !== 1) return false;
     return priorArtifactIds.has(currentArtifactId);
@@ -626,6 +645,12 @@ function countStrongDriftPriors(
         groupOk = false;
         break;
       }
+      // Any detected replay conflict in a prior is an integrity failure;
+      // not safe historical evidence even if it cleared the percentage gate.
+      if (r.conflictCount > 0) {
+        groupOk = false;
+        break;
+      }
       groupContribution++;
     }
     if (!groupOk) break;
@@ -672,10 +697,27 @@ function describeInvalidThresholds(t: ExaptationThresholds): string | undefined 
  */
 const LEGACY_SCOPE = "__legacy__";
 
+/**
+ * Sentinel artifact id for observations whose `artifactId` is missing
+ * or blank. Same shape and rationale as `LEGACY_SCOPE`: pre-artifact-
+ * aware emitters keep wire-compat by bucketing into a named, observable
+ * sentinel rather than dropping silently. The detector refuses
+ * action-bearing suggestions when the cohort touches this bucket so
+ * cross-artifact merging cannot drive irreversible decisions during a
+ * rolling migration.
+ */
+const LEGACY_ARTIFACT = "__legacy_artifact__";
+
 function normalizeScope(scope: string | undefined): string {
   if (typeof scope !== "string") return LEGACY_SCOPE;
   const trimmed = scope.trim();
   return trimmed.length === 0 ? LEGACY_SCOPE : trimmed;
+}
+
+function normalizeArtifactId(artifactId: string | undefined): string {
+  if (typeof artifactId !== "string") return LEGACY_ARTIFACT;
+  const trimmed = artifactId.trim();
+  return trimmed.length === 0 ? LEGACY_ARTIFACT : trimmed;
 }
 
 /**
@@ -752,13 +794,14 @@ function observationIdentity(o: UsagePurposeObservation): string {
 
 function isObservationValid(o: UsagePurposeObservation): boolean {
   if (!isUnitInterval(o.divergenceScore)) return false;
-  // artifactId is required: the detector is per-artifact, and binding
-  // artifact identity to the data shape is what lets `suggestAction`
-  // reject priors whose artifactId does not match the current window.
-  // Without this, a routing bug in the caller's history maintenance
-  // could let unrelated history unlock irreversible actions for the
-  // wrong artifact.
-  if (typeof o.artifactId !== "string" || o.artifactId.trim().length === 0) return false;
+  // artifactId is permissive: missing/blank values normalize to
+  // LEGACY_ARTIFACT (compat sentinel) instead of dropping. The
+  // sentinel itself is RESERVED — a real artifact whose id happens to
+  // match `__legacy_artifact__` would otherwise merge with every
+  // pre-artifact-aware emitter. Reject the explicit string at the
+  // boundary so the sentinel cannot be forged from outside.
+  if (o.artifactId !== undefined && typeof o.artifactId !== "string") return false;
+  if (typeof o.artifactId === "string" && o.artifactId.trim() === LEGACY_ARTIFACT) return false;
   // scope is intentionally permissive: missing / blank values are mapped
   // to LEGACY_SCOPE so pre-multi-tenant emitters keep wire-compat. agentId
   // remains required — without an agent identity we cannot attribute

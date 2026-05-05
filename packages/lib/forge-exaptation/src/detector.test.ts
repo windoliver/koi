@@ -710,18 +710,77 @@ describe("suggestAction", () => {
     }
   });
 
-  test("missing artifactId is rejected at validation", () => {
-    // L0 contract: artifactId is required. Observations without it
-    // cannot attribute drift to an artifact and must drop.
+  test("missing artifactId normalizes to __legacy_artifact__ sentinel (compat path)", () => {
+    // Compat path for pre-artifact-aware emitters: missing artifactId
+    // bucketed into a single named sentinel (LEGACY_ARTIFACT). The
+    // window still passes detection, but suggestAction refuses
+    // action-bearing recommendations because the cohort touches the
+    // sentinel bucket.
+    function omitArtifact(o: UsagePurposeObservation): UsagePurposeObservation {
+      const { artifactId: _id, ...rest } = o;
+      return rest;
+    }
     const observations: UsagePurposeObservation[] = [
-      ...[0.95, 0.95, 0.95].map((s) => {
-        const o = obs("a", s);
-        const { artifactId: _id, ...rest } = o;
-        return rest as UsagePurposeObservation;
-      }),
+      ...[0.95, 0.95, 0.95].map((s) => omitArtifact(obs("a", s))),
+      ...[0.95, 0.95, 0.95].map((s) => omitArtifact(obs("b", s))),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    // Cohort detected; signal is preserved for telemetry.
+    expect(result.kind).toBe("drift");
+    // Action-bearing suggestion blocked because the cohort sits in the
+    // legacy artifact bucket.
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS).kind).toBe("none");
+  });
+
+  test("explicit __legacy_artifact__ scope is rejected at validation (sentinel reserved)", () => {
+    // The LEGACY_ARTIFACT sentinel is internal — a real artifact whose
+    // id happens to match must NOT collide with the missing-artifact
+    // compat bucket. isObservationValid drops observations whose
+    // explicit artifactId is "__legacy_artifact__" so the sentinel
+    // cannot be forged from outside.
+    const observations: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("a", s), artifactId: "__legacy_artifact__" })),
     ];
     const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("invalid-config");
+  });
+
+  test("any conflictCount > 0 hard-blocks action-bearing suggestions", () => {
+    // Replay conflict (same key, different payload) is an integrity
+    // failure -- one such bucket already proves the evidence stream is
+    // corrupted. suggestAction refuses reclassify/new-artifact even
+    // when the percentage-based quality gate would have tolerated it.
+    const eid = "evt-x";
+    const observations: UsagePurposeObservation[] = [
+      // Cohort observations with inconsistent retries on one key.
+      {
+        artifactId: "artifact-1",
+        scope: "default",
+        agentId: "a",
+        eventId: eid,
+        divergenceScore: 0.95,
+        contextText: "x",
+        observedAt: 1,
+      },
+      {
+        artifactId: "artifact-1",
+        scope: "default",
+        agentId: "a",
+        eventId: eid,
+        divergenceScore: 0.7, // different score → conflict
+        contextText: "x",
+        observedAt: 2,
+      },
+      // Plenty of other strong cohort traffic so the cohort itself
+      // would otherwise pass the percentage quality gate.
+      ...Array.from({ length: 10 }, () => obs("b", 0.95)),
+      ...Array.from({ length: 10 }, () => obs("c", 0.95)),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") expect(result.conflictCount).toBe(2);
+    // Action stays blocked despite the dominant clean cohort.
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS).kind).toBe("none");
   });
 
   test("priors newer than (or equal to) the current window are excluded from stability", () => {

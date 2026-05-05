@@ -105,10 +105,16 @@ Tenant isolation is a runtime data contract, enforced by required fields — not
 
 ## Artifact Identity
 
-The detector is per-artifact: drift in one artifact (tool / skill / agent) is independent of drift in another. `UsagePurposeObservation.artifactId` is **required** at the L0 contract, and `suggestAction` rejects any prior whose `artifactId` does not appear in the current window's artifact set. Combined with the per-observation overlap check, this ensures:
+The detector is per-artifact: drift in one artifact (tool / skill / agent) is independent of drift in another. `UsagePurposeObservation.artifactId` is **optional only for backward compatibility** at the L0 contract; missing or whitespace-only values normalize to a single explicit `__legacy_artifact__` sentinel inside the detector (same shape as the `__legacy__` scope sentinel). New emitters MUST set `artifactId` explicitly.
 
-- A routing bug or multi-artifact buffer mixup that hands a strong prior from a different artifact to `suggestAction` cannot unlock `new-artifact` for the current artifact.
-- A timestamp-skewed clone of the current window cannot pose as a "prior" — `windowSignature` excludes `observedAt` and the prior-overlap check rejects any prior that shares even one validated observation identity with the current window.
+- A current window mixing two distinct artifactIds (after normalization) returns `invalid-config` — the detector is per-artifact and refuses to aggregate evidence across artifacts.
+- `suggestAction` requires each prior to be **single-artifact** AND to match the current window's artifactId. A multi-artifact prior is itself contaminated and is filtered out; a prior bound to a different artifact is unrelated history.
+- A current window whose cohort sits in the `__legacy_artifact__` bucket cannot drive action-bearing suggestions — the same fail-closed posture used for `__legacy__` scope.
+- A timestamp-skewed clone of the current window cannot pose as a "prior" — `observationIdentity` excludes `observedAt` and the prior-overlap check rejects any prior that shares even one validated observation identity with the current window.
+
+## Replay Integrity (action-stopping)
+
+Replay conflicts (same `(scope, agentId, eventId)` bucket producing inconsistent payloads) are integrity failures, not noise. Any `conflictCount > 0` in either the current window or in a contributing prior window hard-blocks `reclassify` / `new-artifact`. The detector still surfaces the drift signal for telemetry, but irreversible recommendations stay blocked until the source emitter is fixed.
 
 ## eventId Contract
 
