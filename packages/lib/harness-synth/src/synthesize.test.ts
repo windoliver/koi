@@ -98,6 +98,45 @@ describe("synthesize", () => {
     expect(result.reason).toBe("still wrong");
   });
 
+  test("waits for aborted callback to unwind before starting next attempt", async () => {
+    // After timeout, the next attempt must NOT start while the prior
+    // callback is still running its post-abort cleanup. Track overlap
+    // by counting concurrent in-flight calls.
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    let n = 0;
+    const generate: GenerateCallback = (_p, signal) => {
+      n += 1;
+      const myAttempt = n;
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      return new Promise<string>((resolve) => {
+        const onAbort = (): void => {
+          // Simulate slow async cleanup (network teardown, sandbox kill).
+          setTimeout(() => {
+            concurrent -= 1;
+            // Second attempt resolves a real value so the loop terminates.
+            resolve(myAttempt === 1 ? "" : validRaw());
+          }, 50);
+        };
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 2,
+      attemptTimeoutMs: 30,
+      ...ABORT_HONORED,
+    });
+    void result; // either ok or fail acceptable; we care about non-overlap
+    expect(maxConcurrent).toBe(1);
+  });
+
   test("rejects Infinity maxAttempts (no unbounded loop)", async () => {
     const result = await synthesize(INPUT, {
       generate: async () => "garbage",
@@ -290,7 +329,8 @@ describe("synthesize", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/aborted by caller/);
-    expect(elapsed).toBeLessThan(500);
+    // 1000ms abort-settlement grace window + a small buffer.
+    expect(elapsed).toBeLessThan(1500);
   });
 
   test("rejects verifier summary with non-JSON-plain extras (Date)", async () => {

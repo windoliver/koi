@@ -676,12 +676,45 @@ function guardAttempt<T>(
 ): Promise<GuardedResult<T>> {
   return new Promise<GuardedResult<T>>((resolve) => {
     let settled = false;
+    // Track the underlying callback promise so timeout/abort can wait
+    // for it to actually settle before the outer guardAttempt resolves.
+    // Without this, the next retry can start while the prior callback's
+    // network teardown / sandbox kill / worker shutdown is still in
+    // flight — overlapping side effects despite adapterHonorsAbort.
+    let runPromise: Promise<unknown> = Promise.resolve();
     const finish = (result: GuardedResult<T>): void => {
       if (settled) return;
       settled = true;
       if (timer !== null) clearTimeout(timer);
       attempt.signal.removeEventListener("abort", onAbort);
       resolve(result);
+    };
+    // Settle outer only AFTER the in-flight callback actually finishes
+    // unwinding, OR after a bounded grace window expires. Swallow the
+    // callback outcome — we already chose the typed failure to report
+    // (timeout / aborted). The grace bound caps the cost of a misbehaving
+    // adapter that ignores its abort signal; without it a fully-hung
+    // callback would pin synthesize() forever.
+    const ABORT_SETTLE_GRACE_MS = 1000;
+    const settleAfterUnwind = (result: GuardedResult<T>): void => {
+      let done = false;
+      const finishOnce = (): void => {
+        if (done) return;
+        done = true;
+        finish(result);
+      };
+      const graceTimer = setTimeout(finishOnce, ABORT_SETTLE_GRACE_MS);
+      const cancelGrace = (): void => clearTimeout(graceTimer);
+      runPromise.then(
+        () => {
+          cancelGrace();
+          finishOnce();
+        },
+        () => {
+          cancelGrace();
+          finishOnce();
+        },
+      );
     };
 
     // Fail closed when the budget is already exhausted. setTimeout(fn, 0)
@@ -700,7 +733,7 @@ function guardAttempt<T>(
       timer = setTimeout(() => {
         timedOut = true;
         attempt.abort(); // signal the callback so it can stop its work
-        finish({ ok: false, reason: `${label} timed out after ${timeoutMs}ms` });
+        settleAfterUnwind({ ok: false, reason: `${label} timed out after ${timeoutMs}ms` });
       }, timeoutMs);
     }
 
@@ -708,7 +741,7 @@ function guardAttempt<T>(
       // Only treat external-driven aborts as cancellation. A timeout we fired
       // is reported separately above so the loop can continue retrying.
       if (timedOut) return;
-      finish({ ok: false, reason: `${label} aborted by caller`, aborted: true });
+      settleAfterUnwind({ ok: false, reason: `${label} aborted by caller`, aborted: true });
     };
     if (attempt.signal.aborted) {
       onAbort();
@@ -717,8 +750,9 @@ function guardAttempt<T>(
     attempt.signal.addEventListener("abort", onAbort, { once: true });
 
     try {
-      run(attempt.signal).then(
-        (value) => finish({ ok: true, value }),
+      runPromise = run(attempt.signal);
+      runPromise.then(
+        (value) => finish({ ok: true, value: value as T }),
         (err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
           finish({ ok: false, reason: `${label} failed: ${message}` });
