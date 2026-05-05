@@ -4,6 +4,9 @@
  * Re-exports types, constants, reducer, store, and initial state factory.
  */
 
+// Freshness pure function
+export type { FreshnessInput } from "./freshness.js";
+export { computeFreshness } from "./freshness.js";
 // Initial state
 export { createInitialState } from "./initial.js";
 // Mutations (SolidJS store backend)
@@ -14,9 +17,14 @@ export { reduce } from "./reduce.js";
 export type { StateListener, TuiStore } from "./store.js";
 export { createStore } from "./store.js";
 // Types & constants
+// Supervisor / background session types (not included in main type bundle above)
 export type {
   AgentStatus,
+  BgSessionRow,
+  BgSessionsSlice,
+  BridgeStatus,
   CapabilityFragmentLite,
+  ChannelLiveness,
   ConnectionStatus,
   CumulativeMetrics,
   FetchModelsResult,
@@ -31,12 +39,15 @@ export type {
   PermissionPromptData,
   PermissionRiskLevel,
   PlanTask,
+  RegistryStatus,
   SecurityFinding,
   SessionInfo,
   SessionSummary,
   SpawnProgress,
   SpawnStats,
   SpawnStatus,
+  SupervisorEventEntry,
+  SupervisorSlice,
   Toast,
   ToastKind,
   ToolCallStatus,
