@@ -67,9 +67,9 @@ explicit dependencies — never `new`-ing SDK clients internally. This mirrors
 
 | Channel | Injected Dependencies |
 |---------|------------------------|
-| email | `{ imap: ImapClient, smtp: SmtpTransport, parser: MimeParser, threadStore: ThreadStore, outboxStore: OutboxStore, idempotencyStore: IdempotencyStore, idGenerator?: () => string, clock?: () => number }` |
-| teams | `{ tokenVerifier: JwtVerifier, fetch: typeof fetch, idempotencyStore: IdempotencyStore, clock?: () => number }` |
-| whatsapp | `{ fetch: typeof fetch, idempotencyStore: IdempotencyStore, clock?: () => number }` |
+| email | `{ imap: ImapClient, smtp: SmtpTransport, parser: MimeParser, threadStore: ThreadStore, outboxStore: OutboxStore, idempotencyStore: IdempotencyStore, ingressQueue: IngressQueue, idGenerator?: () => string, clock?: () => number }` |
+| teams | `{ tokenVerifier: JwtVerifier, fetch: typeof fetch, idempotencyStore: IdempotencyStore, conversationAddressStore: ConversationAddressStore, ingressQueue: IngressQueue, clock?: () => number }` |
+| whatsapp | `{ fetch: typeof fetch, idempotencyStore: IdempotencyStore, ingressQueue: IngressQueue, clock?: () => number }` |
 
 `ImapClient`, `SmtpTransport`, `MimeParser`, `JwtVerifier` are **local interfaces**
 defined in each package. Default factory adapters wrap `imapflow`, `nodemailer`,
@@ -130,7 +130,18 @@ auth failure, 503 on in-flight (matches retryable-by-Teams/WhatsApp contract), 5
   2. **`reserved → sending`**: single CAS write to outbox flipping `status: "sending"` immediately before invoking `smtp.sendMail`.
   3. **`sending → sent`**: relay returned `250 OK`. CAS outbox to `status: "sent"`. Thread state was already advanced in step 1 — no further `ThreadStore` write.
   4. **`reserved → aborted` OR `sending → aborted`** (pre-DATA failure only — see classification below): CAS outbox to `status: "aborted"`. Best-effort CAS-rollback `ThreadStore` to the prior version (skip silently if a concurrent sender advanced past us — the reserved chain entry becomes a benign hole since no email carrying that `Message-ID` exists). Caller may retry as a fresh send.
-  5. **`sending → awaiting-recovery`**: process crash or socket drop after the SMTP DATA octet stream began but before `250 OK` was acknowledged into our outbox. Detected at startup by scanning outbox for `status: "sending"`. Channel does **not** auto-resend (SMTP `Message-ID` is not a protocol idempotency key per RFC 5321). `getPendingSends()` exposes the row; operator calls `resolvePending(messageId, outcome)`. **The thread is BLOCKED for any further outbound sends while one or more entries are in `awaiting-recovery`** — `send()` on that thread returns `Result<…, KoiError>` with code `THREAD_BLOCKED_PENDING_RECOVERY` until resolution. This is conservative: continuing to send while discarding a possibly-delivered parent from the reference chain would silently fork the conversation; blocking is loud, recoverable, and operator-actionable. Outbound threading therefore never derives headers from a state that includes uncertain ancestry.
+  5. **`sending → awaiting-recovery`**: process crash or socket drop after the SMTP DATA octet stream began but before `250 OK` was acknowledged into our outbox. Detected at startup by scanning outbox for `status: "sending"`. Channel does **not** auto-resend (SMTP `Message-ID` is not a protocol idempotency key per RFC 5321). `getPendingSends()` exposes the row; the thread is **blocked** for any further outbound sends until resolved (`send()` returns `Result<…, KoiError>` with code `THREAD_BLOCKED_PENDING_RECOVERY`). Resolution is operator-driven via:
+
+     ```ts
+     resolvePending(messageId: string, outcome: "sent" | "failed"): Promise<void>;
+     ```
+
+     The resolution is itself a state transition with strict thread-store semantics:
+
+     - **`awaiting-recovery → sent` (operator confirms relay accepted via mailbox/MTA logs)**: CAS outbox to `status: "sent"`. Thread reservation from step 1 stands as the new chain head. Thread unblocks. Future replies derive `In-Reply-To`/`References` including this `Message-ID`.
+     - **`awaiting-recovery → failed` (operator confirms relay did not accept)**: CAS outbox to `status: "failed"`. Atomically CAS-rollback `ThreadStore` to remove this `Message-ID` from the chain (best-effort: if a concurrent reply has reserved a *new* tentative entry built on top of this one, rollback is rejected with `RECOVERY_CONFLICT` and the operator must resolve later sends first; the system never silently corrupts ancestry). Thread unblocks once the rollback succeeds. Future replies derive headers from the pre-reservation chain head.
+
+     Both branches are atomic across `OutboxStore` + `ThreadStore` writes via per-thread serialization at the in-process level; durable stores must support the same per-thread linearization (operator's `ThreadStore` choice). `resolvePending` is idempotent — calling it twice with the same outcome is a no-op; calling with a different outcome on an already-resolved row returns `ALREADY_RESOLVED`. Tests cover both branches across simulated process restarts.
 
   **Pre-DATA vs post-DATA classification**: the SMTP transport adapter exposes `await smtp.sendMail(...)` which resolves with `{ phase: "pre-data" | "post-data", ok: boolean, error? }`. The state machine reads `phase` to choose `aborted` (pre-DATA) vs `awaiting-recovery` (post-DATA crash). nodemailer's events expose enough information to populate `phase`; the wrapper lives in `platform-send.ts`.
 
@@ -154,8 +165,27 @@ auth failure, 503 on in-flight (matches retryable-by-Teams/WhatsApp contract), 5
 
 #### channel-teams
 
-- **Inbound**: HTTP webhook handler. POST `/api/messages` → verify Bot Framework JWT → parse Activity → `normalize()`.
-- **Outbound**: POST `{activity.serviceUrl}/v3/conversations/{id}/activities`. Bearer token from injected `tokenVerifier.appToken()`.
+- **Inbound**: HTTP webhook handler. POST `/api/messages` → verify Bot Framework JWT → parse Activity → **persist conversation address** (see below) → `normalize()`.
+- **Outbound**: POST `{address.serviceUrl}/v3/conversations/{id}/activities` where `address` is loaded from the **`ConversationAddressStore`**, not from the inbound activity in scope. Bearer token from injected `tokenVerifier.appToken()`.
+- **Conversation address store**: required at construction. Interface:
+
+  ```ts
+  interface ConversationAddressStore {
+    // Persist or refresh the address for a conversation seen on inbound.
+    put(conversationId: string, address: ConversationAddress): Promise<void>;
+    // Load address for a later send. Returns null if unknown/stale.
+    get(conversationId: string): Promise<ConversationAddress | null>;
+  }
+  type ConversationAddress = {
+    readonly serviceUrl: string;        // already validated against serviceUrlAllowlist
+    readonly tenantId: string;
+    readonly channelId: string;         // bot framework channel (msteams, slack-via-bf, etc.)
+    readonly recipient: { readonly id: string; readonly name?: string };
+    readonly lastSeenAt: number;        // ms epoch; for staleness eviction by operator
+  };
+  ```
+
+  On inbound, the channel calls `put()` after JWT + serviceUrl-allowlist verification — only verified addresses are persisted, so a later `send()` cannot route to an unverified `serviceUrl`. On outbound, the channel calls `get()`; if it returns `null`, `send()` returns `Result<…, KoiError>` with code `CONVERSATION_ADDRESS_UNKNOWN` (caller may have lost a conversation that predates this deployment, or addresses were manually purged). The store is **required** to be durable for production deployments; the package ships an `InMemoryConversationAddressStore` for tests/dev only and the factory rejects production configs paired with it (analogous to the `IdempotencyStore` rule).
 - **Format**: text + Adaptive Card v1.5 in `format.ts`. Block kit-style mapper from `ContentBlock[]`.
 - **Threading**: `conversation.id` is the thread key.
 - **Config**: `{ appId, appPassword, tenantAllowlist: string[], cloud?: "public" | "gov" | { issuer: string, jwksUri: string }, serviceUrlAllowlist: ServiceUrlPattern[] }`. `tenantAllowlist` and `serviceUrlAllowlist` are required (use `["*"]` for tenant to opt into multi-tenant explicitly). `cloud` defaults to `"public"` (issuer `https://api.botframework.com`, JWKS from official discovery doc); `"gov"` is the US-Gov profile; an inline `{ issuer, jwksUri }` is for self-hosted/test clouds and **both must be set together** — never just one.
@@ -234,15 +264,35 @@ interface IdempotencyStore {
    - `in-flight`: short bounded wait (default 2s, ≤ provider socket timeout) polling for `committed`. If observed → 200 OK. Otherwise → **503 Service Unavailable**. Both Teams (per Microsoft Learn retry table — 502/503/504) and WhatsApp (Meta Cloud API retries 5xx) explicitly retry 503; this maps duplicate races to documented retryable behavior. **409 is not used** because Teams does not retry 409.
    - `capacity-exhausted`: 503 — provider retries; emit operator alert.
    - `ok`: continue.
-3. `await normalize(payload)` → `await handler(message)` (the user's async `onMessage`). The lease is the *only* state that exists during handler execution; no durable suppression record is written before the handler completes.
-4. On handler thrown error: `abort(lease)` → 500, provider retries (lease released; the next retry re-runs the handler).
-5. On handler success: `commit(lease, commitTtlMs)` writes the durable suppression record. If `commit()` succeeds → 200 OK.
-6. **`commit()` failure after successful handler** (the hard case): return 500 so the provider retries. The user's handler is therefore re-invoked on the retry — this is **at-least-once handler invocation across commit failures**, not at-most-once. The package README documents this explicitly: handlers must either be idempotent against the ingress key, or callers must layer their own per-message outbox keyed on the ingress key for exactly-once side effects. We do not write a pre-handler "processed" marker, because doing so would suppress retries for handlers that never ran (process killed mid-handler), which is a worse failure mode than at-least-once.
-7. **Lease expiration on worker crash**: if a worker dies during handler execution, the lease TTL elapses and `tryBegin` becomes available again to the next retry — handler re-runs (at-least-once), no permanent suppression. The lease is *not* a durable suppression barrier; only `commit` is.
+3. `await normalize(payload)` → **`enqueueDurable({ key, payload, normalized })`** to an injected durable `IngressQueue`. The enqueue is atomic with the lease (same store, single CAS write). Once the queue write commits, the webhook returns **200 OK** to the provider — the message is now durably owned by the channel. The webhook does **not** invoke `handler` synchronously.
+4. A separate **handler worker** (started by the channel on `connect()`) polls the queue, claims items via the same atomic `tryBegin`-style CAS, calls the user `handler(message)`, and on success calls `commit(key, commitTtlMs)` followed by `dequeue(item)`. On handler throw, the worker calls `abort(lease)` and the queue item stays available for the next worker tick (at-least-once handler invocation, but bounded by the worker's own retry budget — not by every webhook delivery).
 
-Telemetry: each transition (`begin`, `commit`, `abort`, `commit-failure`) emits a structured event so operators can observe duplicate-handler runs in the rare commit-failure case.
+This separation has two material effects:
 
-This is a **clean two-state machine: leased (in-flight, not a suppression barrier) → committed (durable suppression).** No "pre-handler" intermediate state, no orphaned markers on crash.
+- **Provider-facing path is exactly-once-acknowledged**: a transient store fault during `commit` no longer causes the provider to redeliver and re-run the handler, because the provider already got 200 OK. Subsequent provider retries see `committed` (or `in-flight` while still processing) on the next `tryBegin` and short-circuit.
+- **Handler invocation is at-least-once but bounded**: only the channel's own worker can re-invoke the handler, and it does so under its own retry policy and dead-letter rules — not every duplicate webhook delivery from the provider triggers a handler run. Side effects are the user's responsibility to make idempotent against the ingress key (documented in README), but the *blast radius* of duplicate handler runs is the worker's retry count (default 3), not the provider's retry budget (which can be unbounded).
+
+5. **Crash before `enqueueDurable` returns**: webhook returns 500, provider retries, no handler ran. Safe.
+6. **Crash after `enqueueDurable` but before 200 OK reaches provider**: provider retries; on retry, `tryBegin` finds the lease still held by the dead worker (lease TTL elapsed → released) or finds the queue item already present and the inbound de-dupes via the same key. Either way, exactly one queue entry exists.
+7. **Crash mid-handler (worker dies)**: lease expires; queue item still present; worker retries on restart. Handler re-runs (at-least-once); after `maxHandlerRetries` (default 3), the item moves to a dead-letter list surfaced via `getDeadLetters()`.
+
+`IngressQueue` interface (injected; durable required for production, in-memory for tests):
+
+```ts
+interface IngressQueue {
+  enqueue(key: string, item: QueueItem): Promise<{ ok: true } | { ok: false; reason: "duplicate" }>;
+  // Returns next unclaimed item with a fresh lease, or null.
+  claim(workerId: string, leaseMs: number): Promise<ClaimedItem | null>;
+  ack(workerId: string, key: string): Promise<void>;        // success — remove item
+  nack(workerId: string, key: string): Promise<void>;       // failure — release lease, increment attempt count
+  deadLetter(workerId: string, key: string, reason: string): Promise<void>;
+  getDeadLetters(): Promise<readonly DeadLetterItem[]>;
+}
+```
+
+Telemetry: each transition (`enqueue`, `claim`, `ack`, `nack`, `dead-letter`, `commit`, `commit-failure`) emits a structured event.
+
+This is now a **three-state pipeline: webhook 200-OK on durable enqueue → worker handler with bounded retry → committed (durable suppression).** Provider-facing duplicate suppression is exactly-once-on-ack; handler-facing is at-least-once-bounded. Side-effect bridges that need stricter exactly-once semantics layer their own outbox keyed on the ingress key (README).
 
 Email is **IMAP-backed, not webhook-backed**, so it has no HTTP response to bind. Its loop instead awaits the handler, then `commit`s on success or `abort`s on failure, leaving the IMAP `\Seen` flag unset on abort so the next IMAP fetch re-delivers. Lease TTL is bounded so a crashed worker's lease expires and the next IMAP poll re-claims.
 
