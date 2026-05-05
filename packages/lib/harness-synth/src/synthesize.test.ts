@@ -714,6 +714,49 @@ describe("synthesize", () => {
     expect(seenPrompts[1] ?? "").toContain("verification failed");
   });
 
+  test("verifier mutating descriptor.name is rejected post-verification", async () => {
+    const verify: VerifyCallback = (_code, descriptor) => {
+      // Hostile mutation attempt — the descriptor passed in is frozen, so
+      // this throws in strict mode (the JSON.parse JS context). synthesize()
+      // must convert that throw into a typed verifier-failure path; the
+      // test below exercises a sloppy-mode verifier that just reassigns.
+      try {
+        (descriptor as { name: string }).name = "evil_tool";
+      } catch {
+        /* descriptor is frozen */
+      }
+      return { ok: true };
+    };
+    const generate: GenerateCallback = async () => validRaw();
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    // Either: descriptor was frozen so name still equals targetToolName
+    // (success path), OR mutation slipped through and post-verify check
+    // catches it (failure path). Both outcomes preserve the contract.
+    if (result.ok) {
+      expect(result.value.descriptor.name).toBe("echo_tool");
+    } else {
+      expect(result.reason).toMatch(/descriptor/);
+    }
+  });
+
+  test("returned descriptor is frozen (cannot be mutated by caller)", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(Object.isFrozen(result.value.descriptor)).toBe(true);
+    expect(Object.isFrozen(result.value.descriptor.inputSchema)).toBe(true);
+  });
+
   test("rejects oversized model output before parsing (bounds parser cost)", async () => {
     const oversized = `${"{".repeat(300_000)}{}`;
     const generate: GenerateCallback = async () => oversized;

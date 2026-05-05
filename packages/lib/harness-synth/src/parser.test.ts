@@ -146,6 +146,18 @@ describe("parseSynthesisOutput", () => {
     expect(result.reason).toMatch(/Descriptor must be a JSON object/);
   });
 
+  test("linear-time on brace-heavy malformed output (no quadratic blowup)", () => {
+    // Worst case for the OLD parser: a long run of unmatched `{` would
+    // re-scan the suffix from each one. With the linear stack-based scan,
+    // 200k unmatched braces should finish in well under a second.
+    const malformed = "{".repeat(200_000);
+    const start = Date.now();
+    const result = parseSynthesisOutput(malformed, "echo_tool");
+    const elapsed = Date.now() - start;
+    expect(result.ok).toBe(false);
+    expect(elapsed).toBeLessThan(1000);
+  });
+
   test("recovers when prose has single-quoted braces before real payload", () => {
     const real = JSON.stringify({
       descriptor: VALID_DESCRIPTOR,

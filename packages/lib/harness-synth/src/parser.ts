@@ -61,6 +61,14 @@ export function parseSynthesisOutput(raw: string, targetToolName: string): Parse
  * Spans that fail to parse or lack the claim keys are skipped — this
  * still tolerates prose framing around the single intended payload.
  */
+/**
+ * Single-pass linear-time scan that emits every top-level balanced `{...}`
+ * span: walks `raw` once, tracking depth and JSON string context, and
+ * records the start when depth goes 0→1 and the end when depth goes 1→0.
+ * O(n) total regardless of how many braces appear, including the worst-
+ * case "200 KB of unmatched `{`" pattern that would have been quadratic
+ * under the old "restart from each `{`" approach.
+ */
 function findParseableJsonObject(
   raw: string,
 ):
@@ -68,41 +76,50 @@ function findParseableJsonObject(
   | { readonly ok: false; readonly reason: string } {
   let lastParseReason: string | null = null;
   const claimants: Record<string, unknown>[] = [];
-  let cursor = 0;
-  while (cursor < raw.length) {
-    const start = raw.indexOf("{", cursor);
-    if (start === -1) break;
-    const end = findBalancedClose(raw, start);
-    if (end === -1) {
-      // Unmatched `{` — could be prose like "Use {descriptor, code". Skip
-      // past this brace and keep searching for a balanced span later in
-      // the response rather than aborting the whole scan.
-      cursor = start + 1;
+  // Stack of unclosed `{` indices outside JSON strings. Pop on matching
+  // `}` to emit the balanced span. Each char is touched once and stack ops
+  // are O(1), so total cost is O(n) regardless of brace density —
+  // including the worst-case "all unmatched `{`" pattern where the stack
+  // simply keeps growing and is discarded at end of input.
+  const opens: number[] = [];
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < raw.length; i += 1) {
+    const ch = raw[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
       continue;
     }
-    const span = raw.slice(start, end + 1);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(span);
-    } catch (err: unknown) {
-      lastParseReason = `Output JSON parse failed: ${err instanceof Error ? err.message : String(err)}`;
-      // The brace span we found is bounded by `findBalancedClose`, which
-      // only treats `"..."` as a string. Prose with single-quoted or
-      // backticked `{...}` before the real payload can fool that scan,
-      // producing an unparseable span that swallows a valid object that
-      // appears later. Advance past just this `{` instead of past the
-      // whole failed span so the next iteration can find inner / later
-      // candidates.
-      cursor = start + 1;
+    if (ch === '"') {
+      inString = true;
       continue;
     }
-    cursor = end + 1;
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      continue;
-    }
-    const obj = parsed as Record<string, unknown>;
-    if (claimsToBeSynthesisPayload(obj)) {
-      claimants.push(obj);
+    if (ch === "{") {
+      opens.push(i);
+    } else if (ch === "}") {
+      const start = opens.pop();
+      if (start === undefined) continue; // stray `}` in prose
+      const span = raw.slice(start, i + 1);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(span);
+      } catch (err: unknown) {
+        lastParseReason = `Output JSON parse failed: ${err instanceof Error ? err.message : String(err)}`;
+        continue;
+      }
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        continue;
+      }
+      const obj = parsed as Record<string, unknown>;
+      if (claimsToBeSynthesisPayload(obj)) {
+        claimants.push(obj);
+      }
     }
   }
   if (claimants.length === 1) {
@@ -122,36 +139,6 @@ function findParseableJsonObject(
 
 function claimsToBeSynthesisPayload(obj: Record<string, unknown>): boolean {
   return Object.hasOwn(obj, "descriptor") && Object.hasOwn(obj, "code");
-}
-
-function findBalancedClose(raw: string, start: number): number {
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = start; i < raw.length; i += 1) {
-    const ch = raw[i];
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (ch === "\\") {
-        escaped = true;
-      } else if (ch === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-    if (ch === "{") {
-      depth += 1;
-    } else if (ch === "}") {
-      depth -= 1;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
 }
 
 function coerceDescriptor(

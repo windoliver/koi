@@ -190,10 +190,18 @@ export async function synthesize(
         continue;
       }
 
+      // Freeze a deep copy of the descriptor before handing it to the
+      // injected verifier and again before returning. A buggy or hostile
+      // verifier could otherwise mutate parsed.value.descriptor (.name,
+      // .inputSchema) after the schema/name invariants passed, so the
+      // returned artifact would no longer match targetToolName /
+      // targetToolSchema. Cloning isolates the verify boundary; freezing
+      // catches any post-return mutation by a downstream caller.
+      const verifierDescriptor = freezeDescriptor(parsed.value.descriptor);
       const verified = await safeVerify(
         config.verify,
         parsed.value.code,
-        parsed.value.descriptor,
+        verifierDescriptor,
         remainingMs(),
         attemptController,
       );
@@ -211,11 +219,34 @@ export async function synthesize(
         continue;
       }
 
+      // Re-validate the descriptor that will actually be returned, in case
+      // the verifier mutated the frozen-but-aliased object. (Object.freeze
+      // throws in strict mode but silently no-ops in sloppy code; defending
+      // against either is cheap.)
+      const finalDescriptor = freezeDescriptor(verifierDescriptor);
+      if (finalDescriptor.name !== safeInput.targetToolName) {
+        return {
+          ok: false,
+          reason: "Verifier mutated descriptor.name post-verification",
+          attempts: attempt,
+        };
+      }
+      const finalSchemaCheck = checkSchemaMatch(
+        finalDescriptor.inputSchema,
+        safeInput.targetToolSchema,
+      );
+      if (!finalSchemaCheck.ok) {
+        return {
+          ok: false,
+          reason: "Verifier mutated descriptor.inputSchema post-verification",
+          attempts: attempt,
+        };
+      }
       return {
         ok: true,
         value: {
           code: parsed.value.code,
-          descriptor: parsed.value.descriptor,
+          descriptor: finalDescriptor,
           attempts: attempt,
           forgedBy: FORGED_BY,
           synthesizedAt: clock(),
@@ -321,6 +352,28 @@ const MAX_GENERATED_BYTES = 256 * 1024;
 
 /** Hard cap on prior code carried into the next refinement prompt. */
 const MAX_PRIOR_CODE_BYTES = 8 * 1024;
+
+/**
+ * Deep-clone via JSON round-trip and recursively freeze. Used to isolate
+ * the parsed descriptor across the verify boundary so a buggy / hostile
+ * verifier cannot mutate fields after schema/name invariants passed. JSON
+ * round-trip is safe here because descriptor.inputSchema is already
+ * required to be JSON-plain (validated upstream).
+ */
+function freezeDescriptor(descriptor: ToolDescriptor): ToolDescriptor {
+  const cloned = JSON.parse(JSON.stringify(descriptor)) as ToolDescriptor;
+  return deepFreeze(cloned);
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value === null || typeof value !== "object") return value;
+  for (const key of Object.keys(value as object)) {
+    const child = (value as Record<string, unknown>)[key];
+    if (child !== null && typeof child === "object") deepFreeze(child);
+  }
+  Object.freeze(value);
+  return value;
+}
 
 /**
  * Truncate prior code before it is forwarded to the LLM in the refinement
