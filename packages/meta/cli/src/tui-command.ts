@@ -29,7 +29,7 @@
  */
 
 import { writeSync } from "node:fs";
-import { readdir, writeFile } from "node:fs/promises";
+import { readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type { SummaryOk } from "@koi/agent-summary";
@@ -2954,11 +2954,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     } catch (err: unknown) {
       console.warn("[tui-command] governance bridge init failed:", err);
     }
-    // Registry-only daemon bridge (#1944). Opened unconditionally so the
-    // /bg view can show sessions from other processes even when this TUI
-    // does not own a daemon supervisor. Replaced by the live bridge below
-    // when the manifest declares subprocess children.
+    // Registry-only daemon bridge (#1944). The registry path follows the
+    // `koi bg` convention — `KOI_STATE_DIR/daemon/sessions` when set, else
+    // `~/.koi/daemon/sessions`. Per-workspace isolation: set KOI_STATE_DIR
+    // per shell. Opened only when the directory already exists so that
+    // simply launching the TUI does not create or mutate shared state on
+    // hosts where no daemon has ever run. Replaced by the live bridge
+    // below when the manifest declares subprocess children.
     const registryDir = defaultRegistryDir();
+    const registryDirExists = await stat(registryDir)
+      .then((s) => s.isDirectory())
+      .catch(() => false);
     // Inline helper: maps a DaemonBridgeToast to the TUI Toast shape.
     // body is empty — daemon toasts carry their message in title only.
     const pushDaemonToast = (
@@ -2977,17 +2983,22 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         },
       });
     };
-    try {
-      const roRegistry = createFileSessionRegistry({ dir: registryDir });
-      registryOnlyBridge = createDaemonBridge({
-        mode: { kind: "registry-only", registry: roRegistry },
-        dispatch: store.dispatch,
-        pushToast: (toast) => {
-          pushDaemonToast(toast, "daemon-bridge");
-        },
-      });
-    } catch (err: unknown) {
-      console.warn("[tui-command] registry-only bridge init failed:", err);
+    if (registryDirExists) {
+      try {
+        // The registry-only bridge only calls describeList() + watch() —
+        // it never invokes register/update/unregister, so even though
+        // FileSessionRegistry exposes write methods we never use them.
+        const roRegistry = createFileSessionRegistry({ dir: registryDir });
+        registryOnlyBridge = createDaemonBridge({
+          mode: { kind: "registry-only", registry: roRegistry },
+          dispatch: store.dispatch,
+          pushToast: (toast) => {
+            pushDaemonToast(toast, "daemon-bridge");
+          },
+        });
+      } catch (err: unknown) {
+        console.warn("[tui-command] registry-only bridge init failed:", err);
+      }
     }
     // Manifest-driven supervision wiring (#1866). When the loaded manifest
     // declares `supervision:`, activate the subsystem here so the declared
