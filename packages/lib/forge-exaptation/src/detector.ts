@@ -475,10 +475,35 @@ function countStrongDriftPriors(
   // check, an off-by-one in the caller's history maintenance would let
   // the current strong window count as its own prior and immediately
   // promote the verdict to `new-artifact` on the very first window.
-  const currentSig = windowSignature(current);
-  const filteredPriors = priorWindows.filter(
-    (w) => w !== current && windowSignature(w) !== currentSig,
-  );
+  // Build the current window's per-observation identity set (excluding
+  // observedAt) so any prior that overlaps even partially can be
+  // rejected. Identity-only equality is too narrow — a caller that
+  // clones the current window and shifts a few timestamps would still
+  // share most observations, and any shared observation makes the prior
+  // non-independent evidence. Treat ANY overlap as disqualifying.
+  const currentIdentities = new Set<string>();
+  // Also derive the current window's artifact identity set so priors
+  // that came from a different artifact (caller routing bug, multi-
+  // artifact buffer mixup) cannot be borrowed as historical evidence.
+  // We collect every distinct artifactId across the current window's
+  // valid observations — if downstream a window mixes artifacts that's
+  // already a contract violation, but we still want to reject any prior
+  // whose artifact is not part of the current window's artifact set.
+  const currentArtifactIds = new Set<string>();
+  for (const o of current) {
+    if (!isObservationValid(o)) continue;
+    currentIdentities.add(observationIdentity(o));
+    currentArtifactIds.add(o.artifactId.trim());
+  }
+  const filteredPriors = priorWindows.filter((w) => {
+    if (w === current) return false;
+    for (const o of w) {
+      if (!isObservationValid(o)) continue;
+      if (currentIdentities.has(observationIdentity(o))) return false;
+      if (!currentArtifactIds.has(o.artifactId.trim())) return false;
+    }
+    return true;
+  });
   // Pair each window with its max observedAt drawn ONLY from observations
   // that pass the same validity check `detectDrift` applies AND that
   // survive same-key dedup (canonical replay collapses to MIN observedAt
@@ -657,32 +682,40 @@ function windowMaxAtAfterDedup(window: readonly UsagePurposeObservation[]): numb
   return maxAt;
 }
 
-function windowSignature(window: readonly UsagePurposeObservation[]): string {
-  const tokens: string[] = [];
-  for (const o of window) {
-    if (!isObservationValid(o)) continue;
-    const scope = normalizeScope(o.scope);
-    const agent = o.agentId.trim();
-    const eid = typeof o.eventId === "string" ? o.eventId.trim() : "";
-    const score = Math.round(o.divergenceScore * PAYLOAD_SCORE_FACTOR);
-    const at = Number.isFinite(o.observedAt) ? String(o.observedAt) : "?";
-    // Length-prefix each variable-width field so concatenation cannot
-    // collide (e.g. scope="ab" + agent="c" vs scope="a" + agent="bc").
-    const parts = [
-      `${String(scope.length)}:${scope}`,
-      `${String(agent.length)}:${agent}`,
-      `${String(eid.length)}:${eid}`,
-      String(score),
-      at,
-    ];
-    tokens.push(parts.join("|"));
-  }
-  tokens.sort();
-  return tokens.join("\n");
+/**
+ * Stable per-observation identity. Excludes `observedAt` deliberately —
+ * a clone of the current window with the timestamps shifted is still
+ * the same observation set and must not bypass the self-reference
+ * check on its way through `priorWindows`. Includes the normalized
+ * payload (rounded score, normalized contextText) plus the dedup key
+ * so two replays of one event collapse to a single token.
+ */
+function observationIdentity(o: UsagePurposeObservation): string {
+  const scope = normalizeScope(o.scope);
+  const agent = o.agentId.trim();
+  const eid = typeof o.eventId === "string" ? o.eventId.trim() : "";
+  const score = Math.round(o.divergenceScore * PAYLOAD_SCORE_FACTOR);
+  const ctx = normalizeContext(o.contextText);
+  // Length-prefix each variable-width field so concatenation cannot
+  // collide (e.g. scope="ab" + agent="c" vs scope="a" + agent="bc").
+  return [
+    `${String(scope.length)}:${scope}`,
+    `${String(agent.length)}:${agent}`,
+    `${String(eid.length)}:${eid}`,
+    String(score),
+    `${String(ctx.length)}:${ctx}`,
+  ].join("|");
 }
 
 function isObservationValid(o: UsagePurposeObservation): boolean {
   if (!isUnitInterval(o.divergenceScore)) return false;
+  // artifactId is required: the detector is per-artifact, and binding
+  // artifact identity to the data shape is what lets `suggestAction`
+  // reject priors whose artifactId does not match the current window.
+  // Without this, a routing bug in the caller's history maintenance
+  // could let unrelated history unlock irreversible actions for the
+  // wrong artifact.
+  if (typeof o.artifactId !== "string" || o.artifactId.trim().length === 0) return false;
   // scope is intentionally permissive: missing / blank values are mapped
   // to LEGACY_SCOPE so pre-multi-tenant emitters keep wire-compat. agentId
   // remains required — without an agent identity we cannot attribute

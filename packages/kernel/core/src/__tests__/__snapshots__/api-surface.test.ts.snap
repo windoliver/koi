@@ -959,6 +959,20 @@ interface ExaptationSignal {
 }
 /** Raw usage observation recording how a brick was used vs its stated purpose. */
 interface UsagePurposeObservation {
+    /**
+     * Identifier of the artifact (tool / skill / agent) this observation
+     * belongs to. **Required.** The exaptation detector is per-artifact —
+     * drift in one artifact's purpose has nothing to do with drift in
+     * another. Binding artifactId to the data shape lets \`suggestAction\`
+     * reject priors whose artifactId does not match the current window,
+     * so a routing bug in the caller's history maintenance cannot let
+     * unrelated history unlock irreversible actions for the wrong
+     * artifact.
+     *
+     * Whitespace-only values are treated as missing and the observation
+     * is dropped at validation. There is no implicit "global" artifact.
+     */
+    readonly artifactId: string;
     /** Truncated model response text preceding the tool call. */
     readonly contextText: string;
     /**

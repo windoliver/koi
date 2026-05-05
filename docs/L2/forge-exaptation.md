@@ -103,6 +103,13 @@ Tenant isolation is a runtime data contract, enforced by required fields — not
 - Emitters can be migrated incrementally: ship the new `scope`-aware producer alongside legacy producers; observe `__legacy__` in dashboards/alerts; swap producers tenant-by-tenant; deprecate `__legacy__` once it is empty.
 - **Action-bearing safety during migration:** when any cohort observation is in `__legacy__`, `detectDrift` sets `cohortHasLegacyScope: true` on the result and `suggestAction` refuses to emit `reclassify` / `new-artifact`. The drift signal is still surfaced for dashboards/telemetry, but irreversible actions stay blocked until producers are migrated to explicit scope. Legacy-contaminated prior windows likewise do not count toward stability.
 
+## Artifact Identity
+
+The detector is per-artifact: drift in one artifact (tool / skill / agent) is independent of drift in another. `UsagePurposeObservation.artifactId` is **required** at the L0 contract, and `suggestAction` rejects any prior whose `artifactId` does not appear in the current window's artifact set. Combined with the per-observation overlap check, this ensures:
+
+- A routing bug or multi-artifact buffer mixup that hands a strong prior from a different artifact to `suggestAction` cannot unlock `new-artifact` for the current artifact.
+- A timestamp-skewed clone of the current window cannot pose as a "prior" — `windowSignature` excludes `observedAt` and the prior-overlap check rejects any prior that shares even one validated observation identity with the current window.
+
 ## eventId Contract
 
 `eventId` is a **per-observation idempotency key**. The L0 docstring on `UsagePurposeObservation.eventId` is the authoritative spec; the short version:

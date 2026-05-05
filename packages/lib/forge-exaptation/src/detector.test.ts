@@ -19,6 +19,7 @@ function obs(
 ): UsagePurposeObservation {
   obsClock += 1;
   return {
+    artifactId: "artifact-1",
     scope: "default",
     agentId,
     divergenceScore,
@@ -35,6 +36,7 @@ function obsNoId(
 ): UsagePurposeObservation {
   obsClock += 1;
   return {
+    artifactId: "artifact-1",
     scope: "default",
     agentId,
     divergenceScore,
@@ -418,6 +420,7 @@ describe("suggestAction", () => {
     for (let i = 0; i < 3; i++) {
       const eid = `pc-${String(i)}`;
       conflictHeavyPrior.push({
+        artifactId: "artifact-1",
         scope: "default",
         agentId: "victim",
         eventId: eid,
@@ -426,6 +429,7 @@ describe("suggestAction", () => {
         observedAt: i,
       });
       conflictHeavyPrior.push({
+        artifactId: "artifact-1",
         scope: "default",
         agentId: "victim",
         eventId: eid,
@@ -485,6 +489,7 @@ describe("suggestAction", () => {
       // legitimate compat-path data, so we use the still-required
       // agentId field to force an invalid sample.)
       {
+        artifactId: "artifact-1",
         scope: "tenant-X",
         agentId: "",
         divergenceScore: 0.99,
@@ -549,6 +554,7 @@ describe("suggestAction", () => {
     // The safe behavior: any undated prior fails stability entirely.
     const undatedStrong: UsagePurposeObservation[] = [
       ...[0.95, 0.95, 0.95].map((s, i) => ({
+        artifactId: "artifact-1",
         scope: "default",
         agentId: "u-a",
         divergenceScore: s,
@@ -557,6 +563,7 @@ describe("suggestAction", () => {
         eventId: `u-a-${String(i)}`,
       })),
       ...[0.95, 0.95, 0.95].map((s, i) => ({
+        artifactId: "artifact-1",
         scope: "default",
         agentId: "u-b",
         divergenceScore: s,
@@ -565,6 +572,7 @@ describe("suggestAction", () => {
         eventId: `u-b-${String(i)}`,
       })),
       ...[0.95, 0.95, 0.95].map((s, i) => ({
+        artifactId: "artifact-1",
         scope: "default",
         agentId: "u-c",
         divergenceScore: s,
@@ -573,6 +581,7 @@ describe("suggestAction", () => {
         eventId: `u-c-${String(i)}`,
       })),
       ...[0.95, 0.95, 0.95].map((s, i) => ({
+        artifactId: "artifact-1",
         scope: "default",
         agentId: "u-d",
         divergenceScore: s,
@@ -605,6 +614,54 @@ describe("suggestAction", () => {
     // All 6 observations dropped at validation → invalid-config.
     expect(result.kind).toBe("invalid-config");
     if (result.kind === "invalid-config") expect(result.reason).toContain("6");
+  });
+
+  test("timestamp-skewed clone of the current window cannot pose as a prior", () => {
+    // Trust-boundary: a caller that clones the current window and shifts
+    // every observedAt slightly earlier must NOT slip past the
+    // self-reference check. windowSignature now excludes observedAt and
+    // the prior-overlap check rejects ANY shared (validated) observation
+    // identity — so a timestamp-skewed self-clone shares all identities
+    // and is filtered out before stability counting.
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    const cloneShifted: UsagePurposeObservation[] = observations.map((o, i) => ({
+      ...o,
+      observedAt: -10_000_000 - i, // far older than current
+    }));
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [cloneShifted]).kind).toBe(
+      "reclassify",
+    );
+  });
+
+  test("prior windows from a different artifactId do not count toward stability", () => {
+    // Trust-boundary: a routing bug or multi-artifact buffer mixup that
+    // hands suggestAction a strong prior from a DIFFERENT artifact must
+    // NOT unlock new-artifact for the current artifact. The detector
+    // matches priors against the current window's artifactId set.
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    function pinAt(o: UsagePurposeObservation, at: number): UsagePurposeObservation {
+      return { ...o, observedAt: at };
+    }
+    const otherArtifactStrongPrior: UsagePurposeObservation[] = strongPriorWindow().map((o) =>
+      pinAt({ ...o, artifactId: "different-artifact" }, -8_000_000),
+    );
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [otherArtifactStrongPrior]).kind,
+    ).toBe("reclassify");
+  });
+
+  test("missing artifactId is rejected at validation", () => {
+    // L0 contract: artifactId is required. Observations without it
+    // cannot attribute drift to an artifact and must drop.
+    const observations: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => {
+        const o = obs("a", s);
+        const { artifactId: _id, ...rest } = o;
+        return rest as UsagePurposeObservation;
+      }),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("invalid-config");
   });
 
   test("priors newer than (or equal to) the current window are excluded from stability", () => {
@@ -674,6 +731,7 @@ describe("suggestAction", () => {
       const score = strong ? 0.95 : 0.05;
       return ["a", "b", "c", "d"].flatMap((suffix) =>
         [score, score, score].map((s, i) => ({
+          artifactId: "artifact-1",
           scope: "default",
           agentId: `${agentPrefix}-${suffix}`,
           divergenceScore: s,
@@ -755,6 +813,7 @@ describe("suggestAction", () => {
     // still claiming "stable" history.
     const undatedStrong: UsagePurposeObservation[] = [
       ...[0.95, 0.95, 0.95].map((s, i) => ({
+        artifactId: "artifact-1",
         scope: "default",
         agentId: "u-a",
         divergenceScore: s,
@@ -763,6 +822,7 @@ describe("suggestAction", () => {
         eventId: `u-a-${String(i)}`,
       })),
       ...[0.95, 0.95, 0.95].map((s, i) => ({
+        artifactId: "artifact-1",
         scope: "default",
         agentId: "u-b",
         divergenceScore: s,
@@ -771,6 +831,7 @@ describe("suggestAction", () => {
         eventId: `u-b-${String(i)}`,
       })),
       ...[0.95, 0.95, 0.95].map((s, i) => ({
+        artifactId: "artifact-1",
         scope: "default",
         agentId: "u-c",
         divergenceScore: s,
@@ -779,6 +840,7 @@ describe("suggestAction", () => {
         eventId: `u-c-${String(i)}`,
       })),
       ...[0.95, 0.95, 0.95].map((s, i) => ({
+        artifactId: "artifact-1",
         scope: "default",
         agentId: "u-d",
         divergenceScore: s,
@@ -857,6 +919,7 @@ describe("eventId-based dedup + replay protection", () => {
     // collisions are accidental and per-agent dedup keeps them independent.
     const sharedId = "shared-eid";
     const a1: UsagePurposeObservation = {
+      artifactId: "artifact-1",
       scope: "default",
       agentId: "a1",
       divergenceScore: 0.95,
@@ -888,6 +951,7 @@ describe("eventId-based dedup + replay protection", () => {
 
   test("duplicateCount reported on drift branch too", () => {
     const a1 = (eid: string, score = 0.9): UsagePurposeObservation => ({
+      artifactId: "artifact-1",
       scope: "default",
       agentId: "a1",
       divergenceScore: score,
@@ -1040,6 +1104,7 @@ describe("non-finite observedAt dedup tiebreak", () => {
   test("equal-score duplicates with NaN observedAt fall through to contextText (order-independent)", () => {
     const eid = "shared";
     const a: UsagePurposeObservation = {
+      artifactId: "artifact-1",
       scope: "default",
       agentId: "a1",
       eventId: eid,
@@ -1099,6 +1164,7 @@ describe("dedup conflict quarantine", () => {
     // gate folds the count into its low-quality denominator.
     const sharedEid = "evt-shared";
     const lo: UsagePurposeObservation = {
+      artifactId: "artifact-1",
       scope: "default",
       agentId: "a1",
       eventId: sharedEid,
@@ -1138,6 +1204,7 @@ describe("dedup conflict quarantine", () => {
     // duplicates rather than quarantining the bucket.
     const eid = "evt-ws";
     const a: UsagePurposeObservation = {
+      artifactId: "artifact-1",
       scope: "default",
       agentId: "a1",
       eventId: eid,
@@ -1168,6 +1235,7 @@ describe("dedup conflict quarantine", () => {
     // collapse as duplicates — not as conflicts that erase evidence.
     const eid = "evt-skew";
     const original: UsagePurposeObservation = {
+      artifactId: "artifact-1",
       scope: "default",
       agentId: "a1",
       eventId: eid,
@@ -1201,6 +1269,7 @@ describe("dedup conflict quarantine", () => {
     // payload disagreement, treated as a conflict.
     const eid = "evt-real-conflict";
     const lo: UsagePurposeObservation = {
+      artifactId: "artifact-1",
       scope: "default",
       agentId: "a1",
       eventId: eid,
@@ -1249,6 +1318,7 @@ describe("dedup conflict quarantine", () => {
     for (let i = 0; i < 4; i++) {
       const eid = `conflict-${String(i)}`;
       conflicts.push({
+        artifactId: "artifact-1",
         scope: "default",
         agentId: "victim",
         eventId: eid,
@@ -1257,6 +1327,7 @@ describe("dedup conflict quarantine", () => {
         observedAt: i,
       });
       conflicts.push({
+        artifactId: "artifact-1",
         scope: "default",
         agentId: "victim",
         eventId: eid,
@@ -1347,6 +1418,7 @@ describe("tenant isolation via required scope field", () => {
     const eid = "evt-1";
     const observations: UsagePurposeObservation[] = [
       {
+        artifactId: "artifact-1",
         scope: "tenant-A",
         agentId: "a",
         eventId: eid,
@@ -1355,6 +1427,7 @@ describe("tenant isolation via required scope field", () => {
         contextText: "x",
       },
       {
+        artifactId: "artifact-1",
         scope: "tenant-A",
         agentId: "a",
         eventId: eid,
@@ -1363,6 +1436,7 @@ describe("tenant isolation via required scope field", () => {
         contextText: "x",
       },
       {
+        artifactId: "artifact-1",
         scope: "tenant-A",
         agentId: "a",
         eventId: eid,
@@ -1433,6 +1507,7 @@ describe("whitespace-only eventId is treated as missing", () => {
     // Upstream emitter sometimes pads keys; trim makes "foo" and "foo " the
     // same dedup bucket so retries still collapse.
     const make = (eventId: string, observedAt: number): UsagePurposeObservation => ({
+      artifactId: "artifact-1",
       scope: "default",
       agentId: "a1",
       eventId,
@@ -1485,6 +1560,7 @@ describe("eventId contract regressions", () => {
     const observations: UsagePurposeObservation[] = [
       // tenantA — 2 distinct (legitimate) eventIds, plus a colliding-id event.
       {
+        artifactId: "artifact-1",
         scope: "tenantA",
         agentId: "agent-x",
         eventId: "evt-1",
@@ -1493,6 +1569,7 @@ describe("eventId contract regressions", () => {
         contextText: "x",
       },
       {
+        artifactId: "artifact-1",
         scope: "tenantA",
         agentId: "agent-x",
         eventId: "evt-2",
@@ -1501,6 +1578,7 @@ describe("eventId contract regressions", () => {
         contextText: "x",
       },
       {
+        artifactId: "artifact-1",
         scope: "tenantA",
         agentId: "agent-x",
         eventId: collidingId,
@@ -1511,6 +1589,7 @@ describe("eventId contract regressions", () => {
       // tenantB — same agentId AND same colliding eventId. Scope keeps
       // tenantB's evidence independent of tenantA's.
       {
+        artifactId: "artifact-1",
         scope: "tenantB",
         agentId: "agent-x",
         eventId: "evt-1",
@@ -1519,6 +1598,7 @@ describe("eventId contract regressions", () => {
         contextText: "x",
       },
       {
+        artifactId: "artifact-1",
         scope: "tenantB",
         agentId: "agent-x",
         eventId: "evt-2",
@@ -1527,6 +1607,7 @@ describe("eventId contract regressions", () => {
         contextText: "x",
       },
       {
+        artifactId: "artifact-1",
         scope: "tenantB",
         agentId: "agent-x",
         eventId: collidingId,
@@ -1649,6 +1730,7 @@ describe("observation-field validation (relaxed)", () => {
     // path it is supposed to harden.
     const eid = "evt-shared";
     const malformed = {
+      artifactId: "artifact-1",
       scope: "default",
       agentId: "a1",
       eventId: eid,
@@ -1657,6 +1739,7 @@ describe("observation-field validation (relaxed)", () => {
       observedAt: 1,
     } satisfies UsagePurposeObservation;
     const goodTwin: UsagePurposeObservation = {
+      artifactId: "artifact-1",
       scope: "default",
       agentId: "a1",
       eventId: eid,
