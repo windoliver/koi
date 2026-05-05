@@ -129,31 +129,53 @@ producing duplicate downstream actions and outbound replies. Each channel
 
 | Channel | Idempotency key | Notes |
 |---------|-----------------|-------|
-| email | `Message-ID` header (RFC 5322) | Falls back to `sha256(date \| from \| subject \| body)` if header missing or malformed. |
-| teams | `activity.id` (Bot Framework guarantees uniqueness per channel-account-conversation) | Combined with `channelId` to scope across multi-tenant. |
-| whatsapp | `messages[].id` (Meta-issued WAMID) | Per-business-phone, globally unique. |
+| email | `mailbox-host \| account \| Message-ID` | `Message-ID` is RFC 5322 unique only within a sending domain, not globally; scoping to the receiving mailbox+account makes it safe across multi-account deployments. Falls back to `sha256(date \| from \| subject \| body)` only when the header is missing or malformed; the fallback never collides with a header-derived key (different prefix). |
+| teams | `channelId \| tid \| conversation.id \| activity.id` | Bot Framework guarantees `activity.id` uniqueness only within a (channel, account, conversation) tuple. Including all four matches the documented uniqueness domain so two conversations with the same `activity.id` both dispatch. |
+| whatsapp | `phone_number_id \| messages[].id` | WAMIDs are unique per business phone; including the receiving phone scopes correctly across multi-number deployments. |
 
-Each package exposes an `IdempotencyStore` interface with a single **atomic
-claim** operation:
+Each package exposes an `IdempotencyStore` with a **two-phase reservation**
+lifecycle so transient failures don't burn legitimate retries:
 
 ```ts
 interface IdempotencyStore {
-  // Atomically: if key is unseen, persist it with TTL and return true.
-  // If key already exists (within TTL), return false. No separate read.
-  // Implementations MUST guarantee at-most-one true return per key across
-  // concurrent callers (in-memory: lock around Map; durable: SETNX/INSERT
-  // ON CONFLICT DO NOTHING / equivalent CAS).
-  claim(key: string, ttlMs: number): Promise<boolean>;
+  // Atomically reserve the key with a short lease (leaseMs).
+  // - Returns { ok: true, lease } if no live record exists.
+  // - Returns { ok: false, reason: "in-flight" } if another worker currently holds a lease.
+  // - Returns { ok: false, reason: "committed" } if the key was already committed within commitTtlMs.
+  // CAS-based; at most one caller observes ok:true per (key, generation).
+  tryBegin(key: string, leaseMs: number): Promise<TryBeginResult>;
+
+  // Promote a held lease to a committed record retained for commitTtlMs.
+  commit(lease: Lease, commitTtlMs: number): Promise<void>;
+
+  // Release a held lease so the next provider retry can re-attempt.
+  // Used on transient failure after auth/normalize/onMessage throws.
+  abort(lease: Lease): Promise<void>;
+
+  // Optional: extend a lease for long-running handler dispatch.
+  renew(lease: Lease, leaseMs: number): Promise<void>;
 }
 ```
 
-The default in-memory `LruIdempotencyStore` (size 10_000, TTL 24h) uses a
-synchronous Map insert under a single async-context boundary — safe within one
-worker. Production multi-worker deployments inject a durable store backed by a
-CAS primitive. The claim happens *after* auth/signature verification and
-*before* normalization; only `claim() === true` proceeds to handler dispatch.
-Tests cover concurrent `claim()` calls with the same key asserting exactly one
-returns true.
+Inbound flow: `auth/verify` → `tryBegin(key, 30s)` →
+- `committed`: silently drop (true duplicate).
+- `in-flight`: return 429 / NACK so the provider retries after the other worker finishes.
+- `ok`: `normalize()` → `onMessage(handler)` → on success `commit(lease, 24h)`; on any thrown error or non-2xx response, `abort(lease)` so the provider's retry can re-claim.
+
+`commitTtlMs` defaults to 24h; the lease TTL covers only the synchronous
+processing window. Tests cover: concurrent `tryBegin` (exactly one `ok`),
+transient handler failure (`abort` releases key, retry succeeds), commit
+(retry after commit is a true no-op duplicate).
+
+**Default store**: `InMemoryIdempotencyStore` — a single-worker store backed by
+two Maps (live leases + committed keys). It is **fail-closed** at a configured
+capacity (`maxCommittedRecords`, default 100_000): when full, `tryBegin` returns
+`{ ok: false, reason: "capacity-exhausted" }` and the channel responds non-2xx
+so the provider retries later (operator alert + scale durable store). It does
+**not** evict committed records via LRU — silent eviction would silently restore
+duplicate-delivery hazards. Multi-worker deployments must inject a durable
+CAS-backed store; this is documented in the package README and verified by an
+integration test asserting capacity-exhausted is observable.
 
 Outbound retry is the caller's concern: `send()` is idempotent at the platform
 level only when the platform supports it (WhatsApp `messaging_product`/`to`+
@@ -180,7 +202,7 @@ Per CLAUDE.md Doc → Tests → Code, every behavior gets a failing test before 
 - `threading.test.ts` (email only) — chain extension and root resolution.
 - `verify-jwt.test.ts` (teams) — valid/invalid/expired tokens, audience mismatch, tenant not allowed, service-URL not allowed, issuer mismatch, clock skew bounds.
 - `verify-signature.test.ts` (whatsapp) — HMAC pass/fail, missing header, body-mutation rejection.
-- `idempotency.test.ts` (each channel) — first delivery emits `onMessage`; retried delivery with same key is silently dropped; key extraction handles missing/malformed headers; eviction after TTL allows re-delivery.
+- `idempotency.test.ts` (each channel) — first delivery emits `onMessage` and commits; retried delivery with the same key after commit is silently dropped; key extraction handles missing/malformed identifiers; expiry of a committed record after `commitTtlMs` allows re-delivery; concurrent `tryBegin` resolves with exactly one `ok:true`; transient handler failure aborts the lease and the provider retry succeeds; capacity exhaustion returns `capacity-exhausted` and surfaces non-2xx.
 
 ### Integration (`__tests__/integration.test.ts`)
 
@@ -190,7 +212,10 @@ Adversarial scenarios (also integration-level):
 - **Email**: IMAP reconnect re-delivers same UID — handler called once. Process-restart simulation: rebuild channel with same durable `ThreadStore`, send reply, assert `In-Reply-To` matches inbound `Message-ID`.
 - **Teams**: token with wrong `aud` rejected with `AUDIENCE_MISMATCH`; activity with `serviceUrl` outside allowlist rejected with `SERVICE_URL_NOT_ALLOWED` (no outbound bearer leak); duplicate `activity.id` only emits once.
 - **WhatsApp**: webhook retry with same `messages[].id` only emits once (replay protection comes from durable WAMID dedupe — no signature timestamp is available).
-- **All channels**: concurrent duplicate deliveries — fire two parallel webhook POSTs with the same idempotency key and assert `onMessage` is invoked exactly once, proving the atomic `claim()` contract.
+- **All channels**: concurrent duplicate deliveries — fire two parallel webhook POSTs with the same idempotency key and assert `onMessage` is invoked exactly once, proving the atomic `tryBegin` contract.
+- **All channels**: transient handler failure — handler throws on first delivery; `abort(lease)` is called; re-deliver same payload, assert `onMessage` is invoked exactly once *successfully* (no message loss).
+- **All channels**: capacity exhaustion — fill `InMemoryIdempotencyStore` to `maxCommittedRecords`, assert next `tryBegin` returns `capacity-exhausted` and channel returns non-2xx (no silent eviction of committed records).
+- **Teams**: two messages with identical `activity.id` but different `conversation.id` — both dispatch (proves dedupe key includes full uniqueness domain).
 
 ### Coverage gate
 
