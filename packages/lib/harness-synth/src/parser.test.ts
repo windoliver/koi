@@ -204,6 +204,15 @@ describe("parseSynthesisOutput", () => {
     expect(elapsed).toBeLessThan(1000);
   });
 
+  test('recovers when prose has a quoted brace `"{"` before real payload', () => {
+    const real = rawWith(VALID_DESCRIPTOR, "x();");
+    const wrapped = `Example: "{" then the real answer:\n${real}`;
+    const result = parseSynthesisOutput(wrapped, "echo_tool");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.code).toBe("x();");
+  });
+
   test("recovers when prose has a stray unmatched double quote before payload", () => {
     const real = rawWith(VALID_DESCRIPTOR, "x();");
     const wrapped = `Here is the "answer:\n${real}`;

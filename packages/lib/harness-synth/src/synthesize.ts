@@ -31,8 +31,16 @@ export async function synthesize(
   config: SynthesisInitConfig,
 ): Promise<SynthesisResult> {
   const requestedAttempts = config.maxAttempts ?? DEFAULT_SYNTHESIS_CONFIG.maxAttempts;
-  if (requestedAttempts < 1) {
-    return { ok: false, reason: "maxAttempts must be >= 1", attempts: 0 };
+  // Reject Infinity, NaN, fractional values, and < 1. Without this an
+  // Infinity cap would let a persistent parse/verify failure drive
+  // unlimited LLM calls, and a NaN cap would silently skip the loop and
+  // return attempts:NaN — both violate the documented hard-cap contract.
+  if (!Number.isInteger(requestedAttempts) || requestedAttempts < 1) {
+    return {
+      ok: false,
+      reason: "maxAttempts must be a positive integer",
+      attempts: 0,
+    };
   }
   const clock = config.clock ?? DEFAULT_SYNTHESIS_CONFIG.clock;
   // adapterHonorsAbort is intentionally REQUIRED — callers must consciously

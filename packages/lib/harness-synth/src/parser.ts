@@ -90,13 +90,33 @@ function findParseableJsonObject(
   let escaped = false;
   for (let i = 0; i < raw.length; i += 1) {
     const ch = raw[i];
-    // Quote tracking only matters INSIDE a candidate JSON object — outside
-    // any `{`, double quotes are just prose. Treating them as JSON-string
-    // delimiters in arbitrary prose let an unmatched `"` swallow the rest
-    // of the response and discard a valid payload that followed.
+    // Outside any candidate JSON object, track quotes so a quoted `{`
+    // (e.g. prose `Example: "{"`) is not misread as a JSON span start —
+    // but reset the quote state on any literal newline. JSON forbids
+    // unescaped newlines inside strings, so a `\n` in the input cannot
+    // be part of a real JSON string; treating it as a quote-state reset
+    // bounds the damage from an unmatched `"` in prose to a single
+    // line, instead of swallowing the rest of the response.
     if (opens.length === 0) {
-      inString = false;
-      escaped = false;
+      if (ch === "\n") {
+        inString = false;
+        escaped = false;
+        continue;
+      }
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === "\\") {
+          escaped = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
       if (ch === "{") opens.push(i);
       // Stray `}` in prose at top-level: ignore.
       continue;

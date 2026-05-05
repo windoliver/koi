@@ -98,6 +98,43 @@ describe("synthesize", () => {
     expect(result.reason).toBe("still wrong");
   });
 
+  test("rejects Infinity maxAttempts (no unbounded loop)", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => "garbage",
+      verify: ALWAYS_OK,
+      maxAttempts: Number.POSITIVE_INFINITY,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/maxAttempts/);
+    expect(result.attempts).toBe(0);
+  });
+
+  test("rejects NaN maxAttempts", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify: ALWAYS_OK,
+      maxAttempts: Number.NaN,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/maxAttempts/);
+  });
+
+  test("rejects fractional maxAttempts", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify: ALWAYS_OK,
+      maxAttempts: 2.5,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/maxAttempts/);
+  });
+
   test("rejects maxAttempts < 1", async () => {
     const result = await synthesize(INPUT, {
       generate: async () => "",
