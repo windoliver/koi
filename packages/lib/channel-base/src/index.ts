@@ -20,6 +20,15 @@ export type {
   TryBeginResult,
 } from "./idempotency-store.js";
 export { InMemoryIdempotencyStore } from "./idempotency-store.js";
+export type {
+  ClaimedItem,
+  DeadLetterItem,
+  EnqueueResult,
+  IngressQueue,
+  InMemoryIngressQueueOptions,
+  QueueItem,
+} from "./ingress-queue.js";
+export { InMemoryIngressQueue } from "./ingress-queue.js";
 export type { RateLimiter, RateLimiterConfig, SendFn } from "./rate-limit.js";
 export { createRateLimiter } from "./rate-limit.js";
 export { renderBlocks } from "./render-blocks.js";
