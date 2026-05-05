@@ -36,15 +36,21 @@ export interface ExaptationThresholds {
  * Replay protection is a **per-observation data contract**, not a config knob.
  *
  * The detector marks a window `replayProtected: true` when every valid
- * observation carries a non-empty string `eventId` (e.g. an upstream
- * correlation ID, idempotency key, or monotonic sequence number) — and uses
- * that ID, scoped per-agent, as the dedup key. If even one observation lacks
- * `eventId`, the window is `replayProtected: false`, no dedup runs, and
- * `suggestAction` refuses to recommend `reclassify` or `new-artifact`.
+ * observation carries a non-empty string `eventId` — a deterministic
+ * idempotency key derived from stable per-call identity (NOT a request-level
+ * correlation ID, NOT an upstream causal event ID shared across agents,
+ * NOT a freshly-minted nonce). See the L0 `UsagePurposeObservation.eventId`
+ * docstring for the full contract; the requirement is identical here.
  *
- * No honor-system boolean. No caller-supplied key function whose stability
- * the detector can't verify. The presence of `eventId` on every sample is
- * the contract, and `isObservationValid` validates it.
+ * Dedup namespace is `(scope, agentId, eventId)`. The optional `scope`
+ * field on the observation provides explicit tenant/account isolation —
+ * without it, two tenants reusing the same `agentId` and `eventId` strings
+ * would collapse one tenant's evidence into the other.
+ *
+ * If even one valid observation lacks `eventId` the window is
+ * `replayProtected: false`, no dedup runs, and `suggestAction` refuses to
+ * recommend `reclassify` or `new-artifact`. The contract is enforced by
+ * `isObservationValid` at runtime.
  */
 
 /** Sensible defaults — conservative to minimize false positives. */
@@ -383,11 +389,12 @@ function isObservationValid(o: UsagePurposeObservation): boolean {
  *     same upstream causal event, and independent observations from
  *     different tenants all generate DIFFERENT `eventId`s and survive.
  *
- * Per-agent scope (vs global) is what protects against accidental
- * cross-tenant `eventId` collisions: if `agentId` already isolates tenants
- * (a typical assumption since agentIds tend to be tenant-prefixed), two
- * tenants that happen to produce the same `eventId` string still get their
- * own dedup buckets and survive as independent evidence.
+ * Tenant isolation is explicit via the optional `scope` field on each
+ * observation (see L0 `UsagePurposeObservation.scope`). Two tenants that
+ * happen to reuse the same `agentId` and `eventId` keep their evidence
+ * independent because their dedup buckets are keyed by the full
+ * `(scope, agentId, eventId)` triple. Whitespace-only / missing scope
+ * normalizes to a single implicit namespace (single-tenant deployments).
  *
  * Conflict resolution is deterministic, content-based — NOT first-write-wins:
  *   1. highest `divergenceScore`        — score conflict resolution
@@ -397,25 +404,32 @@ function isObservationValid(o: UsagePurposeObservation): boolean {
 function dedupePerAgentByEventId(
   observations: readonly UsagePurposeObservation[],
 ): readonly UsagePurposeObservation[] {
-  const winners = new Map<string, Map<string, UsagePurposeObservation>>();
+  // Outer key: scope || implicit. Inner key: agentId. Innermost: eventId.
+  const winners = new Map<string, Map<string, Map<string, UsagePurposeObservation>>>();
   for (const o of observations) {
     if (typeof o.eventId !== "string") continue;
-    // Use trimmed eventId as the dedup key so upstream that varies
-    // surrounding whitespace ("foo " vs "foo") still collapses retries.
     const eventId = o.eventId.trim();
     if (eventId.length === 0) continue;
-    let bucket = winners.get(o.agentId);
-    if (bucket === undefined) {
-      bucket = new Map<string, UsagePurposeObservation>();
-      winners.set(o.agentId, bucket);
+    const scopeKey = typeof o.scope === "string" && o.scope.trim().length > 0 ? o.scope.trim() : "";
+    let scopeBucket = winners.get(scopeKey);
+    if (scopeBucket === undefined) {
+      scopeBucket = new Map<string, Map<string, UsagePurposeObservation>>();
+      winners.set(scopeKey, scopeBucket);
     }
-    const incumbent = bucket.get(eventId);
+    let agentBucket = scopeBucket.get(o.agentId);
+    if (agentBucket === undefined) {
+      agentBucket = new Map<string, UsagePurposeObservation>();
+      scopeBucket.set(o.agentId, agentBucket);
+    }
+    const incumbent = agentBucket.get(eventId);
     if (incumbent === undefined || prefersChallenger(incumbent, o)) {
-      bucket.set(eventId, o);
+      agentBucket.set(eventId, o);
     }
   }
   const out: UsagePurposeObservation[] = [];
-  for (const bucket of winners.values()) for (const o of bucket.values()) out.push(o);
+  for (const scopeBucket of winners.values())
+    for (const agentBucket of scopeBucket.values())
+      for (const o of agentBucket.values()) out.push(o);
   return out;
 }
 
@@ -465,21 +479,30 @@ function computeDivergentCohort(
   const divergentCounts = new Map<string, number>();
   for (const o of observations) {
     if (o.divergenceScore < thresholds.divergenceThreshold) continue;
-    divergentSums.set(o.agentId, (divergentSums.get(o.agentId) ?? 0) + o.divergenceScore);
-    divergentCounts.set(o.agentId, (divergentCounts.get(o.agentId) ?? 0) + 1);
+    // Scoped agent key: same agentId in different tenants counts as
+    // distinct agents, mirroring dedup's tenant isolation.
+    const key = scopedAgentKey(o);
+    divergentSums.set(key, (divergentSums.get(key) ?? 0) + o.divergenceScore);
+    divergentCounts.set(key, (divergentCounts.get(key) ?? 0) + 1);
   }
 
   // let: cohort accumulators
   let agentCount = 0;
   let observationCount = 0;
   let totalDivergence = 0;
-  for (const [agentId, count] of divergentCounts) {
+  for (const [key, count] of divergentCounts) {
     if (count < thresholds.minObservationsPerAgent) continue;
     agentCount++;
     observationCount += count;
-    totalDivergence += divergentSums.get(agentId) ?? 0;
+    totalDivergence += divergentSums.get(key) ?? 0;
   }
   return { agentCount, observationCount, totalDivergence };
+}
+
+function scopedAgentKey(o: UsagePurposeObservation): string {
+  const scope = typeof o.scope === "string" && o.scope.trim().length > 0 ? o.scope.trim() : "";
+  // Length-prefixed encoding so "a|b" + "c" never collides with "a" + "b|c".
+  return `${String(scope.length)}:${scope}|${o.agentId}`;
 }
 
 function computeSeverity(

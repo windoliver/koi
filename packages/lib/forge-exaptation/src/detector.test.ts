@@ -610,6 +610,115 @@ describe("deterministic dedup conflict resolution", () => {
   });
 });
 
+describe("tenant scope isolation", () => {
+  test("same (agentId, eventId) across distinct tenant scopes does NOT collapse", () => {
+    // Two tenants happen to reuse identical agentId AND eventId strings.
+    // Without explicit scope isolation, one tenant's evidence would have
+    // disappeared into the other's dedup bucket.
+    const sharedEid = "evt-shared";
+    const sharedAgent = "agent-shared";
+    const observations: UsagePurposeObservation[] = [
+      // tenant-A — 3 observations
+      {
+        agentId: sharedAgent,
+        scope: "tenant-A",
+        eventId: sharedEid,
+        divergenceScore: 0.95,
+        observedAt: 1,
+        contextText: "x",
+      },
+      {
+        agentId: sharedAgent,
+        scope: "tenant-A",
+        eventId: "evt-a-2",
+        divergenceScore: 0.95,
+        observedAt: 2,
+        contextText: "x",
+      },
+      {
+        agentId: sharedAgent,
+        scope: "tenant-A",
+        eventId: "evt-a-3",
+        divergenceScore: 0.95,
+        observedAt: 3,
+        contextText: "x",
+      },
+      // tenant-B — 3 observations sharing eventId+agentId with tenant-A
+      {
+        agentId: sharedAgent,
+        scope: "tenant-B",
+        eventId: sharedEid,
+        divergenceScore: 0.95,
+        observedAt: 4,
+        contextText: "x",
+      },
+      {
+        agentId: sharedAgent,
+        scope: "tenant-B",
+        eventId: "evt-b-2",
+        divergenceScore: 0.95,
+        observedAt: 5,
+        contextText: "x",
+      },
+      {
+        agentId: sharedAgent,
+        scope: "tenant-B",
+        eventId: "evt-b-3",
+        divergenceScore: 0.95,
+        observedAt: 6,
+        contextText: "x",
+      },
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    // Both tenants survive as 3 obs each, even with identical sharedEid in
+    // both. With explicit scope isolation, neither evidence pool is erased.
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      expect(result.report.observationCount).toBe(6);
+      expect(result.report.divergentAgents).toBe(2);
+    }
+  });
+
+  test("retries within one scope still collapse (replay protection still works)", () => {
+    const eid = "evt-1";
+    const observations: UsagePurposeObservation[] = [
+      {
+        agentId: "a",
+        scope: "tenant-A",
+        eventId: eid,
+        divergenceScore: 0.95,
+        observedAt: 1,
+        contextText: "x",
+      },
+      {
+        agentId: "a",
+        scope: "tenant-A",
+        eventId: eid,
+        divergenceScore: 0.95,
+        observedAt: 2,
+        contextText: "x",
+      },
+      {
+        agentId: "a",
+        scope: "tenant-A",
+        eventId: eid,
+        divergenceScore: 0.95,
+        observedAt: 3,
+        contextText: "x",
+      },
+      ...[0.95, 0.95, 0.95].map((s) => obs("b", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("c", s)),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      // a collapses 3 → 1 (fails minObsPerAgent so excluded). b + c contribute.
+      expect(result.report.observationCount).toBe(6);
+      expect(result.duplicateCount).toBe(2);
+    }
+  });
+});
+
 describe("agentId normalization", () => {
   test("whitespace-only agentId is dropped (cannot fake multi-agent diversity)", () => {
     const observations: UsagePurposeObservation[] = [
