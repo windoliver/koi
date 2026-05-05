@@ -47,7 +47,7 @@ via `SpawnFn` so tests inject a fake without touching the real binary.
 | `account` | `string` (E.164) | required | Bot's registered phone number |
 | `signalCliPath` | `string?` | `"signal-cli"` | Path to the signal-cli binary |
 | `configPath` | `string?` | undefined | `--config` arg for signal-cli |
-| `spawn` | `SpawnFn?` | Bun.spawn-based default | Test-only injected spawn |
+| `spawn` | `SpawnFn?` | `defaultSignalSpawn` (Bun.spawn-backed) | Override only for tests / non-Bun runtimes |
 
 ### Capabilities
 

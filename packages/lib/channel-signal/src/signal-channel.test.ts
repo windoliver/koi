@@ -47,12 +47,11 @@ describe("@koi/channel-signal createSignalChannel", () => {
     ).toThrow(/E.164/);
   });
 
-  test("requires spawn injection (no implicit default)", () => {
-    expect(() =>
-      createSignalChannel({ account: "+15551234567" } as unknown as Parameters<
-        typeof createSignalChannel
-      >[0]),
-    ).toThrow(/spawn is required/);
+  test("falls back to defaultSignalSpawn when config.spawn is omitted", () => {
+    // Default uses Bun.spawn — we don't actually call connect() here, so no
+    // signal-cli binary is required. This just asserts construction works.
+    const adapter = createSignalChannel({ account: "+15551234567" });
+    expect(adapter.name).toBe("signal");
   });
 
   test("connect drives signal-cli subprocess with the configured account", async () => {

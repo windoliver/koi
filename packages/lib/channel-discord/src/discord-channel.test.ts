@@ -203,6 +203,116 @@ describe("@koi/channel-discord createDiscordChannel", () => {
   });
 });
 
+describe("createDiscordChannel — interaction reply path", () => {
+  test("first reply on interaction:<id>:<channelId> threadId routes through editReply", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    await adapter.connect();
+    const edits: DiscordSendPayload[] = [];
+    f.emit("interactionCreate", {
+      id: "i100",
+      isChatInputCommand: () => true,
+      isButton: () => false,
+      commandName: "say",
+      options: { data: [] },
+      user: { id: "U1" },
+      channelId: "C1",
+      guildId: "G1",
+      createdTimestamp: 1,
+      deferReply: async () => undefined,
+      editReply: async (p: DiscordSendPayload) => {
+        edits.push(p);
+        return undefined;
+      },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    await adapter.send({
+      content: [{ kind: "text", text: "answer" }],
+      threadId: "interaction:i100:C1",
+    });
+    expect(edits).toHaveLength(1);
+    expect(edits[0]?.content).toBe("answer");
+    // The channel.send path should NOT have been called for the first payload.
+    expect(f.sent).toHaveLength(0);
+    await adapter.disconnect();
+  });
+
+  test("second reply on the same interaction threadId falls back to channel.send", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    await adapter.connect();
+    f.emit("interactionCreate", {
+      id: "i101",
+      isChatInputCommand: () => true,
+      isButton: () => false,
+      commandName: "say",
+      options: { data: [] },
+      user: { id: "U1" },
+      channelId: "C1",
+      guildId: "G1",
+      createdTimestamp: 1,
+      deferReply: async () => undefined,
+      editReply: async () => undefined,
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    await adapter.send({
+      content: [{ kind: "text", text: "first" }],
+      threadId: "interaction:i101:C1",
+    });
+    await adapter.send({
+      content: [{ kind: "text", text: "second" }],
+      threadId: "interaction:i101:C1",
+    });
+    expect(f.sent).toHaveLength(1);
+    expect(f.sent[0]?.payload.content).toBe("second");
+    await adapter.disconnect();
+  });
+
+  test("interaction overflow (>1 payload) edits first and channel.sends the rest", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    await adapter.connect();
+    const edits: DiscordSendPayload[] = [];
+    f.emit("interactionCreate", {
+      id: "i102",
+      isChatInputCommand: () => true,
+      isButton: () => false,
+      commandName: "say",
+      options: { data: [] },
+      user: { id: "U1" },
+      channelId: "C1",
+      guildId: "G1",
+      createdTimestamp: 1,
+      deferReply: async () => undefined,
+      editReply: async (p: DiscordSendPayload) => {
+        edits.push(p);
+        return undefined;
+      },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    const big = "x".repeat(4500);
+    await adapter.send({
+      content: [{ kind: "text", text: big }],
+      threadId: "interaction:i102:C1",
+    });
+    expect(edits).toHaveLength(1);
+    expect(f.sent.length).toBeGreaterThanOrEqual(2);
+    await adapter.disconnect();
+  });
+
+  test("unknown interaction id falls back to channel.send", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    await adapter.connect();
+    await adapter.send({
+      content: [{ kind: "text", text: "x" }],
+      threadId: "interaction:unknown-id:C1",
+    });
+    expect(f.sent).toHaveLength(1);
+    await adapter.disconnect();
+  });
+});
+
 describe("createDiscordChannel — interaction ack", () => {
   test("slash command triggers deferReply on the raw interaction", async () => {
     const f = fakeClient();

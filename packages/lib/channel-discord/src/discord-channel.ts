@@ -93,6 +93,15 @@ const TEXT_LIMIT = 2000;
 const MAX_EMBEDS = 10;
 const MAX_ACTION_ROWS = 5;
 
+/** Discord interaction tokens are valid for 15 minutes after creation. */
+const INTERACTION_TTL_MS = 15 * 60 * 1000;
+
+/** Internal: subset of a discord.js interaction we route replies through. */
+interface InteractionResponseLike {
+  editReply(payload: DiscordSendPayload): Promise<unknown>;
+  followUp?(payload: DiscordSendPayload): Promise<unknown>;
+}
+
 export function createDiscordChannel(config: DiscordChannelConfig): DiscordChannelAdapter {
   // let requires justification: client is created lazily inside platformConnect
   // because instantiating the real discord.js Client opens cache structures we
@@ -100,6 +109,14 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
   let client: DiscordClientLike | undefined = config.client;
   // let requires justification: bot user id resolved after login; used by normalizer
   let botUserId: string | undefined;
+  // let requires justification: maps interaction id → live discord.js Interaction
+  // so the first send() to threadId "interaction:<id>:<channelId>" routes
+  // through editReply/followUp on the correct interaction handle. Entries are
+  // dropped after first edit, on disconnect, or after INTERACTION_TTL_MS.
+  const pendingInteractions = new Map<
+    string,
+    { readonly interaction: InteractionResponseLike; readonly expiresAt: number }
+  >();
 
   const getClient = (): DiscordClientLike => {
     if (client === undefined) {
@@ -128,10 +145,11 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
       await client.destroy();
       client = undefined;
       botUserId = undefined;
+      pendingInteractions.clear();
     },
 
     platformSend: async (message: OutboundMessage): Promise<void> => {
-      await sendOutbound(getClient(), message);
+      await sendOutbound(getClient(), pendingInteractions, message);
     },
 
     onPlatformEvent: (handler): (() => void) => {
@@ -146,6 +164,14 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
         // show "This interaction failed" while the agent works. Fire-and-forget;
         // ack errors are non-fatal (e.g., already-acked).
         ackInteraction(raw);
+        // Stash the interaction handle so the first outbound reply on its
+        // threadId can route through editReply rather than channel.send.
+        if (isPlainObject(raw) && typeof raw.id === "string" && isInteractionResponseLike(raw)) {
+          pendingInteractions.set(raw.id, {
+            interaction: raw,
+            expiresAt: Date.now() + INTERACTION_TTL_MS,
+          });
+        }
         const ev = toInteractionEvent(raw);
         if (ev !== null) handler(ev);
       };
@@ -197,26 +223,77 @@ export function splitText(text: string, limit: number): readonly string[] {
   return out;
 }
 
-async function sendOutbound(client: DiscordClientLike, message: OutboundMessage): Promise<void> {
+async function sendOutbound(
+  client: DiscordClientLike,
+  pendingInteractions: Map<
+    string,
+    { readonly interaction: InteractionResponseLike; readonly expiresAt: number }
+  >,
+  message: OutboundMessage,
+): Promise<void> {
   if (message.threadId === undefined) {
     throw new Error("[channel-discord] OutboundMessage.threadId is required");
   }
+  const payloads = buildPayloads(message.content);
+
+  // Interaction-response path: when the inbound threadId is
+  // "interaction:<id>:<channelId>", the first payload edits the deferred
+  // reply on the original interaction (so the slash-command's "thinking..."
+  // state resolves cleanly). Overflow payloads spill into the channel.
+  const interactionId = parseInteractionIdFromThreadId(message.threadId);
+  if (interactionId !== undefined) {
+    const entry = pendingInteractions.get(interactionId);
+    if (entry !== undefined && entry.expiresAt > Date.now() && payloads.length > 0) {
+      pendingInteractions.delete(interactionId);
+      const first = payloads[0];
+      if (first !== undefined) await entry.interaction.editReply(first);
+      const channelIdFallback = parseChannelIdFromThreadId(message.threadId);
+      const channel = client.channels.cache.get(channelIdFallback);
+      for (let i = 1; i < payloads.length; i++) {
+        const p = payloads[i];
+        if (p !== undefined && channel !== undefined) {
+          await channel.send(p);
+        }
+      }
+      return;
+    }
+    // Interaction expired/missing — fall through to channel.send
+  }
+
   const channelId = parseChannelIdFromThreadId(message.threadId);
   const channel = client.channels.cache.get(channelId);
   if (channel === undefined) {
     throw new Error(`[channel-discord] channel not found for threadId "${message.threadId}"`);
   }
-  const payloads = buildPayloads(message.content);
   for (const payload of payloads) {
     await channel.send(payload);
   }
 }
 
 function parseChannelIdFromThreadId(threadId: string): string {
+  // "interaction:<id>:<channelId>" → <channelId>
+  if (threadId.startsWith("interaction:")) {
+    const rest = threadId.slice("interaction:".length);
+    const idx = rest.indexOf(":");
+    return idx < 0 ? rest : rest.slice(idx + 1);
+  }
   const parts = threadId.split(":");
   // "guildId:channelId" → channelId; "dm:channelId" → channelId. Both forms
   // resolve through `client.channels.cache` keyed on channelId.
   return parts.length >= 2 ? (parts[1] ?? threadId) : threadId;
+}
+
+function parseInteractionIdFromThreadId(threadId: string): string | undefined {
+  if (!threadId.startsWith("interaction:")) return undefined;
+  const rest = threadId.slice("interaction:".length);
+  const idx = rest.indexOf(":");
+  return idx < 0 ? rest : rest.slice(0, idx);
+}
+
+function isInteractionResponseLike(
+  raw: Record<string, unknown>,
+): raw is Record<string, unknown> & InteractionResponseLike {
+  return typeof raw.editReply === "function";
 }
 
 function buildPayloads(

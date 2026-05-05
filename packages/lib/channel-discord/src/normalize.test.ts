@@ -77,7 +77,7 @@ describe("@koi/channel-discord normalize", () => {
     const n = createNormalizer(() => BOT);
     const out = n({ kind: "slash_command", command: cmd });
     expect(out?.senderId).toBe("u2");
-    expect(out?.threadId).toBe("G1:C1");
+    expect(out?.threadId).toBe("interaction:i1:C1");
     expect(out?.content[0]).toEqual({
       kind: "custom",
       type: "discord:slash_command",
@@ -97,6 +97,7 @@ describe("@koi/channel-discord normalize", () => {
     };
     const n = createNormalizer(() => BOT);
     const out = n({ kind: "button", button: btn });
+    expect(out?.threadId).toBe("interaction:b1:C2");
     expect(out?.content[0]).toEqual({
       kind: "button",
       label: "confirm",
@@ -117,7 +118,7 @@ describe("@koi/channel-discord normalize", () => {
     };
     const n = createNormalizer(() => BOT);
     const out = n({ kind: "button", button: btn });
-    expect(out?.threadId).toBe("dm:C2");
+    expect(out?.threadId).toBe("interaction:b2:C2");
     expect(out?.content[0]).toEqual({ kind: "button", label: "cancel", action: "cancel" });
   });
 });

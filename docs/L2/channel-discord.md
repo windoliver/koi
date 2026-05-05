@@ -71,6 +71,14 @@ Returns the standard `ChannelAdapter` plus:
 | Guild text channel | `"<guildId>:<channelId>"` |
 | Guild thread | `"<guildId>:<threadId>"` |
 | DM | `"dm:<channelId>"` (the DMChannel's id, not the user id — discord.js caches channels by channel id) |
+| Slash command / button interaction | `"interaction:<interactionId>:<channelId>"` |
+
+Inbound slash commands and button presses encode the live interaction id
+into the threadId. The first outbound reply on that threadId is routed
+through `interaction.editReply()` to complete the deferred response (so the
+slash-command's "thinking..." spinner resolves correctly). The trailing
+`channelId` segment is the fallback used for overflow payloads, expired
+tokens (>15 min), or any subsequent send on the same threadId.
 
 Outbound `send()` parses `threadId`, looks up the channel via
 `client.channels.cache`, and calls `.send()` on it. Unknown thread IDs throw.

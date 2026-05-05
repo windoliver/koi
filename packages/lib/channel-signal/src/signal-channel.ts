@@ -13,9 +13,38 @@ export interface SignalChannelConfig {
   readonly account: string;
   readonly signalCliPath?: string;
   readonly configPath?: string;
-  /** Test-only: injected spawn function. Required when no real binary is available. */
+  /**
+   * Subprocess launcher. Defaults to a `Bun.spawn`-backed implementation.
+   * Tests inject a fake to avoid touching the real signal-cli binary.
+   */
   readonly spawn?: SpawnFn;
 }
+
+/**
+ * Default `SpawnFn` backed by `Bun.spawn`. Wires the subprocess's stdout,
+ * stdin (writable FileSink), exited promise, and kill into the
+ * `SignalChildProcess` shape the manager expects.
+ */
+export const defaultSignalSpawn: SpawnFn = (cmd) => {
+  const proc = Bun.spawn([...cmd], { stdin: "pipe", stdout: "pipe" });
+  const stdin = proc.stdin;
+  if (stdin === undefined) {
+    throw new Error("[channel-signal] Bun.spawn produced no stdin handle");
+  }
+  return {
+    stdout: proc.stdout,
+    stdin: {
+      write: (data: Uint8Array): void => {
+        stdin.write(data);
+        stdin.flush();
+      },
+    },
+    exited: proc.exited,
+    kill: (signal?: number): void => {
+      proc.kill(signal);
+    },
+  };
+};
 
 const SIGNAL_CAPABILITIES: ChannelCapabilities = {
   text: true,
@@ -36,17 +65,11 @@ export function createSignalChannel(config: SignalChannelConfig): ChannelAdapter
       `[channel-signal] account must be an E.164 phone number, got "${config.account}"`,
     );
   }
-  if (config.spawn === undefined) {
-    throw new Error(
-      "[channel-signal] config.spawn is required — pass Bun.spawn-based factory or a test fake",
-    );
-  }
-
   const proc: SignalProcess = createSignalProcess(
     config.account,
     config.signalCliPath ?? "signal-cli",
     config.configPath,
-    config.spawn,
+    config.spawn ?? defaultSignalSpawn,
   );
   const normalize = createNormalizer();
 

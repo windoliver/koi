@@ -5,7 +5,12 @@
 export { isE164, normalizeE164 } from "./e164.js";
 export { createNormalizer, GROUP_THREAD_PREFIX } from "./normalize.js";
 export type { SignalChannelConfig } from "./signal-channel.js";
-export { blocksToText, createSignalChannel, splitText } from "./signal-channel.js";
+export {
+  blocksToText,
+  createSignalChannel,
+  defaultSignalSpawn,
+  splitText,
+} from "./signal-channel.js";
 export type {
   SignalAttachment,
   SignalChildProcess,

@@ -118,7 +118,10 @@ function normalizeSlashCommand(cmd: DiscordSlashCommandLike): InboundMessage {
   return {
     content: [block],
     senderId: cmd.userId,
-    threadId: resolveThreadIdFromIds(cmd.guildId, cmd.channelId, cmd.userId),
+    // "interaction:<id>:<channelId>" so the first outbound reply edits the
+    // deferred interaction; the channelId suffix is the fallback for spillover
+    // payloads or expired tokens.
+    threadId: `interaction:${cmd.id}:${cmd.channelId}`,
     timestamp: cmd.createdTimestamp,
   };
 }
@@ -135,7 +138,8 @@ function normalizeButton(btn: DiscordButtonInteractionLike): InboundMessage {
   return {
     content: [block],
     senderId: btn.userId,
-    threadId: resolveThreadIdFromIds(btn.guildId, btn.channelId, btn.userId),
+    // Same convention as slash commands — see normalizeSlashCommand.
+    threadId: `interaction:${btn.id}:${btn.channelId}`,
     timestamp: btn.createdTimestamp,
   };
 }

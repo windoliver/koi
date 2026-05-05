@@ -134,11 +134,14 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
     capabilities: TELEGRAM_CAPABILITIES,
 
     platformConnect: async (): Promise<void> => {
+      // Only instantiate the bot here. grammY's `start()` is the long-poll
+      // loop and never resolves until `stop()` is called — awaiting it would
+      // hang `connect()` forever and block listener registration.
+      // Polling is kicked off from `onPlatformEvent` after the listener is
+      // attached, so no updates are dropped between registration and first
+      // poll.
       if (bot === undefined) {
         bot = await instantiateBot(config.token);
-      }
-      if (deployment.mode === "polling") {
-        await bot.start();
       }
     },
 
@@ -161,7 +164,15 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
       };
       updateHandler = dispatch;
       if (deployment.mode === "polling") {
-        return requireBot().on("update", dispatch);
+        const b = requireBot();
+        const unsub = b.on("update", dispatch);
+        // Attach the listener BEFORE polling starts so no update arrives
+        // before there's a handler to receive it. Then drive the long-poll
+        // loop in the background; surface fatal errors via onHandlerError.
+        void b.start().catch((err: unknown) => {
+          config.onHandlerError?.(err, { phase: "polling" });
+        });
+        return unsub;
       }
       return (): void => {
         updateHandler = undefined;
