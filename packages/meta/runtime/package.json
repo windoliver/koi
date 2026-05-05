@@ -40,6 +40,7 @@
     "@koi/execution-context": "workspace:*",
     "@koi/file-type": "workspace:*",
     "@koi/forge-demand": "workspace:*",
+    "@koi/forge-optimizer": "workspace:*",
     "@koi/forge-policy": "workspace:*",
     "@koi/forge-tools": "workspace:*",
     "@koi/gateway-canvas": "workspace:*",

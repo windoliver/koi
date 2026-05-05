@@ -55,6 +55,7 @@
     { "path": "../../lib/url-safety" },
     { "path": "../../lib/file-type" },
     { "path": "../../lib/forge-demand" },
+    { "path": "../../lib/forge-optimizer" },
     { "path": "../../lib/forge-policy" },
     { "path": "../../lib/forge-tools" },
     { "path": "../../lib/tool-browser" },
