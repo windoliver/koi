@@ -16,7 +16,11 @@ const CANDIDATE: ForgeCandidate = {
 const INPUT: SynthesisInput = {
   candidate: CANDIDATE,
   targetToolName: "echo_tool",
+  targetToolSchema: { type: "object" },
 };
+
+/** Most tests pass through retries; opt in by default. */
+const ABORT_HONORED = { adapterHonorsAbort: true } as const;
 
 function validRaw(name = "echo_tool", code = "export const run = (x) => x;"): string {
   return JSON.stringify({
@@ -51,7 +55,12 @@ describe("synthesize", () => {
       calls += 1;
       return calls === 1 ? { ok: false, reason: "syntax check failed" } : { ok: true };
     };
-    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 3 });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 3,
+      adapterHonorsAbort: true,
+    });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.attempts).toBe(2);
@@ -67,7 +76,7 @@ describe("synthesize", () => {
       n += 1;
       return n === 1 ? "garbage with no tags" : validRaw();
     };
-    const result = await synthesize(INPUT, { generate, verify: ALWAYS_OK });
+    const result = await synthesize(INPUT, { generate, verify: ALWAYS_OK, ...ABORT_HONORED });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.attempts).toBe(2);
@@ -76,7 +85,12 @@ describe("synthesize", () => {
   test("fails after maxAttempts when verify never succeeds", async () => {
     const generate: GenerateCallback = async () => validRaw();
     const verify: VerifyCallback = () => ({ ok: false, reason: "still wrong" });
-    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 3 });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 3,
+      adapterHonorsAbort: true,
+    });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.attempts).toBe(3);
@@ -107,7 +121,12 @@ describe("synthesize", () => {
       if (n === 1) throw new Error("verifier crashed");
       return { ok: true };
     };
-    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 3 });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 3,
+      adapterHonorsAbort: true,
+    });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.attempts).toBe(2);
@@ -119,7 +138,12 @@ describe("synthesize", () => {
     const verify: VerifyCallback = () => {
       throw new Error("flaky");
     };
-    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 2 });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 2,
+      adapterHonorsAbort: true,
+    });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/Verifier failed/);
@@ -137,6 +161,7 @@ describe("synthesize", () => {
       generate,
       verify: ALWAYS_OK,
       maxAttempts: 3,
+      ...ABORT_HONORED,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -153,10 +178,26 @@ describe("synthesize", () => {
   test("default maxAttempts is 3", async () => {
     const generate: GenerateCallback = async () => validRaw();
     const verify: VerifyCallback = () => ({ ok: false, reason: "nope" });
-    const result = await synthesize(INPUT, { generate, verify });
+    const result = await synthesize(INPUT, { generate, verify, ...ABORT_HONORED });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.attempts).toBe(3);
+  });
+
+  test("forces single-shot when adapterHonorsAbort is false (default)", async () => {
+    let calls = 0;
+    const generate: GenerateCallback = async () => {
+      calls += 1;
+      return validRaw();
+    };
+    const verify: VerifyCallback = () => ({ ok: false, reason: "no" });
+    // Caller explicitly asks for 5 attempts but did not assert hard abort —
+    // synthesize must clamp to 1 to avoid overlapping side effects on retry.
+    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 5 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.attempts).toBe(1);
+    expect(calls).toBe(1);
   });
 
   test("rejects descriptor.inputSchema mismatch when targetToolSchema set", async () => {
@@ -206,7 +247,12 @@ describe("synthesize", () => {
     const generate: GenerateCallback = async () => validRaw();
     // biome-ignore lint/suspicious/noExplicitAny: deliberately injecting a misbehaving verifier.
     const verify = (() => undefined) as any as VerifyCallback;
-    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 1 });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      adapterHonorsAbort: true,
+    });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/non-object/);
@@ -216,7 +262,12 @@ describe("synthesize", () => {
     const generate: GenerateCallback = async () => validRaw();
     // biome-ignore lint/suspicious/noExplicitAny: deliberately injecting a misbehaving verifier.
     const verify = (() => ({})) as any as VerifyCallback;
-    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 1 });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      adapterHonorsAbort: true,
+    });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/malformed/);
@@ -225,7 +276,12 @@ describe("synthesize", () => {
   test("returns typed failure when generate yields a non-string", async () => {
     // biome-ignore lint/suspicious/noExplicitAny: deliberately injecting a misbehaving adapter.
     const generate = (async () => ({ not: "a string" })) as any as GenerateCallback;
-    const result = await synthesize(INPUT, { generate, verify: ALWAYS_OK, maxAttempts: 2 });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 2,
+      ...ABORT_HONORED,
+    });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/non-string/);
@@ -270,6 +326,7 @@ describe("synthesize", () => {
       maxAttempts: 5,
       attemptTimeoutMs: 1_000,
       signal: controller.signal,
+      ...ABORT_HONORED,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -289,6 +346,7 @@ describe("synthesize", () => {
       verify: ALWAYS_OK,
       maxAttempts: 3,
       signal: controller.signal,
+      ...ABORT_HONORED,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -334,6 +392,7 @@ describe("synthesize", () => {
       verify: ALWAYS_OK,
       maxAttempts: 2,
       attemptTimeoutMs: 25,
+      ...ABORT_HONORED,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -348,7 +407,12 @@ describe("synthesize", () => {
       ok: true,
       summary: { passed: true /* missing required fields */ },
     })) as unknown as VerifyCallback;
-    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 1 });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      adapterHonorsAbort: true,
+    });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/malformed summary/);
@@ -365,7 +429,12 @@ describe("synthesize", () => {
         stageResults: [{ stage: "", passed: true, durationMs: 1 }],
       },
     })) as unknown as VerifyCallback;
-    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 1 });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      adapterHonorsAbort: true,
+    });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/non-empty string/);
@@ -382,7 +451,12 @@ describe("synthesize", () => {
         stageResults: [{ stage: "syntax", passed: false, durationMs: 1 }],
       },
     })) as unknown as VerifyCallback;
-    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 1 });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      adapterHonorsAbort: true,
+    });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/passed:false/);

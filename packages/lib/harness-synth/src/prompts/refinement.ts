@@ -10,7 +10,7 @@ import type { ForgeCandidate } from "@koi/forge-types";
 export interface RefinementPromptContext {
   readonly candidate: ForgeCandidate;
   readonly targetToolName: string;
-  readonly targetToolSchema?: Readonly<Record<string, unknown>> | undefined;
+  readonly targetToolSchema: Readonly<Record<string, unknown>>;
   readonly priorCode: string;
   readonly priorReason: string;
   readonly attempt: number;
@@ -29,7 +29,7 @@ export function buildRefinementPrompt(ctx: RefinementPromptContext): string {
   const dataBlock = JSON.stringify({
     attempt: ctx.attempt,
     targetToolName: ctx.targetToolName,
-    targetToolSchema: ctx.targetToolSchema ?? null,
+    targetToolSchema: ctx.targetToolSchema,
     candidate: {
       id: ctx.candidate.id,
       kind: ctx.candidate.kind,

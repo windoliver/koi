@@ -60,8 +60,14 @@ export interface SynthesisInput {
   readonly candidate: ForgeCandidate;
   /** Name the synthesized tool descriptor must declare. */
   readonly targetToolName: string;
-  /** Optional input schema hint forwarded to the prompt. */
-  readonly targetToolSchema?: Readonly<Record<string, unknown>> | undefined;
+  /**
+   * Required input schema for the target tool. The synthesized
+   * `descriptor.inputSchema` must structurally equal this — synthesis
+   * cannot succeed with a different input contract than the intended
+   * tool, otherwise downstream callers using the original schema would
+   * fail at invocation time.
+   */
+  readonly targetToolSchema: Readonly<Record<string, unknown>>;
 }
 
 /** Successful synthesis output. */
@@ -116,14 +122,26 @@ export interface SynthesisConfig {
    * `Infinity` to disable; never set to 0 (would fail every attempt).
    */
   readonly attemptTimeoutMs: number;
+  /**
+   * Caller's assertion that BOTH `generate` and `verify` honor the
+   * `AbortSignal` they receive — i.e. they stop work and release any
+   * non-idempotent side effects when aborted. When `false`, the loop
+   * forces `maxAttempts = 1`: a timed-out attempt cannot be retried
+   * because its side effects may still be in flight, and overlapping
+   * a second attempt would duplicate them. This is opt-in: callers
+   * wrapping flaky/legacy adapters can keep `false` and lose retries;
+   * callers wrapping abort-aware adapters set `true` to enable retries.
+   */
+  readonly adapterHonorsAbort: boolean;
 }
 
 /** Defaults applied when fields are omitted from a partial config. */
 export const DEFAULT_SYNTHESIS_CONFIG: Pick<
   SynthesisConfig,
-  "maxAttempts" | "clock" | "attemptTimeoutMs"
+  "maxAttempts" | "clock" | "attemptTimeoutMs" | "adapterHonorsAbort"
 > = Object.freeze({
   maxAttempts: 3,
   clock: Date.now,
   attemptTimeoutMs: 30_000,
+  adapterHonorsAbort: false,
 });

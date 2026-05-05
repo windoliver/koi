@@ -11,7 +11,7 @@ import type { ForgeCandidate } from "@koi/forge-types";
 export interface SynthesisPromptContext {
   readonly candidate: ForgeCandidate;
   readonly targetToolName: string;
-  readonly targetToolSchema?: Readonly<Record<string, unknown>> | undefined;
+  readonly targetToolSchema: Readonly<Record<string, unknown>>;
 }
 
 const TEMPLATE_HEADER = [
@@ -37,7 +37,7 @@ const TEMPLATE_HEADER = [
 export function buildSynthesisPrompt(ctx: SynthesisPromptContext): string {
   const dataBlock = JSON.stringify({
     targetToolName: ctx.targetToolName,
-    targetToolSchema: ctx.targetToolSchema ?? null,
+    targetToolSchema: ctx.targetToolSchema,
     candidate: {
       id: ctx.candidate.id,
       kind: ctx.candidate.kind,

@@ -29,13 +29,20 @@ export async function synthesize(
   input: SynthesisInput,
   config: SynthesisInitConfig,
 ): Promise<SynthesisResult> {
-  const maxAttempts = config.maxAttempts ?? DEFAULT_SYNTHESIS_CONFIG.maxAttempts;
-  if (maxAttempts < 1) {
+  const requestedAttempts = config.maxAttempts ?? DEFAULT_SYNTHESIS_CONFIG.maxAttempts;
+  if (requestedAttempts < 1) {
     return { ok: false, reason: "maxAttempts must be >= 1", attempts: 0 };
   }
   const clock = config.clock ?? DEFAULT_SYNTHESIS_CONFIG.clock;
   const attemptTimeoutMs = config.attemptTimeoutMs ?? DEFAULT_SYNTHESIS_CONFIG.attemptTimeoutMs;
+  const adapterHonorsAbort =
+    config.adapterHonorsAbort ?? DEFAULT_SYNTHESIS_CONFIG.adapterHonorsAbort;
   const signal = config.signal;
+  // Without a hard-cancel guarantee from the adapter, a timed-out attempt
+  // may still be running when the next one starts, duplicating any side
+  // effects (sandboxed exec, network calls). Force single-shot in that
+  // case — the caller can opt in to retries by setting adapterHonorsAbort.
+  const maxAttempts = adapterHonorsAbort ? requestedAttempts : 1;
 
   let priorCode = "";
   let priorReason = "";
@@ -88,17 +95,15 @@ export async function synthesize(
         continue;
       }
 
-      if (input.targetToolSchema !== undefined) {
-        const schemaCheck = checkSchemaMatch(
-          parsed.value.descriptor.inputSchema,
-          input.targetToolSchema,
-        );
-        if (!schemaCheck.ok) {
-          lastReason = schemaCheck.reason;
-          priorReason = schemaCheck.reason;
-          priorCode = parsed.value.code;
-          continue;
-        }
+      const schemaCheck = checkSchemaMatch(
+        parsed.value.descriptor.inputSchema,
+        input.targetToolSchema,
+      );
+      if (!schemaCheck.ok) {
+        lastReason = schemaCheck.reason;
+        priorReason = schemaCheck.reason;
+        priorCode = parsed.value.code;
+        continue;
       }
 
       const verified = await safeVerify(

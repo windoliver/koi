@@ -23,12 +23,23 @@ adapter or `@koi/forge-verifier` (L2-to-L2 imports are forbidden).
 
 ```ts
 const result = await synthesize(input, {
-  generate,    // (prompt) => Promise<string>  — model adapter wraps this
-  verify,      // (code, descriptor) => Promise<VerifyResult> — wraps forge-verifier
+  generate,             // (prompt, signal) => Promise<string>
+  verify,               // (code, descriptor, signal) => Promise<VerifyResult>
   maxAttempts: 3,
+  attemptTimeoutMs: 30_000,
+  // Required: assert that BOTH callbacks honor the signal arg. When false
+  // (default), the loop forces single-shot — a timed-out attempt cannot
+  // safely overlap a retry if its side effects are still in flight.
+  adapterHonorsAbort: true,
+  signal,               // optional caller cancellation
   clock: Date.now,
 });
 ```
+
+`input.targetToolSchema` is required: the synthesized
+`descriptor.inputSchema` must structurally equal it. Schema compatibility
+is a hard invariant, not a hint — synthesis cannot succeed with a different
+input contract than the caller's intended tool.
 
 ## Surface (`src/index.ts`)
 
