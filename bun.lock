@@ -294,6 +294,14 @@
         "@koi/test": "workspace:*",
       },
     },
+    "packages/lib/dashboard-api": {
+      "name": "@koi/dashboard-api",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/dashboard-types": "workspace:*",
+      },
+    },
     "packages/lib/dashboard-client": {
       "name": "@koi/dashboard-client",
       "version": "0.0.0",
@@ -1312,6 +1320,7 @@
         "@koi/core": "workspace:*",
         "@koi/cost-aggregator": "workspace:*",
         "@koi/daemon": "workspace:*",
+        "@koi/dashboard-api": "workspace:*",
         "@koi/dashboard-client": "workspace:*",
         "@koi/dashboard-types": "workspace:*",
         "@koi/debug": "workspace:*",
@@ -2353,6 +2362,8 @@
     "@koi/crystallize": ["@koi/crystallize@workspace:packages/lib/crystallize"],
 
     "@koi/daemon": ["@koi/daemon@workspace:packages/net/daemon"],
+
+    "@koi/dashboard-api": ["@koi/dashboard-api@workspace:packages/lib/dashboard-api"],
 
     "@koi/dashboard-client": ["@koi/dashboard-client@workspace:packages/lib/dashboard-client"],
 
