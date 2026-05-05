@@ -146,6 +146,52 @@ describe("parseSynthesisOutput", () => {
     expect(result.reason).toMatch(/Descriptor must be a JSON object/);
   });
 
+  test("does not misclassify nested properties.{descriptor, code} as a claimant", () => {
+    // A perfectly valid target schema may expose `descriptor` and `code`
+    // fields (e.g. a schema-edit tool). The parser must look at the
+    // top-level payload only, not at nested schema property objects.
+    const out = JSON.stringify({
+      descriptor: {
+        name: "echo_tool",
+        description: "ok",
+        inputSchema: {
+          type: "object",
+          properties: {
+            descriptor: { type: "object" },
+            code: { type: "string" },
+          },
+        },
+      },
+      code: "x();",
+    });
+    const result = parseSynthesisOutput(out, "echo_tool");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.code).toBe("x();");
+  });
+
+  test("linear-time on deeply nested valid JSON (no quadratic re-parse)", () => {
+    // 1000 levels of nesting, all valid. Old per-pop JSON.parse would
+    // re-parse 1000 growing prefixes (~quadratic). New scan parses only
+    // outermost matched span once.
+    const depth = 500;
+    let nested: Record<string, unknown> = {};
+    for (let i = 0; i < depth; i += 1) nested = { n: nested };
+    const out = JSON.stringify({
+      descriptor: {
+        name: "echo_tool",
+        description: "ok",
+        inputSchema: { type: "object", nested },
+      },
+      code: "x();",
+    });
+    const start = Date.now();
+    const result = parseSynthesisOutput(out, "echo_tool");
+    const elapsed = Date.now() - start;
+    expect(result.ok).toBe(true);
+    expect(elapsed).toBeLessThan(1000);
+  });
+
   test("linear-time on brace-heavy malformed output (no quadratic blowup)", () => {
     // Worst case for the OLD parser: a long run of unmatched `{` would
     // re-scan the suffix from each one. With the linear stack-based scan,

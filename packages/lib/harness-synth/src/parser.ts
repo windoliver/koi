@@ -76,12 +76,16 @@ function findParseableJsonObject(
   | { readonly ok: false; readonly reason: string } {
   let lastParseReason: string | null = null;
   const claimants: Record<string, unknown>[] = [];
-  // Stack of unclosed `{` indices outside JSON strings. Pop on matching
-  // `}` to emit the balanced span. Each char is touched once and stack ops
-  // are O(1), so total cost is O(n) regardless of brace density —
-  // including the worst-case "all unmatched `{`" pattern where the stack
-  // simply keeps growing and is discarded at end of input.
+  // Two-phase linear scan. Phase 1: walk once, push every `{` onto a
+  // stack and pop on `}`, recording (start, end, afterDepth) for each
+  // matched pair. Each char is touched once and stack ops are O(1).
+  // Phase 2: parse only spans whose afterDepth equals the unclosed-prefix
+  // count (i.e. outermost-matched relative to whatever `{`s were
+  // abandoned at EOF). Those spans are pairwise non-overlapping, so the
+  // sum of their lengths is at most O(n). Total cost stays linear even
+  // on deeply nested or brace-heavy input.
   const opens: number[] = [];
+  const matched: Array<{ start: number; end: number; afterDepth: number }> = [];
   let inString = false;
   let escaped = false;
   for (let i = 0; i < raw.length; i += 1) {
@@ -105,21 +109,26 @@ function findParseableJsonObject(
     } else if (ch === "}") {
       const start = opens.pop();
       if (start === undefined) continue; // stray `}` in prose
-      const span = raw.slice(start, i + 1);
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(span);
-      } catch (err: unknown) {
-        lastParseReason = `Output JSON parse failed: ${err instanceof Error ? err.message : String(err)}`;
-        continue;
-      }
-      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-        continue;
-      }
-      const obj = parsed as Record<string, unknown>;
-      if (claimsToBeSynthesisPayload(obj)) {
-        claimants.push(obj);
-      }
+      matched.push({ start, end: i, afterDepth: opens.length });
+    }
+  }
+  const abandoned = opens.length;
+  for (const { start, end, afterDepth } of matched) {
+    if (afterDepth !== abandoned) continue; // skip nested spans (O(n) total)
+    const span = raw.slice(start, end + 1);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(span);
+    } catch (err: unknown) {
+      lastParseReason = `Output JSON parse failed: ${err instanceof Error ? err.message : String(err)}`;
+      continue;
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      continue;
+    }
+    const obj = parsed as Record<string, unknown>;
+    if (claimsToBeSynthesisPayload(obj)) {
+      claimants.push(obj);
     }
   }
   if (claimants.length === 1) {
