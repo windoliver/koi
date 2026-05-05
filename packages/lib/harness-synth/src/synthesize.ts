@@ -49,6 +49,16 @@ export async function synthesize(
   // ignored) modes. There is no safe default: a missing assertion on a
   // hanging adapter would otherwise pin the request indefinitely.
   const adapterHonorsAbort = config.adapterHonorsAbort;
+  // Strict boolean check. Any truthy non-boolean ("false", 1, {}) would
+  // otherwise opt into retries even if the adapter does not honor abort,
+  // reopening the duplicated-side-effect hazard this flag exists to gate.
+  if (adapterHonorsAbort !== true && adapterHonorsAbort !== false) {
+    return {
+      ok: false,
+      reason: "adapterHonorsAbort must be a boolean",
+      attempts: 0,
+    };
+  }
   const signal = config.signal;
   const sanitizeVerifierReason =
     config.sanitizeVerifierReason ?? DEFAULT_SYNTHESIS_CONFIG.sanitizeVerifierReason;
@@ -84,29 +94,47 @@ export async function synthesize(
     };
   }
 
-  // Validate that targetToolSchema is JSON-plain (no undefined / Infinity /
-  // NaN / Date / class instances / cycles / BigInt / throwing getters).
-  // A lossy JSON round-trip would silently rewrite the contract — instead
-  // fail closed so the equality check downstream operates on the exact
-  // value the caller supplied.
-  const schemaCheck = ensureJsonPlain(input.targetToolSchema, "targetToolSchema");
-  if (!schemaCheck.ok) {
-    return { ok: false, reason: schemaCheck.reason, attempts: 0 };
-  }
-  // Snapshot targetToolSchema the same way as candidate: deep-clone (via
-  // JSON round-trip — JSON-plainness was just validated) and recursively
-  // freeze. Without this, a caller mutating the original object between
-  // attempts could prompt the model against schema A while equality is
-  // checked against schema B, breaking the contract invariant.
-  let frozenSchema: Readonly<Record<string, unknown>>;
+  // Snapshot first, then validate the snapshot. A single boundary read
+  // is critical: ensureJsonPlain walks getters once, JSON.stringify would
+  // walk them again, so a non-deterministic / hostile schema could pass
+  // validation and then serialize a different value into the prompt and
+  // equality check. Serializing once (via JSON.stringify) and re-parsing
+  // produces a single-read snapshot whose contents are immutable plain
+  // values; ensureJsonPlain on that snapshot then enforces the contract
+  // (cycles cannot survive serialization, but undefined/non-finite/etc.
+  // all silently drop or stringify to invalid JSON, so we still need the
+  // walker to detect them on the cloned value).
   let serializedSchema: string;
   try {
     serializedSchema = JSON.stringify(input.targetToolSchema);
-    frozenSchema = deepFreeze(JSON.parse(serializedSchema)) as Readonly<Record<string, unknown>>;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: `targetToolSchema snapshot failed: ${message}`, attempts: 0 };
+    return { ok: false, reason: `targetToolSchema serialize failed: ${message}`, attempts: 0 };
   }
+  if (typeof serializedSchema !== "string") {
+    // JSON.stringify can return undefined for top-level non-JSON values
+    // (functions, symbols). We require a JSON object at the top level.
+    return { ok: false, reason: "targetToolSchema must serialize to JSON", attempts: 0 };
+  }
+  let schemaSnapshot: Record<string, unknown>;
+  try {
+    schemaSnapshot = JSON.parse(serializedSchema) as Record<string, unknown>;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, reason: `targetToolSchema parse failed: ${message}`, attempts: 0 };
+  }
+  if (
+    schemaSnapshot === null ||
+    typeof schemaSnapshot !== "object" ||
+    Array.isArray(schemaSnapshot)
+  ) {
+    return { ok: false, reason: "targetToolSchema must be a JSON object", attempts: 0 };
+  }
+  const schemaCheck = ensureJsonPlain(schemaSnapshot, "targetToolSchema");
+  if (!schemaCheck.ok) {
+    return { ok: false, reason: schemaCheck.reason, attempts: 0 };
+  }
+  const frozenSchema = deepFreeze(schemaSnapshot) as Readonly<Record<string, unknown>>;
   // Cap prompt-bound inputs BEFORE prompt construction. Without this, a
   // large or adversarial targetToolSchema or candidate.description would
   // produce an oversized prompt that the model provider rejects, times

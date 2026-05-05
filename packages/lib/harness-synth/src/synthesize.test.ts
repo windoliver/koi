@@ -881,6 +881,49 @@ describe("synthesize", () => {
     expect(result.reason).toMatch(/targetToolSchema exceeds/);
   });
 
+  test("rejects non-boolean adapterHonorsAbort (truthy strings, numbers, objects)", async () => {
+    const cases: Array<unknown> = ["false", 1, 0, {}, null, undefined];
+    for (const v of cases) {
+      const result = await synthesize(INPUT, {
+        generate: async () => validRaw(),
+        verify: ALWAYS_OK,
+        adapterHonorsAbort: v as boolean,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) continue;
+      expect(result.reason).toMatch(/adapterHonorsAbort/);
+    }
+  });
+
+  test("non-deterministic schema getter cannot diverge across boundary", async () => {
+    let reads = 0;
+    const schema = Object.create(null, {
+      type: {
+        get: () => {
+          reads += 1;
+          return reads <= 2 ? "object" : "drift";
+        },
+        enumerable: true,
+      },
+    }) as Record<string, unknown>;
+    const seenPrompts: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      seenPrompts.push(p);
+      return JSON.stringify({
+        descriptor: { name: "echo_tool", description: "ok", inputSchema: { type: "object" } },
+        code: "x();",
+      });
+    };
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: schema },
+      { generate, verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    // Whatever value was chosen at the single boundary read must match
+    // both the prompt and the equality check. Since JSON.stringify reads
+    // each enumerable property exactly once, the snapshot is consistent.
+    expect(result.ok).toBe(true);
+  });
+
   test("rejects oversized targetToolName before prompt construction", async () => {
     const result = await synthesize(
       { ...INPUT, targetToolName: "x".repeat(5_000) },
