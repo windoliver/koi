@@ -11,7 +11,8 @@ on the next connect.
 
 - `ChannelAdapter` implementation backed by `Bun.serve({ websocket })`
 - JSON frame protocol (`{ kind: "msg" | "ack", content?, ... }`)
-- Single-client semantics — most recent connect wins; older socket closed
+- **Strict single-client**: a second concurrent connection is REJECTED, not allowed to preempt. Removes the cross-client misroute class entirely.
+- Inbound `senderId`/`threadId` are dropped by default (transport-untrusted); host opts in via `trustClientIdentity: true` only when the transport itself authenticates the client.
 - In-memory offline queue (FIFO, capped at `maxOfflineQueue`)
 - Capabilities declaration (`{ text: true, images: true, files: true, buttons: true }`)
 
@@ -40,6 +41,7 @@ on the next connect.
 | `senderId?` | `string` | `"mobile-user"` | Default sender ID |
 | `maxOfflineQueue?` | `number` | `100` | Max buffered outbound frames |
 | `pushNotifier?` | `(msg) => Promise<void>` | `undefined` | Called per outbound while no client connected |
+| `trustClientIdentity?` | `boolean` | `false` | Trust client-supplied `senderId`/`threadId`. Only enable behind authenticated transport. |
 
 `MobileChannelAdapter extends ChannelAdapter` and exposes `queueDepth: () => number` for tests/observability.
 

@@ -111,32 +111,85 @@ describe("createMobileChannel", () => {
     await ch.disconnect();
   });
 
-  test("queue dropped when a new client preempts an active socket (single-client eviction)", async () => {
-    // Simulates: ws1 holds the socket, more outbound queues if delivery to ws1
-    // races; then ws2 connects and evicts ws1. The queued backlog must NOT
-    // flush to ws2 — it was destined for the previous recipient.
+  test("strict single-client: a second concurrent connection is rejected, not preemptive", async () => {
+    // ws1 connects and stays connected. ws2 attempts to connect while ws1
+    // is active — server must close ws2 immediately. Replies for ws1 must
+    // continue to flow to ws1, with no possibility of misrouting to ws2.
     const port = await freePort();
     const ch = createMobileChannel({ port });
     await ch.connect();
     const ws1 = await openWs(port);
-    await new Promise((r) => setTimeout(r, 20));
-    // ws2 connects while ws1 is still active → server evicts ws1, drops queue.
-    const ws2 = await openWs(port);
-    const got: string[] = [];
-    ws2.addEventListener("message", (ev) => {
+    const got1: string[] = [];
+    ws1.addEventListener("message", (ev) => {
       const f = JSON.parse(typeof ev.data === "string" ? ev.data : "") as {
         content: { text: string }[];
       };
-      got.push(f.content[0]?.text ?? "");
+      got1.push(f.content[0]?.text ?? "");
     });
+    await new Promise((r) => setTimeout(r, 20));
+    // ws2 attempts to connect — server must reject by closing.
+    const ws2 = new WebSocket(`ws://127.0.0.1:${port}`);
+    let ws2Closed = false;
+    ws2.addEventListener("close", () => {
+      ws2Closed = true;
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(ws2Closed).toBe(true);
+    // Reply destined for ws1 must reach ws1 (which still holds the socket).
+    await ch.send({ content: [{ kind: "text", text: "for-ws1" }] });
     await new Promise((r) => setTimeout(r, 30));
-    // Now send to the (replaced) channel — goes to ws2 directly, not via queue.
-    await ch.send({ content: [{ kind: "text", text: "for-ws2" }] });
-    await new Promise((r) => setTimeout(r, 30));
-    // ws2 receives only its own message; ws1's would-be backlog never crosses over.
-    expect(got).toEqual(["for-ws2"]);
+    expect(got1).toEqual(["for-ws1"]);
     ws1.close();
-    ws2.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
+  test("inbound: client-supplied senderId DROPPED by default (untrusted)", async () => {
+    const port = await freePort();
+    const ch = createMobileChannel({ port, senderId: "trusted-host" });
+    const received: InboundMessage[] = [];
+    ch.onMessage(async (m) => {
+      received.push(m);
+    });
+    await ch.connect();
+    const ws = await openWs(port);
+    ws.send(
+      JSON.stringify({
+        kind: "msg",
+        content: [{ kind: "text", text: "x" }],
+        senderId: "spoofed-attacker",
+        threadId: "spoofed-thread",
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    expect(received[0]?.senderId).toBe("trusted-host");
+    expect(received[0]?.threadId).toBeUndefined();
+    ws.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
+  test("inbound: client-supplied senderId honored only when trustClientIdentity: true", async () => {
+    const port = await freePort();
+    const ch = createMobileChannel({ port, trustClientIdentity: true });
+    const received: InboundMessage[] = [];
+    ch.onMessage(async (m) => {
+      received.push(m);
+    });
+    await ch.connect();
+    const ws = await openWs(port);
+    ws.send(
+      JSON.stringify({
+        kind: "msg",
+        content: [{ kind: "text", text: "x" }],
+        senderId: "device-1",
+        threadId: "t-1",
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    expect(received[0]?.senderId).toBe("device-1");
+    expect(received[0]?.threadId).toBe("t-1");
+    ws.close();
     await new Promise((r) => setTimeout(r, 10));
     await ch.disconnect();
   });

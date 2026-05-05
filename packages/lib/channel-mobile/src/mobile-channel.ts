@@ -17,6 +17,14 @@ export interface MobileChannelConfig {
   readonly senderId?: string;
   readonly maxOfflineQueue?: number;
   readonly pushNotifier?: (message: OutboundMessage) => Promise<void>;
+  /**
+   * Trust client-supplied `senderId`/`threadId` from inbound frames. Default
+   * `false`: client metadata is dropped and replaced with the host-configured
+   * `senderId`. Set `true` only when the transport itself authenticates the
+   * client and binds it to a single trusted identity (e.g., reverse proxy
+   * with mTLS or signed bearer token).
+   */
+  readonly trustClientIdentity?: boolean;
 }
 
 interface InboundFrame {
@@ -51,6 +59,7 @@ interface SocketLike {
 export function createMobileChannel(config: MobileChannelConfig): MobileChannelAdapter {
   const defaultSenderId = config.senderId ?? "mobile-user";
   const maxQueue = config.maxOfflineQueue ?? DEFAULT_MAX_QUEUE;
+  const trustClient = config.trustClientIdentity === true;
 
   // let requires justification: socket and server lifecycle managed dynamically
   let server: ServerLike | undefined;
@@ -84,16 +93,14 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         },
         websocket: {
           open(ws: SocketLike) {
-            // Single-client semantics: previous socket evicted. The offline
-            // queue is dropped whenever the active socket is replaced — the
-            // adapter cannot prove the new client is the same recipient as
-            // the queued backlog's intended audience, so flushing to the new
-            // socket would risk delivering one client's private messages to
-            // another. Queue is only valid for the *first* client to connect
-            // after a period of disconnection.
+            // Strict single-client: a second concurrent connection is REJECTED,
+            // not allowed to preempt. This removes the entire class of cross-
+            // client leak (the agent's reply for ws1 cannot be misrouted to ws2
+            // because ws2 was never accepted). The host MUST front this adapter
+            // with auth that prevents reconnect-as-different-identity.
             if (activeSocket !== undefined) {
-              activeSocket.close();
-              offlineQueue.length = 0;
+              ws.close();
+              return;
             }
             activeSocket = ws;
             flushQueue();
@@ -143,9 +150,9 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         if (content.length === 0) return null;
         return {
           content,
-          senderId: frame.senderId ?? defaultSenderId,
+          senderId: trustClient ? (frame.senderId ?? defaultSenderId) : defaultSenderId,
           timestamp: Date.now(),
-          ...(frame.threadId !== undefined ? { threadId: frame.threadId } : {}),
+          ...(trustClient && frame.threadId !== undefined ? { threadId: frame.threadId } : {}),
         };
       } catch {
         return null;
