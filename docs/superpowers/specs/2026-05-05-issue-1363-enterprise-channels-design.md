@@ -45,7 +45,7 @@ or peer L2 channels. Layer rules enforced by `bun run check:layers`.
 
 ```
 src/
-  index.ts                 — public exports (factory + descriptor only)
+  index.ts                 — public exports (factory + descriptor + webhook handler type for Teams/WhatsApp)
   descriptor.ts            — ChannelDescriptor for manifest binding
   config.ts                — Zod schema + validate{Email,Teams,WhatsApp}Config
   {name}-channel.ts        — createXChannel factory; send/onMessage
@@ -67,7 +67,7 @@ explicit dependencies — never `new`-ing SDK clients internally. This mirrors
 
 | Channel | Injected Dependencies |
 |---------|------------------------|
-| email | `{ imap: ImapClient, smtp: SmtpTransport, parser: MimeParser, threadStore: ThreadStore, idempotencyStore: IdempotencyStore, clock?: () => number }` |
+| email | `{ imap: ImapClient, smtp: SmtpTransport, parser: MimeParser, threadStore: ThreadStore, outboxStore: OutboxStore, idempotencyStore: IdempotencyStore, idGenerator?: () => string, clock?: () => number }` |
 | teams | `{ tokenVerifier: JwtVerifier, fetch: typeof fetch, idempotencyStore: IdempotencyStore, clock?: () => number }` |
 | whatsapp | `{ fetch: typeof fetch, idempotencyStore: IdempotencyStore, clock?: () => number }` |
 
@@ -75,12 +75,43 @@ explicit dependencies — never `new`-ing SDK clients internally. This mirrors
 defined in each package. Default factory adapters wrap `imapflow`, `nodemailer`,
 `mailparser`, `jose` — but the interfaces themselves do not leak vendor types.
 
+### Webhook adapter surface (Teams + WhatsApp)
+
+The base `ChannelAdapter` contract (`connect`, `disconnect`, `send`, `onMessage`)
+has no HTTP ingress method. To make request-bound ack/nack semantics
+implementable, both webhook channels expose the same optional surface that
+`channel-slack` already established:
+
+```ts
+readonly handleHttpRequest?: (request: Request) => Promise<Response>;
+```
+
+The runtime/host (gateway, dev server, `@koi/runtime`) is responsible for
+binding the channel's `handleHttpRequest` to the appropriate route
+(`POST /api/messages` for Teams, `GET|POST /webhook` for WhatsApp). The handler
+is what executes the auth → `tryBegin` → `await onMessage` → commit/abort flow
+described below; the HTTP `Response` reflects the handler's outcome
+deterministically. Email has no `handleHttpRequest` because it is IMAP-driven.
+
+The package's `index.ts` re-exports `handleHttpRequest`-shaped types
+(`WebhookRequest`, `WebhookResponse` aliases of standard `Request`/`Response`)
+so hosts can integrate without depending on `@koi/channel-base` internals. The
+golden-replay tests for each webhook channel call `handleHttpRequest` directly
+with synthetic `Request` objects and assert: 200 on commit, 401/403 on auth
+failure, 409 on in-flight, 500 on handler throw, 503 on capacity.
+
 ### Per-channel detail
 
 #### channel-email
 
 - **Inbound**: IMAP IDLE on configured folder. New `EXISTS` event → fetch UID → parse MIME → `normalize()` → emit `KoiMessage`.
-- **Outbound**: SMTP via injected `smtp.sendMail`. Sets `In-Reply-To` and `References` headers from threading state.
+- **Outbound**: SMTP via injected `smtp.sendMail` with a **persistent outbox** for crash safety:
+  1. Pre-generate a stable outbound `Message-ID` (`<uuid@configured-from-domain>`).
+  2. CAS-write an `outbox` record `{ messageId, threadKey, expectedThreadVersion, payloadHash, status: "pending" }` via `OutboxStore` (injected; default in-memory).
+  3. Call `smtp.sendMail` setting that `Message-ID`, `In-Reply-To`, and `References`.
+  4. On SMTP success: CAS-update outbox `status: "sent"` and CAS-advance `ThreadStore` with the new chain entry. Both updates use the version recorded at step 2 so concurrent senders cannot race.
+  5. On SMTP failure or crash: outbox row stays `pending`; on recovery, the channel scans `pending` rows and either retries the send (SMTP servers are required to dedupe by `Message-ID` per RFC 5321 ESMTP, so a duplicate hop is collapsed) or marks `failed` after a bounded retry budget.
+- **Recovery semantics**: because the outbound `Message-ID` is generated *before* SMTP and is included in `From`-side dedupe responsibility, a retry of step 3 with the same `Message-ID` is the standard idempotent-resend pattern; relays that respect the message-id collapse on their end. Threading state is only advanced on confirmed-sent, so a crashed-mid-send never leaves stale `In-Reply-To` pointers.
 - **Threading**: keyed by root `Message-ID` of the chain. **Durable + concurrency-safe**: outbound `In-Reply-To`/`References` derive from persisted message metadata, not from in-process state. The channel exposes a `ThreadStore` interface with CAS semantics:
 
   ```ts
@@ -141,7 +172,7 @@ producing duplicate downstream actions and outbound replies. Each channel
 
 | Channel | Idempotency key | Notes |
 |---------|-----------------|-------|
-| email | `mailbox-host \| account \| Message-ID` | `Message-ID` is RFC 5322 unique only within a sending domain, not globally; scoping to the receiving mailbox+account makes it safe across multi-account deployments. Falls back to `sha256(date \| from \| subject \| body)` only when the header is missing or malformed; the fallback never collides with a header-derived key (different prefix). |
+| email | `mailbox-host \| account \| UIDVALIDITY \| UID` (primary) | IMAP guarantees `(UIDVALIDITY, UID)` uniqueness within a mailbox; this is the durable, collision-free identifier. Optionally cross-checked with `Message-ID` for diagnostics, but the IMAP UID pair is the dedupe key. Mailbox rebuild changes UIDVALIDITY, which legitimately requires a fresh dedupe horizon (operator-acknowledged). No coarse-header fallback — if the IMAP server provides no UID (POP3 or pathological IMAP), the channel rejects ingestion at config time with `UNSUPPORTED_TRANSPORT` rather than silently risking suppression. |
 | teams | `channelId \| tid \| conversation.id \| activity.id` | Bot Framework guarantees `activity.id` uniqueness only within a (channel, account, conversation) tuple. Including all four matches the documented uniqueness domain so two conversations with the same `activity.id` both dispatch. |
 | whatsapp | `phone_number_id \| messages[].id` | WAMIDs are unique per business phone; including the receiving phone scopes correctly across multi-number deployments. |
 
