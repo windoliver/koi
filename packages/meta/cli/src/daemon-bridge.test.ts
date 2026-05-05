@@ -1168,6 +1168,49 @@ describe("createDaemonBridge — live mode", () => {
     await bridge.close();
   });
 
+  test("requestKill expectedPid=0 + workerEvents stale + locallySpawnedIds cleared → registry CAS still authorizes kill", async () => {
+    // Regression: when workerEvents goes stale, the bridge clears
+    // locallySpawnedIds. A `starting` row never appears in health.workers
+    // (not yet running), so the bare ownership check would refuse the kill
+    // before the registry CAS branch could run. The fallback must let the
+    // registry CAS validate ownership when expectedPid=0 + workerEvents stale.
+    const rec = makeRecord("worker-starting-degraded", "agent-sd", "starting");
+    const fakeWithDescribe: FakeRegistry = {
+      ...fake,
+      describe: async (): Promise<{ ok: true; value: typeof rec }> => ({
+        ok: true,
+        value: { ...rec, status: "starting", version: 1, pid: 0 },
+      }),
+    };
+
+    // health.workers is empty (starting row not yet in supervisor health)
+    fakeSupervisor.setHealth(makeHealth([]));
+
+    // Make workerEvents stale — bridge will clear locallySpawnedIds
+    fakeSupervisor.triggerWatchAllError(new Error("stream broke"));
+
+    const { bridge } = makeLiveBridge(fakeWithDescribe, fakeSupervisor, {
+      intervals: { registryPollMs: 100_000, healthPollMs: 100_000 },
+    });
+
+    // Mark and let the watchAll error self-heal (clears locallySpawnedIds)
+    bridge.markLocallySpawned("worker-starting-degraded");
+    for (let i = 0; i < 15; i++) {
+      await pumpMicrotasks();
+    }
+
+    const result = await bridge.requestKill({
+      workerId: "worker-starting-degraded",
+      expectedVersion: 1,
+      expectedPid: 0,
+    });
+
+    expect(result.kind).toBe("stopped");
+    expect(fakeSupervisor.stopCalls().length).toBe(1);
+
+    await bridge.close();
+  });
+
   test("requestKill foreign worker (not in health.workers + not in locallySpawnedIds) → refused, no supervisor.stop", async () => {
     // health.workers is empty
     fakeSupervisor.setHealth(makeHealth([]));

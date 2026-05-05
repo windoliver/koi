@@ -213,6 +213,53 @@ describe("wireDaemonSupervisor", () => {
     await handle.dispose();
   });
 
+  it("supervisor.start proxy unmarks locallySpawnedId when realSupervisor.start returns ok:false", async () => {
+    // Regression for the ownership-marker leak: failed admission paths
+    // (capacity, duplicate id, backend error) return ok:false without any
+    // terminal lifecycle event, so the bridge's event-driven cleanup never
+    // runs. The proxy must remove the marker itself.
+    const backend = makeFakeSubprocessBackend();
+    const opts: WireDaemonSupervisorOptions = {
+      stateDir: tmpDir,
+      manifest: MINIMAL_MANIFEST,
+      dispatch: makeNullDispatch(),
+      pushToast: makeNullToast(),
+      backends: { subprocess: backend },
+    };
+
+    const handle = await wireDaemonSupervisor(opts);
+
+    const { workerId: makeWorkerId, agentId: makeAgentId } = await import("@koi/core");
+    const wId = makeWorkerId("w-failed-start");
+    const aId = makeAgentId("agent-failed-start");
+
+    const markSpy = spyOn(handle.bridge, "markLocallySpawned");
+    const unmarkSpy = spyOn(handle.bridge, "unmarkLocallySpawned");
+
+    // Force start() to return ok:false by spawning the same workerId twice
+    // (first succeeds, second hits duplicate-id rejection).
+    const okResult = await handle.supervisor.start({
+      workerId: wId,
+      agentId: aId,
+      command: ["test"],
+    });
+    expect(okResult.ok).toBe(true);
+
+    const failResult = await handle.supervisor.start({
+      workerId: wId,
+      agentId: aId,
+      command: ["test"],
+    });
+    expect(failResult.ok).toBe(false);
+
+    expect(markSpy).toHaveBeenCalledTimes(2);
+    // unmark only on the failed start
+    expect(unmarkSpy).toHaveBeenCalledTimes(1);
+    expect(unmarkSpy).toHaveBeenCalledWith(String(wId));
+
+    await handle.dispose();
+  });
+
   it("dispose tears down in order: supervisor.shutdown → bridge.close → attachHandle.close", async () => {
     // We intercept createSupervisor to inject an instrumented shutdown.
     // The dispose() closure holds a direct reference to realSupervisor (not

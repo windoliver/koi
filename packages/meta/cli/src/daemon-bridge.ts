@@ -58,6 +58,13 @@ export interface DaemonBridge {
   readonly requestKill: (req: KillRequest) => Promise<KillOutcome>;
   /** Live mode only. No-op in registry-only. */
   readonly markLocallySpawned: (workerId: string) => void;
+  /**
+   * Live mode only. Removes a previously-marked workerId. Called by the
+   * supervisor proxy when start() rejects before admission, so a failed
+   * spawn doesn't leave a stale ownership marker that could authorize a
+   * kill against a foreign worker reusing the same id later.
+   */
+  readonly unmarkLocallySpawned: (workerId: string) => void;
 }
 
 type Dispatch = (action: TuiAction) => void;
@@ -660,11 +667,17 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
     const { supervisor } = mode;
     const { workerId: reqWorkerId, expectedVersion, expectedPid } = req;
 
-    // Check ownership
+    // Check ownership.
+    // Special case: when expectedPid === 0 (starting-row kill) and the
+    // workerEvents push channel is stale, locallySpawnedIds may have been
+    // cleared as part of self-healing — so the only remaining ownership
+    // signal is the registry record. We defer the rejection to the CAS
+    // branch below, which validates status === "starting" + version match.
     const healthSnap = supervisor.health();
     const inHealthWorkers = healthSnap.workers.some((w) => String(w.workerId) === reqWorkerId);
     const inLocallySpawned = locallySpawnedIds.has(reqWorkerId);
-    if (!inHealthWorkers && !inLocallySpawned) {
+    const startingRowDegradedFallback = expectedPid === 0 && channels.workerEvents === "stale";
+    if (!inHealthWorkers && !inLocallySpawned && !startingRowDegradedFallback) {
       return { kind: "refused", reason: "worker not locally owned" };
     }
 
@@ -760,6 +773,11 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
     markLocallySpawned: (wId: string): void => {
       if (mode.kind === "live") {
         locallySpawnedIds.add(wId);
+      }
+    },
+    unmarkLocallySpawned: (wId: string): void => {
+      if (mode.kind === "live") {
+        locallySpawnedIds.delete(wId);
       }
     },
   };

@@ -250,8 +250,9 @@ function timeAgo(ts: number, now: number): string {
 
 const EventFeed: Component<{ readonly events: readonly SupervisorEventEntry[] }> = (p) => {
   const now = Date.now();
-  const recent = (): readonly SupervisorEventEntry[] =>
-    p.events.slice(-MAX_EVENTS).slice().reverse();
+  // Reducer prepends new events, so p.events is already newest-first.
+  // Just take the first MAX_EVENTS entries.
+  const recent = (): readonly SupervisorEventEntry[] => p.events.slice(0, MAX_EVENTS);
 
   return (
     <box flexDirection="column">

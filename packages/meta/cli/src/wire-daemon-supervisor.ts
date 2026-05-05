@@ -104,8 +104,23 @@ export async function wireDaemonSupervisor(
   const proxiedSupervisor: Supervisor = {
     ...realSupervisor,
     start: async (request, overrides) => {
-      bridge.markLocallySpawned(String(request.workerId));
-      return realSupervisor.start(request, overrides);
+      const wId = String(request.workerId);
+      bridge.markLocallySpawned(wId);
+      try {
+        const result = await realSupervisor.start(request, overrides);
+        // Failed admission (capacity, duplicate id, backend error) returns
+        // ok:false without producing a terminal lifecycle event, so the
+        // bridge's event-driven cleanup never runs. Remove the marker now
+        // to avoid authorizing a kill against a future foreign worker that
+        // reuses this id.
+        if (!result.ok) {
+          bridge.unmarkLocallySpawned(wId);
+        }
+        return result;
+      } catch (e: unknown) {
+        bridge.unmarkLocallySpawned(wId);
+        throw e;
+      }
     },
   };
 

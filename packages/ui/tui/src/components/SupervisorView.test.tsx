@@ -64,8 +64,8 @@ const attachedSlice: SupervisorSlice = {
   attached: true,
   status: { kind: "live" },
   health,
+  // Reducer prepends, so newest-first (e2 before e1) matches real storage.
   events: [
-    { id: "e1", ts: NOW - 5000, kind: "started", workerId: "w-1", agentName: "ResearchAgent" },
     {
       id: "e2",
       ts: NOW - 2000,
@@ -74,6 +74,7 @@ const attachedSlice: SupervisorSlice = {
       agentName: "ResearchAgent",
       detail: "ok",
     },
+    { id: "e1", ts: NOW - 5000, kind: "started", workerId: "w-1", agentName: "ResearchAgent" },
   ],
 };
 
