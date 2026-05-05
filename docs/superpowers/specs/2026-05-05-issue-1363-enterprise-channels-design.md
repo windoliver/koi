@@ -107,7 +107,7 @@ The package's `index.ts` re-exports `handleHttpRequest`-shaped types
 so future host integrations do not depend on `@koi/channel-base` internals.
 The golden-replay tests for each webhook channel call `handleHttpRequest`
 directly with synthetic `Request` objects and assert: 200 on commit, 401/403 on
-auth failure, 409 on in-flight, 500 on handler throw, 503 on capacity.
+auth failure, 503 on in-flight (matches retryable-by-Teams/WhatsApp contract), 500 on handler throw, 503 on capacity.
 
 ### Per-channel detail
 
@@ -130,7 +130,7 @@ auth failure, 409 on in-flight, 500 on handler throw, 503 on capacity.
   2. **`reserved → sending`**: single CAS write to outbox flipping `status: "sending"` immediately before invoking `smtp.sendMail`.
   3. **`sending → sent`**: relay returned `250 OK`. CAS outbox to `status: "sent"`. Thread state was already advanced in step 1 — no further `ThreadStore` write.
   4. **`reserved → aborted` OR `sending → aborted`** (pre-DATA failure only — see classification below): CAS outbox to `status: "aborted"`. Best-effort CAS-rollback `ThreadStore` to the prior version (skip silently if a concurrent sender advanced past us — the reserved chain entry becomes a benign hole since no email carrying that `Message-ID` exists). Caller may retry as a fresh send.
-  5. **`sending → awaiting-recovery`**: process crash or socket drop after the SMTP DATA octet stream began but before `250 OK` was acknowledged into our outbox. Detected at startup by scanning outbox for `status: "sending"`. Channel does **not** auto-resend (SMTP `Message-ID` is not a protocol idempotency key per RFC 5321). `getPendingSends()` exposes the row; operator calls `resolvePending(messageId, outcome)`. Thread reservation stands until then; outbound threading skips `awaiting-recovery` rows when deriving future headers.
+  5. **`sending → awaiting-recovery`**: process crash or socket drop after the SMTP DATA octet stream began but before `250 OK` was acknowledged into our outbox. Detected at startup by scanning outbox for `status: "sending"`. Channel does **not** auto-resend (SMTP `Message-ID` is not a protocol idempotency key per RFC 5321). `getPendingSends()` exposes the row; operator calls `resolvePending(messageId, outcome)`. **The thread is BLOCKED for any further outbound sends while one or more entries are in `awaiting-recovery`** — `send()` on that thread returns `Result<…, KoiError>` with code `THREAD_BLOCKED_PENDING_RECOVERY` until resolution. This is conservative: continuing to send while discarding a possibly-delivered parent from the reference chain would silently fork the conversation; blocking is loud, recoverable, and operator-actionable. Outbound threading therefore never derives headers from a state that includes uncertain ancestry.
 
   **Pre-DATA vs post-DATA classification**: the SMTP transport adapter exposes `await smtp.sendMail(...)` which resolves with `{ phase: "pre-data" | "post-data", ok: boolean, error? }`. The state machine reads `phase` to choose `aborted` (pre-DATA) vs `awaiting-recovery` (post-DATA crash). nodemailer's events expose enough information to populate `phase`; the wrapper lives in `platform-send.ts`.
 
@@ -219,10 +219,12 @@ interface IdempotencyStore {
   // Used on transient failure after auth/normalize/onMessage throws.
   abort(lease: Lease): Promise<void>;
 
-  // Optional: extend a lease for long-running handler dispatch.
+  // Extend a lease (called automatically by the channel; not user-visible).
   renew(lease: Lease, leaseMs: number): Promise<void>;
 }
 ```
+
+**Lease renewal is automatic and channel-managed.** While `await handler(message)` runs, the channel sets a renewal interval at `leaseMs / 3` (default 10s for a 30s lease) that calls `renew(lease, leaseMs)` until the handler resolves, throws, or the channel-level `handlerTimeoutMs` (default 5 minutes) elapses. If renewal itself fails (durable store unavailable), the channel cancels the in-flight handler via `AbortSignal` and returns 500 — never silently allowing the lease to expire under an active handler. If the handler exceeds `handlerTimeoutMs`, the channel aborts it and returns 500. This guarantees: a duplicate cannot acquire the key while a handler is still running, full stop. Users do not see, hold, or renew leases.
 
 **Inbound flow + handler-outcome binding**. The current `ChannelAdapter` `onMessage` callback is fire-and-forget — its outcome cannot drive an HTTP response. To make retry semantics enforceable, each enterprise channel ships its own webhook HTTP handler (not the generic `ChannelAdapter` dispatch path) that *awaits* the user-supplied async handler before returning a status:
 
@@ -256,15 +258,13 @@ Email is **IMAP-backed, not webhook-backed**, so it has no HTTP response to bind
 
 Tests cover: concurrent `tryBegin` (exactly one `ok`), transient handler failure (`abort` releases key, retry succeeds), commit (retry after commit is a true no-op duplicate), and email replay 30+ days later still suppressed (with the default `Infinity` TTL).
 
-**Default store**: `InMemoryIdempotencyStore` — a single-worker store backed by
-two Maps (live leases + committed keys). It is **fail-closed** at a configured
-capacity (`maxCommittedRecords`, default 100_000): when full, `tryBegin` returns
-`{ ok: false, reason: "capacity-exhausted" }` and the channel responds non-2xx
-so the provider retries later (operator alert + scale durable store). It does
-**not** evict committed records via LRU — silent eviction would silently restore
-duplicate-delivery hazards. Multi-worker deployments must inject a durable
-CAS-backed store; this is documented in the package README and verified by an
-integration test asserting capacity-exhausted is observable.
+**Store selection** is per-channel and enforced at construction:
+
+- **email**: a durable `IdempotencyStore` is **mandatory** (covered above).
+- **whatsapp**: a durable `IdempotencyStore` is **mandatory**. At a documented platform ceiling of 80 msg/sec/number × 7 days, the committed-record working set can approach ~50M entries per number; no in-memory cap can cover that. Factory throws `INVALID_CONFIG` if an in-memory store is passed.
+- **teams**: a durable `IdempotencyStore` is **mandatory** when `expectedTrafficPerSec > 1` (operator-declared in config) or unconditionally for production deployments. Bot Framework retry rates can be bursty and the 24h horizon × multi-conversation traffic likewise exceeds any safe in-memory cap. Factory throws `INVALID_CONFIG` if `expectedTrafficPerSec * 86400 * commitTtlMs/86400 > maxCommittedRecords` of the supplied store.
+
+The package ships an `InMemoryIdempotencyStore` for **tests and local development only** (size 10_000, fail-closed when full, no LRU eviction — silent eviction would silently restore duplicate-delivery hazards). It is *not* the production default for any of the three channels. The README and config Zod schema both document this; integration tests assert that production-config + in-memory store rejects at construction.
 
 Outbound retry is the caller's concern: `send()` is idempotent at the platform
 level only when the platform supports it (WhatsApp `messaging_product`/`to`+
