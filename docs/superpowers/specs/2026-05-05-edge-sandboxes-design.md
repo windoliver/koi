@@ -31,12 +31,14 @@ Therefore `sandbox-wasm` defines its own contract in `types.ts`:
 ```ts
 export interface WasmExecutor {
   readonly execute: (
-    module: Uint8Array | WebAssembly.Module,
+    moduleBytes: Uint8Array,
     call: { readonly export: string; readonly args: readonly unknown[] },
     options?: { readonly timeoutMs?: number; readonly maxMemoryPages?: number; readonly imports?: WebAssembly.Imports },
   ) => Promise<Result<WasmResult, SandboxError>>;
 }
 ```
+
+The input type is **`Uint8Array` only** — precompiled `WebAssembly.Module` inputs are deliberately not accepted. The host cannot recover original bytes from a `Module` to re-run the binary scanner, and `WebAssembly.Module.imports()` cannot detect an internal memory section. Accepting `Module` would silently bypass the host-memory invariant on one input path. If a caller has a precompiled module, they must round-trip through bytes; for repeated execution of the same module, the executor caches compiled `Module` instances internally keyed by SHA-256 of the validated bytes (cache lives within the package, never exposed).
 
 This is intentionally NOT `SandboxExecutor`. Consumers wanting to plug wasm into a `SandboxExecutor`-shaped slot must build their own bridge that decides what `code: string` means for them (e.g., base64-of-bytes plus structured input). Building that bridge is out of scope for this PR — it would be a `sandbox-wasm-executor-bridge` follow-up package once a real consumer needs it.
 
@@ -76,7 +78,7 @@ src/
 - The scanner is hostile-input-safe: bounded iteration, fails on malformed LEB128 with `PERMISSION`, never allocates beyond a small fixed cursor. This is enforced symmetrically in both the trusted-sync and untrusted-async executors and is covered by adversarial fixtures (modules with internal memory, modules with both internal+imported memory, malformed LEB128, oversized section length claims).
 - **Imports allowlist:** by default `imports` config is empty (`{}`); the executor injects only the host-controlled memory. Any module import not satisfied by the allowlist (other than the memory) causes `WebAssembly.Module.imports` validation to surface a `LinkError` → mapped to `PERMISSION`.
 - CPU cap = worker termination (async) / advisory only (sync — trusted code only). No instruction metering — explicitly out of scope.
-- Code input: caller passes WASM bytes (`Uint8Array`) or a pre-validated `WebAssembly.Module` plus the exported function name and args.
+- Code input: caller passes WASM bytes as `Uint8Array` only (precompiled `WebAssembly.Module` is rejected — see contract section above).
 - `output`: serialized return value of the called export.
 - Error mapping: trap → `CRASH`, OOM (memory.grow fails against the imported maximum) → `OOM`, worker terminated by deadline → `TIMEOUT`, module-defines-internal-memory or unknown import → `PERMISSION`.
 
@@ -117,7 +119,12 @@ Rules:
 
 - **Bounded create timeout:** `createTimeoutMs` (default 30_000) wraps the entire create flow. On timeout, transition to `create failure`.
 - **Best-effort delete:** on any create failure after the deploy step has been issued (i.e., a script with the per-attempt `name` may exist), the adapter unconditionally fires `DELETE /workers/scripts/{name}` regardless of which step failed. This is fire-and-forget with its own short timeout (`cleanupTimeoutMs`, default 5_000).
-- **Cleanup confirmation:** if the cleanup DELETE returns 200 / 204 / 404, return `KoiError { code: "CREATE_FAILED", cleanedUp: true, cause }`. If it returns any other status, times out, or the network errors, return `KoiError { code: "CREATE_FAILED_INDETERMINATE", scriptName: name, cleanedUp: false, cause }`. The latter is operator-actionable: it carries the leaked artifact name so a janitor job (or the provider-smoke leak-check) can sweep it.
+- **Cleanup confirmation (control-plane race aware):**
+  - The adapter tracks `deployStartedAt` for each create attempt. The cleanup DELETE result is interpreted relative to whether deploy is known to have completed:
+    - **Deploy fully completed before failure** (e.g., failure during step 2 secrets-upload, after step 1 returned 200): cleanup `200` / `204` = `cleanedUp: true`. `404` is also accepted because the script existed and is now gone. Return `CREATE_FAILED { cleanedUp: true }`.
+    - **Deploy did NOT complete or is in flight when failure was detected** (e.g., create timeout fired during step 1, or step 1 returned a non-success status): a `404` from cleanup is **NOT** proof of deletion — the deploy can still materialize after the control-plane returned `404`. In this race window, return `CREATE_FAILED_INDETERMINATE { scriptName, cleanedUp: false }` even on `404`. Operator/janitor must verify by re-listing scripts after a delay.
+    - Any other status, timeout, or network error: `CREATE_FAILED_INDETERMINATE { scriptName, cleanedUp: false, cause }` regardless of phase.
+  - The adapter optionally schedules a **delayed re-verify**: 60 seconds after an INDETERMINATE result it re-issues `GET /workers/scripts/{name}` and, if the script now exists (the racing deploy materialized), fires a final DELETE. The result of that re-verify is logged with the original `scriptName` so operators can audit residual artifacts. This is best-effort within the host process lifetime; the provider-smoke leak-check is the authoritative backstop.
 - **Idempotent retries are caller responsibility:** the adapter never auto-retries `create`. Each retry produces a new UUID and is independent.
 - **No orphan from successful create then later failure:** once `ready`, only `destroy()` deletes; failures during `exec()` poison but do not auto-delete (caller decides).
 - Endpoint: `https://api.cloudflare.com/client/v4/accounts/{accountId}/workers/scripts/{instanceScriptName}` for deploy/delete; deployed worker URL for invoke.
@@ -136,7 +143,7 @@ The `SandboxInstance` contract suggests instance-local coherent state (`readFile
 - `readFile`/`writeFile` always throw `UNSUPPORTED` — they are present on the type only because the kernel `SandboxInstance` interface requires them. Implementations are honest stubs.
 - A future PR can add a `sandbox-cloudflare-kv` package that backs files with KV/Durable Objects; that is out of scope here and explicitly listed in "Out of scope" below.
 
-#### Per-instance `exec()` concurrency (serialized)
+#### Per-instance `exec()` concurrency (serialized) and preemptive destroy
 
 The instance's deployed worker is a shared remote resource. If a caller fires two `exec()` calls concurrently and the first times out → poisons the instance, the second is already in flight against an instance the host now considers terminal, with possibly-overlapping side effects on the same provider artifact. Worse, `destroy()` could race against an in-flight `exec`.
 
@@ -145,8 +152,12 @@ To avoid this entire class of hazard, **`exec()` is serialized per instance**:
 - Each instance owns an internal FIFO mutex. Every `exec()` awaits the mutex, runs to completion (or timeout / abort), then releases.
 - Concurrent callers see fair FIFO ordering, not provider-side races.
 - A timeout on call N transitions the instance to POISONED before the mutex is released; subsequent queued calls (N+1, N+2, ...) all reject immediately with `POISONED` when they acquire it. They never reach the provider.
-- `destroy()` acquires the mutex with priority (a separate `destroyPending` flag is checked at mutex-acquire time so queued execs short-circuit to `POISONED` once destroy is requested), then issues the DELETE.
-- Caller-visible: `exec()` is awaited as usual; the only behavioral change vs. an OS sandbox is that calls are not parallel within an instance. Callers that need parallelism create multiple instances.
+
+**`destroy()` is preemptive, not queued:**
+
+- Every `exec()` is wrapped in a host-side `AbortController`. When `destroy()` is called, it (a) sets the instance state to `DESTROYING`, (b) immediately calls `abort()` on the in-flight exec's controller (this rejects the caller's `exec()` promise with `KoiError { code: "DESTROYED" }` and tears down the local `fetch` regardless of whether the remote response ever arrives), (c) drains and rejects all queued execs with `KoiError { code: "DESTROYED" }`, then (d) issues the DELETE.
+- **Mandatory host-side timeout:** `exec()` enforces a non-optional default `timeoutMs` of 30_000 (capped by profile `resources.timeoutMs`). The caller cannot opt out. This guarantees the in-flight `fetch` cannot wait forever even if `destroy()` were not called.
+- Caller-visible: `exec()` is awaited as usual; the only behavioral change vs. an OS sandbox is that calls are not parallel within an instance. Callers that need parallelism create multiple instances. Calling `destroy()` while an `exec()` is in flight rejects that exec promptly — destroy is never blocked behind hung remote work.
 
 This is documented prominently in `docs/L2/sandbox-cloudflare.md` and tested in unit suites (concurrent-exec serialization, poison-after-timeout-rejects-queued, destroy-cancels-queued).
 
