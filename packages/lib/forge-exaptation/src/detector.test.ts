@@ -47,14 +47,25 @@ function obsNoId(
  * Build a single observation window known to produce strong drift
  * (avgDivergence ≥ 0.85, replay-protected, 4 cohort agents). Use as a
  * "prior window" in suggestAction tests that want stability satisfied.
+ *
+ * Observations are dated in the deep past (negative `observedAt`) so the
+ * window is always older than any current observation built via
+ * `obs()` / `buildDrift()` afterwards — `countStrongDriftPriors`
+ * requires priors to be strictly older than the current window.
  */
+let priorClock = -1_000_000;
 function strongPriorWindow(): readonly UsagePurposeObservation[] {
-  return [
-    ...[0.95, 0.95, 0.95].map((s) => obs("prior-a", s)),
-    ...[0.95, 0.95, 0.95].map((s) => obs("prior-b", s)),
-    ...[0.95, 0.95, 0.95].map((s) => obs("prior-c", s)),
-    ...[0.95, 0.95, 0.95].map((s) => obs("prior-d", s)),
-  ];
+  const out: UsagePurposeObservation[] = [];
+  for (const agent of ["prior-a", "prior-b", "prior-c", "prior-d"]) {
+    for (const score of [0.95, 0.95, 0.95]) {
+      const o = obs(agent, score);
+      out.push({ ...o, observedAt: priorClock });
+      priorClock++;
+    }
+  }
+  // Leave a gap so successive priors never collide with each other.
+  priorClock += 16;
+  return out;
 }
 
 function expectDrift(result: DetectionResult): DriftReport {
@@ -596,6 +607,62 @@ describe("suggestAction", () => {
     if (result.kind === "invalid-config") expect(result.reason).toContain("6");
   });
 
+  test("priors newer than (or equal to) the current window are excluded from stability", () => {
+    // Trust-boundary: a "prior" with timestamps >= current window cannot
+    // be historical evidence — it is either the same window misfiled or
+    // a future window from a multi-buffer mixup. countStrongDriftPriors
+    // requires priors to be strictly older. Otherwise a sliding-window
+    // bookkeeping bug could let a same-time or future strong window
+    // satisfy stability and unlock new-artifact prematurely.
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    // Build a "prior" that is actually NEWER than the current window.
+    function pinAt(o: UsagePurposeObservation, at: number): UsagePurposeObservation {
+      return { ...o, observedAt: at };
+    }
+    const newerStrong: UsagePurposeObservation[] = strongPriorWindow().map((o) =>
+      pinAt(o, 9_999_999_999),
+    );
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [newerStrong]).kind).toBe(
+      "reclassify",
+    );
+  });
+
+  test("same-eventId replay with bumped observedAt cannot forge prior recency", () => {
+    // Trust-boundary: dedup collapses same-(scope,agentId,eventId) retries
+    // with identical payloads as harmless replays — but if recency were
+    // computed from the raw observations, a replay with a fresh
+    // observedAt could still raise the prior's maxAt and slot a stale
+    // window into the trailing position. Recency must come from the
+    // canonical (MIN-observedAt) representative per dedup bucket.
+    function pinAt(o: UsagePurposeObservation, at: number): UsagePurposeObservation {
+      return { ...o, observedAt: at };
+    }
+    // Build a strong prior anchored at an ancient timestamp.
+    const ancient = -5_000_000;
+    const stalePrior: UsagePurposeObservation[] = strongPriorWindow().map((o) => pinAt(o, ancient));
+    // Replay one of those exact observations with a much newer
+    // observedAt — same (scope, agentId, eventId), same payload.
+    const first = stalePrior[0];
+    if (first === undefined) throw new Error("test setup");
+    const bumpedReplay: UsagePurposeObservation = pinAt(first, 9_999_999_999);
+    const stalePriorWithReplay: readonly UsagePurposeObservation[] = [...stalePrior, bumpedReplay];
+    // Build a weak prior that legitimately sits between the ancient
+    // strong window and the current window.
+    const weakRecent: UsagePurposeObservation[] = [0.05, 0.05, 0.05]
+      .flatMap((s) => [obs("noisy-a", s), obs("noisy-b", s)])
+      .map((o) => pinAt(o, -1_000_000));
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    // If the replay-bumped observedAt drove recency, the stale window
+    // would slot into the trailing position past `weakRecent` and
+    // unlock new-artifact. With dedup-aware recency, the stale window
+    // stays at -5_000_000, weakRecent (-1_000_000) is trailing, and
+    // the run is broken → reclassify.
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [stalePriorWithReplay, weakRecent])
+        .kind,
+    ).toBe("reclassify");
+  });
+
   test("equal-recency priorWindows are evaluated as a tied group (caller order does not matter)", () => {
     // Trust-boundary: when two prior windows share the same max observedAt
     // (coarsened-to-the-second batches, same-frame producers), array order
@@ -730,30 +797,33 @@ describe("suggestAction", () => {
     // The trailing run starts at the prior with the highest observedAt.
     // A non-strong window in that trailing position breaks the run, so an
     // old outlier cannot satisfy stability for an unrelated current window.
-    // Recency is timestamp-derived (NOT array-position-derived), so we
-    // construct windows in a deterministic temporal order.
+    // Recency is timestamp-derived (NOT array-position-derived), and all
+    // priors must be strictly older than the current window — so we
+    // pin every observation's `observedAt` explicitly here.
+    function pinAt<T extends UsagePurposeObservation>(o: T, at: number): T {
+      return { ...o, observedAt: at };
+    }
     const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    const strongAtT1: UsagePurposeObservation[] = strongPriorWindow().map((o) =>
+      pinAt(o, -3_000_000),
+    );
+    const strongAtT2: UsagePurposeObservation[] = strongPriorWindow().map((o) =>
+      pinAt(o, -2_000_000),
+    );
+    const weakAtT1: UsagePurposeObservation[] = [0.05, 0.05, 0.05]
+      .flatMap((s) => [obs("noisy-a", s), obs("noisy-b", s)])
+      .map((o) => pinAt(o, -3_000_000));
+    const weakAtT2: UsagePurposeObservation[] = [0.05, 0.05, 0.05]
+      .flatMap((s) => [obs("noisy-c", s), obs("noisy-d", s)])
+      .map((o) => pinAt(o, -2_000_000));
 
-    // Case 1: weak window most-recent → trailing weak → run length 0 →
-    // reclassify. Build strong first (earlier timestamps), weak second.
-    const strongOlder = strongPriorWindow();
-    const weakNewer: UsagePurposeObservation[] = [
-      ...[0.05, 0.05, 0.05].map((s) => obs("noisy-a", s)),
-      ...[0.05, 0.05, 0.05].map((s) => obs("noisy-b", s)),
-    ];
+    // Case 1: trailing prior is weak → run length 0 → reclassify.
     expect(
-      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [strongOlder, weakNewer]).kind,
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [strongAtT1, weakAtT2]).kind,
     ).toBe("reclassify");
-
-    // Case 2: strong window most-recent → trailing strong → run length 1 →
-    // new-artifact. Build weak first (earlier timestamps), strong second.
-    const weakOlder: UsagePurposeObservation[] = [
-      ...[0.05, 0.05, 0.05].map((s) => obs("noisy-c", s)),
-      ...[0.05, 0.05, 0.05].map((s) => obs("noisy-d", s)),
-    ];
-    const strongNewer = strongPriorWindow();
+    // Case 2: trailing prior is strong → run length 1 → new-artifact.
     expect(
-      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [weakOlder, strongNewer]).kind,
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [weakAtT1, strongAtT2]).kind,
     ).toBe("new-artifact");
   });
 });

@@ -480,28 +480,36 @@ function countStrongDriftPriors(
     (w) => w !== current && windowSignature(w) !== currentSig,
   );
   // Pair each window with its max observedAt drawn ONLY from observations
-  // that pass the same validity check `detectDrift` applies. Otherwise an
-  // invalid sample (missing scope, malformed agentId, non-string
-  // contextText) carrying a high `observedAt` could win the recency race
-  // and reorder priors — letting an attacker plant a "fresh-looking"
-  // junk timestamp on top of a stale strong-drift window. Computing
-  // recency from the same validated samples that detection itself trusts
-  // closes that path.
-  const indexed = filteredPriors.map((window) => {
-    // let: per-window max-observedAt accumulator (validated samples only)
-    let maxAt = Number.NEGATIVE_INFINITY;
-    for (const o of window) {
-      if (!isObservationValid(o)) continue;
-      if (Number.isFinite(o.observedAt) && o.observedAt > maxAt) maxAt = o.observedAt;
-    }
-    return { window, maxAt };
-  });
+  // that pass the same validity check `detectDrift` applies AND that
+  // survive same-key dedup (canonical replay collapses to MIN observedAt
+  // per `(scope, agentId, eventId)` bucket). Computing recency from raw
+  // observations would let two attacks slip through:
+  //   1. an invalid sample (missing scope, malformed agentId) with a
+  //      junk future timestamp could plant fake recency;
+  //   2. a same-key replay with the same payload but a bumped
+  //      `observedAt` would be ignored for scoring (correct) yet still
+  //      raise `maxAt` and forge recency on a stale window (the bug).
+  // Pulling recency from deduped winners closes both paths.
+  const indexed = filteredPriors.map((window) => ({
+    window,
+    maxAt: windowMaxAtAfterDedup(window),
+  }));
   // Undated priors fail stability outright. Skipping them silently would
   // hide a most-recent weak/low-quality window that should break the
   // trailing run — letting an older strong window unlock `new-artifact`
   // during degraded telemetry. The intent is "stable across recent
   // history"; if we can't ORDER history we don't know it's recent.
   if (indexed.some((e) => !Number.isFinite(e.maxAt))) return 0;
+  // Stability requires priors strictly older than the current window. A
+  // caller that mixes a newer or same-time window into priorWindows
+  // (sliding-window bookkeeping bug, multi-buffer mixup) must NOT have
+  // it count toward stability. Drop the current window's recency the
+  // same way priors compute theirs (deduped) so the comparison is fair.
+  // If the current window itself has no finite recency, the run cannot
+  // be ordered — fail stability outright.
+  const currentMaxAt = windowMaxAtAfterDedup(current);
+  if (!Number.isFinite(currentMaxAt)) return 0;
+  const olderIndexed = indexed.filter((e) => e.maxAt < currentMaxAt);
   // Group windows by maxAt and walk groups from newest to oldest. Within a
   // tied group, EVERY window must clear the strong-drift bar — otherwise
   // the whole tied group breaks the run. This removes caller-steerability
@@ -510,7 +518,7 @@ function countStrongDriftPriors(
   // array order, because any failing window in the trailing tie group
   // halts the count regardless of where it sits in the array.
   const groups = new Map<number, (typeof indexed)[number][]>();
-  for (const entry of indexed) {
+  for (const entry of olderIndexed) {
     const list = groups.get(entry.maxAt);
     if (list === undefined) groups.set(entry.maxAt, [entry]);
     else list.push(entry);
@@ -611,6 +619,44 @@ function normalizeScope(scope: string | undefined): string {
  * observedAt) so a clone of the array still produces the same signature.
  * Sorted to be order-independent — `[a, b]` and `[b, a]` are the same window.
  */
+/**
+ * Compute a window's max `observedAt` from observations that survive the
+ * same validation + same-key dedup that `detectDrift` applies. Used by
+ * `countStrongDriftPriors` so a same-eventId replay with a bumped
+ * `observedAt` cannot forge fresh recency on a stale window — we collapse
+ * each `(scope, agentId, eventId)` bucket to its MIN observedAt
+ * (canonical first occurrence), then take the MAX across buckets.
+ *
+ * Observations without `eventId` are each their own bucket — there is no
+ * replay protection for them, so they keep their raw `observedAt`.
+ *
+ * Returns `Number.NEGATIVE_INFINITY` when no validated observation has a
+ * finite `observedAt` (callers treat that as "undated").
+ */
+function windowMaxAtAfterDedup(window: readonly UsagePurposeObservation[]): number {
+  const minByKey = new Map<string, number>();
+  const noKeyTimes: number[] = [];
+  for (const o of window) {
+    if (!isObservationValid(o)) continue;
+    if (!Number.isFinite(o.observedAt)) continue;
+    const eid = typeof o.eventId === "string" ? o.eventId.trim() : "";
+    if (eid.length === 0) {
+      noKeyTimes.push(o.observedAt);
+      continue;
+    }
+    const scope = normalizeScope(o.scope);
+    const agent = o.agentId.trim();
+    const key = `${String(scope.length)}:${scope}|${String(agent.length)}:${agent}|${eid}`;
+    const prev = minByKey.get(key);
+    if (prev === undefined || o.observedAt < prev) minByKey.set(key, o.observedAt);
+  }
+  // let: max accumulator across deduped buckets and no-eventId observations
+  let maxAt = Number.NEGATIVE_INFINITY;
+  for (const v of minByKey.values()) if (v > maxAt) maxAt = v;
+  for (const v of noKeyTimes) if (v > maxAt) maxAt = v;
+  return maxAt;
+}
+
 function windowSignature(window: readonly UsagePurposeObservation[]): string {
   const tokens: string[] = [];
   for (const o of window) {
