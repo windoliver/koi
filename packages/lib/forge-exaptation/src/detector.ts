@@ -134,8 +134,21 @@ export type DetectionResult =
        * cohort being a small slice.
        */
       readonly validObservationCount: number;
-      /** True iff every cohort observation had `eventId` (cohort-scoped). */
+      /**
+       * Window-wide replay protection: true iff EVERY valid observation in
+       * the window carried `eventId`. Matches the L0 contract on
+       * `UsagePurposeObservation.eventId`. Public consumers branching on
+       * this field can rely on it as a whole-window signal.
+       */
       readonly replayProtected: boolean;
+      /**
+       * Cohort-scoped replay protection: true iff every observation
+       * contributing to the divergent cohort carried `eventId`. Used by
+       * `suggestAction`'s action gate so a baseline sample missing
+       * `eventId` outside the cohort does not veto action for an
+       * otherwise replay-protected cohort.
+       */
+      readonly cohortReplayProtected: boolean;
       /**
        * True iff any cohort observation was normalized to `LEGACY_SCOPE`
        * (missing/blank `scope`). Such cohorts may merge multiple tenants
@@ -260,6 +273,20 @@ export function detectDrift(
     });
   }
 
+  // Single-artifact invariant: every valid observation in one window
+  // must share an artifactId. The detector is per-artifact, and a
+  // window mixing artifacts A and B would let evidence aggregate
+  // across them — driving rewrites/forks for the wrong artifact. Fail
+  // closed when the caller hands us a contaminated window.
+  const distinctArtifactIds = new Set<string>();
+  for (const v of valid) distinctArtifactIds.add(v.artifactId.trim());
+  if (distinctArtifactIds.size > 1) {
+    return deepFreeze({
+      kind: "invalid-config" as const,
+      reason: `window mixes ${String(distinctArtifactIds.size)} distinct artifactIds; detector is per-artifact`,
+    });
+  }
+
   // Partition by eventId presence. The replay-protectable subset is always
   // deduped — even when other samples in the window lack eventId — so a
   // partial telemetry failure cannot inflate evidence by passing through
@@ -325,14 +352,14 @@ export function detectDrift(
     thresholds,
   );
 
-  // Cohort-scoped replay protection: action-bearing decisions only need the
-  // observations that drive the cohort to be replay-protected. A baseline
-  // sample missing eventId in the same window is irrelevant to the verdict
-  // and must NOT veto action for an otherwise clean cohort. Earlier rounds
-  // gated on the whole window, which created an easy denial path: one bad
-  // emitter could keep the detector permanently non-actionable.
-  const replayProtected = cohort.allCohortHadEventId;
-
+  // Two replay-protection signals:
+  //   - `replayProtected` (window-wide): public contract field, true iff
+  //     every valid observation carried eventId. Matches the L0 docstring.
+  //   - `cohortReplayProtected` (cohort-scoped): used by suggestAction's
+  //     action gate so a baseline sample missing eventId outside the
+  //     cohort does not veto action for an otherwise clean cohort. A
+  //     downstream caller should NOT use `replayProtected` for the
+  //     action decision — that's what `cohortReplayProtected` is for.
   return deepFreeze({
     kind: "drift" as const,
     droppedCount,
@@ -340,7 +367,8 @@ export function detectDrift(
     conflictCount,
     missingEventIdCount,
     validObservationCount: unique.length,
-    replayProtected,
+    replayProtected: windowReplayProtected,
+    cohortReplayProtected: cohort.allCohortHadEventId,
     cohortHasLegacyScope: cohort.hasLegacyScope,
     report: {
       kind: "purpose_drift" as const,
@@ -396,7 +424,9 @@ export function suggestAction(
 ): ExaptationSuggestion {
   const result = detectDrift(observations, thresholds);
   if (result.kind !== "drift") return { kind: "none" };
-  if (!result.replayProtected) return { kind: "none" };
+  // Action gate uses cohort-scoped replay protection: baseline samples
+  // missing eventId outside the cohort do not veto action.
+  if (!result.cohortReplayProtected) return { kind: "none" };
   // Refuse irreversible action when any cohort observation lives in
   // LEGACY_SCOPE (the missing-/blank-scope compat bucket). Different
   // tenants that have not yet been migrated to explicit scope all share
@@ -489,20 +519,33 @@ function countStrongDriftPriors(
   // valid observations — if downstream a window mixes artifacts that's
   // already a contract violation, but we still want to reject any prior
   // whose artifact is not part of the current window's artifact set.
-  const currentArtifactIds = new Set<string>();
+  // Current window's artifactId — invariant: a valid current window has
+  // exactly one (`detectDrift` rejects mixed-artifact windows as
+  // invalid-config; we won't reach this code path for those). We still
+  // collect-then-take-first so this stays robust if validation rules
+  // ever loosen.
+  // let: single-artifact id for current window
+  let currentArtifactId: string | undefined;
   for (const o of current) {
     if (!isObservationValid(o)) continue;
     currentIdentities.add(observationIdentity(o));
-    currentArtifactIds.add(o.artifactId.trim());
+    if (currentArtifactId === undefined) currentArtifactId = o.artifactId.trim();
   }
+  if (currentArtifactId === undefined) return 0;
   const filteredPriors = priorWindows.filter((w) => {
     if (w === current) return false;
+    // Each prior must be SINGLE-artifact AND match the current. A prior
+    // whose validated observations span multiple artifacts is itself
+    // contaminated and unsafe to use as historical evidence; a prior
+    // bound to a different artifact is unrelated history.
+    const priorArtifactIds = new Set<string>();
     for (const o of w) {
       if (!isObservationValid(o)) continue;
       if (currentIdentities.has(observationIdentity(o))) return false;
-      if (!currentArtifactIds.has(o.artifactId.trim())) return false;
+      priorArtifactIds.add(o.artifactId.trim());
     }
-    return true;
+    if (priorArtifactIds.size !== 1) return false;
+    return priorArtifactIds.has(currentArtifactId);
   });
   // Pair each window with its max observedAt drawn ONLY from observations
   // that pass the same validity check `detectDrift` applies AND that
@@ -562,7 +605,7 @@ function countStrongDriftPriors(
         groupOk = false;
         break;
       }
-      if (!r.replayProtected) {
+      if (!r.cohortReplayProtected) {
         groupOk = false;
         break;
       }

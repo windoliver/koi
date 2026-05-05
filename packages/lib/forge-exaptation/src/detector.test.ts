@@ -650,6 +650,66 @@ describe("suggestAction", () => {
     ).toBe("reclassify");
   });
 
+  test("current window mixing artifactIds is rejected as invalid-config", () => {
+    // The detector is per-artifact. A caller bug that mixes
+    // observations from different artifacts into one window must NOT
+    // proceed to drift detection — otherwise evidence would aggregate
+    // across artifacts and drive rewrites/forks for the wrong one.
+    const observations: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("a1", s), artifactId: "artifact-A" })),
+      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("a2", s), artifactId: "artifact-B" })),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("invalid-config");
+    if (result.kind === "invalid-config") {
+      expect(result.reason).toContain("2");
+      expect(result.reason).toContain("artifactId");
+    }
+    // suggestAction also returns none when the current window is invalid.
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS).kind).toBe("none");
+  });
+
+  test("multi-artifact prior windows do not count toward stability", () => {
+    // Even if a caller's current window is clean, a prior window
+    // mixing artifact identities is itself contaminated and unsafe to
+    // use as historical evidence.
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    function pinAt(o: UsagePurposeObservation, at: number): UsagePurposeObservation {
+      return { ...o, observedAt: at };
+    }
+    const mixedArtifactPrior: UsagePurposeObservation[] = [
+      ...strongPriorWindow()
+        .slice(0, 6)
+        .map((o) => pinAt({ ...o, artifactId: "artifact-1" }, -8_000_000)),
+      ...strongPriorWindow()
+        .slice(6, 12)
+        .map((o) => pinAt({ ...o, artifactId: "artifact-X" }, -8_000_000)),
+    ];
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [mixedArtifactPrior]).kind,
+    ).toBe("reclassify");
+  });
+
+  test("replayProtected reflects window-wide eventId presence (public contract)", () => {
+    // Window-wide field tracks whether EVERY valid observation had
+    // eventId. Cohort-scoped flag is exposed separately as
+    // cohortReplayProtected for the action gate. A consumer that
+    // branches on the public replayProtected field gets the L0 contract
+    // semantic, NOT a partially-degraded cohort signal.
+    const observations: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => obs("a1", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("a2", s)),
+      // Baseline missing eventId — outside the cohort, but in the window.
+      obsNoId("baseline", 0.05),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      expect(result.replayProtected).toBe(false); // window has missing
+      expect(result.cohortReplayProtected).toBe(true); // cohort is clean
+    }
+  });
+
   test("missing artifactId is rejected at validation", () => {
     // L0 contract: artifactId is required. Observations without it
     // cannot attribute drift to an artifact and must drop.
@@ -1052,7 +1112,11 @@ describe("partial-eventId dedup + cohort-scoped replay protection", () => {
     const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
     if (result.kind === "drift") {
-      expect(result.replayProtected).toBe(true);
+      // 1 baseline missing eventId → window-wide replayProtected: false.
+      // Cohort itself is clean → cohortReplayProtected: true (this is
+      // what suggestAction's action gate consults).
+      expect(result.replayProtected).toBe(false);
+      expect(result.cohortReplayProtected).toBe(true);
       expect(result.missingEventIdCount).toBe(1);
     }
     expect(
@@ -1074,7 +1138,11 @@ describe("partial-eventId dedup + cohort-scoped replay protection", () => {
     const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
     if (result.kind === "drift") {
-      expect(result.replayProtected).toBe(true);
+      // Window has 6 missing-eventId baselines → window-wide replayProtected
+      // is false. Cohort itself is clean → cohortReplayProtected is true.
+      // The two fields now express the distinction explicitly.
+      expect(result.replayProtected).toBe(false);
+      expect(result.cohortReplayProtected).toBe(true);
       expect(result.missingEventIdCount).toBe(6);
     }
     expect(
