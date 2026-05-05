@@ -57,7 +57,13 @@ import { GOVERNANCE, sessionId } from "@koi/core";
 import { formatCost, formatTokens } from "@koi/core/cost-tracker";
 import type { DisplayableResumedMessage } from "@koi/core/message";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
-import { createFileSessionRegistry, createSubprocessBackend } from "@koi/daemon";
+import {
+  type AgentRegistryBridge,
+  attachAgentRegistry,
+  createDaemonSpawnChildFn,
+  createFileSessionRegistry,
+  createSubprocessBackend,
+} from "@koi/daemon";
 import { createAuthNotificationHandler } from "@koi/fs-nexus";
 import type { PatternRule } from "@koi/governance-defaults";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
@@ -2065,6 +2071,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // torn down and replaced by the live bridge when subprocess children are
   // present. let: assigned once; set to null when live mode takes over.
   let registryOnlyBridge: DaemonBridge | null = null;
+  // Agent-registry bridge (#1944). Opened when the daemon supervisor is
+  // active AND the manifest declares subprocess children with `command`,
+  // so daemon-spawned subprocess children mirror their lifecycle into the
+  // manifest reconciler's AgentRegistry. Disposed before the daemon
+  // supervisor handle.
+  let agentRegistryBridge: AgentRegistryBridge | null = null;
   // Declared ahead of interim teardown so a SIGUSR1 arriving during boot
   // can safely inspect it without tripping a TDZ error. Assigned below,
   // once the advisory lock has been acquired.
@@ -2161,6 +2173,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         } catch {}
         try {
           await daemonSupervisorHandle?.dispose();
+        } catch {}
+        try {
+          await agentRegistryBridge?.close();
         } catch {}
         try {
           await supervisionHandle?.dispose();
@@ -3000,32 +3015,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         console.warn("[tui-command] registry-only bridge init failed:", err);
       }
     }
-    // Manifest-driven supervision wiring (#1866). When the loaded manifest
-    // declares `supervision:`, activate the subsystem here so the declared
-    // children appear in the runtime's AgentRegistry and in the /agents
-    // view. The returned handle is retained so shutdown can dispose it in
-    // reverse construction order (see the SIGINT / system:quit chain
-    // below). The helper is safe to call with `undefined` supervision —
-    // it's skipped at the call site.
-    if (manifestSupervision !== undefined) {
-      try {
-        const supHandle = await wireManifestSupervision({
-          runtime: handle.runtime,
-          supervisorManifestName: flags.manifest ?? "supervisor",
-          supervision: manifestSupervision,
-          onChange: (children) => {
-            store.dispatch({ kind: "set_supervised_children", children });
-          },
-        });
-        supervisionHandle = supHandle;
-      } catch (err: unknown) {
-        console.warn("[tui-command] supervision wiring failed:", err);
-      }
-    }
-    // Daemon supervisor wiring (#1944). When the manifest declares supervision
-    // with at least one subprocess child, instantiate the @koi/daemon
-    // Supervisor + FileSessionRegistry + bridge. Skipped when no subprocess
-    // children — in-process supervision keeps using wireManifestSupervision.
+    // Daemon supervisor wiring (#1944). Constructed BEFORE
+    // wireManifestSupervision so its supervisor + sessionRegistry can back
+    // a daemon-aware SpawnChildFn for subprocess children with `command`.
+    // Skipped when the manifest has no subprocess children.
     const hasSubprocessChild =
       manifestSupervision?.children.some((c) => c.isolation === "subprocess") === true;
     if (hasSubprocessChild) {
@@ -3037,9 +3030,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         console.warn("[tui-command] registry-only bridge close failed:", err);
       }
       try {
-        // Synthesise a minimal AgentManifest from the loaded manifest
-        // fields. wireDaemonSupervisor accepts it for future use; the
-        // current implementation does not read it.
         const supervisorManifest: import("@koi/core").AgentManifest = {
           name: flags.manifest ?? "supervisor",
           version: "0",
@@ -3058,6 +3048,51 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         store.dispatch({ kind: "set_supervisor_attached", attached: true });
       } catch (err: unknown) {
         console.warn("[tui-command] daemon supervisor wiring failed:", err);
+      }
+    }
+    // Manifest-driven supervision wiring (#1866 + #1944). When the loaded
+    // manifest declares `supervision:`, activate the subsystem here so the
+    // declared children appear in the runtime's AgentRegistry and in the
+    // /agents view. When the daemon supervisor is also active and a child
+    // declares `command`, route that child through the daemon adapter so
+    // /supervisor, /bg, ownership checks, and on-path kills observe and
+    // control the same worker. Children without `command` continue to
+    // use the in-process stub for backwards compatibility.
+    if (manifestSupervision !== undefined) {
+      try {
+        const daemonHandle = daemonSupervisorHandle;
+        const subprocessSpawnFactory =
+          daemonHandle !== undefined
+            ? (agentRegistry: import("@koi/core").AgentRegistry) => {
+                agentRegistryBridge = attachAgentRegistry({
+                  supervisor: daemonHandle.supervisor,
+                  agentRegistry,
+                });
+                return createDaemonSpawnChildFn({
+                  supervisor: daemonHandle.supervisor,
+                  sessionRegistry: daemonHandle.registry,
+                  agentRegistry,
+                  bridge: agentRegistryBridge,
+                  // Subprocess children must declare a `command` to reach
+                  // this branch (the dispatcher in wireManifestSupervision
+                  // only routes here when childSpec.command is set), so
+                  // the builder is always invoked with a defined command.
+                  commandBuilder: (_parent, childSpec) => childSpec.command ?? [],
+                });
+              }
+            : undefined;
+        const supHandle = await wireManifestSupervision({
+          runtime: handle.runtime,
+          supervisorManifestName: flags.manifest ?? "supervisor",
+          supervision: manifestSupervision,
+          onChange: (children) => {
+            store.dispatch({ kind: "set_supervised_children", children });
+          },
+          ...(subprocessSpawnFactory !== undefined && { subprocessSpawnFactory }),
+        });
+        supervisionHandle = supHandle;
+      } catch (err: unknown) {
+        console.warn("[tui-command] supervision wiring failed:", err);
       }
     }
     // Prime the runtime's in-memory transcript with the resumed
@@ -3334,6 +3369,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const hardExit = setTimeout(() => process.exit(130), FORCE_HARD_EXIT_MS);
         try {
           await daemonSupervisorHandle?.dispose();
+        } catch {
+          // Best-effort — must not block force-quit.
+        }
+        try {
+          await agentRegistryBridge?.close();
         } catch {
           // Best-effort — must not block force-quit.
         }
@@ -4054,6 +4094,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       } catch (disposeErr) {
         process.stderr.write(
           `[koi tui] daemon supervisor dispose failed during shutdown: ${
+            disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+          }\n`,
+        );
+      }
+      try {
+        await agentRegistryBridge?.close();
+      } catch (disposeErr) {
+        process.stderr.write(
+          `[koi tui] agent-registry bridge close failed during shutdown: ${
             disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
           }\n`,
         );

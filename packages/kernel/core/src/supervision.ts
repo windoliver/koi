@@ -62,6 +62,15 @@ export interface ChildSpec {
   readonly shutdownTimeoutMs?: number;
   /** Process isolation mode. Default: "in-process". */
   readonly isolation?: ChildIsolation;
+  /**
+   * Subprocess command for `isolation: "subprocess"` children. When set
+   * and a daemon-backed spawn adapter is wired, the supervised child is
+   * routed through the daemon Supervisor instead of the in-process stub.
+   * Ignored for `in-process` children. When omitted on a subprocess
+   * child, the runtime falls back to the stub registry-only entry so
+   * legacy declarations keep working.
+   */
+  readonly command?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
