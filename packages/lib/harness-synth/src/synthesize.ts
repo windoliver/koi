@@ -439,6 +439,16 @@ function guardAttempt<T>(
       resolve(result);
     };
 
+    // Fail closed when the budget is already exhausted. setTimeout(fn, 0)
+    // would queue the timer behind the microtask that resolves run()'s
+    // promise, so a stage entered with no budget left could still execute
+    // and even succeed before the timer fires — defeating the wall-clock
+    // cap and launching side effects past the attempt deadline.
+    if (Number.isFinite(timeoutMs) && timeoutMs <= 0) {
+      attempt.abort();
+      resolve({ ok: false, reason: `${label} timed out after 0ms` });
+      return;
+    }
     let timer: ReturnType<typeof setTimeout> | null = null;
     let timedOut = false;
     if (Number.isFinite(timeoutMs)) {

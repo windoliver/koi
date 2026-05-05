@@ -35,6 +35,7 @@ export function buildRefinementPrompt(ctx: RefinementPromptContext): string {
       kind: ctx.candidate.kind,
       name: ctx.candidate.name,
       description: ctx.candidate.description,
+      proposedScope: ctx.candidate.proposedScope,
     },
     priorReason: ctx.priorReason,
     priorCode: ctx.priorCode,

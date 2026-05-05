@@ -714,6 +714,55 @@ describe("synthesize", () => {
     expect(seenPrompts[1] ?? "").toContain("verification failed");
   });
 
+  test("zero remaining budget short-circuits — verify is never invoked", async () => {
+    let now = 0;
+    const clock = (): number => now;
+    let verifyCalls = 0;
+    const generate: GenerateCallback = () =>
+      new Promise<string>((resolve) => {
+        // generate consumes the entire budget
+        now += 100;
+        resolve(validRaw());
+      });
+    const verify: VerifyCallback = () => {
+      verifyCalls += 1;
+      return { ok: true };
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      attemptTimeoutMs: 100,
+      clock,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/timed out after 0ms/);
+    expect(verifyCalls).toBe(0);
+  });
+
+  test("refinement prompt preserves candidate.proposedScope across retries", async () => {
+    const seenPrompts: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      seenPrompts.push(p);
+      return validRaw();
+    };
+    let n = 0;
+    const verify: VerifyCallback = () => {
+      n += 1;
+      return n === 1 ? { ok: false, reason: "nope" } : { ok: true };
+    };
+    const candidate: ForgeCandidate = { ...CANDIDATE, proposedScope: "global" };
+    const result = await synthesize(
+      { ...INPUT, candidate },
+      { generate, verify, maxAttempts: 2, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(true);
+    expect(seenPrompts[0] ?? "").toContain("global");
+    expect(seenPrompts[1] ?? "").toContain("global");
+  });
+
   test("attemptTimeoutMs is one budget across generate+verify (not double)", async () => {
     // generate consumes most of the budget; verify must inherit only what is
     // left, so total wall-clock per attempt stays inside attemptTimeoutMs.
