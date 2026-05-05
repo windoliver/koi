@@ -96,10 +96,11 @@ Replay protection is a **per-observation data contract**, not a config knob.
 
 Tenant isolation is a runtime data contract, enforced by required fields — not by upstream documentation.
 
-- Every observation carries `scope: string` (tenant / account / realm). It is **required**: `isObservationValid` drops observations with missing or whitespace-only `scope`, and there is no implicit "global" scope. That is the silent-merge failure mode the field exists to prevent.
+- Every observation carries `scope?: string` (tenant / account / realm). It is **optional only for backward compatibility**: missing or whitespace-only values normalize to a single explicit `__legacy__` sentinel inside the detector, so pre-multi-tenant emitters keep wire-compat (the silent-drop failure mode is avoided) without silently merging into an unnamed "global" namespace (the silent-merge failure mode is also avoided — the sentinel is itself a scope, observable in cohort keys, alertable, and grep-able).
 - Replay dedup is keyed on `(scope, agentId, eventId)`. Two tenants that happen to mint the same `(agentId, eventId)` keep their evidence independent.
 - Cohort attribution is keyed on `(scope, agentId)`. The same logical agent in two tenants counts as two cohort members — different tenants are different observers.
-- Single-tenant deployments may use a constant scope (e.g. `"default"`); the field still has to be set, so every emitter has to make a deliberate choice rather than rely on `agentId` formatting conventions.
+- **New emitters MUST set `scope`** explicitly. Single-tenant deployments may use a constant value (e.g. `"default"`); multi-tenant deployments MUST derive it from authenticated identity at the boundary. Any deployment that lets multi-tenant traffic fall into `__legacy__` will mix tenants in that bucket — the sentinel is a migration aid, not a default tenant.
+- Emitters can be migrated incrementally: ship the new `scope`-aware producer alongside legacy producers; observe `__legacy__` in dashboards/alerts; swap producers tenant-by-tenant; deprecate `__legacy__` once it is empty.
 
 ## eventId Contract
 

@@ -47,18 +47,23 @@ export interface UsagePurposeObservation {
   /** Truncated model response text preceding the tool call. */
   readonly contextText: string;
   /**
-   * Tenant / account / realm namespace. Required, not optional — the
-   * exaptation detector keys both replay dedup and cohort attribution on
-   * `(scope, agentId, ...)`, so providing scope is what guarantees runtime
-   * tenant isolation. Single-tenant deployments may use a constant value
-   * (e.g. `"default"`); the field exists to force every emitter to make a
-   * conscious choice rather than rely on `agentId` formatting conventions.
+   * Tenant / account / realm namespace. Optional **only for backward
+   * compatibility** with pre-multi-tenant emitters: the exaptation detector
+   * keys both replay dedup and cohort attribution on
+   * `(scope, agentId, ...)`, and missing or whitespace-only values are
+   * normalized to a single explicit `"__legacy__"` namespace inside the
+   * detector. That preserves wire-compat during a rolling upgrade — old
+   * data is bucketed compatibly rather than silently dropped — while still
+   * preventing the implicit-global-namespace failure mode (the sentinel
+   * is named, observable, and distinct from any user-chosen scope).
    *
-   * Whitespace-only values are treated as missing and the observation is
-   * dropped. There is no implicit "global" scope — that is exactly the
-   * silent-merge failure mode this field exists to prevent.
+   * **New emitters MUST set this field.** Any deployment with more than
+   * one tenant that lets observations fall into `__legacy__` will cause
+   * cross-tenant evidence to mix in that bucket. Single-tenant deployments
+   * may use a constant value (e.g. `"default"`); multi-tenant deployments
+   * MUST derive scope from authenticated identity at the boundary.
    */
-  readonly scope: string;
+  readonly scope?: string;
   /** Agent that made the observation, identified within `scope`. */
   readonly agentId: string;
   /** Jaccard distance vs the brick's stated purpose (0-1). */

@@ -469,11 +469,13 @@ describe("suggestAction", () => {
     // timestamp has zero influence.
     const staleStrongWithJunkFutureStamp: UsagePurposeObservation[] = [
       ...strongPriorWindow(),
-      // Junk: blank scope makes the observation invalid; the future
-      // timestamp must NOT be used for recency.
+      // Junk: blank agentId makes the observation invalid; the future
+      // timestamp must NOT be used for recency. (scope: "" is now
+      // legitimate compat-path data, so we use the still-required
+      // agentId field to force an invalid sample.)
       {
-        scope: "",
-        agentId: "ghost",
+        scope: "tenant-X",
+        agentId: "",
         divergenceScore: 0.99,
         contextText: "junk",
         observedAt: Number.MAX_SAFE_INTEGER,
@@ -1049,21 +1051,54 @@ describe("tenant isolation via required scope field", () => {
     }
   });
 
-  test("missing/empty scope drops the observation (no implicit global scope)", () => {
-    // Required-field contract: omitting scope (or whitespace-only) is dropped
-    // rather than silently merging into an implicit global namespace.
+  test("missing/blank scope normalizes to __legacy__ sentinel (backward compat)", () => {
+    // Compat path for pre-multi-tenant emitters: missing or whitespace-only
+    // scope normalizes to a single named sentinel rather than dropping the
+    // observation outright. The sentinel is observable (it shows up
+    // explicitly in cohort keys), so deployments can grep / alert and
+    // migrate emitters off of it. Crucially there is still NO implicit
+    // global namespace — `__legacy__` is itself a scope, so two tenants
+    // with real scopes stay isolated from each other and from legacy
+    // traffic.
+    function omitScope(o: UsagePurposeObservation): UsagePurposeObservation {
+      const { scope: _scope, ...rest } = o;
+      return rest;
+    }
     const observations: UsagePurposeObservation[] = [
-      ...Array.from({ length: 9 }, (_, i) => ({
-        ...obs(`agent-${String(i)}`, 0.95),
-        scope: "  ",
-      })),
+      ...[0.95, 0.95, 0.95].map((s) => omitScope(obs("a", s))),
+      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("b", s), scope: "" })),
+      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("c", s), scope: "  " })),
     ];
     const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
-    // Total telemetry loss: every observation dropped at validation surfaces
-    // as `invalid-config` so callers branch into a degraded-input alarm
-    // path instead of confusing it with a healthy "no-drift" signal.
-    expect(result.kind).toBe("invalid-config");
-    if (result.kind === "invalid-config") expect(result.reason).toContain("9");
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      // All three legacy-scope agents bucket into __legacy__ and
+      // contribute to the cohort.
+      expect(result.report.divergentAgents).toBe(3);
+      expect(result.droppedCount).toBe(0);
+    }
+  });
+
+  test("legacy-scope traffic does NOT bleed into tenants with real scope", () => {
+    // The __legacy__ sentinel is itself a scope, so observations missing
+    // scope share a bucket with each other but stay isolated from
+    // tenants that DO set scope. Otherwise the compat path would
+    // re-introduce the silent multi-tenant merge it was meant to avoid.
+    function omitScope(o: UsagePurposeObservation): UsagePurposeObservation {
+      const { scope: _scope, ...rest } = o;
+      return rest;
+    }
+    const observations: UsagePurposeObservation[] = [
+      // Same agentId in legacy + a real tenant — must count as 2
+      // independent cohort members.
+      ...[0.95, 0.95, 0.95].map((s) => omitScope(obs("shared", s))),
+      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("shared", s), scope: "tenant-X" })),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      expect(result.report.divergentAgents).toBe(2);
+    }
   });
 
   test("retries within a single (scope, agentId) collapse via dedup", () => {

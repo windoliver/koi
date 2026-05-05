@@ -216,9 +216,11 @@ export function detectDrift(
     return deepFreeze({ kind: "invalid-config", reason: configError });
   }
 
-  // Validate observations. scope + agentId + divergenceScore are required.
-  // eventId is OPTIONAL data — its presence on every valid sample is what
-  // unlocks replay protection downstream.
+  // Validate observations. agentId + divergenceScore are required;
+  // scope is optional for backward compatibility and missing/blank values
+  // are normalized to `LEGACY_SCOPE` (a named, observable sentinel — NOT
+  // an implicit global namespace). eventId is OPTIONAL data — its presence
+  // on every valid sample is what unlocks replay protection downstream.
   //
   // Normalize scope and agentId by trimming so all downstream bucketing
   // (dedup, cohort attribution) sees one canonical form. Without this,
@@ -227,12 +229,12 @@ export function detectDrift(
   const valid: UsagePurposeObservation[] = [];
   for (const o of observations) {
     if (!isObservationValid(o)) continue;
-    const trimmedScope = o.scope.trim();
+    const normalizedScope = normalizeScope(o.scope);
     const trimmedAgent = o.agentId.trim();
-    if (trimmedScope === o.scope && trimmedAgent === o.agentId) {
+    if (normalizedScope === o.scope && trimmedAgent === o.agentId) {
       valid.push(o);
     } else {
-      valid.push({ ...o, scope: trimmedScope, agentId: trimmedAgent });
+      valid.push({ ...o, scope: normalizedScope, agentId: trimmedAgent });
     }
   }
   const droppedCount = observations.length - valid.length;
@@ -516,15 +518,32 @@ function describeInvalidThresholds(t: ExaptationThresholds): string | undefined 
   return undefined;
 }
 
+/**
+ * Sentinel namespace for observations whose `scope` is missing or blank.
+ * Named on purpose so it shows up explicitly in cohort keys and dedup
+ * buckets — callers can grep for it, alert on it, and migrate emitters
+ * away from it. The sentinel is NOT a default tenant: any deployment with
+ * more than one real tenant that lets traffic fall here will see those
+ * tenants share a single bucket. The doc on `UsagePurposeObservation.scope`
+ * states this contract.
+ */
+const LEGACY_SCOPE = "__legacy__";
+
+function normalizeScope(scope: string | undefined): string {
+  if (typeof scope !== "string") return LEGACY_SCOPE;
+  const trimmed = scope.trim();
+  return trimmed.length === 0 ? LEGACY_SCOPE : trimmed;
+}
+
 function isObservationValid(o: UsagePurposeObservation): boolean {
   if (!isUnitInterval(o.divergenceScore)) return false;
-  // Trim agentId / scope before checking emptiness, the same way eventId is
-  // handled. A blank-but-present string from a degraded serializer must not
-  // count as a real identity — otherwise an unattributable source could
-  // satisfy minDivergentAgents and unlock irreversible suggestions, or merge
-  // into an implicit "global" tenant scope (the silent-merge failure mode
-  // the required-`scope` contract exists to prevent).
-  if (typeof o.scope !== "string" || o.scope.trim().length === 0) return false;
+  // scope is intentionally permissive: missing / blank values are mapped
+  // to LEGACY_SCOPE so pre-multi-tenant emitters keep wire-compat. agentId
+  // remains required — without an agent identity we cannot attribute
+  // cohort membership, so a blank-but-present string from a degraded
+  // serializer must still drop. Otherwise an unattributable source could
+  // satisfy minDivergentAgents and unlock irreversible suggestions.
+  if (o.scope !== undefined && typeof o.scope !== "string") return false;
   if (typeof o.agentId !== "string" || o.agentId.trim().length === 0) return false;
   // contextText must be a string. Empty / whitespace is allowed (a tool with
   // no preceding model text is legitimate), but a non-string from an untyped
@@ -534,9 +553,15 @@ function isObservationValid(o: UsagePurposeObservation): boolean {
   return true;
 }
 
-/** Composite `(scope, agentId)` key. Length-prefix prevents `a:b` / `ab:` collisions. */
-function scopeAgentKey(scope: string, agentId: string): string {
-  return `${String(scope.length)}:${scope}:${agentId}`;
+/**
+ * Composite `(scope, agentId)` key. Length-prefix prevents `a:b` / `ab:`
+ * collisions. Accepts `scope` as `string | undefined` because L0 made the
+ * field optional; missing/blank values are normalized to `LEGACY_SCOPE`
+ * here so callers can hand observations through as-is.
+ */
+function scopeAgentKey(scope: string | undefined, agentId: string): string {
+  const s = normalizeScope(scope);
+  return `${String(s.length)}:${s}:${agentId}`;
 }
 
 interface DedupOutcome {
