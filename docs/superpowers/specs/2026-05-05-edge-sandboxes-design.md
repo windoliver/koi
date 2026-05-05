@@ -90,6 +90,29 @@ src/
 
 - Auth: `apiToken` + `accountId` from config. Token never logged.
 - **Per-instance script naming:** every `create()` call deploys to a unique script name `${configPrefix}-${randomUUID()}` (e.g., `koi-sandbox-7f3a...`). Config supplies an optional `scriptPrefix` (default `koi-sandbox`); the random suffix is owned by the instance. Two concurrent `create()` calls cannot collide, and `destroy()` only deletes the instance's own script.
+
+#### Create-failure state machine (orphan-safe)
+
+Remote create involves multiple sequential mutations: (1) `PUT /workers/scripts/{name}` (deploy bytes), (2) optional per-key `PUT /workers/scripts/{name}/secrets` (env vars from profile), (3) optional route binding. Any of these can fail mid-way.
+
+States:
+
+```
+allocating → deploying → secrets-uploading → bound → ready
+       \         \              \                \
+        \         \              \                +--> create failure → cleanup
+         \         \              +-------------------> create failure → cleanup
+          \         +--------------------------------> create failure → cleanup
+           +-------------------------------------------> no remote artifact yet
+```
+
+Rules:
+
+- **Bounded create timeout:** `createTimeoutMs` (default 30_000) wraps the entire create flow. On timeout, transition to `create failure`.
+- **Best-effort delete:** on any create failure after the deploy step has been issued (i.e., a script with the per-attempt `name` may exist), the adapter unconditionally fires `DELETE /workers/scripts/{name}` regardless of which step failed. This is fire-and-forget with its own short timeout (`cleanupTimeoutMs`, default 5_000).
+- **Cleanup confirmation:** if the cleanup DELETE returns 200 / 204 / 404, return `KoiError { code: "CREATE_FAILED", cleanedUp: true, cause }`. If it returns any other status, times out, or the network errors, return `KoiError { code: "CREATE_FAILED_INDETERMINATE", scriptName: name, cleanedUp: false, cause }`. The latter is operator-actionable: it carries the leaked artifact name so a janitor job (or the provider-smoke leak-check) can sweep it.
+- **Idempotent retries are caller responsibility:** the adapter never auto-retries `create`. Each retry produces a new UUID and is independent.
+- **No orphan from successful create then later failure:** once `ready`, only `destroy()` deletes; failures during `exec()` poison but do not auto-delete (caller decides).
 - Endpoint: `https://api.cloudflare.com/client/v4/accounts/{accountId}/workers/scripts/{instanceScriptName}` for deploy/delete; deployed worker URL for invoke.
 - Network: only `fetch` — no SDK dep.
 - Instance:
@@ -117,15 +140,18 @@ Every option is one of: **mapped** (forwarded over the wire), **rejected** (inst
 | `onStdout`, `onStderr` | **rejected** | Throw `KoiError { code: "UNSUPPORTED" }` immediately if either is set. No silent drop. |
 | `signal` (`AbortSignal`) | **bridged-locally + remote-cancel** | (a) Local: abort the host `fetch` with the same signal so the caller's promise rejects on schedule. (b) Remote: when signal fires OR `timeoutMs` elapses, fire-and-forget POST to a `/cancel` endpoint on the worker. The shim implements `/cancel` by aborting in-flight work it controls. |
 
-#### Cancellation honesty
+#### Cancellation honesty (always-poison on timeout)
 
-Cloudflare Workers cannot guarantee preemption of arbitrary user code in the deployed shim. The contract therefore is:
+Cloudflare Workers cannot guarantee preemption of arbitrary user code, and a 200 from `/cancel` proves only that the shim accepted the cancel — not that the running command stopped. We therefore treat **any local abort or timeout as terminal for the instance**, regardless of `/cancel` response:
 
 - Local abort fires on schedule — caller's promise rejects with `TIMEOUT`.
-- Remote cancel is **best-effort**. If the shim's `/cancel` does not return 200 within 2s after the abort, the instance is marked **poisoned**: subsequent `exec`/`readFile`/`writeFile` calls fail-closed with `KoiError { code: "POISONED" }` and the only valid operation is `destroy()`.
-- `destroy()` on a poisoned instance proceeds normally (DELETE script). Caller must `create()` a new instance.
+- The instance immediately enters **POISONED** state. Subsequent `exec` / `readFile` / `writeFile` calls fail-closed with `KoiError { code: "POISONED" }`. The only valid operation is `destroy()`.
+- The instance optionally fires a best-effort `/cancel` POST as a courtesy to free provider resources sooner, but the result is ignored — poisoning is not contingent on it.
+- `destroy()` on a poisoned instance proceeds normally (DELETE script). Caller must `create()` a fresh instance for any further work.
 
-This is documented behavior — never silently retry on the same instance after timeout, because the prior command may still be running with side effects.
+Rationale: the only way to be sure a remote command has stopped is to delete the artifact running it. Until then, side-effect overlap is possible. We do not gamble on `/cancel` ack semantics.
+
+The only path to skip poisoning would be an authoritative provider-side per-command termination ack (e.g., a kill-by-id confirmation Cloudflare does not currently offer). If that capability lands, the contract can be relaxed; until then, poison-on-timeout is unconditional.
 - **Concurrency safety:** the adapter does not maintain a shared mutable resource; each instance is fully independent. No lease/refcount needed because there is no shared state.
 - Worker shim is a small string template colocated in `client.ts` (the JS that runs inside CF Workers and accepts the protocol). Kept ≤80 LOC.
 
@@ -148,11 +174,11 @@ Mapping is built against the actual fields in `packages/kernel/core/src/sandbox-
 | `resources.maxOpenFiles` | accept (vacuously) | No host FDs in Workers. |
 | `env` | mapped | Forwarded as Worker secrets via `PUT /workers/scripts/{name}/secrets` per key (typed) before deploy. |
 | `nexusMounts` | REJECT | Requires FUSE; not available on edge. |
-| `ssh` | REJECT | SSH-specific, not relevant to edge. |
+| `ssh` | **ignore** | Per `SandboxProfile.ssh` doc comment: "Other adapters MUST ignore this field." Treating it as a validation error would break profile portability when a profile carries an SSH stanza for a different backend. |
 | `required` (capabilities) | inspected by router, not by this adapter | Router rejects upstream; adapter ignores. |
 | Unknown future fields | REJECT (default-deny) | TypeScript catches at compile time; runtime exhaustive check guards against type-erasure bugs. |
 
-Vercel applies the same template with provider-appropriate numeric caps (memory: 1024MB Edge / 3008MB Serverless Pro; CPU: 30_000ms Edge / 900_000ms Serverless).
+Vercel applies the same template, but since runtime selection is deferred (see Out of scope) and the adapter always deploys to **Edge**, validation caps are **Edge-only**: `maxMemoryMb <= 128` and `timeoutMs <= 30_000`. Serverless caps (3008MB / 900_000ms) are NOT accepted — admitting them would let the router commit to this backend with a profile the actual runtime cannot satisfy. When a follow-up PR adds runtime selection, the adapter will accept a `runtime: "edge" | "serverless"` config field and validate against that runtime's caps.
 
 The mapping lives in `validate.ts` as a pure function `mapProfileToCloudflare(profile): Result<CloudflareDeployConfig, KoiError>`. Adapter `create()` calls it first and short-circuits on error before any fetch. The function uses an exhaustive switch over a discriminated union derived from the profile so adding a new core field without updating this mapper is a TypeScript error.
 
