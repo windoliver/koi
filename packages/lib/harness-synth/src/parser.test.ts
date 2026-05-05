@@ -104,6 +104,17 @@ describe("parseSynthesisOutput", () => {
     expect(result.reason).toMatch(/inputSchema/);
   });
 
+  test("skips earlier prose-brace fragments and finds the real payload", () => {
+    // Regression: parser used to grab the first balanced `{...}` even when it
+    // was prose like "{descriptor, code}: ..." and then fail to JSON.parse it.
+    const real = rawWith(VALID_DESCRIPTOR, "x();");
+    const wrapped = `Use the {descriptor, code} object format. Here it is:\n${real}`;
+    const result = parseSynthesisOutput(wrapped, "echo_tool");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.code).toBe("x();");
+  });
+
   test("rejects non-object descriptor", () => {
     const result = parseSynthesisOutput(
       JSON.stringify({ descriptor: "nope", code: "x" }),

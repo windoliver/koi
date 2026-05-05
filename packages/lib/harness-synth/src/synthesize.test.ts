@@ -159,6 +159,58 @@ describe("synthesize", () => {
     expect(result.attempts).toBe(3);
   });
 
+  test("rejects descriptor.inputSchema mismatch when targetToolSchema set", async () => {
+    const generate: GenerateCallback = async () =>
+      JSON.stringify({
+        descriptor: {
+          name: "echo_tool",
+          description: "x",
+          inputSchema: { type: "object", properties: { foo: { type: "string" } } },
+        },
+        code: "x();",
+      });
+    const result = await synthesize(
+      {
+        ...INPUT,
+        targetToolSchema: { type: "object", properties: { bar: { type: "number" } } },
+      },
+      { generate, verify: ALWAYS_OK, maxAttempts: 1 },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/inputSchema/);
+  });
+
+  test("accepts schema match (key-order independent)", async () => {
+    const generate: GenerateCallback = async () =>
+      JSON.stringify({
+        descriptor: {
+          name: "echo_tool",
+          description: "x",
+          // intentionally reordered properties
+          inputSchema: { properties: { foo: { type: "string" } }, type: "object" },
+        },
+        code: "x();",
+      });
+    const result = await synthesize(
+      {
+        ...INPUT,
+        targetToolSchema: { type: "object", properties: { foo: { type: "string" } } },
+      },
+      { generate, verify: ALWAYS_OK, maxAttempts: 1 },
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test("returns typed failure when generate yields a non-string", async () => {
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately injecting a misbehaving adapter.
+    const generate = (async () => ({ not: "a string" })) as any as GenerateCallback;
+    const result = await synthesize(INPUT, { generate, verify: ALWAYS_OK, maxAttempts: 2 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/non-string/);
+  });
+
   test("first prompt does not contain refinement marker", async () => {
     const seen: string[] = [];
     const generate: GenerateCallback = async (p) => {

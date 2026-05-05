@@ -72,6 +72,19 @@ export async function synthesize(
       continue;
     }
 
+    if (input.targetToolSchema !== undefined) {
+      const schemaCheck = checkSchemaMatch(
+        parsed.value.descriptor.inputSchema,
+        input.targetToolSchema,
+      );
+      if (!schemaCheck.ok) {
+        lastReason = schemaCheck.reason;
+        priorReason = schemaCheck.reason;
+        priorCode = parsed.value.code;
+        continue;
+      }
+    }
+
     const verified = await safeVerify(config.verify, parsed.value.code, parsed.value.descriptor);
     if (!verified.ok) {
       lastReason = verified.reason;
@@ -101,11 +114,61 @@ async function safeGenerate(
 ): Promise<{ ok: true; value: string } | { ok: false; reason: string }> {
   try {
     const value = await generate(prompt);
+    if (typeof value !== "string") {
+      return {
+        ok: false,
+        reason: `LLM generation returned non-string (typeof ${typeof value})`,
+      };
+    }
     return { ok: true, value };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, reason: `LLM generation failed: ${message}` };
   }
+}
+
+/**
+ * Compare the synthesized descriptor's input schema against the requested
+ * target schema. Performs structural equality on JSON-serializable values
+ * (key-order independent for objects). Treats this as a hard invariant: if
+ * the caller supplied a target schema, the artifact must match it exactly,
+ * otherwise downstream callers receive the wrong input contract.
+ */
+function checkSchemaMatch(
+  actual: Readonly<Record<string, unknown>>,
+  expected: Readonly<Record<string, unknown>>,
+): { ok: true } | { ok: false; reason: string } {
+  if (jsonEqual(actual, expected)) return { ok: true };
+  return {
+    ok: false,
+    reason: "Synthesized descriptor.inputSchema does not match targetToolSchema",
+  };
+}
+
+function jsonEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (a === null || b === null) return false;
+  if (typeof a !== "object") return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      if (!jsonEqual(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  const aObj = a as Record<string, unknown>;
+  const bObj = b as Record<string, unknown>;
+  const aKeys = Object.keys(aObj).sort();
+  const bKeys = Object.keys(bObj).sort();
+  if (aKeys.length !== bKeys.length) return false;
+  for (let i = 0; i < aKeys.length; i += 1) {
+    if (aKeys[i] !== bKeys[i]) return false;
+    const k = aKeys[i] as string;
+    if (!jsonEqual(aObj[k], bObj[k])) return false;
+  }
+  return true;
 }
 
 async function safeVerify(

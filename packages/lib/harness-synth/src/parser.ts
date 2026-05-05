@@ -10,7 +10,7 @@
  *
  * A single JSON object is the entire payload. Code travels as a JSON string,
  * so any character (including `"`, backslashes, or HTML-like tag fragments)
- * is naturally escapedd — no sentinel-collision class of bug is reachable from
+ * is naturally escaped — no sentinel-collision class of bug is reachable from
  * the model's source-code output. Surrounding fenced-code markers, prose, or
  * whitespace are tolerated; the parser locates the outermost JSON object and
  * rejects anything else.
@@ -28,23 +28,11 @@ export type ParseResult =
   | { readonly ok: false; readonly reason: string };
 
 export function parseSynthesisOutput(raw: string, targetToolName: string): ParseResult {
-  const jsonText = extractOuterJsonObject(raw);
-  if (jsonText === null) {
-    return { ok: false, reason: "No JSON object found in model output" };
+  const candidate = findParseableJsonObject(raw);
+  if (!candidate.ok) {
+    return candidate;
   }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(jsonText);
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: `Output JSON parse failed: ${message}` };
-  }
-
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { ok: false, reason: "Output must be a JSON object" };
-  }
-  const obj = parsed as Record<string, unknown>;
+  const obj = candidate.value;
 
   if (typeof obj.code !== "string") {
     return { ok: false, reason: "Output.code must be a string" };
@@ -63,15 +51,53 @@ export function parseSynthesisOutput(raw: string, targetToolName: string): Parse
 }
 
 /**
- * Locate the first balanced top-level `{ ... }` block, ignoring braces inside
- * JSON strings (with backslash-escaped awareness). Returns the substring or
- * `null` if no balanced object is found. We do not attempt to parse Markdown
- * code fences explicitly — finding a balanced JSON object is sufficient and
- * tolerates whatever framing the model adds around it.
+ * Iterate `{` candidate spans until one parses as a JSON object claiming to
+ * be the synthesis payload (has both `descriptor` and `code` keys). Once we
+ * find a claimant, return it for full validation by the caller — even if
+ * its inner shape is wrong, so the caller can emit a precise error. Spans
+ * that fail to parse, or parse but lack the claim keys, are skipped: this
+ * tolerates prose containing earlier `{...}` fragments before the payload.
  */
-function extractOuterJsonObject(raw: string): string | null {
-  const start = raw.indexOf("{");
-  if (start === -1) return null;
+function findParseableJsonObject(
+  raw: string,
+):
+  | { readonly ok: true; readonly value: Record<string, unknown> }
+  | { readonly ok: false; readonly reason: string } {
+  let lastParseReason: string | null = null;
+  let cursor = 0;
+  while (cursor < raw.length) {
+    const start = raw.indexOf("{", cursor);
+    if (start === -1) break;
+    const end = findBalancedClose(raw, start);
+    if (end === -1) break;
+    const span = raw.slice(start, end + 1);
+    cursor = end + 1;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(span);
+    } catch (err: unknown) {
+      lastParseReason = `Output JSON parse failed: ${err instanceof Error ? err.message : String(err)}`;
+      continue;
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      continue;
+    }
+    const obj = parsed as Record<string, unknown>;
+    if (claimsToBeSynthesisPayload(obj)) {
+      return { ok: true, value: obj };
+    }
+  }
+  if (lastParseReason !== null) {
+    return { ok: false, reason: lastParseReason };
+  }
+  return { ok: false, reason: "No JSON object found in model output" };
+}
+
+function claimsToBeSynthesisPayload(obj: Record<string, unknown>): boolean {
+  return Object.hasOwn(obj, "descriptor") && Object.hasOwn(obj, "code");
+}
+
+function findBalancedClose(raw: string, start: number): number {
   let depth = 0;
   let inString = false;
   let escaped = false;
@@ -95,12 +121,10 @@ function extractOuterJsonObject(raw: string): string | null {
       depth += 1;
     } else if (ch === "}") {
       depth -= 1;
-      if (depth === 0) {
-        return raw.slice(start, i + 1);
-      }
+      if (depth === 0) return i;
     }
   }
-  return null;
+  return -1;
 }
 
 function coerceDescriptor(
