@@ -1,0 +1,26 @@
+{
+  "name": "@koi/dashboard-api",
+  "description": "Dashboard HTTP API — headless REST + SSE handler over Bun.serve, bearer-auth, cursor pagination, and query filters",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/dashboard-types": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "koi": {
+    "optional": true
+  }
+}

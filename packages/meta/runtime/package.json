@@ -29,6 +29,7 @@
     "@koi/core": "workspace:*",
     "@koi/cost-aggregator": "workspace:*",
     "@koi/daemon": "workspace:*",
+    "@koi/dashboard-api": "workspace:*",
     "@koi/dashboard-client": "workspace:*",
     "@koi/dashboard-types": "workspace:*",
     "@koi/debug": "workspace:*",
