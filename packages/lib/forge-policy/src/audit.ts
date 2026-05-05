@@ -139,10 +139,23 @@ export interface PolicyAuditLogOptions {
    * database, SIEM, alert) before relying on the in-memory log as a
    * forensic source — once the callback returns, the entry is gone
    * from `entries()`. Throwing from the callback is suppressed so a
-   * misconfigured sink cannot crash the policy gate; sink failures
-   * must surface through the sink's own monitoring.
+   * misconfigured sink cannot crash the policy gate by default. Set
+   * `failClosedOnOverflowSinkError: true` to flip this and surface
+   * sink failures synchronously.
    */
   readonly onOverflow?: (dropped: PolicyAuditEntry, droppedCount: number) => void;
+  /**
+   * When `true`, an overflow situation in which there is no
+   * `onOverflow` sink (or the sink throws) causes `recordEvaluation`
+   * / `record` to throw — the caller MUST treat the throw as a
+   * fail-closed signal and stop authorizing decisions while audit
+   * retention is degraded. When `false` (default), overflow is
+   * best-effort: the entry is evicted and `droppedCount()`
+   * accumulates so callers can poll for retention loss. Choose
+   * `true` for security-critical deployments where audit trail
+   * loss is unacceptable.
+   */
+  readonly failClosedOnOverflowSinkError?: boolean;
 }
 
 const DEFAULT_MAX_ENTRIES = 10_000;
@@ -185,16 +198,39 @@ function createPolicyAuditLogInternal(
     const frozen = freezeEntry(full);
     buffer.push(frozen);
     if (buffer.length > maxEntries) {
-      const dropEntry = buffer.shift();
-      dropped += 1;
+      const failClosed = options.failClosedOnOverflowSinkError === true;
+      const dropEntry = buffer[0];
+      // Try the sink BEFORE evicting so a sink failure (or absent
+      // sink in fail-closed mode) leaves both the new entry and the
+      // would-be-dropped entry intact and signals the caller.
+      let sinkOk = false;
       if (dropEntry !== undefined && options.onOverflow !== undefined) {
         try {
-          options.onOverflow(dropEntry, dropped);
-        } catch {
-          // Suppress sink failures — a misconfigured durable sink must
-          // not crash the policy gate. Sink reliability is the sink's
-          // own concern; `droppedCount()` still surfaces overflow.
+          options.onOverflow(dropEntry, dropped + 1);
+          sinkOk = true;
+        } catch (e) {
+          if (failClosed) {
+            buffer.pop(); // remove the new entry — caller must retry
+            throw new Error(
+              "audit overflow sink failed and failClosedOnOverflowSinkError is true",
+              { cause: e instanceof Error ? e : new Error(String(e)) },
+            );
+          }
+          // Default: suppress; eviction proceeds regardless.
+          sinkOk = true;
         }
+      } else if (failClosed) {
+        // No sink configured but caller asked to fail closed.
+        buffer.pop();
+        throw new Error(
+          "audit overflow with no onOverflow sink and failClosedOnOverflowSinkError is true",
+        );
+      } else {
+        sinkOk = true;
+      }
+      if (sinkOk) {
+        buffer.shift();
+        dropped += 1;
       }
     }
     return frozen;

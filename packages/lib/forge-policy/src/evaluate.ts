@@ -20,14 +20,18 @@ export interface EvaluatePolicyOptions {
   readonly complexityOf?: ((spec: Readonly<Record<string, unknown>>) => number) | undefined;
 
   /**
-   * Stable identifier for the `complexityOf` scorer (e.g. a name +
-   * semver, a content hash, or a deployed-image digest). Required
+   * Provenance metadata for the `complexityOf` scorer. Required
    * whenever `complexityOf` is set — `evaluatePolicy` fails closed
-   * (deny) otherwise. Bound into `configFingerprint` so two
-   * evaluations that produced different verdicts under different
-   * scoring semantics never collide on the same audit fingerprint.
+   * (deny) otherwise. Both `id` AND `version` are bound into
+   * `configFingerprint`. The caller MUST bump `version` whenever the
+   * scorer's runtime behavior can change (different closure state,
+   * different ambient globals, different feature-flag state, new
+   * implementation, etc.). Two evaluations that ran under
+   * semantically different scorers must never share `(id, version)`.
+   * Function source text is intentionally NOT hashed — closures and
+   * ambient state make source text a misleading provenance signal.
    */
-  readonly complexityScorerId?: string | undefined;
+  readonly complexityScorer?: { readonly id: string; readonly version: string } | undefined;
 
   /**
    * Explicit operator override. `granted: true` rewrites a `deny` or
@@ -199,12 +203,17 @@ export function evaluatePolicy(
   let optionOverride: PolicyOverride | undefined;
   let optionSpec: Readonly<Record<string, unknown>> | undefined;
   let optionComplexityOf: ((spec: Readonly<Record<string, unknown>>) => number) | undefined;
-  let optionComplexityScorerId: string | undefined;
+  let optionComplexityScorer: { id: string; version: string } | undefined;
   try {
     optionOverride = options.override;
     optionSpec = options.spec;
     optionComplexityOf = options.complexityOf;
-    optionComplexityScorerId = options.complexityScorerId;
+    // Snapshot scorer metadata (id+version) into plain locals so a
+    // hostile getter on options.complexityScorer cannot fire later.
+    const scorer = options.complexityScorer;
+    if (scorer !== undefined) {
+      optionComplexityScorer = { id: scorer.id, version: scorer.version };
+    }
   } catch (e) {
     return makeFailClosedEvaluation({
       reason: `options getter threw: ${e instanceof Error ? e.message : String(e)}`,
@@ -231,16 +240,23 @@ export function evaluatePolicy(
     });
   }
   // A custom complexity scorer changes verdict semantics — refuse to
-  // emit an audited evaluation under one without a stable scorer id
-  // bound into the fingerprint. Otherwise two evaluations that used
-  // different scoring semantics could record the same `configFingerprint`,
-  // breaking forensic reproducibility.
+  // emit an audited evaluation under one without (id, version)
+  // metadata bound into the fingerprint. The caller MUST bump
+  // `version` whenever scorer behavior changes (closures, ambient
+  // state, implementation diff). Source-text hashing is intentionally
+  // not used as a substitute — it cannot detect mutable closure or
+  // ambient-global behavior changes and would give false confidence.
   if (
     optionComplexityOf !== undefined &&
-    (typeof optionComplexityScorerId !== "string" || optionComplexityScorerId.length === 0)
+    (optionComplexityScorer === undefined ||
+      typeof optionComplexityScorer.id !== "string" ||
+      optionComplexityScorer.id.length === 0 ||
+      typeof optionComplexityScorer.version !== "string" ||
+      optionComplexityScorer.version.length === 0)
   ) {
     return makeFailClosedEvaluation({
-      reason: "complexityOf requires a non-empty complexityScorerId for audit binding",
+      reason:
+        "complexityOf requires a complexityScorer with non-empty id and version for audit binding",
       candidateId: candidateSnapshot.id,
       override: overrideSnapshot,
       kind: "config",
@@ -254,7 +270,7 @@ export function evaluatePolicy(
   let configSnapshot: ForgePolicyConfig;
   let configFingerprint: string;
   try {
-    const result = snapshotConfig(config, optionComplexityScorerId, optionComplexityOf);
+    const result = snapshotConfig(config, optionComplexityScorer);
     configSnapshot = result.snapshot;
     configFingerprint = result.fingerprint;
   } catch (e) {
@@ -335,13 +351,12 @@ interface ConfigSnapshotResult {
  */
 function snapshotConfig(
   config: ForgePolicyConfig,
-  complexityScorerId: string | undefined,
-  complexityOf: ((spec: Readonly<Record<string, unknown>>) => number) | undefined,
+  complexityScorer: { readonly id: string; readonly version: string } | undefined,
 ): ConfigSnapshotResult {
   const cloned = descriptorClone(config) as ForgePolicyConfig;
   return {
     snapshot: deepFreeze(cloned),
-    fingerprint: computeConfigFingerprint(cloned, complexityScorerId, complexityOf),
+    fingerprint: computeConfigFingerprint(cloned, complexityScorer),
   };
 }
 

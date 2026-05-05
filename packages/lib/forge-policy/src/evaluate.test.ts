@@ -130,7 +130,7 @@ describe("evaluatePolicy — scope and approval", () => {
     const cfg = makeConfig({ maxComplexity: 10_000 });
     const result = evaluatePolicy(cand, cfg, {
       spec: { x: 1 },
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => {
         cand.id = "forged";
         return 1;
@@ -153,7 +153,7 @@ describe("evaluatePolicy — scope and approval", () => {
     });
     const result = evaluatePolicy(cand, cfg, {
       spec: { x: 1 },
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => {
         cand.proposedScope = "agent";
         return 1;
@@ -171,7 +171,7 @@ describe("evaluatePolicy — scope and approval", () => {
     const result = evaluatePolicy(cand, cfg, {
       spec: { x: 1 },
       override,
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => {
         override.granted = true;
         return 1;
@@ -192,7 +192,7 @@ describe("evaluatePolicy — scope and approval", () => {
     const cfg = makeConfig({ maxComplexity: 10_000 }) as Mut;
     const result = evaluatePolicy(makeCandidate({ proposedScope: "agent" }), cfg, {
       spec: { x: 1 },
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => {
         // Hostile mutation: try to push proposedScope above the gate
         // by mutating the live config object.
@@ -324,16 +324,31 @@ describe("evaluatePolicy — scope and approval", () => {
     expect(result!.configFingerprint).toBe("<unavailable>");
   });
 
-  test("complexityOf without complexityScorerId fails closed (audit binding required)", () => {
+  test("complexityOf without complexityScorer (id+version) fails closed (audit binding required)", () => {
     const cfg = makeConfig({ maxComplexity: 10_000 });
     const result = evaluatePolicy(makeCandidate(), cfg, {
       spec: { x: 1 },
       complexityOf: () => 1,
-      // complexityScorerId intentionally omitted
+      // complexityScorer intentionally omitted
     });
     expect(result.verdict.decision).toBe("deny");
     expect(result.failureKind).toBe("config");
-    expect(result.failureReason).toMatch(/complexityScorerId/);
+    expect(result.failureReason).toMatch(/complexityScorer/);
+  });
+
+  test("scorer with same id but different version produces a different fingerprint", () => {
+    const cfg = makeConfig({ maxComplexity: 10_000 });
+    const a = evaluatePolicy(makeCandidate(), cfg, {
+      spec: { x: 1 },
+      complexityOf: () => 1,
+      complexityScorer: { id: "shared-id", version: "1.0.0" },
+    });
+    const b = evaluatePolicy(makeCandidate(), cfg, {
+      spec: { x: 1 },
+      complexityOf: () => 1,
+      complexityScorer: { id: "shared-id", version: "1.0.1" },
+    });
+    expect(a.configFingerprint).not.toBe(b.configFingerprint);
   });
 
   test("different complexityScorerId values produce different configFingerprints", () => {
@@ -341,12 +356,12 @@ describe("evaluatePolicy — scope and approval", () => {
     const a = evaluatePolicy(makeCandidate(), cfg, {
       spec: { x: 1 },
       complexityOf: () => 1,
-      complexityScorerId: "scorer-a-v1",
+      complexityScorer: { id: "scorer-a-v1", version: "v1" },
     });
     const b = evaluatePolicy(makeCandidate(), cfg, {
       spec: { x: 1 },
       complexityOf: () => 1,
-      complexityScorerId: "scorer-b-v1",
+      complexityScorer: { id: "scorer-b-v1", version: "v1" },
     });
     expect(a.configFingerprint).not.toBe(b.configFingerprint);
   });
@@ -401,22 +416,6 @@ describe("evaluatePolicy — scope and approval", () => {
     expect(() =>
       log.recordEvaluation({ evaluation: result, evaluatedAt: 1_700_000_000_000 }),
     ).not.toThrow();
-  });
-
-  test("two scorers with same id but different source produce different fingerprints", () => {
-    const cfg = makeConfig({ maxComplexity: 10_000 });
-    const a = evaluatePolicy(makeCandidate(), cfg, {
-      spec: { x: 1 },
-      complexityOf: (s) => Object.keys(s).length,
-      complexityScorerId: "scorer-v1",
-    });
-    const b = evaluatePolicy(makeCandidate(), cfg, {
-      spec: { x: 1 },
-      // Same id, different implementation — must not collide.
-      complexityOf: (s) => Object.keys(s).length * 2,
-      complexityScorerId: "scorer-v1",
-    });
-    expect(a.configFingerprint).not.toBe(b.configFingerprint);
   });
 
   test("cyclic candidate fails closed (no stack exhaustion)", () => {
@@ -563,7 +562,7 @@ describe("evaluatePolicy — fail-closed cases", () => {
     cyclic.self = cyclic;
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: cyclic,
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("deny");
@@ -576,7 +575,7 @@ describe("evaluatePolicy — fail-closed cases", () => {
     const cfg = makeConfig({ maxComplexity: 10_000 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { v: BigInt(1) } as Readonly<Record<string, unknown>>,
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => 0,
     });
     expect(verdict.decision).toBe("deny");
@@ -835,7 +834,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     for (let i = 0; i < 12_000; i++) spec[`k${i}`] = "x".repeat(1_000);
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec,
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("deny");
@@ -864,7 +863,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     };
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { a: 1 },
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: scorer,
     });
     expect(verdict.decision).toBe("allow");
@@ -882,7 +881,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     };
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { a: 1 },
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: scorer,
     });
     expect(verdict.decision).toBe("allow");
@@ -897,7 +896,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     const cfg = makeConfig({ maxComplexity: 1 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { s: big },
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("deny");
@@ -912,7 +911,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     const cfg = makeConfig({ maxComplexity: 1 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { s: lone },
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("deny");
@@ -926,7 +925,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     const cfg = makeConfig({ maxComplexity: 1 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { s: emoji },
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("allow");
@@ -938,7 +937,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     const cfg = makeConfig({ maxComplexity: 1 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { s: emoji },
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("deny");
@@ -954,7 +953,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     const cfg = makeConfig({ maxComplexity: 1 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { a: arr },
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("deny");
@@ -973,7 +972,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
       const cfg = makeConfig({ maxComplexity: 100 });
       const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
         spec: { a: arr },
-        complexityScorerId: "test-scorer",
+        complexityScorer: { id: "test-scorer", version: "v1" },
         complexityOf: (s) => {
           const a = (s as { a: unknown[] }).a;
           observedAt0 = a[0];
@@ -1010,7 +1009,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     const cfg = makeConfig({ maxComplexity: 1 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { huge } as Readonly<Record<string, unknown>>,
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("deny");
@@ -1027,7 +1026,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     const start = Date.now();
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec,
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => 1,
     });
     const elapsed = Date.now() - start;
@@ -1122,7 +1121,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     };
     evaluatePolicy(makeCandidate(), cfg, {
       spec: { item: inner } as Readonly<Record<string, unknown>>,
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: custom,
     });
     expect(getCalls).toBe(0);
@@ -1132,7 +1131,7 @@ describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
     const cfg = makeConfig({ maxComplexity: 10 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { x: 1 },
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => {
         throw new Error("scorer broken");
       },
@@ -1177,7 +1176,7 @@ describe("evaluatePolicy — determinism and purity", () => {
     const cfg = makeConfig({ maxComplexity: 10 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { huge: "x".repeat(1000) },
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => 1,
     });
     expect(verdict.decision).toBe("allow");
@@ -1187,7 +1186,7 @@ describe("evaluatePolicy — determinism and purity", () => {
     const cfg = makeConfig({ maxComplexity: 1 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { x: 1 },
-      complexityScorerId: "test-scorer",
+      complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => Number.NaN,
     });
     expect(verdict.decision).toBe("allow");

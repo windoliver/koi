@@ -174,6 +174,35 @@ describe("createPolicyAuditLog (storage behavior — _createPolicyAuditLogForTes
     ]);
   });
 
+  test("failClosedOnOverflowSinkError + throwing sink: throws and preserves both entries", () => {
+    const log = _createPolicyAuditLogForTesting({
+      maxEntries: 1,
+      failClosedOnOverflowSinkError: true,
+      onOverflow: () => {
+        throw new Error("durable sink down");
+      },
+    });
+    log.record({ ...baseEntry, candidateId: "a" });
+    expect(() => log.record({ ...baseEntry, candidateId: "b" })).toThrow(/sink failed/);
+    // The original entry must still be present — eviction is rolled
+    // back when the sink fails in fail-closed mode.
+    expect(log.size()).toBe(1);
+    expect(log.entries()[0]?.candidateId).toBe("a");
+    expect(log.droppedCount()).toBe(0);
+  });
+
+  test("failClosedOnOverflowSinkError + no sink: throws and preserves the original entry", () => {
+    const log = _createPolicyAuditLogForTesting({
+      maxEntries: 1,
+      failClosedOnOverflowSinkError: true,
+    });
+    log.record({ ...baseEntry, candidateId: "a" });
+    expect(() => log.record({ ...baseEntry, candidateId: "b" })).toThrow(/no onOverflow sink/);
+    expect(log.size()).toBe(1);
+    expect(log.entries()[0]?.candidateId).toBe("a");
+    expect(log.droppedCount()).toBe(0);
+  });
+
   test("a throwing onOverflow callback does not crash the policy gate", () => {
     const log = _createPolicyAuditLogForTesting({
       maxEntries: 1,
