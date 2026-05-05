@@ -1,0 +1,140 @@
+import { describe, expect, mock, test } from "bun:test";
+import type { ForgeCandidate } from "@koi/forge-types";
+import { synthesize } from "./synthesize.js";
+import type { GenerateCallback, SynthesisInput, VerifyCallback } from "./types.js";
+
+const CANDIDATE: ForgeCandidate = {
+  id: "cand-1",
+  kind: "tool",
+  name: "echo_tool",
+  description: "Echoes its input back",
+  priority: 0.5,
+  proposedScope: "agent",
+  createdAt: 1_700_000_000_000,
+};
+
+const INPUT: SynthesisInput = {
+  candidate: CANDIDATE,
+  targetToolName: "echo_tool",
+};
+
+function validRaw(name = "echo_tool", code = "export const run = (x) => x;"): string {
+  return [
+    `<descriptor>{ "name": "${name}", "description": "Echoes input", "inputSchema": { "type": "object" } }</descriptor>`,
+    `<code>${code}</code>`,
+  ].join("\n");
+}
+
+const ALWAYS_OK: VerifyCallback = () => ({ ok: true });
+
+describe("synthesize", () => {
+  test("returns success on first attempt when generate + verify both succeed", async () => {
+    const generate = mock<GenerateCallback>(async () => validRaw());
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      clock: () => 42,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.attempts).toBe(1);
+    expect(result.value.forgedBy).toBe("harness-synth");
+    expect(result.value.synthesizedAt).toBe(42);
+    expect(result.value.descriptor.name).toBe("echo_tool");
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  test("retries on verify failure with refinement prompt", async () => {
+    const generate = mock<GenerateCallback>(async () => validRaw());
+    let calls = 0;
+    const verify: VerifyCallback = () => {
+      calls += 1;
+      return calls === 1 ? { ok: false, reason: "syntax check failed" } : { ok: true };
+    };
+    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 3 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.attempts).toBe(2);
+    expect(generate).toHaveBeenCalledTimes(2);
+    // refinement prompt should reference the prior failure reason
+    const secondPrompt = generate.mock.calls[1]?.[0] ?? "";
+    expect(secondPrompt).toContain("syntax check failed");
+  });
+
+  test("retries on parse failure", async () => {
+    let n = 0;
+    const generate: GenerateCallback = async () => {
+      n += 1;
+      return n === 1 ? "garbage with no tags" : validRaw();
+    };
+    const result = await synthesize(INPUT, { generate, verify: ALWAYS_OK });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.attempts).toBe(2);
+  });
+
+  test("fails after maxAttempts when verify never succeeds", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify: VerifyCallback = () => ({ ok: false, reason: "still wrong" });
+    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 3 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.attempts).toBe(3);
+    expect(result.reason).toBe("still wrong");
+  });
+
+  test("rejects maxAttempts < 1", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => "",
+      verify: ALWAYS_OK,
+      maxAttempts: 0,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.attempts).toBe(0);
+    expect(result.reason).toMatch(/maxAttempts/);
+  });
+
+  test("recovers from generate-throwing on first attempt", async () => {
+    let n = 0;
+    const generate: GenerateCallback = async () => {
+      n += 1;
+      if (n === 1) throw new Error("LLM offline");
+      return validRaw();
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 3,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.attempts).toBe(2);
+  });
+
+  test("uses synchronous verify return value", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify: VerifyCallback = () => ({ ok: true });
+    const result = await synthesize(INPUT, { generate, verify });
+    expect(result.ok).toBe(true);
+  });
+
+  test("default maxAttempts is 3", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify: VerifyCallback = () => ({ ok: false, reason: "nope" });
+    const result = await synthesize(INPUT, { generate, verify });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.attempts).toBe(3);
+  });
+
+  test("first prompt does not contain refinement marker", async () => {
+    const seen: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      seen.push(p);
+      return validRaw();
+    };
+    await synthesize(INPUT, { generate, verify: ALWAYS_OK });
+    expect(seen[0] ?? "").not.toContain("Previous failure reason");
+  });
+});
