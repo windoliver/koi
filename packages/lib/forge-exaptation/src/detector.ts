@@ -455,6 +455,11 @@ function isObservationValid(o: UsagePurposeObservation): boolean {
   // the required-`scope` contract exists to prevent).
   if (typeof o.scope !== "string" || o.scope.trim().length === 0) return false;
   if (typeof o.agentId !== "string" || o.agentId.trim().length === 0) return false;
+  // contextText must be a string. Empty / whitespace is allowed (a tool with
+  // no preceding model text is legitimate), but a non-string from an untyped
+  // upstream payload would throw later inside `samePayload` when conflict
+  // dedup tries to call `.trim()` on a duplicate-event bucket.
+  if (typeof o.contextText !== "string") return false;
   return true;
 }
 

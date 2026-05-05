@@ -1185,6 +1185,40 @@ describe("observation-field validation (relaxed)", () => {
     expect(result.kind).toBe("no-drift");
     if (result.kind === "no-drift") expect(result.droppedCount).toBe(3);
   });
+
+  test("non-string contextText is dropped (would crash conflict dedup with .trim())", () => {
+    // Untyped upstream payloads (JSON-deserialized without runtime checks)
+    // can ship contextText as null / number / undefined. Without explicit
+    // validation, a duplicate-event replay would invoke .trim() on the
+    // non-string and throw — taking the detector down on exactly the replay
+    // path it is supposed to harden.
+    const eid = "evt-shared";
+    const malformed = {
+      scope: "default",
+      agentId: "a1",
+      eventId: eid,
+      divergenceScore: 0.95,
+      contextText: null as unknown as string,
+      observedAt: 1,
+    } satisfies UsagePurposeObservation;
+    const goodTwin: UsagePurposeObservation = {
+      scope: "default",
+      agentId: "a1",
+      eventId: eid,
+      divergenceScore: 0.95,
+      contextText: "real text",
+      observedAt: 2,
+    };
+    // Should NOT throw — malformed observation is dropped at validation, the
+    // good twin alone passes through.
+    const result = detectDrift(
+      [malformed, goodTwin, ...[0.95, 0.95, 0.95].map((s) => obs("a2", s))],
+      DEFAULT_EXAPTATION_THRESHOLDS,
+    );
+    if (result.kind === "drift" || result.kind === "no-drift") {
+      expect(result.droppedCount).toBe(1);
+    }
+  });
 });
 
 describe("mixed-traffic regressions", () => {
