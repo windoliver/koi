@@ -1,0 +1,26 @@
+{
+  "name": "@koi/harness-synth",
+  "description": "LLM-driven single-candidate forge synthesis with verifier-driven retry (L2)",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/forge-types": "workspace:*"
+  },
+  "koi": {
+    "optional": true
+  }
+}

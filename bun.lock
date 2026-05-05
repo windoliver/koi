@@ -510,6 +510,14 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/harness-synth": {
+      "name": "@koi/harness-synth",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+      },
+    },
     "packages/lib/hash": {
       "name": "@koi/hash",
       "version": "0.0.0",
@@ -2440,6 +2448,8 @@
     "@koi/handoff": ["@koi/handoff@workspace:packages/lib/handoff"],
 
     "@koi/harness": ["@koi/harness@workspace:packages/lib/harness"],
+
+    "@koi/harness-synth": ["@koi/harness-synth@workspace:packages/lib/harness-synth"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/lib/hash"],
 
