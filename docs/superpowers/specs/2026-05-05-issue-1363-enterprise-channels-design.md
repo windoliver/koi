@@ -91,21 +91,22 @@ defined in each package. Default factory adapters wrap `imapflow`, `nodemailer`,
 - **Outbound**: POST `{activity.serviceUrl}/v3/conversations/{id}/activities`. Bearer token from injected `tokenVerifier.appToken()`.
 - **Format**: text + Adaptive Card v1.5 in `format.ts`. Block kit-style mapper from `ContentBlock[]`.
 - **Threading**: `conversation.id` is the thread key.
-- **Config**: `{ appId, appPassword, tenantAllowlist: string[], jwksUri?, serviceUrlAllowlist: string[] }`. `tenantAllowlist` and `serviceUrlAllowlist` are required (use `["*"]` to opt into multi-tenant explicitly).
+- **Config**: `{ appId, appPassword, tenantAllowlist: string[], cloud?: "public" | "gov" | { issuer: string, jwksUri: string }, serviceUrlAllowlist: ServiceUrlPattern[] }`. `tenantAllowlist` and `serviceUrlAllowlist` are required (use `["*"]` for tenant to opt into multi-tenant explicitly). `cloud` defaults to `"public"` (issuer `https://api.botframework.com`, JWKS from official discovery doc); `"gov"` is the US-Gov profile; an inline `{ issuer, jwksUri }` is for self-hosted/test clouds and **both must be set together** — never just one.
+- **`ServiceUrlPattern`**: `{ scheme: "https", host: string, hostMatch: "exact" | "subdomain" }`. `"subdomain"` matches the literal host plus dot-boundary descendants (`a.example.com` matches `*.a.example.com` but NOT `evila.example.com`). Plain string suffix match is forbidden.
 - **Auth invariants** (verify in this exact order, reject with `AUTH_FAILED` on any failure):
-  1. JWT signature valid against Bot Framework JWKS (default issuer `https://api.botframework.com`, configurable for gov clouds via `jwksUri`).
+  1. JWT signature valid against the issuer-paired JWKS (resolved from `cloud`).
   2. `aud` claim equals configured `appId` — rejects forged-from-other-bot tokens.
   3. `tid` claim is in `tenantAllowlist` (if not `["*"]`) — rejects cross-tenant activities.
-  4. `iss` claim matches the configured issuer.
+  4. `iss` claim matches the issuer paired with `cloud` — rejects gov tokens on public bots and vice versa.
   5. `exp`/`nbf` within clock skew (60s).
-  6. Activity body's `serviceUrl` matches an entry in `serviceUrlAllowlist` (suffix match on host) — rejects bearer-token exfiltration via attacker-controlled `serviceUrl`.
+  6. Activity body's `serviceUrl` parses as an HTTPS URL whose normalized origin (`scheme://host`, lowercased, default port stripped) matches a `ServiceUrlPattern` per the rules above — rejects bearer-token exfiltration via attacker-controlled `serviceUrl`.
 - **Errors**: `INVALID_JWT`, `AUDIENCE_MISMATCH`, `TENANT_NOT_ALLOWED`, `SERVICE_URL_NOT_ALLOWED`, `AUTH_FAILED`, `INVALID_ACTIVITY`, `SEND_FAILED`.
 
 #### channel-whatsapp
 
 - **Inbound**: HTTP webhook (Meta Cloud API).
   - GET `/webhook?hub.verify_token=…` → handshake echo `hub.challenge`.
-  - POST `/webhook` → validate `X-Hub-Signature-256` HMAC → parse `entry[].changes[].value.messages[]` → `normalize()`.
+  - POST `/webhook` → validate `X-Hub-Signature-256` HMAC over raw body → parse `entry[].changes[].value.messages[]` → `normalize()`. Replay protection is provided by durable WAMID-keyed idempotency claim (above), not by a freshness timestamp — Meta does not include one in the signed envelope.
 - **Outbound**: POST `https://graph.facebook.com/v18.0/{phoneNumberId}/messages`. Bearer token.
 - **Format**: text, template, image/document/audio (URL-only — no upload).
 - **Threading**: `wa_id` (E.164 phone) + optional `context.message_id` for replies.
@@ -132,13 +133,27 @@ producing duplicate downstream actions and outbound replies. Each channel
 | teams | `activity.id` (Bot Framework guarantees uniqueness per channel-account-conversation) | Combined with `channelId` to scope across multi-tenant. |
 | whatsapp | `messages[].id` (Meta-issued WAMID) | Per-business-phone, globally unique. |
 
-Each package exposes an `IdempotencyStore` interface
-(`has(key): Promise<boolean>`, `record(key, ttlMs): Promise<void>`) injected at
-construction. Default in-memory `LruIdempotencyStore` (size 10_000, TTL 24h) is
-acceptable for dev and survives webhook retry storms within a single process;
-production deployments inject a durable store. The lookup happens *after*
-auth/signature verification and *before* normalization, so rejected/duplicate
-deliveries do not reach handlers.
+Each package exposes an `IdempotencyStore` interface with a single **atomic
+claim** operation:
+
+```ts
+interface IdempotencyStore {
+  // Atomically: if key is unseen, persist it with TTL and return true.
+  // If key already exists (within TTL), return false. No separate read.
+  // Implementations MUST guarantee at-most-one true return per key across
+  // concurrent callers (in-memory: lock around Map; durable: SETNX/INSERT
+  // ON CONFLICT DO NOTHING / equivalent CAS).
+  claim(key: string, ttlMs: number): Promise<boolean>;
+}
+```
+
+The default in-memory `LruIdempotencyStore` (size 10_000, TTL 24h) uses a
+synchronous Map insert under a single async-context boundary — safe within one
+worker. Production multi-worker deployments inject a durable store backed by a
+CAS primitive. The claim happens *after* auth/signature verification and
+*before* normalization; only `claim() === true` proceeds to handler dispatch.
+Tests cover concurrent `claim()` calls with the same key asserting exactly one
+returns true.
 
 Outbound retry is the caller's concern: `send()` is idempotent at the platform
 level only when the platform supports it (WhatsApp `messaging_product`/`to`+
@@ -164,7 +179,7 @@ Per CLAUDE.md Doc → Tests → Code, every behavior gets a failing test before 
 - `platform-send.test.ts` — success path, retryable failure, non-retryable failure, signature failures.
 - `threading.test.ts` (email only) — chain extension and root resolution.
 - `verify-jwt.test.ts` (teams) — valid/invalid/expired tokens, audience mismatch, tenant not allowed, service-URL not allowed, issuer mismatch, clock skew bounds.
-- `verify-signature.test.ts` (whatsapp) — HMAC pass/fail, missing header, replay window.
+- `verify-signature.test.ts` (whatsapp) — HMAC pass/fail, missing header, body-mutation rejection.
 - `idempotency.test.ts` (each channel) — first delivery emits `onMessage`; retried delivery with same key is silently dropped; key extraction handles missing/malformed headers; eviction after TTL allows re-delivery.
 
 ### Integration (`__tests__/integration.test.ts`)
@@ -174,7 +189,8 @@ For each channel: build channel via factory with **fake** transports → handsha
 Adversarial scenarios (also integration-level):
 - **Email**: IMAP reconnect re-delivers same UID — handler called once. Process-restart simulation: rebuild channel with same durable `ThreadStore`, send reply, assert `In-Reply-To` matches inbound `Message-ID`.
 - **Teams**: token with wrong `aud` rejected with `AUDIENCE_MISMATCH`; activity with `serviceUrl` outside allowlist rejected with `SERVICE_URL_NOT_ALLOWED` (no outbound bearer leak); duplicate `activity.id` only emits once.
-- **WhatsApp**: webhook retry with same `messages[].id` only emits once; signature replay outside window rejected.
+- **WhatsApp**: webhook retry with same `messages[].id` only emits once (replay protection comes from durable WAMID dedupe — no signature timestamp is available).
+- **All channels**: concurrent duplicate deliveries — fire two parallel webhook POSTs with the same idempotency key and assert `onMessage` is invoked exactly once, proving the atomic `claim()` contract.
 
 ### Coverage gate
 
