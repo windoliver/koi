@@ -422,7 +422,7 @@ export function suggestAction(
   }
 
   const report = result.report;
-  const priorStrongDrift = countStrongDriftPriors(priorWindows, thresholds);
+  const priorStrongDrift = countStrongDriftPriors(priorWindows, observations, thresholds);
   const stableAndStrong =
     priorStrongDrift >= STABLE_WINDOW_COUNT - 1 &&
     report.avgDivergence >= NEW_ARTIFACT_DIVERGENCE_THRESHOLD;
@@ -463,8 +463,22 @@ export function suggestAction(
  */
 function countStrongDriftPriors(
   priorWindows: readonly (readonly UsagePurposeObservation[])[],
+  current: readonly UsagePurposeObservation[],
   thresholds: ExaptationThresholds,
 ): number {
+  // Reject any prior that is the SAME window as the current evaluation
+  // target. The doc says priorWindows must exclude the current window;
+  // this enforces it instead of trusting it. We dedupe by both array
+  // identity (the typical sliding-window bookkeeping bug) AND by a
+  // content signature over validated observations (catches the case
+  // where the same data was cloned into a new array). Without this
+  // check, an off-by-one in the caller's history maintenance would let
+  // the current strong window count as its own prior and immediately
+  // promote the verdict to `new-artifact` on the very first window.
+  const currentSig = windowSignature(current);
+  const filteredPriors = priorWindows.filter(
+    (w) => w !== current && windowSignature(w) !== currentSig,
+  );
   // Pair each window with its max observedAt drawn ONLY from observations
   // that pass the same validity check `detectDrift` applies. Otherwise an
   // invalid sample (missing scope, malformed agentId, non-string
@@ -473,7 +487,7 @@ function countStrongDriftPriors(
   // junk timestamp on top of a stale strong-drift window. Computing
   // recency from the same validated samples that detection itself trusts
   // closes that path.
-  const indexed = priorWindows.map((window) => {
+  const indexed = filteredPriors.map((window) => {
     // let: per-window max-observedAt accumulator (validated samples only)
     let maxAt = Number.NEGATIVE_INFINITY;
     for (const o of window) {
@@ -482,17 +496,21 @@ function countStrongDriftPriors(
     }
     return { window, maxAt };
   });
+  // Undated priors fail stability outright. Skipping them silently would
+  // hide a most-recent weak/low-quality window that should break the
+  // trailing run — letting an older strong window unlock `new-artifact`
+  // during degraded telemetry. The intent is "stable across recent
+  // history"; if we can't ORDER history we don't know it's recent.
+  if (indexed.some((e) => !Number.isFinite(e.maxAt))) return 0;
   // Group windows by maxAt and walk groups from newest to oldest. Within a
   // tied group, EVERY window must clear the strong-drift bar — otherwise
   // the whole tied group breaks the run. This removes caller-steerability
   // when multiple windows share a timestamp (coarsened-to-the-second
   // batches, same-frame producers): the verdict no longer depends on
   // array order, because any failing window in the trailing tie group
-  // halts the count regardless of where it sits in the array. Windows
-  // with no finite maxAt sort to the bottom and immediately break the run.
+  // halts the count regardless of where it sits in the array.
   const groups = new Map<number, (typeof indexed)[number][]>();
   for (const entry of indexed) {
-    if (!Number.isFinite(entry.maxAt)) continue;
     const list = groups.get(entry.maxAt);
     if (list === undefined) groups.set(entry.maxAt, [entry]);
     else list.push(entry);
@@ -584,6 +602,39 @@ function normalizeScope(scope: string | undefined): string {
   return trimmed.length === 0 ? LEGACY_SCOPE : trimmed;
 }
 
+/**
+ * Stable content signature of a window's validated observations. Used to
+ * detect when a caller has accidentally included the current window in
+ * `priorWindows` — typical sliding-window bookkeeping bug — so the same
+ * data cannot count as its own prior. Built from canonical fields
+ * (post-trim scope, post-trim agentId, eventId, rounded divergence,
+ * observedAt) so a clone of the array still produces the same signature.
+ * Sorted to be order-independent — `[a, b]` and `[b, a]` are the same window.
+ */
+function windowSignature(window: readonly UsagePurposeObservation[]): string {
+  const tokens: string[] = [];
+  for (const o of window) {
+    if (!isObservationValid(o)) continue;
+    const scope = normalizeScope(o.scope);
+    const agent = o.agentId.trim();
+    const eid = typeof o.eventId === "string" ? o.eventId.trim() : "";
+    const score = Math.round(o.divergenceScore * PAYLOAD_SCORE_FACTOR);
+    const at = Number.isFinite(o.observedAt) ? String(o.observedAt) : "?";
+    // Length-prefix each variable-width field so concatenation cannot
+    // collide (e.g. scope="ab" + agent="c" vs scope="a" + agent="bc").
+    const parts = [
+      `${String(scope.length)}:${scope}`,
+      `${String(agent.length)}:${agent}`,
+      `${String(eid.length)}:${eid}`,
+      String(score),
+      at,
+    ];
+    tokens.push(parts.join("|"));
+  }
+  tokens.sort();
+  return tokens.join("\n");
+}
+
 function isObservationValid(o: UsagePurposeObservation): boolean {
   if (!isUnitInterval(o.divergenceScore)) return false;
   // scope is intentionally permissive: missing / blank values are mapped
@@ -593,6 +644,13 @@ function isObservationValid(o: UsagePurposeObservation): boolean {
   // serializer must still drop. Otherwise an unattributable source could
   // satisfy minDivergentAgents and unlock irreversible suggestions.
   if (o.scope !== undefined && typeof o.scope !== "string") return false;
+  // Reserve the LEGACY_SCOPE sentinel: a real tenant whose chosen scope
+  // happens to match `"__legacy__"` would otherwise be merged with every
+  // missing-scope emitter into the same bucket, defeating tenant
+  // isolation in both replay dedup and cohort attribution. Reject the
+  // explicit string at the boundary so the sentinel cannot be forged
+  // from outside.
+  if (typeof o.scope === "string" && o.scope.trim() === LEGACY_SCOPE) return false;
   if (typeof o.agentId !== "string" || o.agentId.trim().length === 0) return false;
   // contextText must be a string. Empty / whitespace is allowed (a tool with
   // no preceding model text is legitimate), but a non-string from an untyped

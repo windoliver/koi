@@ -508,6 +508,94 @@ describe("suggestAction", () => {
     ).toBe("reclassify");
   });
 
+  test("current window passed as a prior does not count as its own stability evidence (identity)", () => {
+    // Trust-boundary: a sliding-window bookkeeping bug that includes the
+    // current observations array in priorWindows must NOT unlock
+    // new-artifact on the very first detection. Identity check catches
+    // the typical case (same array reference reused).
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [observations]).kind).toBe(
+      "reclassify",
+    );
+  });
+
+  test("current window cloned into priorWindows still does not count (content signature)", () => {
+    // Same threat, harder version: caller deep-clones the array (e.g. via
+    // spread or slice) so identity check misses. A content signature over
+    // validated observations catches it — the cloned window has the same
+    // canonical signature as the current window.
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    const cloned: readonly UsagePurposeObservation[] = [...observations];
+    expect(suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [cloned]).kind).toBe(
+      "reclassify",
+    );
+  });
+
+  test("undated prior windows fail stability outright (cannot be silently skipped)", () => {
+    // If a prior window's max observedAt is non-finite, we cannot know
+    // whether it is the most-recent prior. Skipping it would let an
+    // older strong window unlock new-artifact during degraded telemetry.
+    // The safe behavior: any undated prior fails stability entirely.
+    const undatedStrong: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s, i) => ({
+        scope: "default",
+        agentId: "u-a",
+        divergenceScore: s,
+        contextText: `u-a-${String(i)}`,
+        observedAt: Number.NaN,
+        eventId: `u-a-${String(i)}`,
+      })),
+      ...[0.95, 0.95, 0.95].map((s, i) => ({
+        scope: "default",
+        agentId: "u-b",
+        divergenceScore: s,
+        contextText: `u-b-${String(i)}`,
+        observedAt: Number.NaN,
+        eventId: `u-b-${String(i)}`,
+      })),
+      ...[0.95, 0.95, 0.95].map((s, i) => ({
+        scope: "default",
+        agentId: "u-c",
+        divergenceScore: s,
+        contextText: `u-c-${String(i)}`,
+        observedAt: Number.NaN,
+        eventId: `u-c-${String(i)}`,
+      })),
+      ...[0.95, 0.95, 0.95].map((s, i) => ({
+        scope: "default",
+        agentId: "u-d",
+        divergenceScore: s,
+        contextText: `u-d-${String(i)}`,
+        observedAt: Number.NaN,
+        eventId: `u-d-${String(i)}`,
+      })),
+    ];
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    // Even one undated prior alongside a strong dated prior must fail
+    // stability — we can't trust the ordering.
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [
+        strongPriorWindow(),
+        undatedStrong,
+      ]).kind,
+    ).toBe("reclassify");
+  });
+
+  test("explicit __legacy__ scope is rejected at validation (sentinel reserved)", () => {
+    // The LEGACY_SCOPE sentinel is internal — a real tenant happening to
+    // use that string must NOT collide with the missing-scope compat
+    // bucket. isObservationValid drops observations whose explicit scope
+    // is "__legacy__" so the sentinel cannot be forged from outside.
+    const observations: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("a", s), scope: "__legacy__" })),
+      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("b", s), scope: "  __legacy__  " })),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    // All 6 observations dropped at validation → invalid-config.
+    expect(result.kind).toBe("invalid-config");
+    if (result.kind === "invalid-config") expect(result.reason).toContain("6");
+  });
+
   test("equal-recency priorWindows are evaluated as a tied group (caller order does not matter)", () => {
     // Trust-boundary: when two prior windows share the same max observedAt
     // (coarsened-to-the-second batches, same-frame producers), array order
