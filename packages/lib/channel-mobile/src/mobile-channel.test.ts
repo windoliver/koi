@@ -111,6 +111,36 @@ describe("createMobileChannel", () => {
     await ch.disconnect();
   });
 
+  test("queue dropped when a new client preempts an active socket (single-client eviction)", async () => {
+    // Simulates: ws1 holds the socket, more outbound queues if delivery to ws1
+    // races; then ws2 connects and evicts ws1. The queued backlog must NOT
+    // flush to ws2 — it was destined for the previous recipient.
+    const port = await freePort();
+    const ch = createMobileChannel({ port });
+    await ch.connect();
+    const ws1 = await openWs(port);
+    await new Promise((r) => setTimeout(r, 20));
+    // ws2 connects while ws1 is still active → server evicts ws1, drops queue.
+    const ws2 = await openWs(port);
+    const got: string[] = [];
+    ws2.addEventListener("message", (ev) => {
+      const f = JSON.parse(typeof ev.data === "string" ? ev.data : "") as {
+        content: { text: string }[];
+      };
+      got.push(f.content[0]?.text ?? "");
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    // Now send to the (replaced) channel — goes to ws2 directly, not via queue.
+    await ch.send({ content: [{ kind: "text", text: "for-ws2" }] });
+    await new Promise((r) => setTimeout(r, 30));
+    // ws2 receives only its own message; ws1's would-be backlog never crosses over.
+    expect(got).toEqual(["for-ws2"]);
+    ws1.close();
+    ws2.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
   test("pushNotifier called when no client connected", async () => {
     const port = await freePort();
     const pushed: OutboundMessage[] = [];

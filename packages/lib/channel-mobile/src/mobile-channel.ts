@@ -84,8 +84,17 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         },
         websocket: {
           open(ws: SocketLike) {
-            // Single-client semantics: previous socket evicted.
-            if (activeSocket !== undefined) activeSocket.close();
+            // Single-client semantics: previous socket evicted. The offline
+            // queue is dropped whenever the active socket is replaced — the
+            // adapter cannot prove the new client is the same recipient as
+            // the queued backlog's intended audience, so flushing to the new
+            // socket would risk delivering one client's private messages to
+            // another. Queue is only valid for the *first* client to connect
+            // after a period of disconnection.
+            if (activeSocket !== undefined) {
+              activeSocket.close();
+              offlineQueue.length = 0;
+            }
             activeSocket = ws;
             flushQueue();
           },

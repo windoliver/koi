@@ -58,9 +58,16 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     platformConnect: () => config.transport.connect(),
     platformDisconnect: () => config.transport.disconnect(),
     platformSend: async (message: OutboundMessage) => {
+      // Convert every block to a spoken-text representation. createChannelAdapter
+      // already downgrades image/file/button via renderBlocks, but `custom` blocks
+      // pass through unchanged — without an explicit fallback here they would be
+      // silently dropped, producing missing/partial replies on the wire.
       for (const block of message.content) {
-        if (block.kind !== "text") continue;
-        for (const piece of chunk(block.text, maxTtsChars)) {
+        const text =
+          block.kind === "text"
+            ? block.text
+            : `[${block.kind}: ${block.kind === "custom" ? block.type : block.kind}]`;
+        for (const piece of chunk(text, maxTtsChars)) {
           const audio = await config.tts.synthesize(piece);
           await config.transport.sendAudio(audio);
         }

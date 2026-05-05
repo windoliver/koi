@@ -160,6 +160,21 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("outbound: custom blocks downgraded to spoken placeholder (no silent drop)", async () => {
+    const h = harness();
+    const ch = createVoiceChannel({ transport: h.transport, stt: h.stt, tts: h.tts });
+    await ch.connect();
+    await ch.send({
+      content: [
+        { kind: "custom", type: "chart", data: {} },
+        { kind: "text", text: "and the chart" },
+      ],
+    });
+    expect(h.ttsCalls).toContain("[custom: chart]");
+    expect(h.ttsCalls).toContain("and the chart");
+    await ch.disconnect();
+  });
+
   test("custom senderId honored", async () => {
     const h = harness();
     const ch = createVoiceChannel({

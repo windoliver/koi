@@ -115,9 +115,34 @@ describe("createIdeChannel", () => {
     await ch.disconnect();
   });
 
-  test("inbound: senderId from params overrides default", async () => {
+  test("inbound: client-supplied senderId DROPPED by default (untrusted)", async () => {
     const h = harness();
-    const ch = createIdeChannel({ transport: h.transport });
+    const ch = createIdeChannel({ transport: h.transport, senderId: "trusted-host" });
+    const received: InboundMessage[] = [];
+    ch.onMessage(async (m) => {
+      received.push(m);
+    });
+    await ch.connect();
+    h.emitLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notify",
+        params: {
+          content: [{ kind: "text", text: "x" }],
+          senderId: "spoofed-attacker",
+          threadId: "spoofed-thread",
+        },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received[0]?.senderId).toBe("trusted-host");
+    expect(received[0]?.threadId).toBeUndefined();
+    await ch.disconnect();
+  });
+
+  test("inbound: client-supplied senderId honored only when trustClientIdentity: true", async () => {
+    const h = harness();
+    const ch = createIdeChannel({ transport: h.transport, trustClientIdentity: true });
     const received: InboundMessage[] = [];
     ch.onMessage(async (m) => {
       received.push(m);
@@ -130,11 +155,13 @@ describe("createIdeChannel", () => {
         params: {
           content: [{ kind: "text", text: "x" }],
           senderId: "vscode-42",
+          threadId: "thread-1",
         },
       }),
     );
     await new Promise((r) => setTimeout(r, 5));
     expect(received[0]?.senderId).toBe("vscode-42");
+    expect(received[0]?.threadId).toBe("thread-1");
     await ch.disconnect();
   });
 });

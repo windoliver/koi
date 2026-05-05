@@ -19,6 +19,13 @@ export interface IdeTransport {
 export interface IdeChannelConfig {
   readonly transport: IdeTransport;
   readonly senderId?: string;
+  /**
+   * Trust client-supplied `senderId`/`threadId` from inbound `notify.params`.
+   * Default `false`: client-supplied identity/routing metadata is dropped and
+   * replaced with the host-configured `senderId`. Set `true` only when the
+   * transport itself authenticates and binds a single trusted editor session.
+   */
+  readonly trustClientIdentity?: boolean;
 }
 
 const IDE_CAPABILITIES: ChannelCapabilities = {
@@ -58,6 +65,7 @@ function parseFrame(line: string): NotifyFrame | null {
 
 export function createIdeChannel(config: IdeChannelConfig): ChannelAdapter {
   const defaultSenderId = config.senderId ?? "ide-user";
+  const trustClient = config.trustClientIdentity === true;
 
   return createChannelAdapter<string>({
     name: "ide",
@@ -84,9 +92,9 @@ export function createIdeChannel(config: IdeChannelConfig): ChannelAdapter {
       if (content.length === 0) return null;
       return {
         content,
-        senderId: params.senderId ?? defaultSenderId,
+        senderId: trustClient ? (params.senderId ?? defaultSenderId) : defaultSenderId,
         timestamp: Date.now(),
-        ...(params.threadId !== undefined ? { threadId: params.threadId } : {}),
+        ...(trustClient && params.threadId !== undefined ? { threadId: params.threadId } : {}),
       };
     },
   });
