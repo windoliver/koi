@@ -418,7 +418,7 @@ describe("createFsWriteTool", () => {
     expect(receivedOptions).toEqual({ createDirectories: true, overwrite: false });
   });
 
-  test("defaults overwrite to false when omitted", async () => {
+  test("defaults overwrite and createDirectories to false when omitted", async () => {
     let receivedOptions: FileWriteOptions | undefined;
     const backend = {
       ...createMockBackend(),
@@ -429,7 +429,7 @@ describe("createFsWriteTool", () => {
     };
     const tool = createFsWriteTool(backend, "fs", DEFAULT_UNSANDBOXED_POLICY);
     await tool.execute({ path: "/test", content: "x" });
-    expect(receivedOptions).toEqual({ overwrite: false });
+    expect(receivedOptions).toEqual({ createDirectories: false, overwrite: false });
   });
 
   test("returns error on backend failure", async () => {

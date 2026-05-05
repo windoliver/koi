@@ -400,6 +400,25 @@
         "@koi/hash": "workspace:*",
       },
     },
+    "packages/lib/forge-optimizer": {
+      "name": "@koi/forge-optimizer",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+      },
+      "devDependencies": {
+        "fast-check": "4.3.0",
+      },
+    },
+    "packages/lib/forge-policy": {
+      "name": "@koi/forge-policy",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+      },
+    },
     "packages/lib/forge-tools": {
       "name": "@koi/forge-tools",
       "version": "0.0.0",
@@ -816,6 +835,18 @@
         "@koi/token-estimator": "workspace:*",
       },
     },
+    "packages/lib/playbook-store-nexus": {
+      "name": "@koi/playbook-store-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/ace-types": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/fs-nexus": "workspace:*",
+      },
+    },
     "packages/lib/playbook-store-sqlite": {
       "name": "@koi/playbook-store-sqlite",
       "version": "0.0.0",
@@ -927,6 +958,18 @@
         "@koi/skill-scanner": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
+      },
+    },
+    "packages/lib/snapshot-store-nexus": {
+      "name": "@koi/snapshot-store-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/fs-nexus": "workspace:*",
       },
     },
     "packages/lib/snapshot-store-sqlite": {
@@ -1228,6 +1271,20 @@
         "ssh2": "1.16.0",
       },
     },
+    "packages/meta/rlm-stack": {
+      "name": "@koi/rlm-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/context-manager": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/middleware-rlm": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine-compose": "workspace:*",
+        "@koi/middleware-tool-disclosure": "workspace:*",
+      },
+    },
     "packages/meta/runtime": {
       "name": "@koi/runtime",
       "version": "0.0.0",
@@ -1267,6 +1324,8 @@
         "@koi/execution-context": "workspace:*",
         "@koi/file-type": "workspace:*",
         "@koi/forge-demand": "workspace:*",
+        "@koi/forge-optimizer": "workspace:*",
+        "@koi/forge-policy": "workspace:*",
         "@koi/forge-tools": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
@@ -1343,6 +1402,7 @@
         "@koi/query-engine": "workspace:*",
         "@koi/redaction": "workspace:*",
         "@koi/replay": "workspace:*",
+        "@koi/rlm-stack": "workspace:*",
         "@koi/rules-loader": "workspace:*",
         "@koi/sandbox-conformance": "workspace:*",
         "@koi/sandbox-docker": "workspace:*",
@@ -2330,6 +2390,10 @@
 
     "@koi/forge-integrity": ["@koi/forge-integrity@workspace:packages/lib/forge-integrity"],
 
+    "@koi/forge-optimizer": ["@koi/forge-optimizer@workspace:packages/lib/forge-optimizer"],
+
+    "@koi/forge-policy": ["@koi/forge-policy@workspace:packages/lib/forge-policy"],
+
     "@koi/forge-tools": ["@koi/forge-tools@workspace:packages/lib/forge-tools"],
 
     "@koi/forge-types": ["@koi/forge-types@workspace:packages/lib/forge-types"],
@@ -2492,6 +2556,8 @@
 
     "@koi/permissions-nexus": ["@koi/permissions-nexus@workspace:packages/security/permissions-nexus"],
 
+    "@koi/playbook-store-nexus": ["@koi/playbook-store-nexus@workspace:packages/lib/playbook-store-nexus"],
+
     "@koi/playbook-store-sqlite": ["@koi/playbook-store-sqlite@workspace:packages/lib/playbook-store-sqlite"],
 
     "@koi/plugins": ["@koi/plugins@workspace:packages/lib/plugins"],
@@ -2503,6 +2569,8 @@
     "@koi/redaction": ["@koi/redaction@workspace:packages/security/redaction"],
 
     "@koi/replay": ["@koi/replay@workspace:packages/lib/replay"],
+
+    "@koi/rlm-stack": ["@koi/rlm-stack@workspace:packages/meta/rlm-stack"],
 
     "@koi/rules-loader": ["@koi/rules-loader@workspace:packages/lib/rules-loader"],
 
@@ -2547,6 +2615,8 @@
     "@koi/skill-tool": ["@koi/skill-tool@workspace:packages/lib/skill-tool"],
 
     "@koi/skills-runtime": ["@koi/skills-runtime@workspace:packages/lib/skills-runtime"],
+
+    "@koi/snapshot-store-nexus": ["@koi/snapshot-store-nexus@workspace:packages/lib/snapshot-store-nexus"],
 
     "@koi/snapshot-store-sqlite": ["@koi/snapshot-store-sqlite@workspace:packages/lib/snapshot-store-sqlite"],
 

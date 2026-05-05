@@ -2,7 +2,7 @@
  * Tool factory for `web_fetch` — fetch a URL and return the response content.
  */
 
-import type { JsonObject, Tool, ToolPolicy } from "@koi/core";
+import type { JsonObject, Tool, ToolExecuteOptions, ToolPolicy } from "@koi/core";
 import { BLOCKED_HOST_SUFFIXES, BLOCKED_HOSTS, isBlockedIp } from "@koi/url-safety";
 import { MAX_TIMEOUT_MS } from "./constants.js";
 import { htmlToMarkdown } from "./html-to-markdown.js";
@@ -90,7 +90,7 @@ export function createWebFetchTool(
     },
     origin: "primordial",
     policy,
-    execute: async (args: JsonObject): Promise<unknown> => {
+    execute: async (args: JsonObject, options?: ToolExecuteOptions): Promise<unknown> => {
       if (typeof args.url !== "string" || args.url.trim() === "") {
         return { error: "url must be a non-empty string", code: "VALIDATION" };
       }
@@ -134,7 +134,13 @@ export function createWebFetchTool(
       }
       const noCache = args.noCache === true;
 
-      const result = await executor.fetch(url, { method, headers, timeoutMs: timeout, noCache });
+      const result = await executor.fetch(url, {
+        method,
+        headers,
+        timeoutMs: timeout,
+        noCache,
+        signal: options?.signal,
+      });
       if (!result.ok) {
         return { error: result.error.message, code: result.error.code };
       }

@@ -16882,3 +16882,129 @@ describe("Golden: @koi/middleware-user-model", () => {
     expect(text).toContain("typescript");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/forge-optimizer (advisory artifact-optimization helpers — #1350)
+// Two standalone queries, no LLM needed. Exercises the public surface of the
+// L2 package via direct calls so the runtime gate can verify it is wired.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/forge-optimizer", () => {
+  test("validateGraphTransition rejects skip states (draft → active without verifying)", async () => {
+    const { validateGraphTransition, validateStoreTransition } = await import(
+      "@koi/forge-optimizer"
+    );
+    const ok = validateGraphTransition("draft", "verifying");
+    expect(ok).toEqual({ ok: true });
+    const skip = validateGraphTransition("draft", "active");
+    expect(skip.ok).toBe(false);
+    // Store-safe variant additionally rejects exits from terminal lifecycles.
+    const terminalExit = validateStoreTransition("quarantined", "draft");
+    expect(terminalExit.ok).toBe(false);
+  });
+
+  test("recordUsage + computePerformanceScore + suggestRetirement return advisory signals without store mutation", async () => {
+    const { recordUsage, computePerformanceScore, suggestRetirement } = await import(
+      "@koi/forge-optimizer"
+    );
+    const { DEFAULT_BRICK_FITNESS, DEFAULT_UNSANDBOXED_POLICY } = await import("@koi/core");
+    type ToolArtifact = import("@koi/core").ToolArtifact;
+    type ForgeProvenance = import("@koi/core").ForgeProvenance;
+
+    const fitness = recordUsage(
+      DEFAULT_BRICK_FITNESS,
+      { outcome: "success", latencyMs: 25, at: 1_000 },
+      1_000,
+    );
+    expect(fitness.successCount).toBe(1);
+    expect(fitness.lastUsedAt).toBe(1_000);
+
+    const score = computePerformanceScore(fitness, 1_000);
+    expect(score).toBeGreaterThan(0);
+
+    const tool: ToolArtifact = {
+      id: "sha256:t" as ToolArtifact["id"],
+      kind: "tool",
+      name: "stale",
+      description: "",
+      scope: "agent",
+      origin: "operator",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
+      lifecycle: "active",
+      provenance: {} as ForgeProvenance,
+      version: "1.0.0",
+      tags: [],
+      usageCount: 0,
+      implementation: "",
+      inputSchema: {},
+    };
+    const suggestions = suggestRetirement([tool], { minUsageCount: 5, maxIdleMs: 1_000 }, 0);
+    expect(suggestions.length).toBe(1);
+    expect(suggestions[0]?.brickId).toBe(tool.id);
+  });
+});
+
+describe("Golden: @koi/forge-policy", () => {
+  test("evaluatePolicy denies a disallowed brick kind and binds candidateId + configFingerprint", async () => {
+    const { evaluatePolicy } = await import("@koi/forge-policy");
+    const { DEFAULT_FORGE_BUDGET } = await import("@koi/core");
+    const candidate = {
+      id: "cand-policy-1",
+      kind: "tool",
+      name: "user.add",
+      description: "adds",
+      priority: 0.5,
+      proposedScope: "agent",
+      createdAt: 1_700_000_000_000,
+    } as const;
+    const config = {
+      allowedKinds: ["middleware"],
+      maxScope: "zone",
+      budget: DEFAULT_FORGE_BUDGET,
+      requireApprovalAtOrAbove: "global",
+    } as const;
+    const result = evaluatePolicy(candidate, config);
+    expect(result.verdict.decision).toBe("deny");
+    expect(result.candidateId).toBe("cand-policy-1");
+    expect(result.configFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.baseVerdict.decision).toBe("deny");
+    expect(result.overrideApplied).toBe(false);
+  });
+
+  test("createPolicyEvaluator + evaluateAndRecord persist same-instance audit entries with monotonic sequence", async () => {
+    const { createPolicyEvaluator } = await import("@koi/forge-policy");
+    const { DEFAULT_FORGE_BUDGET } = await import("@koi/core");
+    const { evaluateAndRecord, log } = createPolicyEvaluator();
+    const baseCandidate = {
+      kind: "tool",
+      name: "user.add",
+      description: "adds",
+      priority: 0.5,
+      proposedScope: "agent",
+      createdAt: 1_700_000_000_000,
+    } as const;
+    const config = {
+      allowedKinds: ["tool", "skill"],
+      maxScope: "zone",
+      budget: DEFAULT_FORGE_BUDGET,
+      requireApprovalAtOrAbove: "global",
+    } as const;
+    const first = evaluateAndRecord({
+      candidate: { id: "cand-policy-2", ...baseCandidate },
+      config,
+      evaluatedAt: 1_700_000_000_000,
+    });
+    const second = evaluateAndRecord({
+      candidate: { id: "cand-policy-3", ...baseCandidate },
+      config,
+      evaluatedAt: 1_700_000_000_001,
+    });
+    expect(first.evaluation.verdict.decision).toBe("allow");
+    expect(first.entry.sequence).toBe(0);
+    expect(second.entry.sequence).toBe(1);
+    expect(log.size()).toBe(2);
+    // configFingerprint is bound by the evaluator at decision time —
+    // both entries against the same config must agree on the digest.
+    expect(first.entry.configFingerprint).toBe(second.entry.configFingerprint);
+  });
+});

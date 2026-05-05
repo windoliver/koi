@@ -69,6 +69,7 @@
       - "packages/**/agent/cli/**"
       - "packages/**/cli/**"
       - "packages/**/gateway-stack/**"
+      - "packages/**/rlm-stack/**"
       - "packages/**/runtime/**"
 
 # L2 is the catch-all: any package change that is not L0, L1, L0u, or L3.
@@ -112,6 +113,7 @@
       - "!packages/**/query-engine/**"
       - "!packages/**/redaction/**"
       - "!packages/**/replay/**"
+      - "!packages/**/rlm-stack/**"
       - "!packages/**/rules-loader/**"
       - "!packages/**/runtime/**"
       - "!packages/**/secure-storage/**"
