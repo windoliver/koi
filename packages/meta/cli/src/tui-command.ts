@@ -57,6 +57,7 @@ import { GOVERNANCE, sessionId } from "@koi/core";
 import { formatCost, formatTokens } from "@koi/core/cost-tracker";
 import type { DisplayableResumedMessage } from "@koi/core/message";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
+import { createFileSessionRegistry, createSubprocessBackend } from "@koi/daemon";
 import { createAuthNotificationHandler } from "@koi/fs-nexus";
 import type { PatternRule } from "@koi/governance-defaults";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
@@ -99,9 +100,12 @@ import { mergeGovernanceFlags } from "./args/governance-flags.js";
 import type { TuiFlags } from "./args.js";
 import { formatAtReferencesForModel, resolveAtReferences } from "./at-reference.js";
 import { createAuthInterceptor } from "./auth-interceptor.js";
+import { defaultRegistryDir } from "./commands/bg.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
 import { type CostBridge, createCostBridge } from "./cost-bridge.js";
 import { createCurrentModelMiddleware } from "./current-model-middleware.js";
+import type { DaemonBridge } from "./daemon-bridge.js";
+import { createDaemonBridge } from "./daemon-bridge.js";
 import { resolveApiConfig } from "./env.js";
 import { createFileCompletionHandler } from "./file-completions.js";
 import { createForegroundSubmitQueue } from "./foreground-submit-queue.js";
@@ -136,6 +140,7 @@ import {
   SIGUSR1_EXIT_CODE,
   SIGUSR1_SUPPORTED,
 } from "./tui-sigusr1.js";
+import { type WireDaemonSupervisorHandle, wireDaemonSupervisor } from "./wire-daemon-supervisor.js";
 import {
   type ManifestSupervisionHandle,
   wireManifestSupervision,
@@ -2052,6 +2057,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // koi.yaml carries a `supervision:` block. Disposed in reverse-construction
   // order in the teardown chain below.
   let supervisionHandle: ManifestSupervisionHandle | undefined;
+  // Daemon supervisor wiring (#1944). Populated when manifest declares a
+  // subprocess child. Disposed before supervisionHandle in the teardown chain.
+  // let: assigned once after runtime ready when subprocess children present.
+  let daemonSupervisorHandle: WireDaemonSupervisorHandle | undefined;
+  // Registry-only bridge (#1944). Opened unconditionally after runtime ready;
+  // torn down and replaced by the live bridge when subprocess children are
+  // present. let: assigned once; set to null when live mode takes over.
+  let registryOnlyBridge: DaemonBridge | null = null;
   // Declared ahead of interim teardown so a SIGUSR1 arriving during boot
   // can safely inspect it without tripping a TDZ error. Assigned below,
   // once the advisory lock has been acquired.
@@ -2147,7 +2160,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           runtimeHandle?.shutdownBackgroundTasks();
         } catch {}
         try {
+          await daemonSupervisorHandle?.dispose();
+        } catch {}
+        try {
           await supervisionHandle?.dispose();
+        } catch {}
+        try {
+          await registryOnlyBridge?.close();
         } catch {}
         try {
           if (runtimeHandle !== null) {
@@ -2935,6 +2954,41 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     } catch (err: unknown) {
       console.warn("[tui-command] governance bridge init failed:", err);
     }
+    // Registry-only daemon bridge (#1944). Opened unconditionally so the
+    // /bg view can show sessions from other processes even when this TUI
+    // does not own a daemon supervisor. Replaced by the live bridge below
+    // when the manifest declares subprocess children.
+    const registryDir = defaultRegistryDir();
+    // Inline helper: maps a DaemonBridgeToast to the TUI Toast shape.
+    // body is empty — daemon toasts carry their message in title only.
+    const pushDaemonToast = (
+      toast: import("./daemon-bridge.js").DaemonBridgeToast,
+      key: string,
+    ): void => {
+      store.dispatch({
+        kind: "add_toast",
+        toast: {
+          id: crypto.randomUUID(),
+          kind: toast.kind,
+          key,
+          title: toast.message,
+          body: "",
+          ts: Date.now(),
+        },
+      });
+    };
+    try {
+      const roRegistry = createFileSessionRegistry({ dir: registryDir });
+      registryOnlyBridge = createDaemonBridge({
+        mode: { kind: "registry-only", registry: roRegistry },
+        dispatch: store.dispatch,
+        pushToast: (toast) => {
+          pushDaemonToast(toast, "daemon-bridge");
+        },
+      });
+    } catch (err: unknown) {
+      console.warn("[tui-command] registry-only bridge init failed:", err);
+    }
     // Manifest-driven supervision wiring (#1866). When the loaded manifest
     // declares `supervision:`, activate the subsystem here so the declared
     // children appear in the runtime's AgentRegistry and in the /agents
@@ -2955,6 +3009,44 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         supervisionHandle = supHandle;
       } catch (err: unknown) {
         console.warn("[tui-command] supervision wiring failed:", err);
+      }
+    }
+    // Daemon supervisor wiring (#1944). When the manifest declares supervision
+    // with at least one subprocess child, instantiate the @koi/daemon
+    // Supervisor + FileSessionRegistry + bridge. Skipped when no subprocess
+    // children — in-process supervision keeps using wireManifestSupervision.
+    const hasSubprocessChild =
+      manifestSupervision?.children.some((c) => c.isolation === "subprocess") === true;
+    if (hasSubprocessChild) {
+      // Tear down the registry-only bridge first; live mode owns the registry.
+      try {
+        await registryOnlyBridge?.close();
+        registryOnlyBridge = null;
+      } catch (err: unknown) {
+        console.warn("[tui-command] registry-only bridge close failed:", err);
+      }
+      try {
+        // Synthesise a minimal AgentManifest from the loaded manifest
+        // fields. wireDaemonSupervisor accepts it for future use; the
+        // current implementation does not read it.
+        const supervisorManifest: import("@koi/core").AgentManifest = {
+          name: flags.manifest ?? "supervisor",
+          version: "0",
+          model: { name: modelName },
+          ...(manifestSupervision !== undefined && { supervision: manifestSupervision }),
+        };
+        daemonSupervisorHandle = await wireDaemonSupervisor({
+          stateDir: registryDir,
+          manifest: supervisorManifest,
+          dispatch: store.dispatch,
+          pushToast: (toast) => {
+            pushDaemonToast(toast, "daemon-supervisor");
+          },
+          backends: { subprocess: createSubprocessBackend() },
+        });
+        store.dispatch({ kind: "set_supervisor_attached", attached: true });
+      } catch (err: unknown) {
+        console.warn("[tui-command] daemon supervisor wiring failed:", err);
       }
     }
     // Prime the runtime's in-memory transcript with the resumed
@@ -3230,7 +3322,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       const forceDispose = async (): Promise<void> => {
         const hardExit = setTimeout(() => process.exit(130), FORCE_HARD_EXIT_MS);
         try {
+          await daemonSupervisorHandle?.dispose();
+        } catch {
+          // Best-effort — must not block force-quit.
+        }
+        try {
           await supervisionHandle?.dispose();
+        } catch {
+          // Best-effort — must not block force-quit.
+        }
+        try {
+          await registryOnlyBridge?.close();
         } catch {
           // Best-effort — must not block force-quit.
         }
@@ -3933,14 +4035,32 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       if (hadLiveTasks) {
         await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
       }
-      // Dispose manifest-declared supervision before the runtime itself so
-      // the reconcile runner/process tree can observe a live registry during
-      // their own teardown.
+      // Dispose daemon supervisor + manifest supervision before the runtime
+      // itself so the reconcile runner/process tree can observe a live
+      // registry during their own teardown.
+      try {
+        await daemonSupervisorHandle?.dispose();
+      } catch (disposeErr) {
+        process.stderr.write(
+          `[koi tui] daemon supervisor dispose failed during shutdown: ${
+            disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+          }\n`,
+        );
+      }
       try {
         await supervisionHandle?.dispose();
       } catch (disposeErr) {
         process.stderr.write(
           `[koi tui] supervision dispose failed during shutdown: ${
+            disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+          }\n`,
+        );
+      }
+      try {
+        await registryOnlyBridge?.close();
+      } catch (disposeErr) {
+        process.stderr.write(
+          `[koi tui] registry-only bridge close failed during shutdown: ${
             disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
           }\n`,
         );
