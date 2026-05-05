@@ -13,6 +13,8 @@ export type { ChannelFactory, ChannelRegistry } from "./channel-registry.js";
 export { createChannelRegistry } from "./channel-registry.js";
 export type { ChannelErrorOutput } from "./format-error.js";
 export { classifyErrorForChannel, formatErrorForChannel } from "./format-error.js";
+export type { HandlerInput, HandlerWorkerOptions } from "./handler-worker.js";
+export { startHandlerWorker } from "./handler-worker.js";
 export type {
   IdempotencyStore,
   InMemoryIdempotencyStoreOptions,
