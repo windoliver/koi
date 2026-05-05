@@ -135,6 +135,8 @@ export async function synthesize(
     ["name", candidateSnapshot.value.name],
     ["description", candidateSnapshot.value.description],
     ["id", candidateSnapshot.value.id],
+    ["kind", candidateSnapshot.value.kind],
+    ["proposedScope", candidateSnapshot.value.proposedScope],
   ] as const) {
     if (value.length > MAX_CANDIDATE_FIELD_BYTES) {
       return {
@@ -144,9 +146,32 @@ export async function synthesize(
       };
     }
   }
+  // targetToolName is also read into prompts via JSON.stringify. Validate
+  // and size-cap explicitly — a throwing getter on input.targetToolName
+  // would otherwise escape the typed-result contract via the spread below,
+  // and an unbounded value would amplify every prompt.
+  let targetToolName: string;
+  try {
+    targetToolName = input.targetToolName;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, reason: `targetToolName getter threw: ${message}`, attempts: 0 };
+  }
+  if (typeof targetToolName !== "string" || targetToolName.length === 0) {
+    return { ok: false, reason: "targetToolName must be a non-empty string", attempts: 0 };
+  }
+  if (targetToolName.length > MAX_CANDIDATE_FIELD_BYTES) {
+    return {
+      ok: false,
+      reason: `targetToolName exceeds ${MAX_CANDIDATE_FIELD_BYTES} bytes (got ${targetToolName.length})`,
+      attempts: 0,
+    };
+  }
+  // Build safeInput from validated primitive snapshots only — never spread
+  // the raw caller input, since that re-reads getters past the boundary.
   const safeInput: SynthesisInput = {
-    ...input,
     candidate: candidateSnapshot.value,
+    targetToolName,
     targetToolSchema: frozenSchema,
   };
 
@@ -697,7 +722,11 @@ function guardAttempt<T>(
     // (timeout / aborted). The grace bound caps the cost of a misbehaving
     // adapter that ignores its abort signal; without it a fully-hung
     // callback would pin synthesize() forever.
-    const ABORT_SETTLE_GRACE_MS = 1000;
+    // Grace window bounded so attemptTimeoutMs is the true end-to-end cap
+    // (work + unwind). Without this bound, repeated timeouts could each
+    // overshoot by a fixed grace, compounding across retries and breaking
+    // any upstream deadline that trusts the configured budget.
+    const graceMs = Number.isFinite(timeoutMs) ? Math.min(1000, Math.floor(timeoutMs * 0.5)) : 1000;
     const settleAfterUnwind = (result: GuardedResult<T>): void => {
       cancelled = true;
       let done = false;
@@ -706,7 +735,7 @@ function guardAttempt<T>(
         done = true;
         finish(result);
       };
-      const graceTimer = setTimeout(finishOnce, ABORT_SETTLE_GRACE_MS);
+      const graceTimer = setTimeout(finishOnce, graceMs);
       const cancelGrace = (): void => clearTimeout(graceTimer);
       runPromise.then(
         () => {
@@ -733,11 +762,15 @@ function guardAttempt<T>(
     let timer: ReturnType<typeof setTimeout> | null = null;
     let timedOut = false;
     if (Number.isFinite(timeoutMs)) {
+      // Reserve graceMs (= min(1000, timeoutMs/2)) for unwind so the
+      // total attempt cost stays inside attemptTimeoutMs. timeoutMs/2 is
+      // already used for graceMs above, so workMs is also at least half.
+      const workMs = Math.max(0, timeoutMs - Math.min(1000, Math.floor(timeoutMs * 0.5)));
       timer = setTimeout(() => {
         timedOut = true;
         attempt.abort(); // signal the callback so it can stop its work
         settleAfterUnwind({ ok: false, reason: `${label} timed out after ${timeoutMs}ms` });
-      }, timeoutMs);
+      }, workMs);
     }
 
     const onAbort = (): void => {

@@ -184,7 +184,10 @@ describe("synthesize", () => {
       generate,
       verify: ALWAYS_OK,
       maxAttempts: 2,
-      attemptTimeoutMs: 30,
+      // Grace = min(1000, timeoutMs/2). With timeoutMs=200, grace=100ms,
+      // which covers the 50ms cleanup so attempt 2 only starts after
+      // attempt 1 has fully unwound.
+      attemptTimeoutMs: 200,
       ...ABORT_HONORED,
     });
     void result; // either ok or fail acceptable; we care about non-overlap
@@ -876,6 +879,49 @@ describe("synthesize", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/targetToolSchema exceeds/);
+  });
+
+  test("rejects oversized targetToolName before prompt construction", async () => {
+    const result = await synthesize(
+      { ...INPUT, targetToolName: "x".repeat(5_000) },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/targetToolName exceeds/);
+  });
+
+  test("hostile targetToolName getter returns typed failure", async () => {
+    const hostile = Object.create(null, {
+      candidate: { value: CANDIDATE, enumerable: true },
+      targetToolName: {
+        get: () => {
+          throw new Error("hostile name getter");
+        },
+        enumerable: true,
+      },
+      targetToolSchema: { value: { type: "object" }, enumerable: true },
+    }) as SynthesisInput;
+    const result = await synthesize(hostile, {
+      generate: async () => validRaw(),
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/targetToolName/);
+  });
+
+  test("rejects oversized candidate.proposedScope before prompt construction", async () => {
+    const candidate = { ...CANDIDATE, proposedScope: "x".repeat(5_000) } as ForgeCandidate;
+    const result = await synthesize(
+      { ...INPUT, candidate },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/candidate\.proposedScope exceeds/);
   });
 
   test("rejects oversized candidate.description before prompt construction", async () => {

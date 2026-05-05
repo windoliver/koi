@@ -115,11 +115,14 @@ export interface SynthesisConfig {
    */
   readonly signal?: AbortSignal | undefined;
   /**
-   * Per-attempt hard timeout in ms. Default 30_000. A `generate` or `verify`
-   * call that does not settle within the window converts to a typed
-   * `{ ok: false, reason: "...timed out..." }` and the loop continues to
-   * the next attempt (or exits if `maxAttempts` is exhausted). Set to
-   * `Infinity` to disable; never set to 0 (would fail every attempt).
+   * Per-attempt hard timeout in ms. Default 30_000. End-to-end cap that
+   * covers BOTH the generate/verify work AND any post-abort unwind grace —
+   * after this window, synthesize() will not still be inside the attempt.
+   * Internally split as `workMs = timeoutMs - graceMs`, where
+   * `graceMs = min(1000, timeoutMs / 2)`; the timer fires after workMs and
+   * the loop waits up to graceMs more for the aborted callback to settle
+   * before starting the next attempt. Set to `Infinity` to disable; never
+   * set to 0 (would fail every attempt).
    */
   readonly attemptTimeoutMs: number;
   /**
