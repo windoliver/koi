@@ -744,6 +744,67 @@ describe("dedup conflict quarantine", () => {
     }
   });
 
+  test("retry skew within tolerance does NOT trigger quarantine (legitimate retry)", () => {
+    // Rolling deploys / float drift can produce harmless variation: scores
+    // differ in the 5th decimal, contextText gains/loses surrounding
+    // whitespace. The detector normalizes both before equality, so these
+    // collapse as duplicates — not as conflicts that erase evidence.
+    const eid = "evt-skew";
+    const original: UsagePurposeObservation = {
+      scope: "default",
+      agentId: "a1",
+      eventId: eid,
+      divergenceScore: 0.95,
+      contextText: "read configuration files",
+      observedAt: 1,
+    };
+    const skewed: UsagePurposeObservation = {
+      ...original,
+      divergenceScore: 0.94999999, // float drift below precision boundary
+      contextText: "  read configuration files\n", // whitespace edit
+      observedAt: 2,
+    };
+    const observations: UsagePurposeObservation[] = [
+      original,
+      skewed,
+      ...[0.95, 0.95, 0.95].map((s) => obs("a2", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("a3", s)),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      // Skew collapsed as duplicate, not quarantined as conflict.
+      expect(result.duplicateCount).toBe(1);
+      expect(result.conflictCount).toBe(0);
+    }
+  });
+
+  test("genuine score divergence beyond precision DOES trigger quarantine", () => {
+    // Score difference of 0.55 is far beyond rounding noise — that's a real
+    // payload disagreement, treated as a conflict.
+    const eid = "evt-real-conflict";
+    const lo: UsagePurposeObservation = {
+      scope: "default",
+      agentId: "a1",
+      eventId: eid,
+      divergenceScore: 0.4,
+      contextText: "x",
+      observedAt: 1,
+    };
+    const hi: UsagePurposeObservation = { ...lo, divergenceScore: 0.95 };
+    const observations: UsagePurposeObservation[] = [
+      lo,
+      hi,
+      ...[0.95, 0.95, 0.95].map((s) => obs("a2", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("a3", s)),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    if (result.kind === "drift") {
+      expect(result.conflictCount).toBe(2);
+      expect(result.duplicateCount).toBe(0);
+    }
+  });
+
   test("identical-payload retries still collapse as duplicates (replay protection)", () => {
     // Replay of the same logical event with same payload — the desired and
     // safe collapse. duplicateCount tracks these; conflictCount stays 0.

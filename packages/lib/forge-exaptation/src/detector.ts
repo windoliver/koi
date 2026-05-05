@@ -548,11 +548,30 @@ function dedupeByScopeAgentEvent(observations: readonly UsagePurposeObservation[
   return { winners, duplicateCount, conflictCount };
 }
 
+/**
+ * Conflict-equivalence check for replay dedup. Compares **normalized** payloads
+ * so harmless retry / version skew is not mistaken for a real conflict:
+ *
+ *   - `divergenceScore` is rounded to `PAYLOAD_SCORE_PRECISION` decimals;
+ *     0.949999... compares equal to 0.95.
+ *   - `contextText` is trimmed; rolling-deploy whitespace edits don't quarantine.
+ *
+ * `isObservationValid` has already rejected non-finite scores upstream, so
+ * both inputs here are finite numbers in `[0, 1]` and exact rounding works.
+ *
+ * Real conflicts — different rounded scores or different trimmed text —
+ * still trigger quarantine, blocking corrupted-replay attacks.
+ */
 function samePayload(a: UsagePurposeObservation, b: UsagePurposeObservation): boolean {
-  if (a.divergenceScore !== b.divergenceScore) return false;
-  if (a.contextText !== b.contextText) return false;
+  const sa = Math.round(a.divergenceScore * PAYLOAD_SCORE_FACTOR);
+  const sb = Math.round(b.divergenceScore * PAYLOAD_SCORE_FACTOR);
+  if (sa !== sb) return false;
+  if (a.contextText.trim() !== b.contextText.trim()) return false;
   return true;
 }
+
+const PAYLOAD_SCORE_PRECISION = 4;
+const PAYLOAD_SCORE_FACTOR = 10 ** PAYLOAD_SCORE_PRECISION;
 
 interface DivergentCohort {
   /** Number of agents whose own drift evidence cleared the bar. */
