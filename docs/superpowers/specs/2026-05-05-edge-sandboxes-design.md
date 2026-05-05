@@ -62,7 +62,7 @@ export interface EdgeInvokeResult {
 }
 export interface EdgeFunctionInstance {
   readonly invoke: (req: EdgeInvokeRequest) => Promise<Result<EdgeInvokeResult, KoiError>>;
-  readonly destroy: () => Promise<void>;
+  readonly destroy: () => Promise<DestroyOutcome>;  // see Cancellation honesty below
 }
 export interface EdgeFunctionAdapter {
   readonly name: string;
@@ -168,19 +168,33 @@ Rules:
 
 In-process delayed re-verify is necessary but not sufficient: a host crash, container restart, or kill-9 between detecting the failure and completing cleanup leaves a billable artifact behind. The adapter therefore persists pending orphans **durably** before declaring an INDETERMINATE result:
 
-- **Orphan ledger location:** `${config.orphanLedgerPath ?? "${HOME}/.koi/sandbox-orphans.json"}` — a JSON file holding a discriminated-union list of orphans, one variant per provider so the cleanup key is provider-correct:
-  ```ts
-  type OrphanEntry =
-    | { provider: "cloudflare"; accountId: string; scriptName: string; createdAt: string; lastTriedAt: string }
-    | { provider: "vercel"; teamId?: string; projectId: string; deploymentId: string; deploymentUrl: string; createdAt: string; lastTriedAt: string };
+- **Orphan ledger storage — SQLite, not a JSON file:** `${config.orphanLedgerPath ?? "${HOME}/.koi/sandbox-orphans.db"}` — a `bun:sqlite` database. JSON files are unsafe under concurrent writers (multi-process or multi-host hosts re-running the adapter): two failing creates can read the same snapshot, each rewrite, and the last rename wins. SQLite gives us proper transactional read-modify-write with row-level mutation safety inside a single process, and `BEGIN IMMEDIATE` + WAL mode handles cross-process contention via the OS-level lock SQLite already implements.
+- **Schema (one table, two row variants discriminated by `provider`):**
+  ```sql
+  CREATE TABLE IF NOT EXISTS orphans (
+    id TEXT PRIMARY KEY,                -- provider:scope:resource-id (deterministic; see below)
+    provider TEXT NOT NULL,             -- "cloudflare" | "vercel"
+    account_id TEXT,                    -- Cloudflare: required; Vercel: NULL
+    team_id TEXT,                       -- Vercel: nullable; Cloudflare: NULL
+    project_id TEXT,                    -- Vercel: required; Cloudflare: NULL
+    script_name TEXT,                   -- Cloudflare: required
+    deployment_id TEXT,                 -- Vercel: required
+    deployment_url TEXT,                -- Vercel: required
+    created_at TEXT NOT NULL,
+    last_tried_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_orphans_provider_scope ON orphans (provider, account_id, team_id, project_id);
   ```
-  Atomic write via temp-file + rename (the `@koi/memory-fs-atomic-upsert` design pattern from the existing specs).
+  `id` is `cloudflare:${accountId}:${scriptName}` or `vercel:${teamId ?? "_personal"}:${projectId}:${deploymentId}` — deterministic so re-inserting an already-known orphan is an UPSERT, not a duplicate.
+- **Atomic operations:** all writes wrap `BEGIN IMMEDIATE; ... COMMIT;` so concurrent adapter instances cannot interleave. Reconciliation deletes a row in the same transaction that confirms the provider DELETE returned success — no read-then-delete window.
+- **WAL mode + fsync per transaction:** `PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;` provides crash safety across host restarts (the WAL is replayed on reopen). For the create-failure path that requires durable persistence before returning, the adapter additionally calls `db.exec("PRAGMA wal_checkpoint(TRUNCATE)")` to force WAL flush before reporting INDETERMINATE — this guarantees the orphan survives even an immediate `kill -9`.
 - **Write-before-return invariant:** an INDETERMINATE result is only returned to the caller AFTER the orphan has been persisted to the ledger. If the ledger write itself fails, the adapter blocks and retries (bounded) before returning a strictly-stronger error `KoiError { code: "ORPHAN_LEDGER_WRITE_FAILED" }` with the artifact identity in context. Caller knows operator intervention is required immediately.
 - **Reconciliation on adapter init:** at construction time, each adapter reads the ledger and matches entries by its provider-specific ownership key:
   - Cloudflare: `provider === "cloudflare" && accountId === config.accountId`.
   - Vercel: `provider === "vercel" && (teamId ?? null) === (config.teamId ?? null) && projectId === config.projectId`.
   Each matched orphan triggers a provider-specific DELETE (`/workers/scripts/{scriptName}` for CF, `/v13/deployments/{deploymentId}` for Vercel). Successful deletions (or 404 confirmed by a follow-up GET) remove the entry; failures bump `lastTriedAt` and stay queued. The Vercel adapter requires `projectId` in its config so reconciliation has a deterministic key — it is not optional.
-- **External reconciliation:** the `provider-smoke.yml` nightly cron job lists scripts/deployments matching `koi-*` prefixes older than 1 hour and unconditionally deletes them. This is the cross-host backstop; the local ledger is the single-host backstop.
+- **External reconciliation:** the `provider-smoke.yml` nightly cron job lists ALL scripts/deployments older than 1 hour, regardless of prefix, that the configured token has authority to delete. The configurable `scriptPrefix` defaults to `koi-sandbox` but is not relied on for sweeping — operators can override prefix without losing janitor coverage. The sweep cross-references the SQLite ledger to skip artifacts the local process is still actively managing (rows with `last_tried_at` within 5 minutes), and deletes everything else. This is the cross-host backstop independent of any prefix convention; the local SQLite ledger is the single-host transactional backstop.
 - **Synchronous cleanup option:** for callers that cannot tolerate any deferred cleanup, config exposes `synchronousCreateCleanup: boolean` (default `false`). When `true`, the adapter does not return until either (a) the cleanup DELETE returns confirmed-deleted (success path), or (b) cleanup fails and the orphan is persisted to the ledger. INDETERMINATE results are never returned with a still-pending in-process re-verify scheduled — the caller blocks until the durable trace is written. This trades latency for an absolute guarantee that no artifact exists outside the ledger.
 - **Idempotent retries are caller responsibility:** the adapter never auto-retries `create`. Each retry produces a new UUID and is independent.
 - **No orphan from successful create then later failure:** once `ready`, only `destroy()` deletes; failures during `exec()` poison but do not auto-delete (caller decides).
@@ -211,11 +225,27 @@ To avoid this entire class of hazard, **`invoke()` is serialized per instance**:
 - Concurrent callers see fair FIFO ordering, not provider-side races.
 - A timeout on call N transitions the instance to POISONED before the mutex is released; subsequent queued calls (N+1, N+2, ...) all reject immediately with `POISONED` when they acquire it. They never reach the provider.
 
-**`destroy()` is preemptive, not queued:**
+**`destroy()` is preemptive, not queued — but does NOT prove remote quiescence:**
 
 - Every `invoke()` is wrapped in a host-side `AbortController`. When `destroy()` is called, it (a) sets the instance state to `DESTROYING`, (b) immediately calls `abort()` on the in-flight invoke's controller (this rejects the caller's `invoke()` promise with `KoiError { code: "DESTROYED" }` and tears down the local `fetch` regardless of whether the remote response ever arrives), (c) drains and rejects all queued invokes with `KoiError { code: "DESTROYED" }`, then (d) issues the DELETE.
 - **Mandatory host-side timeout:** `invoke()` enforces a non-optional default `timeoutMs` of 30_000 (capped by profile `resources.timeoutMs`). The caller cannot opt out. This guarantees the in-flight `fetch` cannot wait forever even if `destroy()` were not called.
-- Caller-visible: `invoke()` is awaited as usual; the only behavioral change vs. an OS sandbox is that calls are not parallel within an instance. Callers that need parallelism create multiple instances. Calling `destroy()` while an `invoke()` is in flight rejects that invoke promptly — destroy is never blocked behind hung remote work.
+
+**Honest contract — `destroy()` returns `DestroyOutcome`, not bare `void`:**
+
+Cloudflare and Vercel offer no authoritative provider-side per-invocation kill confirmation. DELETE removes routing for new requests but cannot prove an already-running invocation has stopped. We refuse to lie about that:
+
+```ts
+export type DestroyOutcome =
+  | { readonly kind: "destroyed-clean" }                          // never had an in-flight invoke
+  | { readonly kind: "destroyed-local-remote-indeterminate"; readonly inflightAtDestroy: number };
+```
+
+- `destroyed-clean`: no `invoke()` was in flight when `destroy()` was called. Local handle gone, no possible residual side effects.
+- `destroyed-local-remote-indeterminate`: at least one `invoke()` was active. Local handle is gone, no future invokes possible, BUT in-flight remote work may still complete and produce side effects after `destroy()` returns. The number of affected invokes is reported.
+- `EdgeFunctionInstance.destroy()` is typed `Promise<DestroyOutcome>` — not `Promise<void>`. Callers must read it. This forces the contract to be honest at the type level; idempotency considerations propagate to the caller's design.
+- The threat model is updated accordingly: "destroy reliably terminates locally; remote completion of in-flight work is not preventable on these providers and callers must design `invoke()` payloads to be idempotent or carry a unique request token the caller can deduplicate at side-effect targets".
+
+Caller-visible: `invoke()` is awaited as usual; the only behavioral change vs. an OS sandbox is that calls are not parallel within an instance. Callers that need parallelism create multiple instances. Calling `destroy()` while an `invoke()` is in flight rejects that invoke promptly — destroy is never blocked behind hung remote work — and the returned `DestroyOutcome` documents whether residual remote effects are possible.
 
 This is documented prominently in `docs/L2/sandbox-cloudflare.md` and tested in unit suites (concurrent-invoke serialization, poison-after-timeout-rejects-queued, destroy-cancels-queued).
 
