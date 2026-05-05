@@ -268,6 +268,7 @@ export async function synthesize(
         prompt,
         remainingMs(),
         attemptController,
+        adapterHonorsAbort,
       );
       if (!generated.ok) {
         // Tainted reasons (caller-thrown error messages, adapter stderr,
@@ -345,6 +346,7 @@ export async function synthesize(
         verifierDescriptor,
         remainingMs(),
         attemptController,
+        adapterHonorsAbort,
       );
       if (!verified.ok) {
         // Same default-deny rule as the generator branch: tainted reasons
@@ -602,12 +604,14 @@ async function safeGenerate(
   prompt: string,
   timeoutMs: number,
   attempt: AbortController,
+  adapterHonorsAbort: boolean,
 ): Promise<GuardedResult<string>> {
   const guarded = await guardAttempt(
     (signal) => Promise.resolve(generate(prompt, signal)),
     timeoutMs,
     attempt,
     "LLM generation",
+    adapterHonorsAbort,
   );
   if (!guarded.ok) {
     // Map guardAttempt's generic failure to a structured generate_* kind.
@@ -842,6 +846,7 @@ async function safeVerify(
   descriptor: ToolDescriptor,
   timeoutMs: number,
   attempt: AbortController,
+  adapterHonorsAbort: boolean,
 ): Promise<
   VerifyResult & {
     readonly aborted?: boolean;
@@ -854,6 +859,7 @@ async function safeVerify(
     timeoutMs,
     attempt,
     "Verifier",
+    adapterHonorsAbort,
   );
   if (!guarded.ok) {
     const kind: SynthesisFailureKind = guarded.aborted
@@ -910,6 +916,23 @@ function guardAttempt<T>(
   timeoutMs: number,
   attempt: AbortController,
   label: string,
+  /**
+   * When `true` (strict mode — caller asserted the adapter honors abort),
+   * settling waits indefinitely for the in-flight callback to actually
+   * unwind after timeout/abort fires. This costs the wall-clock end-to-
+   * end cap (an adapter slow to clean up extends the attempt) but
+   * guarantees retry attempt N+1 NEVER runs while attempt N is still
+   * executing — preventing duplicated side effects from the very class
+   * of overlap this package exists to avoid.
+   *
+   * When `false` (best-effort mode — caller acknowledged the adapter
+   * may not honor abort), settle after the bounded `graceMs` so a
+   * fully-hung callback cannot pin synthesize() forever. The caller
+   * has already accepted that an abandoned callback may still run in
+   * the background; that is the documented cost of opting out of
+   * strict mode.
+   */
+  blockUntilUnwind: boolean,
 ): Promise<GuardedResult<T>> {
   return new Promise<GuardedResult<T>>((resolve) => {
     let settled = false;
@@ -947,8 +970,14 @@ function guardAttempt<T>(
         done = true;
         finish(result);
       };
-      const graceTimer = setTimeout(finishOnce, graceMs);
-      const cancelGrace = (): void => clearTimeout(graceTimer);
+      // Strict mode: wait indefinitely for the callback to unwind so the
+      // synthesis loop never starts a new attempt while a prior one may
+      // still be running. Best-effort mode: fall back to bounded grace
+      // so a hung callback cannot pin synthesize() forever.
+      const graceTimer = blockUntilUnwind ? null : setTimeout(finishOnce, graceMs);
+      const cancelGrace = (): void => {
+        if (graceTimer !== null) clearTimeout(graceTimer);
+      };
       runPromise.then(
         () => {
           cancelGrace();
@@ -1028,10 +1057,22 @@ function coerceVerificationSummary(
 ):
   | { readonly ok: true; readonly value: ForgeVerificationSummary }
   | { readonly ok: false; readonly reason: string } {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  // Single-read snapshot FIRST. The previous implementation read the
+  // verifier's live object multiple times — once for shape checks, once
+  // for ensureJsonPlain, once for JSON.stringify — letting a hostile
+  // verifier with non-deterministic getters return one value during
+  // validation and a different value during snapshotting. Same TOCTOU
+  // class as the targetToolSchema fix earlier in this file. Do all
+  // validation against the immutable snapshot, never the live input.
+  const snap = snapshotJsonPlain(value, "summary");
+  if (!snap.ok) {
+    return { ok: false, reason: snap.reason };
+  }
+  const snapshot = snap.value;
+  if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) {
     return { ok: false, reason: "summary must be a JSON object" };
   }
-  const obj = value as Record<string, unknown>;
+  const obj = snapshot as Record<string, unknown>;
   if (typeof obj.passed !== "boolean")
     return { ok: false, reason: "summary.passed must be boolean" };
   if (typeof obj.sandbox !== "boolean")
@@ -1058,11 +1099,9 @@ function coerceVerificationSummary(
       return { ok: false, reason: `summary.stageResults[${i}].durationMs must be a finite number` };
     }
   }
-  // Cross-field invariant: summary.passed:true cannot coexist with any
-  // stageResults[i].passed:false. A buggy / version-skewed verifier whose
-  // top-level verdict disagrees with its own stage evidence must not ship
-  // as a verified artifact — fail closed so downstream audit cannot get
-  // an internally contradictory success signal.
+  // Cross-field invariants on the snapshot — guaranteed to match what
+  // the caller actually returns since validation and the returned value
+  // are the same object reference.
   if (obj.passed === true) {
     // A passed:true verdict with zero stage evidence is contractually
     // empty — downstream forge audit / provenance has nothing to record
@@ -1086,35 +1125,10 @@ function coerceVerificationSummary(
       }
     }
   }
-  // Validate JSON-plainness on every additional field so downstream
-  // provenance (which rejects non-plain values) receives a safe payload,
-  // but DO preserve verifier-supplied evidence — digests, attestation
-  // ids, etc. — instead of silently dropping fields. A non-plain extra
-  // is an error here, not a silent strip.
-  const plainCheck = ensureJsonPlain(value, "summary");
-  if (!plainCheck.ok) {
-    return { ok: false, reason: plainCheck.reason };
-  }
-  for (let i = 0; i < obj.stageResults.length; i += 1) {
-    const stagePlain = ensureJsonPlain(obj.stageResults[i], `summary.stageResults[${i}]`);
-    if (!stagePlain.ok) {
-      return { ok: false, reason: stagePlain.reason };
-    }
-  }
-  // Snapshot via JSON round-trip and freeze. Returning the verifier's live
-  // object would let a hostile / buggy verifier mutate audit data after
-  // synthesize() resolves, or expose accessor properties whose values
-  // change between reads — corrupting downstream provenance after the
-  // success path has already committed. JSON-plainness was just validated,
-  // so the round-trip is lossless.
-  let snapshot: ForgeVerificationSummary;
-  try {
-    snapshot = JSON.parse(JSON.stringify(value)) as ForgeVerificationSummary;
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: `summary snapshot failed: ${message}` };
-  }
-  return { ok: true, value: deepFreeze(snapshot) };
+  // snapshotJsonPlain already enforced JSON-plainness on every field,
+  // so no second ensureJsonPlain pass is needed — the snapshot IS the
+  // returned value, and it has been validated as plain.
+  return { ok: true, value: deepFreeze(snapshot as ForgeVerificationSummary) };
 }
 
 /**

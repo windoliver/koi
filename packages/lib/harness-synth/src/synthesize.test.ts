@@ -565,7 +565,16 @@ describe("synthesize", () => {
   });
 
   test("times out a hung generator instead of stalling forever", async () => {
-    const generate: GenerateCallback = () => new Promise(() => {}); // never resolves
+    // Strict-mode contract: adapter MUST honor abort so the loop can
+    // settle the attempt without overlap into the next one. An adapter
+    // that simply returns `new Promise(() => {})` violates that contract;
+    // such adapters belong in best-effort mode (see the ABORT_HONORED:false
+    // test below). Here we simulate a strict-mode adapter whose work
+    // hangs but whose abort handler reliably rejects on signal.
+    const generate: GenerateCallback = (_p, signal) =>
+      new Promise<string>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
     const result = await synthesize(INPUT, {
       generate,
       verify: ALWAYS_OK,
@@ -580,7 +589,10 @@ describe("synthesize", () => {
 
   test("times out a hung verifier instead of stalling forever", async () => {
     const generate: GenerateCallback = async () => validRaw();
-    const verify: VerifyCallback = () => new Promise(() => {});
+    const verify: VerifyCallback = (_c, _d, signal) =>
+      new Promise<VerifyResult>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
     const result = await synthesize(INPUT, {
       generate,
       verify,
@@ -619,9 +631,10 @@ describe("synthesize", () => {
 
   test("respects an external AbortSignal mid-flight", async () => {
     const controller = new AbortController();
-    const generate: GenerateCallback = () =>
-      new Promise((_resolve) => {
+    const generate: GenerateCallback = (_p, signal) =>
+      new Promise<string>((_resolve, reject) => {
         setTimeout(() => controller.abort(), 5);
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
       });
     const result = await synthesize(INPUT, {
       generate,
@@ -678,14 +691,18 @@ describe("synthesize", () => {
     const observedAborts: boolean[] = [];
     let n = 0;
     const generate: GenerateCallback = (_p, signal) =>
-      new Promise<string>((resolve) => {
+      new Promise<string>((resolve, reject) => {
         n += 1;
         const myAttempt = n;
         signal.addEventListener("abort", () => {
           observedAborts.push(myAttempt === 1);
+          // Strict-mode adapters MUST settle on abort so the loop can
+          // proceed without overlap. Reject so the next attempt starts.
+          reject(new Error("aborted"));
         });
         if (myAttempt === 1) {
-          // never resolve — let timeout fire
+          // never resolve on its own — let timeout fire and the abort
+          // handler above settle the promise.
           return;
         }
         resolve(validRaw());
@@ -1391,7 +1408,10 @@ describe("synthesize", () => {
         now += 80;
         resolve(validRaw());
       });
-    const verify: VerifyCallback = () => new Promise<VerifyResult>(() => undefined); // never settles
+    const verify: VerifyCallback = (_c, _d, signal) =>
+      new Promise<VerifyResult>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
     const result = await synthesize(INPUT, {
       generate,
       verify,
@@ -1602,5 +1622,92 @@ describe("synthesize", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/at least one stageResults/);
+  });
+
+  test("strict mode: timed-out attempt unwinds before next attempt starts (no overlap)", async () => {
+    // The previous bounded-grace path could let attempt N's callback
+    // continue executing while attempt N+1 had already started — exactly
+    // the duplicate-side-effect class this package exists to prevent in
+    // strict mode. Verify that an adapter whose cleanup takes longer
+    // than the old graceMs (~min(1000, timeoutMs/2)) still completes
+    // before the next attempt fires.
+    const order: string[] = [];
+    let n = 0;
+    const generate: GenerateCallback = (_p, signal) =>
+      new Promise<string>((resolve, reject) => {
+        n += 1;
+        const me = `attempt-${n}`;
+        order.push(`${me}:start`);
+        signal.addEventListener("abort", () => {
+          // Simulate a slow cleanup (longer than the old graceMs cap of
+          // min(1000, timeoutMs/2) = 25ms for a 50ms timeout).
+          setTimeout(() => {
+            order.push(`${me}:unwound`);
+            reject(new Error("aborted"));
+          }, 80);
+        });
+        if (n === 1) return; // never settles on its own
+        order.push(`${me}:resolved`);
+        resolve(validRaw());
+      });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 2,
+      attemptTimeoutMs: 50,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.attempts).toBe(2);
+    // Attempt 1 must have FULLY unwound before attempt 2 even started.
+    const unwoundIdx = order.indexOf("attempt-1:unwound");
+    const a2StartIdx = order.indexOf("attempt-2:start");
+    expect(unwoundIdx).toBeGreaterThanOrEqual(0);
+    expect(a2StartIdx).toBeGreaterThan(unwoundIdx);
+  });
+
+  test("verifier with non-deterministic getter cannot bypass summary validation (TOCTOU)", async () => {
+    // Trust-boundary regression: previously coerceVerificationSummary
+    // validated the live verifier object then re-read it for snapshot,
+    // letting a non-deterministic getter pass invariants on read 1 and
+    // return different data on read 2. snapshotJsonPlain now reads each
+    // property exactly once.
+    let reads = 0;
+    const hostileSummary = {
+      sandbox: false,
+      totalDurationMs: 1,
+      stageResults: [{ stage: "syntax", passed: true, durationMs: 1 }],
+      // Throwing/varying getter on `passed` — first read returns true,
+      // second returns false. With single-read clone, the snapshot
+      // captures whichever value the FIRST read returned, and validation
+      // sees the same value (consistency, not value choice, is what
+      // matters here).
+      get passed(): boolean {
+        reads += 1;
+        return reads === 1;
+      },
+    };
+    const verify: VerifyCallback = () =>
+      ({ ok: true, summary: hostileSummary }) as unknown as VerifyResult;
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    // Either: success with passed:true captured on the single read, OR
+    // a typed failure. What MUST NOT happen is success with snapshot
+    // values different from what passed validation. Verify that if we
+    // got success, the snapshot's passed is true (the validated value).
+    if (result.ok) {
+      expect(result.value.verification.passed).toBe(true);
+    } else {
+      // Acceptable failure modes — what matters is no inconsistent success.
+      expect(result.kind).toMatch(/verify_/);
+    }
+    // The single-read guarantee: `passed` was read exactly once during
+    // the entire boundary crossing.
+    expect(reads).toBe(1);
   });
 });
