@@ -44,11 +44,14 @@ src/
 ```
 
 - Uses native `WebAssembly` global (Bun built-in). Zero deps.
-- Two executors: pure-sync (deterministic, no host calls) and async (allows controlled host imports — abort signal, deadline).
-- Resource limits: memory pages cap (validated at compile/instantiate), wall-clock `timeoutMs` via `AbortSignal`.
+- **Two executors with distinct trust models:**
+  - **`wasm-executor` (sync)** — TRUSTED CODE ONLY. Runs `WebAssembly.Instance.exports.<fn>(...)` on the host event loop. A hostile or buggy guest with a tight loop pins the host thread; `AbortSignal` cannot interrupt synchronous WASM. Documented limitation: `timeoutMs` is advisory for sync executor and is enforced only at boundaries (pre-call, post-call). Caller MUST treat sync executor as same trust boundary as the host.
+  - **`async-executor` (untrusted-safe)** — runs the module inside a `Worker` (Bun worker thread). The worker is `terminate()`d when `AbortSignal` fires or `timeoutMs` elapses, providing real preemption for hostile code. This is the default for any code-injection or third-party brick scenario.
+- `index.ts` exports both with explicit names (`createTrustedWasmExecutor`, `createWasmExecutor`); `createWasmExecutor` is the worker-backed default.
+- Resource limits: memory pages cap (`WebAssembly.Memory({ maximum })`), CPU cap = worker termination (async) / advisory only (sync). No instruction metering — explicitly out of scope.
 - Code input: caller passes WASM bytes (base64 or `Uint8Array`) plus the exported function name and args via `input`.
 - `output`: serialized return value of the called export.
-- Error mapping: trap → `CRASH`, OOM (memory.grow fail) → `OOM`, abort/timeout → `TIMEOUT`, validate fail → `PERMISSION`.
+- Error mapping: trap → `CRASH`, OOM (memory.grow fail) → `OOM`, worker terminated by deadline → `TIMEOUT`, validate fail → `PERMISSION`.
 
 ### `@koi/sandbox-cloudflare` (~350 LOC src + tests)
 
@@ -66,20 +69,25 @@ src/
 ```
 
 - Auth: `apiToken` + `accountId` from config. Token never logged.
-- Endpoint: `https://api.cloudflare.com/client/v4/accounts/{accountId}/workers/scripts/{name}` for deploy/delete; deployed worker URL for invoke.
+- **Per-instance script naming:** every `create()` call deploys to a unique script name `${configPrefix}-${randomUUID()}` (e.g., `koi-sandbox-7f3a...`). Config supplies an optional `scriptPrefix` (default `koi-sandbox`); the random suffix is owned by the instance. Two concurrent `create()` calls cannot collide, and `destroy()` only deletes the instance's own script.
+- Endpoint: `https://api.cloudflare.com/client/v4/accounts/{accountId}/workers/scripts/{instanceScriptName}` for deploy/delete; deployed worker URL for invoke.
 - Network: only `fetch` — no SDK dep.
 - Instance:
-  - `exec(cmd, args, opts)` → POST `{cmd, args, ...opts}` to worker URL → translate JSON response to `SandboxAdapterResult`.
+  - Owns its own `scriptName` (private field, set at create time, never reused).
+  - `exec(cmd, args, opts)` → POST `{cmd, args, ...opts}` to its own worker URL → translate JSON response to `SandboxAdapterResult`.
   - `readFile`/`writeFile` → POST control endpoints implemented by the deployed worker shim.
-  - `destroy()` → DELETE script.
+  - `destroy()` → DELETE only this instance's script. Idempotent (404 on re-destroy is success).
+- **Concurrency safety:** the adapter does not maintain a shared mutable resource; each instance is fully independent. No lease/refcount needed because there is no shared state.
 - Worker shim is a small string template colocated in `client.ts` (the JS that runs inside CF Workers and accepts the protocol). Kept ≤80 LOC.
 
 ### `@koi/sandbox-vercel` (~350 LOC src + tests)
 
-Mirrors cloudflare, swapping endpoints:
+Mirrors cloudflare's per-instance isolation pattern:
 
 - Endpoint: `https://api.vercel.com/v13/deployments` (create), `/v13/deployments/{id}` (delete).
 - Auth: `vercelToken` + `teamId?` from config.
+- **Per-instance deployment:** each `create()` produces a fresh deployment with its own `id` returned by Vercel. Instance owns the `id` and only deletes that id in `destroy()`. Concurrent creates cannot collide because Vercel allocates ids server-side.
+- `destroy()` is idempotent — 404 on re-destroy treated as success.
 - Function shim ≤80 LOC, same protocol as CF shim (POST `/exec`, `/read`, `/write`).
 
 ## Sharing strategy
@@ -100,9 +108,20 @@ The two cloud adapters share ~150 LOC of pattern (HTTP fetch with timeout, error
 
 Coverage threshold: 80% per `bunfig.toml`.
 
-### Integration (env-gated, never in CI by default)
+### Integration (env-gated developer harness)
 
-- `__tests__/integration.test.ts` per cloud package: skipped unless `CF_API_TOKEN` / `VERCEL_TOKEN` set. Deploys a real worker/function, invokes once, deletes. Documents the manual verification path.
+- `__tests__/integration.test.ts` per cloud package: skipped unless `CF_API_TOKEN` / `VERCEL_TOKEN` set. Deploys a real worker/function, invokes once, deletes. Used during local development.
+
+### Provider smoke (mandatory pre-merge gate)
+
+Mocked fetch is insufficient evidence for auth, header shape, endpoint correctness, response parsing, and cleanup. A separate **required** workflow `provider-smoke.yml` runs against shared sandbox accounts (CF + Vercel) on every PR that touches `packages/sandbox/sandbox-cloudflare/**` or `packages/sandbox/sandbox-vercel/**`:
+
+1. **create** — deploy a tagged sandbox (`scriptPrefix: koi-ci-${runId}`)
+2. **invoke** — execute a hello-world tool call, assert response
+3. **destroy** — DELETE; assert 200/204 on first call, then 404 on second (idempotency)
+4. **leak check** — list scripts/deployments by `koi-ci-` prefix older than 1h; fail the job if any are found
+
+Tokens stored in repo secrets (`CF_CI_API_TOKEN`, `VERCEL_CI_TOKEN`), scoped to a sandbox account with billing alarm. The workflow blocks merge if any step (especially destroy + leak check) fails. Forks without secret access skip the gate; CODEOWNERS approval required for fork PRs that touch these paths.
 
 ### Golden queries (CI gate per CLAUDE.md)
 
@@ -125,6 +144,7 @@ Cloud golden queries use a mocked `fetch` (injected via config) so replays are h
 - [ ] `bun run check:golden-queries` — 3 new queries land assertions
 - [ ] `bun run check:duplicates` — accept 5+ line cloud duplication only if Rule-of-Three justified inline
 - [ ] `bun run test` — coverage ≥80%
+- [ ] `provider-smoke.yml` — required workflow; blocks merge on cleanup failure or leaked artifacts
 
 ## Docs (Doc → Tests → Code)
 
@@ -154,5 +174,6 @@ Each follows existing `docs/L2/sandbox-*.md` template: purpose, contract, config
 - [ ] Three packages compile, lint, typecheck under TS6 strict
 - [ ] All unit tests pass with ≥80% coverage
 - [ ] Layer + orphan + golden-query CI gates green
+- [ ] `provider-smoke.yml` green (cloud adapters: real create/invoke/destroy + leak check)
 - [ ] Three `docs/L2/*.md` files committed
 - [ ] PR < 1500 lines logic
