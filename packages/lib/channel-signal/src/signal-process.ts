@@ -53,6 +53,7 @@ export function createSignalProcess(
   configPath: string | undefined,
   spawn: SpawnFn,
   shutdownTimeoutMs: number = SIGNAL_SHUTDOWN_TIMEOUT_MS,
+  onUnexpectedExit?: () => void,
 ): SignalProcess {
   // let requires justification: subprocess handle, undefined when not running
   let proc: SignalChildProcess | undefined;
@@ -109,9 +110,21 @@ export function createSignalProcess(
       const argv: string[] = [signalCliPath, "-a", account];
       if (configPath !== undefined) argv.push("--config", configPath);
       argv.push("jsonRpc");
-      proc = spawn(argv);
+      const child = spawn(argv);
+      proc = child;
       running = true;
-      void readStdout(proc.stdout);
+      // Watch for unexpected subprocess exit (signal-cli crashed, killed
+      // out-of-band, etc.). Without this the adapter would keep reporting
+      // running=true and silently drop sends to a dead stdin handle.
+      void child.exited.then(() => {
+        if (proc !== child) return; // already replaced or torn down by stop()
+        running = false;
+        cancelReader?.();
+        cancelReader = undefined;
+        proc = undefined;
+        onUnexpectedExit?.();
+      });
+      void readStdout(child.stdout);
     },
 
     stop: async (): Promise<void> => {

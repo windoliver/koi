@@ -164,9 +164,19 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
         // show "This interaction failed" while the agent works. Fire-and-forget;
         // ack errors are non-fatal (e.g., already-acked).
         ackInteraction(raw);
-        // Stash the interaction handle so the first outbound reply on its
-        // threadId can route through editReply rather than channel.send.
-        if (isPlainObject(raw) && typeof raw.id === "string" && isInteractionResponseLike(raw)) {
+        // Only stash slash-command interactions. For buttons we use
+        // deferUpdate() (keeps the source message intact); calling editReply
+        // on a deferred-update interaction would mutate the original message
+        // that contained the button — exactly what users do not want.
+        // Button replies fall through to channel.send via the channelId
+        // suffix in the threadId.
+        if (
+          isPlainObject(raw) &&
+          typeof raw.id === "string" &&
+          typeof raw.isChatInputCommand === "function" &&
+          raw.isChatInputCommand() === true &&
+          isInteractionResponseLike(raw)
+        ) {
           pendingInteractions.set(raw.id, {
             interaction: raw,
             expiresAt: Date.now() + INTERACTION_TTL_MS,

@@ -7,7 +7,7 @@ import type { ChannelAdapter, ChannelCapabilities, ContentBlock, OutboundMessage
 import { isE164 } from "./e164.js";
 import { createNormalizer, GROUP_THREAD_PREFIX } from "./normalize.js";
 import type { SignalEvent, SignalProcess, SpawnFn } from "./signal-process.js";
-import { createSignalProcess } from "./signal-process.js";
+import { createSignalProcess, SIGNAL_SHUTDOWN_TIMEOUT_MS } from "./signal-process.js";
 
 export interface SignalChannelConfig {
   readonly account: string;
@@ -18,6 +18,13 @@ export interface SignalChannelConfig {
    * Tests inject a fake to avoid touching the real signal-cli binary.
    */
   readonly spawn?: SpawnFn;
+  /**
+   * Called when the signal-cli subprocess exits unexpectedly (crash,
+   * external SIGKILL, etc.). The adapter has already been marked
+   * disconnected internally; consumers can use this hook to trigger a
+   * reconnect, surface a user-visible error, or alert.
+   */
+  readonly onUnexpectedExit?: () => void;
 }
 
 /**
@@ -70,6 +77,8 @@ export function createSignalChannel(config: SignalChannelConfig): ChannelAdapter
     config.signalCliPath ?? "signal-cli",
     config.configPath,
     config.spawn ?? defaultSignalSpawn,
+    SIGNAL_SHUTDOWN_TIMEOUT_MS,
+    config.onUnexpectedExit,
   );
   const normalize = createNormalizer();
 

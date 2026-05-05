@@ -300,6 +300,39 @@ describe("createDiscordChannel — interaction reply path", () => {
     await adapter.disconnect();
   });
 
+  test("button replies do NOT use editReply (would clobber the source message)", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    await adapter.connect();
+    const edits: DiscordSendPayload[] = [];
+    f.emit("interactionCreate", {
+      id: "btn-i1",
+      isChatInputCommand: () => false,
+      isButton: () => true,
+      customId: "ok",
+      user: { id: "U1" },
+      channelId: "C1",
+      guildId: "G1",
+      createdTimestamp: 1,
+      deferUpdate: async () => undefined,
+      editReply: async (p: DiscordSendPayload) => {
+        edits.push(p);
+        return undefined;
+      },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    await adapter.send({
+      content: [{ kind: "text", text: "thanks!" }],
+      threadId: "interaction:btn-i1:C1",
+    });
+    // editReply MUST NOT have been called — it would mutate the original
+    // message that contained the button.
+    expect(edits).toHaveLength(0);
+    expect(f.sent).toHaveLength(1);
+    expect(f.sent[0]?.payload.content).toBe("thanks!");
+    await adapter.disconnect();
+  });
+
   test("unknown interaction id falls back to channel.send", async () => {
     const f = fakeClient();
     const adapter = createDiscordChannel({ token: "T", client: f.client });

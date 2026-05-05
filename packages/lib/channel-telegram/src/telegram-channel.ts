@@ -238,9 +238,13 @@ async function sendOutbound(api: TelegramApiLike, message: OutboundMessage): Pro
     );
   }
 
-  // Text + inline keyboard: one or more sendMessage calls
+  // Text + inline keyboard: one or more sendMessage calls.
   if (parts.text.length > 0 || parts.buttons.length > 0) {
-    const chunks = parts.text.length > 0 ? splitText(parts.text, TEXT_LIMIT) : [""];
+    // Telegram rejects sendMessage with empty `text`. When the caller wants a
+    // button-only response (no text blocks), synthesize a single non-empty
+    // character so the API accepts the call. Single space is the smallest
+    // payload that survives Telegram's whitespace trim.
+    const chunks = parts.text.length > 0 ? splitText(parts.text, TEXT_LIMIT) : [" "];
     const keyboard: TelegramReplyMarkup | undefined =
       parts.buttons.length > 0
         ? {

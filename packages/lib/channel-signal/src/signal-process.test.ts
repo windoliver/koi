@@ -202,6 +202,29 @@ describe("@koi/channel-signal createSignalProcess", () => {
     await p.stop();
   });
 
+  test("subprocess exiting unexpectedly flips running false and fires onUnexpectedExit", async () => {
+    const f = makeFake();
+    const spawn: SpawnFn = () => f.proc;
+    let died = 0;
+    const p = createSignalProcess(
+      "+15551234567",
+      "signal-cli",
+      undefined,
+      spawn,
+      undefined,
+      () => died++,
+    );
+    await p.start();
+    expect(p.isRunning()).toBe(true);
+    f.finishExit();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(p.isRunning()).toBe(false);
+    expect(died).toBe(1);
+    await expect(p.send({ method: "send", params: { recipient: "+1" } })).rejects.toThrow(
+      /not running/,
+    );
+  });
+
   test("isRunning reflects start/stop", async () => {
     const f = makeFake();
     const spawn: SpawnFn = () => f.proc;

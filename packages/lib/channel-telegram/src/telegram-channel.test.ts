@@ -166,6 +166,22 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
+  test("send: button-only message uses a non-empty placeholder text (Telegram rejects empty)", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({ token: "T", bot: f.bot });
+    await adapter.connect();
+    await adapter.send({
+      content: [{ kind: "button", label: "Yes", action: "yes" }],
+      threadId: "200",
+    });
+    expect(f.calls).toHaveLength(1);
+    const args = f.calls[0]?.args as TelegramSendOptions;
+    expect(args.text).toBeDefined();
+    expect((args.text as string).length).toBeGreaterThan(0);
+    expect(args.reply_markup?.inline_keyboard[0]?.[0]?.callback_data).toBe("yes");
+    await adapter.disconnect();
+  });
+
   test("send: button block becomes inline_keyboard on last text chunk", async () => {
     const f = fakeBot();
     const adapter = createTelegramChannel({ token: "T", bot: f.bot });
