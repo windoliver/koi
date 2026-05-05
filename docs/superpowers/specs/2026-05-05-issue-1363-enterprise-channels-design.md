@@ -81,7 +81,19 @@ defined in each package. Default factory adapters wrap `imapflow`, `nodemailer`,
 
 - **Inbound**: IMAP IDLE on configured folder. New `EXISTS` event → fetch UID → parse MIME → `normalize()` → emit `KoiMessage`.
 - **Outbound**: SMTP via injected `smtp.sendMail`. Sets `In-Reply-To` and `References` headers from threading state.
-- **Threading**: keyed by root `Message-ID` of the chain. **Durable**: outbound `In-Reply-To`/`References` derive from the persisted `Message-ID` of the inbound message being replied to, not from in-process state. The channel exposes a `ThreadStore` interface (`get(threadKey): Promise<ThreadState | null>`, `put(threadKey, state): Promise<void>`) injected at construction; default in-process `MapThreadStore` is for single-instance dev only and emits a startup warning. Production deployments inject a durable store (filesystem or external KV — out of scope for this PR but the interface is stable). Pure threading-key logic in `threading.ts` is store-agnostic.
+- **Threading**: keyed by root `Message-ID` of the chain. **Durable + concurrency-safe**: outbound `In-Reply-To`/`References` derive from persisted message metadata, not from in-process state. The channel exposes a `ThreadStore` interface with CAS semantics:
+
+  ```ts
+  interface ThreadStore {
+    get(threadKey: string): Promise<{ state: ThreadState; version: number } | null>;
+    // Compare-and-set: persist new state only if stored version === expectedVersion.
+    // Returns true on success, false if a concurrent writer advanced the version.
+    // Callers retry the read-modify-write loop on false.
+    cas(threadKey: string, expectedVersion: number, next: ThreadState): Promise<boolean>;
+  }
+  ```
+
+  The append-only field of `ThreadState` is the chain of seen `Message-ID`s; a CAS conflict means another worker added a sibling reply concurrently, and the loser re-reads and re-appends. Default in-process `MapThreadStore` provides CAS via a synchronous Map mutex — single-worker safe only and emits a startup warning. Multi-instance deployments inject a durable CAS-backed store. Pure threading-key logic in `threading.ts` is store-agnostic.
 - **Config**: `{ imap: { host, port, user, pass, mailbox }, smtp: { host, port, user, pass, from }, pollInterval? }`.
 - **Errors**: `INVALID_CONFIG`, `AUTH_FAILED`, `CONNECTION_LOST`, `PARSE_FAILED`, `SEND_FAILED`.
 
@@ -157,15 +169,31 @@ interface IdempotencyStore {
 }
 ```
 
-Inbound flow: `auth/verify` → `tryBegin(key, 30s)` →
-- `committed`: silently drop (true duplicate).
-- `in-flight`: return 429 / NACK so the provider retries after the other worker finishes.
-- `ok`: `normalize()` → `onMessage(handler)` → on success `commit(lease, 24h)`; on any thrown error or non-2xx response, `abort(lease)` so the provider's retry can re-claim.
+**Inbound flow + handler-outcome binding**. The current `ChannelAdapter` `onMessage` callback is fire-and-forget — its outcome cannot drive an HTTP response. To make retry semantics enforceable, each enterprise channel ships its own webhook HTTP handler (not the generic `ChannelAdapter` dispatch path) that *awaits* the user-supplied async handler before returning a status:
 
-`commitTtlMs` defaults to 24h; the lease TTL covers only the synchronous
-processing window. Tests cover: concurrent `tryBegin` (exactly one `ok`),
-transient handler failure (`abort` releases key, retry succeeds), commit
-(retry after commit is a true no-op duplicate).
+1. `auth/verify` → on failure return 401/403, no idempotency interaction.
+2. `tryBegin(key, leaseMs)`:
+   - `committed`: 200 OK, silently drop (true duplicate).
+   - `in-flight`: 409 — provider retries (Teams + WhatsApp both retry 4xx other than 4xx-final).
+   - `capacity-exhausted`: 503 — provider retries; emit operator alert.
+   - `ok`: continue.
+3. `await normalize(payload)` → `await handler(message)` (the user's async `onMessage`).
+4. On success: `commit(lease, commitTtlMs)` → 200 OK.
+5. On thrown error: `abort(lease)` → 500 — provider retries.
+
+Email is **IMAP-backed, not webhook-backed**, so it has no HTTP response to bind. Its loop instead awaits the handler, then `commit`s on success or `abort`s on failure, leaving the IMAP `\Seen` flag unset on abort so the next IMAP fetch re-delivers. Lease TTL is bounded so a crashed worker's lease expires and the next IMAP poll re-claims.
+
+`leaseMs` covers the synchronous handler dispatch window (default 30s, renew with `renew()` for long handlers).
+
+**`commitTtlMs` per channel**:
+
+| Channel | `commitTtlMs` default | Rationale |
+|---------|-----------------------|-----------|
+| teams | 24h | Bot Framework retry budget is hours; 24h covers all observed retries with margin. |
+| whatsapp | 7 days | Meta Cloud API may retry within minutes, but full WAMID dedupe survives tenant moves and disaster recovery for a week. |
+| email | **`Infinity` (never expire by default)** | IMAP can re-deliver the same `Message-ID` weeks/months later via reconnect, mailbox rescan, replication failover, or backup restore. Reprocessing historical mail at the 24h boundary triggers duplicate replies and tool calls. Operators may set a finite value when paired with a known-bounded mailbox retention. The default in-memory store still respects `maxCommittedRecords`; durable email deployments must supply a store that retains for the mailbox retention horizon. |
+
+Tests cover: concurrent `tryBegin` (exactly one `ok`), transient handler failure (`abort` releases key, retry succeeds), commit (retry after commit is a true no-op duplicate), and email replay 30+ days later still suppressed (with the default `Infinity` TTL).
 
 **Default store**: `InMemoryIdempotencyStore` — a single-worker store backed by
 two Maps (live leases + committed keys). It is **fail-closed** at a configured
