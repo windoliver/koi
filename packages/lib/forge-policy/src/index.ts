@@ -20,4 +20,9 @@ export type {
   EvaluateAndRecordResult,
 } from "./evaluate-and-record.js";
 export { evaluateAndRecord } from "./evaluate-and-record.js";
+export type {
+  EvaluateAndRecordBoundParams,
+  ForgePolicyEvaluator,
+} from "./evaluator.js";
+export { createPolicyEvaluator } from "./evaluator.js";
 export { computeConfigFingerprint, POLICY_EVALUATOR_VERSION } from "./fingerprint.js";

@@ -216,6 +216,29 @@ describe("createPolicyAuditLog (storage behavior — _createPolicyAuditLogForTes
     expect(log.droppedCount()).toBe(0);
   });
 
+  test("rejected fail-closed write does not consume a sequence number (no gap on retry)", () => {
+    // Regression: sequence is documented as monotonic per accepted
+    // entry. A failing overflow sink that throws must not advance
+    // the counter — otherwise a forensic reader cannot tell a real
+    // tampering hole from a transient sink retry.
+    let failNext = false;
+    const log = _createPolicyAuditLogForTesting({
+      maxEntries: 1,
+      failClosedOnOverflowSinkError: true,
+      onOverflow: () => {
+        if (failNext) throw new Error("sink down");
+      },
+    });
+    const first = log.record({ ...baseEntry, candidateId: "a" });
+    expect(first.sequence).toBe(0);
+    failNext = true;
+    expect(() => log.record({ ...baseEntry, candidateId: "b" })).toThrow(/sink failed/);
+    failNext = false;
+    const retry = log.record({ ...baseEntry, candidateId: "b" });
+    // The retry must reuse sequence=1 — no gap from the rejected attempt.
+    expect(retry.sequence).toBe(1);
+  });
+
   test("failClosedOnOverflowSinkError + no sink: rejected at construction (no DoS path)", () => {
     expect(() =>
       _createPolicyAuditLogForTesting({

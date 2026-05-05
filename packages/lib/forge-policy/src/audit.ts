@@ -211,7 +211,14 @@ function createPolicyAuditLogInternal(
 
   function record(input: PolicyAuditEntryInput): PolicyAuditEntry {
     validateEntry(input);
-    const sequence = nextSequence++;
+    // Reserve, but DO NOT yet commit, a sequence number. If the call
+    // ends up rejected (fail-closed overflow with a failing or absent
+    // sink), `nextSequence` is rolled back so a retry sees no gap.
+    // Sequence is documented as a tamper-resistant ordering signal —
+    // unexplained holes from rejected writes would weaken that
+    // contract and make forensic reconstruction harder to distinguish
+    // from real deletion or tampering.
+    const sequence = nextSequence;
     const recordedAt = Date.now();
     const full: PolicyAuditEntry = { ...input, recordedAt, sequence };
     const frozen = freezeEntry(full);
@@ -233,6 +240,8 @@ function createPolicyAuditLogInternal(
         } catch (e) {
           if (failClosed) {
             buffer.pop(); // remove the new entry — caller must retry
+            // Roll back the reserved sequence so a successful retry
+            // re-uses it without leaving an unexplained gap.
             throw new Error(
               "audit overflow sink failed and failClosedOnOverflowSinkError is true",
               { cause: e instanceof Error ? e : new Error(String(e)) },
@@ -255,6 +264,10 @@ function createPolicyAuditLogInternal(
         dropped += 1;
       }
     }
+    // Commit the reserved sequence number only after the entry has
+    // survived overflow handling without throwing. Any earlier throw
+    // path leaves `nextSequence` untouched.
+    nextSequence = sequence + 1;
     return frozen;
   }
 
