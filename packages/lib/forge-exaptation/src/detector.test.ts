@@ -616,6 +616,127 @@ describe("suggestAction", () => {
     if (result.kind === "invalid-config") expect(result.reason).toContain("6");
   });
 
+  test("mixed legacy + explicit window: detectDrift telemetry scores ONLY the explicit subset", () => {
+    // Per-artifact telemetry isolation: when a window mixes legacy
+    // and explicit artifactIds, dashboards/alerts must see metrics
+    // from the explicit (migrated) stream alone -- legacy traffic
+    // could otherwise change avgDivergence / divergentAgents on the
+    // explicit stream during rollout.
+    function omitArtifact(o: UsagePurposeObservation): UsagePurposeObservation {
+      const { artifactId: _id, ...rest } = o;
+      return rest;
+    }
+    const explicitObs: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => obs("explicit-a", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("explicit-b", s)),
+    ];
+    // Legacy noise that would, if scored, ADD a third divergent agent
+    // and lift observationCount.
+    const legacyNoise: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => omitArtifact(obs("legacy-x", s))),
+    ];
+    const result = detectDrift([...explicitObs, ...legacyNoise], DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      // Cohort scored from explicit subset only — 2 agents, 6 obs.
+      expect(result.report.divergentAgents).toBe(2);
+      expect(result.report.observationCount).toBe(6);
+      // Legacy obs counted as droppedCount so telemetry surface still
+      // records them, but they didn't contribute to the report.
+      expect(result.droppedCount).toBe(legacyNoise.length);
+      // Window-level legacy presence still surfaces so suggestAction
+      // can refuse action.
+      expect(result.cohortHasLegacyArtifact).toBe(true);
+    }
+    // Action stays blocked.
+    expect(
+      suggestAction([...explicitObs, ...legacyNoise], DEFAULT_EXAPTATION_THRESHOLDS).kind,
+    ).toBe("none");
+  });
+
+  test("countStrongDriftPriors derives currentArtifactId from the explicit set, not raw input order", () => {
+    // F2 round 10: a single legacy baseline observation appearing first
+    // in the current window must NOT pin currentArtifactId to the
+    // legacy sentinel and discard valid explicit-artifact priors.
+    function pinAt(o: UsagePurposeObservation, at: number): UsagePurposeObservation {
+      return { ...o, observedAt: at };
+    }
+    function omitArtifact(o: UsagePurposeObservation): UsagePurposeObservation {
+      const { artifactId: _id, ...rest } = o;
+      return rest;
+    }
+    const strong = strongPriorWindow().map((o) => pinAt(o, -8_000_000));
+    const fresh = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    // Insert a legacy baseline observation at the FRONT of the current
+    // array. Under the old "first valid observation" logic this would
+    // pin currentArtifactId to LEGACY_ARTIFACT.
+    const currentWithLegacyFirst: UsagePurposeObservation[] = [
+      omitArtifact(obs("legacy-baseline", 0.05)),
+      ...fresh.observations,
+    ];
+    const currentWithLegacyLast: UsagePurposeObservation[] = [
+      ...fresh.observations,
+      omitArtifact(obs("legacy-baseline-2", 0.05)),
+    ];
+    // Current window has a legacy observation → suggestAction blocks
+    // action regardless of where the legacy obs sits in the array.
+    // The point: BOTH orderings produce the same verdict. There is
+    // no array-order sensitivity any more.
+    const verdictA = suggestAction(currentWithLegacyFirst, DEFAULT_EXAPTATION_THRESHOLDS, [
+      strong,
+    ]).kind;
+    const verdictB = suggestAction(currentWithLegacyLast, DEFAULT_EXAPTATION_THRESHOLDS, [
+      strong,
+    ]).kind;
+    expect(verdictA).toBe(verdictB);
+  });
+
+  test("recency dedup uses trimmed agentId (whitespace-skewed retries do not forge stale recency)", () => {
+    // F3 round 10: windowMaxAtAfterDedup must trim agentId the same
+    // way detectDrift does. Otherwise a replay that differs only in
+    // surrounding agentId whitespace lands in a separate recency
+    // bucket and re-opens the forged-recency path.
+    const stableId = "shared-event-x";
+    function makePrior(at: number, padAgent: string): UsagePurposeObservation {
+      return {
+        artifactId: "artifact-1",
+        scope: "default",
+        agentId: padAgent, // padded form
+        eventId: stableId,
+        divergenceScore: 0.95,
+        contextText: "x",
+        observedAt: at,
+      };
+    }
+    // Strong prior at very-old time, replayed with whitespace-skewed
+    // agent at far-future time. With trimmed dedup, both replays
+    // collapse and recency stays at the older time. Without trimming,
+    // the future replay would land in a separate bucket and forge
+    // recency forward.
+    const stalePrior: UsagePurposeObservation[] = [
+      ...["clean-a", "clean-b", "clean-c", "clean-d"].flatMap((a) =>
+        [0.95, 0.95, 0.95].map((s, i) => ({
+          artifactId: "artifact-1",
+          scope: "default",
+          agentId: a,
+          eventId: `${a}-${String(i)}`,
+          divergenceScore: s,
+          contextText: "x",
+          observedAt: -10_000_000 + i,
+        })),
+      ),
+      makePrior(-10_000_000, "padded"),
+      makePrior(9_999_999, "padded "), // trailing space — same logical agent
+    ];
+    const fresh = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    // The whitespace-padded replay must NOT advance the prior's recency
+    // past the current window's max observedAt — otherwise the prior
+    // would be excluded from stability for being not strictly older.
+    expect(
+      suggestAction(fresh.observations, DEFAULT_EXAPTATION_THRESHOLDS, [stalePrior]).kind,
+    ).toBe("new-artifact");
+  });
+
   test("sub-precision score skew (0.69996 vs 0.70004) does not flip the verdict", () => {
     // Replays whose scores differ only at sub-precision must be
     // canonicalized BEFORE threshold comparisons. Otherwise samePayload

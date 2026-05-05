@@ -286,8 +286,6 @@ export function detectDrift(
       });
     }
   }
-  const droppedCount = observations.length - valid.length;
-
   // Total telemetry loss: every observation dropped at validation. This is a
   // detector failure, not a healthy "no-drift" signal — surface it as
   // invalid-config so callers can branch into a degraded-input alarm path
@@ -309,15 +307,39 @@ export function detectDrift(
   // fail-closed when the window mixes more than one EXPLICIT artifactId
   // (i.e. the caller actually routed two distinct artifacts through).
   const explicitArtifactIds = new Set<string>();
+  let hasLegacyArtifactObservation = false;
   for (const v of valid) {
     const aid = normalizeArtifactId(v.artifactId);
-    if (aid !== LEGACY_ARTIFACT) explicitArtifactIds.add(aid);
+    if (aid === LEGACY_ARTIFACT) hasLegacyArtifactObservation = true;
+    else explicitArtifactIds.add(aid);
   }
   if (explicitArtifactIds.size > 1) {
     return deepFreeze({
       kind: "invalid-config" as const,
       reason: `window mixes ${String(explicitArtifactIds.size)} distinct explicit artifactIds; detector is per-artifact`,
     });
+  }
+
+  // Per-artifact telemetry isolation: when a window mixes legacy +
+  // explicit observations, score ONLY the explicit subset. Legacy
+  // observations are treated as un-migrated noise — counted as
+  // `droppedCount` so the telemetry surface still records them, but
+  // never folded into avgDivergence, divergentAgents, or dedup. This
+  // closes the path where legacy traffic could change the explicit
+  // stream's `detectDrift` report (used by dashboards/alerts) even
+  // when `suggestAction` later blocks action. A pure-legacy window
+  // (no explicit id at all) keeps the previous behavior — score the
+  // legacy bucket as one cohort and let cohortHasLegacyArtifact
+  // suppress action — so we only filter when both kinds coexist.
+  const isMixedLegacyExplicit = hasLegacyArtifactObservation && explicitArtifactIds.size === 1;
+  let scoredValid: UsagePurposeObservation[];
+  let droppedCount: number;
+  if (isMixedLegacyExplicit) {
+    scoredValid = valid.filter((v) => normalizeArtifactId(v.artifactId) !== LEGACY_ARTIFACT);
+    droppedCount = observations.length - scoredValid.length;
+  } else {
+    scoredValid = valid;
+    droppedCount = observations.length - valid.length;
   }
 
   // Partition by eventId presence. The replay-protectable subset is always
@@ -328,7 +350,7 @@ export function detectDrift(
   // `replayProtected: false`, which keeps `suggestAction` conservative.
   const withEventId: UsagePurposeObservation[] = [];
   const withoutEventId: UsagePurposeObservation[] = [];
-  for (const o of valid) {
+  for (const o of scoredValid) {
     // Trim before checking: a whitespace-only string is upstream's way of
     // saying "field present but empty" (common JSON serialization quirk).
     // Treating " " or "\n" as a real ID would falsely flip replayProtected
@@ -347,7 +369,7 @@ export function detectDrift(
   // Window-level replayProtected: every valid observation has eventId. Used
   // for the "no-drift" branch (no cohort to scope to) and as a coarse
   // telemetry signal.
-  const windowReplayProtected = valid.length > 0 && missingEventIdCount === 0;
+  const windowReplayProtected = scoredValid.length > 0 && missingEventIdCount === 0;
 
   const noDrift = (): DetectionResult =>
     deepFreeze({
@@ -403,7 +425,12 @@ export function detectDrift(
     replayProtected: windowReplayProtected,
     cohortReplayProtected: cohort.allCohortHadEventId,
     cohortHasLegacyScope: cohort.hasLegacyScope,
-    cohortHasLegacyArtifact: cohort.hasLegacyArtifact,
+    // Also surface legacy-artifact contamination at the window level:
+    // when scoring filters legacy observations out of the cohort
+    // (mixed-window case), the cohort's own flag would be false but
+    // the window still touched legacy traffic. suggestAction must
+    // still refuse action.
+    cohortHasLegacyArtifact: cohort.hasLegacyArtifact || isMixedLegacyExplicit,
     report: {
       kind: "purpose_drift" as const,
       severity,
@@ -571,13 +598,30 @@ function countStrongDriftPriors(
   // invalid-config; we won't reach this code path for those). We still
   // collect-then-take-first so this stays robust if validation rules
   // ever loosen.
-  // let: single-artifact id for current window
-  let currentArtifactId: string | undefined;
+  // Derive currentArtifactId from the EXPLICIT set, not from "first
+  // valid observation". A mixed window that happens to list a legacy
+  // baseline observation first would otherwise pin currentArtifactId
+  // to LEGACY_ARTIFACT and drop perfectly good explicit-artifact
+  // priors as "different artifact" — making stability decisions
+  // depend on raw input order. Falling back to LEGACY_ARTIFACT only
+  // when no explicit id exists keeps the pure-legacy path working,
+  // and lets a mixed window inherit the (single) explicit identity.
+  const currentExplicitArtifactIds = new Set<string>();
+  let currentHasLegacyArtifact = false;
   for (const o of current) {
     if (!isObservationValid(o)) continue;
     currentIdentities.add(observationIdentity(o));
-    if (currentArtifactId === undefined) currentArtifactId = normalizeArtifactId(o.artifactId);
+    const aid = normalizeArtifactId(o.artifactId);
+    if (aid === LEGACY_ARTIFACT) currentHasLegacyArtifact = true;
+    else currentExplicitArtifactIds.add(aid);
   }
+  // detectDrift already rejected windows with >1 explicit artifactId
+  // as invalid-config and suggestAction returned early. We won't
+  // reach here in that case; defensively bail anyway.
+  if (currentExplicitArtifactIds.size > 1) return 0;
+  const explicitId = currentExplicitArtifactIds.values().next().value;
+  const currentArtifactId: string | undefined =
+    explicitId ?? (currentHasLegacyArtifact ? LEGACY_ARTIFACT : undefined);
   if (currentArtifactId === undefined) return 0;
   // Subtract overlapping observations from each prior rather than
   // discarding the whole window on first overlap. The package's stated
@@ -814,12 +858,15 @@ function windowMaxAtAfterDedup(window: readonly UsagePurposeObservation[]): numb
       continue;
     }
     // Recency dedup mirrors the structural dedup key:
-    // `(artifactId, scope, agentId, eventId)`. Without artifactId, a
-    // legacy observation from artifact B sharing an eventId with
-    // artifact A's observation would collapse here and influence A's
-    // recency — exactly the cross-artifact contamination path the
-    // migration tolerance is supposed to forbid.
-    const key = `${artifactScopeAgentKey(o.artifactId, o.scope, o.agentId)}|${eid}`;
+    // `(artifactId, scope, agentId, eventId)` — but with the SAME
+    // canonicalization detectDrift applies (trimmed agentId,
+    // normalized scope, normalized artifactId). Without trimming
+    // agentId here, a replay differing only in surrounding
+    // whitespace of agentId would land in a separate recency bucket
+    // even though detectDrift would collapse it into the same logical
+    // agent. That re-opens the forged-recency path on a stale window.
+    const trimmedAgent = o.agentId.trim();
+    const key = `${artifactScopeAgentKey(o.artifactId, o.scope, trimmedAgent)}|${eid}`;
     const prev = minByKey.get(key);
     if (prev === undefined || o.observedAt < prev) minByKey.set(key, o.observedAt);
   }
