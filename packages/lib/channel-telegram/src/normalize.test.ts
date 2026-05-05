@@ -158,6 +158,18 @@ describe("@koi/channel-telegram normalize", () => {
     expect(out?.threadId).toBe("7");
   });
 
+  test("inline-mode callback_query produces a non-repliable inline:<id> threadId", async () => {
+    const n = createNormalizer(deps());
+    const cq: TelegramCallbackQueryLike = {
+      id: "cb",
+      from: { id: 99 },
+      data: "x",
+      inline_message_id: "INLINE_42",
+    };
+    const out = await n(tgUpdate({ callback_query: cq }));
+    expect(out?.threadId).toBe("inline:INLINE_42");
+  });
+
   test("update with neither message nor callback_query returns null", async () => {
     const n = createNormalizer(deps());
     const out = await n(tgUpdate());

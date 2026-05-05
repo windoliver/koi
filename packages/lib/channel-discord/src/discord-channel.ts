@@ -164,6 +164,11 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
         // show "This interaction failed" while the agent works. Fire-and-forget;
         // ack errors are non-fatal (e.g., already-acked).
         ackInteraction(raw);
+        // Sweep expired entries every time a new interaction arrives. This
+        // bounds memory under traffic for slash commands the agent never
+        // replies to (handler dropped the event, decided not to answer,
+        // crashed, etc.) without scheduling a separate timer.
+        sweepExpiredInteractions(pendingInteractions);
         // Only stash slash-command interactions. For buttons we use
         // deferUpdate() (keeps the source message intact); calling editReply
         // on a deferred-update interaction would mutate the original message
@@ -304,6 +309,16 @@ function isInteractionResponseLike(
   raw: Record<string, unknown>,
 ): raw is Record<string, unknown> & InteractionResponseLike {
   return typeof raw.editReply === "function";
+}
+
+/** Removes entries whose interaction tokens have expired (15 min). */
+function sweepExpiredInteractions(
+  map: Map<string, { readonly interaction: InteractionResponseLike; readonly expiresAt: number }>,
+): void {
+  const now = Date.now();
+  for (const [id, entry] of map) {
+    if (entry.expiresAt <= now) map.delete(id);
+  }
 }
 
 function buildPayloads(

@@ -46,6 +46,12 @@ export interface TelegramCallbackQueryLike {
   readonly from: TelegramUserLike;
   readonly data?: string;
   readonly message?: TelegramMessageLike;
+  /**
+   * Set when the callback fires from an inline-mode result (no chat
+   * context). The adapter cannot reply via sendMessage — it would have to
+   * use editMessageText with inline_message_id, which is out of scope.
+   */
+  readonly inline_message_id?: string;
 }
 
 export interface TelegramUpdateLike {
@@ -96,13 +102,23 @@ async function normalizeCallbackQuery(
   const payloadStr = idx === -1 ? undefined : data.slice(idx + 1);
   const payload = payloadStr === undefined ? undefined : safeParse(payloadStr);
 
-  // Outbound `parseThreadId` expects a numeric chatId (optionally
-  // ":threadId"). For Telegram a private-chat user id IS the chat id, so
-  // we always emit a numeric-string form — never `dm:<id>` — so that
-  // `send()` can reply on the same thread without a routing mismatch.
-  const chatId = cq.message?.chat.id ?? cq.from.id;
-  const threadIdFromMsg = cq.message?.message_thread_id;
-  const threadId = threadIdFromMsg === undefined ? String(chatId) : `${chatId}:${threadIdFromMsg}`;
+  // Inline-mode callbacks have no chat context. Replying would require
+  // editMessageText with inline_message_id, which this adapter does not
+  // support. Emit a non-repliable `inline:<id>` threadId so `send()` fails
+  // closed instead of silently DMing the clicking user.
+  // `parseThreadId` expects a numeric chatId for repliable destinations; a
+  // private-chat user id IS the chat id, so we use `String(from.id)` as the
+  // chat fallback when the callback's `message` is missing but the click
+  // did NOT come from inline mode.
+  // let requires justification: branchy threadId derivation
+  let threadId: string;
+  if (cq.inline_message_id !== undefined) {
+    threadId = `inline:${cq.inline_message_id}`;
+  } else {
+    const chatId = cq.message?.chat.id ?? cq.from.id;
+    const threadIdFromMsg = cq.message?.message_thread_id;
+    threadId = threadIdFromMsg === undefined ? String(chatId) : `${chatId}:${threadIdFromMsg}`;
+  }
 
   const block: ContentBlock = {
     kind: "button",

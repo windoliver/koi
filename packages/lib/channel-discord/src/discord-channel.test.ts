@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { OutboundMessage } from "@koi/core";
 import {
   createDiscordChannel,
@@ -297,6 +297,45 @@ describe("createDiscordChannel — interaction reply path", () => {
     });
     expect(edits).toHaveLength(1);
     expect(f.sent.length).toBeGreaterThanOrEqual(2);
+    await adapter.disconnect();
+  });
+
+  test("expired pending interactions are swept when a new interaction arrives (no leak)", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    await adapter.connect();
+    const editsByInteraction: Record<string, number> = {};
+    const makeInteraction = (id: string): Record<string, unknown> => ({
+      id,
+      isChatInputCommand: () => true,
+      isButton: () => false,
+      commandName: "x",
+      options: { data: [] },
+      user: { id: "U1" },
+      channelId: "C1",
+      guildId: "G1",
+      createdTimestamp: 1,
+      deferReply: async () => undefined,
+      editReply: async () => {
+        editsByInteraction[id] = (editsByInteraction[id] ?? 0) + 1;
+        return undefined;
+      },
+    });
+    const t0 = Date.now();
+    const nowSpy = spyOn(Date, "now").mockReturnValue(t0);
+    f.emit("interactionCreate", makeInteraction("OLD"));
+    // Advance virtual clock past the 15-minute TTL.
+    nowSpy.mockReturnValue(t0 + 16 * 60 * 1000);
+    f.emit("interactionCreate", makeInteraction("NEW"));
+    // Try to reply to the OLD interaction — should fall back to channel.send,
+    // because the sweep on NEW evicted it.
+    await adapter.send({
+      content: [{ kind: "text", text: "late" }],
+      threadId: "interaction:OLD:C1",
+    });
+    expect(editsByInteraction.OLD ?? 0).toBe(0);
+    expect(f.sent).toHaveLength(1);
+    nowSpy.mockRestore();
     await adapter.disconnect();
   });
 

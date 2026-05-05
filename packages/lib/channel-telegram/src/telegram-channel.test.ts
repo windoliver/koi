@@ -47,6 +47,7 @@ function fakeBot(): {
       calls.push({ method: "answerCallbackQuery", args: id });
       return undefined;
     },
+    getMe: async () => ({ id: 999, username: "fakebot" }),
   };
   const bot: TelegramBotLike = {
     api,
@@ -88,6 +89,21 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     expect(started).toBe(1);
     await adapter.disconnect();
     expect(stopped).toBe(1);
+  });
+
+  test("connect surfaces a token-validation failure synchronously (getMe handshake)", async () => {
+    const f = fakeBot();
+    const badBot: TelegramBotLike = {
+      ...f.bot,
+      api: {
+        ...f.bot.api,
+        getMe: async () => {
+          throw new Error("401 Unauthorized");
+        },
+      },
+    };
+    const adapter = createTelegramChannel({ token: "T", bot: badBot });
+    await expect(adapter.connect()).rejects.toThrow(/401/);
   });
 
   test("polling: incoming text update dispatches an InboundMessage", async () => {
@@ -234,6 +250,17 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     f.setSendError({ error_code: 429, parameters: { retry_after: 0 } });
     await adapter.send({ content: [{ kind: "text", text: "x" }], threadId: "200" });
     expect(f.calls).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
+  test("send: inline:<id> threadId is rejected (no chat to reply to, fails closed)", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({ token: "T", bot: f.bot });
+    await adapter.connect();
+    await expect(
+      adapter.send({ content: [{ kind: "text", text: "x" }], threadId: "inline:abc123" }),
+    ).rejects.toThrow(/inline-mode/);
+    expect(f.calls).toHaveLength(0);
     await adapter.disconnect();
   });
 

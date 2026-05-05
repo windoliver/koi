@@ -55,6 +55,8 @@ export interface TelegramApiLike {
   }): Promise<unknown>;
   getFile(fileId: string): Promise<{ readonly file_path?: string }>;
   answerCallbackQuery(id: string): Promise<unknown>;
+  /** Returns the bot's identity. Used as a connect-time handshake. */
+  getMe(): Promise<{ readonly id: number; readonly username?: string }>;
 }
 
 export interface TelegramChannelConfig {
@@ -143,6 +145,11 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
       if (bot === undefined) {
         bot = await instantiateBot(config.token);
       }
+      // Connect-time handshake: validate the bot token by calling getMe.
+      // This surfaces auth errors and basic connectivity failures during
+      // connect() instead of letting them disappear into the background
+      // polling promise.
+      await bot.api.getMe();
     },
 
     platformDisconnect: async (): Promise<void> => {
@@ -210,6 +217,11 @@ export function splitText(s: string, limit: number): readonly string[] {
 async function sendOutbound(api: TelegramApiLike, message: OutboundMessage): Promise<void> {
   if (message.threadId === undefined) {
     throw new Error("[channel-telegram] OutboundMessage.threadId is required");
+  }
+  if (message.threadId.startsWith("inline:")) {
+    throw new Error(
+      `[channel-telegram] cannot reply on inline-mode threadId "${message.threadId}" — there is no chat context. Use editMessageText with inline_message_id outside this adapter.`,
+    );
   }
   const { chatId, threadId } = parseThreadId(message.threadId);
 
