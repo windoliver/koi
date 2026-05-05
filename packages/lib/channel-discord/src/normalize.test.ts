@@ -40,10 +40,10 @@ describe("@koi/channel-discord normalize", () => {
     expect(out?.content[0]).toEqual({ kind: "text", text: "hello" });
   });
 
-  test("DM message uses dm:userId threadId", () => {
+  test("DM message uses dm:channelId threadId (round-trips with channels.cache)", () => {
     const n = createNormalizer(() => BOT);
-    const out = n({ kind: "message", message: msg({ guildId: null }) });
-    expect(out?.threadId).toBe("dm:u1");
+    const out = n({ kind: "message", message: msg({ guildId: null, channelId: "DM_CHAN" }) });
+    expect(out?.threadId).toBe("dm:DM_CHAN");
   });
 
   test("returns null when message has no content and no attachments", () => {
@@ -117,7 +117,7 @@ describe("@koi/channel-discord normalize", () => {
     };
     const n = createNormalizer(() => BOT);
     const out = n({ kind: "button", button: btn });
-    expect(out?.threadId).toBe("dm:u3");
+    expect(out?.threadId).toBe("dm:C2");
     expect(out?.content[0]).toEqual({ kind: "button", label: "cancel", action: "cancel" });
   });
 });

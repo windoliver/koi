@@ -141,7 +141,12 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
         if (m !== null) handler({ kind: "message", message: m });
       };
       const onInteractionCreate = (...args: readonly unknown[]): void => {
-        const ev = toInteractionEvent(args[0]);
+        const raw = args[0];
+        // Eagerly acknowledge the interaction so the Discord client does not
+        // show "This interaction failed" while the agent works. Fire-and-forget;
+        // ack errors are non-fatal (e.g., already-acked).
+        ackInteraction(raw);
+        const ev = toInteractionEvent(raw);
         if (ev !== null) handler(ev);
       };
       c.on("messageCreate", onMessageCreate);
@@ -209,7 +214,8 @@ async function sendOutbound(client: DiscordClientLike, message: OutboundMessage)
 
 function parseChannelIdFromThreadId(threadId: string): string {
   const parts = threadId.split(":");
-  // "guildId:channelId" → channelId; "dm:userId" → userId (DM channel id == userId for cache)
+  // "guildId:channelId" → channelId; "dm:channelId" → channelId. Both forms
+  // resolve through `client.channels.cache` keyed on channelId.
   return parts.length >= 2 ? (parts[1] ?? threadId) : threadId;
 }
 
@@ -289,6 +295,36 @@ function buildPayloads(
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Calls deferReply() on slash commands and deferUpdate() on button presses so
+ * the user does not see "This interaction failed" while the agent decides what
+ * to send. The actual response still goes through the channel `send()` path.
+ */
+function ackInteraction(raw: unknown): void {
+  if (!isPlainObject(raw)) return;
+  if (typeof raw.isChatInputCommand === "function" && raw.isChatInputCommand() === true) {
+    const fn = raw.deferReply;
+    if (typeof fn === "function") {
+      try {
+        void Promise.resolve(fn.call(raw)).catch(() => undefined);
+      } catch {
+        // sync throw from defer*() — swallow; the agent response can still go through
+      }
+    }
+    return;
+  }
+  if (typeof raw.isButton === "function" && raw.isButton() === true) {
+    const fn = raw.deferUpdate;
+    if (typeof fn === "function") {
+      try {
+        void Promise.resolve(fn.call(raw)).catch(() => undefined);
+      } catch {
+        // sync throw from defer*() — swallow; the agent response can still go through
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

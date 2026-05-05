@@ -68,6 +68,12 @@ export interface TelegramChannelConfig {
 export interface TelegramChannelAdapter extends ChannelAdapter {
   /** Webhook mode only — caller forwards an HTTPS-delivered update. */
   readonly handleUpdate: (update: TelegramUpdateLike) => void;
+  /**
+   * Resolves an inbound `tg://file/<fileId>` reference (or a bare file_id) to
+   * a short-lived token-bearing download URL. Call this only at the fetch
+   * site; never log or surface the result.
+   */
+  readonly resolveMediaUrl: (fileIdOrTgUrl: string) => Promise<string>;
 }
 
 const TELEGRAM_CAPABILITIES: ChannelCapabilities = {
@@ -96,17 +102,32 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
   };
 
   const normalize = createNormalizer({
-    getFileUrl: async (fileId: string): Promise<string> => {
-      const info = await requireBot().api.getFile(fileId);
-      if (info.file_path !== undefined) {
-        return `https://api.telegram.org/file/bot${config.token}/${info.file_path}`;
-      }
-      return `tg://file/${fileId}`;
-    },
+    // Emit an opaque `tg://file/<fileId>` reference rather than the
+    // token-bearing CDN URL. The Bot API's media URLs embed the bot token,
+    // so leaking them downstream (logs, model prompts, middleware) would
+    // expose a bearer-equivalent secret. Consumers that need to download
+    // media call back into the adapter via `resolveMediaUrl(fileId)`.
+    getFileUrl: async (fileId: string): Promise<string> => `tg://file/${fileId}`,
     answerCallbackQuery: async (id: string): Promise<void> => {
       await requireBot().api.answerCallbackQuery(id);
     },
   });
+
+  /**
+   * Resolves an opaque `tg://file/<fileId>` reference to a short-lived,
+   * token-bearing download URL. Use this only at the actual fetch site —
+   * never store, log, or surface the result.
+   */
+  const resolveMediaUrl = async (fileIdOrTgUrl: string): Promise<string> => {
+    const fileId = fileIdOrTgUrl.startsWith("tg://file/")
+      ? fileIdOrTgUrl.slice("tg://file/".length)
+      : fileIdOrTgUrl;
+    const info = await requireBot().api.getFile(fileId);
+    if (info.file_path === undefined) {
+      throw new Error(`[channel-telegram] file_path unavailable for "${fileId}"`);
+    }
+    return `https://api.telegram.org/file/bot${config.token}/${info.file_path}`;
+  };
 
   const base = createChannelAdapter<TelegramUpdateLike>({
     name: "telegram",
@@ -156,6 +177,7 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
     handleUpdate: (update: TelegramUpdateLike): void => {
       updateHandler?.(update);
     },
+    resolveMediaUrl,
   };
 }
 

@@ -96,14 +96,13 @@ async function normalizeCallbackQuery(
   const payloadStr = idx === -1 ? undefined : data.slice(idx + 1);
   const payload = payloadStr === undefined ? undefined : safeParse(payloadStr);
 
-  const chatId = cq.message?.chat.id;
+  // Outbound `parseThreadId` expects a numeric chatId (optionally
+  // ":threadId"). For Telegram a private-chat user id IS the chat id, so
+  // we always emit a numeric-string form — never `dm:<id>` — so that
+  // `send()` can reply on the same thread without a routing mismatch.
+  const chatId = cq.message?.chat.id ?? cq.from.id;
   const threadIdFromMsg = cq.message?.message_thread_id;
-  const threadId =
-    chatId === undefined
-      ? `dm:${cq.from.id}`
-      : threadIdFromMsg === undefined
-        ? String(chatId)
-        : `${chatId}:${threadIdFromMsg}`;
+  const threadId = threadIdFromMsg === undefined ? String(chatId) : `${chatId}:${threadIdFromMsg}`;
 
   const block: ContentBlock = {
     kind: "button",

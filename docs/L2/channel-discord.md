@@ -16,7 +16,7 @@ text, embeds, buttons, and files via the REST API.
   `discord:action_row` custom-block escape hatches, `ButtonBlock` mapped to a
   single action row, image / file blocks attached by URL
 - Slash-command registration (`registerCommands`)
-- threadId convention `"<guildId>:<channelId>"`, `"dm:<userId>"`
+- threadId convention `"<guildId>:<channelId>"`, `"dm:<channelId>"`
 
 ## What it does NOT own
 
@@ -70,7 +70,7 @@ Returns the standard `ChannelAdapter` plus:
 | ------ | -------- |
 | Guild text channel | `"<guildId>:<channelId>"` |
 | Guild thread | `"<guildId>:<threadId>"` |
-| DM | `"dm:<userId>"` |
+| DM | `"dm:<channelId>"` (the DMChannel's id, not the user id — discord.js caches channels by channel id) |
 
 Outbound `send()` parses `threadId`, looks up the channel via
 `client.channels.cache`, and calls `.send()` on it. Unknown thread IDs throw.

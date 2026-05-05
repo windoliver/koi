@@ -10,7 +10,11 @@ into `handleUpdate`). Outbound calls go through the Bot API.
 
 - `createTelegramChannel(config)` factory
 - Normalization of grammy `Context` → `InboundMessage` (text, photo as
-  image, document/audio/video as file, callback_query as button block)
+  image, document/audio/video as file, callback_query as button block).
+  Inbound media `url` fields are opaque `tg://file/<fileId>` references —
+  the token-bearing CDN URL is **never** surfaced. Consumers call
+  `adapter.resolveMediaUrl(ref)` at the fetch site to obtain a short-lived
+  download URL.
 - Outbound rendering: text (4096-char split), inline keyboards built from
   `ButtonBlock`s, photo via `sendPhoto`, file via `sendDocument`
 - `handleUpdate(update)` for webhook deployments
@@ -82,9 +86,13 @@ Inbound:
 
 ## Security
 
-- Token never logged. URLs constructed from token (`/file/bot<token>/...`)
-  are only used for inbound media downloads — they are not echoed to
-  callers.
+- Token never logged.
+- Inbound media URLs surfaced to consumers are opaque `tg://file/<fileId>`
+  strings — the bot token is **not** embedded. Token-bearing CDN URLs are
+  only constructed inside `resolveMediaUrl()` at the fetch site and must
+  not be stored or logged. Avoiding token-bearing URLs in `ContentBlock.url`
+  prevents the token from leaking into transcripts, model prompts, and
+  third-party log sinks.
 - 429 handling: on first 429, sleep `retry_after` seconds and retry once;
   on subsequent failure, throw.
 

@@ -275,6 +275,63 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
   });
 });
 
+describe("resolveMediaUrl (token boundary)", () => {
+  test("inbound photo url is opaque tg://file/<id> — token never surfaces", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({ token: "SECRET_TOKEN", bot: f.bot });
+    await adapter.connect();
+    const seen: { content: readonly Record<string, unknown>[] }[] = [];
+    adapter.onMessage(async (m) => {
+      seen.push(m as unknown as { content: readonly Record<string, unknown>[] });
+    });
+    f.emit({
+      update_id: 1,
+      message: {
+        message_id: 1,
+        from: { id: 1 },
+        chat: { id: 200 },
+        date: 1,
+        photo: [{ file_id: "F1", width: 1024, height: 1024 }],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    const url = seen[0]?.content[0]?.url;
+    expect(url).toBe("tg://file/F1");
+    expect(url).not.toContain("SECRET_TOKEN");
+    await adapter.disconnect();
+  });
+
+  test("resolveMediaUrl resolves an opaque ref to a token-bearing CDN url at the fetch site", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({ token: "SECRET_TOKEN", bot: f.bot });
+    await adapter.connect();
+    const url = await adapter.resolveMediaUrl("tg://file/F1");
+    expect(url).toBe("https://api.telegram.org/file/botSECRET_TOKEN/doc/abc.bin");
+    await adapter.disconnect();
+  });
+
+  test("resolveMediaUrl throws when getFile returns no file_path", async () => {
+    const f = fakeBot();
+    const noPathBot = {
+      ...f.bot,
+      api: { ...f.bot.api, getFile: async () => ({}) },
+    };
+    const adapter = createTelegramChannel({ token: "T", bot: noPathBot });
+    await adapter.connect();
+    await expect(adapter.resolveMediaUrl("F1")).rejects.toThrow(/file_path unavailable/);
+    await adapter.disconnect();
+  });
+
+  test("resolveMediaUrl accepts a bare file_id too", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({ token: "T", bot: f.bot });
+    await adapter.connect();
+    const url = await adapter.resolveMediaUrl("F1");
+    expect(url).toBe("https://api.telegram.org/file/botT/doc/abc.bin");
+    await adapter.disconnect();
+  });
+});
+
 describe("splitText", () => {
   test("returns input unchanged when below limit", () => {
     expect(splitText("abc", 100)).toEqual(["abc"]);

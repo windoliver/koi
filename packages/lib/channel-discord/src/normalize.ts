@@ -144,8 +144,14 @@ function resolveThreadId(message: DiscordMessageLike): string {
   return resolveThreadIdFromIds(message.guildId, message.channelId, message.author.id);
 }
 
-function resolveThreadIdFromIds(guildId: string | null, channelId: string, userId: string): string {
-  if (guildId === null) return `dm:${userId}`;
+function resolveThreadIdFromIds(
+  guildId: string | null,
+  channelId: string,
+  _userId: string,
+): string {
+  // discord.js caches channels (including DM channels) by channel id, not user
+  // id. Using the channel id keeps inbound and outbound routing symmetric.
+  if (guildId === null) return `dm:${channelId}`;
   return `${guildId}:${channelId}`;
 }
 

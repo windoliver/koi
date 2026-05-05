@@ -28,7 +28,9 @@ function fakeClient(): {
     },
   });
   cache.set("C1", makeChannel("C1"));
-  cache.set("U1", makeChannel("U1"));
+  // DM channel id (distinct from any user id) — discord.js caches DM channels
+  // by channel id, so the test fixture mirrors that.
+  cache.set("DM_CHAN", makeChannel("DM_CHAN"));
 
   const client: DiscordClientLike = {
     user: { id: "BOT" },
@@ -201,6 +203,84 @@ describe("@koi/channel-discord createDiscordChannel", () => {
   });
 });
 
+describe("createDiscordChannel — interaction ack", () => {
+  test("slash command triggers deferReply on the raw interaction", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    await adapter.connect();
+    let deferred = 0;
+    f.emit("interactionCreate", {
+      id: "i1",
+      isChatInputCommand: () => true,
+      isButton: () => false,
+      commandName: "say",
+      options: { data: [] },
+      user: { id: "U1" },
+      channelId: "C1",
+      guildId: "G1",
+      createdTimestamp: 1,
+      deferReply: async () => {
+        deferred++;
+        return undefined;
+      },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(deferred).toBe(1);
+    await adapter.disconnect();
+  });
+
+  test("button press triggers deferUpdate on the raw interaction", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    await adapter.connect();
+    let updated = 0;
+    f.emit("interactionCreate", {
+      id: "b1",
+      isChatInputCommand: () => false,
+      isButton: () => true,
+      customId: "ok",
+      user: { id: "U1" },
+      channelId: "C1",
+      guildId: "G1",
+      createdTimestamp: 1,
+      deferUpdate: async () => {
+        updated++;
+        return undefined;
+      },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(updated).toBe(1);
+    await adapter.disconnect();
+  });
+
+  test("ack failure is swallowed; the InboundMessage still dispatches", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    await adapter.connect();
+    const seen: unknown[] = [];
+    adapter.onMessage(async (m) => {
+      seen.push(m);
+    });
+    f.emit("interactionCreate", {
+      id: "i2",
+      isChatInputCommand: () => true,
+      isButton: () => false,
+      commandName: "x",
+      options: { data: [] },
+      user: { id: "U1" },
+      channelId: "C1",
+      guildId: "G1",
+      createdTimestamp: 1,
+      deferReply: () => {
+        throw new Error("already-acked");
+      },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(seen).toHaveLength(1);
+    await adapter.disconnect();
+  });
+});
+
 describe("createDiscordChannel — coverage of less-trodden paths", () => {
   test("inbound slash_command interaction is normalized", async () => {
     const f = fakeClient();
@@ -293,12 +373,12 @@ describe("createDiscordChannel — coverage of less-trodden paths", () => {
     await adapter.disconnect();
   });
 
-  test("send to dm:userId threadId routes to the user channel cache", async () => {
+  test("send to dm:<channelId> threadId routes to the DM channel cache entry", async () => {
     const f = fakeClient();
     const adapter = createDiscordChannel({ token: "T", client: f.client });
     await adapter.connect();
-    await adapter.send({ content: [{ kind: "text", text: "hi" }], threadId: "dm:U1" });
-    expect(f.sent[0]?.channelId).toBe("U1");
+    await adapter.send({ content: [{ kind: "text", text: "hi" }], threadId: "dm:DM_CHAN" });
+    expect(f.sent[0]?.channelId).toBe("DM_CHAN");
     await adapter.disconnect();
   });
 
