@@ -22,12 +22,24 @@ export function matchRoute(pattern: string, pathname: string): RouteMatch | unde
     const a = actualParts[i] ?? "";
     if (p.startsWith(":")) {
       if (a.length === 0) return undefined;
-      params[p.slice(1)] = decodeURIComponent(a);
+      const decoded = safeDecode(a);
+      if (decoded === undefined) return undefined;
+      params[p.slice(1)] = decoded;
     } else if (p !== a) {
       return undefined;
     }
   }
   return { params };
+}
+
+function safeDecode(value: string): string | undefined {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    // Malformed percent-encoding (e.g. "/foo/%E0%A4") — treat as non-match so
+    // the router emits a 404 instead of leaking URIError as a 500.
+    return undefined;
+  }
 }
 
 function splitPath(p: string): readonly string[] {

@@ -136,20 +136,41 @@ Bearer token via `Authorization: Bearer <token>`:
 
 ```typescript
 interface DashboardDataSource {
-  listAgents(q: AgentListQuery): Promise<Page<AgentStatus>>;
-  getAgent(id: AgentId): Promise<AgentStatus | undefined>;
-  terminateAgent(id: AgentId): Promise<boolean>;
-  listSessions(q: SessionListQuery): Promise<Page<SessionSummary>>;
-  getSession(id: SessionId): Promise<SessionSummary | undefined>;
-  listMetrics(q: MetricListQuery): Promise<readonly MetricPoint[]>;
-  listTraces(q: TraceListQuery): Promise<Page<TraceView>>;
-  getTrace(id: string): Promise<TraceView | undefined>;
+  listAgents(q: AgentListQuery): MaybeAsync<Result<Page<AgentStatus>, KoiError>>;
+  getAgent(id: AgentId): MaybeAsync<Result<AgentStatus | undefined, KoiError>>;
+  terminateAgent(id: AgentId): MaybeAsync<Result<boolean, KoiError>>;
+  listSessions(q): MaybeAsync<Result<Page<SessionSummary>, KoiError>>;
+  getSession(id): MaybeAsync<Result<SessionSummary | undefined, KoiError>>;
+  listMetrics(q): MaybeAsync<Result<readonly MetricPoint[], KoiError>>;
+  listTraces(q): MaybeAsync<Result<Page<TraceView>, KoiError>>;
+  getTrace(id): MaybeAsync<Result<TraceView | undefined, KoiError>>;
   subscribe(cb: (event: WsEvent) => void): () => void;
 }
 ```
 
 `Page<T> = { items: readonly T[]; nextCursor?: string }`. The data source owns
 storage, indexing, and snapshot semantics — the API package never holds state.
+
+**Error model — structured Result, never throw.** Methods return
+`Result<T, KoiError>`:
+
+- `{ ok: true, value }` is the success payload. `value` may be `undefined`/
+  `false` for not-found / no-op (those still return 200 wrapper +
+  package-level 404 logic, not adapter-level errors).
+- `{ ok: false, error }` carries a structured `KoiError`. The API maps
+  `error.code` to a stable HTTP status (`UNAVAILABLE`→503, `TIMEOUT`→504,
+  `RATE_LIMIT`→429, `PERMISSION`→403, `NOT_FOUND`→404, …) and forwards
+  `retryable` / `retryAfterMs` / `context` to the client envelope.
+
+**Adapter responsibility:** sanitize `error.message` and `error.context` before
+returning. Whatever is in those fields reaches the wire verbatim — never put
+tenant identifiers, ACL row text, or backend secrets there. The API strips
+`cause` defensively.
+
+**Thrown values are bugs, not failures.** If a method throws, the catch-all
+returns an opaque `500 INTERNAL` to the client and logs only the request
+method/path plus the Error class name. No raw message, stack, or context is
+emitted to logs.
 
 ---
 

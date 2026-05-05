@@ -40,22 +40,23 @@ export function createFixtureSource(): FixtureControls {
   const terminated = new Set<string>();
   const subs = new Set<(e: WsEvent) => void>();
 
+  const ok = <T>(value: T): { readonly ok: true; readonly value: T } => ({ ok: true, value });
+
   const source: DashboardDataSource = {
-    listAgents(query: AgentListQuery): Page<AgentStatus> {
+    listAgents(query: AgentListQuery) {
       const filtered =
         query.state === undefined ? agents : agents.filter((a) => a.state === query.state);
-      const items = filtered.slice(0, query.limit);
-      return { items };
+      return ok<Page<AgentStatus>>({ items: filtered.slice(0, query.limit) });
     },
-    getAgent(id: AgentId): AgentStatus | undefined {
-      return agents.find((a) => a.agentId === id);
+    getAgent(id: AgentId) {
+      return ok(agents.find((a) => a.agentId === id));
     },
-    terminateAgent(id: AgentId): boolean {
+    terminateAgent(id: AgentId) {
       const exists = agents.some((a) => a.agentId === id);
       if (exists) terminated.add(String(id));
-      return exists;
+      return ok(exists);
     },
-    listSessions(query: SessionListQuery): Page<SessionSummary> {
+    listSessions(query: SessionListQuery) {
       let filtered = sessions;
       if (query.agentId !== undefined) {
         filtered = filtered.filter((s) => s.agentId === query.agentId);
@@ -63,12 +64,12 @@ export function createFixtureSource(): FixtureControls {
       if (query.status !== undefined) {
         filtered = filtered.filter((s) => s.status === query.status);
       }
-      return { items: filtered.slice(0, query.limit) };
+      return ok<Page<SessionSummary>>({ items: filtered.slice(0, query.limit) });
     },
-    getSession(id: SessionId): SessionSummary | undefined {
-      return sessions.find((s) => s.sessionId === id);
+    getSession(id: SessionId) {
+      return ok(sessions.find((s) => s.sessionId === id));
     },
-    listMetrics(query: MetricListQuery): readonly MetricPoint[] {
+    listMetrics(query: MetricListQuery) {
       let filtered = metrics;
       if (query.name !== undefined) {
         filtered = filtered.filter((m) => m.name === query.name);
@@ -77,9 +78,9 @@ export function createFixtureSource(): FixtureControls {
         const since = query.sinceMs;
         filtered = filtered.filter((m) => m.timestampMs >= since);
       }
-      return filtered.slice(0, query.limit);
+      return ok<readonly MetricPoint[]>(filtered.slice(0, query.limit));
     },
-    listTraces(query: TraceListQuery): Page<TraceView> {
+    listTraces(query: TraceListQuery) {
       let filtered = traces;
       if (query.agentId !== undefined) {
         filtered = filtered.filter((t) => t.agentId === query.agentId);
@@ -88,10 +89,10 @@ export function createFixtureSource(): FixtureControls {
         const since = query.sinceMs;
         filtered = filtered.filter((t) => t.startedAtMs >= since);
       }
-      return { items: filtered.slice(0, query.limit) };
+      return ok<Page<TraceView>>({ items: filtered.slice(0, query.limit) });
     },
-    getTrace(id: string): TraceView | undefined {
-      return traces.find((t) => t.turnId === id);
+    getTrace(id: string) {
+      return ok(traces.find((t) => t.turnId === id));
     },
     subscribe(callback: (event: WsEvent) => void): () => void {
       subs.add(callback);

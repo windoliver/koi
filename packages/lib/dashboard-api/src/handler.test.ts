@@ -206,4 +206,292 @@ describe("unknown route", () => {
     const body = await readJson(r);
     if (!body.ok) expect(body.error.code).toBe("NOT_FOUND");
   });
+
+  test("malformed percent-encoded path returns 404 not 500", async () => {
+    const r = await api.fetch(authedReq("/traces/%E0%A4%A"));
+    expect(r.status).toBe(404);
+  });
+});
+
+describe("cursor passthrough", () => {
+  test("opaque cursor is passed to data source verbatim", async () => {
+    let captured: string | undefined;
+    const passthrough = createDashboardApi({
+      source: {
+        ...fx.source,
+        listAgents: (q) => {
+          captured = q.cursor;
+          return { ok: true, value: { items: [] } };
+        },
+      },
+      authToken: TOKEN,
+    });
+    await passthrough.fetch(authedReq("/agents?cursor=anything-the-datasource-emitted"));
+    expect(captured).toBe("anything-the-datasource-emitted");
+  });
+});
+
+describe("data source failures", () => {
+  test("converts thrown datasource error into 500 with INTERNAL code", async () => {
+    const failing = createDashboardApi({
+      source: {
+        ...fx.source,
+        listAgents: () => {
+          throw new Error("storage offline");
+        },
+      },
+      authToken: TOKEN,
+    });
+    const r = await failing.fetch(authedReq("/agents"));
+    expect(r.status).toBe(500);
+    const body = await readJson(r);
+    if (!body.ok) expect(body.error.code).toBe("INTERNAL");
+  });
+
+  test("converts rejected datasource promise into 500", async () => {
+    const failing = createDashboardApi({
+      source: {
+        ...fx.source,
+        getAgent: () => Promise.reject(new Error("db gone")),
+      },
+      authToken: TOKEN,
+    });
+    const r = await failing.fetch(authedReq("/agents/x"));
+    expect(r.status).toBe(500);
+  });
+
+  test("handles non-serializable thrown values without crashing", async () => {
+    // Build a value that JSON.stringify cannot serialize.
+    const circular: { self?: unknown } = {};
+    circular.self = circular;
+    const failing = createDashboardApi({
+      source: {
+        ...fx.source,
+        listAgents: () => {
+          const err: Error & { extra?: unknown } = new Error("boom");
+          err.extra = circular;
+          throw err;
+        },
+      },
+      authToken: TOKEN,
+    });
+    const r = await failing.fetch(authedReq("/agents"));
+    expect(r.status).toBe(500);
+    // Body must still parse — sanitization stripped the unsafe cause.
+    const body = await readJson(r);
+    expect(body.ok).toBe(false);
+    if (!body.ok) expect(body.error.code).toBe("INTERNAL");
+  });
+
+  test("hostile thrown value with inspection trap still yields 500", async () => {
+    // A Proxy whose `get` always throws — touching any property to log it
+    // would re-throw. The catch-all must remain side-effect-safe.
+    const hostile = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("inspection trap");
+        },
+      },
+    );
+    const failing = createDashboardApi({
+      source: {
+        ...fx.source,
+        listAgents: () => {
+          throw hostile;
+        },
+      },
+      authToken: TOKEN,
+    });
+    const r = await failing.fetch(authedReq("/agents"));
+    expect(r.status).toBe(500);
+    const body = await readJson(r);
+    if (!body.ok) expect(body.error.code).toBe("INTERNAL");
+  });
+
+  test("logs request method, path, and Error class on internal failure", async () => {
+    const captured: unknown[][] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      captured.push(args);
+    };
+    try {
+      const failing = createDashboardApi({
+        source: {
+          ...fx.source,
+          listAgents: () => {
+            throw new TypeError("boom");
+          },
+        },
+        authToken: TOKEN,
+      });
+      await failing.fetch(authedReq("/agents?limit=1"));
+    } finally {
+      console.error = originalError;
+    }
+    expect(captured.length).toBeGreaterThan(0);
+    const flat = captured.flat().join(" ");
+    expect(flat).toContain("method=GET");
+    expect(flat).toContain("path=/agents");
+    expect(flat).toContain("kind=TypeError");
+    // But the raw error message must not leak through.
+    expect(flat).not.toContain("boom");
+  });
+
+  test("structured Result error preserves UNAVAILABLE → 503", async () => {
+    const failing = createDashboardApi({
+      source: {
+        ...fx.source,
+        listAgents: () => ({
+          ok: false,
+          error: {
+            code: "UNAVAILABLE",
+            message: "backend down",
+            retryable: false,
+          },
+        }),
+      },
+      authToken: TOKEN,
+    });
+    const r = await failing.fetch(authedReq("/agents"));
+    expect(r.status).toBe(503);
+    const body = await readJson<never>(r);
+    expect(body.ok).toBe(false);
+    if (!body.ok) {
+      expect(body.error.code).toBe("UNAVAILABLE");
+      expect(body.error.retryable).toBe(false);
+    }
+  });
+
+  test("structured Result error preserves RATE_LIMIT → 429 with retryAfterMs", async () => {
+    const failing = createDashboardApi({
+      source: {
+        ...fx.source,
+        listSessions: () => ({
+          ok: false,
+          error: {
+            code: "RATE_LIMIT",
+            message: "slow down",
+            retryable: true,
+            retryAfterMs: 2000,
+          },
+        }),
+      },
+      authToken: TOKEN,
+    });
+    const r = await failing.fetch(authedReq("/sessions"));
+    expect(r.status).toBe(429);
+    const body = await readJson<never>(r);
+    if (!body.ok) {
+      expect(body.error.code).toBe("RATE_LIMIT");
+      expect(body.error.retryable).toBe(true);
+      expect(body.error.retryAfterMs).toBe(2000);
+    }
+  });
+
+  test("structured Result error preserves TIMEOUT → 504", async () => {
+    const failing = createDashboardApi({
+      source: {
+        ...fx.source,
+        listTraces: () => ({
+          ok: false,
+          error: { code: "TIMEOUT", message: "slow query", retryable: true },
+        }),
+      },
+      authToken: TOKEN,
+    });
+    const r = await failing.fetch(authedReq("/traces"));
+    expect(r.status).toBe(504);
+  });
+
+  test("KoiError.cause is NEVER forwarded to the client", async () => {
+    const failing = createDashboardApi({
+      source: {
+        ...fx.source,
+        listAgents: () => ({
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: "upstream blew up",
+            retryable: false,
+            cause: { secretToken: "deadbeef-DO-NOT-LEAK" },
+          },
+        }),
+      },
+      authToken: TOKEN,
+    });
+    const r = await failing.fetch(authedReq("/agents"));
+    const text = await r.text();
+    expect(text).not.toContain("deadbeef");
+    expect(text).not.toContain("cause");
+    const body = JSON.parse(text);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("EXTERNAL");
+  });
+
+  test("structured Result error preserves PERMISSION → 403 with sanitized context", async () => {
+    const failing = createDashboardApi({
+      source: {
+        ...fx.source,
+        getAgent: () => ({
+          ok: false,
+          error: {
+            code: "PERMISSION",
+            message: "agent restricted",
+            retryable: false,
+            context: { resourceId: "a-1" },
+          },
+        }),
+      },
+      authToken: TOKEN,
+    });
+    const r = await failing.fetch(authedReq("/agents/a-1"));
+    expect(r.status).toBe(403);
+  });
+
+  test("all datasource throws (even structured ones) collapse to 500 INTERNAL", async () => {
+    // Even a thrown value with rich error metadata must NOT be propagated to
+    // the client as a real 4xx — datasource adapters live outside this package
+    // and may include sensitive identifiers in error messages/context. The
+    // contract is to return `T | undefined` for expected failures.
+    const failing = createDashboardApi({
+      source: {
+        ...fx.source,
+        listAgents: () => {
+          throw {
+            code: "PERMISSION",
+            message: "tenant 42 missing ACL row — internal detail",
+            retryable: false,
+            context: { tenantId: 42, secretKey: "deadbeef" },
+          };
+        },
+      },
+      authToken: TOKEN,
+    });
+    const r = await failing.fetch(authedReq("/agents"));
+    expect(r.status).toBe(500);
+    const text = await r.text();
+    expect(text).not.toContain("tenant 42");
+    expect(text).not.toContain("deadbeef");
+    const body = JSON.parse(text);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("INTERNAL");
+  });
+
+  test("sensitive cause fields are not exposed to the client", async () => {
+    const failing = createDashboardApi({
+      source: {
+        ...fx.source,
+        listAgents: () => {
+          const err: Error & { secretToken?: string } = new Error("kaboom");
+          err.secretToken = "supersecret";
+          throw err;
+        },
+      },
+      authToken: TOKEN,
+    });
+    const r = await failing.fetch(authedReq("/agents"));
+    const text = await r.text();
+    expect(text).not.toContain("supersecret");
+  });
 });

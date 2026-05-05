@@ -9,6 +9,7 @@ import {
   parseSessionList,
   parseTraceList,
 } from "./query.js";
+import { statusForCode } from "./status-codes.js";
 import type { ApiResult, DashboardApiConfig, DashboardDataSource } from "./types.js";
 
 const JSON_HEADERS: Readonly<Record<string, string>> = Object.freeze({
@@ -30,8 +31,64 @@ export function jsonOk<T>(value: T, status = 200): Response {
 }
 
 export function jsonError(error: KoiError, status: number): Response {
-  const body: ApiResult<never> = { ok: false, error };
-  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
+  // Build the wire envelope by explicit field allowlist — `cause` is never
+  // exposed (may carry adapter-internal details), `context` is included only
+  // if it survives JSON round-trip (drops circular refs / BigInts / Proxies).
+  const body: ApiResult<never> = { ok: false, error: sanitizeError(error) };
+  return new Response(safeStringify(body), { status, headers: JSON_HEADERS });
+}
+
+/**
+ * Project a `KoiError` to its client-safe field set. Drops `cause` always;
+ * preserves `code`, `message`, `retryable`, and (when JSON-safe) `context`,
+ * `retryAfterMs`. This is the single chokepoint between datasource-supplied
+ * errors and the wire — keep it conservative.
+ */
+function sanitizeError(error: KoiError): KoiError {
+  const safe: { -readonly [K in keyof KoiError]?: KoiError[K] } = {
+    code: error.code,
+    message: error.message,
+    retryable: error.retryable,
+  };
+  if (typeof error.retryAfterMs === "number" && Number.isFinite(error.retryAfterMs)) {
+    safe.retryAfterMs = error.retryAfterMs;
+  }
+  if (error.context !== undefined) {
+    const cleaned = jsonRoundTrip(error.context);
+    if (cleaned !== undefined) safe.context = cleaned;
+  }
+  return safe as KoiError;
+}
+
+function jsonRoundTrip<T>(value: T): T | undefined {
+  try {
+    return JSON.parse(JSON.stringify(value)) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * JSON-stringify with a fallback. Some `KoiError.cause` values may be circular
+ * or contain `BigInt`s that would throw — never let serialization failure of
+ * an error response itself become an unhandled rejection. The fallback strips
+ * the `cause`/`context` fields so we always emit a valid envelope.
+ */
+function safeStringify(body: ApiResult<unknown>): string {
+  try {
+    return JSON.stringify(body);
+  } catch {
+    if (body.ok) return JSON.stringify({ ok: true, value: null });
+    const safe: ApiResult<never> = {
+      ok: false,
+      error: {
+        code: body.error.code,
+        message: body.error.message,
+        retryable: body.error.retryable,
+      },
+    };
+    return JSON.stringify(safe);
+  }
 }
 
 export function notFound(resource: string, id: string): Response {
@@ -74,19 +131,22 @@ export function handleHealth(ctx: RouteContext): Response {
 
 export async function handleListAgents(url: URL, ctx: RouteContext): Promise<Response> {
   const query = parseAgentList(url, ctx.config);
-  const page = await ctx.source.listAgents(query);
-  return jsonOk(page);
+  const result = await ctx.source.listAgents(query);
+  if (!result.ok) return jsonError(result.error, statusForCode(result.error.code));
+  return jsonOk(result.value);
 }
 
 export async function handleGetAgent(id: string, ctx: RouteContext): Promise<Response> {
-  const agent = await ctx.source.getAgent(asAgentId(id));
-  if (agent === undefined) return notFound("agent", id);
-  return jsonOk(agent);
+  const result = await ctx.source.getAgent(asAgentId(id));
+  if (!result.ok) return jsonError(result.error, statusForCode(result.error.code));
+  if (result.value === undefined) return notFound("agent", id);
+  return jsonOk(result.value);
 }
 
 export async function handleTerminateAgent(id: string, ctx: RouteContext): Promise<Response> {
-  const ok = await ctx.source.terminateAgent(asAgentId(id));
-  if (!ok) return notFound("agent", id);
+  const result = await ctx.source.terminateAgent(asAgentId(id));
+  if (!result.ok) return jsonError(result.error, statusForCode(result.error.code));
+  if (!result.value) return notFound("agent", id);
   return jsonOk({ accepted: true }, 202);
 }
 
@@ -96,14 +156,16 @@ export async function handleTerminateAgent(id: string, ctx: RouteContext): Promi
 
 export async function handleListSessions(url: URL, ctx: RouteContext): Promise<Response> {
   const query = parseSessionList(url, ctx.config);
-  const page = await ctx.source.listSessions(query);
-  return jsonOk(page);
+  const result = await ctx.source.listSessions(query);
+  if (!result.ok) return jsonError(result.error, statusForCode(result.error.code));
+  return jsonOk(result.value);
 }
 
 export async function handleGetSession(id: string, ctx: RouteContext): Promise<Response> {
-  const session = await ctx.source.getSession(asSessionId(id));
-  if (session === undefined) return notFound("session", id);
-  return jsonOk(session);
+  const result = await ctx.source.getSession(asSessionId(id));
+  if (!result.ok) return jsonError(result.error, statusForCode(result.error.code));
+  if (result.value === undefined) return notFound("session", id);
+  return jsonOk(result.value);
 }
 
 // ---------------------------------------------------------------------------
@@ -113,8 +175,9 @@ export async function handleGetSession(id: string, ctx: RouteContext): Promise<R
 export async function handleListMetrics(url: URL, ctx: RouteContext): Promise<Response> {
   const parsed = parseMetricList(url, ctx.config);
   if (!parsed.ok) return jsonError(parsed.error, 400);
-  const points = await ctx.source.listMetrics(parsed.value);
-  return jsonOk({ points });
+  const result = await ctx.source.listMetrics(parsed.value);
+  if (!result.ok) return jsonError(result.error, statusForCode(result.error.code));
+  return jsonOk({ points: result.value });
 }
 
 // ---------------------------------------------------------------------------
@@ -124,14 +187,16 @@ export async function handleListMetrics(url: URL, ctx: RouteContext): Promise<Re
 export async function handleListTraces(url: URL, ctx: RouteContext): Promise<Response> {
   const parsed = parseTraceList(url, ctx.config);
   if (!parsed.ok) return jsonError(parsed.error, 400);
-  const page = await ctx.source.listTraces(parsed.value);
-  return jsonOk(page);
+  const result = await ctx.source.listTraces(parsed.value);
+  if (!result.ok) return jsonError(result.error, statusForCode(result.error.code));
+  return jsonOk(result.value);
 }
 
 export async function handleGetTrace(id: string, ctx: RouteContext): Promise<Response> {
-  const trace = await ctx.source.getTrace(id);
-  if (trace === undefined) return notFound("trace", id);
-  return jsonOk(trace);
+  const result = await ctx.source.getTrace(id);
+  if (!result.ok) return jsonError(result.error, statusForCode(result.error.code));
+  if (result.value === undefined) return notFound("trace", id);
+  return jsonOk(result.value);
 }
 
 // ---------------------------------------------------------------------------

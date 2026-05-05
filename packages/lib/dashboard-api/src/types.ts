@@ -1,4 +1,4 @@
-import type { AgentId, KoiError, SessionId } from "@koi/core";
+import type { AgentId, KoiError, Result, SessionId } from "@koi/core";
 import type {
   AgentStatus,
   MetricPoint,
@@ -52,22 +52,40 @@ export interface EventSubscription {
   readonly topics: readonly WsTopic[];
 }
 
+/** Convenience alias: `T` or a `Promise<T>` — async-by-default boundary. */
+export type MaybeAsync<T> = T | Promise<T>;
+
 /**
  * Storage abstraction the dashboard-api routes through. Implementations live
  * outside this package (see `@koi/runtime`'s adapter to `@koi/event-trace` and
  * `@koi/agent-monitor`).
  *
+ * **Error model.** Methods return `Result<T, KoiError>`:
+ * - `{ ok: true, value }` carries the success payload. `value` may itself be
+ *   `undefined` / `false` for the not-found / no-op happy paths.
+ * - `{ ok: false, error }` carries a structured `KoiError` whose `code`
+ *   maps to a stable HTTP status (`UNAVAILABLE`→503, `TIMEOUT`→504,
+ *   `RATE_LIMIT`→429, etc.) and whose `retryable` / `retryAfterMs` fields
+ *   propagate to the client envelope. Adapters are responsible for
+ *   sanitizing `error.message` and `error.context` before returning —
+ *   anything in those fields reaches the wire verbatim. The API package
+ *   strips `cause` defensively but does not redact the message.
+ *
+ * Thrown values from a method are reserved for *bugs*, not for signaling
+ * backend failures. The catch-all surfaces them as opaque 500 INTERNAL with
+ * no classification, no client-visible text, and no log of the cause body.
+ *
  * All methods may return synchronously or via `Promise` — callers always await.
  */
 export interface DashboardDataSource {
-  listAgents(query: AgentListQuery): Promise<Page<AgentStatus>> | Page<AgentStatus>;
-  getAgent(id: AgentId): Promise<AgentStatus | undefined> | (AgentStatus | undefined);
-  terminateAgent(id: AgentId): Promise<boolean> | boolean;
-  listSessions(query: SessionListQuery): Promise<Page<SessionSummary>> | Page<SessionSummary>;
-  getSession(id: SessionId): Promise<SessionSummary | undefined> | (SessionSummary | undefined);
-  listMetrics(query: MetricListQuery): Promise<readonly MetricPoint[]> | readonly MetricPoint[];
-  listTraces(query: TraceListQuery): Promise<Page<TraceView>> | Page<TraceView>;
-  getTrace(id: string): Promise<TraceView | undefined> | (TraceView | undefined);
+  listAgents(query: AgentListQuery): MaybeAsync<Result<Page<AgentStatus>, KoiError>>;
+  getAgent(id: AgentId): MaybeAsync<Result<AgentStatus | undefined, KoiError>>;
+  terminateAgent(id: AgentId): MaybeAsync<Result<boolean, KoiError>>;
+  listSessions(query: SessionListQuery): MaybeAsync<Result<Page<SessionSummary>, KoiError>>;
+  getSession(id: SessionId): MaybeAsync<Result<SessionSummary | undefined, KoiError>>;
+  listMetrics(query: MetricListQuery): MaybeAsync<Result<readonly MetricPoint[], KoiError>>;
+  listTraces(query: TraceListQuery): MaybeAsync<Result<Page<TraceView>, KoiError>>;
+  getTrace(id: string): MaybeAsync<Result<TraceView | undefined, KoiError>>;
   /**
    * Register a callback that receives every emitted event.
    * Returns an unsubscribe function — must be safe to call multiple times.

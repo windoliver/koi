@@ -47,4 +47,10 @@ describe("matchRoute", () => {
       params: { id: "abc" },
     });
   });
+
+  test("returns undefined for malformed percent-encoded segments", () => {
+    // decodeURIComponent throws URIError on these — must not propagate.
+    expect(matchRoute("/traces/:id", "/traces/%E0%A4%A")).toBeUndefined();
+    expect(matchRoute("/agents/:id", "/agents/%")).toBeUndefined();
+  });
 });
