@@ -1187,6 +1187,192 @@ describe("createDaemonBridge — live mode", () => {
     await bridge.close();
   });
 
+  test("WorkerEvent.started dispatches add_info with ↑ prefix", async () => {
+    const { bridge, actions } = makeLiveBridge(fake, fakeSupervisor);
+
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    const startedEvent: WorkerEvent = {
+      kind: "started",
+      workerId: "worker-s1" as never,
+      at: 10_000_001,
+    };
+    fakeSupervisor.pushWorkerEvent(startedEvent);
+
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    const infoActions = actions.filter((a) => a.kind === "add_info" && a.message.startsWith("↑"));
+    expect(infoActions.length).toBe(1);
+    const msg = infoActions[0];
+    if (msg?.kind === "add_info") {
+      expect(msg.message).toContain("worker-s1");
+    }
+
+    await bridge.close();
+  });
+
+  test("WorkerEvent.exited dispatches add_info with code+state", async () => {
+    const { bridge, actions } = makeLiveBridge(fake, fakeSupervisor);
+
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    const exitedEvent: WorkerEvent = {
+      kind: "exited",
+      workerId: "worker-e1" as never,
+      at: 10_000_001,
+      code: 1,
+      state: "terminated",
+    };
+    fakeSupervisor.pushWorkerEvent(exitedEvent);
+
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    const infoActions = actions.filter((a) => a.kind === "add_info" && a.message.startsWith("↓"));
+    expect(infoActions.length).toBe(1);
+    const msg = infoActions[0];
+    if (msg?.kind === "add_info") {
+      expect(msg.message).toContain("code=1");
+      expect(msg.message).toContain("state=terminated");
+    }
+
+    await bridge.close();
+  });
+
+  test("WorkerEvent.crashed dispatches add_info with error.message", async () => {
+    const { bridge, actions } = makeLiveBridge(fake, fakeSupervisor);
+
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    const crashedEvent: WorkerEvent = {
+      kind: "crashed",
+      workerId: "worker-c1" as never,
+      at: 10_000_001,
+      error: { code: "INTERNAL", message: "segfault in worker", retryable: false },
+    };
+    fakeSupervisor.pushWorkerEvent(crashedEvent);
+
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    const infoActions = actions.filter((a) => a.kind === "add_info" && a.message.startsWith("✗"));
+    expect(infoActions.length).toBe(1);
+    const msg = infoActions[0];
+    if (msg?.kind === "add_info") {
+      expect(msg.message).toContain("segfault in worker");
+    }
+
+    await bridge.close();
+  });
+
+  test("WorkerEvent.heartbeat does NOT dispatch add_info (too noisy)", async () => {
+    const { bridge, actions } = makeLiveBridge(fake, fakeSupervisor);
+
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    const heartbeatEvent: WorkerEvent = {
+      kind: "heartbeat",
+      workerId: "worker-hb" as never,
+      at: 10_000_001,
+    };
+    fakeSupervisor.pushWorkerEvent(heartbeatEvent);
+
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    const infoActions = actions.filter((a) => a.kind === "add_info");
+    expect(infoActions.length).toBe(0);
+
+    await bridge.close();
+  });
+
+  test("derived running→restarting dispatches add_info with '(derived)' suffix", async () => {
+    const runningWorker: SupervisorHealth["workers"][number] = {
+      workerId: "worker-dr" as never,
+      agentId: "agent-dr" as never,
+      state: "running",
+      lastHeartbeatAt: undefined,
+      heartbeatDeadlineAt: undefined,
+    };
+    fakeSupervisor.setHealth(makeHealth([runningWorker]));
+
+    const { bridge, actions } = makeLiveBridge(fake, fakeSupervisor, {
+      intervals: { registryPollMs: 100_000, healthPollMs: 1 },
+    });
+
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    fakeSupervisor.setHealth(makeHealth([{ ...runningWorker, state: "restarting" }]));
+
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    const derivedInfoActions = actions.filter(
+      (a) => a.kind === "add_info" && a.message.includes("(derived)"),
+    );
+    expect(derivedInfoActions.length).toBe(1);
+    const msg = derivedInfoActions[0];
+    if (msg?.kind === "add_info") {
+      expect(msg.message).toContain("restarting");
+      expect(msg.message).toContain("(derived)");
+    }
+
+    await bridge.close();
+  });
+
+  test("derived running→quarantined dispatches add_info with '(derived)' suffix", async () => {
+    const runningWorker: SupervisorHealth["workers"][number] = {
+      workerId: "worker-dq" as never,
+      agentId: "agent-dq" as never,
+      state: "running",
+      lastHeartbeatAt: undefined,
+      heartbeatDeadlineAt: undefined,
+    };
+    fakeSupervisor.setHealth(makeHealth([runningWorker]));
+
+    const { bridge, actions } = makeLiveBridge(fake, fakeSupervisor, {
+      intervals: { registryPollMs: 100_000, healthPollMs: 1 },
+    });
+
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    fakeSupervisor.setHealth(makeHealth([{ ...runningWorker, state: "quarantined" }]));
+
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    const derivedInfoActions = actions.filter(
+      (a) => a.kind === "add_info" && a.message.includes("(derived)"),
+    );
+    expect(derivedInfoActions.length).toBe(1);
+    const msg = derivedInfoActions[0];
+    if (msg?.kind === "add_info") {
+      expect(msg.message).toContain("quarantined");
+      expect(msg.message).toContain("(derived)");
+    }
+
+    await bridge.close();
+  });
+
   test("requestKill supervisor.stop returning Result.ok:false → toast + refused", async () => {
     fakeSupervisor.setHealth(
       makeHealth([

@@ -141,6 +141,19 @@ function resolveAgentName(workerId: string, health: SupervisorHealth | null): st
   return workerId;
 }
 
+function inlineFor(event: WorkerEvent, agentName: string): string {
+  switch (event.kind) {
+    case "started":
+      return `↑ ${agentName} started (worker ${String(event.workerId)})`;
+    case "exited":
+      return `↓ ${agentName} exited (code=${event.code}, state=${event.state})`;
+    case "crashed":
+      return `✗ ${agentName} crashed: ${event.error.message}`;
+    case "heartbeat":
+      return ""; // not inlined — too noisy
+  }
+}
+
 function makeEventEntry(event: WorkerEvent, agentName: string, now: number): SupervisorEventEntry {
   const id = `${String(event.workerId)}:${now}:${event.kind}`;
   switch (event.kind) {
@@ -447,8 +460,10 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
 
       if (prevWorker.state === "running" && worker.state === "quarantined") {
         pushToast({ kind: "warn", message: `⚠ worker ${agentName} quarantined` });
+        dispatch({ kind: "add_info", message: `⚠ ${agentName} quarantined (derived)` });
       } else if (prevWorker.state === "running" && worker.state === "restarting") {
         pushToast({ kind: "info", message: `↻ worker ${agentName} restarting` });
+        dispatch({ kind: "add_info", message: `↻ ${agentName} restarting (derived)` });
       }
     }
 
@@ -526,6 +541,12 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
 
     const entry = makeEventEntry(event, agentName, now);
     dispatch({ kind: "push_supervisor_event", entry });
+
+    // Inline lifecycle signal in conversation log (heartbeat excluded — too noisy)
+    const inlineMsg = inlineFor(event, agentName);
+    if (inlineMsg !== "") {
+      dispatch({ kind: "add_info", message: inlineMsg });
+    }
   }
 
   async function runWatchAllLoop(): Promise<void> {
