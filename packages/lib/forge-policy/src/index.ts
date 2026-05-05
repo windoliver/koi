@@ -15,4 +15,9 @@ export { createPolicyAuditLog } from "./audit.js";
 export type { ForgePolicyConfig, PolicyOverride } from "./config.js";
 export type { EvaluatePolicyOptions, PolicyEvaluation } from "./evaluate.js";
 export { evaluatePolicy, MAX_ARRAY_LENGTH, STRUCTURAL_BUDGET_BYTES } from "./evaluate.js";
+export type {
+  EvaluateAndRecordParams,
+  EvaluateAndRecordResult,
+} from "./evaluate-and-record.js";
+export { evaluateAndRecord } from "./evaluate-and-record.js";
 export { computeConfigFingerprint, POLICY_EVALUATOR_VERSION } from "./fingerprint.js";
