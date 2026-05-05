@@ -610,6 +610,32 @@ describe("deterministic dedup conflict resolution", () => {
   });
 });
 
+describe("agentId normalization", () => {
+  test("whitespace-only agentId is dropped (cannot fake multi-agent diversity)", () => {
+    const observations: UsagePurposeObservation[] = [
+      ...Array.from({ length: 4 }, () => ({ ...obs(" ", 0.95), agentId: " " })),
+      ...Array.from({ length: 4 }, () => ({ ...obs("\n", 0.95), agentId: "\n" })),
+      ...Array.from({ length: 4 }, () => ({ ...obs("\t", 0.95), agentId: "\t" })),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("no-drift");
+    if (result.kind === "no-drift") expect(result.droppedCount).toBe(12);
+  });
+
+  test("agentIds varying only in surrounding whitespace bucket as one agent", () => {
+    // Without trim normalization, "agent-a" and "agent-a " would count as
+    // distinct agents and could falsely satisfy minDivergentAgents.
+    const observations: UsagePurposeObservation[] = [
+      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("agent-a", s), agentId: "agent-a" })),
+      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("agent-a", s), agentId: "agent-a " })),
+      ...[0.95, 0.95, 0.95].map((s) => ({ ...obs("agent-a", s), agentId: " agent-a\n" })),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    // Only one true agent → fails minDivergentAgents=2.
+    expect(result.kind).toBe("no-drift");
+  });
+});
+
 describe("whitespace-only eventId is treated as missing", () => {
   test('eventId of " " or "\\n" does NOT enable replayProtected', () => {
     const observations: UsagePurposeObservation[] = [

@@ -86,6 +86,7 @@ export function tokenize(text: string): ReadonlySet<string> {
   for (const segment of segments) {
     const word = segment.toLowerCase();
     if (STOPWORDS.has(word)) continue;
+    if (isRuntimeIdentifier(word)) continue;
     if (word.length >= 3) {
       tokens.add(word);
     } else if (word.length === 2 && TWO_LETTER_ALLOWLIST.has(word)) {
@@ -93,6 +94,28 @@ export function tokenize(text: string): ReadonlySet<string> {
     }
   }
   return tokens;
+}
+
+/**
+ * Reject runtime-identifier-shaped tokens before they reach the Jaccard
+ * sets: digits-only (`200`, `1730000000`), hex digests (`a3f9c2`), and
+ * mixed alphanumeric blobs that look like UUID fragments / ticket IDs.
+ * These are common in tool/model context but absent from artifact
+ * descriptions, so they enlarge the union without contributing real
+ * semantic drift and produce false positives under noisy production
+ * traffic. Plain technical words (`http`, `tool`, `agent`) keep at least
+ * two letter-runs of length ≥ 2 and are unaffected.
+ */
+function isRuntimeIdentifier(word: string): boolean {
+  if (word.length === 0) return false;
+  // Digits-only — timestamps, ports, HTTP codes, ticket numbers.
+  if (/^[0-9]+$/.test(word)) return true;
+  // No digits → not an identifier blob.
+  if (!/[0-9]/.test(word)) return false;
+  // Mixed alphanumeric: reject if at least 4 chars AND no run of ≥3
+  // consecutive letters (UUID fragments, hex digests, base32 IDs).
+  if (word.length < 4) return false;
+  return !/[a-z]{3,}/.test(word);
 }
 
 /**

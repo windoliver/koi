@@ -192,10 +192,14 @@ export function detectDrift(
   // Validate observations. agentId + divergenceScore are required for any
   // scoring path. eventId is OPTIONAL data — its presence on every valid
   // sample is what unlocks replay protection downstream.
+  //
+  // Normalize agentId by trimming so all downstream bucketing (dedup,
+  // cohort attribution) sees one canonical form for an agent. Without
+  // this, "agent" and "agent " would bucket as two distinct agents.
   const valid: UsagePurposeObservation[] = [];
   for (const o of observations) {
     if (!isObservationValid(o)) continue;
-    valid.push(o);
+    valid.push(o.agentId === o.agentId.trim() ? o : { ...o, agentId: o.agentId.trim() });
   }
   const droppedCount = observations.length - valid.length;
 
@@ -357,7 +361,11 @@ function describeInvalidThresholds(t: ExaptationThresholds): string | undefined 
 
 function isObservationValid(o: UsagePurposeObservation): boolean {
   if (!isUnitInterval(o.divergenceScore)) return false;
-  if (typeof o.agentId !== "string" || o.agentId.length === 0) return false;
+  // Trim agentId before checking emptiness, the same way eventId is handled.
+  // A blank-but-present string from a degraded serializer must not count as
+  // a distinct agent — otherwise one unattributable source can satisfy
+  // minDivergentAgents and unlock irreversible suggestions.
+  if (typeof o.agentId !== "string" || o.agentId.trim().length === 0) return false;
   return true;
 }
 

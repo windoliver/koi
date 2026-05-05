@@ -36,6 +36,30 @@ describe("tokenize", () => {
     expect([...tokenize("to of in on is it at by tool")].sort()).toEqual(["tool"]);
   });
 
+  test("drops digits-only tokens (timestamps, ports, HTTP codes)", () => {
+    expect([...tokenize("status 200 port 8080 1730000000 tool")].sort()).toEqual([
+      "port",
+      "status",
+      "tool",
+    ]);
+  });
+
+  test("drops UUID-fragment / hex-digest tokens (no 3+ letter run)", () => {
+    expect([...tokenize("trace a3f9c2 b00b1e5 f00b4r5 parser")].sort()).toEqual([
+      "parser",
+      "trace",
+    ]);
+  });
+
+  test("keeps technical words containing digits when they have a real letter run", () => {
+    expect([...tokenize("oauth2 sha256 utf8 parser")].sort()).toEqual([
+      "oauth2",
+      "parser",
+      "sha256",
+      "utf8",
+    ]);
+  });
+
   test("unrelated short prose still scores as fully divergent", () => {
     // Regression: when 2-char filler words slipped through, two semantically
     // unrelated short sentences could overlap on `to`, `of`, `is`, etc., and
