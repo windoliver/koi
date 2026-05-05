@@ -133,6 +133,21 @@ export interface SynthesisConfig {
    * callers wrapping abort-aware adapters set `true` to enable retries.
    */
   readonly adapterHonorsAbort: boolean;
+  /**
+   * Caller-supplied sanitizer for verifier failure reasons before they are
+   * forwarded into the next refinement prompt. Verifier output is caller-
+   * controlled (sandbox stderr, stack traces, fixture values, tenant data)
+   * and crosses a trust boundary back into the LLM provider on retry —
+   * defaulting to forwarding raw text would leak whatever the verifier
+   * happened to print.
+   *
+   * Default: replaces verifier text with the fixed string
+   * `"verification failed (reason omitted)"`. Callers that want the model
+   * to see the actual diagnostic must opt in with their own implementation
+   * — either pass-through (`(s) => s`) for trusted in-process verifiers, or
+   * a redactor that strips secrets/PII before returning.
+   */
+  readonly sanitizeVerifierReason: (reason: string) => string;
 }
 
 /**
@@ -142,9 +157,10 @@ export interface SynthesisConfig {
  */
 export const DEFAULT_SYNTHESIS_CONFIG: Pick<
   SynthesisConfig,
-  "maxAttempts" | "clock" | "attemptTimeoutMs"
+  "maxAttempts" | "clock" | "attemptTimeoutMs" | "sanitizeVerifierReason"
 > = Object.freeze({
   maxAttempts: 3,
   clock: Date.now,
   attemptTimeoutMs: 30_000,
+  sanitizeVerifierReason: (_reason: string): string => "verification failed (reason omitted)",
 });

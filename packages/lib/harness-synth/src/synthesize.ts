@@ -41,6 +41,8 @@ export async function synthesize(
   // hanging adapter would otherwise pin the request indefinitely.
   const adapterHonorsAbort = config.adapterHonorsAbort;
   const signal = config.signal;
+  const sanitizeVerifierReason =
+    config.sanitizeVerifierReason ?? DEFAULT_SYNTHESIS_CONFIG.sanitizeVerifierReason;
   // Without a hard-cancel guarantee from the adapter, a timed-out attempt
   // may still be running when the next one starts, duplicating any side
   // effects (sandboxed exec, network calls). Force single-shot in that
@@ -148,7 +150,11 @@ export async function synthesize(
       );
       if (!verified.ok) {
         lastReason = verified.reason;
-        priorReason = redactReason(verified.reason);
+        // Verifier reason crosses the trust boundary back into the LLM —
+        // sanitize via caller-supplied hook (default replaces with a fixed
+        // generic string), then apply redactReason as a defense-in-depth
+        // length/control-char cap on whatever the sanitizer chose to emit.
+        priorReason = redactReason(safeSanitize(sanitizeVerifierReason, verified.reason));
         priorCode = parsed.value.code;
         if (verified.aborted) {
           return { ok: false, reason: verified.reason, attempts: attempt };
@@ -197,6 +203,23 @@ export async function synthesize(
  * that want stricter redaction should sanitize inside their `verify`
  * implementation before returning the reason string.
  */
+/**
+ * Run a caller-supplied sanitizer without letting a buggy implementation
+ * propagate exceptions or return non-string values past the trust boundary.
+ * Failure here means we fall back to a fixed generic string rather than
+ * forwarding the raw verifier reason — the whole point of the sanitizer is
+ * to keep verifier text out of the model retry prompt.
+ */
+function safeSanitize(sanitize: (reason: string) => string, reason: string): string {
+  try {
+    const out = sanitize(reason);
+    if (typeof out !== "string") return "verification failed (reason omitted)";
+    return out;
+  } catch {
+    return "verification failed (reason omitted)";
+  }
+}
+
 function redactReason(reason: string): string {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping is the point
   const cleaned = reason.replace(/[\x00-\x08\x0B-\x1F\x7F]/g, "");
@@ -365,7 +388,17 @@ async function safeVerify(
     "Verifier",
   );
   if (!guarded.ok) return guarded;
-  return coerceVerifyResult(guarded.value);
+  // Wrap coercion in try/catch: a hostile verifier may return an object with
+  // throwing getters or other accessors that explode on property reads. The
+  // boundary's whole purpose is to keep buggy adapters from crashing the
+  // loop, so we convert any such throw into a typed failure rather than let
+  // it escape past the typed-result contract.
+  try {
+    return coerceVerifyResult(guarded.value);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, reason: `Verifier returned hostile object: ${message}` };
+  }
 }
 
 /**

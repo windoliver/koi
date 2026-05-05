@@ -35,6 +35,11 @@ const result = await synthesize(input, {
   adapterHonorsAbort: true,
   signal,               // optional caller cancellation
   clock: Date.now,
+  // Default sanitizer drops verifier reason (forwards a fixed generic string
+  // to the model on retry). Verifier output crosses a trust boundary back
+  // into the LLM provider — opt in explicitly to forward diagnostics.
+  // sanitizeVerifierReason: (s) => s,        // pass-through (trusted verifier)
+  // sanitizeVerifierReason: stripSecrets,    // caller's own redactor
 });
 ```
 

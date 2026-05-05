@@ -61,12 +61,12 @@ describe("synthesize", () => {
       verify,
       maxAttempts: 3,
       adapterHonorsAbort: true,
+      sanitizeVerifierReason: (s) => s, // opt in to forwarding for this test
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.attempts).toBe(2);
     expect(generate).toHaveBeenCalledTimes(2);
-    // refinement prompt should reference the prior failure reason
     const secondPrompt = generate.mock.calls[1]?.[0] ?? "";
     expect(secondPrompt).toContain("syntax check failed");
   });
@@ -128,6 +128,7 @@ describe("synthesize", () => {
       verify,
       maxAttempts: 3,
       adapterHonorsAbort: true,
+      sanitizeVerifierReason: (s) => s,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -634,12 +635,11 @@ describe("synthesize", () => {
     expect(seen[0] ?? "").not.toContain("Previous failure reason");
   });
 
-  test("redacts verifier reason before forwarding into refinement prompt", async () => {
-    // Verifier output is caller-controlled and may contain control characters
-    // (sandbox stderr) or be arbitrarily long. The refinement prompt must
-    // strip controls and cap length so unbounded / non-printable diagnostics
-    // do not flow verbatim to the LLM provider on retry.
-    const noisyReason = `secret ctrlchars${"X".repeat(500)}`;
+  test("default sanitizer drops verifier reason text from refinement prompt", async () => {
+    // Verifier output crosses a trust boundary back into the LLM provider —
+    // the default must NOT forward raw text. Callers must explicitly opt in
+    // via sanitizeVerifierReason if they want the model to see diagnostics.
+    const secret = "SUPER_SECRET_API_KEY=sk-leaked-12345";
     let attempt = 0;
     const seenPrompts: string[] = [];
     const generate: GenerateCallback = async (p) => {
@@ -648,7 +648,7 @@ describe("synthesize", () => {
     };
     const verify: VerifyCallback = () => {
       attempt += 1;
-      if (attempt === 1) return { ok: false, reason: noisyReason };
+      if (attempt === 1) return { ok: false, reason: secret };
       return { ok: true };
     };
     const result = await synthesize(INPUT, {
@@ -659,9 +659,80 @@ describe("synthesize", () => {
     });
     expect(result.ok).toBe(true);
     const refinementPrompt = seenPrompts[1] ?? "";
-    expect(refinementPrompt).not.toContain(" ");
-    expect(refinementPrompt).not.toContain("");
+    expect(refinementPrompt).not.toContain(secret);
+    expect(refinementPrompt).toContain("verification failed");
+  });
+
+  test("opt-in sanitizer pass-through forwards verifier text (with redact cap)", async () => {
+    const noisy = `verifier said: ${"X".repeat(500)}`;
+    let attempt = 0;
+    const seenPrompts: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      seenPrompts.push(p);
+      return validRaw();
+    };
+    const verify: VerifyCallback = () => {
+      attempt += 1;
+      if (attempt === 1) return { ok: false, reason: noisy };
+      return { ok: true };
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 2,
+      sanitizeVerifierReason: (s) => s,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    const refinementPrompt = seenPrompts[1] ?? "";
+    expect(refinementPrompt).toContain("verifier said");
     expect(refinementPrompt).toContain("truncated");
-    expect(refinementPrompt.length).toBeLessThan(noisyReason.length + 2000);
+  });
+
+  test("buggy sanitizer (throws) falls back to generic message", async () => {
+    let attempt = 0;
+    const verify: VerifyCallback = () => {
+      attempt += 1;
+      if (attempt === 1) return { ok: false, reason: "boom" };
+      return { ok: true };
+    };
+    const seenPrompts: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      seenPrompts.push(p);
+      return validRaw();
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 2,
+      sanitizeVerifierReason: () => {
+        throw new Error("sanitizer crashed");
+      },
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    expect(seenPrompts[1] ?? "").toContain("verification failed");
+  });
+
+  test("hostile verifier object with throwing getter converts to typed failure", async () => {
+    const hostile: VerifyCallback = () =>
+      Object.create(null, {
+        ok: {
+          get() {
+            throw new Error("hostile getter");
+          },
+          enumerable: true,
+        },
+      }) as never;
+    const generate: GenerateCallback = async () => validRaw();
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: hostile,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/hostile|Verifier/);
   });
 });
