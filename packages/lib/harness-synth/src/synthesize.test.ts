@@ -1,0 +1,1713 @@
+import { describe, expect, mock, test } from "bun:test";
+import type { ForgeCandidate } from "@koi/forge-types";
+import { synthesize } from "./synthesize.js";
+import type { GenerateCallback, SynthesisInput, VerifyCallback, VerifyResult } from "./types.js";
+
+const CANDIDATE: ForgeCandidate = {
+  id: "cand-1",
+  kind: "tool",
+  name: "echo_tool",
+  description: "Echoes its input back",
+  priority: 0.5,
+  proposedScope: "agent",
+  createdAt: 1_700_000_000_000,
+};
+
+const INPUT: SynthesisInput = {
+  candidate: CANDIDATE,
+  targetToolName: "echo_tool",
+  targetToolSchema: { type: "object" },
+};
+
+/** Most tests pass through retries; opt in by default. */
+const ABORT_HONORED = { adapterHonorsAbort: true } as const;
+// Most tests assert on raw verifier/generator failure text, so opt in to
+// passthrough sanitization. Production callers default to redacted text;
+// tests that exercise the redaction default override `sanitizeVerifierReason`
+// inline.
+const PASSTHROUGH_SANITIZE = { sanitizeVerifierReason: (s: string): string => s } as const;
+
+function validRaw(name = "echo_tool", code = "export const run = (x) => x;"): string {
+  return JSON.stringify({
+    descriptor: { name, description: "Echoes input", inputSchema: { type: "object" } },
+    code,
+  });
+}
+
+const STUB_SUMMARY = {
+  passed: true as const,
+  sandbox: false,
+  totalDurationMs: 1,
+  stageResults: [{ stage: "stub", passed: true, durationMs: 1 }],
+};
+const ALWAYS_OK: VerifyCallback = () => ({ ok: true, summary: STUB_SUMMARY });
+
+describe("synthesize", () => {
+  test("returns success on first attempt when generate + verify both succeed", async () => {
+    const generate = mock<GenerateCallback>(async () => validRaw());
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      clock: () => 42,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.attempts).toBe(1);
+    expect(result.value.forgedBy).toBe("harness-synth");
+    expect(result.value.synthesizedAt).toBe(42);
+    expect(result.value.descriptor.name).toBe("echo_tool");
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  test("retries on verify failure with refinement prompt", async () => {
+    const generate = mock<GenerateCallback>(async () => validRaw());
+    let calls = 0;
+    const verify: VerifyCallback = () => {
+      calls += 1;
+      return calls === 1
+        ? { ok: false, reason: "syntax check failed" }
+        : { ok: true, summary: STUB_SUMMARY };
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 3,
+      adapterHonorsAbort: true,
+      sanitizeVerifierReason: (s) => s, // opt in to forwarding for this test
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.attempts).toBe(2);
+    expect(generate).toHaveBeenCalledTimes(2);
+    const secondPrompt = generate.mock.calls[1]?.[0] ?? "";
+    expect(secondPrompt).toContain("syntax check failed");
+  });
+
+  test("retries on parse failure", async () => {
+    let n = 0;
+    const generate: GenerateCallback = async () => {
+      n += 1;
+      return n === 1 ? "garbage with no tags" : validRaw();
+    };
+    const result = await synthesize(INPUT, { generate, verify: ALWAYS_OK, ...ABORT_HONORED });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.attempts).toBe(2);
+  });
+
+  test("fails after maxAttempts when verify never succeeds", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify: VerifyCallback = () => ({ ok: false, reason: "still wrong" });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 3,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.attempts).toBe(3);
+    expect(result.reason).toBe("still wrong");
+  });
+
+  test("post-timeout late success cannot override the timeout failure", async () => {
+    // generate is slow but resolves successfully WITHIN the unwind grace
+    // window after timeout. The chosen timeout failure must still win.
+    const generate: GenerateCallback = (_p, signal) =>
+      new Promise<string>((resolve) => {
+        const onAbort = (): void => {
+          // Simulate "tear down then succeed anyway" — the contract says
+          // the abort decision is terminal regardless of late success.
+          setTimeout(() => resolve(validRaw()), 50);
+        };
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      attemptTimeoutMs: 20,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/timed out/);
+  });
+
+  test("post-abort late verify success cannot override the caller-abort failure", async () => {
+    const controller = new AbortController();
+    const verify: VerifyCallback = (_c, _d, signal) =>
+      new Promise<VerifyResult>((resolve) => {
+        const onAbort = (): void => {
+          setTimeout(() => resolve({ ok: true, summary: STUB_SUMMARY }), 50);
+        };
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+    setTimeout(() => controller.abort(), 5);
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify,
+      maxAttempts: 1,
+      signal: controller.signal,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/aborted by caller/);
+  });
+
+  test("waits for aborted callback to unwind before starting next attempt", async () => {
+    // After timeout, the next attempt must NOT start while the prior
+    // callback is still running its post-abort cleanup. Track overlap
+    // by counting concurrent in-flight calls.
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    let n = 0;
+    const generate: GenerateCallback = (_p, signal) => {
+      n += 1;
+      const myAttempt = n;
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      return new Promise<string>((resolve) => {
+        const onAbort = (): void => {
+          // Simulate slow async cleanup (network teardown, sandbox kill).
+          setTimeout(() => {
+            concurrent -= 1;
+            // Second attempt resolves a real value so the loop terminates.
+            resolve(myAttempt === 1 ? "" : validRaw());
+          }, 50);
+        };
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 2,
+      // Grace = min(1000, timeoutMs/2). With timeoutMs=200, grace=100ms,
+      // which covers the 50ms cleanup so attempt 2 only starts after
+      // attempt 1 has fully unwound.
+      attemptTimeoutMs: 200,
+      ...ABORT_HONORED,
+    });
+    void result; // either ok or fail acceptable; we care about non-overlap
+    expect(maxConcurrent).toBe(1);
+  });
+
+  test("rejects Infinity maxAttempts (no unbounded loop)", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => "garbage",
+      verify: ALWAYS_OK,
+      maxAttempts: Number.POSITIVE_INFINITY,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/maxAttempts/);
+    expect(result.attempts).toBe(0);
+  });
+
+  test("rejects NaN maxAttempts", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify: ALWAYS_OK,
+      maxAttempts: Number.NaN,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/maxAttempts/);
+  });
+
+  test("rejects fractional maxAttempts", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify: ALWAYS_OK,
+      maxAttempts: 2.5,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/maxAttempts/);
+  });
+
+  test("rejects maxAttempts < 1", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => "",
+      verify: ALWAYS_OK,
+      maxAttempts: 0,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.attempts).toBe(0);
+    expect(result.reason).toMatch(/maxAttempts/);
+  });
+
+  test("recovers from verify-throwing on first attempt", async () => {
+    const prompts: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      prompts.push(p);
+      return validRaw();
+    };
+    let n = 0;
+    const verify: VerifyCallback = () => {
+      n += 1;
+      if (n === 1) throw new Error("verifier crashed");
+      return { ok: true, summary: STUB_SUMMARY };
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 3,
+      adapterHonorsAbort: true,
+      sanitizeVerifierReason: (s) => s,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.attempts).toBe(2);
+    expect(prompts[1] ?? "").toContain("Verifier failed");
+  });
+
+  test("returns typed failure when verify throws on every attempt", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify: VerifyCallback = () => {
+      throw new Error("flaky");
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 2,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/Verifier failed/);
+    expect(result.attempts).toBe(2);
+  });
+
+  test("recovers from generate-throwing on first attempt", async () => {
+    let n = 0;
+    const generate: GenerateCallback = async () => {
+      n += 1;
+      if (n === 1) throw new Error("LLM offline");
+      return validRaw();
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 3,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.attempts).toBe(2);
+  });
+
+  test("uses synchronous verify return value", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify: VerifyCallback = () => ({ ok: true, summary: STUB_SUMMARY });
+    const result = await synthesize(INPUT, { generate, verify, ...ABORT_HONORED });
+    expect(result.ok).toBe(true);
+  });
+
+  test("default maxAttempts is 3", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify: VerifyCallback = () => ({ ok: false, reason: "nope" });
+    const result = await synthesize(INPUT, { generate, verify, ...ABORT_HONORED });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.attempts).toBe(3);
+  });
+
+  test("returns typed failure for cyclic targetToolSchema", async () => {
+    const cyclic: Record<string, unknown> = { type: "object" };
+    cyclic.self = cyclic;
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: cyclic },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/targetToolSchema/);
+    expect(result.attempts).toBe(0);
+  });
+
+  test("returns typed failure for throwing-getter targetToolSchema", async () => {
+    const schema: Record<string, unknown> = { type: "object" };
+    Object.defineProperty(schema, "evil", {
+      enumerable: true,
+      get: () => {
+        throw new Error("boom");
+      },
+    });
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: schema },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/targetToolSchema/);
+  });
+
+  test("rejects targetToolSchema with undefined / non-finite values (no lossy normalization)", async () => {
+    const schema = { type: "object", missing: undefined, weight: Number.POSITIVE_INFINITY };
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: schema as Record<string, unknown> },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/targetToolSchema/);
+  });
+
+  test("honors external signal in best-effort mode (synthesize() resolves promptly)", async () => {
+    // In best-effort mode the callback may not honor abort, but synthesize()
+    // itself MUST still resolve when the caller cancels — otherwise a stuck
+    // adapter pins the request indefinitely. The caller accepts that the
+    // background callback may keep running; what they need is a prompt
+    // typed failure so they can move on.
+    const controller = new AbortController();
+    const generate: GenerateCallback = () =>
+      new Promise<string>((resolve) => {
+        setTimeout(() => controller.abort(), 5);
+        // Resolves long after the abort — synthesize() must not wait for it.
+        setTimeout(() => resolve(validRaw()), 1000);
+      });
+    const start = Date.now();
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      signal: controller.signal,
+      adapterHonorsAbort: false,
+    });
+    const elapsed = Date.now() - start;
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/aborted by caller/);
+    // 1000ms abort-settlement grace window + a small buffer.
+    expect(elapsed).toBeLessThan(1500);
+  });
+
+  test("rejects verifier summary with non-JSON-plain extras (Date)", async () => {
+    // A leaky verifier that includes a Date / class instance must be
+    // rejected, not silently dropped — downstream forge provenance
+    // requires JSON-plain values, and silent stripping hides drift.
+    const generate: GenerateCallback = async () => validRaw();
+    const verify: VerifyCallback = () => ({
+      ok: true,
+      summary: {
+        passed: true,
+        sandbox: false,
+        totalDurationMs: 5,
+        stageResults: [{ stage: "syntax", passed: true, durationMs: 2 }],
+        // biome-ignore lint/suspicious/noExplicitAny: simulating leaky verifier output.
+        leak: new Date() as any,
+      },
+    });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/summary/);
+  });
+
+  test("preserves verifier-supplied JSON-plain extras (digests, ids)", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify: VerifyCallback = () => ({
+      ok: true,
+      summary: {
+        passed: true,
+        sandbox: true,
+        totalDurationMs: 12,
+        stageResults: [{ stage: "syntax", passed: true, durationMs: 2 }],
+        // Extra JSON-plain fields (audit metadata) must flow through.
+        attestationId: "att-123",
+        digest: "sha256:abc",
+      } as never,
+    });
+    const result = await synthesize(INPUT, { generate, verify, ...ABORT_HONORED });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const v = result.value.verification as unknown as Record<string, unknown>;
+    expect(v.attestationId).toBe("att-123");
+    expect(v.digest).toBe("sha256:abc");
+  });
+
+  test("forces single-shot when adapterHonorsAbort is false (default)", async () => {
+    let calls = 0;
+    const generate: GenerateCallback = async () => {
+      calls += 1;
+      return validRaw();
+    };
+    const verify: VerifyCallback = () => ({ ok: false, reason: "no" });
+    // Caller explicitly asks for 5 attempts but did not assert hard abort —
+    // synthesize must clamp to 1 to avoid overlapping side effects on retry.
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 5,
+      adapterHonorsAbort: false,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.attempts).toBe(1);
+    expect(calls).toBe(1);
+  });
+
+  test("rejects descriptor.inputSchema mismatch when targetToolSchema set", async () => {
+    const generate: GenerateCallback = async () =>
+      JSON.stringify({
+        descriptor: {
+          name: "echo_tool",
+          description: "x",
+          inputSchema: { type: "object", properties: { foo: { type: "string" } } },
+        },
+        code: "x();",
+      });
+    const result = await synthesize(
+      {
+        ...INPUT,
+        targetToolSchema: { type: "object", properties: { bar: { type: "number" } } },
+      },
+      { generate, verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/inputSchema/);
+  });
+
+  test("accepts schema match (key-order independent)", async () => {
+    const generate: GenerateCallback = async () =>
+      JSON.stringify({
+        descriptor: {
+          name: "echo_tool",
+          description: "x",
+          // intentionally reordered properties
+          inputSchema: { properties: { foo: { type: "string" } }, type: "object" },
+        },
+        code: "x();",
+      });
+    const result = await synthesize(
+      {
+        ...INPUT,
+        targetToolSchema: { type: "object", properties: { foo: { type: "string" } } },
+      },
+      { generate, verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test("coerces undefined verifier return into typed failure", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately injecting a misbehaving verifier.
+    const verify = (() => undefined) as any as VerifyCallback;
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/non-object/);
+  });
+
+  test("coerces empty-object verifier return into typed failure", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately injecting a misbehaving verifier.
+    const verify = (() => ({})) as any as VerifyCallback;
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/malformed/);
+  });
+
+  test("returns typed failure when generate yields a non-string", async () => {
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately injecting a misbehaving adapter.
+    const generate = (async () => ({ not: "a string" })) as any as GenerateCallback;
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 2,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/non-string/);
+  });
+
+  test("times out a hung generator instead of stalling forever", async () => {
+    // Strict-mode contract: adapter MUST honor abort so the loop can
+    // settle the attempt without overlap into the next one. An adapter
+    // that simply returns `new Promise(() => {})` violates that contract;
+    // such adapters belong in best-effort mode (see the ABORT_HONORED:false
+    // test below). Here we simulate a strict-mode adapter whose work
+    // hangs but whose abort handler reliably rejects on signal.
+    const generate: GenerateCallback = (_p, signal) =>
+      new Promise<string>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      attemptTimeoutMs: 25,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/timed out/);
+  });
+
+  test("times out a hung verifier instead of stalling forever", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify: VerifyCallback = (_c, _d, signal) =>
+      new Promise<VerifyResult>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      attemptTimeoutMs: 25,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/timed out/);
+  });
+
+  test("enforces attemptTimeoutMs in best-effort mode (forces maxAttempts=1, no retry)", async () => {
+    // Timeouts are honored even in best-effort mode so synthesize() cannot
+    // hang on a stuck adapter — but maxAttempts is still forced to 1 so the
+    // loop never starts a second attempt while the first may still be in
+    // flight.
+    let calls = 0;
+    const generate: GenerateCallback = () => {
+      calls += 1;
+      return new Promise<string>(() => undefined); // never settles
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 5, // ignored in best-effort
+      attemptTimeoutMs: 10,
+      adapterHonorsAbort: false,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/timed out/);
+    expect(result.attempts).toBe(1);
+    expect(calls).toBe(1);
+  });
+
+  test("respects an external AbortSignal mid-flight", async () => {
+    const controller = new AbortController();
+    const generate: GenerateCallback = (_p, signal) =>
+      new Promise<string>((_resolve, reject) => {
+        setTimeout(() => controller.abort(), 5);
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 5,
+      attemptTimeoutMs: 1_000,
+      signal: controller.signal,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/aborted/);
+  });
+
+  test("respects a pre-aborted signal without running any attempts", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let calls = 0;
+    const generate: GenerateCallback = async () => {
+      calls += 1;
+      return validRaw();
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 3,
+      signal: controller.signal,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/aborted/);
+    expect(calls).toBe(0);
+  });
+
+  test("forwards an AbortSignal to generate + verify", async () => {
+    let genSignal: AbortSignal | undefined;
+    let verSignal: AbortSignal | undefined;
+    const generate: GenerateCallback = async (_p, signal) => {
+      genSignal = signal;
+      return validRaw();
+    };
+    const verify: VerifyCallback = (_c, _d, signal) => {
+      verSignal = signal;
+      return { ok: true, summary: STUB_SUMMARY };
+    };
+    const result = await synthesize(INPUT, { generate, verify, ...ABORT_HONORED });
+    expect(result.ok).toBe(true);
+    expect(genSignal).toBeInstanceOf(AbortSignal);
+    expect(verSignal).toBeInstanceOf(AbortSignal);
+  });
+
+  test("aborts the previous attempt before the next one starts (no overlap)", async () => {
+    const observedAborts: boolean[] = [];
+    let n = 0;
+    const generate: GenerateCallback = (_p, signal) =>
+      new Promise<string>((resolve, reject) => {
+        n += 1;
+        const myAttempt = n;
+        signal.addEventListener("abort", () => {
+          observedAborts.push(myAttempt === 1);
+          // Strict-mode adapters MUST settle on abort so the loop can
+          // proceed without overlap. Reject so the next attempt starts.
+          reject(new Error("aborted"));
+        });
+        if (myAttempt === 1) {
+          // never resolve on its own — let timeout fire and the abort
+          // handler above settle the promise.
+          return;
+        }
+        resolve(validRaw());
+      });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 2,
+      attemptTimeoutMs: 25,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.attempts).toBe(2);
+    // First attempt must have observed an abort before the second one resolved.
+    expect(observedAborts).toContain(true);
+  });
+
+  test("rejects ok:true with malformed verification summary", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify = (() => ({
+      ok: true,
+      summary: { passed: true /* missing required fields */ },
+    })) as unknown as VerifyCallback;
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/malformed summary/);
+  });
+
+  test("rejects ok:true with empty stage name (downstream provenance invariant)", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify = (() => ({
+      ok: true,
+      summary: {
+        passed: true,
+        sandbox: false,
+        totalDurationMs: 1,
+        stageResults: [{ stage: "", passed: true, durationMs: 1 }],
+      },
+    })) as unknown as VerifyCallback;
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/non-empty string/);
+  });
+
+  test("rejects ok:true with passed:false summary (cross-field invariant)", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify = (() => ({
+      ok: true,
+      summary: {
+        passed: false,
+        sandbox: false,
+        totalDurationMs: 1,
+        stageResults: [{ stage: "syntax", passed: false, durationMs: 1 }],
+      },
+    })) as unknown as VerifyCallback;
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/passed:false/);
+  });
+
+  test("propagates verification summary into SynthesisOutput", async () => {
+    const summary = {
+      passed: true as const,
+      sandbox: false,
+      totalDurationMs: 17,
+      stageResults: [{ stage: "syntax", passed: true, durationMs: 5 }],
+    };
+    const generate: GenerateCallback = async () => validRaw();
+    const verify: VerifyCallback = () => ({ ok: true, summary });
+    const result = await synthesize(INPUT, { generate, verify, ...ABORT_HONORED });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.verification).toEqual(summary);
+  });
+
+  test("first prompt does not contain refinement marker", async () => {
+    const seen: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      seen.push(p);
+      return validRaw();
+    };
+    await synthesize(INPUT, { generate, verify: ALWAYS_OK, ...ABORT_HONORED });
+    expect(seen[0] ?? "").not.toContain("Previous failure reason");
+  });
+
+  test("default sanitizer drops verifier reason text from refinement prompt", async () => {
+    // Verifier output crosses a trust boundary back into the LLM provider —
+    // the default must NOT forward raw text. Callers must explicitly opt in
+    // via sanitizeVerifierReason if they want the model to see diagnostics.
+    const secret = "SUPER_SECRET_API_KEY=sk-leaked-12345";
+    let attempt = 0;
+    const seenPrompts: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      seenPrompts.push(p);
+      return validRaw();
+    };
+    const verify: VerifyCallback = () => {
+      attempt += 1;
+      if (attempt === 1) return { ok: false, reason: secret };
+      return { ok: true, summary: STUB_SUMMARY };
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 2,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    const refinementPrompt = seenPrompts[1] ?? "";
+    expect(refinementPrompt).not.toContain(secret);
+    expect(refinementPrompt).toContain("failure reason omitted");
+  });
+
+  test("opt-in sanitizer pass-through forwards verifier text (with redact cap)", async () => {
+    const noisy = `verifier said: ${"X".repeat(500)}`;
+    let attempt = 0;
+    const seenPrompts: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      seenPrompts.push(p);
+      return validRaw();
+    };
+    const verify: VerifyCallback = () => {
+      attempt += 1;
+      if (attempt === 1) return { ok: false, reason: noisy };
+      return { ok: true, summary: STUB_SUMMARY };
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 2,
+      sanitizeVerifierReason: (s) => s,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    const refinementPrompt = seenPrompts[1] ?? "";
+    expect(refinementPrompt).toContain("verifier said");
+    expect(refinementPrompt).toContain("truncated");
+  });
+
+  test("buggy sanitizer (throws) falls back to generic message", async () => {
+    let attempt = 0;
+    const verify: VerifyCallback = () => {
+      attempt += 1;
+      if (attempt === 1) return { ok: false, reason: "boom" };
+      return { ok: true, summary: STUB_SUMMARY };
+    };
+    const seenPrompts: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      seenPrompts.push(p);
+      return validRaw();
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 2,
+      sanitizeVerifierReason: () => {
+        throw new Error("sanitizer crashed");
+      },
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    expect(seenPrompts[1] ?? "").toContain("failure reason omitted");
+  });
+
+  test("default sanitizer also drops generator failure text from refinement", async () => {
+    const adapterSecret = "ADAPTER_TOKEN=tok-leak";
+    let n = 0;
+    const seenPrompts: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      seenPrompts.push(p);
+      n += 1;
+      if (n === 1) throw new Error(adapterSecret);
+      return validRaw();
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 2,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    const refinement = seenPrompts[1] ?? "";
+    expect(refinement).not.toContain(adapterSecret);
+    expect(refinement).toContain("failure reason omitted");
+  });
+
+  test("rejects oversized targetToolSchema before prompt construction", async () => {
+    const huge = { type: "object", junk: "x".repeat(40_000) };
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: huge },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/targetToolSchema exceeds/);
+  });
+
+  test("accepts null-prototype targetToolSchema (sanitized wire-format)", async () => {
+    // Object.create(null) is a common pattern for prototype-pollution-safe
+    // decoded JSON. The walker must accept null as well as Object.prototype.
+    const schema = Object.create(null) as Record<string, unknown>;
+    schema.type = "object";
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: schema },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects targetToolSchema with undefined value (no silent JSON normalization)", async () => {
+    // JSON.stringify drops undefined keys; old two-pass code would have
+    // accepted this as a normalized {type:"object"} schema. Single-pass
+    // snapshotter must reject the original violation.
+    const schema = { type: "object", drop: undefined };
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: schema },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/undefined/);
+  });
+
+  test("rejects targetToolSchema with NaN value (no silent normalization to null)", async () => {
+    const schema = { type: "object", val: Number.NaN };
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: schema },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/non-finite/);
+  });
+
+  test("healthy work gets the full attemptTimeoutMs budget (no reserved slack)", async () => {
+    // Generate takes 80ms inside a 100ms budget. Old code reserved up to
+    // 50% as grace, so generate would get only 50ms and time out.
+    const generate: GenerateCallback = () =>
+      new Promise<string>((resolve) => setTimeout(() => resolve(validRaw()), 80));
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      attemptTimeoutMs: 100,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects non-boolean adapterHonorsAbort (truthy strings, numbers, objects)", async () => {
+    const cases: Array<unknown> = ["false", 1, 0, {}, null, undefined];
+    for (const v of cases) {
+      const result = await synthesize(INPUT, {
+        generate: async () => validRaw(),
+        verify: ALWAYS_OK,
+        adapterHonorsAbort: v as boolean,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) continue;
+      expect(result.reason).toMatch(/adapterHonorsAbort/);
+    }
+  });
+
+  test("non-deterministic schema getter cannot diverge across boundary", async () => {
+    let reads = 0;
+    const schema: Record<string, unknown> = {};
+    Object.defineProperty(schema, "type", {
+      get: () => {
+        reads += 1;
+        return reads <= 2 ? "object" : "drift";
+      },
+      enumerable: true,
+    });
+    const seenPrompts: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      seenPrompts.push(p);
+      return JSON.stringify({
+        descriptor: { name: "echo_tool", description: "ok", inputSchema: { type: "object" } },
+        code: "x();",
+      });
+    };
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: schema },
+      { generate, verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    // Whatever value was chosen at the single boundary read must match
+    // both the prompt and the equality check. Since JSON.stringify reads
+    // each enumerable property exactly once, the snapshot is consistent.
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects oversized targetToolName before prompt construction", async () => {
+    const result = await synthesize(
+      { ...INPUT, targetToolName: "x".repeat(5_000) },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/targetToolName exceeds/);
+  });
+
+  test("hostile targetToolName getter returns typed failure", async () => {
+    const hostile = Object.create(null, {
+      candidate: { value: CANDIDATE, enumerable: true },
+      targetToolName: {
+        get: () => {
+          throw new Error("hostile name getter");
+        },
+        enumerable: true,
+      },
+      targetToolSchema: { value: { type: "object" }, enumerable: true },
+    }) as SynthesisInput;
+    const result = await synthesize(hostile, {
+      generate: async () => validRaw(),
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/targetToolName/);
+  });
+
+  test("rejects oversized candidate.proposedScope before prompt construction", async () => {
+    const candidate = { ...CANDIDATE, proposedScope: "x".repeat(5_000) } as ForgeCandidate;
+    const result = await synthesize(
+      { ...INPUT, candidate },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/candidate\.proposedScope exceeds/);
+  });
+
+  test("rejects oversized candidate.description before prompt construction", async () => {
+    const candidate: ForgeCandidate = { ...CANDIDATE, description: "x".repeat(5_000) };
+    const result = await synthesize(
+      { ...INPUT, candidate },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/candidate\.description exceeds/);
+  });
+
+  test("best-effort caller-abort failure discloses 'adapter may still be running'", async () => {
+    const controller = new AbortController();
+    const generate: GenerateCallback = () => new Promise<string>(() => undefined);
+    setTimeout(() => controller.abort(), 5);
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      signal: controller.signal,
+      adapterHonorsAbort: false,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/adapter may still be running/);
+  });
+
+  test("best-effort timeout failure discloses 'adapter may still be running'", async () => {
+    const generate: GenerateCallback = () => new Promise<string>(() => undefined);
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      attemptTimeoutMs: 30,
+      adapterHonorsAbort: false,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/adapter may still be running/);
+  });
+
+  test("rejects ok:true verifier result without ForgeVerificationSummary", async () => {
+    // Cast through unknown to bypass the type guard — we're testing
+    // the runtime defense for callers ignoring or skewed past the type.
+    const verify = (() => ({ ok: true })) as unknown as VerifyCallback;
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/ForgeVerificationSummary/);
+  });
+
+  test("rejects ok:true verifier result whose stages contradict (passed but stage failed)", async () => {
+    const summary = {
+      passed: true as const,
+      sandbox: false,
+      totalDurationMs: 10,
+      stageResults: [
+        { stage: "syntax", passed: true, durationMs: 3 },
+        { stage: "exec", passed: false, durationMs: 7 },
+      ],
+    };
+    const verify: VerifyCallback = () => ({ ok: true, summary });
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/conflicts with.*passed:false/);
+  });
+
+  test("verification summary is snapshotted (verifier cannot mutate audit data post-success)", async () => {
+    const live: {
+      passed: true;
+      sandbox: boolean;
+      totalDurationMs: number;
+      stageResults: Array<{ stage: string; passed: boolean; durationMs: number }>;
+    } = {
+      passed: true,
+      sandbox: false,
+      totalDurationMs: 17,
+      stageResults: [{ stage: "syntax", passed: true, durationMs: 5 }],
+    };
+    const verify: VerifyCallback = () => ({ ok: true, summary: live });
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Verifier mutates its live reference AFTER synthesize() resolved.
+    live.totalDurationMs = 9999;
+    live.stageResults[0]!.passed = false;
+    // Returned value must be unaffected.
+    expect(result.value.verification.totalDurationMs).toBe(17);
+    expect(result.value.verification.stageResults[0]?.passed).toBe(true);
+    expect(Object.isFrozen(result.value.verification)).toBe(true);
+  });
+
+  test("targetToolSchema is snapshotted (caller mutation post-call has no effect)", async () => {
+    const original: Record<string, unknown> = { type: "object", v: 1 };
+    const generate: GenerateCallback = async () => {
+      // Mutate the caller's original after generation has been triggered.
+      // synthesize() should still equality-check against the snapshot,
+      // not against the now-changed object.
+      original.v = 2;
+      return JSON.stringify({
+        descriptor: {
+          name: "echo_tool",
+          description: "ok",
+          // matches the ORIGINAL (snapshot), not the mutated value
+          inputSchema: { type: "object", v: 1 },
+        },
+        code: "x();",
+      });
+    };
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: original },
+      { generate, verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects deeply nested targetToolSchema (depth bound, no stack overflow)", async () => {
+    let nested: Record<string, unknown> = {};
+    for (let i = 0; i < 200; i += 1) nested = { n: nested };
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: nested },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, maxAttempts: 1, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/max nesting depth|targetToolSchema/);
+  });
+
+  test("verifier mutating descriptor.name is rejected post-verification", async () => {
+    const verify: VerifyCallback = (_code, descriptor) => {
+      // Hostile mutation attempt — the descriptor passed in is frozen, so
+      // this throws in strict mode (the JSON.parse JS context). synthesize()
+      // must convert that throw into a typed verifier-failure path; the
+      // test below exercises a sloppy-mode verifier that just reassigns.
+      try {
+        (descriptor as { name: string }).name = "evil_tool";
+      } catch {
+        /* descriptor is frozen */
+      }
+      return { ok: true, summary: STUB_SUMMARY };
+    };
+    const generate: GenerateCallback = async () => validRaw();
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    // Either: descriptor was frozen so name still equals targetToolName
+    // (success path), OR mutation slipped through and post-verify check
+    // catches it (failure path). Both outcomes preserve the contract.
+    if (result.ok) {
+      expect(result.value.descriptor.name).toBe("echo_tool");
+    } else {
+      expect(result.reason).toMatch(/descriptor/);
+    }
+  });
+
+  test("returned descriptor is frozen (cannot be mutated by caller)", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(Object.isFrozen(result.value.descriptor)).toBe(true);
+    expect(Object.isFrozen(result.value.descriptor.inputSchema)).toBe(true);
+  });
+
+  test("rejects oversized model output before parsing (bounds parser cost)", async () => {
+    const oversized = `${"{".repeat(300_000)}{}`;
+    const generate: GenerateCallback = async () => oversized;
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/exceeds \d+ bytes/);
+  });
+
+  test("caps priorCode in refinement prompt (no oversized retry blowup)", async () => {
+    const seenPrompts: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      seenPrompts.push(p);
+      // first attempt: huge but valid JSON code field
+      if (seenPrompts.length === 1) {
+        return JSON.stringify({
+          descriptor: { name: "echo_tool", description: "ok", inputSchema: { type: "object" } },
+          code: "x".repeat(50_000),
+        });
+      }
+      return validRaw();
+    };
+    let n = 0;
+    const verify: VerifyCallback = () => {
+      n += 1;
+      return n === 1 ? { ok: false, reason: "nope" } : { ok: true, summary: STUB_SUMMARY };
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 2,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    const refinement = seenPrompts[1] ?? "";
+    expect(refinement).toContain("truncated");
+    // refinement prompt should not carry the full 50KB priorCode
+    expect(refinement.length).toBeLessThan(20_000);
+  });
+
+  test("rejects NaN attemptTimeoutMs (no silent timeout disable)", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify: ALWAYS_OK,
+      attemptTimeoutMs: Number.NaN,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/attemptTimeoutMs/);
+    expect(result.attempts).toBe(0);
+  });
+
+  test("rejects negative attemptTimeoutMs", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify: ALWAYS_OK,
+      attemptTimeoutMs: -1,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/attemptTimeoutMs/);
+  });
+
+  test("hostile candidate.name (throwing getter) returns typed failure, not exception", async () => {
+    const hostile: ForgeCandidate = Object.create(CANDIDATE, {
+      name: {
+        get: () => {
+          throw new Error("hostile candidate getter");
+        },
+        enumerable: true,
+      },
+    }) as ForgeCandidate;
+    const result = await synthesize(
+      { ...INPUT, candidate: hostile },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/candidate/);
+    expect(result.attempts).toBe(0);
+  });
+
+  test("candidate field of wrong type returns typed failure", async () => {
+    const bad = { ...CANDIDATE, name: 123 as unknown as string };
+    const result = await synthesize(
+      { ...INPUT, candidate: bad },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/candidate\.name/);
+  });
+
+  test("zero remaining budget short-circuits — verify is never invoked", async () => {
+    let now = 0;
+    const clock = (): number => now;
+    let verifyCalls = 0;
+    const generate: GenerateCallback = () =>
+      new Promise<string>((resolve) => {
+        // generate consumes the entire budget
+        now += 100;
+        resolve(validRaw());
+      });
+    const verify: VerifyCallback = () => {
+      verifyCalls += 1;
+      return { ok: true, summary: STUB_SUMMARY };
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      attemptTimeoutMs: 100,
+      clock,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/timed out after 0ms/);
+    expect(verifyCalls).toBe(0);
+  });
+
+  test("refinement prompt preserves candidate.proposedScope across retries", async () => {
+    const seenPrompts: string[] = [];
+    const generate: GenerateCallback = async (p) => {
+      seenPrompts.push(p);
+      return validRaw();
+    };
+    let n = 0;
+    const verify: VerifyCallback = () => {
+      n += 1;
+      return n === 1 ? { ok: false, reason: "nope" } : { ok: true, summary: STUB_SUMMARY };
+    };
+    const candidate: ForgeCandidate = { ...CANDIDATE, proposedScope: "global" };
+    const result = await synthesize(
+      { ...INPUT, candidate },
+      { generate, verify, maxAttempts: 2, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(true);
+    expect(seenPrompts[0] ?? "").toContain("global");
+    expect(seenPrompts[1] ?? "").toContain("global");
+  });
+
+  test("attemptTimeoutMs is one budget across generate+verify (not double)", async () => {
+    // generate consumes most of the budget; verify must inherit only what is
+    // left, so total wall-clock per attempt stays inside attemptTimeoutMs.
+    let now = 0;
+    const clock = (): number => now;
+    const generate: GenerateCallback = () =>
+      new Promise<string>((resolve) => {
+        // simulate generate taking 80ms inside an 100ms budget
+        now += 80;
+        resolve(validRaw());
+      });
+    const verify: VerifyCallback = (_c, _d, signal) =>
+      new Promise<VerifyResult>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      attemptTimeoutMs: 100,
+      clock,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // verify should have been given at most 20ms (the budget remainder).
+    // Without the fix, it would have been given a fresh 100ms.
+    expect(result.reason).toMatch(/timed out after (\d+)ms/);
+    const match = result.reason.match(/timed out after (\d+)ms/);
+    const ms = match ? Number.parseInt(match[1] ?? "0", 10) : 0;
+    expect(ms).toBeLessThanOrEqual(30);
+  });
+
+  test("hostile verifier object with throwing getter converts to typed failure", async () => {
+    const hostile: VerifyCallback = () =>
+      Object.create(null, {
+        ok: {
+          get() {
+            throw new Error("hostile getter");
+          },
+          enumerable: true,
+        },
+      }) as never;
+    const generate: GenerateCallback = async () => validRaw();
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: hostile,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/hostile|Verifier/);
+  });
+
+  test("public reason redacts caller-supplied verifier text under default sanitizer", async () => {
+    // Trust-boundary regression: the default sanitizer must scrub
+    // caller-supplied verifier reasons from BOTH the LLM retry prompt AND
+    // the public SynthesisResult.reason. Higher layers may log/persist
+    // the public reason, so leaking sandbox stderr / tenant data / stack
+    // traces there is the same data-leak class as leaking into the prompt.
+    const verify: VerifyCallback = () => ({
+      ok: false,
+      reason: "tenant=acme secret=hunter2 stack: Error at /srv/secret/path",
+    });
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+      // default sanitizeVerifierReason — drops caller text.
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("failure reason omitted");
+    expect(result.reason).not.toContain("hunter2");
+    expect(result.reason).not.toContain("/srv/secret");
+  });
+
+  test("public reason redacts caller-thrown generator error message under default sanitizer", async () => {
+    const generate: GenerateCallback = async () => {
+      throw new Error("OPENAI_API_KEY=sk-XXXX leaked stack trace");
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("failure reason omitted");
+    expect(result.reason).not.toContain("sk-XXXX");
+  });
+
+  test("public reason preserves internal timeout/abort text (not tainted)", async () => {
+    // Internal-only reasons ("timed out", "aborted by caller") contain no
+    // caller-controlled data and must pass through default sanitization
+    // unchanged so operators retain failure-mode visibility on the public
+    // channel.
+    const generate: GenerateCallback = (_prompt, signal) =>
+      new Promise<string>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      attemptTimeoutMs: 30,
+      ...ABORT_HONORED,
+      // default sanitizer — internal reasons should still flow through.
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/timed out/);
+  });
+
+  test("SynthesisResult.kind classifies generator timeout independently of redacted reason", async () => {
+    // Observability regression: callers must be able to triage failures
+    // (retry / page / surface) by `kind` even when `reason` has been
+    // redacted to "failure reason omitted" by the default sanitizer.
+    const generate: GenerateCallback = (_p, signal) =>
+      new Promise<string>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      attemptTimeoutMs: 30,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.kind).toBe("generate_timeout");
+  });
+
+  test("SynthesisResult.kind distinguishes verify_rejected from verify_malformed", async () => {
+    const rejected = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify: () => ({ ok: false, reason: "code is wrong" }),
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(rejected.ok).toBe(false);
+    if (rejected.ok) return;
+    expect(rejected.kind).toBe("verify_rejected");
+
+    const malformed = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      // biome-ignore lint/suspicious/noExplicitAny: simulating skewed verifier.
+      verify: (() => ({})) as any as VerifyCallback,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(malformed.ok).toBe(false);
+    if (malformed.ok) return;
+    expect(malformed.kind).toBe("verify_malformed");
+  });
+
+  test("SynthesisResult.kind classifies caller-thrown generator as generate_exception", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => {
+        throw new Error("adapter blew up");
+      },
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.kind).toBe("generate_exception");
+  });
+
+  test("SynthesisResult.kind reflects config_invalid for bad maxAttempts", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify: ALWAYS_OK,
+      maxAttempts: 0,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.kind).toBe("config_invalid");
+  });
+
+  test("SynthesisResult.kind reflects synthesis_aborted on external signal", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify: ALWAYS_OK,
+      maxAttempts: 3,
+      ...ABORT_HONORED,
+      signal: ac.signal,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.kind).toBe("synthesis_aborted");
+  });
+
+  test("rejects ok:true summary with empty stageResults (no audit evidence)", async () => {
+    // A passed:true summary with zero stageResults entries publishes an
+    // artifact as verified with no per-stage evidence — downstream forge
+    // audit/provenance has nothing to record. Fail closed.
+    const verify: VerifyCallback = () => ({
+      ok: true,
+      summary: {
+        passed: true,
+        sandbox: false,
+        totalDurationMs: 5,
+        stageResults: [],
+      },
+    });
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+      ...PASSTHROUGH_SANITIZE,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/at least one stageResults/);
+  });
+
+  test("strict mode: timed-out attempt unwinds before next attempt starts (no overlap)", async () => {
+    // The previous bounded-grace path could let attempt N's callback
+    // continue executing while attempt N+1 had already started — exactly
+    // the duplicate-side-effect class this package exists to prevent in
+    // strict mode. Verify that an adapter whose cleanup takes longer
+    // than the old graceMs (~min(1000, timeoutMs/2)) still completes
+    // before the next attempt fires.
+    const order: string[] = [];
+    let n = 0;
+    const generate: GenerateCallback = (_p, signal) =>
+      new Promise<string>((resolve, reject) => {
+        n += 1;
+        const me = `attempt-${n}`;
+        order.push(`${me}:start`);
+        signal.addEventListener("abort", () => {
+          // Simulate a slow cleanup (longer than the old graceMs cap of
+          // min(1000, timeoutMs/2) = 25ms for a 50ms timeout).
+          setTimeout(() => {
+            order.push(`${me}:unwound`);
+            reject(new Error("aborted"));
+          }, 80);
+        });
+        if (n === 1) return; // never settles on its own
+        order.push(`${me}:resolved`);
+        resolve(validRaw());
+      });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 2,
+      attemptTimeoutMs: 50,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.attempts).toBe(2);
+    // Attempt 1 must have FULLY unwound before attempt 2 even started.
+    const unwoundIdx = order.indexOf("attempt-1:unwound");
+    const a2StartIdx = order.indexOf("attempt-2:start");
+    expect(unwoundIdx).toBeGreaterThanOrEqual(0);
+    expect(a2StartIdx).toBeGreaterThan(unwoundIdx);
+  });
+
+  test("verifier with non-deterministic getter cannot bypass summary validation (TOCTOU)", async () => {
+    // Trust-boundary regression: previously coerceVerificationSummary
+    // validated the live verifier object then re-read it for snapshot,
+    // letting a non-deterministic getter pass invariants on read 1 and
+    // return different data on read 2. snapshotJsonPlain now reads each
+    // property exactly once.
+    let reads = 0;
+    const hostileSummary = {
+      sandbox: false,
+      totalDurationMs: 1,
+      stageResults: [{ stage: "syntax", passed: true, durationMs: 1 }],
+      // Throwing/varying getter on `passed` — first read returns true,
+      // second returns false. With single-read clone, the snapshot
+      // captures whichever value the FIRST read returned, and validation
+      // sees the same value (consistency, not value choice, is what
+      // matters here).
+      get passed(): boolean {
+        reads += 1;
+        return reads === 1;
+      },
+    };
+    const verify: VerifyCallback = () =>
+      ({ ok: true, summary: hostileSummary }) as unknown as VerifyResult;
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    // Either: success with passed:true captured on the single read, OR
+    // a typed failure. What MUST NOT happen is success with snapshot
+    // values different from what passed validation. Verify that if we
+    // got success, the snapshot's passed is true (the validated value).
+    if (result.ok) {
+      expect(result.value.verification.passed).toBe(true);
+    } else {
+      // Acceptable failure modes — what matters is no inconsistent success.
+      expect(result.kind).toMatch(/verify_/);
+    }
+    // The single-read guarantee: `passed` was read exactly once during
+    // the entire boundary crossing.
+    expect(reads).toBe(1);
+  });
+});

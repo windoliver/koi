@@ -26,6 +26,7 @@
     { "path": "../../lib/channel-slack" },
     { "path": "../../lib/channel-web" },
     { "path": "../../lib/context-manager" },
+    { "path": "../../lib/dashboard-api" },
     { "path": "../../lib/dashboard-client" },
     { "path": "../../lib/dashboard-types" },
     { "path": "../../lib/fs-local" },
