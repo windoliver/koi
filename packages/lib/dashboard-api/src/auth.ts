@@ -12,7 +12,14 @@ export type AuthOutcome = "ok" | "missing" | "invalid" | "unconfigured";
 const BEARER_PREFIX = "Bearer ";
 
 export function checkAuth(request: Request, expectedToken: string): AuthOutcome {
-  if (expectedToken.length === 0) return "unconfigured";
+  // Defensive: TypeScript declares `expectedToken: string` but JS callers,
+  // transpiled code, or `process.env.X` (typed `string | undefined`) can
+  // still hand us a non-string at runtime. Treat anything non-stringy or
+  // empty as unconfigured so the documented fail-closed 503 is returned
+  // instead of a generic catch-all 500.
+  if (typeof expectedToken !== "string" || expectedToken.length === 0) {
+    return "unconfigured";
+  }
 
   const header = request.headers.get("authorization");
   if (header === null || !header.startsWith(BEARER_PREFIX)) return "missing";

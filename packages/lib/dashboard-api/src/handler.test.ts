@@ -58,6 +58,15 @@ describe("auth", () => {
     if (!body.ok) expect(body.error.code).toBe("UNAVAILABLE");
   });
 
+  test("accepts undefined authToken at compile time and returns 503 at runtime", async () => {
+    // Regression for the documented `process.env.DASHBOARD_TOKEN` pattern,
+    // which is `string | undefined` in TypeScript. Must compile and behave.
+    const tokenFromEnv: string | undefined = undefined;
+    const noAuth = createDashboardApi({ source: fx.source, authToken: tokenFromEnv });
+    const r = await noAuth.fetch(authedReq("/agents"));
+    expect(r.status).toBe(503);
+  });
+
   test("/health is unauthenticated", async () => {
     const r = await api.fetch(new Request("http://localhost/health"));
     expect(r.status).toBe(200);

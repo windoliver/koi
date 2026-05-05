@@ -107,9 +107,13 @@ type ApiResult<T> =
 | `topics` | `/events` | comma-sep | all | subset of WsTopic |
 | `logLevel` | `/events` | enum | `info` | reserved for filtered event subscription |
 
-Cursor encoding is opaque base64 of `{lastId, lastTimestampMs}`; clients must
-treat it as a black box. The server validates and rejects malformed cursors with
-`VALIDATION` error.
+Cursors are **opaque to both client and API**. The data source owns cursor
+encoding/decoding — different adapters may use different formats (the
+`encodeCursor`/`decodeCursor` helpers shipped in this package are convenience
+utilities for in-memory implementations, not a wire contract). The API
+forwards `cursor` to the data source verbatim; if the cursor is malformed the
+data source returns `Result.error` with code `VALIDATION`, which the API maps
+to a 400 response.
 
 ### Authentication
 
@@ -202,7 +206,8 @@ web-standard runtime.
 interface DashboardApiConfig {
   readonly source: DashboardDataSource;
   /** Required. Empty/undefined → fail closed (503). */
-  readonly authToken: string;
+  /** Empty/undefined → 503 fail-closed on every authed endpoint. */
+  readonly authToken: string | undefined;
   /** Reported on /health. Default: "unknown". */
   readonly version?: string;
   /** Reported on /health for client capability negotiation. */

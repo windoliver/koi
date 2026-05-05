@@ -89,7 +89,7 @@ async function dispatch(
     return handleHealth(ctx);
   }
 
-  const auth = checkAuth(request, config.authToken);
+  const auth = checkAuth(request, config.authToken ?? "");
   if (auth !== "ok") return authFailure(auth);
 
   // Static routes.

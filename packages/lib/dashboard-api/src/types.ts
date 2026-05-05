@@ -96,8 +96,14 @@ export interface DashboardDataSource {
 /** Static configuration for `createDashboardApi`. */
 export interface DashboardApiConfig {
   readonly source: DashboardDataSource;
-  /** Bearer token. Empty/undefined → 503 on every authed endpoint. */
-  readonly authToken: string;
+  /**
+   * Bearer token. Required for any authed endpoint to succeed.
+   * Typed as `string | undefined` so callers can pass `process.env.X`
+   * (which is `string | undefined`) without a cast — when the value is
+   * empty or undefined, every authed endpoint returns 503 `UNAVAILABLE`
+   * (fail closed). Set this explicitly in production.
+   */
+  readonly authToken: string | undefined;
   readonly version?: string;
   readonly capabilities?: readonly string[];
   readonly defaultLimit?: number;

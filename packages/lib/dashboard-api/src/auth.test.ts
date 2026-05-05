@@ -31,6 +31,18 @@ describe("checkAuth", () => {
     expect(checkAuth(reqWith({ authorization: "Bearer x" }), "")).toBe("unconfigured");
   });
 
+  test("returns unconfigured when expected token is undefined at runtime", () => {
+    // TS types declare string, but `process.env.X` is `string | undefined`
+    // so callers may pass undefined despite the type. Must not throw.
+    const undef = undefined as unknown as string;
+    expect(checkAuth(reqWith({ authorization: "Bearer x" }), undef)).toBe("unconfigured");
+  });
+
+  test("returns unconfigured when expected token is non-string at runtime", () => {
+    const num = 42 as unknown as string;
+    expect(checkAuth(reqWith({ authorization: "Bearer x" }), num)).toBe("unconfigured");
+  });
+
   test("token comparison is independent of length when mismatched", () => {
     // Different lengths still produce 'invalid', not throw.
     expect(checkAuth(reqWith({ authorization: "Bearer short" }), "muchlonger")).toBe("invalid");
