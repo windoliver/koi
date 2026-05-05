@@ -91,9 +91,10 @@ Replay protection is a **per-observation data contract**, not a config knob.
 
 `eventId` is a **per-observation idempotency key**. The L0 docstring on `UsagePurposeObservation.eventId` is the authoritative spec; the short version:
 
-- Generate at the moment of observation (e.g. `${agentId}:${observedAt}:${nonce}`) — NOT a request-level correlation ID, NOT an upstream causal event ID shared across agents, NOT an account/tenant identifier.
-- Retries of the same observation must re-emit the same `eventId` so replay dedup collapses them.
-- Distinct tool calls within one request, multiple agents recording the same upstream event, and observations from different tenants must all generate **different** `eventId`s.
+- Derive deterministically from a stable per-call identity — e.g. `sha256(agentId + ":" + toolCallId)` where `toolCallId` is an upstream identifier of the originating tool invocation. NOT a request-level correlation ID, NOT an upstream causal event ID shared across agents, NOT an account/tenant identifier, NOT a freshly-minted nonce/UUID (random values mint a new key per retry and defeat replay dedup).
+- Retries of the same observation MUST re-emit the same `eventId` — that is what idempotent derivation buys you.
+- Distinct tool calls within one request, multiple agents recording the same upstream event, and observations from different tenants must all derive **different** `eventId`s.
+- For multi-tenant deployments, also set `scope` (tenant/account/realm). Replay dedup is keyed on `(scope, agentId, eventId)`; cohort-agent counting still uses canonical `agentId` only, so scope diversity cannot manufacture multi-agent drift.
 
 ## Dedup Conflict Resolution
 

@@ -995,6 +995,20 @@ interface UsagePurposeObservation {
      * contract the detector validates at runtime.
      */
     readonly eventId?: string;
+    /**
+     * Optional tenant/account/realm namespace for replay-dedup isolation. The
+     * exaptation detector keys dedup on \`(scope, agentId, eventId)\`, so two
+     * tenants that happen to reuse the same \`agentId\` *and* the same
+     * \`eventId\` keep their evidence independent rather than collapsing into
+     * one observation.
+     *
+     * Provide a stable per-tenant string (e.g. an org/account/workspace ID)
+     * when running across tenant boundaries. When \`scope\` is omitted, the
+     * detector treats all observations as sharing one implicit scope —
+     * acceptable for single-tenant deployments. Whitespace-only values are
+     * normalized to undefined.
+     */
+    readonly scope?: string;
 }
 
 /**

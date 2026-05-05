@@ -479,30 +479,25 @@ function computeDivergentCohort(
   const divergentCounts = new Map<string, number>();
   for (const o of observations) {
     if (o.divergenceScore < thresholds.divergenceThreshold) continue;
-    // Scoped agent key: same agentId in different tenants counts as
-    // distinct agents, mirroring dedup's tenant isolation.
-    const key = scopedAgentKey(o);
-    divergentSums.set(key, (divergentSums.get(key) ?? 0) + o.divergenceScore);
-    divergentCounts.set(key, (divergentCounts.get(key) ?? 0) + 1);
+    // Cohort attribution uses canonical agentId ONLY — not (scope, agentId).
+    // Tenant scope is a replay-dedup boundary, not a measure of agent
+    // independence. Counting one logical agent deployed across N tenants as
+    // N divergent agents would let scope diversity manufacture drift.
+    divergentSums.set(o.agentId, (divergentSums.get(o.agentId) ?? 0) + o.divergenceScore);
+    divergentCounts.set(o.agentId, (divergentCounts.get(o.agentId) ?? 0) + 1);
   }
 
   // let: cohort accumulators
   let agentCount = 0;
   let observationCount = 0;
   let totalDivergence = 0;
-  for (const [key, count] of divergentCounts) {
+  for (const [agentId, count] of divergentCounts) {
     if (count < thresholds.minObservationsPerAgent) continue;
     agentCount++;
     observationCount += count;
-    totalDivergence += divergentSums.get(key) ?? 0;
+    totalDivergence += divergentSums.get(agentId) ?? 0;
   }
   return { agentCount, observationCount, totalDivergence };
-}
-
-function scopedAgentKey(o: UsagePurposeObservation): string {
-  const scope = typeof o.scope === "string" && o.scope.trim().length > 0 ? o.scope.trim() : "";
-  // Length-prefixed encoding so "a|b" + "c" never collides with "a" + "b|c".
-  return `${String(scope.length)}:${scope}|${o.agentId}`;
 }
 
 function computeSeverity(
