@@ -287,8 +287,24 @@ export function evaluatePolicy(
     // JSON string would otherwise burn CPU and exhaust memory inside
     // the parser before any later size guard could fire. Cap matches
     // STRUCTURAL_BUDGET_BYTES so honest inputs that fit the post-
-    // parse validator also fit the pre-parse limit.
+    // parse validator also fit the pre-parse limit. Measure UTF-8
+    // bytes — `String.length` counts UTF-16 code units, so a payload
+    // of multibyte characters could otherwise stay under the check
+    // while exceeding the advertised byte budget by 2-3×.
+    // Cheap pre-screen first: a string whose UTF-16 length already
+    // exceeds the byte budget cannot fit in UTF-8 either (each code
+    // unit is at least one byte). Skips encoding huge strings.
     if (optionSpecJson.length > STRUCTURAL_BUDGET_BYTES) {
+      return makeFailClosedEvaluation({
+        reason: `options.specJson exceeds MAX_SPEC_JSON_BYTES (${STRUCTURAL_BUDGET_BYTES})`,
+        candidateId: candidateSnapshot.id,
+        override: overrideSnapshot,
+        kind: "config",
+        configFingerprint: UNAVAILABLE_FINGERPRINT,
+      });
+    }
+    const specJsonByteLength = new TextEncoder().encode(optionSpecJson).byteLength;
+    if (specJsonByteLength > STRUCTURAL_BUDGET_BYTES) {
       return makeFailClosedEvaluation({
         reason: `options.specJson exceeds MAX_SPEC_JSON_BYTES (${STRUCTURAL_BUDGET_BYTES})`,
         candidateId: candidateSnapshot.id,
