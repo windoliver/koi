@@ -52,28 +52,25 @@ export async function synthesize(
     ? (config.attemptTimeoutMs ?? DEFAULT_SYNTHESIS_CONFIG.attemptTimeoutMs)
     : Number.POSITIVE_INFINITY;
 
-  // Snapshot the caller-supplied schema once. A cyclic / BigInt / throwing-
-  // getter schema can crash JSON.stringify inside prompt builders later —
-  // catch that here so the API always returns a typed SynthesisResult
-  // rather than throwing out of the discriminated-union contract.
-  let frozenSchema: Readonly<Record<string, unknown>>;
-  try {
-    frozenSchema = JSON.parse(JSON.stringify(input.targetToolSchema));
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      ok: false,
-      reason: `targetToolSchema is not JSON-serializable: ${message}`,
-      attempts: 0,
-    };
+  // Validate that targetToolSchema is JSON-plain (no undefined / Infinity /
+  // NaN / Date / class instances / cycles / BigInt / throwing getters).
+  // A lossy JSON round-trip would silently rewrite the contract — instead
+  // fail closed so the equality check downstream operates on the exact
+  // value the caller supplied.
+  const schemaCheck = ensureJsonPlain(input.targetToolSchema, "targetToolSchema");
+  if (!schemaCheck.ok) {
+    return { ok: false, reason: schemaCheck.reason, attempts: 0 };
   }
-  const safeInput: SynthesisInput = { ...input, targetToolSchema: frozenSchema };
+  const safeInput: SynthesisInput = input;
 
   let priorCode = "";
   let priorReason = "";
   let lastReason = "no attempts ran";
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    // Pre-flight abort check is only safe when no adapter work has started
+    // yet OR the adapter honors abort. In best-effort mode we still respect
+    // it before launching a new attempt (no work can be in flight here).
     if (signal?.aborted) {
       return { ok: false, reason: "Synthesis aborted by caller", attempts: attempt - 1 };
     }
@@ -94,7 +91,12 @@ export async function synthesize(
           });
 
     const attemptController = new AbortController();
-    const detach = linkSignal(signal, attemptController);
+    // In best-effort mode we DO NOT link the external signal: a signal
+    // abort would resolve the attempt early while a non-abort-aware
+    // callback may still be running, recreating the orphan-side-effect
+    // race that single-shot mode is supposed to prevent. Callers needing
+    // mid-flight cancellation must opt into adapterHonorsAbort:true.
+    const detach = adapterHonorsAbort ? linkSignal(signal, attemptController) : () => undefined;
     try {
       const generated = await safeGenerate(
         config.generate,
@@ -231,6 +233,71 @@ function checkSchemaMatch(
     ok: false,
     reason: "Synthesized descriptor.inputSchema does not match targetToolSchema",
   };
+}
+
+/**
+ * Walk a value and confirm it is composed only of JSON-plain primitives:
+ * `null`, finite numbers, strings, booleans, arrays of plain values, and
+ * plain object literals (own enumerable string keys). Rejects `undefined`,
+ * `NaN`, `Infinity`, `BigInt`, functions, symbols, class instances, cycles,
+ * and throwing getters. Used to enforce that public API inputs are exactly
+ * the contract the caller supplied — no lossy normalization.
+ */
+function ensureJsonPlain(
+  value: unknown,
+  label: string,
+): { ok: true } | { ok: false; reason: string } {
+  const seen = new WeakSet<object>();
+  return walk(value, label);
+
+  function walk(v: unknown, path: string): { ok: true } | { ok: false; reason: string } {
+    if (v === null) return { ok: true };
+    const t = typeof v;
+    if (t === "string" || t === "boolean") return { ok: true };
+    if (t === "number") {
+      if (!Number.isFinite(v)) {
+        return { ok: false, reason: `${path} contains non-finite number` };
+      }
+      return { ok: true };
+    }
+    if (t === "bigint") return { ok: false, reason: `${path} contains bigint` };
+    if (t === "function") return { ok: false, reason: `${path} contains function` };
+    if (t === "symbol") return { ok: false, reason: `${path} contains symbol` };
+    if (t === "undefined") return { ok: false, reason: `${path} contains undefined` };
+    if (t !== "object") return { ok: false, reason: `${path} contains non-JSON value` };
+    const obj = v as object;
+    if (seen.has(obj)) return { ok: false, reason: `${path} contains a cycle` };
+    seen.add(obj);
+    if (Array.isArray(obj)) {
+      for (let i = 0; i < obj.length; i += 1) {
+        const r = walk(obj[i], `${path}[${i}]`);
+        if (!r.ok) return r;
+      }
+      return { ok: true };
+    }
+    if (Object.getPrototypeOf(obj) !== Object.prototype) {
+      return { ok: false, reason: `${path} is not a plain object literal` };
+    }
+    let keys: string[];
+    try {
+      keys = Object.keys(obj);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, reason: `${path} key access threw: ${message}` };
+    }
+    for (const k of keys) {
+      let child: unknown;
+      try {
+        child = (obj as Record<string, unknown>)[k];
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { ok: false, reason: `${path}.${k} getter threw: ${message}` };
+      }
+      const r = walk(child, `${path}.${k}`);
+      if (!r.ok) return r;
+    }
+    return { ok: true };
+  }
 }
 
 function jsonEqual(a: unknown, b: unknown): boolean {
@@ -383,7 +450,25 @@ function coerceVerificationSummary(
       return { ok: false, reason: `summary.stageResults[${i}].durationMs must be a finite number` };
     }
   }
-  return { ok: true, value: value as ForgeVerificationSummary };
+  // Construct a fresh JSON-plain summary so downstream forge publication
+  // (createForgeProvenance rejects non-plain values) gets exactly what it
+  // expects. Pass-through of the verifier's original object would let any
+  // extra non-plain fields (Date, class instance, throwing getter) leak
+  // through and fail later during persistence/audit.
+  const normalized: ForgeVerificationSummary = {
+    passed: obj.passed,
+    sandbox: obj.sandbox,
+    totalDurationMs: obj.totalDurationMs,
+    stageResults: obj.stageResults.map((s) => {
+      const stage = s as Record<string, unknown>;
+      return {
+        stage: stage.stage as string,
+        passed: stage.passed as boolean,
+        durationMs: stage.durationMs as number,
+      };
+    }),
+  };
+  return { ok: true, value: normalized };
 }
 
 /**

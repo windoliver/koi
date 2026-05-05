@@ -193,7 +193,7 @@ describe("synthesize", () => {
     );
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.reason).toMatch(/not JSON-serializable/);
+    expect(result.reason).toMatch(/targetToolSchema/);
     expect(result.attempts).toBe(0);
   });
 
@@ -211,7 +211,71 @@ describe("synthesize", () => {
     );
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.reason).toMatch(/not JSON-serializable/);
+    expect(result.reason).toMatch(/targetToolSchema/);
+  });
+
+  test("rejects targetToolSchema with undefined / non-finite values (no lossy normalization)", async () => {
+    const schema = { type: "object", missing: undefined, weight: Number.POSITIVE_INFINITY };
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: schema as Record<string, unknown> },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/targetToolSchema/);
+  });
+
+  test("ignores external signal in best-effort mode (no early-return race)", async () => {
+    // In best-effort mode (adapterHonorsAbort:false), an external abort
+    // mid-flight must NOT cut the attempt short — the callback may not
+    // honor the signal, and returning early would let the caller move on
+    // while side effects are still running.
+    const controller = new AbortController();
+    let resolved = false;
+    const generate: GenerateCallback = () =>
+      new Promise<string>((resolve) => {
+        // Abort the external signal almost immediately, then resolve later.
+        setTimeout(() => controller.abort(), 5);
+        setTimeout(() => {
+          resolved = true;
+          resolve(validRaw());
+        }, 30);
+      });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      signal: controller.signal,
+    });
+    expect(result.ok).toBe(true);
+    expect(resolved).toBe(true);
+  });
+
+  test("normalizes verification summary into a JSON-plain object on success", async () => {
+    // Verifier returns a summary with extra non-JSON-plain leak (Date) —
+    // the normalized value the caller observes must contain only the
+    // contractual fields so downstream provenance does not reject it.
+    const generate: GenerateCallback = async () => validRaw();
+    const verify: VerifyCallback = () => ({
+      ok: true,
+      summary: {
+        passed: true,
+        sandbox: false,
+        totalDurationMs: 5,
+        stageResults: [{ stage: "syntax", passed: true, durationMs: 2 }],
+        // biome-ignore lint/suspicious/noExplicitAny: simulating leaky verifier output.
+        leak: new Date() as any,
+      },
+    });
+    const result = await synthesize(INPUT, { generate, verify });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const v = result.value.verification;
+    if (v === undefined) throw new Error("verification missing");
+    expect(Object.keys(v).sort()).toEqual(
+      ["passed", "sandbox", "stageResults", "totalDurationMs"].sort(),
+    );
+    expect(v.stageResults[0]?.stage).toBe("syntax");
   });
 
   test("forces single-shot when adapterHonorsAbort is false (default)", async () => {
