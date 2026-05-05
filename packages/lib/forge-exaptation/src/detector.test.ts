@@ -600,35 +600,47 @@ describe("suggestAction quality gate", () => {
 
 describe("partial-eventId dedup + cohort-scoped replay protection", () => {
   test("baseline obs without eventId outside the cohort does NOT disable replay protection", () => {
-    // 3 same-eventId duplicates from a1 + 3 unique a1 + 3 unique a2 (cohort,
-    // all replay-protected) + 1 obsNoId baseline at score 0.05 (NOT in cohort
-    // because below divergenceThreshold). Cohort-scoped replay protection
-    // means the action gate doesn't care about the no-eventId baseline.
-    const dupSeed = obs("a1", 0.95);
+    // Cohort all replay-protected; one no-eventId baseline below threshold.
+    // Cohort-scoped replayProtected stays true (the no-eventId obs is NOT
+    // in the cohort). The quality gate counts the missing-eventId obs as
+    // low-quality, but at < 25% it doesn't block action.
     const observations: UsagePurposeObservation[] = [
-      dupSeed,
-      dupSeed,
-      dupSeed,
-      obs("a1", 0.95),
-      obs("a1", 0.95),
-      obs("a2", 0.95),
-      obs("a2", 0.95),
-      obs("a2", 0.95),
+      ...Array.from({ length: 6 }, () => obs("a1", 0.95)),
+      ...Array.from({ length: 6 }, () => obs("a2", 0.95)),
+      // 1 baseline no-eventId in 13 valid total → missing/total = 1/13 ≈ 7.7%.
       obsNoId("a3", 0.05),
     ];
     const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
     expect(result.kind).toBe("drift");
     if (result.kind === "drift") {
-      // Cohort = a1 + a2, all eventId-bearing → cohort is replay-protected.
       expect(result.replayProtected).toBe(true);
-      // 2 collapsed copies of dupSeed still register as duplicates.
-      expect(result.duplicateCount).toBe(2);
+      expect(result.missingEventIdCount).toBe(1);
     }
-    // Action path: cohort is replay-protected and a strong-prior unlocks
-    // new-artifact even though one baseline sample lacked eventId.
     expect(
       suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [strongPriorWindow()]).kind,
     ).toBe("new-artifact");
+  });
+
+  test("partial telemetry outage (>25% missing eventId) blocks action even when cohort is clean", () => {
+    // Cohort itself is replay-protected, but more than 25% of valid window
+    // observations bypassed dedup. The quality gate now sees the partial
+    // telemetry failure and refuses action — closing the path where a
+    // cohort-scoped flag could hide a wide outage outside the cohort.
+    const observations: UsagePurposeObservation[] = [
+      ...Array.from({ length: 6 }, () => obs("a1", 0.95)),
+      ...Array.from({ length: 6 }, () => obs("a2", 0.95)),
+      // 6 baseline no-eventId in 18 valid total → 6/18 = 33% > 25%.
+      ...Array.from({ length: 6 }, (_, i) => obsNoId(`baseline-${String(i)}`, 0.05)),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    expect(result.kind).toBe("drift");
+    if (result.kind === "drift") {
+      expect(result.replayProtected).toBe(true);
+      expect(result.missingEventIdCount).toBe(6);
+    }
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [strongPriorWindow()]),
+    ).toEqual({ kind: "none" });
   });
 
   test("cohort observation missing eventId DOES disable replay protection", () => {
@@ -741,6 +753,36 @@ describe("dedup conflict quarantine", () => {
       // a1's evidence is gone; only a2 + a3 remain in cohort.
       expect(r1.report.divergentAgents).toBe(2);
       expect(r1.report.observationCount).toBe(6);
+    }
+  });
+
+  test("retry with internal-whitespace skew (rolling deploy serializer) does NOT quarantine", () => {
+    // Rolling deploys can change internal whitespace (single space vs double
+    // space, tab vs space, newline injection) without changing the meaning
+    // of the model context. Compare normalized text so these collapse as
+    // duplicates rather than quarantining the bucket.
+    const eid = "evt-ws";
+    const a: UsagePurposeObservation = {
+      scope: "default",
+      agentId: "a1",
+      eventId: eid,
+      divergenceScore: 0.95,
+      contextText: "read configuration files",
+      observedAt: 1,
+    };
+    const b: UsagePurposeObservation = { ...a, contextText: "read  configuration\tfiles" };
+    const c: UsagePurposeObservation = { ...a, contextText: "read\nconfiguration  files" };
+    const observations: UsagePurposeObservation[] = [
+      a,
+      b,
+      c,
+      ...[0.95, 0.95, 0.95].map((s) => obs("a2", s)),
+      ...[0.95, 0.95, 0.95].map((s) => obs("a3", s)),
+    ];
+    const result = detectDrift(observations, DEFAULT_EXAPTATION_THRESHOLDS);
+    if (result.kind === "drift") {
+      expect(result.duplicateCount).toBe(2);
+      expect(result.conflictCount).toBe(0);
     }
   });
 

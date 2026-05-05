@@ -120,13 +120,21 @@ export type DetectionResult =
        */
       readonly conflictCount: number;
       /**
+       * Number of valid observations that lacked a usable `eventId` and so
+       * bypassed dedup. These are NOT replay-checked, so the quality gate
+       * counts them as low-quality evidence even when they sit outside the
+       * cohort. Without this, partial telemetry outage would be invisible
+       * to the gate as long as the cohort itself was clean.
+       */
+      readonly missingEventIdCount: number;
+      /**
        * Total post-dedup valid observations in the window — including baseline
        * traffic outside the divergent cohort. Used by `suggestAction`'s quality
        * gate so that clean baseline-heavy windows aren't punished for the
        * cohort being a small slice.
        */
       readonly validObservationCount: number;
-      /** False when any valid observation lacks `eventId` — `suggestAction` will refuse. */
+      /** True iff every cohort observation had `eventId` (cohort-scoped). */
       readonly replayProtected: boolean;
     }
   | {
@@ -136,6 +144,7 @@ export type DetectionResult =
       readonly droppedCount: number;
       readonly duplicateCount: number;
       readonly conflictCount: number;
+      readonly missingEventIdCount: number;
       readonly replayProtected: boolean;
     }
   | { readonly kind: "invalid-config"; readonly reason: string };
@@ -248,13 +257,14 @@ export function detectDrift(
   const unique: readonly UsagePurposeObservation[] = [...dedup.winners, ...withoutEventId];
   const duplicateCount = dedup.duplicateCount;
   const conflictCount = dedup.conflictCount;
+  const missingEventIdCount = withoutEventId.length;
   // Track which observations bypassed dedup (no eventId). Object identity
   // works because we never copy these references after partitioning.
   const noEventIdSet = new Set<UsagePurposeObservation>(withoutEventId);
   // Window-level replayProtected: every valid observation has eventId. Used
   // for the "no-drift" branch (no cohort to scope to) and as a coarse
   // telemetry signal.
-  const windowReplayProtected = valid.length > 0 && withoutEventId.length === 0;
+  const windowReplayProtected = valid.length > 0 && missingEventIdCount === 0;
 
   const noDrift = (): DetectionResult =>
     deepFreeze({
@@ -264,6 +274,7 @@ export function detectDrift(
       droppedCount,
       duplicateCount,
       conflictCount,
+      missingEventIdCount,
       replayProtected: windowReplayProtected,
     });
 
@@ -304,6 +315,7 @@ export function detectDrift(
     droppedCount,
     duplicateCount,
     conflictCount,
+    missingEventIdCount,
     validObservationCount: unique.length,
     replayProtected,
     report: {
@@ -361,7 +373,12 @@ export function suggestAction(
     result.droppedCount +
     result.duplicateCount +
     result.conflictCount;
-  const lowQuality = result.droppedCount + result.duplicateCount + result.conflictCount;
+  // Missing-eventId observations bypassed dedup, so they are low-quality
+  // evidence even when they fall outside the cohort. Folding them into the
+  // gate denominator means partial telemetry outage is visible to the gate
+  // (instead of being hidden by cohort-scoped replay protection).
+  const lowQuality =
+    result.droppedCount + result.duplicateCount + result.conflictCount + result.missingEventIdCount;
   if (total > 0 && lowQuality / total > MAX_QUALITY_DEGRADATION_RATIO) {
     return { kind: "none" };
   }
@@ -411,7 +428,7 @@ function countStrongDriftPriors(
     if (!r.replayProtected) break;
     if (r.report.avgDivergence < NEW_ARTIFACT_DIVERGENCE_THRESHOLD) break;
     const total = r.validObservationCount + r.droppedCount + r.duplicateCount + r.conflictCount;
-    const lowQuality = r.droppedCount + r.duplicateCount + r.conflictCount;
+    const lowQuality = r.droppedCount + r.duplicateCount + r.conflictCount + r.missingEventIdCount;
     if (total > 0 && lowQuality / total > MAX_QUALITY_DEGRADATION_RATIO) break;
     strong++;
   }
@@ -559,20 +576,27 @@ function dedupeByScopeAgentEvent(observations: readonly UsagePurposeObservation[
  *
  *   - `divergenceScore` is rounded to `PAYLOAD_SCORE_PRECISION` decimals;
  *     0.949999... compares equal to 0.95.
- *   - `contextText` is trimmed; rolling-deploy whitespace edits don't quarantine.
+ *   - `contextText` is fully whitespace-normalized: surrounding whitespace
+ *     trimmed AND every internal run of whitespace collapsed to a single
+ *     space. Rolling-deploy serializer changes (`"a b"` vs `"a  b"` vs
+ *     `"a\tb"` vs `"a\nb"`) all compare equal.
  *
- * `isObservationValid` has already rejected non-finite scores upstream, so
- * both inputs here are finite numbers in `[0, 1]` and exact rounding works.
+ * `isObservationValid` has already rejected non-finite scores and non-string
+ * `contextText` upstream, so both inputs here are well-formed.
  *
- * Real conflicts — different rounded scores or different trimmed text —
+ * Real conflicts — different rounded scores or genuinely different text —
  * still trigger quarantine, blocking corrupted-replay attacks.
  */
 function samePayload(a: UsagePurposeObservation, b: UsagePurposeObservation): boolean {
   const sa = Math.round(a.divergenceScore * PAYLOAD_SCORE_FACTOR);
   const sb = Math.round(b.divergenceScore * PAYLOAD_SCORE_FACTOR);
   if (sa !== sb) return false;
-  if (a.contextText.trim() !== b.contextText.trim()) return false;
+  if (normalizeContext(a.contextText) !== normalizeContext(b.contextText)) return false;
   return true;
+}
+
+function normalizeContext(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 const PAYLOAD_SCORE_PRECISION = 4;
