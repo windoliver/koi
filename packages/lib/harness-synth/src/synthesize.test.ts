@@ -184,6 +184,36 @@ describe("synthesize", () => {
     expect(result.attempts).toBe(3);
   });
 
+  test("returns typed failure for cyclic targetToolSchema", async () => {
+    const cyclic: Record<string, unknown> = { type: "object" };
+    cyclic.self = cyclic;
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: cyclic },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/not JSON-serializable/);
+    expect(result.attempts).toBe(0);
+  });
+
+  test("returns typed failure for throwing-getter targetToolSchema", async () => {
+    const schema: Record<string, unknown> = { type: "object" };
+    Object.defineProperty(schema, "evil", {
+      enumerable: true,
+      get: () => {
+        throw new Error("boom");
+      },
+    });
+    const result = await synthesize(
+      { ...INPUT, targetToolSchema: schema },
+      { generate: async () => validRaw(), verify: ALWAYS_OK, ...ABORT_HONORED },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/not JSON-serializable/);
+  });
+
   test("forces single-shot when adapterHonorsAbort is false (default)", async () => {
     let calls = 0;
     const generate: GenerateCallback = async () => {
@@ -294,6 +324,7 @@ describe("synthesize", () => {
       verify: ALWAYS_OK,
       maxAttempts: 1,
       attemptTimeoutMs: 25,
+      ...ABORT_HONORED,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -308,10 +339,32 @@ describe("synthesize", () => {
       verify,
       maxAttempts: 1,
       attemptTimeoutMs: 25,
+      ...ABORT_HONORED,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/timed out/);
+  });
+
+  test("disables attemptTimeoutMs when adapterHonorsAbort is false", async () => {
+    // In best-effort mode the timer must NOT fire — otherwise a non-abort-
+    // aware adapter keeps running after the API has reported failure.
+    let resolved = false;
+    const generate: GenerateCallback = () =>
+      new Promise<string>((resolve) => {
+        setTimeout(() => {
+          resolved = true;
+          resolve(validRaw());
+        }, 50);
+      });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      attemptTimeoutMs: 5, // would have fired before resolve
+    });
+    expect(result.ok).toBe(true);
+    expect(resolved).toBe(true);
   });
 
   test("respects an external AbortSignal mid-flight", async () => {

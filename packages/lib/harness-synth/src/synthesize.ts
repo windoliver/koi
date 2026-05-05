@@ -34,7 +34,6 @@ export async function synthesize(
     return { ok: false, reason: "maxAttempts must be >= 1", attempts: 0 };
   }
   const clock = config.clock ?? DEFAULT_SYNTHESIS_CONFIG.clock;
-  const attemptTimeoutMs = config.attemptTimeoutMs ?? DEFAULT_SYNTHESIS_CONFIG.attemptTimeoutMs;
   const adapterHonorsAbort =
     config.adapterHonorsAbort ?? DEFAULT_SYNTHESIS_CONFIG.adapterHonorsAbort;
   const signal = config.signal;
@@ -43,6 +42,32 @@ export async function synthesize(
   // effects (sandboxed exec, network calls). Force single-shot in that
   // case — the caller can opt in to retries by setting adapterHonorsAbort.
   const maxAttempts = adapterHonorsAbort ? requestedAttempts : 1;
+  // Attempt timeouts are also unsafe under best-effort cancellation: a timer
+  // can resolve the promise as failed while the underlying callback keeps
+  // running, and the caller may move on / start cleanup while side effects
+  // are still in flight. Disable timeouts unless the adapter promises to
+  // honor abort. Callers that need wall-clock bounds in best-effort mode
+  // must apply them externally via `signal`.
+  const attemptTimeoutMs = adapterHonorsAbort
+    ? (config.attemptTimeoutMs ?? DEFAULT_SYNTHESIS_CONFIG.attemptTimeoutMs)
+    : Number.POSITIVE_INFINITY;
+
+  // Snapshot the caller-supplied schema once. A cyclic / BigInt / throwing-
+  // getter schema can crash JSON.stringify inside prompt builders later —
+  // catch that here so the API always returns a typed SynthesisResult
+  // rather than throwing out of the discriminated-union contract.
+  let frozenSchema: Readonly<Record<string, unknown>>;
+  try {
+    frozenSchema = JSON.parse(JSON.stringify(input.targetToolSchema));
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      reason: `targetToolSchema is not JSON-serializable: ${message}`,
+      attempts: 0,
+    };
+  }
+  const safeInput: SynthesisInput = { ...input, targetToolSchema: frozenSchema };
 
   let priorCode = "";
   let priorReason = "";
@@ -55,14 +80,14 @@ export async function synthesize(
     const prompt =
       attempt === 1
         ? buildSynthesisPrompt({
-            candidate: input.candidate,
-            targetToolName: input.targetToolName,
-            targetToolSchema: input.targetToolSchema,
+            candidate: safeInput.candidate,
+            targetToolName: safeInput.targetToolName,
+            targetToolSchema: safeInput.targetToolSchema,
           })
         : buildRefinementPrompt({
-            candidate: input.candidate,
-            targetToolName: input.targetToolName,
-            targetToolSchema: input.targetToolSchema,
+            candidate: safeInput.candidate,
+            targetToolName: safeInput.targetToolName,
+            targetToolSchema: safeInput.targetToolSchema,
             priorCode,
             priorReason,
             attempt,
@@ -87,7 +112,7 @@ export async function synthesize(
         continue;
       }
 
-      const parsed = parseSynthesisOutput(generated.value, input.targetToolName);
+      const parsed = parseSynthesisOutput(generated.value, safeInput.targetToolName);
       if (!parsed.ok) {
         lastReason = parsed.reason;
         priorReason = parsed.reason;
@@ -97,7 +122,7 @@ export async function synthesize(
 
       const schemaCheck = checkSchemaMatch(
         parsed.value.descriptor.inputSchema,
-        input.targetToolSchema,
+        safeInput.targetToolSchema,
       );
       if (!schemaCheck.ok) {
         lastReason = schemaCheck.reason;
