@@ -19,7 +19,7 @@ All three are L2 packages, depend only on `@koi/core` (and minimal L0u utilities
 | Package | Contract |
 |---------|----------|
 | `sandbox-wasm` | **Package-local `WasmExecutor` contract** (NOT `SandboxExecutor`). |
-| `sandbox-cloudflare` | `SandboxAdapter` + `SandboxInstance` from `@koi/core/sandbox-adapter.ts`. |
+| `sandbox-cloudflare` | **Package-local `EdgeFunctionAdapter` + `EdgeFunctionInstance` contracts** (NOT `SandboxAdapter`). |
 | `sandbox-vercel` | Same as cloudflare. |
 
 ### Why wasm does not implement `SandboxExecutor`
@@ -42,7 +42,45 @@ The input type is **`Uint8Array` only** — precompiled `WebAssembly.Module` inp
 
 This is intentionally NOT `SandboxExecutor`. Consumers wanting to plug wasm into a `SandboxExecutor`-shaped slot must build their own bridge that decides what `code: string` means for them (e.g., base64-of-bytes plus structured input). Building that bridge is out of scope for this PR — it would be a `sandbox-wasm-executor-bridge` follow-up package once a real consumer needs it.
 
-Cloudflare/Vercel implement `SandboxAdapter` because they genuinely run process-level commands inside the deployed worker; that contract fits.
+### Why cloud adapters do not implement `SandboxAdapter`
+
+`SandboxAdapter` is a process-level contract: `exec(command, args)` returns `{ exitCode, stdout, stderr, signal }` and existing call sites use it to run shell commands like `bash --noprofile --norc -c ...`. Cloudflare Workers and Vercel Edge runtimes execute **JavaScript**, not arbitrary shell commands; they have no `argv`/`exit code` model and no shell. A shim that pretends to honor `bash -c` would either embed a JS shell emulator (massive surface, wrong semantics) or silently fail at the first real call site.
+
+Same reasoning as wasm: rather than overload `SandboxAdapter` and break router selection for downstream consumers, edge adapters define their own narrower contract:
+
+```ts
+// in @koi/sandbox-cloudflare/src/types.ts (also @koi/sandbox-vercel)
+export interface EdgeInvokeRequest {
+  readonly payload: unknown;          // arbitrary JSON-serializable input
+  readonly timeoutMs?: number;        // capped by profile.resources.timeoutMs
+  readonly signal?: AbortSignal;
+}
+export interface EdgeInvokeResult {
+  readonly output: unknown;           // JSON-deserialized response from the function
+  readonly durationMs: number;
+  readonly truncated?: boolean;
+}
+export interface EdgeFunctionInstance {
+  readonly invoke: (req: EdgeInvokeRequest) => Promise<Result<EdgeInvokeResult, KoiError>>;
+  readonly destroy: () => Promise<void>;
+}
+export interface EdgeFunctionAdapter {
+  readonly name: string;
+  readonly version: string;
+  readonly create: (config: { code: string; profile: SandboxProfile }) => Promise<Result<EdgeFunctionInstance, KoiError>>;
+}
+```
+
+Note the differences vs. `SandboxAdapter`:
+
+- No `exec(command, args)` — replaced with `invoke(payload)` on a deployed JS function.
+- No `readFile`/`writeFile`/`spawn` — these methods don't exist on `EdgeFunctionInstance`, so callers can't accidentally invoke them.
+- `create` takes the JS source `code` to deploy, not just a profile.
+- Returns `unknown` output, not stdout/stderr.
+
+`SandboxProfile` is still consumed for resource caps and the policy enforcement table below. The router does NOT route `SandboxProfile`-keyed selection to these adapters, because they are not `SandboxAdapter`s. A consumer that wants edge function execution constructs the adapter directly and calls `invoke()`.
+
+A future `sandbox-edge-router` package can offer cross-provider selection between Cloudflare and Vercel; that's out of scope here.
 
 ## Package layout
 
@@ -91,8 +129,8 @@ src/
   validate.ts          — validateCloudflareConfig (token, accountId, scriptName)
   classify.ts          — fetch error / status → KoiError
   client.ts            — minimal fetch wrapper for Cloudflare API
-  instance.ts          — SandboxInstance over deployed worker URL
-  adapter.ts           — createCloudflareAdapter → SandboxAdapter
+  instance.ts          — EdgeFunctionInstance over deployed worker URL
+  adapter.ts           — createCloudflareAdapter → EdgeFunctionAdapter
   *.test.ts
   __tests__/integration.test.ts — env-gated live deploy
 ```
@@ -130,66 +168,75 @@ Rules:
 
 In-process delayed re-verify is necessary but not sufficient: a host crash, container restart, or kill-9 between detecting the failure and completing cleanup leaves a billable artifact behind. The adapter therefore persists pending orphans **durably** before declaring an INDETERMINATE result:
 
-- **Orphan ledger location:** `${config.orphanLedgerPath ?? "${HOME}/.koi/sandbox-orphans.json"}` — a JSON file with one entry per orphan: `{ provider: "cloudflare" | "vercel", name, accountId, createdAt, lastTriedAt }`. Atomic write via temp-file + rename (the `@koi/memory-fs-atomic-upsert` design pattern from the existing specs).
-- **Write-before-return invariant:** an INDETERMINATE result is only returned to the caller AFTER the orphan has been persisted to the ledger. If the ledger write itself fails, the adapter blocks and retries (bounded) before returning a strictly-stronger error `KoiError { code: "ORPHAN_LEDGER_WRITE_FAILED" }` with the artifact name in context. Caller knows operator intervention is required immediately.
-- **Reconciliation on adapter init:** every `createCloudflareAdapter` / `createVercelAdapter` reads the ledger at construction time and fires DELETE for each entry whose `provider`+`accountId` matches its own config. Successful deletions (or 404 confirmed by a follow-up GET) remove the entry; failures bump `lastTriedAt` and stay queued.
+- **Orphan ledger location:** `${config.orphanLedgerPath ?? "${HOME}/.koi/sandbox-orphans.json"}` — a JSON file holding a discriminated-union list of orphans, one variant per provider so the cleanup key is provider-correct:
+  ```ts
+  type OrphanEntry =
+    | { provider: "cloudflare"; accountId: string; scriptName: string; createdAt: string; lastTriedAt: string }
+    | { provider: "vercel"; teamId?: string; projectId: string; deploymentId: string; deploymentUrl: string; createdAt: string; lastTriedAt: string };
+  ```
+  Atomic write via temp-file + rename (the `@koi/memory-fs-atomic-upsert` design pattern from the existing specs).
+- **Write-before-return invariant:** an INDETERMINATE result is only returned to the caller AFTER the orphan has been persisted to the ledger. If the ledger write itself fails, the adapter blocks and retries (bounded) before returning a strictly-stronger error `KoiError { code: "ORPHAN_LEDGER_WRITE_FAILED" }` with the artifact identity in context. Caller knows operator intervention is required immediately.
+- **Reconciliation on adapter init:** at construction time, each adapter reads the ledger and matches entries by its provider-specific ownership key:
+  - Cloudflare: `provider === "cloudflare" && accountId === config.accountId`.
+  - Vercel: `provider === "vercel" && (teamId ?? null) === (config.teamId ?? null) && projectId === config.projectId`.
+  Each matched orphan triggers a provider-specific DELETE (`/workers/scripts/{scriptName}` for CF, `/v13/deployments/{deploymentId}` for Vercel). Successful deletions (or 404 confirmed by a follow-up GET) remove the entry; failures bump `lastTriedAt` and stay queued. The Vercel adapter requires `projectId` in its config so reconciliation has a deterministic key — it is not optional.
 - **External reconciliation:** the `provider-smoke.yml` nightly cron job lists scripts/deployments matching `koi-*` prefixes older than 1 hour and unconditionally deletes them. This is the cross-host backstop; the local ledger is the single-host backstop.
 - **Synchronous cleanup option:** for callers that cannot tolerate any deferred cleanup, config exposes `synchronousCreateCleanup: boolean` (default `false`). When `true`, the adapter does not return until either (a) the cleanup DELETE returns confirmed-deleted (success path), or (b) cleanup fails and the orphan is persisted to the ledger. INDETERMINATE results are never returned with a still-pending in-process re-verify scheduled — the caller blocks until the durable trace is written. This trades latency for an absolute guarantee that no artifact exists outside the ledger.
 - **Idempotent retries are caller responsibility:** the adapter never auto-retries `create`. Each retry produces a new UUID and is independent.
 - **No orphan from successful create then later failure:** once `ready`, only `destroy()` deletes; failures during `exec()` poison but do not auto-delete (caller decides).
 - Endpoint: `https://api.cloudflare.com/client/v4/accounts/{accountId}/workers/scripts/{instanceScriptName}` for deploy/delete; deployed worker URL for invoke.
 - Network: only `fetch` — no SDK dep.
-- Instance:
+- Instance (`EdgeFunctionInstance`):
   - Owns its own `scriptName` (private field, set at create time, never reused).
-  - `exec(cmd, args, opts)` posts a JSON-only subset of `opts` (cwd, env, stdin, timeoutMs, maxOutputBytes) to its own worker URL → translates JSON response to `SandboxAdapterResult`.
-  - `readFile`/`writeFile` → **fail-closed** with `KoiError { code: "UNSUPPORTED" }`. Edge runtimes have no persistent host filesystem across requests, and request handling is not guaranteed to hit the same warm isolate, so honoring these methods would produce nondeterministic data loss. The contract is documented as **stateless single-request execution**: every `exec()` is independent; there is no instance-local state that survives between calls. Callers needing file state must use a different adapter (docker/e2b/local) or model storage explicitly via tool calls inside `exec()` payloads.
+  - `invoke(req)` posts `{ payload, timeoutMs }` to its own worker URL → translates JSON response to `EdgeInvokeResult`. Only JSON-serializable input; the worker shim parses request, calls the deployed JS handler, returns `{ output, durationMs }`.
+  - No `exec`, `spawn`, `readFile`, or `writeFile` methods exist on the type. Direct callers cannot accidentally invoke them — TypeScript catches at compile time. This is the value of the narrower contract.
   - `destroy()` → DELETE only this instance's script. Idempotent (404 on re-destroy is success).
 
-#### Stateless instance contract — `create()` is fail-closed for direct callers
+#### Stateless contract — `create()` is fail-closed for unsupported profile shapes
 
-The `SandboxInstance` contract suggests instance-local coherent state (`readFile` after `writeFile` returning the same bytes). Cloud edge adapters cannot honor that without a backing store. Rather than silently degrade for direct callers, **`create(profile)` rejects up-front any profile that needs the unsupported surface**, regardless of whether the call came through the router:
+The `EdgeFunctionInstance` surface (just `invoke` + `destroy`) is intentionally smaller than `SandboxInstance`, so most contract-mismatch issues vanish at the type level. Two checks remain at runtime:
 
-- **Capability declaration:** `capabilities.supports = Set(["exec"])` only — NOT `"filesystem-rw"`, NOT `"copy-files"`, NOT `"persistence"`. The router uses this for selection.
-- **Independent fail-closed check inside `create()`:** the adapter does not assume the router pre-filtered. `create(profile)` first calls `validateRequiredCapabilities(profile.required, SUPPORTED)`. If `profile.required` exists and demands any capability outside `SUPPORTED`, return `KoiError { code: "UNSUPPORTED_PROFILE", reason: "required-capability-not-supported", required: <set>, supported: <set> }` before any remote work.
-- **Filesystem profile reject still applies:** the existing profile mapping table already rejects `filesystem.allowRead`/`filesystem.allowWrite` (any non-empty), `nexusMounts`, and `defaultReadAccess: "open"`. So a profile that asks for filesystem-RW via the structural fields is also rejected, independent of `required`. The two checks are belt-and-braces.
-- **Honest method stubs are still required by the kernel interface:** `readFile`/`writeFile` exist on `SandboxInstance` and throw `UNSUPPORTED` if anyone calls them. Because `create()` rejects profiles that need them, the only path to call them is a caller who explicitly ignored the documented capability set — at that point throwing `UNSUPPORTED` is correct.
-- **No silent degradation:** there is no profile shape that gets a successful `create()` followed by a runtime `UNSUPPORTED`. If `create()` returns `ok`, every method honored by `capabilities.supports` works; methods outside that set throw immediately.
-- A future PR can add a `sandbox-cloudflare-kv` package that backs files with KV/Durable Objects; that is out of scope here and explicitly listed in "Out of scope" below. That package would advertise `"filesystem-rw"` honestly.
+- **Profile structural reject:** the profile mapping table (next section) rejects `filesystem.allowRead`/`filesystem.allowWrite` non-empty, `nexusMounts` non-empty, and `defaultReadAccess: "open"` before any remote call. A profile asking for filesystem-RW is refused at `create()`.
+- **Capability requirement reject:** `create()` calls `validateRequiredCapabilities(profile.required, SUPPORTED)` where `SUPPORTED = Set(["exec"])` (best fit existing taxonomy for "run code and get output"). If `profile.required` demands any capability outside `SUPPORTED` (e.g., `"filesystem-rw"`, `"copy-files"`, `"persistence"`), return `KoiError { code: "UNSUPPORTED_PROFILE", required, supported }` before any remote work. This catches direct callers that bypass any router.
+- **No streaming:** `EdgeInvokeRequest` does not have `onStdout`/`onStderr` fields, so streaming output cannot be requested. Callers wanting streaming use a different adapter. (The narrower contract eliminates the previous round's "fail at exec but pass at create" concern.)
+- A future PR can add a `sandbox-cloudflare-kv` package that backs files with KV/Durable Objects; that is out of scope here and explicitly listed in "Out of scope" below.
 
-#### Per-instance `exec()` concurrency (serialized) and preemptive destroy
+#### Per-instance `invoke()` concurrency (serialized) and preemptive destroy
 
-The instance's deployed worker is a shared remote resource. If a caller fires two `exec()` calls concurrently and the first times out → poisons the instance, the second is already in flight against an instance the host now considers terminal, with possibly-overlapping side effects on the same provider artifact. Worse, `destroy()` could race against an in-flight `exec`.
+The instance's deployed worker is a shared remote resource. If a caller fires two `invoke()` calls concurrently and the first times out → poisons the instance, the second is already in flight against an instance the host now considers terminal, with possibly-overlapping side effects on the same provider artifact. Worse, `destroy()` could race against an in-flight `invoke`.
 
-To avoid this entire class of hazard, **`exec()` is serialized per instance**:
+To avoid this entire class of hazard, **`invoke()` is serialized per instance**:
 
-- Each instance owns an internal FIFO mutex. Every `exec()` awaits the mutex, runs to completion (or timeout / abort), then releases.
+- Each instance owns an internal FIFO mutex. Every `invoke()` awaits the mutex, runs to completion (or timeout / abort), then releases.
 - Concurrent callers see fair FIFO ordering, not provider-side races.
 - A timeout on call N transitions the instance to POISONED before the mutex is released; subsequent queued calls (N+1, N+2, ...) all reject immediately with `POISONED` when they acquire it. They never reach the provider.
 
 **`destroy()` is preemptive, not queued:**
 
-- Every `exec()` is wrapped in a host-side `AbortController`. When `destroy()` is called, it (a) sets the instance state to `DESTROYING`, (b) immediately calls `abort()` on the in-flight exec's controller (this rejects the caller's `exec()` promise with `KoiError { code: "DESTROYED" }` and tears down the local `fetch` regardless of whether the remote response ever arrives), (c) drains and rejects all queued execs with `KoiError { code: "DESTROYED" }`, then (d) issues the DELETE.
-- **Mandatory host-side timeout:** `exec()` enforces a non-optional default `timeoutMs` of 30_000 (capped by profile `resources.timeoutMs`). The caller cannot opt out. This guarantees the in-flight `fetch` cannot wait forever even if `destroy()` were not called.
-- Caller-visible: `exec()` is awaited as usual; the only behavioral change vs. an OS sandbox is that calls are not parallel within an instance. Callers that need parallelism create multiple instances. Calling `destroy()` while an `exec()` is in flight rejects that exec promptly — destroy is never blocked behind hung remote work.
+- Every `invoke()` is wrapped in a host-side `AbortController`. When `destroy()` is called, it (a) sets the instance state to `DESTROYING`, (b) immediately calls `abort()` on the in-flight invoke's controller (this rejects the caller's `invoke()` promise with `KoiError { code: "DESTROYED" }` and tears down the local `fetch` regardless of whether the remote response ever arrives), (c) drains and rejects all queued invokes with `KoiError { code: "DESTROYED" }`, then (d) issues the DELETE.
+- **Mandatory host-side timeout:** `invoke()` enforces a non-optional default `timeoutMs` of 30_000 (capped by profile `resources.timeoutMs`). The caller cannot opt out. This guarantees the in-flight `fetch` cannot wait forever even if `destroy()` were not called.
+- Caller-visible: `invoke()` is awaited as usual; the only behavioral change vs. an OS sandbox is that calls are not parallel within an instance. Callers that need parallelism create multiple instances. Calling `destroy()` while an `invoke()` is in flight rejects that invoke promptly — destroy is never blocked behind hung remote work.
 
-This is documented prominently in `docs/L2/sandbox-cloudflare.md` and tested in unit suites (concurrent-exec serialization, poison-after-timeout-rejects-queued, destroy-cancels-queued).
+This is documented prominently in `docs/L2/sandbox-cloudflare.md` and tested in unit suites (concurrent-invoke serialization, poison-after-timeout-rejects-queued, destroy-cancels-queued).
 
-#### `SandboxExecOptions` enforcement (fail-closed)
+#### `EdgeInvokeRequest` field handling
 
-Every option is one of: **mapped** (forwarded over the wire), **rejected** (instance returns typed error before issuing fetch), or **bridged-locally** (wrapped at the host without provider participation):
+`EdgeInvokeRequest` is intentionally minimal:
 
-| Option | Disposition | Notes |
-|--------|-------------|-------|
-| `cwd`, `env`, `stdin`, `timeoutMs`, `maxOutputBytes` | mapped | JSON-serializable; passed in POST body |
-| `onStdout`, `onStderr` | **rejected** | Throw `KoiError { code: "UNSUPPORTED" }` immediately if either is set. No silent drop. |
-| `signal` (`AbortSignal`) | **bridged-locally + remote-cancel** | (a) Local: abort the host `fetch` with the same signal so the caller's promise rejects on schedule. (b) Remote: when signal fires OR `timeoutMs` elapses, fire-and-forget POST to a `/cancel` endpoint on the worker. The shim implements `/cancel` by aborting in-flight work it controls. |
+| Field | Disposition | Notes |
+|-------|-------------|-------|
+| `payload` | mapped | JSON-serialized into POST body |
+| `timeoutMs` | mapped + host-enforced | Both passed in body and used for host AbortController. Capped by profile `resources.timeoutMs` and by the mandatory 30_000ms default. |
+| `signal` (`AbortSignal`) | bridged-locally + remote-cancel | (a) Local: abort the host `fetch` so the caller's promise rejects on schedule. (b) Remote: when signal fires OR `timeoutMs` elapses, fire-and-forget POST to a `/cancel` endpoint on the worker. The shim implements `/cancel` by aborting in-flight work it controls. |
+
+There is no `onStdout`/`onStderr` on `EdgeInvokeRequest` — streaming is not part of the contract, by design. Callers who need streaming use a different adapter.
 
 #### Cancellation honesty (always-poison on timeout)
 
 Cloudflare Workers cannot guarantee preemption of arbitrary user code, and a 200 from `/cancel` proves only that the shim accepted the cancel — not that the running command stopped. We therefore treat **any local abort or timeout as terminal for the instance**, regardless of `/cancel` response:
 
 - Local abort fires on schedule — caller's promise rejects with `TIMEOUT`.
-- The instance immediately enters **POISONED** state. Subsequent `exec` / `readFile` / `writeFile` calls fail-closed with `KoiError { code: "POISONED" }`. The only valid operation is `destroy()`.
+- The instance immediately enters **POISONED** state. Subsequent `invoke` calls fail-closed with `KoiError { code: "POISONED" }`. The only valid operation is `destroy()`.
 - The instance optionally fires a best-effort `/cancel` POST as a courtesy to free provider resources sooner, but the result is ignored — poisoning is not contingent on it.
 - `destroy()` on a poisoned instance proceeds normally (DELETE script). Caller must `create()` a fresh instance for any further work.
 
@@ -271,8 +318,8 @@ Mocked fetch is insufficient evidence for auth, header shape, endpoint correctne
 1. **happy-path** — create → invoke (hello-world) → destroy (200/204 first call, 404 second, idempotency proven)
 2. **mid-create failure** — inject a fault after the deploy step succeeds but before secrets upload (test hook: pass an env var with a forced 4xx-trigger key). Assert the adapter returns `CREATE_FAILED` with `cleanedUp: true`, then list scripts by attempt prefix and assert zero remain.
 3. **create timeout** — set `createTimeoutMs: 1` so the create flow times out after deploy initiation. Assert `CREATE_FAILED_INDETERMINATE` is returned with the leaked `scriptName` populated, then a janitor sweep deletes it and the assertion passes.
-4. **exec timeout poisons instance** — create a sandbox whose shim deliberately sleeps longer than `exec(opts.timeoutMs)`. Assert (a) caller's promise rejects with `TIMEOUT`, (b) a subsequent `exec` call rejects with `POISONED`, (c) `readFile`/`writeFile` reject with `UNSUPPORTED` (already always true), (d) `destroy()` succeeds, (e) post-destroy script list shows zero artifacts.
-5. **abort-signal poisons instance** — caller passes `AbortSignal` and aborts mid-exec; same assertions as (4).
+4. **invoke timeout poisons instance** — create a sandbox whose shim deliberately sleeps longer than `invoke(req.timeoutMs)`. Assert (a) caller's promise rejects with `TIMEOUT`, (b) a subsequent `invoke` call rejects with `POISONED`, (c) `destroy()` succeeds, (d) post-destroy script list shows zero artifacts.
+5. **abort-signal poisons instance** — caller passes `AbortSignal` and aborts mid-invoke; same assertions as (4).
 6. **leak sweep (final)** — list all scripts/deployments matching `koi-ci-${runId}-*`; fail the job if any remain. This catches escapes from any of the above scenarios that destroy() failed to clean up.
 
 **Configuration:**
@@ -323,7 +370,7 @@ Each follows existing `docs/L2/sandbox-*.md` template: purpose, contract, config
 ## Out of scope (deferred)
 
 - WASI support (sandbox-wasm runs core WebAssembly only)
-- Streaming output (`onStdout`/`onStderr` callbacks return whole-buffer for cloud; future enhancement)
+- Streaming output (no `onStdout`/`onStderr` on `EdgeInvokeRequest`; deferred until a future `EdgeFunctionStreamingAdapter` contract exists)
 - KV / Durable Objects / Edge Config bindings (Cloudflare)
 - Vercel Edge runtime vs Node runtime selection (defaults to Edge)
 - `findOrCreate` persistence on cloud adapters (script reuse) — current PR creates fresh per `create()`
