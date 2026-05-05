@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentManifest } from "@koi/core";
+import type { AgentManifest, KoiError, Result } from "@koi/core";
 import type {
   WorkerBackend,
   WorkerBackendKind,
