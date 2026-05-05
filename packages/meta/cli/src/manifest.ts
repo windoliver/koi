@@ -1343,6 +1343,7 @@ function parseManifestSupervision(
       restart: RestartType;
       shutdownTimeoutMs?: number;
       isolation?: ChildIsolation;
+      command?: readonly string[];
     } = { name: e.name, restart };
     if (e.shutdownTimeoutMs !== undefined) {
       const n = Number(e.shutdownTimeoutMs);
@@ -1362,6 +1363,19 @@ function parseManifestSupervision(
         };
       }
       child.isolation = e.isolation;
+    }
+    if (e.command !== undefined) {
+      if (
+        !Array.isArray(e.command) ||
+        e.command.length === 0 ||
+        !e.command.every((c) => typeof c === "string" && c.length > 0)
+      ) {
+        return {
+          ok: false,
+          error: `manifest.supervision.children[${i}].command must be a non-empty array of non-empty strings`,
+        };
+      }
+      child.command = e.command as readonly string[];
     }
     children.push(child);
   }

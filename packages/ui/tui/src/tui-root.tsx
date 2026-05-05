@@ -37,6 +37,8 @@ import { CommandPalette } from "./components/CommandPalette.js";
 import { ConversationView } from "./components/ConversationView.js";
 import { DoctorView } from "./components/DoctorView.js";
 import { GovernanceView } from "./components/GovernanceView.js";
+import { SupervisorView } from "./components/SupervisorView.js";
+import { BgView } from "./components/BgView.js";
 import { HelpView } from "./components/HelpView.js";
 import { ModelPicker } from "./components/ModelPicker.js";
 import { PermissionPrompt } from "./components/PermissionPrompt.js";
@@ -81,6 +83,8 @@ const NAV_VIEW_MAP: Partial<Record<string, TuiView>> = {
   "nav:cost": "cost",
   "nav:mcp": "mcp",
   "nav:plugins": "plugins",
+  "nav:supervisor": "supervisor",
+  "nav:bg": "bg",
 };
 
 /**
@@ -209,6 +213,8 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   const agentStatus = useTuiStore((s) => s.agentStatus);
   const toasts = useTuiStore((s) => s.toasts);
   const governance = useTuiStore((s) => s.governance);
+  const supervisor = useTuiStore((s) => s.supervisor);
+  const bg = useTuiStore((s) => s.bg);
 
   // #16: notify bridge when a turn completes (processing → idle transition)
   createEffect(
@@ -578,6 +584,12 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
         </Match>
         <Match when={viewSignal() === "governance"}>
           <GovernanceView slice={governance()} />
+        </Match>
+        <Match when={viewSignal() === "supervisor"}>
+          <SupervisorView slice={supervisor()} />
+        </Match>
+        <Match when={viewSignal() === "bg"}>
+          <BgView slice={bg()} onCommand={props.onCommand} />
         </Match>
       </Switch>
 

@@ -9,6 +9,14 @@ exports[`createInitialState initial state shape 1`] = `
   "atQuery": null,
   "atResults": [],
   "auditEntries": [],
+  "bg": {
+    "killConfirm": null,
+    "registryStatus": {
+      "kind": "live",
+    },
+    "rows": [],
+    "tailingWorkerId": null,
+  },
   "connectionStatus": "disconnected",
   "costBreakdown": null,
   "cumulativeMetrics": {
@@ -50,6 +58,14 @@ exports[`createInitialState initial state shape 1`] = `
   "siblingInfo": null,
   "slashQuery": null,
   "supervisedChildren": [],
+  "supervisor": {
+    "attached": false,
+    "events": [],
+    "health": null,
+    "status": {
+      "kind": "detached",
+    },
+  },
   "toasts": [],
   "tokenRate": null,
   "toolsExpanded": false,

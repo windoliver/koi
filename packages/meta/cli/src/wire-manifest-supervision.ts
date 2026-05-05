@@ -19,10 +19,32 @@
  * in the runtime + TUI rather than silently dropped at parse time.
  */
 
-import type { AgentId, AgentManifest, AgentRegistry, SupervisionConfig } from "@koi/core";
+import type {
+  AgentId,
+  AgentManifest,
+  AgentRegistry,
+  ChildSpec,
+  SupervisionConfig,
+} from "@koi/core";
 import { agentId as makeAgentId } from "@koi/core";
 import type { KoiRuntime, SupervisionWiring } from "@koi/engine";
-import { createInMemoryRegistry, createInProcessSpawnChildFn, wireSupervision } from "@koi/engine";
+import {
+  createDispatchingSpawnChildFn,
+  createInMemoryRegistry,
+  createInProcessSpawnChildFn,
+  wireSupervision,
+} from "@koi/engine";
+
+/**
+ * Structurally typed SpawnChildFn — kept inline rather than importing from
+ * `@koi/engine-reconcile` to avoid pulling that package into `@koi/cli`'s
+ * dependency graph. Matches the shape consumed by createDispatchingSpawnChildFn.
+ */
+type SpawnChildFn = (
+  parentId: AgentId,
+  childSpec: ChildSpec,
+  manifest: AgentManifest,
+) => Promise<AgentId>;
 
 export interface SupervisedChildSummary {
   readonly agentId: string;
@@ -49,6 +71,20 @@ export interface WireManifestSupervisionOptions {
    * log or ignore.
    */
   readonly onChange?: (children: readonly SupervisedChildSummary[]) => void;
+  /**
+   * Optional factory that produces a daemon-backed SpawnChildFn for
+   * subprocess children. Receives the in-memory AgentRegistry created
+   * here so the daemon adapter can register children under the same
+   * registry the parent reconciler reads from.
+   *
+   * When undefined, subprocess children fall back to the in-process stub
+   * (registers a placeholder entry; does not spawn). When provided AND
+   * a child has a `command`, the dispatcher routes the child through the
+   * daemon supervisor end-to-end. Children without `command` always use
+   * the stub regardless of the factory, since the daemon adapter cannot
+   * spawn without a command.
+   */
+  readonly subprocessSpawnFactory?: (agentRegistry: AgentRegistry) => SpawnChildFn;
 }
 
 export async function wireManifestSupervision(
@@ -69,32 +105,59 @@ export async function wireManifestSupervision(
     supervision,
   };
 
-  // Stub spawnChild: registers a placeholder entry in the registry for
-  // each supervised child. See the file-level doc comment for why this
-  // does not actually spawn a child agent runtime.
+  // Shared helper: inline registry-register for the stub path. Used
+  // both by the in-process adapter and by the subprocess fallback when
+  // the caller supplied no daemon factory or the child has no `command`.
+  // Mints a fresh agent id, registers a placeholder entry in phase
+  // "running", and returns the id. Does not actually spawn a runtime —
+  // see file header for why.
   let spawnCounter = 0;
-  const spawnChild = createInProcessSpawnChildFn({
+  const stubRegister = (parent: AgentId, childSpec: ChildSpec): AgentId => {
+    spawnCounter += 1;
+    const childId = makeAgentId(`${childSpec.name}-${spawnCounter}`);
+    registry.register({
+      agentId: childId,
+      parentId: parent,
+      status: {
+        phase: "running",
+        generation: 0,
+        conditions: [],
+        reason: { kind: "assembly_complete" },
+        lastTransitionAt: Date.now(),
+      },
+      agentType: "worker",
+      metadata: { childSpecName: childSpec.name },
+      registeredAt: Date.now(),
+      priority: 10,
+    });
+    return childId;
+  };
+
+  // In-process adapter — gates on isolation === "in-process" internally.
+  const inProcessSpawn = createInProcessSpawnChildFn({
     registry,
-    spawn: async (parent, childSpec) => {
-      spawnCounter += 1;
-      const childId = makeAgentId(`${childSpec.name}-${spawnCounter}`);
-      registry.register({
-        agentId: childId,
-        parentId: parent,
-        status: {
-          phase: "running",
-          generation: 0,
-          conditions: [],
-          reason: { kind: "assembly_complete" },
-          lastTransitionAt: Date.now(),
-        },
-        agentType: "worker",
-        metadata: { childSpecName: childSpec.name },
-        registeredAt: Date.now(),
-        priority: 10,
-      });
-      return childId;
-    },
+    spawn: async (parent, childSpec) => stubRegister(parent, childSpec),
+  });
+
+  // Daemon-backed subprocess adapter, when the caller provided one.
+  const daemonSpawnChild =
+    opts.subprocessSpawnFactory !== undefined ? opts.subprocessSpawnFactory(registry) : undefined;
+
+  // Subprocess dispatch wrapper: route to daemon when both a factory and a
+  // command exist; otherwise fall back to the inline stub register so
+  // legacy manifests (subprocess child without `command`) keep working.
+  // Cannot use the in-process adapter here because it throws on
+  // isolation !== "in-process".
+  const subprocessSpawn: SpawnChildFn = async (parent, childSpec, manifest) => {
+    if (daemonSpawnChild !== undefined && childSpec.command !== undefined) {
+      return daemonSpawnChild(parent, childSpec, manifest);
+    }
+    return stubRegister(parent, childSpec);
+  };
+
+  const spawnChild = createDispatchingSpawnChildFn({
+    inProcess: inProcessSpawn,
+    subprocess: subprocessSpawn,
   });
 
   const wiring = wireSupervision({

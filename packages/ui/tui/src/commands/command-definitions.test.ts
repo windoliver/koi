@@ -6,8 +6,8 @@ import { COMMAND_DEFINITIONS, filterCommands } from "./command-definitions.js";
 // ---------------------------------------------------------------------------
 
 describe("COMMAND_DEFINITIONS", () => {
-  test("has exactly 26 commands", () => {
-    expect(COMMAND_DEFINITIONS).toHaveLength(26);
+  test("has exactly 29 commands", () => {
+    expect(COMMAND_DEFINITIONS).toHaveLength(29);
   });
 
   test("all command ids are unique", () => {

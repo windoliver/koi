@@ -86,7 +86,7 @@ const TOOL_MAP: Readonly<Record<string, ToolDisplayEntry>> = {
   Grep: { title: "Search", subtitleKey: "pattern" },
   Bash: { title: "Shell", subtitleKey: "command" },
   ToolSearch: { title: "Tool Search", subtitleKey: "query" },
-  Spawn: { title: "Spawn", subtitleKey: "name" },
+  Spawn: { title: "Spawn", subtitleKey: "agentName" },
   web_search: { title: "Web Search", subtitleKey: "query" },
   memory_store: { title: "Memory Store", subtitleKey: "name" },
   memory_recall: { title: "Memory Recall", subtitleKey: "query" },
@@ -264,13 +264,24 @@ export function getToolDisplay(
  * Keys that carry the main content body per tool result shape.
  * Checked in priority order; first match becomes the body.
  */
-const BODY_KEYS = ["stdout", "content", "result", "body", "paths"] as const;
+const BODY_KEYS = ["stdout", "content", "result", "body", "paths", "output"] as const;
 
 /**
  * Keys to extract as result chips (scalar metadata).
  * Order determines chip display order.
+ *
+ * Spawn-specific keys (workerId, isolation, backendKind) come first so they
+ * claim the 3-chip budget when a Spawn result is displayed. Other tools do
+ * not emit these fields, so ordering has no effect on non-Spawn results.
  */
 const RESULT_CHIP_KEYS = [
+  // Spawn tool result metadata — rendered first for the 3-chip budget.
+  // agentName → workerId → isolation (backendKind falls off at cap=3 when all present).
+  "agentName",
+  "workerId",
+  "isolation",
+  "backendKind",
+  // Standard tool result metadata
   "exitCode",
   "status",
   "contentType",

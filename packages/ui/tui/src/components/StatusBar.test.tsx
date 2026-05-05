@@ -1,10 +1,12 @@
 import { testRender } from "@opentui/solid";
 import { describe, expect, test } from "bun:test";
+import type { AgentId } from "@koi/core/ecs";
+import type { WorkerId, SupervisorHealth, WorkerHealth } from "@koi/core/daemon";
 import type { GovernanceSnapshot } from "@koi/core/governance";
 import { createInitialState } from "../state/initial.js";
 import { createStore } from "../state/store.js";
 import { StoreContext } from "../store-context.js";
-import { StatusBar } from "./StatusBar.js";
+import { StatusBar, computeSupervisorChip } from "./StatusBar.js";
 import {
   chipTier,
   formatCost,
@@ -160,6 +162,96 @@ describe("chipTier", () => {
 });
 
 // ---------------------------------------------------------------------------
+// computeSupervisorChip — pure helper unit tests
+// ---------------------------------------------------------------------------
+
+function makeHealth(opts: {
+  readonly status: SupervisorHealth["status"];
+  readonly running: number;
+  readonly total: number;
+}): SupervisorHealth {
+  const workers: WorkerHealth[] = [];
+  for (let i = 0; i < opts.running; i++) {
+    workers.push({
+      workerId: `w${i}` as WorkerId,
+      agentId: `a${i}` as AgentId,
+      state: "running",
+      lastHeartbeatAt: undefined,
+      heartbeatDeadlineAt: undefined,
+    });
+  }
+  return {
+    status: opts.status,
+    reasons: [],
+    workers,
+    metrics: {
+      poolSize: opts.total,
+      maxWorkers: 8,
+      quarantinedCount: 0,
+      restartingCount: 0,
+      pendingSpawnCount: 0,
+      eventDropCount: 0,
+      shuttingDown: false,
+    },
+  };
+}
+
+describe("computeSupervisorChip", () => {
+  const NOW = 1_700_000_000_000;
+
+  test("detached → null (badge hidden)", () => {
+    expect(computeSupervisorChip({ kind: "detached" }, null, NOW)).toBeNull();
+  });
+
+  test("live + ok → ◎ green with running/total", () => {
+    const health = makeHealth({ status: "ok", running: 2, total: 5 });
+    const chip = computeSupervisorChip({ kind: "live" }, health, NOW);
+    expect(chip?.symbol).toBe("◎");
+    expect(chip?.label).toBe("2/5 workers");
+  });
+
+  test("live + degraded → ◑ amber", () => {
+    const health = makeHealth({ status: "degraded", running: 1, total: 3 });
+    const chip = computeSupervisorChip({ kind: "live" }, health, NOW);
+    expect(chip?.symbol).toBe("◑");
+    expect(chip?.label).toBe("1/3 workers");
+  });
+
+  test("live + unhealthy → ● red", () => {
+    const health = makeHealth({ status: "unhealthy", running: 0, total: 3 });
+    const chip = computeSupervisorChip({ kind: "live" }, health, NOW);
+    expect(chip?.symbol).toBe("●");
+    expect(chip?.label).toBe("0/3 workers");
+  });
+
+  test("live with null health → ◎ 0/0 workers", () => {
+    const chip = computeSupervisorChip({ kind: "live" }, null, NOW);
+    expect(chip?.symbol).toBe("◎");
+    expect(chip?.label).toBe("0/0 workers");
+  });
+
+  test("degraded → ◐ with seconds since missing", () => {
+    const chip = computeSupervisorChip(
+      { kind: "degraded", missing: ["workerEvents"], since: NOW - 5000 },
+      null,
+      NOW,
+    );
+    expect(chip?.symbol).toBe("◐");
+    expect(chip?.label).toBe("degraded 5s");
+  });
+
+  test("stale → ◌ with seconds since stale", () => {
+    const chip = computeSupervisorChip(
+      { kind: "stale", since: NOW - 12_000, reason: "x" },
+      null,
+      NOW,
+    );
+    expect(chip?.symbol).toBe("◌");
+    expect(chip?.label).toBe("stale 12s");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // StatusBar governance chip rendering
 // ---------------------------------------------------------------------------
 
@@ -200,6 +292,31 @@ describe("StatusBar governance chip rendering", () => {
     );
     await utils.renderOnce();
     expect(utils.captureCharFrame()).toContain("gov: turn 12/50");
+    utils.renderer.destroy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// StatusBar supervisor badge rendering
+// ---------------------------------------------------------------------------
+
+describe("StatusBar supervisor badge rendering", () => {
+  test("hides badge when supervisor.attached === false", async () => {
+    const store = createStore(createInitialState());
+    // attached defaults to false in initial state — supervisor badge must be hidden
+    const utils = await testRender(
+      () => (
+        <StoreContext.Provider value={store}>
+          <StatusBar width={120} />
+        </StoreContext.Provider>
+      ),
+      { width: 120, height: 1 },
+    );
+    await utils.renderOnce();
+    const frame = utils.captureCharFrame();
+    expect(frame).not.toContain("workers");
+    expect(frame).not.toContain("stale");
+    expect(frame).not.toContain("degraded");
     utils.renderer.destroy();
   });
 });

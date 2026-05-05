@@ -245,4 +245,92 @@ describe("wireManifestSupervision: end-to-end", () => {
     // (TUI graceful + SIGINT paths can both fire).
     await expect(handle.dispose()).resolves.toBeUndefined();
   });
+
+  test("subprocessSpawnFactory is invoked for subprocess children with command; falls back to stub otherwise", async () => {
+    // Regression for #1944 finding: previously, subprocess children always
+    // went through the in-process stub, leaving the daemon supervisor blind
+    // to manifest-declared subprocess workers. The dispatcher now routes
+    // children with `command` through the caller-provided factory.
+    const factoryCalls: { parent: string; childSpec: string; command: readonly string[] }[] = [];
+    const stubFallbackCalls: string[] = [];
+
+    const runtime = createMockRuntime();
+    const handle = await wireManifestSupervision({
+      runtime,
+      supervisorManifestName: "test-parent",
+      supervision: {
+        strategy: { kind: "one_for_one" },
+        maxRestarts: 5,
+        maxRestartWindowMs: 60_000,
+        children: [
+          // subprocess + command → daemon route
+          {
+            name: "with-cmd",
+            restart: "permanent",
+            isolation: "subprocess",
+            command: ["/usr/bin/echo", "hello"],
+          },
+          // subprocess but no command → stub fallback
+          {
+            name: "no-cmd",
+            restart: "permanent",
+            isolation: "subprocess",
+          },
+          // in-process → stub
+          {
+            name: "in-proc",
+            restart: "permanent",
+            isolation: "in-process",
+          },
+        ],
+      },
+      subprocessSpawnFactory: (registry) => async (parent, childSpec, _manifest) => {
+        factoryCalls.push({
+          parent: String(parent),
+          childSpec: childSpec.name,
+          command: childSpec.command ?? [],
+        });
+        const childId = agentId(`daemon-${childSpec.name}`);
+        registry.register({
+          agentId: childId,
+          parentId: parent,
+          status: {
+            phase: "running",
+            generation: 0,
+            conditions: [],
+            reason: { kind: "assembly_complete" },
+            lastTransitionAt: Date.now(),
+          },
+          agentType: "worker",
+          metadata: { childSpecName: childSpec.name },
+          registeredAt: Date.now(),
+          priority: 10,
+        });
+        return childId;
+      },
+      onChange: (children) => {
+        for (const c of children) {
+          if (c.childSpecName === "no-cmd" || c.childSpecName === "in-proc") {
+            if (!stubFallbackCalls.includes(c.childSpecName)) {
+              stubFallbackCalls.push(c.childSpecName);
+            }
+          }
+        }
+      },
+    });
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+
+      // Daemon route: only the subprocess+command child
+      expect(factoryCalls.length).toBe(1);
+      expect(factoryCalls[0]?.childSpec).toBe("with-cmd");
+      expect(factoryCalls[0]?.command).toEqual(["/usr/bin/echo", "hello"]);
+
+      // Stub fallback: no-cmd subprocess + in-process
+      expect(stubFallbackCalls.sort()).toEqual(["in-proc", "no-cmd"]);
+    } finally {
+      await handle.dispose();
+    }
+  });
 });
