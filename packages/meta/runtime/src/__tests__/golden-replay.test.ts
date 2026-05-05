@@ -16883,6 +16883,67 @@ describe("Golden: @koi/middleware-user-model", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Golden: @koi/forge-optimizer (advisory artifact-optimization helpers — #1350)
+// Two standalone queries, no LLM needed. Exercises the public surface of the
+// L2 package via direct calls so the runtime gate can verify it is wired.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/forge-optimizer", () => {
+  test("validateGraphTransition rejects skip states (draft → active without verifying)", async () => {
+    const { validateGraphTransition, validateStoreTransition } = await import(
+      "@koi/forge-optimizer"
+    );
+    const ok = validateGraphTransition("draft", "verifying");
+    expect(ok).toEqual({ ok: true });
+    const skip = validateGraphTransition("draft", "active");
+    expect(skip.ok).toBe(false);
+    // Store-safe variant additionally rejects exits from terminal lifecycles.
+    const terminalExit = validateStoreTransition("quarantined", "draft");
+    expect(terminalExit.ok).toBe(false);
+  });
+
+  test("recordUsage + computePerformanceScore + suggestRetirement return advisory signals without store mutation", async () => {
+    const { recordUsage, computePerformanceScore, suggestRetirement } = await import(
+      "@koi/forge-optimizer"
+    );
+    const { DEFAULT_BRICK_FITNESS, DEFAULT_UNSANDBOXED_POLICY } = await import("@koi/core");
+    type ToolArtifact = import("@koi/core").ToolArtifact;
+    type ForgeProvenance = import("@koi/core").ForgeProvenance;
+
+    const fitness = recordUsage(
+      DEFAULT_BRICK_FITNESS,
+      { outcome: "success", latencyMs: 25, at: 1_000 },
+      1_000,
+    );
+    expect(fitness.successCount).toBe(1);
+    expect(fitness.lastUsedAt).toBe(1_000);
+
+    const score = computePerformanceScore(fitness, 1_000);
+    expect(score).toBeGreaterThan(0);
+
+    const tool: ToolArtifact = {
+      id: "sha256:t" as ToolArtifact["id"],
+      kind: "tool",
+      name: "stale",
+      description: "",
+      scope: "agent",
+      origin: "operator",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
+      lifecycle: "active",
+      provenance: {} as ForgeProvenance,
+      version: "1.0.0",
+      tags: [],
+      usageCount: 0,
+      implementation: "",
+      inputSchema: {},
+    };
+    const suggestions = suggestRetirement([tool], { minUsageCount: 5, maxIdleMs: 1_000 }, 0);
+    expect(suggestions.length).toBe(1);
+    expect(suggestions[0]?.brickId).toBe(tool.id);
+  });
+});
+
 describe("Golden: @koi/forge-policy", () => {
   test("evaluatePolicy denies a disallowed brick kind and binds candidateId + configFingerprint", async () => {
     const { evaluatePolicy } = await import("@koi/forge-policy");
