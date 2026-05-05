@@ -51,6 +51,10 @@ function chunk(text: string, max: number): readonly string[] {
 export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
   const senderId = config.senderId ?? "voice-user";
   const maxTtsChars = config.maxTtsChars ?? DEFAULT_MAX_TTS_CHARS;
+  // Reject up front rather than hanging the outbound loop in chunk().
+  if (!Number.isFinite(maxTtsChars) || maxTtsChars <= 0) {
+    throw new Error(`maxTtsChars must be a positive finite number; got ${String(maxTtsChars)}`);
+  }
 
   return createChannelAdapter<Uint8Array>({
     name: "voice",

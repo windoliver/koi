@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { InboundMessage, OutboundMessage, TextBlock } from "@koi/core";
-import { createMobileChannel } from "./mobile-channel.js";
+import { createMobileChannel, MobileNoDeliveryTargetError } from "./mobile-channel.js";
 
 async function freePort(): Promise<number> {
   const server = Bun.serve({ port: 0, fetch: () => new Response("ok") });
@@ -132,6 +132,82 @@ describe("createMobileChannel", () => {
     expect(got).toEqual([]);
     ws.close();
     await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
+  test("session epoch: reply for a disconnected sender does NOT route to a new client", async () => {
+    // Sequence: ws1 sends inbound → ws1 disconnects → ws2 connects → agent
+    // generates reply for ws1's inbound. Reply must go to pushNotifier, NOT
+    // to ws2 (which would be a confidentiality leak).
+    const port = await freePort();
+    const pushed: OutboundMessage[] = [];
+    const ch = createMobileChannel({
+      port,
+      pushNotifier: async (m) => {
+        pushed.push(m);
+      },
+    });
+    const inbound: InboundMessage[] = [];
+    ch.onMessage(async (m: InboundMessage) => {
+      inbound.push(m);
+    });
+    await ch.connect();
+    const ws1 = await openWs(port);
+    ws1.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: "from ws1" }] }));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(inbound).toHaveLength(1);
+    ws1.close();
+    await new Promise((r) => setTimeout(r, 30));
+    const ws2 = await openWs(port);
+    const got2: string[] = [];
+    ws2.addEventListener("message", (ev) => {
+      const f = JSON.parse(typeof ev.data === "string" ? ev.data : "") as {
+        content: { text: string }[];
+      };
+      got2.push(f.content[0]?.text ?? "");
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    // Now agent issues the reply destined for ws1.
+    await ch.send({ content: [{ kind: "text", text: "secret-for-ws1" }] });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(got2).toEqual([]);
+    expect(pushed).toHaveLength(1);
+    ws2.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
+  test("send rejects when no client AND no pushNotifier — failure is observable", async () => {
+    const port = await freePort();
+    const ch = createMobileChannel({ port });
+    await ch.connect();
+    let err: unknown;
+    try {
+      await ch.send({ content: [{ kind: "text", text: "lost" }] });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(MobileNoDeliveryTargetError);
+    await ch.disconnect();
+  });
+
+  test("send propagates pushNotifier rejection to caller (not silently swallowed)", async () => {
+    const port = await freePort();
+    const ch = createMobileChannel({
+      port,
+      pushNotifier: async () => {
+        throw new Error("APNs down");
+      },
+    });
+    await ch.connect();
+    let err: unknown;
+    try {
+      await ch.send({ content: [{ kind: "text", text: "ping" }] });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe("APNs down");
     await ch.disconnect();
   });
 

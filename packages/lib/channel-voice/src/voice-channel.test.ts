@@ -62,6 +62,17 @@ function harness(opts?: {
   return h;
 }
 
+describe("createVoiceChannel config validation", () => {
+  test("rejects non-positive maxTtsChars instead of hanging", () => {
+    const h = harness();
+    const cfg = { transport: h.transport, stt: h.stt, tts: h.tts };
+    expect(() => createVoiceChannel({ ...cfg, maxTtsChars: 0 })).toThrow();
+    expect(() => createVoiceChannel({ ...cfg, maxTtsChars: -5 })).toThrow();
+    expect(() => createVoiceChannel({ ...cfg, maxTtsChars: Number.NaN })).toThrow();
+    expect(() => createVoiceChannel({ ...cfg, maxTtsChars: Number.POSITIVE_INFINITY })).toThrow();
+  });
+});
+
 describe("createVoiceChannel", () => {
   test("declares text+audio capabilities", () => {
     const h = harness();

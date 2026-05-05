@@ -13,11 +13,13 @@ export interface MobileChannelConfig {
   readonly port: number;
   readonly senderId?: string;
   /**
-   * Invoked for every outbound message issued while no client is connected.
-   * Provides the host's escape hatch for offline delivery (APNs, FCM, etc.) —
-   * the adapter itself does NOT buffer outbound messages, because it cannot
-   * prove that the next client to connect is the same recipient and would
-   * otherwise leak prior content across sessions.
+   * Invoked for every outbound message issued while no client is connected,
+   * AND for replies whose originating session has ended (see the session-epoch
+   * binding below). The adapter itself does NOT buffer outbound; the host's
+   * push pipeline owns durability and retry. If `pushNotifier` rejects, the
+   * `send()` call itself rejects so the host can observe / retry the failure.
+   * If `pushNotifier` is undefined and there is nowhere to deliver, `send()`
+   * rejects with a `MobileNoDeliveryTargetError`.
    */
   readonly pushNotifier?: (message: OutboundMessage) => Promise<void>;
   /**
@@ -28,6 +30,13 @@ export interface MobileChannelConfig {
    * with mTLS or signed bearer token).
    */
   readonly trustClientIdentity?: boolean;
+}
+
+export class MobileNoDeliveryTargetError extends Error {
+  constructor() {
+    super("No connected client and no pushNotifier configured");
+    this.name = "MobileNoDeliveryTargetError";
+  }
 }
 
 interface InboundFrame {
@@ -67,6 +76,18 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   let server: ServerLike | undefined;
   let activeSocket: SocketLike | undefined;
   let lineHandler: ((line: string) => void) | undefined;
+  // Session-epoch binding prevents cross-session reply leakage. The epoch
+  // increments on every open AND every close, so any disconnect/reconnect
+  // cycle (even with the same client) creates a new session boundary. The
+  // last inbound captured the epoch in effect when it was dispatched; if the
+  // current epoch has moved on by the time the agent's reply arrives at
+  // `platformSend`, the originating session is gone and the reply MUST NOT
+  // be routed to the now-active socket. It is forwarded to `pushNotifier`
+  // (or rejected) instead.
+  // let requires justification: monotonic counter for session boundaries
+  let sessionEpoch = 0;
+  // let requires justification: epoch captured at most-recent inbound dispatch
+  let lastInboundEpoch = -1;
 
   return createChannelAdapter<string>({
     name: "mobile",
@@ -93,13 +114,17 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
               return;
             }
             activeSocket = ws;
+            sessionEpoch++;
           },
           message(_ws: SocketLike, data: string | Uint8Array) {
             const text = typeof data === "string" ? data : new TextDecoder().decode(data);
             lineHandler?.(text);
           },
           close(ws: SocketLike) {
-            if (activeSocket === ws) activeSocket = undefined;
+            if (activeSocket === ws) {
+              activeSocket = undefined;
+              sessionEpoch++;
+            }
           },
         },
       });
@@ -111,21 +136,26 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       server = undefined;
     },
     platformSend: async (message: OutboundMessage) => {
-      if (activeSocket !== undefined) {
+      // Cross-session safety: deliver to the active socket ONLY if the
+      // originating session is still alive. If the session epoch has advanced
+      // since the last inbound (i.e., a disconnect happened), the reply is
+      // for a recipient that is gone — route it to push, not to whatever
+      // client happens to be connected now. If no inbound has ever dispatched
+      // (lastInboundEpoch === -1), allow direct delivery (host-initiated
+      // outbound to the current connection).
+      const sessionStillAlive =
+        activeSocket !== undefined &&
+        (lastInboundEpoch === -1 || lastInboundEpoch === sessionEpoch);
+      if (sessionStillAlive && activeSocket !== undefined) {
         activeSocket.send(JSON.stringify({ kind: "msg", ...message, timestamp: Date.now() }));
         return;
       }
-      // No connected client: hand off to the host's push pipeline if configured.
-      // The adapter intentionally does NOT buffer — buffered replays cannot
-      // distinguish recipients and would leak content across sessions.
-      if (config.pushNotifier !== undefined) {
-        try {
-          await config.pushNotifier(message);
-        } catch {
-          // push failure is non-fatal and not retried — the host pipeline is
-          // expected to provide its own retry/durability semantics.
-        }
+      // No live recipient — push pipeline owns durability.
+      if (config.pushNotifier === undefined) {
+        throw new MobileNoDeliveryTargetError();
       }
+      // Propagate notifier failure so the caller can retry / observe.
+      await config.pushNotifier(message);
     },
     onPlatformEvent: (handler) => {
       lineHandler = handler;
@@ -139,6 +169,9 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         if (frame.kind !== "msg") return null;
         const content = frame.content ?? [];
         if (content.length === 0) return null;
+        // Capture the session epoch at dispatch time so that any reply
+        // generated after a disconnect/reconnect is detected and rerouted.
+        lastInboundEpoch = sessionEpoch;
         return {
           content,
           senderId: trustClient ? (frame.senderId ?? defaultSenderId) : defaultSenderId,
