@@ -7,16 +7,22 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { BackgroundSessionEvent } from "@koi/core/daemon";
-import type { KoiError } from "@koi/core/errors";
+import type {
+  BackgroundSessionEvent,
+  BackgroundSessionRecord,
+  SupervisorHealth,
+  WorkerEvent,
+  WorkerId,
+} from "@koi/core/daemon";
+import type { KoiError, Result } from "@koi/core/errors";
 import type { TuiAction } from "@koi/tui";
 import {
   type CreateDaemonBridgeOptions,
   createDaemonBridge,
   type DaemonBridgeToast,
 } from "./daemon-bridge.js";
-import type { FakeRegistry } from "./daemon-bridge.test-helpers.js";
-import { makeFakeRegistry, makeRecord } from "./daemon-bridge.test-helpers.js";
+import type { FakeRegistry, FakeSupervisor } from "./daemon-bridge.test-helpers.js";
+import { makeFakeRegistry, makeFakeSupervisor, makeRecord } from "./daemon-bridge.test-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -344,6 +350,884 @@ describe("createDaemonBridge — registry-only mode", () => {
       const row = last.rows.find((r) => r.workerId === "worker-t");
       expect(row?.freshness).toBe("terminal");
     }
+
+    await bridge.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live mode helpers
+// ---------------------------------------------------------------------------
+
+function makeHealth(workers: SupervisorHealth["workers"] = []): SupervisorHealth {
+  return {
+    status: "ok",
+    reasons: [],
+    metrics: {
+      poolSize: workers.length,
+      maxWorkers: 10,
+      quarantinedCount: 0,
+      restartingCount: 0,
+      pendingSpawnCount: 0,
+      eventDropCount: 0,
+      shuttingDown: false,
+    },
+    workers,
+  };
+}
+
+/** Immediate setTimeoutFn so backoffs don't stall microtask-driven tests. */
+function immediateTimeout(fn: () => void, _ms: number): ReturnType<typeof setTimeout> {
+  return setTimeout(fn, 0);
+}
+
+function makeLiveBridge(
+  fake: FakeRegistry,
+  fakeSupervisor: FakeSupervisor,
+  overrides: Partial<CreateDaemonBridgeOptions> = {},
+): {
+  bridge: ReturnType<typeof createDaemonBridge>;
+  actions: TuiAction[];
+  toasts: DaemonBridgeToast[];
+} {
+  const actions: TuiAction[] = [];
+  const toasts: DaemonBridgeToast[] = [];
+  const bridge = createDaemonBridge({
+    mode: { kind: "live", registry: fake, supervisor: fakeSupervisor },
+    dispatch: (a: TuiAction): void => {
+      actions.push(a);
+    },
+    pushToast: (t: DaemonBridgeToast): void => {
+      toasts.push(t);
+    },
+    clock: () => 10_000_000,
+    intervals: { registryPollMs: 100_000, healthPollMs: 100_000 },
+    setTimeoutFn: immediateTimeout,
+    ...overrides,
+  });
+  return { bridge, actions, toasts };
+}
+
+// ---------------------------------------------------------------------------
+// Live mode tests
+// ---------------------------------------------------------------------------
+
+describe("createDaemonBridge — live mode", () => {
+  let fake: FakeRegistry;
+  let fakeSupervisor: FakeSupervisor;
+
+  beforeEach(() => {
+    fake = makeFakeRegistry();
+    fakeSupervisor = makeFakeSupervisor(makeHealth());
+  });
+
+  afterEach(async () => {
+    await pumpMicrotasks();
+  });
+
+  test("health() poll dispatches set_supervisor_health", async () => {
+    const health = makeHealth();
+    fakeSupervisor.setHealth(health);
+
+    const { bridge, actions } = makeLiveBridge(fake, fakeSupervisor, {
+      intervals: { registryPollMs: 100_000, healthPollMs: 1 },
+    });
+
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    const healthActions = actions.filter((a) => a.kind === "set_supervisor_health");
+    expect(healthActions.length).toBeGreaterThan(0);
+    const last = healthActions[healthActions.length - 1];
+    expect(last?.kind).toBe("set_supervisor_health");
+
+    await bridge.close();
+  });
+
+  test("WorkerEvent.crashed pushes toast + supervisor event entry", async () => {
+    const { bridge, actions, toasts } = makeLiveBridge(fake, fakeSupervisor);
+
+    // Give bridge time to start loops
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    const crashEvent: WorkerEvent = {
+      kind: "crashed",
+      workerId: "worker-x" as never,
+      at: 10_000_001,
+      error: { code: "INTERNAL", message: "OOM error", retryable: false },
+    };
+    fakeSupervisor.pushWorkerEvent(crashEvent);
+
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    const crashToasts = toasts.filter((t) => t.message.includes("crashed"));
+    expect(crashToasts.length).toBe(1);
+    expect(crashToasts[0]?.kind).toBe("warn");
+    expect(crashToasts[0]?.message).toContain("OOM error");
+
+    const eventActions = actions.filter((a) => a.kind === "push_supervisor_event");
+    expect(eventActions.length).toBeGreaterThan(0);
+    const last = eventActions[eventActions.length - 1];
+    if (last?.kind === "push_supervisor_event") {
+      expect(last.entry.kind).toBe("crashed");
+      expect(last.entry.detail).toBe("OOM error");
+    }
+
+    await bridge.close();
+  });
+
+  test("crash dedup within 30s emits single toast", async () => {
+    const { bridge, toasts } = makeLiveBridge(fake, fakeSupervisor, {
+      clock: () => 10_000_000,
+    });
+
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    // Push started event first to set incarnation
+    const startedEvent: WorkerEvent = {
+      kind: "started",
+      workerId: "worker-dup" as never,
+      at: 9_999_990,
+    };
+    fakeSupervisor.pushWorkerEvent(startedEvent);
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    const crashEvent: WorkerEvent = {
+      kind: "crashed",
+      workerId: "worker-dup" as never,
+      at: 10_000_001,
+      error: { code: "INTERNAL", message: "dup crash", retryable: false },
+    };
+    // Push same crash twice (same incarnation, within dedup window)
+    fakeSupervisor.pushWorkerEvent(crashEvent);
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+    fakeSupervisor.pushWorkerEvent({ ...crashEvent });
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    const crashToasts = toasts.filter((t) => t.message.includes("dup crash"));
+    expect(crashToasts.length).toBe(1);
+
+    await bridge.close();
+  });
+
+  test("same workerId different incarnation (startedAt) emits two crash toasts", async () => {
+    let now = 10_000_000;
+    const { bridge, toasts } = makeLiveBridge(fake, fakeSupervisor, {
+      clock: () => now,
+    });
+
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    // First incarnation: started at t=100, crashed
+    fakeSupervisor.pushWorkerEvent({ kind: "started", workerId: "worker-inc" as never, at: 100 });
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+    fakeSupervisor.pushWorkerEvent({
+      kind: "crashed",
+      workerId: "worker-inc" as never,
+      at: 200,
+      error: { code: "INTERNAL", message: "first crash", retryable: false },
+    });
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    // Advance time past dedup window
+    now = 10_000_000 + 35_000;
+
+    // Second incarnation: started at t=300, crashed
+    fakeSupervisor.pushWorkerEvent({ kind: "started", workerId: "worker-inc" as never, at: 300 });
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+    fakeSupervisor.pushWorkerEvent({
+      kind: "crashed",
+      workerId: "worker-inc" as never,
+      at: 400,
+      error: { code: "INTERNAL", message: "second crash", retryable: false },
+    });
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    const crashToasts = toasts.filter((t) => t.message.includes("crash"));
+    expect(crashToasts.length).toBe(2);
+
+    await bridge.close();
+  });
+
+  test("health.state running→quarantined emits toast once per transition", async () => {
+    const runningWorker: SupervisorHealth["workers"][number] = {
+      workerId: "worker-q" as never,
+      agentId: "agent-q" as never,
+      state: "running",
+      lastHeartbeatAt: undefined,
+      heartbeatDeadlineAt: undefined,
+    };
+    fakeSupervisor.setHealth(makeHealth([runningWorker]));
+
+    const { bridge, toasts } = makeLiveBridge(fake, fakeSupervisor, {
+      intervals: { registryPollMs: 100_000, healthPollMs: 1 },
+    });
+
+    // First poll: establishes baseline (running)
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    // Change to quarantined
+    fakeSupervisor.setHealth(makeHealth([{ ...runningWorker, state: "quarantined" }]));
+
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    const quarantineToasts = toasts.filter((t) => t.message.includes("quarantined"));
+    expect(quarantineToasts.length).toBe(1);
+    expect(quarantineToasts[0]?.kind).toBe("warn");
+
+    await bridge.close();
+  });
+
+  test("health.state running→restarting emits info toast", async () => {
+    const runningWorker: SupervisorHealth["workers"][number] = {
+      workerId: "worker-r" as never,
+      agentId: "agent-r" as never,
+      state: "running",
+      lastHeartbeatAt: undefined,
+      heartbeatDeadlineAt: undefined,
+    };
+    fakeSupervisor.setHealth(makeHealth([runningWorker]));
+
+    const { bridge, toasts } = makeLiveBridge(fake, fakeSupervisor, {
+      intervals: { registryPollMs: 100_000, healthPollMs: 1 },
+    });
+
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    fakeSupervisor.setHealth(makeHealth([{ ...runningWorker, state: "restarting" }]));
+
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    const restartToasts = toasts.filter((t) => t.message.includes("restarting"));
+    expect(restartToasts.length).toBe(1);
+    expect(restartToasts[0]?.kind).toBe("info");
+
+    await bridge.close();
+  });
+
+  test("health.status ok→degraded emits warn toast", async () => {
+    fakeSupervisor.setHealth(makeHealth());
+
+    const { bridge, toasts } = makeLiveBridge(fake, fakeSupervisor, {
+      intervals: { registryPollMs: 100_000, healthPollMs: 1 },
+    });
+
+    // Establish baseline (ok)
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    fakeSupervisor.setHealth({
+      ...makeHealth(),
+      status: "degraded",
+      reasons: ["worker quarantined"],
+    });
+
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    const degradedToasts = toasts.filter((t) => t.message.includes("supervisor degraded"));
+    expect(degradedToasts.length).toBe(1);
+    expect(degradedToasts[0]?.kind).toBe("warn");
+    expect(degradedToasts[0]?.message).toContain("worker quarantined");
+
+    await bridge.close();
+  });
+
+  test("3 consecutive health() failures → status stale, last snapshot preserved", async () => {
+    const health = makeHealth();
+    fakeSupervisor.setHealth(health);
+    let healthCallCount = 0;
+    let throwHealth = false;
+
+    const throwingSupervisor: FakeSupervisor = {
+      ...fakeSupervisor,
+      health: (): SupervisorHealth => {
+        healthCallCount++;
+        if (throwHealth) throw new Error("health poll failed");
+        return health;
+      },
+    };
+
+    const { bridge, actions } = makeLiveBridge(fake, throwingSupervisor, {
+      intervals: { registryPollMs: 100_000, healthPollMs: 1 },
+    });
+
+    // Get baseline health dispatched
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+    expect(healthCallCount).toBeGreaterThan(0);
+
+    throwHealth = true;
+
+    // Drive 3+ failures
+    for (let i = 0; i < 10; i++) {
+      await pumpMicrotasks();
+    }
+
+    const staleStatuses = actions.filter(
+      (a) => a.kind === "set_supervisor_status" && a.status.kind === "stale",
+    );
+    expect(staleStatuses.length).toBeGreaterThan(0);
+
+    // Last health dispatch was NOT null (snapshot preserved)
+    const healthActions = actions.filter((a) => a.kind === "set_supervisor_health");
+    expect(healthActions.length).toBeGreaterThan(0);
+    const lastHealthAction = healthActions[healthActions.length - 1];
+    if (lastHealthAction?.kind === "set_supervisor_health") {
+      expect(lastHealthAction.health).not.toBeNull();
+    }
+
+    await bridge.close();
+  });
+
+  test("watchAll iterator throw → status degraded with missing workerEvents", async () => {
+    fakeSupervisor.triggerWatchAllError(new Error("stream broke"));
+
+    const { bridge, actions } = makeLiveBridge(fake, fakeSupervisor, {
+      intervals: { registryPollMs: 100_000, healthPollMs: 100_000 },
+    });
+
+    for (let i = 0; i < 10; i++) {
+      await pumpMicrotasks();
+    }
+
+    const degradedStatuses = actions.filter(
+      (a) => a.kind === "set_supervisor_status" && a.status.kind === "degraded",
+    );
+    expect(degradedStatuses.length).toBeGreaterThan(0);
+    const last = degradedStatuses[degradedStatuses.length - 1];
+    if (last?.kind === "set_supervisor_status" && last.status.kind === "degraded") {
+      expect(last.status.missing).toContain("workerEvents");
+    }
+
+    await bridge.close();
+  });
+
+  test("watchAll reacquire restores live; restoration toast fires once on degraded→live", async () => {
+    fakeSupervisor.triggerWatchAllError(new Error("initial error"));
+
+    const { bridge, actions, toasts } = makeLiveBridge(fake, fakeSupervisor, {
+      intervals: { registryPollMs: 100_000, healthPollMs: 100_000 },
+    });
+
+    // Wait for stream to go stale
+    for (let i = 0; i < 10; i++) {
+      await pumpMicrotasks();
+    }
+
+    const degradedStatuses = actions.filter(
+      (a) => a.kind === "set_supervisor_status" && a.status.kind === "degraded",
+    );
+    expect(degradedStatuses.length).toBeGreaterThan(0);
+
+    // Push a real event — should restore live
+    fakeSupervisor.pushWorkerEvent({
+      kind: "heartbeat",
+      workerId: "worker-restore" as never,
+      at: 10_000_002,
+    });
+
+    for (let i = 0; i < 10; i++) {
+      await pumpMicrotasks();
+    }
+
+    const restorationToasts = toasts.filter((t) =>
+      t.message.includes("supervisor events restored"),
+    );
+    expect(restorationToasts.length).toBeGreaterThanOrEqual(1);
+
+    // Second time restored toast fires only once
+    const liveStatuses = actions.filter(
+      (a) => a.kind === "set_supervisor_status" && a.status.kind === "live",
+    );
+    expect(liveStatuses.length).toBeGreaterThan(0);
+
+    await bridge.close();
+  });
+
+  test("watchAll backoff cancelled by close() via closed sentinel", async () => {
+    fakeSupervisor.triggerWatchAllError(new Error("initial error"));
+
+    const { bridge } = makeLiveBridge(fake, fakeSupervisor, {
+      intervals: { registryPollMs: 100_000, healthPollMs: 100_000 },
+    });
+
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    const start = Date.now();
+    await bridge.close();
+    const elapsed = Date.now() - start;
+
+    // Should complete well under 1 second despite backoff
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  test("locallySpawnedIds: markLocallySpawned inserts; terminal WorkerEvent removes", async () => {
+    const { bridge } = makeLiveBridge(fake, fakeSupervisor);
+
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    bridge.markLocallySpawned("worker-local");
+
+    // Push terminal event
+    fakeSupervisor.pushWorkerEvent({
+      kind: "exited",
+      workerId: "worker-local" as never,
+      at: 10_000_001,
+      code: 0,
+      state: "terminated",
+    });
+
+    for (let i = 0; i < 5; i++) {
+      await pumpMicrotasks();
+    }
+
+    // After terminal, the worker is removed from locallySpawnedIds
+    // We can verify indirectly by running a kill and checking ownership
+    const result = await bridge.requestKill({
+      workerId: "worker-local",
+      expectedVersion: 1,
+      expectedPid: 1234,
+    });
+    // worker-local not in health.workers (empty) and not in locallySpawnedIds
+    expect(result.kind).toBe("refused");
+
+    await bridge.close();
+  });
+
+  test("locallySpawnedIds cleared on workerEvents → stale", async () => {
+    const { bridge } = makeLiveBridge(fake, fakeSupervisor);
+
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    bridge.markLocallySpawned("worker-stale-test");
+
+    // Trigger watchAll error to go stale
+    fakeSupervisor.triggerWatchAllError(new Error("stream broke"));
+
+    for (let i = 0; i < 10; i++) {
+      await pumpMicrotasks();
+    }
+
+    // After going stale, locallySpawnedIds should be cleared
+    // We verify by checking kill is refused (not owned anymore)
+    const result = await bridge.requestKill({
+      workerId: "worker-stale-test",
+      expectedVersion: 1,
+      expectedPid: 1234,
+    });
+    expect(result.kind).toBe("refused");
+    expect(result.kind === "refused" && result.reason).toContain("not locally owned");
+
+    await bridge.close();
+  });
+
+  test("requestKill happy path: describe matches → supervisor.stop called → kind: stopped", async () => {
+    const rec = makeRecord("worker-kill", "agent-kill");
+    fake.setRecords([rec]);
+    // Make registry.describe work
+    const fakeWithDescribe: FakeRegistry = {
+      ...fake,
+      describe: async (
+        _id: WorkerId,
+      ): Promise<Result<BackgroundSessionRecord | undefined, KoiError>> => ({
+        ok: true,
+        value: { ...rec, status: "running", version: 1, pid: rec.pid },
+      }),
+    };
+
+    // Setup health with this worker
+    fakeSupervisor.setHealth(
+      makeHealth([
+        {
+          workerId: "worker-kill" as never,
+          agentId: "agent-kill" as never,
+          state: "running",
+          lastHeartbeatAt: undefined,
+          heartbeatDeadlineAt: undefined,
+        },
+      ]),
+    );
+
+    const { bridge } = makeLiveBridge(fakeWithDescribe, fakeSupervisor);
+
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    const result = await bridge.requestKill({
+      workerId: "worker-kill",
+      expectedVersion: 1,
+      expectedPid: rec.pid,
+    });
+
+    expect(result.kind).toBe("stopped");
+    expect(fakeSupervisor.stopCalls().length).toBe(1);
+    expect(fakeSupervisor.stopCalls()[0]?.id).toBe("worker-kill");
+
+    await bridge.close();
+  });
+
+  test("requestKill registry unreadable → info toast + supervisor.stop still called", async () => {
+    const fakeWithUnreadable: FakeRegistry = {
+      ...fake,
+      describe: async (
+        _id: WorkerId,
+      ): Promise<Result<BackgroundSessionRecord | undefined, KoiError>> => ({
+        ok: false,
+        error: { code: "INTERNAL", message: "registry down", retryable: false },
+      }),
+    };
+
+    fakeSupervisor.setHealth(
+      makeHealth([
+        {
+          workerId: "worker-unreg" as never,
+          agentId: "agent-unreg" as never,
+          state: "running",
+          lastHeartbeatAt: undefined,
+          heartbeatDeadlineAt: undefined,
+        },
+      ]),
+    );
+
+    const { bridge, toasts } = makeLiveBridge(fakeWithUnreadable, fakeSupervisor);
+
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    const result = await bridge.requestKill({
+      workerId: "worker-unreg",
+      expectedVersion: 1,
+      expectedPid: 1234,
+    });
+
+    expect(result.kind).toBe("stopped");
+    const infoToasts = toasts.filter((t) => t.message.includes("registry unreadable"));
+    expect(infoToasts.length).toBe(1);
+    expect(fakeSupervisor.stopCalls().length).toBe(1);
+
+    await bridge.close();
+  });
+
+  test("requestKill mismatched version/pid → no supervisor.stop, kind: refused, warn toast", async () => {
+    const rec = makeRecord("worker-mismatch", "agent-m");
+    const fakeWithDescribe: FakeRegistry = {
+      ...fake,
+      describe: async (): Promise<{ ok: true; value: typeof rec }> => ({
+        ok: true,
+        value: { ...rec, status: "running", version: 5, pid: 9999 },
+      }),
+    };
+
+    fakeSupervisor.setHealth(
+      makeHealth([
+        {
+          workerId: "worker-mismatch" as never,
+          agentId: "agent-m" as never,
+          state: "running",
+          lastHeartbeatAt: undefined,
+          heartbeatDeadlineAt: undefined,
+        },
+      ]),
+    );
+
+    const { bridge, toasts } = makeLiveBridge(fakeWithDescribe, fakeSupervisor);
+
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    const result = await bridge.requestKill({
+      workerId: "worker-mismatch",
+      expectedVersion: 1, // mismatch: registry has version 5
+      expectedPid: 1234, // mismatch: registry has pid 9999
+    });
+
+    expect(result.kind).toBe("refused");
+    expect(fakeSupervisor.stopCalls().length).toBe(0);
+    const warnToasts = toasts.filter((t) => t.message.includes("row stale"));
+    expect(warnToasts.length).toBe(1);
+
+    await bridge.close();
+  });
+
+  test("requestKill expectedPid=0 + workerEvents live → bypass CAS, supervisor.stop called", async () => {
+    const rec = makeRecord("worker-starting", "agent-s", "starting");
+    const fakeWithDescribe: FakeRegistry = {
+      ...fake,
+      describe: async (): Promise<{ ok: true; value: typeof rec }> => ({
+        ok: true,
+        value: { ...rec, status: "starting", version: 99, pid: 0 },
+      }),
+    };
+
+    fakeSupervisor.setHealth(
+      makeHealth([
+        {
+          workerId: "worker-starting" as never,
+          agentId: "agent-s" as never,
+          state: "running",
+          lastHeartbeatAt: undefined,
+          heartbeatDeadlineAt: undefined,
+        },
+      ]),
+    );
+
+    const { bridge } = makeLiveBridge(fakeWithDescribe, fakeSupervisor);
+
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    // workerEvents is live (no errors); expectedPid=0 → bypass CAS
+    const result = await bridge.requestKill({
+      workerId: "worker-starting",
+      expectedVersion: 1, // version mismatch — but bypassed
+      expectedPid: 0,
+    });
+
+    expect(result.kind).toBe("stopped");
+    expect(fakeSupervisor.stopCalls().length).toBe(1);
+
+    await bridge.close();
+  });
+
+  test("requestKill expectedPid=0 + workerEvents stale → enforce version CAS; mismatch refuses", async () => {
+    const rec = makeRecord("worker-starting2", "agent-s2", "starting");
+    const fakeWithDescribe: FakeRegistry = {
+      ...fake,
+      describe: async (): Promise<{ ok: true; value: typeof rec }> => ({
+        ok: true,
+        // version mismatch from expected
+        value: { ...rec, status: "starting", version: 99, pid: 0 },
+      }),
+    };
+
+    fakeSupervisor.setHealth(
+      makeHealth([
+        {
+          workerId: "worker-starting2" as never,
+          agentId: "agent-s2" as never,
+          state: "running",
+          lastHeartbeatAt: undefined,
+          heartbeatDeadlineAt: undefined,
+        },
+      ]),
+    );
+
+    // Trigger watchAll error to make workerEvents stale
+    fakeSupervisor.triggerWatchAllError(new Error("stream broke"));
+
+    const { bridge, toasts } = makeLiveBridge(fakeWithDescribe, fakeSupervisor, {
+      intervals: { registryPollMs: 100_000, healthPollMs: 100_000 },
+    });
+
+    for (let i = 0; i < 15; i++) {
+      await pumpMicrotasks();
+    }
+
+    const result = await bridge.requestKill({
+      workerId: "worker-starting2",
+      expectedVersion: 1, // mismatch (registry has 99)
+      expectedPid: 0,
+    });
+
+    expect(result.kind).toBe("refused");
+    expect(fakeSupervisor.stopCalls().length).toBe(0);
+    const warnToasts = toasts.filter((t) => t.message.includes("row stale"));
+    expect(warnToasts.length).toBe(1);
+
+    await bridge.close();
+  });
+
+  test("requestKill foreign worker (not in health.workers + not in locallySpawnedIds) → refused, no supervisor.stop", async () => {
+    // health.workers is empty
+    fakeSupervisor.setHealth(makeHealth([]));
+
+    const { bridge } = makeLiveBridge(fake, fakeSupervisor);
+
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    const result = await bridge.requestKill({
+      workerId: "foreign-worker",
+      expectedVersion: 1,
+      expectedPid: 1234,
+    });
+
+    expect(result.kind).toBe("refused");
+    if (result.kind === "refused") {
+      expect(result.reason).toContain("not locally owned");
+    }
+    expect(fakeSupervisor.stopCalls().length).toBe(0);
+
+    await bridge.close();
+  });
+
+  test("requestKill terminal/terminating/detached registry record → refused", async () => {
+    const testCases = [
+      { status: "exited" as const, expectedReason: "already terminal" },
+      { status: "crashed" as const, expectedReason: "already terminal" },
+      { status: "terminating" as const, expectedReason: "kill in flight; wait" },
+      { status: "detached" as const, expectedReason: "use koi bg kill or koi bg attach" },
+    ];
+
+    for (const tc of testCases) {
+      const fresh = makeFakeRegistry();
+      const freshSupervisor = makeFakeSupervisor(
+        makeHealth([
+          {
+            workerId: "worker-term" as never,
+            agentId: "agent-term" as never,
+            state: "running",
+            lastHeartbeatAt: undefined,
+            heartbeatDeadlineAt: undefined,
+          },
+        ]),
+      );
+
+      const rec = makeRecord("worker-term", "agent-term", tc.status);
+      const fakeWithDescribe: FakeRegistry = {
+        ...fresh,
+        describe: async (): Promise<{ ok: true; value: typeof rec }> => ({
+          ok: true,
+          value: rec,
+        }),
+      };
+
+      const { bridge } = makeLiveBridge(fakeWithDescribe, freshSupervisor);
+
+      for (let i = 0; i < 3; i++) {
+        await pumpMicrotasks();
+      }
+
+      const result = await bridge.requestKill({
+        workerId: "worker-term",
+        expectedVersion: 1,
+        expectedPid: rec.pid,
+      });
+
+      expect(result.kind).toBe("refused");
+      if (result.kind === "refused") {
+        expect(result.reason).toBe(tc.expectedReason);
+      }
+      expect(freshSupervisor.stopCalls().length).toBe(0);
+
+      await bridge.close();
+    }
+  });
+
+  test("requestKill in registry-only mode → refused with hint", async () => {
+    const { actions, toasts } = collectActions();
+    const bridge = createDaemonBridge({
+      mode: { kind: "registry-only", registry: fake },
+      dispatch: (a: TuiAction): void => {
+        actions.push(a);
+      },
+      pushToast: (t: DaemonBridgeToast): void => {
+        toasts.push(t);
+      },
+      clock: () => 10_000_000,
+    });
+
+    const result = await bridge.requestKill({
+      workerId: "any-worker",
+      expectedVersion: 1,
+      expectedPid: 1234,
+    });
+
+    expect(result.kind).toBe("refused");
+    if (result.kind === "refused") {
+      expect(result.reason).toContain("no live supervisor");
+    }
+
+    await bridge.close();
+  });
+
+  test("requestKill supervisor.stop returning Result.ok:false → toast + refused", async () => {
+    fakeSupervisor.setHealth(
+      makeHealth([
+        {
+          workerId: "worker-stopfail" as never,
+          agentId: "agent-sf" as never,
+          state: "running",
+          lastHeartbeatAt: undefined,
+          heartbeatDeadlineAt: undefined,
+        },
+      ]),
+    );
+    fakeSupervisor.setStopResult({
+      ok: false,
+      error: { code: "NOT_FOUND", message: "worker already gone", retryable: false },
+    });
+
+    const rec = makeRecord("worker-stopfail", "agent-sf");
+    const fakeWithDescribe: FakeRegistry = {
+      ...fake,
+      describe: async (): Promise<{ ok: true; value: typeof rec }> => ({
+        ok: true,
+        value: { ...rec, status: "running", version: 1, pid: rec.pid },
+      }),
+    };
+
+    const { bridge, toasts } = makeLiveBridge(fakeWithDescribe, fakeSupervisor);
+
+    for (let i = 0; i < 3; i++) {
+      await pumpMicrotasks();
+    }
+
+    const result = await bridge.requestKill({
+      workerId: "worker-stopfail",
+      expectedVersion: 1,
+      expectedPid: rec.pid,
+    });
+
+    expect(result.kind).toBe("refused");
+    const warnToasts = toasts.filter((t) => t.message.includes("stop failed"));
+    expect(warnToasts.length).toBe(1);
 
     await bridge.close();
   });

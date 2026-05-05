@@ -1,33 +1,63 @@
 /**
  * DaemonBridge — subscribes to a `FileSessionRegistry` and dispatches into
- * the TUI store. Registry-only construction mode (Task 6). Task 7 extends
- * this with live/supervisor mode.
+ * the TUI store. Registry-only construction mode (Task 6). Live mode extends
+ * this with supervisor health/events + kill flow + locallySpawnedIds (Task 7).
  *
  * Cancellation: closed-sentinel pattern from registry-supervisor-bridge.ts.
  * Never calls `iter.return()` — races each `next()` against `closedPromise`.
  */
 
-import type { BackgroundSessionEvent, BackgroundSessionRecord } from "@koi/core/daemon";
+import type {
+  BackgroundSessionEvent,
+  BackgroundSessionRecord,
+  Supervisor,
+  SupervisorHealth,
+  WorkerEvent,
+  WorkerId,
+} from "@koi/core/daemon";
 import type { FileSessionRegistry } from "@koi/daemon";
-import type { BgSessionRow, RegistryStatus, TuiAction } from "@koi/tui";
+import type {
+  BgSessionRow,
+  BridgeStatus,
+  RegistryStatus,
+  SupervisorEventEntry,
+  TuiAction,
+} from "@koi/tui";
 import { computeFreshness } from "@koi/tui/state";
 
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
-export type DaemonBridgeMode = {
-  readonly kind: "registry-only";
-  readonly registry: FileSessionRegistry;
-};
+export type DaemonBridgeMode =
+  | { readonly kind: "registry-only"; readonly registry: FileSessionRegistry }
+  | {
+      readonly kind: "live";
+      readonly registry: FileSessionRegistry;
+      readonly supervisor: Supervisor;
+    };
 
 export interface DaemonBridgeToast {
   readonly kind: "info" | "warn" | "error";
   readonly message: string;
 }
 
+export interface KillRequest {
+  readonly workerId: string;
+  readonly expectedVersion: number;
+  readonly expectedPid: number;
+}
+
+export type KillOutcome =
+  | { readonly kind: "stopped" }
+  | { readonly kind: "refused"; readonly reason: string };
+
 export interface DaemonBridge {
   readonly close: () => Promise<void>;
+  /** Live mode only. Returns refused on registry-only bridges. */
+  readonly requestKill: (req: KillRequest) => Promise<KillOutcome>;
+  /** Live mode only. No-op in registry-only. */
+  readonly markLocallySpawned: (workerId: string) => void;
 }
 
 type Dispatch = (action: TuiAction) => void;
@@ -37,7 +67,10 @@ export interface CreateDaemonBridgeOptions {
   readonly dispatch: Dispatch;
   readonly pushToast: (toast: DaemonBridgeToast) => void;
   readonly clock?: () => number;
-  readonly intervals?: { readonly registryPollMs?: number };
+  readonly intervals?: {
+    readonly registryPollMs?: number;
+    readonly healthPollMs?: number;
+  };
   /** Injectable for tests — defaults to global setTimeout. */
   readonly setTimeoutFn?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
 }
@@ -50,6 +83,7 @@ const DEFAULT_POLL_MS = 1000;
 const FAILURE_STRIKE_THRESHOLD = 3;
 const BACKOFF_BASE_MS = 1000;
 const BACKOFF_CEILING_MS = 60_000;
+const CRASH_DEDUP_TTL_MS = 30_000;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -85,16 +119,90 @@ function recordToRow(
 function mapRecordsToRows(
   records: readonly BackgroundSessionRecord[],
   now: number,
+  health: SupervisorHealth | null,
+  locallySpawnedIds: ReadonlySet<string>,
 ): readonly BgSessionRow[] {
   return records.map((rec) => {
     const freshness = computeFreshness({
       row: recordToRow(rec, "foreign"), // temporary row for freshness input
-      health: null,
-      locallySpawnedIds: new Set(),
+      health,
+      locallySpawnedIds,
       now,
     });
     return recordToRow(rec, freshness);
   });
+}
+
+function resolveAgentName(workerId: string, health: SupervisorHealth | null): string {
+  if (health !== null) {
+    const worker = health.workers.find((w) => String(w.workerId) === workerId);
+    if (worker !== undefined) return String(worker.agentId);
+  }
+  return workerId;
+}
+
+function makeEventEntry(event: WorkerEvent, agentName: string, now: number): SupervisorEventEntry {
+  const id = `${String(event.workerId)}:${now}:${event.kind}`;
+  switch (event.kind) {
+    case "crashed":
+      return {
+        id,
+        ts: event.at,
+        kind: event.kind,
+        workerId: String(event.workerId),
+        agentName,
+        detail: event.error.message,
+      };
+    case "exited":
+      return {
+        id,
+        ts: event.at,
+        kind: event.kind,
+        workerId: String(event.workerId),
+        agentName,
+        detail: `code=${event.code}`,
+      };
+    default:
+      return {
+        id,
+        ts: event.at,
+        kind: event.kind,
+        workerId: String(event.workerId),
+        agentName,
+      };
+  }
+}
+
+interface ChannelLivenessState {
+  health: "live" | "stale";
+  registryList: "live" | "stale";
+  workerEvents: "live" | "stale";
+  registryEvents: "live" | "stale";
+}
+
+function computeBridgeStatus(channels: ChannelLivenessState, now: number): BridgeStatus {
+  if (channels.health === "stale" || channels.registryList === "stale") {
+    return {
+      kind: "stale",
+      since: now,
+      reason:
+        channels.health === "stale" ? "supervisor health poll failed" : "registry poll failed",
+    };
+  }
+  const missingPush: ("workerEvents" | "registryEvents")[] = [];
+  if (channels.workerEvents === "stale") missingPush.push("workerEvents");
+  if (channels.registryEvents === "stale") missingPush.push("registryEvents");
+  if (missingPush.length > 0) {
+    return { kind: "degraded", missing: missingPush, since: now };
+  }
+  return { kind: "live" };
+}
+
+function bridgeStatusKind(status: BridgeStatus): string {
+  if (status.kind === "degraded") {
+    return `degraded:${(status as { kind: "degraded"; missing: readonly string[] }).missing.join(",")}`;
+  }
+  return status.kind;
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +212,7 @@ function mapRecordsToRows(
 export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridge {
   const { mode, dispatch, pushToast, clock = (): number => Date.now(), intervals } = opts;
   const pollMs = intervals?.registryPollMs ?? DEFAULT_POLL_MS;
+  const healthPollMs = intervals?.healthPollMs ?? DEFAULT_POLL_MS;
   const setTimeoutFn = opts.setTimeoutFn ?? setTimeout;
 
   const registry = mode.registry;
@@ -118,14 +227,31 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
   let closed = false;
 
   // ---------------------------------------------------------------------------
-  // Mutable bridge state
+  // Mutable bridge state (all let because values mutate as bridge runs)
   // ---------------------------------------------------------------------------
-  // Let is required because these values mutate as the bridge runs.
   let consecutiveFailures = 0;
-  // undefined = not yet dispatched (first poll always dispatches)
   let registryStatusKind: RegistryStatus["kind"] | undefined;
   let watchDegraded = false;
   let watchDegradedSince = 0;
+
+  // Live mode state
+  let currentHealth: SupervisorHealth | null = null;
+  let prevHealthSnapshot: SupervisorHealth | null = null;
+  let consecutiveHealthFailures = 0;
+  // Channel liveness for live mode (unused in registry-only)
+  const channels: ChannelLivenessState = {
+    health: "live",
+    registryList: "live",
+    workerEvents: "live",
+    registryEvents: "live",
+  };
+  let prevBridgeStatusKey: string | undefined;
+  // locallySpawnedIds for live mode
+  const locallySpawnedIds = new Set<string>();
+  // startedAt per workerId from "started" events (for crash dedup incarnation key)
+  const workerStartedAt = new Map<string, number>();
+  // Dedup cache: key → expiry ms
+  const dedupCache = new Map<string, number>();
 
   // ---------------------------------------------------------------------------
   // Poll helpers
@@ -135,24 +261,41 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
     dispatch({ kind: "set_bg_registry_status", status });
   }
 
+  function dispatchBridgeStatus(): void {
+    if (mode.kind !== "live") return;
+    const status = computeBridgeStatus(channels, clock());
+    const key = bridgeStatusKind(status);
+    if (prevBridgeStatusKey === key) return;
+    prevBridgeStatusKey = key;
+    dispatch({ kind: "set_supervisor_status", status });
+  }
+
+  function dedupToast(key: string, now: number): boolean {
+    const expiry = dedupCache.get(key);
+    if (expiry !== undefined && now < expiry) return true; // already seen
+    dedupCache.set(key, now + CRASH_DEDUP_TTL_MS);
+    return false;
+  }
+
   async function runOnePoll(): Promise<void> {
     const result = await registry.describeList();
     if (closed) return;
 
     if (result.ok) {
       consecutiveFailures = 0;
+      if (mode.kind === "live") {
+        channels.registryList = "live";
+        dispatchBridgeStatus();
+      }
       const now = clock();
-      const rows = mapRecordsToRows(result.value, now);
+      const rows = mapRecordsToRows(result.value, now, currentHealth, locallySpawnedIds);
       dispatch({ kind: "set_bg_rows", rows });
 
-      // If we were stale, recover to live (and possibly degraded if watch is down)
       const wasStale = registryStatusKind === "stale";
       const newStatus: RegistryStatus = watchDegraded
         ? { kind: "degraded", since: watchDegradedSince }
         : { kind: "live" };
 
-      // Always dispatch on first poll (registryStatusKind === undefined),
-      // and on transitions thereafter.
       if (registryStatusKind === undefined || registryStatusKind !== newStatus.kind) {
         registryStatusKind = newStatus.kind;
         dispatchRegistryStatus(newStatus);
@@ -162,6 +305,10 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
       }
     } else {
       consecutiveFailures++;
+      if (mode.kind === "live" && consecutiveFailures >= FAILURE_STRIKE_THRESHOLD) {
+        channels.registryList = "stale";
+        dispatchBridgeStatus();
+      }
       if (
         consecutiveFailures >= FAILURE_STRIKE_THRESHOLD &&
         (registryStatusKind === undefined || registryStatusKind !== "stale")
@@ -177,7 +324,7 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
   }
 
   // ---------------------------------------------------------------------------
-  // Poll loop
+  // Registry poll loop
   // ---------------------------------------------------------------------------
 
   let pollLoopDone: Promise<void>;
@@ -186,7 +333,6 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
     while (!closed) {
       await runOnePoll();
       if (closed) break;
-      // Sleep for pollMs, but allow close() to interrupt
       await Promise.race([
         new Promise<void>((resolve) => setTimeoutFn(resolve, pollMs)),
         closedPromise,
@@ -199,18 +345,17 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
   });
 
   // ---------------------------------------------------------------------------
-  // Watch loop
+  // Registry watch loop
   // ---------------------------------------------------------------------------
 
   let watchLoopDone: Promise<void>;
 
   async function runWatchLoop(): Promise<void> {
-    // eslint-disable-next-line prefer-const
+    // let because attempt increments
     let attempt = 0;
 
     while (!closed) {
       const iter = registry.watch()[Symbol.asyncIterator]();
-      // pendingNext: one in-flight iter.next() at a time (same pattern as registry-supervisor-bridge.ts)
       let pendingNext: Promise<IteratorResult<BackgroundSessionEvent>> | undefined;
 
       const getNext = (): Promise<IteratorResult<BackgroundSessionEvent>> => {
@@ -221,44 +366,44 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
       };
 
       try {
-        // Consume events until closed or iter done
         while (!closed) {
           const result = await Promise.race([getNext(), closedPromise]);
           if (result === "closed") return;
           pendingNext = undefined;
           if (result.done) break;
 
-          // Watch event received — trigger immediate poll
           if (!closed) {
             await runOnePoll();
           }
 
-          // Transition back to live if we were degraded
           if (watchDegraded && !closed) {
             watchDegraded = false;
             watchDegradedSince = 0;
-            if (registryStatusKind !== "stale") {
+            if (mode.kind === "live") {
+              channels.registryEvents = "live";
+              dispatchBridgeStatus();
+            } else if (registryStatusKind !== "stale") {
               registryStatusKind = "live";
               dispatchRegistryStatus({ kind: "live" });
             }
           }
           attempt = 0;
         }
-        // iter.done — no more events; break outer while
         if (!closed) break;
       } catch (_e: unknown) {
         if (closed) return;
-        // Watch stream failed → degraded
         if (!watchDegraded) {
           watchDegraded = true;
           watchDegradedSince = clock();
-          if (registryStatusKind !== "stale") {
+          if (mode.kind === "live") {
+            channels.registryEvents = "stale";
+            dispatchBridgeStatus();
+          } else if (registryStatusKind !== "stale") {
             registryStatusKind = "degraded";
             dispatchRegistryStatus({ kind: "degraded", since: watchDegradedSince });
           }
         }
 
-        // Backoff before reacquire
         const backoffMs = computeBackoff(attempt);
         attempt++;
         await Promise.race([
@@ -274,6 +419,275 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
   });
 
   // ---------------------------------------------------------------------------
+  // Live mode: health poll loop
+  // ---------------------------------------------------------------------------
+
+  let healthLoopDone: Promise<void> = Promise.resolve();
+
+  function diffHealthSnapshots(prev: SupervisorHealth | null, next: SupervisorHealth): void {
+    const now = clock();
+
+    // Health status transitions
+    if (prev !== null && prev.status === "ok" && next.status !== "ok") {
+      const reason = next.reasons[0] ?? "unknown";
+      const toastKind = next.status === "degraded" ? "warn" : "warn";
+      if (next.status === "degraded") {
+        pushToast({ kind: toastKind, message: `⚠ supervisor degraded: ${reason}` });
+      } else {
+        pushToast({ kind: toastKind, message: `⚠ supervisor unhealthy: ${reason}` });
+      }
+    }
+
+    // Per-worker state transitions
+    for (const worker of next.workers) {
+      const workerId = String(worker.workerId);
+      const agentName = String(worker.agentId);
+      const prevWorker = prev?.workers.find((w) => String(w.workerId) === workerId);
+      if (prevWorker === undefined) continue;
+
+      if (prevWorker.state === "running" && worker.state === "quarantined") {
+        pushToast({ kind: "warn", message: `⚠ worker ${agentName} quarantined` });
+      } else if (prevWorker.state === "running" && worker.state === "restarting") {
+        pushToast({ kind: "info", message: `↻ worker ${agentName} restarting` });
+      }
+    }
+
+    // Suppress unused variable
+    void now;
+  }
+
+  async function runHealthPollLoop(): Promise<void> {
+    if (mode.kind !== "live") return;
+    const { supervisor } = mode;
+
+    while (!closed) {
+      try {
+        const health = supervisor.health();
+        consecutiveHealthFailures = 0;
+        if (channels.health === "stale") {
+          channels.health = "live";
+          dispatchBridgeStatus();
+        }
+
+        diffHealthSnapshots(prevHealthSnapshot, health);
+        prevHealthSnapshot = health;
+        currentHealth = health;
+        dispatch({ kind: "set_supervisor_health", health });
+      } catch (_e: unknown) {
+        consecutiveHealthFailures++;
+        if (consecutiveHealthFailures >= FAILURE_STRIKE_THRESHOLD) {
+          channels.health = "stale";
+          dispatchBridgeStatus();
+        }
+      }
+
+      if (closed) break;
+      await Promise.race([
+        new Promise<void>((resolve) => setTimeoutFn(resolve, healthPollMs)),
+        closedPromise,
+      ]);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Live mode: watchAll consumer loop
+  // ---------------------------------------------------------------------------
+
+  let watchAllLoopDone: Promise<void> = Promise.resolve();
+  let watchAllRestoredToastSent = false;
+
+  function processWorkerEvent(event: WorkerEvent): void {
+    if (mode.kind !== "live") return;
+    const workerId = String(event.workerId);
+    const now = clock();
+    const agentName = resolveAgentName(workerId, currentHealth);
+
+    // Track startedAt for dedup incarnation key
+    if (event.kind === "started") {
+      workerStartedAt.set(workerId, event.at);
+    }
+
+    // Remove from locallySpawnedIds on terminal events
+    if (event.kind === "exited" || event.kind === "crashed") {
+      locallySpawnedIds.delete(workerId);
+    }
+
+    // Toast for crashes (with incarnation-aware dedup)
+    if (event.kind === "crashed") {
+      const incarnation = workerStartedAt.get(workerId) ?? event.at;
+      const dedupKey = `${workerId}:${incarnation}:crashed`;
+      if (!dedupToast(dedupKey, now)) {
+        pushToast({
+          kind: "warn",
+          message: `⚠ worker ${agentName} crashed: ${event.error.message}`,
+        });
+      }
+    }
+
+    const entry = makeEventEntry(event, agentName, now);
+    dispatch({ kind: "push_supervisor_event", entry });
+  }
+
+  async function runWatchAllLoop(): Promise<void> {
+    if (mode.kind !== "live") return;
+    const { supervisor } = mode;
+
+    // let because attempt increments
+    let attempt = 0;
+
+    while (!closed) {
+      const iter = supervisor.watchAll()[Symbol.asyncIterator]();
+      let pendingNext: Promise<IteratorResult<WorkerEvent>> | undefined;
+
+      const getNext = (): Promise<IteratorResult<WorkerEvent>> => {
+        if (pendingNext === undefined) {
+          pendingNext = iter.next() as Promise<IteratorResult<WorkerEvent>>;
+        }
+        return pendingNext;
+      };
+
+      try {
+        while (!closed) {
+          const result = await Promise.race([getNext(), closedPromise]);
+          if (result === "closed") return;
+          pendingNext = undefined;
+          if (result.done) break;
+
+          // Successful event — restore if previously stale
+          if (channels.workerEvents === "stale" && !closed) {
+            channels.workerEvents = "live";
+            dispatchBridgeStatus();
+            if (!watchAllRestoredToastSent) {
+              watchAllRestoredToastSent = true;
+              pushToast({ kind: "info", message: "ℹ supervisor events restored" });
+            }
+          }
+          watchAllRestoredToastSent = false; // reset for next stale→live cycle
+          attempt = 0;
+
+          processWorkerEvent(result.value);
+        }
+        if (!closed) break;
+      } catch (_e: unknown) {
+        if (closed) return;
+        // Mark workerEvents stale; clear locallySpawnedIds
+        if (channels.workerEvents === "live") {
+          channels.workerEvents = "stale";
+          // Self-heal: clear locallySpawnedIds when push channel goes stale
+          locallySpawnedIds.clear();
+          dispatchBridgeStatus();
+          watchAllRestoredToastSent = false;
+        }
+
+        const backoffMs = computeBackoff(attempt);
+        attempt++;
+        await Promise.race([
+          new Promise<void>((resolve) => setTimeoutFn(resolve, backoffMs)),
+          closedPromise,
+        ]);
+      }
+    }
+  }
+
+  if (mode.kind === "live") {
+    // Dispatch initial attached state
+    dispatch({ kind: "set_supervisor_attached", attached: true });
+    // Initialize bridge status
+    const initialStatus: BridgeStatus = { kind: "live" };
+    prevBridgeStatusKey = bridgeStatusKind(initialStatus);
+    dispatch({ kind: "set_supervisor_status", status: initialStatus });
+
+    healthLoopDone = runHealthPollLoop().catch((_e: unknown) => {
+      // Non-fatal
+    });
+    watchAllLoopDone = runWatchAllLoop().catch((_e: unknown) => {
+      // Non-fatal
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // requestKill
+  // ---------------------------------------------------------------------------
+
+  async function runKillFlow(req: KillRequest): Promise<KillOutcome> {
+    if (mode.kind !== "live") {
+      return { kind: "refused", reason: "no live supervisor; use koi bg kill" };
+    }
+    const { supervisor } = mode;
+    const { workerId: reqWorkerId, expectedVersion, expectedPid } = req;
+
+    // Check ownership
+    const healthSnap = supervisor.health();
+    const inHealthWorkers = healthSnap.workers.some((w) => String(w.workerId) === reqWorkerId);
+    const inLocallySpawned = locallySpawnedIds.has(reqWorkerId);
+    if (!inHealthWorkers && !inLocallySpawned) {
+      return { kind: "refused", reason: "worker not locally owned" };
+    }
+
+    // Describe registry record
+    let record: BackgroundSessionRecord | undefined;
+    let registryReadable = true;
+    try {
+      const result = await registry.describe(reqWorkerId as WorkerId);
+      if (!result.ok) {
+        registryReadable = false;
+        pushToast({ kind: "info", message: "ℹ registry unreadable; proceeding with local stop" });
+      } else {
+        record = result.value;
+      }
+    } catch (_e: unknown) {
+      registryReadable = false;
+      pushToast({ kind: "info", message: "ℹ registry unreadable; proceeding with local stop" });
+    }
+
+    if (registryReadable && record !== undefined) {
+      // Check terminal status
+      if (record.status === "exited" || record.status === "crashed") {
+        return { kind: "refused", reason: "already terminal" };
+      }
+      if (record.status === "terminating") {
+        return { kind: "refused", reason: "kill in flight; wait" };
+      }
+      if (record.status === "detached") {
+        return { kind: "refused", reason: "use koi bg kill or koi bg attach" };
+      }
+
+      // CAS check
+      if (expectedPid === 0) {
+        // starting-row kill
+        if (channels.workerEvents === "live") {
+          // bypass CAS — workerEvents live means locallySpawnedIds is authoritative
+        } else {
+          // workerEvents stale; enforce version CAS
+          if (record.status !== "starting" || record.version !== expectedVersion) {
+            pushToast({ kind: "warn", message: "⚠ row stale; refresh and try again" });
+            return { kind: "refused", reason: "row stale" };
+          }
+        }
+      } else {
+        // Normal CAS
+        const versionMismatch = record.version !== expectedVersion || record.pid !== expectedPid;
+        if (versionMismatch) {
+          pushToast({
+            kind: "warn",
+            message:
+              "⚠ row stale; the worker has restarted under a new id — refresh and pick the new row",
+          });
+          return { kind: "refused", reason: "row stale" };
+        }
+      }
+    }
+
+    // Execute stop
+    const stopResult = await supervisor.stop(reqWorkerId as WorkerId, "user-requested");
+    if (!stopResult.ok) {
+      pushToast({ kind: "warn", message: `⚠ stop failed: ${stopResult.error.message}` });
+      return { kind: "refused", reason: stopResult.error.message };
+    }
+    return { kind: "stopped" };
+  }
+
+  // ---------------------------------------------------------------------------
   // close()
   // ---------------------------------------------------------------------------
 
@@ -281,8 +695,16 @@ export function createDaemonBridge(opts: CreateDaemonBridgeOptions): DaemonBridg
     if (closed) return;
     closed = true;
     resolveClosed?.();
-    await Promise.all([pollLoopDone, watchLoopDone]);
+    await Promise.all([pollLoopDone, watchLoopDone, healthLoopDone, watchAllLoopDone]);
   };
 
-  return { close };
+  return {
+    close,
+    requestKill: (req: KillRequest): Promise<KillOutcome> => runKillFlow(req),
+    markLocallySpawned: (wId: string): void => {
+      if (mode.kind === "live") {
+        locallySpawnedIds.add(wId);
+      }
+    },
+  };
 }

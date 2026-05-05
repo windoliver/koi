@@ -7,7 +7,11 @@ import type {
   BackgroundSessionEvent,
   BackgroundSessionRecord,
   BackgroundSessionStatus,
+  Supervisor,
+  SupervisorHealth,
+  WorkerEvent,
   WorkerId,
+  WorkerSpawnRequest,
 } from "@koi/core/daemon";
 import type { KoiError, Result } from "@koi/core/errors";
 import type { FileSessionRegistry } from "@koi/daemon";
@@ -109,6 +113,107 @@ export function makeFakeRegistry(): FakeRegistry {
   };
 
   return fake;
+}
+
+// ---------------------------------------------------------------------------
+// FakeSupervisor
+// ---------------------------------------------------------------------------
+
+export interface FakeSupervisor extends Supervisor {
+  /** Replace the in-memory health snapshot returned by health(). */
+  setHealth(h: SupervisorHealth): void;
+  /** Push a WorkerEvent to all active watchAll() consumers. */
+  pushWorkerEvent(event: WorkerEvent): void;
+  /** Cause the next watchAll() consumer to throw on its next next(). */
+  triggerWatchAllError(err: Error): void;
+  /** Inspect stop() call history. */
+  readonly stopCalls: () => ReadonlyArray<{ id: string; reason: string }>;
+  /** Override stop() return value for next call. */
+  setStopResult(result: Result<void, KoiError>): void;
+}
+
+export function makeFakeSupervisor(initialHealth?: SupervisorHealth): FakeSupervisor {
+  let _health: SupervisorHealth = initialHealth ?? {
+    status: "ok",
+    reasons: [],
+    metrics: {
+      poolSize: 0,
+      maxWorkers: 10,
+      quarantinedCount: 0,
+      restartingCount: 0,
+      pendingSpawnCount: 0,
+      eventDropCount: 0,
+      shuttingDown: false,
+    },
+    workers: [],
+  };
+
+  const watchAllListeners: Array<(event: WorkerEvent | "error" | "close") => void> = [];
+  let watchAllErrorPending: Error | undefined;
+  const _stopCalls: Array<{ id: string; reason: string }> = [];
+  let nextStopResult: Result<void, KoiError> = { ok: true, value: undefined };
+
+  async function* watchAllGen(): AsyncGenerator<WorkerEvent> {
+    if (watchAllErrorPending !== undefined) {
+      const err = watchAllErrorPending;
+      watchAllErrorPending = undefined;
+      throw err;
+    }
+    while (true) {
+      const event = await new Promise<WorkerEvent | "error" | "close">((resolve) => {
+        const listener = (e: WorkerEvent | "error" | "close"): void => {
+          resolve(e);
+        };
+        watchAllListeners.push(listener);
+      });
+      if (event === "close") return;
+      if (event === "error") {
+        throw new Error("watchAll error injected by test");
+      }
+      yield event;
+    }
+  }
+
+  const notImplemented = (): never => {
+    throw new Error("not implemented in FakeSupervisor");
+  };
+
+  return {
+    health: (): SupervisorHealth => _health,
+    watchAll: (): AsyncIterable<WorkerEvent> => ({
+      [Symbol.asyncIterator]: () => watchAllGen(),
+    }),
+    stop: async (id: WorkerId, reason: string): Promise<Result<void, KoiError>> => {
+      _stopCalls.push({ id: String(id), reason });
+      const result = nextStopResult;
+      nextStopResult = { ok: true, value: undefined }; // reset for next call
+      return result;
+    },
+    start: (_req: WorkerSpawnRequest): Promise<never> => notImplemented(),
+    shutdown: (_reason: string): Promise<never> => notImplemented(),
+    list: () => [],
+    setHealth(h: SupervisorHealth): void {
+      _health = h;
+    },
+    pushWorkerEvent(event: WorkerEvent): void {
+      const listener = watchAllListeners.shift();
+      if (listener !== undefined) {
+        listener(event);
+      }
+    },
+    triggerWatchAllError(err: Error): void {
+      const listener = watchAllListeners.shift();
+      if (listener !== undefined) {
+        listener("error");
+      } else {
+        watchAllErrorPending = err;
+      }
+    },
+    stopCalls: () => _stopCalls,
+    setStopResult(result: Result<void, KoiError>): void {
+      nextStopResult = result;
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
