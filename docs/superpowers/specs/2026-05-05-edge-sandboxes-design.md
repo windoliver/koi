@@ -14,15 +14,33 @@ Port three v1 sandbox packages to v2:
 
 All three are L2 packages, depend only on `@koi/core` (and minimal L0u utilities), implement contracts already defined in `packages/kernel/core/`, and ship in one PR.
 
-## Contracts (already in `@koi/core`)
+## Contracts
 
 | Package | Contract |
 |---------|----------|
-| `sandbox-wasm` | `SandboxExecutor` (`execute(code, input, timeoutMs, ctx) → SandboxResult`) — code-level execution. Source: `packages/kernel/core/src/sandbox-executor.ts`. |
-| `sandbox-cloudflare` | `SandboxAdapter` + `SandboxInstance` (process-level: `exec`, `readFile`, `writeFile`, `destroy`). Source: `packages/kernel/core/src/sandbox-adapter.ts`. |
+| `sandbox-wasm` | **Package-local `WasmExecutor` contract** (NOT `SandboxExecutor`). |
+| `sandbox-cloudflare` | `SandboxAdapter` + `SandboxInstance` from `@koi/core/sandbox-adapter.ts`. |
 | `sandbox-vercel` | Same as cloudflare. |
 
-This split mirrors v1: wasm ran code in the host process; cloudflare/vercel deployed a worker and bridged HTTPS to a process-shaped instance.
+### Why wasm does not implement `SandboxExecutor`
+
+The kernel `SandboxExecutor.execute(code: string, input: unknown, timeoutMs, ctx)` is a code-string contract — `code` is source text consumed by a runtime that can interpret it. Treating WASM bytes as `code: string` (e.g., base64) silently breaks generic consumers: a router that picks `SandboxExecutor` by capability cannot tell which executor will accept which payload, and routing a JS source string to a wasm-only backend produces a mis-execution that the contract cannot detect.
+
+Therefore `sandbox-wasm` defines its own contract in `types.ts`:
+
+```ts
+export interface WasmExecutor {
+  readonly execute: (
+    module: Uint8Array | WebAssembly.Module,
+    call: { readonly export: string; readonly args: readonly unknown[] },
+    options?: { readonly timeoutMs?: number; readonly maxMemoryPages?: number; readonly imports?: WebAssembly.Imports },
+  ) => Promise<Result<WasmResult, SandboxError>>;
+}
+```
+
+This is intentionally NOT `SandboxExecutor`. Consumers wanting to plug wasm into a `SandboxExecutor`-shaped slot must build their own bridge that decides what `code: string` means for them (e.g., base64-of-bytes plus structured input). Building that bridge is out of scope for this PR — it would be a `sandbox-wasm-executor-bridge` follow-up package once a real consumer needs it.
+
+Cloudflare/Vercel implement `SandboxAdapter` because they genuinely run process-level commands inside the deployed worker; that contract fits.
 
 ## Package layout
 
@@ -74,11 +92,55 @@ src/
 - Network: only `fetch` — no SDK dep.
 - Instance:
   - Owns its own `scriptName` (private field, set at create time, never reused).
-  - `exec(cmd, args, opts)` → POST `{cmd, args, ...opts}` to its own worker URL → translate JSON response to `SandboxAdapterResult`.
+  - `exec(cmd, args, opts)` posts a JSON-only subset of `opts` (cwd, env, stdin, timeoutMs, maxOutputBytes) to its own worker URL → translates JSON response to `SandboxAdapterResult`.
   - `readFile`/`writeFile` → POST control endpoints implemented by the deployed worker shim.
   - `destroy()` → DELETE only this instance's script. Idempotent (404 on re-destroy is success).
+
+#### `SandboxExecOptions` enforcement (fail-closed)
+
+Every option is one of: **mapped** (forwarded over the wire), **rejected** (instance returns typed error before issuing fetch), or **bridged-locally** (wrapped at the host without provider participation):
+
+| Option | Disposition | Notes |
+|--------|-------------|-------|
+| `cwd`, `env`, `stdin`, `timeoutMs`, `maxOutputBytes` | mapped | JSON-serializable; passed in POST body |
+| `onStdout`, `onStderr` | **rejected** | Throw `KoiError { code: "UNSUPPORTED" }` immediately if either is set. No silent drop. |
+| `signal` (`AbortSignal`) | **bridged-locally + remote-cancel** | (a) Local: abort the host `fetch` with the same signal so the caller's promise rejects on schedule. (b) Remote: when signal fires OR `timeoutMs` elapses, fire-and-forget POST to a `/cancel` endpoint on the worker. The shim implements `/cancel` by aborting in-flight work it controls. |
+
+#### Cancellation honesty
+
+Cloudflare Workers cannot guarantee preemption of arbitrary user code in the deployed shim. The contract therefore is:
+
+- Local abort fires on schedule — caller's promise rejects with `TIMEOUT`.
+- Remote cancel is **best-effort**. If the shim's `/cancel` does not return 200 within 2s after the abort, the instance is marked **poisoned**: subsequent `exec`/`readFile`/`writeFile` calls fail-closed with `KoiError { code: "POISONED" }` and the only valid operation is `destroy()`.
+- `destroy()` on a poisoned instance proceeds normally (DELETE script). Caller must `create()` a new instance.
+
+This is documented behavior — never silently retry on the same instance after timeout, because the prior command may still be running with side effects.
 - **Concurrency safety:** the adapter does not maintain a shared mutable resource; each instance is fully independent. No lease/refcount needed because there is no shared state.
 - Worker shim is a small string template colocated in `client.ts` (the JS that runs inside CF Workers and accepts the protocol). Kept ≤80 LOC.
+
+#### `SandboxProfile` enforcement (fail-closed)
+
+`create(profile)` MUST refuse profiles whose policy fields cannot be enforced by the provider. Two-tier strategy:
+
+| Profile field | Cloudflare disposition | Mechanism |
+|---------------|------------------------|-----------|
+| `network.allow = false` | **REJECT** with `KoiError { code: "UNSUPPORTED_PROFILE", field: "network.allow" }` | Workers always have egress fetch; CF does not expose a network-disable knob. Cannot enforce → refuse. |
+| `network.allowedHosts` | REJECT | Same reason: no enforceable allowlist. |
+| `filesystem.readOnly = true` | accept | Workers have no host filesystem; readOnly is trivially true. |
+| `filesystem.binds` (any non-empty) | REJECT | No host bind support. |
+| `resources.maxMemoryMb` | accept iff `<= 128` | CF Workers free tier: 128MB. Reject above; bound is provider-fixed, not configurable. |
+| `resources.maxCpuMs` | accept iff `<= 30_000` | CF Workers Unbound limit. Reject above. |
+| `resources.maxPids` | REJECT | No process model in Workers. |
+| `capabilities.runUntrustedCode = true` | accept | Workers v8 isolate is the isolation boundary. |
+| Unknown fields | REJECT | Default-deny — surface as `UNSUPPORTED_PROFILE`. |
+
+Vercel applies the same template with provider-appropriate caps (memory: up to 3008MB on Pro, CPU: 60s Edge / 900s Serverless).
+
+The mapping lives in `validate.ts` as a pure function `mapProfileToCloudflare(profile): Result<CloudflareDeployConfig, KoiError>`. Adapter `create()` calls it first and short-circuits on error before any fetch.
+
+#### Profile conformance tests
+
+`packages/sandbox/sandbox-conformance` provides a profile-rejection harness. Each cloud package adds a conformance test that walks every field above and asserts the documented accept/reject behavior. CI fails if a new `SandboxProfile` field lands in core without a matching conformance entry per cloud adapter.
 
 ### `@koi/sandbox-vercel` (~350 LOC src + tests)
 
