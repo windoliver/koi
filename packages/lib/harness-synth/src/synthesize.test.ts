@@ -202,6 +202,26 @@ describe("synthesize", () => {
     expect(result.ok).toBe(true);
   });
 
+  test("coerces undefined verifier return into typed failure", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately injecting a misbehaving verifier.
+    const verify = (() => undefined) as any as VerifyCallback;
+    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 1 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/non-object/);
+  });
+
+  test("coerces empty-object verifier return into typed failure", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately injecting a misbehaving verifier.
+    const verify = (() => ({})) as any as VerifyCallback;
+    const result = await synthesize(INPUT, { generate, verify, maxAttempts: 1 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/malformed/);
+  });
+
   test("returns typed failure when generate yields a non-string", async () => {
     // biome-ignore lint/suspicious/noExplicitAny: deliberately injecting a misbehaving adapter.
     const generate = (async () => ({ not: "a string" })) as any as GenerateCallback;

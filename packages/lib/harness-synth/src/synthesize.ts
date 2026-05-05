@@ -177,9 +177,35 @@ async function safeVerify(
   descriptor: ToolDescriptor,
 ): Promise<VerifyResult> {
   try {
-    return await Promise.resolve(verify(code, descriptor));
+    const value = await Promise.resolve(verify(code, descriptor));
+    return coerceVerifyResult(value);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, reason: `Verifier threw: ${message}` };
   }
+}
+
+/**
+ * Validate the shape of a value returned by an injected verifier. A
+ * version-skewed or buggy adapter that resolves to `undefined`, `null`, or
+ * an object missing the discriminator must not crash the synthesis loop —
+ * the boundary's whole point is to keep this typed.
+ */
+function coerceVerifyResult(value: unknown): VerifyResult {
+  if (value === null || typeof value !== "object") {
+    return {
+      ok: false,
+      reason: `Verifier returned non-object (typeof ${typeof value})`,
+    };
+  }
+  const obj = value as Record<string, unknown>;
+  if (obj.ok === true) return { ok: true };
+  if (obj.ok === false) {
+    const reason = typeof obj.reason === "string" ? obj.reason : "(no reason supplied)";
+    return { ok: false, reason };
+  }
+  return {
+    ok: false,
+    reason: "Verifier returned malformed result (missing or non-boolean `ok`)",
+  };
 }

@@ -115,6 +115,15 @@ describe("parseSynthesisOutput", () => {
     expect(result.value.code).toBe("x();");
   });
 
+  test("recovers when an earlier unmatched `{` precedes the payload", () => {
+    const real = rawWith(VALID_DESCRIPTOR, "x();");
+    const wrapped = `Example: { incomplete\n${real}`;
+    const result = parseSynthesisOutput(wrapped, "echo_tool");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.code).toBe("x();");
+  });
+
   test("rejects non-object descriptor", () => {
     const result = parseSynthesisOutput(
       JSON.stringify({ descriptor: "nope", code: "x" }),

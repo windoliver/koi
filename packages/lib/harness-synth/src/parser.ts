@@ -69,7 +69,13 @@ function findParseableJsonObject(
     const start = raw.indexOf("{", cursor);
     if (start === -1) break;
     const end = findBalancedClose(raw, start);
-    if (end === -1) break;
+    if (end === -1) {
+      // Unmatched `{` — could be prose like "Use {descriptor, code". Skip
+      // past this brace and keep searching for a balanced span later in
+      // the response rather than aborting the whole scan.
+      cursor = start + 1;
+      continue;
+    }
     const span = raw.slice(start, end + 1);
     cursor = end + 1;
     let parsed: unknown;
