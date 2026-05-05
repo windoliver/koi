@@ -98,6 +98,60 @@ describe("synthesize", () => {
     expect(result.reason).toBe("still wrong");
   });
 
+  test("post-timeout late success cannot override the timeout failure", async () => {
+    // generate is slow but resolves successfully WITHIN the unwind grace
+    // window after timeout. The chosen timeout failure must still win.
+    const generate: GenerateCallback = (_p, signal) =>
+      new Promise<string>((resolve) => {
+        const onAbort = (): void => {
+          // Simulate "tear down then succeed anyway" — the contract says
+          // the abort decision is terminal regardless of late success.
+          setTimeout(() => resolve(validRaw()), 50);
+        };
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      attemptTimeoutMs: 20,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/timed out/);
+  });
+
+  test("post-abort late verify success cannot override the caller-abort failure", async () => {
+    const controller = new AbortController();
+    const verify: VerifyCallback = (_c, _d, signal) =>
+      new Promise<VerifyResult>((resolve) => {
+        const onAbort = (): void => {
+          setTimeout(() => resolve({ ok: true }), 50);
+        };
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+    setTimeout(() => controller.abort(), 5);
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify,
+      maxAttempts: 1,
+      signal: controller.signal,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/aborted by caller/);
+  });
+
   test("waits for aborted callback to unwind before starting next attempt", async () => {
     // After timeout, the next attempt must NOT start while the prior
     // callback is still running its post-abort cleanup. Track overlap

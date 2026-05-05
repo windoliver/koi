@@ -676,11 +676,13 @@ function guardAttempt<T>(
 ): Promise<GuardedResult<T>> {
   return new Promise<GuardedResult<T>>((resolve) => {
     let settled = false;
-    // Track the underlying callback promise so timeout/abort can wait
-    // for it to actually settle before the outer guardAttempt resolves.
-    // Without this, the next retry can start while the prior callback's
-    // network teardown / sandbox kill / worker shutdown is still in
-    // flight — overlapping side effects despite adapterHonorsAbort.
+    // Once timeout or external abort latches a chosen failure, late
+    // success/error from the callback MUST NOT override it. Without this
+    // flag, a generate/verify that resolves ok:true during the unwind
+    // grace window would win the race and ship an artifact past the
+    // configured wall-clock cap or after the caller cancelled — defeating
+    // the entire timeout/cancellation contract.
+    let cancelled = false;
     let runPromise: Promise<unknown> = Promise.resolve();
     const finish = (result: GuardedResult<T>): void => {
       if (settled) return;
@@ -697,6 +699,7 @@ function guardAttempt<T>(
     // callback would pin synthesize() forever.
     const ABORT_SETTLE_GRACE_MS = 1000;
     const settleAfterUnwind = (result: GuardedResult<T>): void => {
+      cancelled = true;
       let done = false;
       const finishOnce = (): void => {
         if (done) return;
@@ -752,8 +755,12 @@ function guardAttempt<T>(
     try {
       runPromise = run(attempt.signal);
       runPromise.then(
-        (value) => finish({ ok: true, value: value as T }),
+        (value) => {
+          if (cancelled) return; // timeout/abort already chose the result
+          finish({ ok: true, value: value as T });
+        },
         (err: unknown) => {
+          if (cancelled) return;
           const message = err instanceof Error ? err.message : String(err);
           finish({ ok: false, reason: `${label} failed: ${message}` });
         },
