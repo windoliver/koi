@@ -34,12 +34,17 @@ export async function synthesize(
     return { ok: false, reason: "maxAttempts must be >= 1", attempts: 0 };
   }
   const clock = config.clock ?? DEFAULT_SYNTHESIS_CONFIG.clock;
+  const attemptTimeoutMs = config.attemptTimeoutMs ?? DEFAULT_SYNTHESIS_CONFIG.attemptTimeoutMs;
+  const signal = config.signal;
 
   let priorCode = "";
   let priorReason = "";
   let lastReason = "no attempts ran";
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (signal?.aborted) {
+      return { ok: false, reason: "Synthesis aborted by caller", attempts: attempt - 1 };
+    }
     const prompt =
       attempt === 1
         ? buildSynthesisPrompt({
@@ -56,11 +61,14 @@ export async function synthesize(
             attempt,
           });
 
-    const generated = await safeGenerate(config.generate, prompt);
+    const generated = await safeGenerate(config.generate, prompt, attemptTimeoutMs, signal);
     if (!generated.ok) {
       lastReason = generated.reason;
       priorReason = generated.reason;
       priorCode = "";
+      if (generated.aborted) {
+        return { ok: false, reason: generated.reason, attempts: attempt };
+      }
       continue;
     }
 
@@ -85,11 +93,20 @@ export async function synthesize(
       }
     }
 
-    const verified = await safeVerify(config.verify, parsed.value.code, parsed.value.descriptor);
+    const verified = await safeVerify(
+      config.verify,
+      parsed.value.code,
+      parsed.value.descriptor,
+      attemptTimeoutMs,
+      signal,
+    );
     if (!verified.ok) {
       lastReason = verified.reason;
       priorReason = verified.reason;
       priorCode = parsed.value.code;
+      if (verified.aborted) {
+        return { ok: false, reason: verified.reason, attempts: attempt };
+      }
       continue;
     }
 
@@ -108,23 +125,30 @@ export async function synthesize(
   return { ok: false, reason: lastReason, attempts: maxAttempts };
 }
 
+type GuardedResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly reason: string; readonly aborted?: boolean };
+
 async function safeGenerate(
   generate: SynthesisConfig["generate"],
   prompt: string,
-): Promise<{ ok: true; value: string } | { ok: false; reason: string }> {
-  try {
-    const value = await generate(prompt);
-    if (typeof value !== "string") {
-      return {
-        ok: false,
-        reason: `LLM generation returned non-string (typeof ${typeof value})`,
-      };
-    }
-    return { ok: true, value };
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: `LLM generation failed: ${message}` };
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+): Promise<GuardedResult<string>> {
+  const guarded = await guardAttempt(
+    () => Promise.resolve(generate(prompt)),
+    timeoutMs,
+    signal,
+    "LLM generation",
+  );
+  if (!guarded.ok) return guarded;
+  if (typeof guarded.value !== "string") {
+    return {
+      ok: false,
+      reason: `LLM generation returned non-string (typeof ${typeof guarded.value})`,
+    };
   }
+  return { ok: true, value: guarded.value };
 }
 
 /**
@@ -175,14 +199,74 @@ async function safeVerify(
   verify: SynthesisConfig["verify"],
   code: string,
   descriptor: ToolDescriptor,
-): Promise<VerifyResult> {
-  try {
-    const value = await Promise.resolve(verify(code, descriptor));
-    return coerceVerifyResult(value);
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: `Verifier threw: ${message}` };
-  }
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+): Promise<VerifyResult & { readonly aborted?: boolean }> {
+  const guarded = await guardAttempt(
+    () => Promise.resolve(verify(code, descriptor)),
+    timeoutMs,
+    signal,
+    "Verifier",
+  );
+  if (!guarded.ok) return guarded;
+  return coerceVerifyResult(guarded.value);
+}
+
+/**
+ * Race a callback against a timeout and an external `AbortSignal`. Whichever
+ * settles first wins; the caller cannot stop the underlying work (the
+ * callback signature has no signal arg today), but the loop is freed from a
+ * hung dependency and reports a typed reason. `aborted: true` on the failure
+ * variant tells the loop to stop iterating instead of retrying.
+ */
+function guardAttempt<T>(
+  run: () => Promise<T>,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+  label: string,
+): Promise<GuardedResult<T>> {
+  return new Promise<GuardedResult<T>>((resolve) => {
+    let settled = false;
+    const finish = (result: GuardedResult<T>): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      if (signal && abortListener) signal.removeEventListener("abort", abortListener);
+      resolve(result);
+    };
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    if (Number.isFinite(timeoutMs)) {
+      timer = setTimeout(() => {
+        finish({ ok: false, reason: `${label} timed out after ${timeoutMs}ms` });
+      }, timeoutMs);
+    }
+
+    let abortListener: (() => void) | null = null;
+    if (signal) {
+      if (signal.aborted) {
+        finish({ ok: false, reason: `${label} aborted by caller`, aborted: true });
+        return;
+      }
+      abortListener = (): void => {
+        finish({ ok: false, reason: `${label} aborted by caller`, aborted: true });
+      };
+      signal.addEventListener("abort", abortListener, { once: true });
+    }
+
+    try {
+      run().then(
+        (value) => finish({ ok: true, value }),
+        (err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          finish({ ok: false, reason: `${label} failed: ${message}` });
+        },
+      );
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      finish({ ok: false, reason: `${label} failed: ${message}` });
+    }
+  });
 }
 
 /**

@@ -79,11 +79,28 @@ export interface SynthesisConfig {
   readonly maxAttempts: number;
   /** Wall-clock source. Default `Date.now`. */
   readonly clock: () => number;
+  /**
+   * Caller-supplied cancellation. When the signal aborts, the in-flight
+   * attempt is converted to a typed failure and the loop exits without
+   * starting another iteration. Has no effect on already-resolved values.
+   */
+  readonly signal?: AbortSignal | undefined;
+  /**
+   * Per-attempt hard timeout in ms. Default 30_000. A `generate` or `verify`
+   * call that does not settle within the window converts to a typed
+   * `{ ok: false, reason: "...timed out..." }` and the loop continues to
+   * the next attempt (or exits if `maxAttempts` is exhausted). Set to
+   * `Infinity` to disable; never set to 0 (would fail every attempt).
+   */
+  readonly attemptTimeoutMs: number;
 }
 
 /** Defaults applied when fields are omitted from a partial config. */
-export const DEFAULT_SYNTHESIS_CONFIG: Pick<SynthesisConfig, "maxAttempts" | "clock"> =
-  Object.freeze({
-    maxAttempts: 3,
-    clock: Date.now,
-  });
+export const DEFAULT_SYNTHESIS_CONFIG: Pick<
+  SynthesisConfig,
+  "maxAttempts" | "clock" | "attemptTimeoutMs"
+> = Object.freeze({
+  maxAttempts: 3,
+  clock: Date.now,
+  attemptTimeoutMs: 30_000,
+});

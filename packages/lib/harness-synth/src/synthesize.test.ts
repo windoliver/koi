@@ -111,7 +111,7 @@ describe("synthesize", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.attempts).toBe(2);
-    expect(prompts[1] ?? "").toContain("Verifier threw");
+    expect(prompts[1] ?? "").toContain("Verifier failed");
   });
 
   test("returns typed failure when verify throws on every attempt", async () => {
@@ -122,7 +122,7 @@ describe("synthesize", () => {
     const result = await synthesize(INPUT, { generate, verify, maxAttempts: 2 });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.reason).toMatch(/Verifier threw/);
+    expect(result.reason).toMatch(/Verifier failed/);
     expect(result.attempts).toBe(2);
   });
 
@@ -229,6 +229,71 @@ describe("synthesize", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/non-string/);
+  });
+
+  test("times out a hung generator instead of stalling forever", async () => {
+    const generate: GenerateCallback = () => new Promise(() => {}); // never resolves
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      attemptTimeoutMs: 25,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/timed out/);
+  });
+
+  test("times out a hung verifier instead of stalling forever", async () => {
+    const generate: GenerateCallback = async () => validRaw();
+    const verify: VerifyCallback = () => new Promise(() => {});
+    const result = await synthesize(INPUT, {
+      generate,
+      verify,
+      maxAttempts: 1,
+      attemptTimeoutMs: 25,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/timed out/);
+  });
+
+  test("respects an external AbortSignal mid-flight", async () => {
+    const controller = new AbortController();
+    const generate: GenerateCallback = () =>
+      new Promise((_resolve) => {
+        setTimeout(() => controller.abort(), 5);
+      });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 5,
+      attemptTimeoutMs: 1_000,
+      signal: controller.signal,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/aborted/);
+  });
+
+  test("respects a pre-aborted signal without running any attempts", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let calls = 0;
+    const generate: GenerateCallback = async () => {
+      calls += 1;
+      return validRaw();
+    };
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 3,
+      signal: controller.signal,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/aborted/);
+    expect(calls).toBe(0);
   });
 
   test("first prompt does not contain refinement marker", async () => {
