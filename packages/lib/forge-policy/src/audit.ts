@@ -262,10 +262,19 @@ function createPolicyAuditLogInternal(
     // Reject fabricated evaluation objects: only objects produced by
     // `evaluatePolicy` are in the authentic-evaluation WeakSet, so a
     // caller cannot hand-craft a structural `PolicyEvaluation` and have
-    // it persisted as if it came from a real evaluation.
+    // it persisted as if it came from a real evaluation. The brand is
+    // closure-private to one module instance, so a `PolicyEvaluation`
+    // produced in another bundle / worker / duplicated module copy will
+    // also be rejected here. Cross-boundary callers MUST use
+    // `evaluateAndRecord` (which keeps both calls in one module instance)
+    // — the error below names it explicitly so misuse surfaces with an
+    // actionable fix rather than a confusing "fabricated" message.
     if (!isAuthenticEvaluation(params.evaluation)) {
       throw new Error(
-        "recordEvaluation requires a PolicyEvaluation produced by evaluatePolicy — fabricated evaluation rejected",
+        "recordEvaluation requires a PolicyEvaluation produced by evaluatePolicy in this same module instance. " +
+          "If the evaluator and recorder may live in different bundles, workers, or duplicated module copies, " +
+          "use `evaluateAndRecord` instead — it guarantees same-instance branding. " +
+          "Otherwise the evaluation is fabricated or stale and is rejected.",
       );
     }
     const input: PolicyAuditEntryInput = {

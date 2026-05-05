@@ -620,6 +620,56 @@ describe("evaluatePolicy — fail-closed cases", () => {
     });
     expect(verdict.decision).toBe("deny");
   });
+
+  test("complexityOf returning NaN fails closed instead of coercing to 0", () => {
+    // Regression: a broken scorer must NOT silently disable maxComplexity.
+    const cfg = makeConfig({ maxComplexity: 1 });
+    const huge: Readonly<Record<string, unknown>> = { payload: "x".repeat(10_000) };
+    const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
+      spec: huge,
+      complexityScorer: { id: "test-scorer", version: "v1" },
+      complexityOf: () => Number.NaN,
+    });
+    expect(verdict.decision).toBe("deny");
+    if (verdict.decision === "deny") {
+      expect(verdict.reason).toMatch(/invalid score|failing closed/i);
+    }
+  });
+
+  test("complexityOf returning Infinity fails closed", () => {
+    const cfg = makeConfig({ maxComplexity: 1 });
+    const huge: Readonly<Record<string, unknown>> = { payload: "x".repeat(10_000) };
+    const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
+      spec: huge,
+      complexityScorer: { id: "test-scorer", version: "v1" },
+      complexityOf: () => Number.POSITIVE_INFINITY,
+    });
+    expect(verdict.decision).toBe("deny");
+  });
+
+  test("complexityOf returning a negative number fails closed", () => {
+    const cfg = makeConfig({ maxComplexity: 1 });
+    const huge: Readonly<Record<string, unknown>> = { payload: "x".repeat(10_000) };
+    const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
+      spec: huge,
+      complexityScorer: { id: "test-scorer", version: "v1" },
+      complexityOf: () => -1,
+    });
+    expect(verdict.decision).toBe("deny");
+  });
+
+  test("complexityOf returning a non-number fails closed", () => {
+    const cfg = makeConfig({ maxComplexity: 1 });
+    const huge: Readonly<Record<string, unknown>> = { payload: "x".repeat(10_000) };
+    const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
+      spec: huge,
+      complexityScorer: { id: "test-scorer", version: "v1" },
+      complexityOf: (() => "not a number") as unknown as (
+        s: Readonly<Record<string, unknown>>,
+      ) => number,
+    });
+    expect(verdict.decision).toBe("deny");
+  });
 });
 
 describe("evaluatePolicy — JSON-stringify parity for soft cases", () => {
@@ -1222,14 +1272,16 @@ describe("evaluatePolicy — determinism and purity", () => {
     expect(verdict.decision).toBe("allow");
   });
 
-  test("non-finite complexityOf result is treated as zero", () => {
+  test("non-finite complexityOf result fails closed (does not silently coerce to zero)", () => {
+    // Was previously coerced to 0 and allowed; now fails closed so a broken
+    // scorer cannot silently disable the operator's maxComplexity ceiling.
     const cfg = makeConfig({ maxComplexity: 1 });
     const { verdict } = evaluatePolicy(makeCandidate(), cfg, {
       spec: { x: 1 },
       complexityScorer: { id: "test-scorer", version: "v1" },
       complexityOf: () => Number.NaN,
     });
-    expect(verdict.decision).toBe("allow");
+    expect(verdict.decision).toBe("deny");
   });
 
   test("complexity is measured in UTF-8 bytes, not UTF-16 code units", () => {

@@ -811,8 +811,21 @@ function computeComplexity(
       // the exception escape the policy path.
       return { ok: false, reason: "complexityOf threw — failing closed" };
     }
-    const score = typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? raw : 0;
-    return { ok: true, score };
+    // Fail closed on invalid scorer output. Coercing NaN / Infinity /
+    // negative / non-number to `0` would silently disable the
+    // configured `maxComplexity` ceiling, allowing oversized specs to
+    // slip through whenever a scorer bug, version skew, or unexpected
+    // input produces garbage. The operator asked for a hard ceiling —
+    // a broken scorer must produce a deterministic deny, not a
+    // best-effort allow.
+    if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) {
+      return {
+        ok: false,
+        reason:
+          "complexityOf returned an invalid score (must be a finite non-negative number) — failing closed",
+      };
+    }
+    return { ok: true, score: raw };
   }
   const canonical = canonicalize(validation.clone);
   if (canonical === undefined) {

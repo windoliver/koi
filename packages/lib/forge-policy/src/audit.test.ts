@@ -484,7 +484,7 @@ describe("createPolicyAuditLog — recordEvaluation", () => {
         evaluation: fabricated,
         evaluatedAt: 1_700_000_000_000,
       }),
-    ).toThrow(/fabricated evaluation rejected/);
+    ).toThrow(/evaluateAndRecord|fabricated/);
   });
 
   test("returned PolicyEvaluation is deep-frozen (verdict, baseVerdict, override)", () => {
