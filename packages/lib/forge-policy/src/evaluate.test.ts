@@ -383,6 +383,26 @@ describe("evaluatePolicy — scope and approval", () => {
     expect(result!.failureReason).toMatch(/options getter threw/);
   });
 
+  test("malformed non-granted override fails closed at evaluation (consistent with audit writer)", async () => {
+    // Mirror the granted-blank-fields fail-closed contract on
+    // ungranted overrides — otherwise an authentic deny gets returned
+    // but recordEvaluation would crash on the malformed override
+    // metadata, leaving the decision unrecordable.
+    type Override = NonNullable<Parameters<typeof evaluatePolicy>[2]>["override"];
+    const cfg = makeConfig();
+    const result = evaluatePolicy(makeCandidate(), cfg, {
+      override: { granted: false, reason: "", grantedBy: "" } as unknown as Override,
+    });
+    expect(result.verdict.decision).toBe("deny");
+    expect(result.failureKind).toBe("override");
+    // The fail-closed evaluation must itself be recordable.
+    const { createPolicyAuditLog } = await import("./audit.js");
+    const log = createPolicyAuditLog();
+    expect(() =>
+      log.recordEvaluation({ evaluation: result, evaluatedAt: 1_700_000_000_000 }),
+    ).not.toThrow();
+  });
+
   test("two scorers with same id but different source produce different fingerprints", () => {
     const cfg = makeConfig({ maxComplexity: 10_000 });
     const a = evaluatePolicy(makeCandidate(), cfg, {

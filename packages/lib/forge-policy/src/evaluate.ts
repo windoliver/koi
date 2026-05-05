@@ -248,28 +248,31 @@ export function evaluatePolicy(
       configFingerprint: UNAVAILABLE_FINGERPRINT,
     });
   }
-  // Validate override metadata BEFORE `applyOverride` could relax a
-  // verdict — otherwise a granted override with blank reason/grantedBy
-  // could authorize the action and then crash `recordEvaluation`,
-  // dropping the audit entry while leaving the action as `allow`.
-  if (overrideSnapshot !== undefined && overrideSnapshot.granted === true) {
+  // Validate override metadata for ANY supplied override (granted or
+  // not). A blank reason/grantedBy on a granted override could let
+  // `applyOverride` authorize the action and then crash
+  // `recordEvaluation` — leaving the action as allow without an audit
+  // entry. A blank reason/grantedBy on a non-granted override is also
+  // rejected by `validateOverride` inside the audit writer, so it
+  // would crash audit recording on an otherwise authentic deny. Both
+  // cases must fail consistently inside `evaluatePolicy`.
+  if (overrideSnapshot !== undefined) {
     const blankReason =
       typeof overrideSnapshot.reason !== "string" || overrideSnapshot.reason.length === 0;
     const blankGrantedBy =
       typeof overrideSnapshot.grantedBy !== "string" || overrideSnapshot.grantedBy.length === 0;
     if (blankReason || blankGrantedBy) {
-      // Build the failure reason with the attempted-override
-      // attribution (grantedBy if non-empty), so forensics can still
-      // see who tried even though the override is rejected. The audit
-      // entry itself drops the malformed override (it would otherwise
-      // crash `validateEntry`).
       const attribution =
         !blankGrantedBy && typeof overrideSnapshot.grantedBy === "string"
           ? ` from grantedBy='${overrideSnapshot.grantedBy}'`
           : "";
+      const grantedTag = overrideSnapshot.granted === true ? "granted " : "";
       return makeFailClosedEvaluation({
-        reason: `granted override missing reason or grantedBy${attribution}`,
+        reason: `${grantedTag}override missing reason or grantedBy${attribution}`,
         candidateId: candidateSnapshot.id,
+        // Drop the malformed override on the fail-closed entry —
+        // otherwise the audit writer's `validateOverride` would reject
+        // the entry and the decision would be unrecordable.
         override: undefined,
         kind: "override",
         configFingerprint,
