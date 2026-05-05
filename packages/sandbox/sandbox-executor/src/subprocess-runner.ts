@@ -24,6 +24,8 @@
  * stderr so existing tests/tools that exec the runner directly still work.
  */
 
+export {};
+
 import { writeSync } from "node:fs";
 
 /** Framing marker separating protocol output from any other content. */
