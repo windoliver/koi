@@ -366,17 +366,39 @@ export function suggestAction(
   return { kind: "reclassify", severity: report.severity };
 }
 
+/**
+ * Count the **trailing consecutive run** of action-safe strong-drift prior
+ * windows, walking from the most-recent prior backwards. Stops at the first
+ * window that fails any criterion — so an old outlier far back in history
+ * cannot satisfy stability for an unrelated current window.
+ *
+ * Each prior must clear the SAME bar that the current window has to clear
+ * to be action-safe:
+ *   - `kind: "drift"` AND `replayProtected: true`
+ *   - `avgDivergence ≥ NEW_ARTIFACT_DIVERGENCE_THRESHOLD` (0.85)
+ *   - quality-gate pass: (dropped + duplicate + conflict) / total ≤ 25%
+ *
+ * Without the quality gate on priors, one replay-heavy / conflict-heavy
+ * prior window — evidence the detector itself would refuse to act on — could
+ * still bump stability for a fresh strong window. Requiring priors to pass
+ * the same gate closes that path.
+ */
 function countStrongDriftPriors(
   priorWindows: readonly (readonly UsagePurposeObservation[])[],
   thresholds: ExaptationThresholds,
 ): number {
-  // let: prior-window stability accumulator
+  // let: prior-window stability accumulator (trailing consecutive run)
   let strong = 0;
-  for (const window of priorWindows) {
+  for (let i = priorWindows.length - 1; i >= 0; i--) {
+    const window = priorWindows[i];
+    if (window === undefined) break;
     const r = detectDrift(window, thresholds);
-    if (r.kind !== "drift") continue;
-    if (!r.replayProtected) continue;
-    if (r.report.avgDivergence < NEW_ARTIFACT_DIVERGENCE_THRESHOLD) continue;
+    if (r.kind !== "drift") break;
+    if (!r.replayProtected) break;
+    if (r.report.avgDivergence < NEW_ARTIFACT_DIVERGENCE_THRESHOLD) break;
+    const total = r.validObservationCount + r.droppedCount + r.duplicateCount + r.conflictCount;
+    const lowQuality = r.droppedCount + r.duplicateCount + r.conflictCount;
+    if (total > 0 && lowQuality / total > MAX_QUALITY_DEGRADATION_RATIO) break;
     strong++;
   }
   return strong;

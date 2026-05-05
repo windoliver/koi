@@ -397,6 +397,60 @@ describe("suggestAction", () => {
       "reclassify",
     );
   });
+
+  test("low-quality prior window (>25% conflicts) does NOT count toward stability", () => {
+    // A prior window the package itself would refuse to act on must not be
+    // accepted as stability evidence for a fresh strong current window.
+    // Otherwise the action gate could be bypassed by laundering noisy
+    // history through the stability path.
+    const conflictHeavyPrior: UsagePurposeObservation[] = [];
+    for (let i = 0; i < 3; i++) {
+      const eid = `pc-${String(i)}`;
+      conflictHeavyPrior.push({
+        scope: "default",
+        agentId: "victim",
+        eventId: eid,
+        divergenceScore: 0.4,
+        contextText: "x",
+        observedAt: i,
+      });
+      conflictHeavyPrior.push({
+        scope: "default",
+        agentId: "victim",
+        eventId: eid,
+        divergenceScore: 0.95,
+        contextText: "x",
+        observedAt: i,
+      });
+    }
+    conflictHeavyPrior.push(...[0.95, 0.95, 0.95].map((s) => obs("good-a", s)));
+    conflictHeavyPrior.push(...[0.95, 0.95, 0.95].map((s) => obs("good-b", s)));
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [conflictHeavyPrior]).kind,
+    ).toBe("reclassify");
+  });
+
+  test("stability requires the trailing CONSECUTIVE run to be strong-drift", () => {
+    // The trailing run starts at the most-recent prior. A non-strong window
+    // anywhere in the trailing position breaks the run, so an old outlier
+    // cannot satisfy stability for an unrelated current window.
+    const weakWindow: UsagePurposeObservation[] = [
+      ...[0.05, 0.05, 0.05].map((s) => obs("noisy-a", s)),
+      ...[0.05, 0.05, 0.05].map((s) => obs("noisy-b", s)),
+    ];
+    const { observations } = buildDrift({ agents: 4, obsPerAgent: 3, score: 0.95 });
+    // [strong, weak]: trailing weak → run length 0 → reclassify.
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [strongPriorWindow(), weakWindow])
+        .kind,
+    ).toBe("reclassify");
+    // [weak, strong]: trailing strong → run length 1 → new-artifact.
+    expect(
+      suggestAction(observations, DEFAULT_EXAPTATION_THRESHOLDS, [weakWindow, strongPriorWindow()])
+        .kind,
+    ).toBe("new-artifact");
+  });
 });
 
 describe("suggestAction replay-protection gate", () => {

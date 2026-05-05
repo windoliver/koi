@@ -68,7 +68,7 @@ Severity ∈ [0, 1]: scales with how broadly and how strongly the artifact has d
 | `kind ≠ "drift"` (no-drift, invalid-config) | `none` |
 | `replayProtected: false` (any valid observation lacks `eventId`) | `none` |
 | `(droppedCount + duplicateCount + conflictCount) / (validObservationCount + dropped + duplicate + conflict) > 25%` | `none` (low-quality window — denominator is the *full* validated window, so clean baseline-heavy traffic isn't punished for the cohort being a small slice; conflicts count as low-quality so a corrupted-replay attack cannot bias the window past the threshold) |
-| `≥ STABLE_WINDOW_COUNT - 1` prior windows ALSO produced strong drift AND current `avgDivergence ≥ 0.85` | `new-artifact` — fork a specialized variant |
+| ≥ `STABLE_WINDOW_COUNT - 1` *trailing consecutive* prior windows are strong-drift AND ALSO pass the action quality gate (`drift`, `replayProtected`, `avgDivergence ≥ 0.85`, `≤ 25%` low-quality), AND current `avgDivergence ≥ 0.85` | `new-artifact` — fork a specialized variant |
 | Cohort share `< 50%` of validated window AND not stable+strong | `none` — minority drift should NOT overwrite the canonical purpose the baseline majority depends on |
 | Otherwise (cohort majority, single window or sub-fork divergence) | `reclassify` — rewrite the artifact's description to match observed usage |
 
