@@ -14,7 +14,21 @@ export interface PolicyAuditEntry {
    * policy rule a granted override bypassed.
    */
   readonly baseVerdict: ForgePolicyVerdict;
+  /** Caller-supplied wall-clock timestamp from the originating
+   *  evaluation context. Convenience metadata only — NOT a
+   *  tamper-resistant ordering signal. Forensic reconstruction must
+   *  use `recordedAt` and `sequence`, both bound by the audit log
+   *  itself. */
   readonly evaluatedAt: number;
+  /** Logger-bound append timestamp (`Date.now()` at the moment the
+   *  entry was committed to the buffer). Generated inside the audit
+   *  log so a caller cannot backdate a record. */
+  readonly recordedAt: number;
+  /** Monotonic per-log sequence number. Starts at 0 and increments by
+   *  one for every accepted entry, regardless of FIFO eviction.
+   *  Tamper-resistant ordering signal — even if `evaluatedAt` /
+   *  `recordedAt` collide, sequence numbers do not. */
+  readonly sequence: number;
   readonly configFingerprint: string;
   readonly override?: PolicyOverride | undefined;
   /**
@@ -90,7 +104,7 @@ export interface PolicyAuditLog {
  * runtime. The leading underscore signals: not part of the public
  * write API, do not call from non-test code.
  */
-export function _validatePolicyAuditEntry(entry: PolicyAuditEntry): void {
+export function _validatePolicyAuditEntry(entry: PolicyAuditEntryInput): void {
   validateEntry(entry);
 }
 
@@ -100,15 +114,35 @@ export function _validatePolicyAuditEntry(entry: PolicyAuditEntry): void {
  * thin wrapper that delegates `recordEvaluation` to the underlying
  * unsafe-record path.
  */
+/**
+ * Test-only input shape for the unsafe `record()` path. The audit log
+ * binds `recordedAt` and `sequence` itself, so test callers must not
+ * supply them — they would just be overwritten. Keeping the input type
+ * separate from `PolicyAuditEntry` documents that contract at the type
+ * level.
+ */
+export type PolicyAuditEntryInput = Omit<PolicyAuditEntry, "recordedAt" | "sequence">;
+
 export function _createPolicyAuditLogForTesting(
   options: PolicyAuditLogOptions = {},
-): PolicyAuditLog & { readonly record: (entry: PolicyAuditEntry) => void } {
+): PolicyAuditLog & { readonly record: (entry: PolicyAuditEntryInput) => PolicyAuditEntry } {
   return createPolicyAuditLogInternal(options, true);
 }
 
 export interface PolicyAuditLogOptions {
   /** Maximum entries retained — oldest evicted FIFO once exceeded. */
   readonly maxEntries?: number;
+  /**
+   * Synchronous callback invoked the moment an entry is evicted by
+   * FIFO truncation. Receives the dropped entry and the new
+   * cumulative `droppedCount`. Wire this to a durable sink (file,
+   * database, SIEM, alert) before relying on the in-memory log as a
+   * forensic source — once the callback returns, the entry is gone
+   * from `entries()`. Throwing from the callback is suppressed so a
+   * misconfigured sink cannot crash the policy gate; sink failures
+   * must surface through the sink's own monitoring.
+   */
+  readonly onOverflow?: (dropped: PolicyAuditEntry, droppedCount: number) => void;
 }
 
 const DEFAULT_MAX_ENTRIES = 10_000;
@@ -125,7 +159,7 @@ export function createPolicyAuditLog(options: PolicyAuditLogOptions = {}): Polic
 function createPolicyAuditLogInternal(
   options: PolicyAuditLogOptions,
   exposeUnsafeRecord: true,
-): PolicyAuditLog & { readonly record: (entry: PolicyAuditEntry) => void };
+): PolicyAuditLog & { readonly record: (entry: PolicyAuditEntryInput) => PolicyAuditEntry };
 function createPolicyAuditLogInternal(
   options: PolicyAuditLogOptions,
   exposeUnsafeRecord: false,
@@ -133,7 +167,7 @@ function createPolicyAuditLogInternal(
 function createPolicyAuditLogInternal(
   options: PolicyAuditLogOptions,
   exposeUnsafeRecord: boolean,
-): PolicyAuditLog & { readonly record?: (entry: PolicyAuditEntry) => void } {
+): PolicyAuditLog & { readonly record?: (entry: PolicyAuditEntryInput) => PolicyAuditEntry } {
   const maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
   if (!Number.isInteger(maxEntries) || maxEntries < 1) {
     throw new Error(`maxEntries must be a positive integer, got ${maxEntries}`);
@@ -141,15 +175,29 @@ function createPolicyAuditLogInternal(
 
   const buffer: PolicyAuditEntry[] = [];
   let dropped = 0;
+  let nextSequence = 0;
 
-  function record(entry: PolicyAuditEntry): void {
-    validateEntry(entry);
-    const frozen = freezeEntry(entry);
+  function record(input: PolicyAuditEntryInput): PolicyAuditEntry {
+    validateEntry(input);
+    const sequence = nextSequence++;
+    const recordedAt = Date.now();
+    const full: PolicyAuditEntry = { ...input, recordedAt, sequence };
+    const frozen = freezeEntry(full);
     buffer.push(frozen);
     if (buffer.length > maxEntries) {
-      buffer.shift();
+      const dropEntry = buffer.shift();
       dropped += 1;
+      if (dropEntry !== undefined && options.onOverflow !== undefined) {
+        try {
+          options.onOverflow(dropEntry, dropped);
+        } catch {
+          // Suppress sink failures — a misconfigured durable sink must
+          // not crash the policy gate. Sink reliability is the sink's
+          // own concern; `droppedCount()` still surfaces overflow.
+        }
+      }
     }
+    return frozen;
   }
 
   function recordEvaluation(params: RecordEvaluationParams): PolicyAuditEntry {
@@ -162,7 +210,7 @@ function createPolicyAuditLogInternal(
         "recordEvaluation requires a PolicyEvaluation produced by evaluatePolicy — fabricated evaluation rejected",
       );
     }
-    const entry: PolicyAuditEntry = {
+    const input: PolicyAuditEntryInput = {
       candidateId: params.evaluation.candidateId,
       verdict: params.evaluation.verdict,
       baseVerdict: params.evaluation.baseVerdict,
@@ -177,8 +225,7 @@ function createPolicyAuditLogInternal(
         failureReason: params.evaluation.failureReason,
       }),
     };
-    record(entry);
-    return entry;
+    return record(input);
   }
 
   function entries(): readonly PolicyAuditEntry[] {
@@ -200,7 +247,7 @@ function createPolicyAuditLogInternal(
   );
 }
 
-function validateEntry(entry: PolicyAuditEntry): void {
+function validateEntry(entry: PolicyAuditEntryInput): void {
   if (typeof entry.candidateId !== "string" || entry.candidateId.length === 0) {
     throw new Error("PolicyAuditEntry.candidateId must be a non-empty string");
   }
@@ -230,7 +277,7 @@ function validateEntry(entry: PolicyAuditEntry): void {
  *     granted override MUST be present — overrides only relax
  *     non-`allow` verdicts and never tighten an `allow`.
  */
-function validateOverrideInvariants(entry: PolicyAuditEntry): void {
+function validateOverrideInvariants(entry: PolicyAuditEntryInput): void {
   if (!entry.overrideApplied) {
     if (!verdictsEqual(entry.verdict, entry.baseVerdict)) {
       throw new Error(
@@ -297,6 +344,8 @@ function freezeEntry(entry: PolicyAuditEntry): PolicyAuditEntry {
     verdict,
     baseVerdict,
     evaluatedAt: entry.evaluatedAt,
+    recordedAt: entry.recordedAt,
+    sequence: entry.sequence,
     configFingerprint: entry.configFingerprint,
     override,
     overrideApplied: entry.overrideApplied,

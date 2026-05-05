@@ -137,6 +137,55 @@ describe("createPolicyAuditLog (storage behavior — _createPolicyAuditLogForTes
     expect(log.entries().map((e) => e.candidateId)).toEqual(["b", "c"]);
   });
 
+  test("recordedAt and sequence are bound by the log, not by callers", () => {
+    const log = _createPolicyAuditLogForTesting();
+    const before = Date.now();
+    const a = log.record({ ...baseEntry, candidateId: "a", evaluatedAt: 1 });
+    const b = log.record({ ...baseEntry, candidateId: "b", evaluatedAt: 2 });
+    const after = Date.now();
+    // Sequence numbers monotonically increment per log instance.
+    expect(a.sequence).toBe(0);
+    expect(b.sequence).toBe(1);
+    // recordedAt is the logger's own clock, distinct from caller-supplied evaluatedAt.
+    expect(a.recordedAt).toBeGreaterThanOrEqual(before);
+    expect(a.recordedAt).toBeLessThanOrEqual(after);
+    expect(a.evaluatedAt).toBe(1);
+    // Caller-supplied evaluatedAt does not influence sequence ordering.
+    expect(b.sequence).toBeGreaterThan(a.sequence);
+  });
+
+  test("onOverflow callback fires synchronously when an entry is evicted", () => {
+    const dropped: Array<{ id: string; count: number }> = [];
+    const log = _createPolicyAuditLogForTesting({
+      maxEntries: 2,
+      onOverflow: (entry, count) => {
+        dropped.push({ id: entry.candidateId, count });
+      },
+    });
+    log.record({ ...baseEntry, candidateId: "a" });
+    log.record({ ...baseEntry, candidateId: "b" });
+    expect(dropped).toEqual([]);
+    log.record({ ...baseEntry, candidateId: "c" });
+    expect(dropped).toEqual([{ id: "a", count: 1 }]);
+    log.record({ ...baseEntry, candidateId: "d" });
+    expect(dropped).toEqual([
+      { id: "a", count: 1 },
+      { id: "b", count: 2 },
+    ]);
+  });
+
+  test("a throwing onOverflow callback does not crash the policy gate", () => {
+    const log = _createPolicyAuditLogForTesting({
+      maxEntries: 1,
+      onOverflow: () => {
+        throw new Error("sink down");
+      },
+    });
+    log.record({ ...baseEntry, candidateId: "a" });
+    expect(() => log.record({ ...baseEntry, candidateId: "b" })).not.toThrow();
+    expect(log.droppedCount()).toBe(1);
+  });
+
   test("droppedCount reports FIFO evictions (overflow is observable, not silent)", () => {
     const log = _createPolicyAuditLogForTesting({ maxEntries: 2 });
     expect(log.droppedCount()).toBe(0);
