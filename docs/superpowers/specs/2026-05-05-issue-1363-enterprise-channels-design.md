@@ -110,8 +110,10 @@ failure, 409 on in-flight, 500 on handler throw, 503 on capacity.
   2. CAS-write an `outbox` record `{ messageId, threadKey, expectedThreadVersion, payloadHash, status: "pending" }` via `OutboxStore` (injected; default in-memory).
   3. Call `smtp.sendMail` setting that `Message-ID`, `In-Reply-To`, and `References`.
   4. On SMTP success: CAS-update outbox `status: "sent"` and CAS-advance `ThreadStore` with the new chain entry. Both updates use the version recorded at step 2 so concurrent senders cannot race.
-  5. On SMTP failure or crash: outbox row stays `pending`; on recovery, the channel scans `pending` rows and either retries the send (SMTP servers are required to dedupe by `Message-ID` per RFC 5321 ESMTP, so a duplicate hop is collapsed) or marks `failed` after a bounded retry budget.
-- **Recovery semantics**: because the outbound `Message-ID` is generated *before* SMTP and is included in `From`-side dedupe responsibility, a retry of step 3 with the same `Message-ID` is the standard idempotent-resend pattern; relays that respect the message-id collapse on their end. Threading state is only advanced on confirmed-sent, so a crashed-mid-send never leaves stale `In-Reply-To` pointers.
+  5. On SMTP failure *before* the relay accepted the DATA (e.g., connection refused, 4xx/5xx pre-DATA): outbox stays `pending`; safe to retry — no duplicate is possible. After bounded retries it transitions to `failed`.
+  6. On SMTP failure *after* DATA accepted but before our local state lands (e.g., process crash between server `250 OK` and outbox update): outbox stays `pending` with an `awaiting-recovery` flag set just before the SMTP call. On recovery the channel does **not** auto-resend such rows — instead it surfaces them via a `getPendingSends(): Promise<PendingSend[]>` API for operator review, because SMTP `Message-ID` is **not** a protocol-level idempotency key (RFC 5321 does not require relays to collapse duplicates by message-id; many do not).
+- **Delivery guarantee**: the channel promises **at-most-once acknowledged delivery** plus **at-least-once intent persistence**. Crash recovery after DATA-acked is operator-resolved (mark `sent` if confirmed by mailbox/MTA logs, or `failed` and let the user retry through the agent loop). The contract and the README both state that automated SMTP retry can produce duplicate user-visible mail and is therefore opt-in via an explicit `autoRetryAfterDataAck: true` config flag (default `false`).
+- **Threading**: state is only advanced on confirmed-sent (status `sent`), so a crashed-mid-send never leaves stale `In-Reply-To` pointers. `awaiting-recovery` rows do not contribute to outbound threading.
 - **Threading**: keyed by root `Message-ID` of the chain. **Durable + concurrency-safe**: outbound `In-Reply-To`/`References` derive from persisted message metadata, not from in-process state. The channel exposes a `ThreadStore` interface with CAS semantics:
 
   ```ts
@@ -208,9 +210,14 @@ interface IdempotencyStore {
    - `in-flight`: 409 — provider retries (Teams + WhatsApp both retry 4xx other than 4xx-final).
    - `capacity-exhausted`: 503 — provider retries; emit operator alert.
    - `ok`: continue.
-3. `await normalize(payload)` → `await handler(message)` (the user's async `onMessage`).
-4. On success: `commit(lease, commitTtlMs)` → 200 OK.
-5. On thrown error: `abort(lease)` → 500 — provider retries.
+3. `await normalize(payload)` → **before invoking the handler**, write a durable `processed` record (CAS, same store) tagged `pre-handler`. If this write fails, abort and return 500 — no side effects yet.
+4. `await handler(message)` (the user's async `onMessage`).
+5. On handler thrown error: `abort(lease)` (and clear `processed` if `pre-handler`-only) → 500, provider retries.
+6. On handler success: `commit(lease, commitTtlMs)` promotes the record to `committed`.
+   - If `commit()` itself fails after a successful handler, the record is *already* `pre-handler`-tagged for this key, so subsequent retries see `processed` on `tryBegin` lookup and short-circuit to 200 OK *without* re-running the handler. Operators see a non-fatal warning telemetry event (`commit-failed-but-processed`); the duplicate-suppression barrier is intact even though `commit()` did not complete cleanly. The `pre-handler` record is upgraded to fully-committed on the next successful `tryBegin` lookup that observes it (lazy promotion).
+   - 200 OK is returned to the provider in both the clean-commit and `commit-failed-but-processed` cases — they are observationally identical to the user.
+
+This makes the post-handler boundary effectively **at-most-once handler invocation** as long as the underlying store provides single-record CAS for the `processed` write. Side-effect bridges that need stricter exactly-once semantics layer their own outbox on top, with the ingress key as the dedupe seed (documented in the package README).
 
 Email is **IMAP-backed, not webhook-backed**, so it has no HTTP response to bind. Its loop instead awaits the handler, then `commit`s on success or `abort`s on failure, leaving the IMAP `\Seen` flag unset on abort so the next IMAP fetch re-delivers. Lease TTL is bounded so a crashed worker's lease expires and the next IMAP poll re-claims.
 
@@ -222,7 +229,7 @@ Email is **IMAP-backed, not webhook-backed**, so it has no HTTP response to bind
 |---------|-----------------------|-----------|
 | teams | 24h | Bot Framework retry budget is hours; 24h covers all observed retries with margin. |
 | whatsapp | 7 days | Meta Cloud API may retry within minutes, but full WAMID dedupe survives tenant moves and disaster recovery for a week. |
-| email | **`Infinity` (never expire by default)** | IMAP can re-deliver the same `Message-ID` weeks/months later via reconnect, mailbox rescan, replication failover, or backup restore. Reprocessing historical mail at the 24h boundary triggers duplicate replies and tool calls. Operators may set a finite value when paired with a known-bounded mailbox retention. The default in-memory store still respects `maxCommittedRecords`; durable email deployments must supply a store that retains for the mailbox retention horizon. |
+| email | no in-process default — **a durable `IdempotencyStore` is mandatory at construction**; factory throws `INVALID_CONFIG` otherwise | IMAP can re-deliver the same UIDVALIDITY+UID weeks/months later via reconnect, mailbox rescan, replication failover, or backup restore, so committed records must outlive any in-memory cap. Pairing the in-memory `maxCommittedRecords` cap with `Infinity` retention would silently fail-closed on routine mailbox volume; the spec rules that combination out by *requiring* a durable store. The injected store's retention must cover the mailbox retention horizon (operator-configured, typically 90d–`Infinity`). A bundled filesystem-backed `FileIdempotencyStore` (append-only log + in-memory index) ships in the package as the no-extra-infra default for single-node deployments. |
 
 Tests cover: concurrent `tryBegin` (exactly one `ok`), transient handler failure (`abort` releases key, retry succeeds), commit (retry after commit is a true no-op duplicate), and email replay 30+ days later still suppressed (with the default `Infinity` TTL).
 
