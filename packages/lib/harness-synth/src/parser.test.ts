@@ -245,4 +245,19 @@ describe("parseSynthesisOutput", () => {
     if (!result.ok) return;
     expect(result.value.descriptor.name).toBe("echo_tool");
   });
+
+  test("rejects valid claimant followed by balanced-but-malformed `{...}` (likely retry attempt)", () => {
+    // Trust-boundary regression: a balanced `{...}` after the sole
+    // claimant whose body fails JSON.parse (e.g. unquoted keys) marks a
+    // model-retry attempt. Accepting the earlier object would ship stale
+    // code as verified. Fail closed — same rationale as the unmatched
+    // trailing `{` case.
+    const real = rawWith(VALID_DESCRIPTOR, "x();");
+    const malformedRetry = "{ descriptor: not-json, code: also-not }"; // unquoted keys
+    const wrapped = `${real}\n\nRetry: ${malformedRetry}`;
+    const result = parseSynthesisOutput(wrapped, "echo_tool");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/malformed.*after the claimant/);
+  });
 });

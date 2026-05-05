@@ -1495,6 +1495,90 @@ describe("synthesize", () => {
     expect(result.reason).toMatch(/timed out/);
   });
 
+  test("SynthesisResult.kind classifies generator timeout independently of redacted reason", async () => {
+    // Observability regression: callers must be able to triage failures
+    // (retry / page / surface) by `kind` even when `reason` has been
+    // redacted to "failure reason omitted" by the default sanitizer.
+    const generate: GenerateCallback = (_p, signal) =>
+      new Promise<string>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    const result = await synthesize(INPUT, {
+      generate,
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      attemptTimeoutMs: 30,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.kind).toBe("generate_timeout");
+  });
+
+  test("SynthesisResult.kind distinguishes verify_rejected from verify_malformed", async () => {
+    const rejected = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify: () => ({ ok: false, reason: "code is wrong" }),
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(rejected.ok).toBe(false);
+    if (rejected.ok) return;
+    expect(rejected.kind).toBe("verify_rejected");
+
+    const malformed = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      // biome-ignore lint/suspicious/noExplicitAny: simulating skewed verifier.
+      verify: (() => ({})) as any as VerifyCallback,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(malformed.ok).toBe(false);
+    if (malformed.ok) return;
+    expect(malformed.kind).toBe("verify_malformed");
+  });
+
+  test("SynthesisResult.kind classifies caller-thrown generator as generate_exception", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => {
+        throw new Error("adapter blew up");
+      },
+      verify: ALWAYS_OK,
+      maxAttempts: 1,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.kind).toBe("generate_exception");
+  });
+
+  test("SynthesisResult.kind reflects config_invalid for bad maxAttempts", async () => {
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify: ALWAYS_OK,
+      maxAttempts: 0,
+      ...ABORT_HONORED,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.kind).toBe("config_invalid");
+  });
+
+  test("SynthesisResult.kind reflects synthesis_aborted on external signal", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const result = await synthesize(INPUT, {
+      generate: async () => validRaw(),
+      verify: ALWAYS_OK,
+      maxAttempts: 3,
+      ...ABORT_HONORED,
+      signal: ac.signal,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.kind).toBe("synthesis_aborted");
+  });
+
   test("rejects ok:true summary with empty stageResults (no audit evidence)", async () => {
     // A passed:true summary with zero stageResults entries publishes an
     // artifact as verified with no per-stage evidence — downstream forge

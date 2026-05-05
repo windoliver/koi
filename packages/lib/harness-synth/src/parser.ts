@@ -76,6 +76,12 @@ function findParseableJsonObject(
   | { readonly ok: false; readonly reason: string } {
   let lastParseReason: string | null = null;
   const claimants: Array<{ obj: Record<string, unknown>; end: number }> = [];
+  // Track outermost balanced spans that FAILED JSON.parse — a balanced
+  // `{...}` after the sole claimant whose body is malformed JSON (e.g.
+  // unquoted keys from a model retry attempt) means the model started a
+  // second payload. Accepting the earlier valid claimant in that case
+  // ships stale code as verified.
+  const malformedSpanStarts: number[] = [];
   // Two-phase linear scan. Phase 1: walk once, push every `{` onto a
   // stack and pop on `}`, recording (start, end, afterDepth) for each
   // matched pair. Each char is touched once and stack ops are O(1).
@@ -172,6 +178,7 @@ function findParseableJsonObject(
       parsed = JSON.parse(span);
     } catch (err: unknown) {
       lastParseReason = `Output JSON parse failed: ${err instanceof Error ? err.message : String(err)}`;
+      malformedSpanStarts.push(start);
       continue;
     }
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -195,6 +202,19 @@ function findParseableJsonObject(
         return {
           ok: false,
           reason: "Output has an unmatched `{` after the claimant payload (likely truncated retry)",
+        };
+      }
+      // A balanced-but-malformed `{...}` after the sole claimant likely
+      // marks a corrected retry whose body is invalid JSON (unquoted
+      // keys, trailing commas, etc.). Same trust-boundary failure as the
+      // unmatched-brace case: accepting the earlier object would ship
+      // stale code instead of the model's intended retry. Fail closed.
+      const trailingMalformed = malformedSpanStarts.some((s) => s > sole.end);
+      if (trailingMalformed) {
+        return {
+          ok: false,
+          reason:
+            "Output has a malformed `{...}` span after the claimant payload (likely retry attempt)",
         };
       }
       return { ok: true, value: sole.obj };

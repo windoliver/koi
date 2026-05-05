@@ -94,10 +94,55 @@ export interface SynthesisOutput {
   readonly verification: ForgeVerificationSummary;
 }
 
+/**
+ * Coarse failure category for `SynthesisResult` ok:false. Stable, secret-free,
+ * and independent of `reason` text — callers can branch on `kind` for retry,
+ * paging, or alerting decisions even when the human-readable `reason` has
+ * been redacted to "failure reason omitted" by the default sanitizer.
+ *
+ * Intended decision matrix:
+ * - `config_invalid` / `input_invalid`     → caller bug; do not retry, surface to operator.
+ * - `generate_timeout` / `verify_timeout`  → infra slow; retry with backoff or escalate.
+ * - `generate_aborted` / `verify_aborted`  → caller cancelled; do not retry.
+ * - `generate_exception` / `verify_exception` → adapter fault; page infra.
+ * - `generate_oversized`                   → model misbehavior; retry with stricter prompt.
+ * - `parse_failed` / `schema_mismatch`     → model output drift; retry up to maxAttempts.
+ * - `verify_rejected`                      → genuine verification failure; do NOT page infra.
+ * - `verify_malformed` / `verify_post_mutation` → verifier bug; surface to verifier owner.
+ * - `synthesis_aborted`                    → external signal aborted before any attempt ran.
+ */
+export type SynthesisFailureKind =
+  | "config_invalid"
+  | "input_invalid"
+  | "synthesis_aborted"
+  | "generate_timeout"
+  | "generate_aborted"
+  | "generate_exception"
+  | "generate_oversized"
+  | "parse_failed"
+  | "schema_mismatch"
+  | "verify_timeout"
+  | "verify_aborted"
+  | "verify_rejected"
+  | "verify_malformed"
+  | "verify_exception"
+  | "verify_post_mutation";
+
 /** Discriminated result of a synthesis attempt. */
 export type SynthesisResult =
   | { readonly ok: true; readonly value: SynthesisOutput }
-  | { readonly ok: false; readonly reason: string; readonly attempts: number };
+  | {
+      readonly ok: false;
+      readonly reason: string;
+      readonly attempts: number;
+      /**
+       * Stable, non-secret failure category. Use this — not the `reason`
+       * text — for retry/paging/alerting decisions. The `reason` may be
+       * redacted to a generic string by the default sanitizer for
+       * caller-controlled failure paths.
+       */
+      readonly kind: SynthesisFailureKind;
+    };
 
 // ---------------------------------------------------------------------------
 // Config

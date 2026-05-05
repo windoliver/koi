@@ -18,6 +18,7 @@ import {
   DEFAULT_SYNTHESIS_CONFIG,
   FORGED_BY,
   type SynthesisConfig,
+  type SynthesisFailureKind,
   type SynthesisInput,
   type SynthesisResult,
   type VerifyResult,
@@ -40,6 +41,7 @@ export async function synthesize(
       ok: false,
       reason: "maxAttempts must be a positive integer",
       attempts: 0,
+      kind: "config_invalid",
     };
   }
   const clock = config.clock ?? DEFAULT_SYNTHESIS_CONFIG.clock;
@@ -57,6 +59,7 @@ export async function synthesize(
       ok: false,
       reason: "adapterHonorsAbort must be a boolean",
       attempts: 0,
+      kind: "config_invalid",
     };
   }
   const signal = config.signal;
@@ -91,6 +94,7 @@ export async function synthesize(
       ok: false,
       reason: "attemptTimeoutMs must be a positive finite number or Infinity",
       attempts: 0,
+      kind: "config_invalid",
     };
   }
 
@@ -107,14 +111,19 @@ export async function synthesize(
   // Single-read + reject-on-violation gives us both invariants at once.
   const schemaSnapshot = snapshotJsonPlain(input.targetToolSchema, "targetToolSchema");
   if (!schemaSnapshot.ok) {
-    return { ok: false, reason: schemaSnapshot.reason, attempts: 0 };
+    return { ok: false, reason: schemaSnapshot.reason, attempts: 0, kind: "input_invalid" };
   }
   if (
     schemaSnapshot.value === null ||
     typeof schemaSnapshot.value !== "object" ||
     Array.isArray(schemaSnapshot.value)
   ) {
-    return { ok: false, reason: "targetToolSchema must be a JSON object", attempts: 0 };
+    return {
+      ok: false,
+      reason: "targetToolSchema must be a JSON object",
+      attempts: 0,
+      kind: "input_invalid",
+    };
   }
   const frozenSchema = deepFreeze(schemaSnapshot.value as Record<string, unknown>) as Readonly<
     Record<string, unknown>
@@ -127,6 +136,7 @@ export async function synthesize(
       ok: false,
       reason: `targetToolSchema exceeds ${MAX_SCHEMA_BYTES} bytes (got ${serializedSchema.length})`,
       attempts: 0,
+      kind: "input_invalid",
     };
   }
   // Defensively read the candidate fields we serialize into prompts. A
@@ -136,7 +146,7 @@ export async function synthesize(
   // never touches the original (potentially hostile) value again.
   const candidateSnapshot = snapshotCandidate(input.candidate);
   if (!candidateSnapshot.ok) {
-    return { ok: false, reason: candidateSnapshot.reason, attempts: 0 };
+    return { ok: false, reason: candidateSnapshot.reason, attempts: 0, kind: "input_invalid" };
   }
   // Cap candidate prompt-bound string fields. Same rationale as schema:
   // an oversized name/description blows up every attempt's prompt before
@@ -153,6 +163,7 @@ export async function synthesize(
         ok: false,
         reason: `candidate.${key} exceeds ${MAX_CANDIDATE_FIELD_BYTES} bytes (got ${value.length})`,
         attempts: 0,
+        kind: "input_invalid",
       };
     }
   }
@@ -165,16 +176,27 @@ export async function synthesize(
     targetToolName = input.targetToolName;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: `targetToolName getter threw: ${message}`, attempts: 0 };
+    return {
+      ok: false,
+      reason: `targetToolName getter threw: ${message}`,
+      attempts: 0,
+      kind: "input_invalid",
+    };
   }
   if (typeof targetToolName !== "string" || targetToolName.length === 0) {
-    return { ok: false, reason: "targetToolName must be a non-empty string", attempts: 0 };
+    return {
+      ok: false,
+      reason: "targetToolName must be a non-empty string",
+      attempts: 0,
+      kind: "input_invalid",
+    };
   }
   if (targetToolName.length > MAX_CANDIDATE_FIELD_BYTES) {
     return {
       ok: false,
       reason: `targetToolName exceeds ${MAX_CANDIDATE_FIELD_BYTES} bytes (got ${targetToolName.length})`,
       attempts: 0,
+      kind: "input_invalid",
     };
   }
   // Build safeInput from validated primitive snapshots only — never spread
@@ -188,13 +210,24 @@ export async function synthesize(
   let priorCode = "";
   let priorReason = "";
   let lastReason = "no attempts ran";
+  // Coarse failure category tracked alongside lastReason so the final
+  // exhaustion return carries the most-recent failure's structured kind
+  // even after the human-readable reason has been redacted by the
+  // sanitizer. Initialised to a sentinel that should never surface
+  // (the loop body always sets it before the final return).
+  let lastKind: SynthesisFailureKind = "generate_exception";
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     // Pre-flight abort check is only safe when no adapter work has started
     // yet OR the adapter honors abort. In best-effort mode we still respect
     // it before launching a new attempt (no work can be in flight here).
     if (signal?.aborted) {
-      return { ok: false, reason: "Synthesis aborted by caller", attempts: attempt - 1 };
+      return {
+        ok: false,
+        reason: "Synthesis aborted by caller",
+        attempts: attempt - 1,
+        kind: "synthesis_aborted",
+      };
     }
     const prompt =
       attempt === 1
@@ -253,10 +286,11 @@ export async function synthesize(
             ? " (adapter may still be running)"
             : "";
         lastReason = safeReason + extra;
+        lastKind = generated.failureKind ?? "generate_exception";
         priorReason = redactReason(safeReason);
         priorCode = "";
         if (generated.aborted) {
-          return { ok: false, reason: lastReason, attempts: attempt };
+          return { ok: false, reason: lastReason, attempts: attempt, kind: lastKind };
         }
         continue;
       }
@@ -270,6 +304,7 @@ export async function synthesize(
       if (generated.value.length > MAX_GENERATED_BYTES) {
         const reason = `Generated output exceeds ${MAX_GENERATED_BYTES} bytes (got ${generated.value.length})`;
         lastReason = reason;
+        lastKind = "generate_oversized";
         priorReason = redactReason(reason);
         priorCode = "";
         continue;
@@ -278,6 +313,7 @@ export async function synthesize(
       const parsed = parseSynthesisOutput(generated.value, safeInput.targetToolName);
       if (!parsed.ok) {
         lastReason = parsed.reason;
+        lastKind = "parse_failed";
         priorReason = redactReason(parsed.reason);
         priorCode = capPriorCode(generated.value);
         continue;
@@ -289,6 +325,7 @@ export async function synthesize(
       );
       if (!schemaCheck.ok) {
         lastReason = schemaCheck.reason;
+        lastKind = "schema_mismatch";
         priorReason = redactReason(schemaCheck.reason);
         priorCode = capPriorCode(parsed.value.code);
         continue;
@@ -322,10 +359,11 @@ export async function synthesize(
             ? " (adapter may still be running)"
             : "";
         lastReason = safeReason + verifyExtra;
+        lastKind = verified.failureKind ?? "verify_exception";
         priorReason = redactReason(safeReason);
         priorCode = capPriorCode(parsed.value.code);
         if (verified.aborted) {
-          return { ok: false, reason: lastReason, attempts: attempt };
+          return { ok: false, reason: lastReason, attempts: attempt, kind: lastKind };
         }
         continue;
       }
@@ -340,6 +378,7 @@ export async function synthesize(
           ok: false,
           reason: "Verifier mutated descriptor.name post-verification",
           attempts: attempt,
+          kind: "verify_post_mutation",
         };
       }
       const finalSchemaCheck = checkSchemaMatch(
@@ -351,6 +390,7 @@ export async function synthesize(
           ok: false,
           reason: "Verifier mutated descriptor.inputSchema post-verification",
           attempts: attempt,
+          kind: "verify_post_mutation",
         };
       }
       return {
@@ -373,7 +413,7 @@ export async function synthesize(
     }
   }
 
-  return { ok: false, reason: lastReason, attempts: maxAttempts };
+  return { ok: false, reason: lastReason, attempts: maxAttempts, kind: lastKind };
 }
 
 /**
@@ -546,6 +586,15 @@ type GuardedResult<T> =
        * leave this `undefined`/false and are forwarded as-is.
        */
       readonly tainted?: boolean;
+      /**
+       * Coarse failure category set by the wrapper that produced this
+       * result (safeGenerate / safeVerify) and surfaced as
+       * `SynthesisResult.kind`. Independent of `reason` text so callers
+       * can branch on it even after sanitization redacts the human
+       * message. `guardAttempt` itself does not set this — callers know
+       * which side of the synthesis pipeline they wrap.
+       */
+      readonly failureKind?: SynthesisFailureKind;
     };
 
 async function safeGenerate(
@@ -560,11 +609,20 @@ async function safeGenerate(
     attempt,
     "LLM generation",
   );
-  if (!guarded.ok) return guarded;
+  if (!guarded.ok) {
+    // Map guardAttempt's generic failure to a structured generate_* kind.
+    const kind: SynthesisFailureKind = guarded.aborted
+      ? "generate_aborted"
+      : /timed out/.test(guarded.reason)
+        ? "generate_timeout"
+        : "generate_exception";
+    return { ...guarded, failureKind: kind };
+  }
   if (typeof guarded.value !== "string") {
     return {
       ok: false,
       reason: `LLM generation returned non-string (typeof ${typeof guarded.value})`,
+      failureKind: "generate_exception",
     };
   }
   return { ok: true, value: guarded.value };
@@ -784,14 +842,27 @@ async function safeVerify(
   descriptor: ToolDescriptor,
   timeoutMs: number,
   attempt: AbortController,
-): Promise<VerifyResult & { readonly aborted?: boolean; readonly tainted?: boolean }> {
+): Promise<
+  VerifyResult & {
+    readonly aborted?: boolean;
+    readonly tainted?: boolean;
+    readonly failureKind?: SynthesisFailureKind;
+  }
+> {
   const guarded = await guardAttempt(
     (signal) => Promise.resolve(verify(code, descriptor, signal)),
     timeoutMs,
     attempt,
     "Verifier",
   );
-  if (!guarded.ok) return guarded;
+  if (!guarded.ok) {
+    const kind: SynthesisFailureKind = guarded.aborted
+      ? "verify_aborted"
+      : /timed out/.test(guarded.reason)
+        ? "verify_timeout"
+        : "verify_exception";
+    return { ...guarded, failureKind: kind };
+  }
   // Wrap coercion in try/catch: a hostile verifier may return an object with
   // throwing getters or other accessors that explode on property reads. The
   // boundary's whole purpose is to keep buggy adapters from crashing the
@@ -799,17 +870,26 @@ async function safeVerify(
   // it escape past the typed-result contract.
   try {
     const coerced = coerceVerifyResult(guarded.value);
-    // Verifier-returned ok:false reasons always reflect caller-controlled
-    // text — either the verifier's own diagnostic string (line 1062) or
-    // an internal coercion message that interpolates caller-supplied data
-    // (malformed summary contents, etc.). Tag tainted so the loop runs
-    // them through sanitizeVerifierReason before exposing on either the
-    // public reason channel or the LLM retry prompt.
-    if (!coerced.ok) return { ...coerced, tainted: true };
+    if (!coerced.ok) {
+      // Distinguish a genuine verifier rejection (the callback returned
+      // ok:false with its own reason) from a malformed verifier result
+      // (wrong shape, missing summary, internal contradictions). Callers
+      // need this distinction to decide whether the failure is the code
+      // (verify_rejected — do not page infra) or the verifier
+      // (verify_malformed — surface to verifier owner).
+      const kind: SynthesisFailureKind =
+        coerced.cause === "rejected" ? "verify_rejected" : "verify_malformed";
+      return { ok: false, reason: coerced.reason, tainted: true, failureKind: kind };
+    }
     return coerced;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: `Verifier returned hostile object: ${message}`, tainted: true };
+    return {
+      ok: false,
+      reason: `Verifier returned hostile object: ${message}`,
+      tainted: true,
+      failureKind: "verify_exception",
+    };
   }
 }
 
@@ -1043,11 +1123,29 @@ function coerceVerificationSummary(
  * an object missing the discriminator must not crash the synthesis loop —
  * the boundary's whole point is to keep this typed.
  */
-function coerceVerifyResult(value: unknown): VerifyResult {
+type CoercedVerifyResult =
+  | { readonly ok: true; readonly summary: ForgeVerificationSummary }
+  | {
+      readonly ok: false;
+      readonly reason: string;
+      /**
+       * `"rejected"` — the verifier itself returned ok:false (genuine
+       * verification failure of the synthesized code).
+       * `"malformed"` — the verifier returned a result that did not
+       * conform to the VerifyResult contract (wrong shape, missing
+       * summary, contradictory fields, non-JSON-plain extras, etc.).
+       * The synthesis loop maps these to verify_rejected vs
+       * verify_malformed in `SynthesisResult.kind`.
+       */
+      readonly cause: "rejected" | "malformed";
+    };
+
+function coerceVerifyResult(value: unknown): CoercedVerifyResult {
   if (value === null || typeof value !== "object") {
     return {
       ok: false,
       reason: `Verifier returned non-object (typeof ${typeof value})`,
+      cause: "malformed",
     };
   }
   const obj = value as Record<string, unknown>;
@@ -1060,6 +1158,7 @@ function coerceVerifyResult(value: unknown): VerifyResult {
       return {
         ok: false,
         reason: "Verifier returned ok:true without ForgeVerificationSummary",
+        cause: "malformed",
       };
     }
     const summary = coerceVerificationSummary(obj.summary);
@@ -1067,6 +1166,7 @@ function coerceVerifyResult(value: unknown): VerifyResult {
       return {
         ok: false,
         reason: `Verifier returned ok:true with malformed summary: ${summary.reason}`,
+        cause: "malformed",
       };
     }
     if (!summary.value.passed) {
@@ -1077,16 +1177,18 @@ function coerceVerifyResult(value: unknown): VerifyResult {
       return {
         ok: false,
         reason: "Verifier returned ok:true with summary.passed:false",
+        cause: "malformed",
       };
     }
     return { ok: true, summary: summary.value };
   }
   if (obj.ok === false) {
     const reason = typeof obj.reason === "string" ? obj.reason : "(no reason supplied)";
-    return { ok: false, reason };
+    return { ok: false, reason, cause: "rejected" };
   }
   return {
     ok: false,
     reason: "Verifier returned malformed result (missing or non-boolean `ok`)",
+    cause: "malformed",
   };
 }
