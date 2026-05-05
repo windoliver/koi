@@ -29,8 +29,8 @@ export type InMemoryIdempotencyStoreOptions = {
   readonly now?: () => number;
 };
 
-type LeaseRecord = { token: string; expiresAt: number };
-type CommittedRecord = { expiresAt: number };
+type LeaseRecord = { readonly token: string; readonly expiresAt: number };
+type CommittedRecord = { readonly expiresAt: number };
 
 export class InMemoryIdempotencyStore implements IdempotencyStore {
   readonly #leases = new Map<string, LeaseRecord>();
@@ -82,6 +82,9 @@ export class InMemoryIdempotencyStore implements IdempotencyStore {
     if (!live || live.token !== lease.token) {
       throw new Error(`renew: lease ${lease.key} not held`);
     }
-    live.expiresAt = this.#now() + leaseMs;
+    this.#leases.set(lease.key, {
+      token: live.token,
+      expiresAt: this.#now() + leaseMs,
+    });
   }
 }

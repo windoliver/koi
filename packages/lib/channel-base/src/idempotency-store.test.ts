@@ -63,4 +63,30 @@ describe("InMemoryIdempotencyStore", () => {
     const r2 = await s.tryBegin("k1", 100);
     expect(r2.ok).toBe(true);
   });
+
+  test("commit with stale token rejects after lease was reissued", async () => {
+    const s = new InMemoryIdempotencyStore();
+    const r1 = await s.tryBegin("k1", 100);
+    if (!r1.ok) throw new Error();
+    await s.abort(r1.lease);
+    const r2 = await s.tryBegin("k1", 100);
+    if (!r2.ok) throw new Error();
+    expect(s.commit(r1.lease, 1000)).rejects.toThrow();
+    // Second lease still valid:
+    await s.commit(r2.lease, 1000);
+  });
+
+  test("abort with stale token does not wipe a reissued lease", async () => {
+    const s = new InMemoryIdempotencyStore();
+    const r1 = await s.tryBegin("k1", 100);
+    if (!r1.ok) throw new Error();
+    await s.abort(r1.lease);
+    const r2 = await s.tryBegin("k1", 100);
+    if (!r2.ok) throw new Error();
+    // Stale aborter should be a silent no-op, not delete the active lease.
+    await s.abort(r1.lease);
+    const r3 = await s.tryBegin("k1", 100);
+    expect(r3).toEqual({ ok: false, reason: "in-flight" });
+    await s.commit(r2.lease, 1000);
+  });
 });
