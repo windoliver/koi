@@ -65,14 +65,15 @@ function normalizeReferences(refs: ParsedMail["references"]): readonly string[] 
   return [];
 }
 
-function deriveContent(parsed: ParsedMail): readonly TextBlock[] {
+function deriveContent(parsed: ParsedMail): readonly TextBlock[] | null {
   if (typeof parsed.text === "string" && parsed.text.length > 0) {
     return [{ kind: "text", text: parsed.text }];
   }
   if (typeof parsed.html === "string" && parsed.html.length > 0) {
-    return [{ kind: "text", text: stripHtml(parsed.html) }];
+    const stripped = stripHtml(parsed.html);
+    if (stripped.length > 0) return [{ kind: "text", text: stripped }];
   }
-  return [{ kind: "text", text: "" }];
+  return null;
 }
 
 export function normalizeEmail(
@@ -128,8 +129,32 @@ export function normalizeEmail(
       : {}),
   };
 
+  const content = deriveContent(parsed);
+  if (content === null) {
+    // Empty body. Either attachment-only mail (PDF/screenshot/etc.
+    // sent without accompanying text) or a parse regression. We
+    // fail closed rather than synthesize a blank text block —
+    // synthesizing meant the handler saw `[{kind:"text", text:""}]`
+    // and the IMAP adapter could ack the message, silently
+    // discarding the attachment payload. Until first-class
+    // attachment content blocks are wired in, surface this as
+    // PARSE_FAILED so the IMAP adapter keeps the message un-acked
+    // and an operator (or onIngressError hook) decides whether to
+    // dead-letter or wait.
+    const attachmentCount = parsed.attachments?.length ?? 0;
+    return {
+      ok: false,
+      error: {
+        code: "PARSE_FAILED",
+        message:
+          attachmentCount > 0
+            ? `email body is empty and contains ${attachmentCount} attachment(s); attachment-only mail is not yet supported (no first-class file content blocks)`
+            : "email body is empty (no text, no html, no attachments)",
+      },
+    };
+  }
   const value: InboundMessage = {
-    content: deriveContent(parsed),
+    content,
     senderId,
     threadId,
     timestamp,

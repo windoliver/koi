@@ -16,6 +16,7 @@
 
 import { createRemoteJWKSet, type JWTPayload, jwtVerify } from "jose";
 import type { ServiceUrlPattern, TeamsConfig } from "./config.js";
+import { createBotFrameworkAppTokenMinter } from "./mint-app-token.js";
 
 export type TeamsErrorCode =
   | "INVALID_JWT"
@@ -152,39 +153,31 @@ export type VerifyTokenFn = (token: string) => Promise<JWTPayload>;
 export type CreateTokenVerifierOptions = {
   readonly verifyToken?: VerifyTokenFn;
   /**
-   * REQUIRED for production deployments. Mints a Bot Framework OAuth2 access
-   * token (client credentials flow against
-   * https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token, scope
-   * `https://api.botframework.com/.default`) with caching/expiry handling.
-   * The package does NOT ship a default implementation because there is no
-   * safe default — using `appPassword` directly as a Bearer token is rejected
-   * by Bot Framework and would silently break outbound sends.
+   * Optional override for the Bot Framework outbound app-token minter.
+   * When omitted, the verifier defaults to
+   * `createBotFrameworkAppTokenMinter(config)` — the in-package OAuth2
+   * client-credentials minter. Override only for tests, custom IDPs, or
+   * inline cloud profiles that need a custom token endpoint.
    */
-  readonly mintAppToken: () => Promise<string>;
+  readonly mintAppToken?: () => Promise<string>;
   readonly clock?: () => number;
 };
 
 export function createTokenVerifier(
   config: TeamsConfig,
-  options: CreateTokenVerifierOptions,
+  options: CreateTokenVerifierOptions = {},
 ): JwtVerifier {
-  // Explicit guard for callers from JavaScript or older binding code
-  // that may omit `options`. `mintAppToken` has no safe default
-  // (Bot Framework rejects the appPassword as a Bearer token), so we
-  // fail with a clear error rather than crashing on `options.clock`
-  // dereference. TypeScript callers cannot reach this branch — it
-  // exists for runtime defense at the package boundary.
-  if (
-    typeof options !== "object" ||
-    options === null ||
-    typeof (options as { mintAppToken?: unknown }).mintAppToken !== "function"
-  ) {
-    throw new Error(
-      "INVALID_CONFIG: createTokenVerifier requires options.mintAppToken (Bot Framework OAuth2 client-credentials minter; no safe default — see createBotFrameworkAppTokenMinter)",
-    );
-  }
   const { issuer, jwksUri } = resolveIssuer(config);
   const clock = options.clock ?? Date.now;
+  // Default to the package's Bot Framework client-credentials minter
+  // when the caller does not supply one. The default is safe — it
+  // derives tenant + scope from `config.cloud` so public/gov configs
+  // mint against the correct authority — and it is the path
+  // documented in the package README. Callers that need to override
+  // (custom IDP, inline cloud profile with non-standard endpoints,
+  // or test stubs) can still pass `options.mintAppToken`.
+  const mintAppToken: () => Promise<string> =
+    options.mintAppToken ?? createBotFrameworkAppTokenMinter(config);
   const verifyToken: VerifyTokenFn =
     options.verifyToken ??
     (async (token: string): Promise<JWTPayload> => {
@@ -239,5 +232,5 @@ export function createTokenVerifier(
     return claims;
   };
 
-  return { verify, appToken: options.mintAppToken };
+  return { verify, appToken: mintAppToken };
 }

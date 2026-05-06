@@ -255,15 +255,16 @@ describe("createTokenVerifier (DI path)", () => {
     expect(await v.appToken()).toBe("minted-bot-framework-token");
   });
 
-  test("createTokenVerifier(config) without options throws explicit INVALID_CONFIG", () => {
-    // Regression: previous behaviour crashed on `options.clock`
-    // dereference when called without the second argument (e.g. from
-    // JS or older binding code following a misread of the docs as
-    // accepting optional options). The function now hard-fails with
-    // an explicit INVALID_CONFIG error naming the missing dependency.
-    expect(() =>
-      // @ts-expect-error: deliberately omit required options to assert the runtime guard
-      createTokenVerifier(baseConfig),
-    ).toThrow(/INVALID_CONFIG.*mintAppToken/);
+  test("createTokenVerifier(config) constructs default Bot Framework minter when options omitted", () => {
+    // Regression: createTokenVerifier was the documented public
+    // verifier entrypoint but threw INVALID_CONFIG when called
+    // without `options.mintAppToken`, breaking the advertised
+    // default path. It now defaults to
+    // createBotFrameworkAppTokenMinter(config) so callers following
+    // the docs path get a usable verifier; overrides are still
+    // available via options for tests / inline cloud profiles.
+    const v = createTokenVerifier(baseConfig);
+    expect(typeof v.verify).toBe("function");
+    expect(typeof v.appToken).toBe("function");
   });
 });

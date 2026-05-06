@@ -95,4 +95,37 @@ describe("normalizeEmail", () => {
       { filename: "a.pdf", contentType: "application/pdf", size: 100 },
     ]);
   });
+
+  test("attachment-only mail (no text body) fails closed with PARSE_FAILED", () => {
+    // Regression: previously deriveContent emitted [{kind:"text",text:""}]
+    // for body-less mail, and the IMAP adapter would ack the message
+    // even though the user's actual payload was the attachment —
+    // silent data loss for support/ops mailboxes. Now empty-body is
+    // a PARSE_FAILED that the IMAP layer surfaces as un-acked so an
+    // operator can dead-letter or hold for a future attachment-
+    // block implementation.
+    const r = normalizeEmail({
+      parsed: {
+        ...baseParsed,
+        text: undefined,
+        html: undefined,
+        attachments: [{ filename: "scan.pdf", contentType: "application/pdf", size: 1024 }],
+      },
+      imap: baseImap,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe("PARSE_FAILED");
+    expect(r.error.message).toContain("attachment");
+  });
+
+  test("entirely empty mail (no text, html, attachments) fails closed", () => {
+    const r = normalizeEmail({
+      parsed: { ...baseParsed, text: undefined, html: undefined },
+      imap: baseImap,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe("PARSE_FAILED");
+  });
 });
