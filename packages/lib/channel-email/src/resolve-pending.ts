@@ -89,14 +89,33 @@ export async function resolvePending(
   }
 
   // outcome === "failed"
-  // Order matters: we must NOT flip the outbox out of `awaiting-recovery`
-  // until thread rollback has succeeded. Otherwise a CAS conflict on the
-  // thread leaves the chain corrupted while the outbox row is no longer
-  // pending — the thread silently unblocks with stale ancestry.
   //
-  // Step 1: probe the thread version. If it has advanced past us, refuse
-  // before touching the outbox so the row stays visible to the operator
-  // and the thread stays blocked.
+  // Race-free single-owner protocol:
+  //
+  //   Step 1: CAS awaiting-recovery → aborting. This wins the resolver
+  //           race: a concurrent "sent" resolver will see status=aborting
+  //           and refuse, and a concurrent "failed" resolver will lose
+  //           this CAS and return ALREADY_RESOLVED. Only after we own
+  //           the row do we touch ThreadStore.
+  //   Step 2: probe thread version; refuse with RECOVERY_CONFLICT (and
+  //           leave the row in `aborting` for operator inspection) if a
+  //           later send has stacked on top.
+  //   Step 3: thread rollback CAS.
+  //   Step 4: aborting → aborted (terminal).
+  const claimed = await deps.outboxStore.cas(messageId, "awaiting-recovery", "aborting");
+  if (!claimed) {
+    const after = await deps.outboxStore.get(messageId);
+    if (after) return alreadyResolved(after, outcome);
+    return {
+      ok: false,
+      error: {
+        code: "ALREADY_RESOLVED",
+        message: "outbox row no longer awaiting-recovery",
+        context: { messageId },
+      },
+    };
+  }
+
   const thread = await deps.threadStore.get(current.threadKey);
   if (thread && thread.version !== current.threadVersion) {
     return {
@@ -113,9 +132,6 @@ export async function resolvePending(
     };
   }
 
-  // Step 2: attempt the thread rollback CAS first. If a concurrent writer
-  // sneaks in between the probe and the CAS, the CAS will fail and we
-  // surface the same RECOVERY_CONFLICT — the outbox is still untouched.
   if (thread) {
     const stripped = thread.state.chain.filter((id) => id !== messageId);
     const rolled = await deps.threadStore.cas(current.threadKey, current.threadVersion, {
@@ -133,10 +149,7 @@ export async function resolvePending(
     }
   }
 
-  // Step 3: only now, with thread state already rolled back, flip the
-  // outbox row. The handler-side blocking check uses outbox listing so
-  // this transition is the one that unblocks the thread.
-  const flipped = await deps.outboxStore.cas(messageId, "awaiting-recovery", "aborted");
+  const flipped = await deps.outboxStore.cas(messageId, "aborting", "aborted");
   if (!flipped) {
     const after = await deps.outboxStore.get(messageId);
     if (after) return alreadyResolved(after, outcome);

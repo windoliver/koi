@@ -7,12 +7,18 @@
  * the CAS succeeds it advances to `reserved`; if the CAS loses contention
  * it advances to `aborted`. A row stuck in `reserving` after a crash is
  * recoverable — see `recoverOrphanedReservations` in `@koi/channel-email`.
+ *
+ * `aborting` is a resolver-owned intermediate. `resolvePending(messageId,
+ * "failed")` CAS-flips `awaiting-recovery → aborting` BEFORE mutating
+ * thread state, so a concurrent `"sent"` resolver cannot interleave and
+ * leave the outbox `sent` while the thread chain is rolled back.
  */
 export type OutboxStatus =
   | "reserving"
   | "reserved"
   | "sending"
   | "sent"
+  | "aborting"
   | "aborted"
   | "awaiting-recovery";
 

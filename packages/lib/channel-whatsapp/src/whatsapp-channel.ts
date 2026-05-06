@@ -173,37 +173,48 @@ export function createWhatsAppChannel(
       return new Response(null, { status: 200 });
     }
 
-    // Probe IdempotencyStore BEFORE 200 ack so a healthy provider response
-    // implies durable dedupe capacity. If the store is at capacity or the
-    // key is in-flight under another worker, return 5xx and let Meta retry.
-    // Each message gets its own dedupe key + probe + enqueue. Probe outcome:
-    //   - committed              → already processed, skip and continue
-    //   - in-flight              → 503 (Meta retries whole batch)
-    //   - capacity-exhausted     → 503 (Meta retries whole batch)
-    //   - ok → enqueue → abort lease (worker re-claims via tryBegin)
+    // Step 1: validate ALL messages in the batch BEFORE any persistence.
+    // A single bad message must fail the whole webhook with 400 — no
+    // partial-persist + 4xx split, which would silently drop later items
+    // because Meta does not retry 4xx.
+    type Item = {
+      readonly msg: WhatsAppMessage;
+      readonly key: string;
+      readonly normalized: InboundMessage;
+    };
+    const items: Item[] = [];
     for (const msg of messages) {
       const norm = normalizeWhatsApp(msg, config.phoneNumberId, clock);
       if (!norm.ok) {
         return new Response(`INVALID_PAYLOAD: ${norm.error.message}`, { status: 400 });
       }
-      const key = dedupeKey(config.phoneNumberId, msg);
-      const begin = await deps.idempotencyStore.tryBegin(key, WEBHOOK_LEASE_MS);
+      items.push({ msg, key: dedupeKey(config.phoneNumberId, msg), normalized: norm.value });
+    }
+
+    // Step 2: probe IdempotencyStore + enqueue per message. All items are
+    // already known-valid, so any failure here is transient store/dedupe
+    // pressure → 503 so Meta retries the whole batch (enqueue is
+    // idempotent on dedupe key, so retries converge).
+    //
+    //   - committed              → already processed, skip
+    //   - in-flight / capacity   → 503 (Meta retries whole batch)
+    //   - ok → enqueue → abort lease (worker re-claims via tryBegin)
+    for (const item of items) {
+      const begin = await deps.idempotencyStore.tryBegin(item.key, WEBHOOK_LEASE_MS);
       if (!begin.ok) {
         if (begin.reason === "committed") continue;
-        // in-flight or capacity-exhausted: refuse the ack so Meta retries.
         return new Response(begin.reason, { status: 503 });
       }
       try {
-        await deps.ingressQueue.enqueue(key, {
-          key,
-          payload: msg,
-          normalized: norm.value,
+        await deps.ingressQueue.enqueue(item.key, {
+          key: item.key,
+          payload: item.msg,
+          normalized: item.normalized,
         });
       } catch {
         await deps.idempotencyStore.abort(begin.lease).catch(() => {});
         return new Response("ingress-queue-unavailable", { status: 503 });
       }
-      // Release the lease so the handler worker can re-claim via tryBegin.
       await deps.idempotencyStore.abort(begin.lease).catch(() => {});
     }
     return new Response(null, { status: 200 });

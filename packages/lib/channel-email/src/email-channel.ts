@@ -44,7 +44,15 @@ export type InboundEnvelope = {
 export interface ImapClient {
   open(): Promise<void>;
   close(): Promise<void>;
-  onNewMessage(cb: (env: InboundEnvelope) => void): () => void;
+  /**
+   * Subscribe to new mailbox messages. The callback returns a Promise that
+   * resolves ONLY after the channel has durably enqueued the message; the
+   * IMAP adapter MUST treat callback rejection as a signal to keep the
+   * message un-acked / unread so a future poll cycle redelivers it.
+   * Acknowledging (or advancing the cursor) before the callback resolves
+   * loses messages on transient parser/store failures.
+   */
+  onNewMessage(cb: (env: InboundEnvelope) => Promise<void>): () => void;
 }
 
 export type { MimeParser } from "./normalize-bridge.js";
@@ -198,21 +206,17 @@ export function createEmailChannel(
         threadStore: deps.threadStore,
       });
       await deps.imap.open();
-      unsubscribeImap = deps.imap.onNewMessage((env) => {
-        enqueueInbound(deps, env, clock).catch((err: unknown) => {
-          // Surface the failure so the IMAP adapter can keep the message
-          // un-acked / unread for retry on the next poll cycle. If the
-          // caller has not provided an explicit handler, re-throw on a
-          // microtask so the failure raises `unhandledRejection` telemetry
-          // rather than disappearing silently.
-          if (deps.onIngressError) {
-            deps.onIngressError(err, env);
-          } else {
-            queueMicrotask(() => {
-              throw err instanceof Error ? err : new Error(String(err));
-            });
-          }
-        });
+      unsubscribeImap = deps.imap.onNewMessage(async (env) => {
+        try {
+          await enqueueInbound(deps, env, clock);
+        } catch (err: unknown) {
+          // Surface for telemetry, then re-throw so the IMAP adapter keeps
+          // the message un-acked / unread for redelivery. The `await` in
+          // this callback is the contract that lets the adapter gate
+          // mailbox acknowledgement on durable enqueue success.
+          deps.onIngressError?.(err, env);
+          throw err;
+        }
       });
       stopWorker = startHandlerWorker({
         queue: deps.ingressQueue,

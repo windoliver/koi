@@ -53,7 +53,7 @@ async function rollbackThreadIfPresent(threadStore: ThreadStore, row: OutboxReco
 async function abortPreSendRow(
   deps: RecoverDeps,
   row: OutboxRecord,
-  expected: "reserving" | "reserved",
+  expected: "reserving" | "reserved" | "aborting",
 ): Promise<RecoverResult> {
   await rollbackThreadIfPresent(deps.threadStore, row);
   const ok = await deps.outboxStore.cas(row.messageId, expected, "aborted");
@@ -75,6 +75,14 @@ export async function recoverOrphanedReservations(
   }
   for (const row of await deps.outboxStore.list({ status: "reserved" })) {
     results.push(await abortPreSendRow(deps, row, "reserved"));
+  }
+
+  // A resolver crashed mid-flight after CAS-claiming `awaiting-recovery →
+  // aborting` but before the terminal flip. Roll the chain back if needed
+  // (idempotent if the resolver already stripped it) and complete the
+  // transition to `aborted`.
+  for (const row of await deps.outboxStore.list({ status: "aborting" })) {
+    results.push(await abortPreSendRow(deps, row, "aborting"));
   }
 
   // Post-SMTP intent: `sending` rows reached the SMTP layer but we did
