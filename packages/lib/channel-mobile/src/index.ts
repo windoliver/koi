@@ -6,7 +6,11 @@
  * forwarded to an optional `pushNotifier` (APNs/FCM) provided by the host.
  */
 
-export type { MobileChannelAdapter, MobileChannelConfig } from "./mobile-channel.js";
+export type {
+  MobileChannelAdapter,
+  MobileChannelConfig,
+  MobilePushContext,
+} from "./mobile-channel.js";
 export {
   createMobileChannel,
   MobileNoDeliveryTargetError,

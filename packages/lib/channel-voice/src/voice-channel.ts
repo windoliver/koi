@@ -112,8 +112,14 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     normalize: async (frame) => {
       const text = await config.stt.transcribe(frame);
       if (text === null) return null;
+      // Treat empty / whitespace-only transcripts as silence. Otherwise a
+      // clipped audio frame, end-of-utterance marker, or degraded provider
+      // response that returns "" would burn a full agent turn (and may even
+      // produce a spoken response to silence).
+      const trimmed = text.trim();
+      if (trimmed.length === 0) return null;
       return {
-        content: [{ kind: "text", text }],
+        content: [{ kind: "text", text: trimmed }],
         senderId,
         timestamp: Date.now(),
       };

@@ -115,6 +115,25 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("inbound: STT returns empty/whitespace → no message dispatched (silence)", async () => {
+    // Regression: prior version dispatched empty TextBlock for "" or "   ",
+    // burning a model turn on silence. normalize() now trims and treats
+    // empty-after-trim as silence.
+    for (const blank of ["", "   ", "\n\n  \t"]) {
+      const h = harness({ sttResult: () => blank });
+      const ch = createVoiceChannel({ transport: h.transport, stt: h.stt, tts: h.tts });
+      const received: InboundMessage[] = [];
+      ch.onMessage(async (msg) => {
+        received.push(msg);
+      });
+      await ch.connect();
+      h.emitAudio(new Uint8Array([1]));
+      await new Promise((r) => setTimeout(r, 5));
+      expect(received).toHaveLength(0);
+      await ch.disconnect();
+    }
+  });
+
   test("inbound: STT returns null → no message dispatched", async () => {
     const h = harness({ sttResult: () => null });
     const ch = createVoiceChannel({ transport: h.transport, stt: h.stt, tts: h.tts });

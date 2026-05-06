@@ -76,17 +76,46 @@ export interface MobileChannelAdapter extends ChannelAdapter {
  *    client unconditionally must use `sendUnsolicited()`.
  */
 
+/**
+ * Recipient-routing context handed to `pushNotifier`. The adapter computes
+ * what it knows from the originating inbound (when the outbound carries a
+ * valid reply tag); the host's notifier maps it to a real device/user.
+ */
+export interface MobilePushContext {
+  /**
+   * The originating inbound's `senderId` if and only if the outbound
+   * carries a verifiable reply correlation (HMAC tag from `replyToInbound`,
+   * or matching ALS context). `undefined` for unsolicited / untagged sends —
+   * the adapter has no recipient to route to in that case.
+   *
+   * In `trustClientIdentity: true` mode, this is the client-authenticated
+   * identity. In default untrusted mode, this is the host-configured
+   * placeholder `senderId` from config (the same string for every session)
+   * — useful only when the host runs a single trusted recipient identity,
+   * otherwise insufficient and the host MUST refuse to push.
+   */
+  readonly originatingSenderId?: string;
+  /** Originating thread, if any (only populated when trustClientIdentity is on). */
+  readonly originatingThreadId?: string;
+}
+
 export interface MobileChannelConfig {
   readonly port: number;
   readonly senderId?: string;
   /**
    * Invoked for every outbound message issued while no live recipient
    * exists (no client connected, OR a strict reply whose originating
-   * session has ended). Failure propagates to the `send()` caller so the
-   * host can observe / retry. If `pushNotifier` is undefined and there is
-   * nowhere to deliver, `send()` rejects with `MobileNoDeliveryTargetError`.
+   * session has ended). The second argument is the recipient-routing
+   * context the adapter could derive from the originating inbound — see
+   * `MobilePushContext`. The host's notifier is responsible for translating
+   * that context into a real device/user push token; if it cannot, it MUST
+   * reject so `send()` surfaces the failure.
+   *
+   * Failure propagates to the `send()` caller so the host can observe /
+   * retry. If `pushNotifier` is undefined and there is nowhere to deliver,
+   * `send()` rejects with `MobileNoDeliveryTargetError`.
    */
-  readonly pushNotifier?: (message: OutboundMessage) => Promise<void>;
+  readonly pushNotifier?: (message: OutboundMessage, context: MobilePushContext) => Promise<void>;
   /**
    * Trust client-supplied `senderId` from inbound frames. Default `false`:
    * client metadata is dropped and replaced with the host-configured
@@ -112,6 +141,8 @@ export class MobileNoDeliveryTargetError extends Error {
 const EPOCH_KEY = "mobileSessionEpoch";
 const MAC_KEY = "mobileSessionMac";
 const UNSOLICITED_MAC_KEY = "mobileUnsolicitedMac";
+const ORIGIN_SENDER_KEY = "mobileOriginatingSenderId";
+const ORIGIN_THREAD_KEY = "mobileOriginatingThreadId";
 
 /**
  * Build an `OutboundMessage` that explicitly replies to a given inbound.
@@ -124,12 +155,16 @@ export function replyToInbound(inbound: InboundMessage, message: OutboundMessage
   const epoch = inbound.metadata?.[EPOCH_KEY];
   const mac = inbound.metadata?.[MAC_KEY];
   if (typeof epoch !== "number" || typeof mac !== "string") return message;
+  const originSender = inbound.metadata?.[ORIGIN_SENDER_KEY];
+  const originThread = inbound.metadata?.[ORIGIN_THREAD_KEY];
   return {
     ...message,
     metadata: {
       ...(message.metadata ?? {}),
       [EPOCH_KEY]: epoch,
       [MAC_KEY]: mac,
+      ...(typeof originSender === "string" ? { [ORIGIN_SENDER_KEY]: originSender } : {}),
+      ...(typeof originThread === "string" ? { [ORIGIN_THREAD_KEY]: originThread } : {}),
     },
   };
 }
@@ -154,7 +189,14 @@ function extractAndVerifyEpoch(
 
 function stripInternalMetadata(message: OutboundMessage): OutboundMessage {
   if (message.metadata === undefined) return message;
-  const { [EPOCH_KEY]: _e, [MAC_KEY]: _m, [UNSOLICITED_MAC_KEY]: _u, ...rest } = message.metadata;
+  const {
+    [EPOCH_KEY]: _e,
+    [MAC_KEY]: _m,
+    [UNSOLICITED_MAC_KEY]: _u,
+    [ORIGIN_SENDER_KEY]: _os,
+    [ORIGIN_THREAD_KEY]: _ot,
+    ...rest
+  } = message.metadata;
   if (Object.keys(rest).length === 0) {
     const { metadata: _md, ...withoutMetadata } = message;
     return withoutMetadata;
@@ -229,10 +271,16 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   let sessionEpoch = 0;
 
   // ALS tags handler-chain sends with the originating session epoch (a
-  // belt-and-suspenders signal alongside the metadata-borne HMAC tag).
-  // Detached callbacks lose this context; for those, hosts must use
-  // replyToInbound() so the HMAC tag rides on the message itself.
-  const sessionContext = new AsyncLocalStorage<number>();
+  // belt-and-suspenders signal alongside the metadata-borne HMAC tag) plus
+  // the originating sender/thread for push-context routing on detached-
+  // recipient fallback. Detached callbacks lose this context; for those,
+  // hosts must use replyToInbound() so the HMAC tag rides on the message.
+  interface AlsCtx {
+    readonly epoch: number;
+    readonly senderId: string;
+    readonly threadId?: string;
+  }
+  const sessionContext = new AsyncLocalStorage<AlsCtx>();
 
   const inner = createChannelAdapter<string>({
     name: "mobile",
@@ -304,7 +352,7 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       const hasReplyField =
         message.metadata?.[EPOCH_KEY] !== undefined || message.metadata?.[MAC_KEY] !== undefined;
       const epochFromMeta = extractAndVerifyEpoch(message, verify);
-      const epochFromAls = sessionContext.getStore();
+      const alsCtx = sessionContext.getStore();
       // let requires justification: classification depends on signal presence
       let liveRecipient: boolean;
       if (hasUnsolicitedField) {
@@ -316,8 +364,8 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
           epochFromMeta !== undefined &&
           epochFromMeta === sessionEpoch &&
           activeSocket !== undefined;
-      } else if (epochFromAls !== undefined) {
-        liveRecipient = epochFromAls === sessionEpoch && activeSocket !== undefined;
+      } else if (alsCtx !== undefined) {
+        liveRecipient = alsCtx.epoch === sessionEpoch && activeSocket !== undefined;
       } else {
         liveRecipient = false;
       }
@@ -331,7 +379,31 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       if (config.pushNotifier === undefined) {
         throw new MobileNoDeliveryTargetError();
       }
-      await config.pushNotifier(wireMessage);
+      // Compute recipient-routing context from whatever signed signal the
+      // outbound carries: prefer the reply tag's stamped origin (survives
+      // detached callbacks), then fall back to ALS context (handler-chain).
+      // For unsolicited or untagged fallbacks, the adapter has no recipient
+      // to advise; the host's notifier must decide whether to drop or use
+      // an out-of-band lookup.
+      const ctx: MobilePushContext = (() => {
+        const meta = message.metadata;
+        const metaSender = meta?.[ORIGIN_SENDER_KEY];
+        const metaThread = meta?.[ORIGIN_THREAD_KEY];
+        if (epochFromMeta !== undefined && typeof metaSender === "string") {
+          return {
+            originatingSenderId: metaSender,
+            ...(typeof metaThread === "string" ? { originatingThreadId: metaThread } : {}),
+          };
+        }
+        if (alsCtx !== undefined) {
+          return {
+            originatingSenderId: alsCtx.senderId,
+            ...(alsCtx.threadId !== undefined ? { originatingThreadId: alsCtx.threadId } : {}),
+          };
+        }
+        return {};
+      })();
+      await config.pushNotifier(wireMessage, ctx);
     },
     onPlatformEvent: (handler) => {
       lineHandler = handler;
@@ -362,6 +434,8 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
             ...(inbound.metadata ?? {}),
             [EPOCH_KEY]: sessionEpoch,
             [MAC_KEY]: sign(sessionEpoch),
+            [ORIGIN_SENDER_KEY]: inbound.senderId,
+            ...(inbound.threadId !== undefined ? { [ORIGIN_THREAD_KEY]: inbound.threadId } : {}),
           },
         };
         return signedInbound;
@@ -386,12 +460,17 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
     send: inner.send,
     onMessage: (handler: MessageHandler): (() => void) =>
       inner.onMessage(async (msg) => {
-        // The inbound carries its session epoch in metadata (signed). Use
-        // that as the ALS tag so handler-chain sends inherit it; falls
-        // through to current sessionEpoch if metadata is absent.
+        // The inbound carries its session epoch + originating sender in
+        // metadata (signed). Use them as the ALS tag so handler-chain sends
+        // inherit them and detached push fallback can still route.
         const metaEpoch = msg.metadata?.[EPOCH_KEY];
-        const epoch = typeof metaEpoch === "number" ? metaEpoch : sessionEpoch;
-        return sessionContext.run(epoch, () => handler(msg));
+        const metaSender = msg.metadata?.[ORIGIN_SENDER_KEY];
+        const ctx: AlsCtx = {
+          epoch: typeof metaEpoch === "number" ? metaEpoch : sessionEpoch,
+          senderId: typeof metaSender === "string" ? metaSender : msg.senderId,
+          ...(msg.threadId !== undefined ? { threadId: msg.threadId } : {}),
+        };
+        return sessionContext.run(ctx, () => handler(msg));
       }),
     sendUnsolicited: (message: OutboundMessage): Promise<void> =>
       inner.send({

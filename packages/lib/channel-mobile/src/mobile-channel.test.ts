@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { InboundMessage, OutboundMessage, TextBlock } from "@koi/core";
+import type { MobilePushContext } from "./mobile-channel.js";
 import {
   createMobileChannel,
   MobileNoDeliveryTargetError,
@@ -315,6 +316,50 @@ describe("createMobileChannel", () => {
     expect(pushed[0]?.content[0]).toEqual({ kind: "text", text: "secret-for-ws1" });
     ws2.close();
     await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
+  test("pushNotifier receives originating sender context for tagged replies (recipient routing)", async () => {
+    // Regression: prior version handed pushNotifier only the OutboundMessage
+    // with no per-session recipient identity, so a notifier in untrusted
+    // mode had no signal to route the push to the right device. Now the
+    // adapter passes a MobilePushContext carrying the originating inbound's
+    // senderId so the host can resolve a real device token.
+    const port = await freePort();
+    const pushedCtx: MobilePushContext[] = [];
+    const ch = createMobileChannel({
+      port,
+      trustClientIdentity: true,
+      pushNotifier: async (_m, ctx) => {
+        pushedCtx.push(ctx);
+      },
+    });
+    let captured: InboundMessage | undefined;
+    ch.onMessage(async (m: InboundMessage) => {
+      if (captured === undefined) captured = m;
+    });
+    await ch.connect();
+    const ws1 = await openWs(port);
+    ws1.send(
+      JSON.stringify({
+        kind: "msg",
+        senderId: "device-abc",
+        content: [{ kind: "text", text: "hi" }],
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    ws1.close();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(captured).toBeDefined();
+    if (captured !== undefined) {
+      const reply = replyToInbound(captured, {
+        content: [{ kind: "text", text: "delayed" }],
+      });
+      await ch.send(reply);
+    }
+    await new Promise((r) => setTimeout(r, 30));
+    expect(pushedCtx).toHaveLength(1);
+    expect(pushedCtx[0]?.originatingSenderId).toBe("device-abc");
     await ch.disconnect();
   });
 
