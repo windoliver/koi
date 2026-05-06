@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import { createChannelAdapter } from "@koi/channel-base";
 import type {
@@ -291,6 +292,13 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
   let pendingUtterances: Array<{ sessionId: string; utterance: Uint8Array }> = [];
   let unsubTransport: (() => void) | undefined;
 
+  // ALS captures the connectGen at handler-entry time. wrappedSend
+  // checks this on every send: if the host's handler awaited across
+  // disconnect/reconnect and now calls send(), the captured gen will
+  // not match the current connectGen and the stale reply is rejected
+  // (preventing cross-session leak into a reused threadId).
+  const inboundGenContext = new AsyncLocalStorage<{ readonly gen: number }>();
+
   // Per-session dispatch-completion tracker. The wrapped onMessage
   // below records every async handler invocation's promise here so the
   // STT chain (in onPlatformEvent) can await it before processing the
@@ -561,6 +569,15 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     if (message.threadId === undefined || message.threadId.length === 0) {
       return Promise.reject(new VoiceMissingSessionError());
     }
+    // Cross-generation send guard: if this send is being issued from a
+    // host handler that started in a prior connection generation and
+    // awaited across disconnect/reconnect, reject it. Without this,
+    // a stale handler could speak a reply from an old call into a
+    // newly reconnected one on the same reused threadId.
+    const inboundCtx = inboundGenContext.getStore();
+    if (inboundCtx !== undefined && inboundCtx.gen !== connectGen) {
+      return Promise.reject(new VoicePoisonedSessionError(message.threadId));
+    }
     // Poison persists for the adapter's lifetime once set. A non-
     // cooperative transport's stale call can still surface audio
     // later, so we MUST NOT admit a new send on the same threadId
@@ -671,7 +688,13 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     // pipeline (not just STT).
     onMessage: (handler: import("@koi/core").MessageHandler): (() => void) =>
       inner.onMessage((msg) => {
-        const result = handler(msg);
+        // Snapshot the connection generation at handler-entry time and
+        // pin it into ALS for the duration of the handler chain. Any
+        // wrappedSend() called from within (even after disconnect/
+        // reconnect bumps connectGen) sees the captured value and
+        // rejects if it no longer matches.
+        const capturedGen = connectGen;
+        const result = inboundGenContext.run({ gen: capturedGen }, () => handler(msg));
         const sid = msg.threadId;
         if (sid !== undefined && sid.length > 0 && result instanceof Promise) {
           // Compose with any existing in-flight promise for this

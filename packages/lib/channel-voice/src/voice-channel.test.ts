@@ -925,6 +925,66 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("stale handler from old generation cannot send into reused threadId after reconnect", async () => {
+    // Round-21 high finding: outbound serialization protected against
+    // stale TTS/transport, but inbound handlers were not bound to the
+    // connection generation. A host handler that paused (awaiting
+    // model/tool work) across disconnect/reconnect could later call
+    // ch.send() on a reused threadId — leaking a stale reply into
+    // the new call. Fix: ALS pins connectGen at handler entry; any
+    // wrappedSend() in the handler chain rejects when the captured
+    // gen no longer matches.
+    // let requires justification: harness state captured by closures
+    let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+    let releaseHandler: (() => void) | undefined;
+    const sentOrder: string[] = [];
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async (_s, utteranceId) => {
+        sentOrder.push(utteranceId);
+      },
+      onUtterance: (handler) => {
+        listener = handler;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = { transcribe: async () => "transcript" };
+    const tts: Tts = { synthesize: async () => new Uint8Array(0) };
+    const ch = createVoiceChannel({ transport, stt, tts });
+    await ch.connect();
+    let handlerSendError: unknown;
+    ch.onMessage(async (_msg: InboundMessage) => {
+      // Pause the handler until the test releases it (after reconnect).
+      await new Promise<void>((r) => {
+        releaseHandler = r;
+      });
+      try {
+        await ch.send({
+          threadId: "default",
+          content: [{ kind: "text", text: "stale reply" }],
+          metadata: { utteranceId: "stale" },
+        });
+      } catch (e) {
+        handlerSendError = e;
+      }
+    });
+    listener!("default", new Uint8Array([1]));
+    // Wait for the inbound to dispatch and the handler to start.
+    await new Promise((r) => setTimeout(r, 30));
+    // Now disconnect/reconnect — host handler is paused, in old gen.
+    await ch.disconnect();
+    await ch.connect();
+    // Release the stale handler. Its ch.send() must reject.
+    releaseHandler?.();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(handlerSendError).toBeInstanceOf(VoicePoisonedSessionError);
+    expect(sentOrder).not.toContain("stale");
+    await ch.disconnect();
+  });
+
   test("queued sends behind a hung send do not execute after disconnect/reconnect", async () => {
     // Round-20 high finding: wrappedSend chains queued ops as
     // `prev.catch().then(() => performSend(...))`. If prev hangs and
