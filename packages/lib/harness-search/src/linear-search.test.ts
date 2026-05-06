@@ -471,6 +471,49 @@ describe("linearSearch", () => {
     expect(result.stopReason).toBe("eval_failed");
   });
 
+  test("malformed evaluator (failures contains null element) yields eval_failed (no TypeError)", async () => {
+    const config = makeConfig({
+      evaluate: async () =>
+        ({
+          successRate: 0.5,
+          sampleCount: 10,
+          failures: [null],
+        }) as unknown as Awaited<ReturnType<SearchConfig["evaluate"]>>,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_failed");
+  });
+
+  test("malformed evaluator (failures missing string fields) yields eval_failed", async () => {
+    const config = makeConfig({
+      evaluate: async () =>
+        ({
+          successRate: 0.5,
+          sampleCount: 10,
+          failures: [{ toolName: 42, errorCode: "E", errorMessage: "m", parameters: {} }],
+        }) as unknown as Awaited<ReturnType<SearchConfig["evaluate"]>>,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_failed");
+  });
+
+  test("non-string refinement output yields refine_failed (no TypeError)", async () => {
+    const config = makeConfig({
+      evaluate: async () => ({
+        successRate: 0.5,
+        sampleCount: 10,
+        failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+      }),
+      // Wrapper accidentally returns structured output.
+      refine: (async () => ({
+        choices: [{ text: "anything" }],
+      })) as unknown as SearchConfig["refine"],
+      random: () => 0.99,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("refine_failed");
+  });
+
   test("malformed evaluator (negative samples) yields eval_failed", async () => {
     const config = makeConfig({
       evaluate: async () => ({ successRate: 0.9, sampleCount: -1, failures: [] }),

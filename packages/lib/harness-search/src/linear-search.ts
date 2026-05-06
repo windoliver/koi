@@ -387,13 +387,33 @@ async function withDeadline<T>(
  * a typed eval failure instead of letting them drive convergence.
  */
 function isValidEvalResult(r: EvalResult): boolean {
-  return (
-    typeof r.successRate === "number" &&
-    Number.isFinite(r.successRate) &&
-    r.successRate >= 0 &&
-    r.successRate <= 1 &&
-    Number.isInteger(r.sampleCount) &&
-    r.sampleCount >= 0 &&
-    Array.isArray(r.failures)
-  );
+  if (
+    typeof r.successRate !== "number" ||
+    !Number.isFinite(r.successRate) ||
+    r.successRate < 0 ||
+    r.successRate > 1 ||
+    !Number.isInteger(r.sampleCount) ||
+    r.sampleCount < 0 ||
+    !Array.isArray(r.failures)
+  ) {
+    return false;
+  }
+  // Element-level shape check — Array.isArray alone admits [null] /
+  // [123] / objects missing required string fields, all of which would
+  // crash in sanitizeFailures when it dereferences toolName/errorCode/
+  // errorMessage and bypass the typed eval_failed stop.
+  for (const f of r.failures) {
+    if (
+      f === null ||
+      typeof f !== "object" ||
+      typeof (f as EvalFailure).toolName !== "string" ||
+      typeof (f as EvalFailure).errorCode !== "string" ||
+      typeof (f as EvalFailure).errorMessage !== "string" ||
+      (f as EvalFailure).parameters === null ||
+      typeof (f as EvalFailure).parameters !== "object"
+    ) {
+      return false;
+    }
+  }
+  return true;
 }

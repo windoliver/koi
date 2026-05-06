@@ -25,11 +25,15 @@ const TS_TAGS: ReadonlySet<string> = new Set(["typescript", "ts"]);
 
 /**
  * Extract the canonical fenced code block from refinement output.
- * Returns null when there is no block, when the only block is empty,
- * or when the output is ambiguous (multiple fences without a single
- * unambiguous typescript-tagged block).
+ * Returns null when the input is not a string, when there is no block,
+ * when the only block is empty, or when the output is ambiguous
+ * (multiple fences without a single unambiguous typescript-tagged
+ * block). Accepts `unknown` so a refiner that accidentally resolves
+ * structured output / null / undefined degrades to `refine_failed`
+ * instead of throwing.
  */
-export function parseRefinementOutput(raw: string): string | null {
+export function parseRefinementOutput(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
   const blocks: { readonly tag: string; readonly body: string }[] = [];
   for (const match of raw.matchAll(CODE_FENCE_GLOBAL)) {
     const tag = (match[1] ?? "").toLowerCase();

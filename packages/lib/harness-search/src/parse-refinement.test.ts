@@ -49,4 +49,11 @@ describe("parseRefinementOutput", () => {
   test("returns null for empty fence", () => {
     expect(parseRefinementOutput("```ts\n   \n```")).toBeNull();
   });
+
+  test("returns null for non-string input (no throw)", () => {
+    expect(parseRefinementOutput(null)).toBeNull();
+    expect(parseRefinementOutput(undefined)).toBeNull();
+    expect(parseRefinementOutput({ choices: [] })).toBeNull();
+    expect(parseRefinementOutput(42)).toBeNull();
+  });
 });
