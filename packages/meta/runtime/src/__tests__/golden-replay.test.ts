@@ -26,6 +26,7 @@ import { createS3BlobStore } from "@koi/artifacts-s3";
 import { runBlobStoreContract } from "@koi/blob-cas/contract";
 import type {
   Agent,
+  ChannelAdapter,
   ChannelStatus,
   EngineAdapter,
   EngineEvent,
@@ -38,6 +39,7 @@ import type {
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  OutboundMessage,
   SkillComponent,
   ToolCallId,
   ToolRequest,
@@ -17175,8 +17177,8 @@ describe("Golden: @koi/channel-fallback", () => {
 
   test("downgrades unsupported image block to text before delegating", async () => {
     const { wrapWithFallback } = await import("@koi/channel-fallback");
-    const sent: { content: readonly { kind: string; text?: string }[] }[] = [];
-    const inner = {
+    const sent: OutboundMessage[] = [];
+    const inner: ChannelAdapter = {
       name: "inner",
       capabilities: {
         text: true,
@@ -17190,14 +17192,17 @@ describe("Golden: @koi/channel-fallback", () => {
       },
       connect: async () => {},
       disconnect: async () => {},
-      send: async (m: { content: readonly { kind: string; text?: string }[] }) => {
+      send: async (m) => {
         sent.push(m);
       },
       onMessage: () => () => {},
     };
     const wrapped = wrapWithFallback(inner, { urlPrefix: "https://cdn/" });
     await wrapped.send({ content: [{ kind: "image", url: "x.png", alt: "diagram" }] });
-    expect(sent[0]?.content[0]?.kind).toBe("text");
-    expect(sent[0]?.content[0]?.text).toBe("[image: diagram](https://cdn/x.png)");
+    const block = sent[0]?.content[0];
+    expect(block?.kind).toBe("text");
+    if (block?.kind === "text") {
+      expect(block.text).toBe("[image: diagram](https://cdn/x.png)");
+    }
   });
 });
