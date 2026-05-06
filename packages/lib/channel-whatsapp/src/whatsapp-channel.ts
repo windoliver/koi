@@ -58,10 +58,16 @@ export type WhatsAppChannelAdapter = ChannelAdapter & {
 
 const WHATSAPP_CAPABILITIES: ChannelCapabilities = {
   text: true,
-  images: true,
-  files: true,
+  // formatOutbound() currently emits only Cloud API `type: "text"`
+  // payloads. Advertising images/files/audio without the corresponding
+  // outbound media-upload + send pipeline would silently drop those
+  // blocks before the Graph API call — a contract break for callers
+  // that route on advertised capabilities. Flip true only when format.ts
+  // emits real `type: "image" | "document" | "audio"` payloads.
+  images: false,
+  files: false,
   buttons: false,
-  audio: true,
+  audio: false,
   video: false,
   threads: true,
   supportsA2ui: false,

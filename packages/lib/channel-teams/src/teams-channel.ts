@@ -59,9 +59,15 @@ export type TeamsChannelAdapter = ChannelAdapter & {
 
 const TEAMS_CAPABILITIES: ChannelCapabilities = {
   text: true,
-  images: true,
-  files: true,
-  buttons: true,
+  // formatOutbound() currently serializes only text blocks. Advertising
+  // images/files/buttons here without an end-to-end serializer would
+  // silently drop those blocks on the wire — a contract break for
+  // capability-driven callers. Flip these to true only when format.ts
+  // emits the corresponding Bot Framework attachment / suggested-action
+  // payloads.
+  images: false,
+  files: false,
+  buttons: false,
   audio: false,
   video: false,
   threads: true,

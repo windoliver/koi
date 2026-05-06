@@ -90,6 +90,15 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
       if (!begin.ok) {
         if (begin.reason === "committed") {
           await opts.queue.ack(opts.workerId, claimed.key);
+        } else if (begin.reason === "poisoned") {
+          // A prior attempt for this key terminally failed (handler timeout
+          // or max-retry exhaustion). Acking the redelivered queue item
+          // would let drain-gated channel adapters (notably email IMAP)
+          // mark the source message handled despite no successful run.
+          // Dead-letter instead so awaitDrain reports failure and the
+          // adapter keeps the message in a state requiring operator
+          // resolution.
+          await opts.queue.deadLetter(opts.workerId, claimed.key, "poisoned-key-replay");
         } else {
           // in-flight or capacity-exhausted — another worker still owns the
           // idempotency lease, OR the store cannot accept more work right now.
@@ -131,7 +140,7 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
             // `committed` and the worker ack-without-running path takes
             // over — and dead-letter the queue item so operators retain
             // visibility for diagnostic replay.
-            await opts.idempotencyStore.commit(begin.lease, opts.commitTtlMs).catch(() => {});
+            await opts.idempotencyStore.commitPoison(begin.lease, opts.commitTtlMs).catch(() => {});
             await opts.queue.deadLetter(
               opts.workerId,
               claimed.key,
@@ -145,13 +154,13 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
         await opts.queue.ack(opts.workerId, claimed.key);
       } catch (e) {
         if (claimed.attempts + 1 >= maxRetries) {
-          // Dead-letter is terminal: commit the idempotency lease as a
-          // tombstone so any future re-delivery of the same ingress key
-          // (provider redelivery, IMAP redelivery, operator replay
-          // returning the message to the queue) is suppressed via the
-          // ack-without-running path. Aborting here would leave the key
-          // un-tombstoned and the same poison ingress could loop forever.
-          await opts.idempotencyStore.commit(begin.lease, opts.commitTtlMs).catch(() => {});
+          // Dead-letter is terminal: commit a POISON tombstone so any
+          // future re-delivery of the same ingress key (provider
+          // redelivery, IMAP redelivery, operator replay returning the
+          // message to the queue) is dead-lettered rather than silently
+          // acked. A plain success-tombstone would let drain-gated
+          // adapters mark the source message handled despite the failure.
+          await opts.idempotencyStore.commitPoison(begin.lease, opts.commitTtlMs).catch(() => {});
           await opts.queue.deadLetter(opts.workerId, claimed.key, errorMessage(e));
         } else {
           // Transient: abort lease so a successor retry can re-claim and

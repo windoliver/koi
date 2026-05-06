@@ -60,6 +60,7 @@ describe("startHandlerWorker", () => {
     const wrapped = {
       tryBegin: idem.tryBegin.bind(idem),
       commit: idem.commit.bind(idem),
+      commitPoison: idem.commitPoison.bind(idem),
       abort: idem.abort.bind(idem),
       renew: async (
         lease: { readonly key: string; readonly token: string; readonly expiresAt: number },
@@ -135,5 +136,34 @@ describe("startHandlerWorker", () => {
     await stop();
     expect(calls).toBe(0);
     expect(await queue.claim("w2", 100)).toBeNull();
+  });
+
+  test("poisoned key replay is dead-lettered, not acked", async () => {
+    // Drain-gated adapters (email IMAP) treat ack as handler success.
+    // A redelivered queue item whose key has a POISON tombstone must
+    // surface as a dead-letter on awaitDrain so the adapter keeps the
+    // source message un-acked for operator triage.
+    const queue = new InMemoryIngressQueue<{ readonly v: number }, null>();
+    const idem = new InMemoryIdempotencyStore();
+    let calls = 0;
+    const r = await idem.tryBegin("k-poison", 100);
+    if (!r.ok) throw new Error();
+    await idem.commitPoison(r.lease, 10_000);
+    const stop = startHandlerWorker({
+      queue,
+      idempotencyStore: idem,
+      handler: async () => {
+        calls++;
+      },
+      commitTtlMs: 1000,
+      handlerTimeoutMs: 1000,
+      pollIntervalMs: 1,
+      workerId: "w1",
+    });
+    await queue.enqueue("k-poison", { key: "k-poison", payload: { v: 1 }, normalized: null });
+    const drain = await queue.awaitDrain("k-poison");
+    await stop();
+    expect(calls).toBe(0);
+    expect(drain.ok).toBe(false);
   });
 });
