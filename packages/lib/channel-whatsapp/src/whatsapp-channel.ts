@@ -203,6 +203,17 @@ export function createWhatsAppChannel(
   if (!guard.ok) {
     throw new Error(`${guard.error.code}: ${guard.error.message}`);
   }
+  // In production, onIngressIssue MUST be supplied. Webhook batches that
+  // are entirely malformed / mismatched / un-normalizable cannot be
+  // retried (Meta does not retry 4xx; 5xx would loop forever on poison
+  // content) and would otherwise be silently 200-acked into the void.
+  // The hook is the operator's durable dead-letter surface; without it,
+  // a provider schema regression would lose every affected message.
+  if (config.production && deps.onIngressIssue === undefined) {
+    throw new Error(
+      "MISSING_PRODUCTION_DEPENDENCY: onIngressIssue hook is required in production (operator-visible dead-letter surface for malformed/all-invalid webhook batches)",
+    );
+  }
   const clock = deps.clock ?? Date.now;
   const handlerRef: HandlerRef = { current: null };
 

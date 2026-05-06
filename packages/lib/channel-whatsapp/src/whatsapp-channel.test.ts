@@ -205,6 +205,45 @@ describe("createWhatsAppChannel", () => {
     expect(issues).toEqual([{ kind: "malformed-entry", count: 1 }]);
   });
 
+  test("production mode requires onIngressIssue hook", async () => {
+    // Regression: all-invalid webhook batches 200-ack with no native
+    // retry surface. The ingress-issue hook is the operator's only
+    // dead-letter signal in that case; the factory must refuse to
+    // start in production without it.
+    //
+    // Wrap the in-memory stores in plain objects so the durability
+    // guard doesn't fire first — we want to assert the missing-hook
+    // branch.
+    const idem = new InMemoryIdempotencyStore();
+    const queue = new InMemoryIngressQueue<WhatsAppMessage, InboundMessage>();
+    const durableLikeIdem = {
+      tryBegin: idem.tryBegin.bind(idem),
+      commit: idem.commit.bind(idem),
+      commitPoison: idem.commitPoison.bind(idem),
+      abort: idem.abort.bind(idem),
+      renew: idem.renew.bind(idem),
+    };
+    const durableLikeQueue = {
+      enqueue: queue.enqueue.bind(queue),
+      claim: queue.claim.bind(queue),
+      ack: queue.ack.bind(queue),
+      nack: queue.nack.bind(queue),
+      deadLetter: queue.deadLetter.bind(queue),
+      renew: queue.renew.bind(queue),
+      awaitDrain: queue.awaitDrain.bind(queue),
+      getDeadLetters: queue.getDeadLetters.bind(queue),
+    };
+    const prodConfig: WhatsAppConfig = { ...config, production: true };
+    const prodDeps: WhatsAppDependencies = {
+      fetch: async () => new Response("{}", { status: 200 }),
+      idempotencyStore: durableLikeIdem,
+      ingressQueue: durableLikeQueue,
+    };
+    expect(() => createWhatsAppChannel(prodConfig, prodDeps)).toThrow(
+      /MISSING_PRODUCTION_DEPENDENCY/,
+    );
+  });
+
   test("send() without threadId throws INVALID_PAYLOAD", async () => {
     const ch = createWhatsAppChannel(config, buildDeps());
     let err: unknown = null;

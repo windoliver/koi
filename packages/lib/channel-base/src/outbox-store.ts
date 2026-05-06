@@ -18,12 +18,11 @@
  *
  *   reserving   pre-CAS intent record; thread CAS may not have landed
  *   reserved    pre-SMTP, post-CAS; SMTP not yet invoked
- *   dispatching pre-SMTP-I/O explicit phase marker; cas reserved → dispatching
- *               happens immediately before the SMTP transport call. A row in
- *               this state after a crash is "pre-send" — the SMTP I/O had not
- *               been observed to start, so recovery auto-aborts (no operator
- *               intervention required).
- *   sending     SMTP attempted post-DATA; outcome ambiguous
+ *   sending     persisted BEFORE the SMTP transport call. A row in this
+ *               state on restart is post-I/O-uncertain: bytes may have
+ *               been written to the relay or not. Recovery flips to
+ *               awaiting-recovery — never auto-aborts (rolling back a
+ *               possibly-delivered message would duplicate on retry).
  *   sent        delivered (post-DATA OK)
  *   aborting    resolver-owned intermediate during failed-resolution
  *   aborted     terminal failure
@@ -32,7 +31,6 @@
 export type OutboxStatus =
   | "reserving"
   | "reserved"
-  | "dispatching"
   | "sending"
   | "sent"
   | "aborting"

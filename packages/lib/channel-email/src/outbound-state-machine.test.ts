@@ -157,4 +157,71 @@ describe("executeOutbound", () => {
     if (result.ok) return;
     expect(result.error.code).toBe("THREAD_BLOCKED_PENDING_RECOVERY");
   });
+
+  test("crash mid-SMTP leaves row in `sending`, NOT auto-aborted on recovery", async () => {
+    // Regression: previously the row was placed in `dispatching` before
+    // sendViaSmtp and recovery auto-aborted dispatching rows. If the
+    // process crashed during the SMTP call after DATA bytes were sent,
+    // the relay may have accepted the message but recovery would roll
+    // it back as if unsent — a future retry would then send it again
+    // with a new Message-ID, duplicating the user-visible delivery.
+    // Now the row enters `sending` BEFORE the SMTP call, so a crash
+    // mid-call leaves a `sending` row that recovery flips to
+    // `awaiting-recovery` for operator decision rather than
+    // auto-aborting.
+    const { recoverOrphanedReservations } = await import("./recover-orphans.js");
+    let crashedDuringSmtp = false;
+    const crashingSmtp: SmtpTransport = {
+      async sendMail(): Promise<SmtpSendResult> {
+        crashedDuringSmtp = true;
+        // Simulate process death by never returning.
+        throw new Error("simulated process crash mid-SMTP");
+      },
+    };
+    const deps = buildDeps({ smtp: crashingSmtp });
+    // The crash itself is observed via post-data-fail classification
+    // (no recognized error code). The row is left in `awaiting-
+    // recovery` directly. To reproduce a true mid-call crash where
+    // executeOutbound never returns, we run the call and inspect the
+    // intermediate state via a custom outboxStore that snapshots at the
+    // pre-SMTP write.
+    const states: string[] = [];
+    const wrappedOutbox = new InMemoryOutboxStore();
+    const monitoringOutbox: OutboxStore = {
+      put: (r) => wrappedOutbox.put(r),
+      cas: async (id, exp, next) => {
+        states.push(`${exp}->${next}`);
+        return wrappedOutbox.cas(id, exp, next);
+      },
+      get: (id) => wrappedOutbox.get(id),
+      list: (q) => wrappedOutbox.list(q),
+    };
+    const depsMon = buildDeps({ smtp: crashingSmtp, outboxStore: monitoringOutbox });
+    await executeOutbound(depsMon, sampleInput);
+    expect(crashedDuringSmtp).toBe(true);
+    // The state machine MUST persist `reserved->sending` BEFORE
+    // calling SMTP (no `dispatching` intermediate). This guarantees
+    // recovery sees `sending` after a real crash.
+    expect(states).toContain("reserved->sending");
+    // Independently: a row directly placed in `sending` (simulating
+    // post-crash state) is recovered as `awaiting-recovery`, never
+    // auto-aborted.
+    const standaloneOutbox = new InMemoryOutboxStore();
+    const standaloneThreads = new InMemoryThreadStore();
+    await standaloneOutbox.put({
+      messageId: "<crashed@test>",
+      threadKey: sampleInput.threadKey,
+      threadVersion: 1,
+      payloadHash: "x",
+      status: "sending",
+      createdAt: 0,
+    });
+    const recovered = await recoverOrphanedReservations({
+      outboxStore: standaloneOutbox,
+      threadStore: standaloneThreads,
+    });
+    expect(recovered.length).toBe(1);
+    expect(recovered[0]?.outcome).toBe("awaiting-recovery");
+    void deps; // silence unused
+  });
 });

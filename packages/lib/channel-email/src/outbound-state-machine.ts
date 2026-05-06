@@ -206,16 +206,24 @@ export async function executeOutbound(
   if (!reserved.ok) return reserved;
   const { messageId, threadVersion, priorThread } = reserved.value;
 
-  // reserved → dispatching: explicit pre-SMTP-I/O phase marker. A row
-  // stuck in `dispatching` after a crash is unambiguously "SMTP I/O not
-  // yet observed", so recovery auto-aborts without forcing operator
-  // intervention. We promote dispatching → sending only AFTER sendViaSmtp
-  // has crossed into the post-DATA territory (returning post-data result).
-  const dispatched = await deps.outboxStore.cas(messageId, "reserved", "dispatching");
+  // reserved → sending: persist the post-I/O-uncertain state BEFORE
+  // calling sendViaSmtp. A crash mid-call leaves the row in `sending`,
+  // which crash recovery promotes to `awaiting-recovery` for operator
+  // resolution — never auto-aborted. The earlier "dispatching" marker
+  // attempted to mark "I/O not yet started" but the durable write
+  // happened on entry to that state, before the actual SMTP call: a
+  // process crash between `cas reserved→dispatching` and the post-call
+  // `cas dispatching→sending` could leave a row that had ALREADY
+  // written DATA stuck in `dispatching`, which recovery would then
+  // auto-abort and incorrectly retry, causing duplicate delivery. The
+  // fix: state is `sending` from before the SMTP call, and pre-DATA
+  // failures (returned synchronously) flip sending→aborted with
+  // thread rollback as before.
+  const dispatched = await deps.outboxStore.cas(messageId, "reserved", "sending");
   if (!dispatched) {
     return {
       ok: false,
-      error: err("SEND_FAILED", "outbox CAS reserved→dispatching failed", { messageId }),
+      error: err("SEND_FAILED", "outbox CAS reserved→sending failed", { messageId }),
     };
   }
 
@@ -231,8 +239,9 @@ export async function executeOutbound(
   const result = await sendViaSmtp(deps.smtp, envelope);
 
   if (result.phase === "pre-data") {
-    // Pre-DATA failure → aborted + thread rollback (strip-by-id loop).
-    await deps.outboxStore.cas(messageId, "dispatching", "aborted");
+    // Pre-DATA failure (sync return → no DATA bytes written). Safe to
+    // flip sending→aborted and roll back the thread chain.
+    await deps.outboxStore.cas(messageId, "sending", "aborted");
     await rollbackThread(deps.threadStore, input.threadKey, threadVersion, messageId);
     return {
       ok: false,
@@ -242,11 +251,6 @@ export async function executeOutbound(
       }),
     };
   }
-
-  // We crossed into post-DATA territory: promote to `sending` so a future
-  // crash before the terminal flip is correctly recovered as
-  // awaiting-recovery (post-DATA outcome ambiguous), not auto-aborted.
-  await deps.outboxStore.cas(messageId, "dispatching", "sending");
 
   if (result.phase === "post-data" && result.ok) {
     const ok = await deps.outboxStore.cas(messageId, "sending", "sent");

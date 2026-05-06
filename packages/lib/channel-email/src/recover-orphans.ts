@@ -1,7 +1,7 @@
 /**
  * @koi/channel-email — crash recovery for non-terminal outbox rows.
  *
- * After a crash the outbox can hold rows in three non-terminal states.
+ * After a crash the outbox can hold rows in non-terminal states.
  * Recovery distinguishes pre-SMTP intent from post-SMTP uncertainty:
  *
  *  - `reserving` (pre-SMTP, before reservation promotion)
@@ -12,12 +12,20 @@
  *                 to `sending`)
  *      Row was never sent. Strip from the thread chain and abort.
  *
- *  - `sending`   (post-SMTP intent, before terminal flip)
- *      We started talking to the SMTP server but did not record the
- *      outcome. Bytes may or may not have hit the wire — flip to
+ *  - `sending`   (durably persisted BEFORE the SMTP call returns; a
+ *                 row in this state on restart means SMTP I/O may
+ *                 have started or may have completed)
+ *      Bytes may or may not have hit the wire — flip to
  *      `awaiting-recovery` and require an operator decision. Thread
  *      state is preserved (consistent with the post-DATA crash branch
- *      in `executeOutbound`).
+ *      in `executeOutbound`). NEVER auto-abort: that risks rolling
+ *      back a message the relay already accepted, which retries would
+ *      then duplicate.
+ *
+ *  - `aborting` (resolver-owned intermediate)
+ *      Resolver crashed mid-flight after CAS-claiming awaiting-recovery
+ *      → aborting but before the terminal flip. Roll the chain back
+ *      (idempotent) and complete the abort.
  *
  * Run once on channel `connect()` BEFORE accepting new sends, never
  * concurrently with `executeOutbound` for the same thread key.
@@ -57,7 +65,7 @@ async function rollbackThreadIfPresent(threadStore: ThreadStore, row: OutboxReco
 async function abortPreSendRow(
   deps: RecoverDeps,
   row: OutboxRecord,
-  expected: "reserving" | "reserved" | "dispatching" | "aborting",
+  expected: "reserving" | "reserved" | "aborting",
 ): Promise<RecoverResult> {
   await rollbackThreadIfPresent(deps.threadStore, row);
   const ok = await deps.outboxStore.cas(row.messageId, expected, "aborted");
@@ -80,13 +88,6 @@ export async function recoverOrphanedReservations(
   for (const row of await deps.outboxStore.list({ status: "reserved" })) {
     results.push(await abortPreSendRow(deps, row, "reserved"));
   }
-  // `dispatching` is the explicit pre-SMTP-I/O phase marker: SMTP had not
-  // been observed to start, so auto-abort is safe and avoids unnecessary
-  // operator intervention after benign restarts.
-  for (const row of await deps.outboxStore.list({ status: "dispatching" })) {
-    results.push(await abortPreSendRow(deps, row, "dispatching"));
-  }
-
   // A resolver crashed mid-flight after CAS-claiming `awaiting-recovery →
   // aborting` but before the terminal flip. Roll the chain back if needed
   // (idempotent if the resolver already stripped it) and complete the
