@@ -105,6 +105,34 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await expect(adapter.connect()).rejects.toThrow(/start.*rejected|409/);
   });
 
+  test("post-startup polling rejection forces the adapter to disconnect (no silent ingress loss)", async () => {
+    const f = fakeBot();
+    // let requires justification: deferred reject for late polling failure
+    let rejectStart: (err: unknown) => void = () => undefined;
+    const lateFailingBot: TelegramBotLike = {
+      ...f.bot,
+      start: () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectStart = reject;
+        }),
+    };
+    const errors: unknown[] = [];
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: lateFailingBot,
+      onHandlerError: (err) => errors.push(err),
+    });
+    await adapter.connect();
+    // Trigger a late polling rejection — well past the 250ms startup race.
+    rejectStart(new Error("network gone"));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(errors).toHaveLength(1);
+    // Adapter must no longer be connected; send() must reject.
+    await expect(
+      adapter.send({ content: [{ kind: "text", text: "x" }], threadId: "200" }),
+    ).rejects.toThrow();
+  });
+
   test("connect surfaces a token-validation failure synchronously (getMe handshake)", async () => {
     const f = fakeBot();
     const badBot: TelegramBotLike = {

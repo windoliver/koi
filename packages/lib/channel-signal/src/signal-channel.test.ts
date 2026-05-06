@@ -205,6 +205,34 @@ describe("@koi/channel-signal createSignalChannel", () => {
   });
 });
 
+describe("createSignalChannel — transport death revokes connectivity", () => {
+  test("unexpected subprocess exit forces the adapter to disconnect (no false-healthy state)", async () => {
+    const captured: Captured[] = [];
+    const spawn = makeSpawn(captured);
+    let userHookCalls = 0;
+    const adapter = createSignalChannel({
+      account: "+15551234567",
+      spawn,
+      onUnexpectedExit: () => {
+        userHookCalls++;
+      },
+    });
+    await adapter.connect();
+    // Simulate signal-cli dying after a successful start.
+    captured[0]?.finish();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(userHookCalls).toBe(1);
+    // After transport death the adapter must no longer report connected.
+    // channel-base rejects sends to a disconnected channel.
+    await expect(
+      adapter.send({
+        content: [{ kind: "text", text: "x" }],
+        threadId: "+15551234567",
+      }),
+    ).rejects.toThrow();
+  });
+});
+
 describe("blocksToText", () => {
   test("text blocks join with newlines", () => {
     expect(

@@ -82,17 +82,36 @@ export function createSignalChannel(config: SignalChannelConfig): ChannelAdapter
       `[channel-signal] account must be an E.164 phone number, got "${config.account}"`,
     );
   }
+
+  // let requires justification: assigned after adapter construction so the
+  // unexpected-exit handler (which fires after start()) can drive the
+  // adapter's lifecycle by calling disconnect().
+  let adapter: ChannelAdapter | undefined;
+
+  const onUnexpectedExit = (): void => {
+    // Transport died after a successful start. Force the channel out of
+    // its connected state so the runtime stops trusting it and inbound
+    // ingress loss becomes observable instead of silent. Errors during
+    // teardown go to stderr because there is no well-defined caller hook
+    // at this point in the lifecycle (the user's callback is invoked
+    // separately, below, for any reconnect logic).
+    adapter?.disconnect().catch((err: unknown) => {
+      console.error("[channel-signal] disconnect after unexpected exit failed:", err);
+    });
+    config.onUnexpectedExit?.();
+  };
+
   const proc: SignalProcess = createSignalProcess(
     config.account,
     config.signalCliPath ?? "signal-cli",
     config.configPath,
     config.spawn ?? defaultSignalSpawn,
     SIGNAL_SHUTDOWN_TIMEOUT_MS,
-    config.onUnexpectedExit,
+    onUnexpectedExit,
   );
   const normalize = createNormalizer();
 
-  return createChannelAdapter<SignalEvent>({
+  adapter = createChannelAdapter<SignalEvent>({
     name: "signal",
     capabilities: SIGNAL_CAPABILITIES,
 
@@ -112,6 +131,8 @@ export function createSignalChannel(config: SignalChannelConfig): ChannelAdapter
 
     normalize,
   });
+
+  return adapter;
 }
 
 async function sendOutbound(

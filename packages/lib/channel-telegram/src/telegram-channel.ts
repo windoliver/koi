@@ -175,6 +175,11 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
     return `https://api.telegram.org/file/bot${config.token}/${info.file_path}`;
   };
 
+  // let requires justification: forward-declared so the post-startup
+  // rejection path can call disconnect() to revoke the channel's connected
+  // state; assigned right after createChannelAdapter returns.
+  let adapter: TelegramChannelAdapter | undefined;
+
   const base = createChannelAdapter<TelegramUpdateLike>({
     name: "telegram",
     capabilities: TELEGRAM_CAPABILITIES,
@@ -218,11 +223,25 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
             { cause: result.rejected },
           );
         }
-        // Polling is alive. Continue draining `start()` in the background;
-        // late rejections (network drops, auth revocation) surface via
-        // onHandlerError so the adapter doesn't crash on uncaught.
+        // Polling is alive. Continue draining `start()` in the background.
+        // A late rejection (network drop, auth revocation, server kicked
+        // us off) is channel-fatal: revoke the adapter's connected state
+        // so the runtime stops trusting it and inbound silence becomes
+        // observable instead of a hidden blackhole. The user's
+        // onHandlerError hook still fires for reconnect logic; if no hook
+        // is provided we log so the outage cannot remain silent.
         void startPromise.catch((err: unknown) => {
-          config.onHandlerError?.(err, { phase: "polling" });
+          if (config.onHandlerError !== undefined) {
+            config.onHandlerError(err, { phase: "polling" });
+          } else {
+            console.error("[channel-telegram] polling loop terminated:", err);
+          }
+          adapter?.disconnect().catch((teardownErr: unknown) => {
+            console.error(
+              "[channel-telegram] disconnect after polling failure failed:",
+              teardownErr,
+            );
+          });
         });
       }
     },
@@ -267,13 +286,14 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
     ...(config.onHandlerError !== undefined && { onHandlerError: config.onHandlerError }),
   });
 
-  return {
+  adapter = {
     ...base,
     handleUpdate: (update: TelegramUpdateLike): void => {
       updateHandler?.(update);
     },
     resolveMediaUrl,
   };
+  return adapter;
 }
 
 export function splitText(s: string, limit: number): readonly string[] {
