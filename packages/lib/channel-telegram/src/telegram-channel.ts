@@ -88,14 +88,42 @@ export interface TelegramApiLike {
 export interface TelegramChannelConfig {
   readonly token: string;
   readonly deployment?: TelegramDeployment;
+  /**
+   * Webhook mode only — the secret-token Telegram sends in the
+   * `X-Telegram-Bot-Api-Secret-Token` header (set via `setWebhook`).
+   * When set, `handleWebhook(headerValue, update)` requires this exact
+   * value before forwarding the update; mismatches throw and the update
+   * is dropped. Required for production webhook mode — without it any
+   * caller that gets the public webhook URL can spoof updates.
+   */
+  readonly webhookSecret?: string;
   /** Test-only injected bot double. */
   readonly bot?: TelegramBotLike;
   readonly onHandlerError?: (err: unknown, ctx: unknown) => void;
 }
 
 export interface TelegramChannelAdapter extends ChannelAdapter {
-  /** Webhook mode only — caller forwards an HTTPS-delivered update. */
+  /**
+   * Webhook mode only — caller forwards an HTTPS-delivered update.
+   *
+   * Does NO authenticity check. Use `handleWebhook` (which verifies the
+   * Telegram secret-token header) for any path that takes input from the
+   * network. `handleUpdate` is reserved for already-trusted sources
+   * (tests, an in-process queue, a verified handler) — passing forged
+   * updates here drives agent execution as arbitrary chats.
+   */
   readonly handleUpdate: (update: TelegramUpdateLike) => void;
+  /**
+   * Webhook mode only — verifies the
+   * `X-Telegram-Bot-Api-Secret-Token` header against the configured
+   * `webhookSecret`, then dispatches the update. Throws when the
+   * adapter has no `webhookSecret` configured (fail closed: explicit
+   * setup required for production) or when the header does not match.
+   */
+  readonly handleWebhook: (
+    secretHeaderValue: string | undefined,
+    update: TelegramUpdateLike,
+  ) => void;
   /**
    * Resolves an inbound `tg://file/<fileId>` reference (or a bare file_id) to
    * a short-lived token-bearing download URL. Call this only at the fetch
@@ -291,9 +319,40 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
     handleUpdate: (update: TelegramUpdateLike): void => {
       updateHandler?.(update);
     },
+    handleWebhook: (secretHeaderValue, update): void => {
+      if (config.webhookSecret === undefined) {
+        throw new Error(
+          "[channel-telegram] handleWebhook requires `webhookSecret` in TelegramChannelConfig — refusing to dispatch unauthenticated update",
+        );
+      }
+      if (
+        secretHeaderValue === undefined ||
+        !timingSafeEqual(secretHeaderValue, config.webhookSecret)
+      ) {
+        throw new Error(
+          "[channel-telegram] handleWebhook secret mismatch — dropping update (X-Telegram-Bot-Api-Secret-Token header missing or incorrect)",
+        );
+      }
+      updateHandler?.(update);
+    },
     resolveMediaUrl,
   };
   return adapter;
+}
+
+/**
+ * Constant-time comparison to prevent secret-token timing leaks. Both
+ * arguments must be equal-length strings to compare equal; differing
+ * lengths short-circuit to false.
+ */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  // let requires justification: XOR-accumulator over byte differences
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
 }
 
 export function splitText(s: string, limit: number): readonly string[] {

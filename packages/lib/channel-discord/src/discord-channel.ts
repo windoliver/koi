@@ -212,15 +212,40 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
     capabilities: DISCORD_CAPABILITIES,
 
     platformConnect: async (): Promise<void> => {
+      // let requires justification: track whether we created the client
+      // here, so a login() failure only destroys/clears the client we own
+      // (caller-injected test doubles must survive a retry).
+      let createdHere = false;
       if (client === undefined) {
         client = await instantiateClient(config.intents ?? DEFAULT_INTENTS);
+        createdHere = true;
       }
+      const c = client;
       // Attach gateway listeners BEFORE login so we don't miss the first
       // events the WebSocket delivers right after READY.
-      client.on("messageCreate", onMessageCreate);
-      client.on("interactionCreate", onInteractionCreate);
-      await client.login(config.token);
-      botUserId = client.user?.id;
+      c.on("messageCreate", onMessageCreate);
+      c.on("interactionCreate", onInteractionCreate);
+      try {
+        await c.login(config.token);
+      } catch (err: unknown) {
+        // Roll back listener registration so a retried connect() does not
+        // attach duplicates on top of the existing handlers — a single
+        // inbound event would otherwise fan out into multiple agent
+        // turns. Owned clients also get destroyed so the next connect
+        // starts from a clean instance.
+        c.removeAllListeners();
+        if (createdHere) {
+          try {
+            await c.destroy();
+          } catch {
+            // best-effort — original error matters more
+          }
+          client = undefined;
+        }
+        pending = [];
+        throw err;
+      }
+      botUserId = c.user?.id;
     },
 
     platformDisconnect: async (): Promise<void> => {
@@ -315,7 +340,6 @@ async function sendOutbound(
   if (parsed !== undefined) {
     const entry = pendingInteractions.get(parsed.interactionId);
     if (entry !== undefined && entry.expiresAt > Date.now() && payloads.length > 0) {
-      pendingInteractions.delete(parsed.interactionId);
       const first = payloads[0];
       const followUp = entry.interaction.followUp;
       if (entry.kind === "button") {
@@ -324,13 +348,22 @@ async function sendOutbound(
             `[channel-discord] button interaction "${parsed.interactionId}" missing followUp() — cannot reply without leaking out of ephemeral scope`,
           );
         }
-        for (const p of payloads) {
-          await followUp.call(entry.interaction, p);
+        // Keep the entry until the first followUp() succeeds so a transient
+        // failure can be retried on the same threadId without losing the
+        // interaction handle (which would otherwise force the retry to
+        // hard-fail per the button-fail-closed rule above).
+        if (first !== undefined) await followUp.call(entry.interaction, first);
+        pendingInteractions.delete(parsed.interactionId);
+        for (let i = 1; i < payloads.length; i++) {
+          const p = payloads[i];
+          if (p !== undefined) await followUp.call(entry.interaction, p);
         }
         return;
       }
-      // slash
+      // slash — keep the entry until editReply() succeeds so transient
+      // failures (network, 5xx) can be retried on the same threadId.
       if (first !== undefined) await entry.interaction.editReply(first);
+      pendingInteractions.delete(parsed.interactionId);
       if (payloads.length > 1) {
         if (typeof followUp === "function") {
           for (let i = 1; i < payloads.length; i++) {

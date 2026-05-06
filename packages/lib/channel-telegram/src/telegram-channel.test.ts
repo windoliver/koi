@@ -171,6 +171,75 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
+  test("webhook: handleWebhook rejects when no webhookSecret is configured (fails closed)", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+    });
+    await adapter.connect();
+    expect(() =>
+      adapter.handleWebhook("any", {
+        update_id: 1,
+        message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "x" },
+      }),
+    ).toThrow(/webhookSecret/);
+    await adapter.disconnect();
+  });
+
+  test("webhook: handleWebhook rejects on secret mismatch", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "expected",
+    });
+    await adapter.connect();
+    const seen: unknown[] = [];
+    adapter.onMessage(async (m) => {
+      seen.push(m);
+    });
+    expect(() =>
+      adapter.handleWebhook("WRONG", {
+        update_id: 1,
+        message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "x" },
+      }),
+    ).toThrow(/secret mismatch/);
+    expect(() =>
+      adapter.handleWebhook(undefined, {
+        update_id: 1,
+        message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "x" },
+      }),
+    ).toThrow(/secret mismatch/);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(seen).toHaveLength(0);
+    await adapter.disconnect();
+  });
+
+  test("webhook: handleWebhook dispatches when secret matches", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "expected",
+    });
+    await adapter.connect();
+    const seen: unknown[] = [];
+    adapter.onMessage(async (m) => {
+      seen.push(m);
+    });
+    adapter.handleWebhook("expected", {
+      update_id: 1,
+      message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(seen).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
   test("webhook: handleUpdate forwards updates to the registered listener", async () => {
     const f = fakeBot();
     const adapter = createTelegramChannel({

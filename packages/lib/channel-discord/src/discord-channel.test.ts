@@ -58,6 +58,40 @@ function fakeClient(): {
 }
 
 describe("@koi/channel-discord createDiscordChannel", () => {
+  test("a failed login removes listeners so retried connect dispatches each event once", async () => {
+    const base = fakeClient();
+    let attempts = 0;
+    const wrapped: DiscordClientLike = {
+      ...base.client,
+      login: async () => {
+        attempts++;
+        if (attempts === 1) throw new Error("401 Unauthorized");
+        return undefined;
+      },
+    };
+    const adapter = createDiscordChannel({ token: "T", client: wrapped });
+    await expect(adapter.connect()).rejects.toThrow(/401/);
+    // Retry — succeeds. Listeners from the failed attempt must NOT have
+    // survived; otherwise each emit would fan out into 2+ dispatches.
+    await adapter.connect();
+    const seen: unknown[] = [];
+    adapter.onMessage(async (m) => {
+      seen.push(m);
+    });
+    base.emit("messageCreate", {
+      id: "m1",
+      content: "hi",
+      author: { id: "U1", bot: false },
+      channelId: "C1",
+      guildId: "G1",
+      createdTimestamp: 1,
+      attachments: new Map(),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(seen).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
   test("connect / disconnect calls login and destroy", async () => {
     const { client } = fakeClient();
     let logins = 0;
@@ -417,6 +451,47 @@ describe("createDiscordChannel — interaction reply path", () => {
       threadId: "interaction:cmd:unknown-id:C1",
     });
     expect(f.sent).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
+  test("retry after a transient editReply failure still routes through editReply (not channel.send)", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    await adapter.connect();
+    let editCalls = 0;
+    f.emit("interactionCreate", {
+      id: "i-retry",
+      isChatInputCommand: () => true,
+      isButton: () => false,
+      commandName: "say",
+      options: { data: [] },
+      user: { id: "U1" },
+      channelId: "C1",
+      guildId: "G1",
+      createdTimestamp: 1,
+      deferReply: async () => undefined,
+      editReply: async (_p: DiscordSendPayload) => {
+        editCalls++;
+        if (editCalls === 1) throw new Error("transient 5xx");
+        return undefined;
+      },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    // First send rejects (transient).
+    await expect(
+      adapter.send({
+        content: [{ kind: "text", text: "hello" }],
+        threadId: "interaction:cmd:i-retry:C1",
+      }),
+    ).rejects.toThrow(/transient 5xx/);
+    // Retry MUST still hit editReply (the pending entry was preserved).
+    await adapter.send({
+      content: [{ kind: "text", text: "hello" }],
+      threadId: "interaction:cmd:i-retry:C1",
+    });
+    expect(editCalls).toBe(2);
+    // No channel.send fallback.
+    expect(f.sent).toHaveLength(0);
     await adapter.disconnect();
   });
 
