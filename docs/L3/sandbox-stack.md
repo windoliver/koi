@@ -1,6 +1,6 @@
 # @koi/sandbox-stack — Unified Sandboxed Code Execution
 
-> **EDGE ADAPTERS: AUTHORITATIVE CONTRACT IS `docs/superpowers/specs/2026-05-05-edge-sandboxes-design.md` (issue-1377).** The Cloudflare/Vercel rows in `createCloudSandbox` and the lazy-loaded factory table below are obsolete forward-looking placeholder text — they describe no currently-shipped behavior (neither package exists on `main`) and DO NOT describe the future contract either. **For all questions about edge-adapter shape, lifecycle, security model, dedupe contract, attestation, integrity verification, workload-class enforcement, sweep, golden queries, or release scope, the design spec at `docs/superpowers/specs/2026-05-05-edge-sandboxes-design.md` is the single normative source of truth, effective immediately upon this PR's merge.** PRs 2–5 of issue-1377 implement that spec; PR 2 also rewrites this L3 doc substantively to remove these obsolete rows and add the corresponding `EdgeFunctionAdapter` documentation. The wasm executor and OS/SSH sections of this L3 doc remain accurate for what IS shipped on `main`.
+> Edge adapters: see `docs/superpowers/specs/2026-05-05-edge-sandboxes-design.md` (issue-1377). The Cloudflare/Vercel rows below are not currently shipped.
 
 Unified L3 bundle for all sandbox functionality: cloud provider dispatch, stack composition, timeout guards, code execution tools, subprocess executors, and sandbox middleware. One import for everything sandbox — replaces the former `@koi/sandbox-cloud` meta-package.
 

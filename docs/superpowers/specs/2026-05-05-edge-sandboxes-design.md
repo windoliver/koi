@@ -1386,7 +1386,7 @@ Coverage threshold: 80% per `bunfig.toml`.
 
 ### Provider smoke (mandatory pre-merge gate)
 
-Mocked fetch is insufficient evidence for auth, header shape, endpoint correctness, response parsing, and cleanup. A separate **required** workflow `provider-smoke.yml` runs against shared sandbox accounts (CF + Vercel) on every PR that touches `packages/sandbox/sandbox-cloudflare/**` or `packages/sandbox/sandbox-vercel/**`. It exercises the **safety-critical failure paths**, not just the happy path:
+Mocked fetch is insufficient evidence for auth, header shape, endpoint correctness, response parsing, and cleanup. A separate **required** workflow `provider-smoke.yml` runs against a shared sandbox account on every PR that touches `packages/sandbox/sandbox-cloudflare/**`. **Cloudflare scenarios are the only required gate in v1.** Vercel's package is design-only this release and is NOT in `provider-smoke.yml`'s required path; the Vercel scenarios are documented below for reference only and become required when PR 5 lands and adds them to the workflow + branch-protection set. It exercises the **safety-critical failure paths**, not just the happy path:
 
 **Lifecycle scenarios:**
 
@@ -1399,9 +1399,9 @@ Mocked fetch is insufficient evidence for auth, header shape, endpoint correctne
 
 **Configuration:**
 
-- Tokens stored in repo secrets (`CF_CI_API_TOKEN`, `VERCEL_CI_TOKEN`), scoped to a dedicated sandbox account with a billing alarm.
+- Tokens stored in repo secrets (`CF_CI_API_TOKEN` only in v1; `VERCEL_CI_TOKEN` is added when PR 5 promotes Vercel scenarios to required), scoped to a dedicated sandbox account with a billing alarm.
 - The workflow blocks merge if any scenario fails — especially the leak sweep and the poison-after-timeout assertion, which are the regressions the design relies on for safety.
-- **Fork PRs do NOT skip the gate.** The default GitHub workflow trigger for forks lacks secret access; this is acceptable for the initial CI run but **NOT acceptable as a merge condition**. A separate `provider-smoke-trusted.yml` workflow runs on a maintainer-triggered `workflow_dispatch` event with the same scenarios and full secret access. A maintainer MUST run `provider-smoke-trusted` against the fork's HEAD SHA and the merge is blocked until that workflow has reported success on that exact SHA. The branch protection rule for paths under `packages/sandbox/sandbox-cloudflare/**` and `packages/sandbox/sandbox-vercel/**` requires `provider-smoke-trusted/passed` as a status check. CODEOWNERS approval is necessary but not sufficient.
+- **Fork PRs do NOT skip the gate.** The default GitHub workflow trigger for forks lacks secret access; this is acceptable for the initial CI run but **NOT acceptable as a merge condition**. A separate `provider-smoke-trusted.yml` workflow runs on a maintainer-triggered `workflow_dispatch` event with the same scenarios and full secret access. A maintainer MUST run `provider-smoke-trusted` against the fork's HEAD SHA and the merge is blocked until that workflow has reported success on that exact SHA. The branch protection rule for paths under `packages/sandbox/sandbox-cloudflare/**` requires `provider-smoke-trusted/passed` as a status check (PR 5 extends the rule to `packages/sandbox/sandbox-vercel/**` when Vercel ships). CODEOWNERS approval is necessary but not sufficient.
 - A nightly cron runs the same workflow against `main` to catch provider-side drift between merges.
 
 ### Golden queries (CI gate per CLAUDE.md)
