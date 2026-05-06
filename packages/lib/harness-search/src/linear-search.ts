@@ -67,6 +67,7 @@ export async function linearSearch(
     convergenceThreshold = DEFAULT_SEARCH_CONFIG.convergenceThreshold,
     minEvalSamples = DEFAULT_SEARCH_CONFIG.minEvalSamples,
     noImprovementLimit = DEFAULT_SEARCH_CONFIG.noImprovementLimit,
+    attemptTimeoutMs = DEFAULT_SEARCH_CONFIG.attemptTimeoutMs,
     clock = DEFAULT_SEARCH_CONFIG.clock,
     random = DEFAULT_SEARCH_CONFIG.random,
     signal,
@@ -88,13 +89,21 @@ export async function linearSearch(
       break;
     }
 
-    let evalResult: EvalResult;
-    try {
-      evalResult = await evaluate(currentCode, initialDescriptor, signal ?? neverAbort());
-    } catch (_err: unknown) {
-      stopReason = isAborted(signal) ? "aborted" : "eval_failed";
+    const evalOutcome = await withDeadline(
+      (sig) => evaluate(currentCode, initialDescriptor, sig),
+      signal,
+      attemptTimeoutMs,
+    );
+    if (!evalOutcome.ok) {
+      stopReason =
+        evalOutcome.kind === "aborted"
+          ? "aborted"
+          : evalOutcome.kind === "timeout"
+            ? "eval_timeout"
+            : "eval_failed";
       break;
     }
+    const evalResult: EvalResult = evalOutcome.value;
 
     const node: SearchNode = {
       id: `node-${nodeCounter++}`,
@@ -154,28 +163,30 @@ export async function linearSearch(
     }
 
     if (iteration < maxIterations - 1 && evalResult.failures.length > 0) {
-      try {
-        const refinedRaw = await refine(
-          currentCode,
-          evalResult.failures,
-          iteration + 1,
-          maxIterations,
-          signal ?? neverAbort(),
-        );
-        const parsed = parseRefinementOutput(refinedRaw);
-        if (parsed === null) {
-          // Unparseable / empty refinement is a partial-failure mode the
-          // caller must be able to distinguish from "candidate unchanged" —
-          // silently reusing the prior code burns budget and hides broken
-          // refiners. Surface it as refine_failed.
-          stopReason = "refine_failed";
-          break;
-        }
-        currentCode = parsed;
-      } catch (_err: unknown) {
-        stopReason = isAborted(signal) ? "aborted" : "refine_failed";
+      const refineOutcome = await withDeadline(
+        (sig) => refine(currentCode, evalResult.failures, iteration + 1, maxIterations, sig),
+        signal,
+        attemptTimeoutMs,
+      );
+      if (!refineOutcome.ok) {
+        stopReason =
+          refineOutcome.kind === "aborted"
+            ? "aborted"
+            : refineOutcome.kind === "timeout"
+              ? "refine_timeout"
+              : "refine_failed";
         break;
       }
+      const parsed = parseRefinementOutput(refineOutcome.value);
+      if (parsed === null) {
+        // Unparseable / empty refinement is a partial-failure mode the
+        // caller must be able to distinguish from "candidate unchanged" —
+        // silently reusing the prior code burns budget and hides broken
+        // refiners. Surface it as refine_failed.
+        stopReason = "refine_failed";
+        break;
+      }
+      currentCode = parsed;
     }
   }
 
@@ -202,10 +213,61 @@ export async function linearSearch(
   };
 }
 
-function neverAbort(): AbortSignal {
-  return new AbortController().signal;
-}
-
 function isAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted ?? false;
+}
+
+type DeadlineOutcome<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly kind: "timeout" | "aborted" | "error" };
+
+/**
+ * Race a callback against a per-attempt deadline AND the external
+ * cancellation signal. Returns a tagged outcome; the caller decides
+ * which `StopReason` to surface. The deadline is enforced *here* — not
+ * left to the callback to honor — so a non-cooperative adapter cannot
+ * hang the bounded search loop. The per-attempt AbortSignal is forwarded
+ * to the callback so cooperative adapters can release in-flight work
+ * promptly.
+ */
+async function withDeadline<T>(
+  fn: (signal: AbortSignal) => Promise<T>,
+  parentSignal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<DeadlineOutcome<T>> {
+  const controller = new AbortController();
+  const onParentAbort = (): void => controller.abort();
+  if (parentSignal !== undefined) {
+    if (parentSignal.aborted) controller.abort();
+    else parentSignal.addEventListener("abort", onParentAbort, { once: true });
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const timeoutPromise: Promise<DeadlineOutcome<T>> = Number.isFinite(timeoutMs)
+    ? new Promise((resolve) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+          resolve({ ok: false, kind: "timeout" });
+        }, timeoutMs);
+      })
+    : new Promise(() => {
+        // Never resolves — Infinity disables the deadline; callback wins.
+      });
+
+  try {
+    const callbackPromise = fn(controller.signal).then(
+      (value): DeadlineOutcome<T> => ({ ok: true, value }),
+      (): DeadlineOutcome<T> => {
+        if (timedOut) return { ok: false, kind: "timeout" };
+        if (isAborted(parentSignal)) return { ok: false, kind: "aborted" };
+        return { ok: false, kind: "error" };
+      },
+    );
+    return await Promise.race([callbackPromise, timeoutPromise]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (parentSignal !== undefined) parentSignal.removeEventListener("abort", onParentAbort);
+  }
 }

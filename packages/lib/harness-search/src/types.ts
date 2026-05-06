@@ -54,8 +54,12 @@ export interface EvalFailure {
 
 /**
  * Refine existing code given new failures. Returns the next candidate
- * source — typically wraps an LLM call. The signal aborts when the
- * search is cancelled; abort-aware adapters MUST honor it.
+ * source — typically wraps an LLM call.
+ *
+ * The signal aborts on caller cancellation OR per-attempt timeout; the
+ * loop also races this promise against a deadline so a non-cooperative
+ * adapter cannot hang the search. Abort-aware adapters SHOULD still
+ * honor the signal to release in-flight work promptly.
  */
 export type RefineCallback = (
   currentCode: string,
@@ -69,6 +73,16 @@ export type RefineCallback = (
  * Evaluate a variant against test scenarios. Typically wraps a verifier
  * + eval framework. Returns a success rate plus failures for the next
  * refinement.
+ *
+ * The descriptor is held constant across the entire search — the search
+ * loop refines the *implementation*, not the *contract*. Refiners may
+ * emit code whose runtime interface drifts from `descriptor`; the
+ * evaluator is responsible for catching that and reporting a low
+ * success rate / verifier failure. Schema-aware synthesis (mutating the
+ * descriptor) is `@koi/harness-synth`'s domain, not search's.
+ *
+ * Like `RefineCallback`, the signal aborts on caller cancellation OR
+ * per-attempt timeout; the loop races against a deadline.
  */
 export type EvaluateCallback = (
   code: string,
@@ -91,6 +105,17 @@ export interface SearchConfig {
   readonly minEvalSamples: number;
   /** Stop after N consecutive iterations without strict improvement. Default 3. */
   readonly noImprovementLimit: number;
+  /**
+   * Per-callback deadline in ms. The loop races each `evaluate` /
+   * `refine` invocation against this timeout AND the external `signal`,
+   * aborting the per-attempt controller on either trigger and surfacing
+   * `eval_timeout` / `refine_timeout` so the bounded-search contract
+   * holds even when an injected callback ignores its signal. Default
+   * 30_000. Use `Number.POSITIVE_INFINITY` to disable the deadline (only
+   * for callbacks proven to be cooperative). Must be a positive number
+   * or `Infinity`.
+   */
+  readonly attemptTimeoutMs: number;
   /** Wall-clock source. Default Date.now. */
   readonly clock: () => number;
   /** PRNG. Default Math.random. */
@@ -106,6 +131,7 @@ export const DEFAULT_SEARCH_CONFIG: Pick<
   | "convergenceThreshold"
   | "minEvalSamples"
   | "noImprovementLimit"
+  | "attemptTimeoutMs"
   | "clock"
   | "random"
 > = Object.freeze({
@@ -113,6 +139,7 @@ export const DEFAULT_SEARCH_CONFIG: Pick<
   convergenceThreshold: 1.0,
   minEvalSamples: 5,
   noImprovementLimit: 3,
+  attemptTimeoutMs: 30_000,
   clock: Date.now,
   random: Math.random,
 });
@@ -128,7 +155,9 @@ export type StopReason =
   | "thompson_deploy"
   | "no_improvement"
   | "eval_failed"
+  | "eval_timeout"
   | "refine_failed"
+  | "refine_timeout"
   | "aborted";
 
 export interface SearchResult {

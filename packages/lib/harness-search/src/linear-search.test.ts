@@ -342,6 +342,56 @@ describe("linearSearch", () => {
     expect(result.stopReason).toBe("refine_failed");
   });
 
+  test("eval that ignores its signal hits attemptTimeoutMs and stops with eval_timeout", async () => {
+    const config = makeConfig({
+      attemptTimeoutMs: 30,
+      // Non-cooperative evaluator: never resolves, never honors signal.
+      evaluate: () => new Promise(() => {}),
+    });
+    const start = Date.now();
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    const elapsed = Date.now() - start;
+
+    expect(result.stopReason).toBe("eval_timeout");
+    expect(elapsed).toBeLessThan(500);
+    expect(result.totalIterations).toBe(0);
+  });
+
+  test("refine that ignores its signal hits attemptTimeoutMs and stops with refine_timeout", async () => {
+    const config = makeConfig({
+      attemptTimeoutMs: 30,
+      evaluate: async () => ({
+        successRate: 0.5,
+        sampleCount: 10,
+        failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+      }),
+      refine: () => new Promise(() => {}),
+    });
+    const start = Date.now();
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    const elapsed = Date.now() - start;
+
+    expect(result.stopReason).toBe("refine_timeout");
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  test("Infinity attemptTimeoutMs disables deadline (cooperative-only)", async () => {
+    let i = 0;
+    const config = makeConfig({
+      maxIterations: 3,
+      attemptTimeoutMs: Number.POSITIVE_INFINITY,
+      evaluate: async () => ({
+        successRate: ++i * 0.4,
+        sampleCount: 10,
+        failures:
+          i < 3 ? [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }] : [],
+      }),
+      random: () => 0.99,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.totalIterations).toBeGreaterThan(0);
+  });
+
   test("never exceeds maxIterations even with infinite-failure evaluator", async () => {
     const config = makeConfig({
       maxIterations: 7,
