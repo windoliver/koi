@@ -78,6 +78,12 @@ export interface WorkerHandle {
   readonly workerId: WorkerId;
   readonly agentId: AgentId;
   readonly backendKind: WorkerBackendKind;
+  /** tmux session name for tmux-backed workers only. */
+  readonly tmuxSessionName?: string | undefined;
+  /** tmux window target for tmux-backed workers only. */
+  readonly tmuxWindowTarget?: string | undefined;
+  /** tmux pane id for tmux-backed workers only. */
+  readonly tmuxPaneId?: string | undefined;
   readonly startedAt: number;
   readonly signal: AbortSignal;
 }
@@ -292,6 +298,12 @@ export interface BackgroundSessionRecord {
   readonly agentId: AgentId;
   /** Optional logical session id (chat-session, job-id, etc.). */
   readonly sessionId?: string | undefined;
+  /** tmux session name for tmux-backed records only. */
+  readonly tmuxSessionName?: string | undefined;
+  /** tmux window target for tmux-backed records only. */
+  readonly tmuxWindowTarget?: string | undefined;
+  /** tmux pane id for tmux-backed records only. */
+  readonly tmuxPaneId?: string | undefined;
   /** OS process id. 0 for backends that lack a PID (in-process, some remote). */
   readonly pid: number;
   readonly status: BackgroundSessionStatus;
@@ -338,6 +350,9 @@ export interface BackgroundSessionUpdate {
   readonly endedAt?: number;
   readonly exitCode?: number;
   readonly sessionId?: string;
+  readonly tmuxSessionName?: string | undefined;
+  readonly tmuxWindowTarget?: string | undefined;
+  readonly tmuxPaneId?: string | undefined;
   readonly logPath?: string;
   readonly pid?: number;
   readonly startedAt?: number;
@@ -471,6 +486,50 @@ export function validateBackgroundSessionRecord(
         retryable: false,
       },
     };
+  }
+  const tmuxFields = [
+    ["tmuxSessionName", record.tmuxSessionName],
+    ["tmuxWindowTarget", record.tmuxWindowTarget],
+    ["tmuxPaneId", record.tmuxPaneId],
+  ] as const;
+  if (record.backendKind !== "tmux") {
+    const disallowedField = tmuxFields.find(([, value]) => value !== undefined);
+    if (disallowedField !== undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message:
+            'BackgroundSessionRecord.tmux* fields are only allowed when backendKind is "tmux"',
+          retryable: false,
+        },
+      };
+    }
+  } else {
+    const nonStringField = tmuxFields.find(
+      ([, value]) => value !== undefined && typeof value !== "string",
+    );
+    if (nonStringField !== undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: `BackgroundSessionRecord.${nonStringField[0]} must be a string when provided`,
+          retryable: false,
+        },
+      };
+    }
+    const emptyField = tmuxFields.find(([, value]) => value === "");
+    if (emptyField !== undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: `BackgroundSessionRecord.${emptyField[0]} must be non-empty when provided`,
+          retryable: false,
+        },
+      };
+    }
   }
   if (!Number.isFinite(record.pid)) {
     return {

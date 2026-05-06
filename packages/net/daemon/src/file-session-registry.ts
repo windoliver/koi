@@ -653,12 +653,21 @@ export function createFileSessionRegistry(config: FileSessionRegistryConfig): Fi
             ...(patch.endedAt !== undefined && { endedAt: patch.endedAt }),
             ...(patch.exitCode !== undefined && { exitCode: patch.exitCode }),
             ...(patch.sessionId !== undefined && { sessionId: patch.sessionId }),
+            ...(patch.tmuxSessionName !== undefined && {
+              tmuxSessionName: patch.tmuxSessionName,
+            }),
+            ...(patch.tmuxWindowTarget !== undefined && {
+              tmuxWindowTarget: patch.tmuxWindowTarget,
+            }),
+            ...(patch.tmuxPaneId !== undefined && { tmuxPaneId: patch.tmuxPaneId }),
             ...(patch.logPath !== undefined && { logPath: patch.logPath }),
             ...(patch.pid !== undefined && { pid: patch.pid }),
             ...(patch.startedAt !== undefined && { startedAt: patch.startedAt }),
             ...(patch.signaledAt !== undefined && { signaledAt: patch.signaledAt }),
             version: expectedVersion + 1,
           };
+          const validation = validateBackgroundSessionRecord(merged);
+          if (!validation.ok) return validation;
           // CAS: write tmp → re-read current persisted version → rename only
           // if it still matches what we read at the start of this attempt.
           // Between the version check and the rename there is still a tiny

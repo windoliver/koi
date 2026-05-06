@@ -164,6 +164,14 @@ describe("validateBackgroundSessionRecord", () => {
     backendKind: "subprocess",
   };
 
+  const tmuxRecord: BackgroundSessionRecord = {
+    ...baseRecord,
+    backendKind: "tmux",
+    tmuxSessionName: "koi-w-1",
+    tmuxWindowTarget: "koi-w-1:0",
+    tmuxPaneId: "%12",
+  };
+
   it("accepts a well-formed record", () => {
     const result = validateBackgroundSessionRecord(baseRecord);
     expect(result.ok).toBe(true);
@@ -201,6 +209,59 @@ describe("validateBackgroundSessionRecord", () => {
       pid: Number.POSITIVE_INFINITY,
     });
     expect(result.ok).toBe(false);
+  });
+
+  it("accepts tmux metadata on tmux-backed records", () => {
+    const result = validateBackgroundSessionRecord(tmuxRecord);
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects tmux metadata on non-tmux-backed records", () => {
+    for (const [field, record] of [
+      ["tmuxSessionName", { ...baseRecord, tmuxSessionName: "koi-w-1" }],
+      ["tmuxWindowTarget", { ...baseRecord, tmuxWindowTarget: "koi-w-1:0" }],
+      ["tmuxPaneId", { ...baseRecord, tmuxPaneId: "%12" }],
+    ] as const) {
+      const result = validateBackgroundSessionRecord(record);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("VALIDATION");
+        expect(result.error.message).toContain(
+          'tmux* fields are only allowed when backendKind is "tmux"',
+        );
+      }
+      expect(field).toMatch(/^tmux/);
+    }
+  });
+
+  it("rejects empty tmux identifiers", () => {
+    for (const [field, record] of [
+      ["tmuxSessionName", { ...tmuxRecord, tmuxSessionName: "" }],
+      ["tmuxWindowTarget", { ...tmuxRecord, tmuxWindowTarget: "" }],
+      ["tmuxPaneId", { ...tmuxRecord, tmuxPaneId: "" }],
+    ] as const) {
+      const result = validateBackgroundSessionRecord(record);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("VALIDATION");
+        expect(result.error.message).toContain(`${field} must be non-empty`);
+      }
+    }
+  });
+
+  it("rejects non-string tmux metadata on tmux-backed records", () => {
+    for (const [field, record] of [
+      ["tmuxSessionName", { ...tmuxRecord, tmuxSessionName: 42 as unknown as string }],
+      ["tmuxWindowTarget", { ...tmuxRecord, tmuxWindowTarget: 42 as unknown as string }],
+      ["tmuxPaneId", { ...tmuxRecord, tmuxPaneId: 42 as unknown as string }],
+    ] as const) {
+      const result = validateBackgroundSessionRecord(record);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("VALIDATION");
+        expect(result.error.message).toContain(`${field} must be a string when provided`);
+      }
+    }
   });
 });
 
