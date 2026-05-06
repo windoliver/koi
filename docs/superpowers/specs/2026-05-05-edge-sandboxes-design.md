@@ -837,7 +837,7 @@ Cloudflare and Vercel offer no authoritative provider-side per-invocation kill c
 ```ts
 export type DestroyOutcome =
   | { readonly kind: "destroyed-clean" }                          // local + remote DELETE confirmed; no in-flight invoke at start
-  | { readonly kind: "destroyed-local-remote-indeterminate"; readonly inflightAtDestroy: number }
+  | { readonly kind: "destroyed-local-remote-indeterminate"; readonly inflightCount: number; readonly priorTimeoutOrAbort: boolean }
   | { readonly kind: "destroyed-local-remote-leaked"; readonly providerArtifacts: readonly string[]; readonly cause: KoiError }
   | { readonly kind: "destroyed-local-remote-uncertain"; readonly providerArtifacts: readonly string[]; readonly cause: KoiError };
 
@@ -915,7 +915,7 @@ Because `destroy()` and timeout/abort can leave remote work in flight (see `Dest
   - **Known composite key, in-flight:** the second request awaits the first's outcome (same Promise) and returns the same response. Two callers using the SAME `(operationId, requestId)` pair see the same result; the handler runs exactly once.
   - **Known composite key, completed:** return the cached result without re-running the handler.
   - **`requestId` reused with a DIFFERENT `operationId`:** treated as a fresh, unrelated invocation. The shim does NOT alias the new request to the cached entry — the lookup misses because the composite key differs. This prevents a caller bug (accidentally regenerating `operationId` while reusing a stale `requestId`, or vice versa) from returning one operation's result to a different operation. Defense-in-depth against caller misuse.
-- **`requestId` is mandatory at the API boundary — no implicit generation.** The host-side `invoke()` rejects requests without `requestId` with `KoiError { code: "MISSING_REQUEST_ID" }` before any fetch. There is no auto-gen path. Rationale: callers who need to retry after timeout/abort/destroy MUST be able to reuse the same token on the retry; auto-generating the ID inside `invoke()` makes the original token unreachable to the caller (it lives in already-discarded request state), so retries necessarily carry a fresh UUID and the dedupe is useless on the exact failure paths it exists to mitigate.
+- **`requestId` is mandatory at the API boundary — no implicit generation, and is FRESH per attempt (NEVER reused on retry).** The host-side `invoke()` rejects requests without `requestId` with `KoiError { code: "MISSING_REQUEST_ID" }` before any fetch. There is no auto-gen path. **Authoritative retry contract: `operationId` is the stable durable-dedupe key reused across all retries of the same logical operation; `requestId` is FRESH per attempt and MUST NOT be reused.** The reason for requiring caller-supplied `requestId` (vs. auto-generation) is observability and traceability — caller code owns the per-attempt id so it can be correlated with caller-side logs, NOT to enable retry reuse. Earlier draft language suggesting `requestId` reuse on retry was incorrect and has been removed; reuse would alias distinct attempts onto a single shim-cache entry and is forbidden. The only authoritative cross-retry dedupe key is `operationId` consulted against the durable Cloudflare-DO/Vercel-KV store.
 - Required caller pattern: callers supply a stable `operationId` ONCE per logical operation (and pass it through any subsequent recovery boundaries), and a FRESH `requestId` per network attempt:
   ```ts
   const operationId = crypto.randomUUID();   // owned by the caller; persists across destroy/recreate
