@@ -5,23 +5,33 @@ import type { ChannelAdapter, ChannelCapabilities, OutboundMessage } from "@koi/
  * Audio I/O transport for the voice channel. Vendor wiring (LiveKit, Twilio,
  * a local PCM pipeline, etc.) lives here.
  *
- * **Inbound contract:** `onUtterance` MUST deliver complete utterance buffers
- * — the result of upstream voice-activity detection / endpointing — NOT raw
- * packetized PCM/Opus frames. The voice channel calls `stt.transcribe()`
- * once per emitted buffer; emitting per-packet would fragment transcripts
- * and explode STT cost. Transports built on streaming codecs MUST implement
- * VAD/buffering before invoking the handler.
+ * **Session identity** — every inbound and outbound carries an opaque
+ * `sessionId` string identifying the call/leg/track the audio belongs to.
+ * The voice channel surfaces it as `InboundMessage.threadId` and accepts
+ * it back via `OutboundMessage.threadId` so the host can fan multiple live
+ * sessions through one adapter without cross-talk. Transports that only
+ * ever serve a single concurrent session may pass a constant string (e.g.
+ * `"default"`) — but the field is REQUIRED so the contract cannot silently
+ * collapse two callers into one conversation.
+ *
+ * **Inbound contract:** `onUtterance` MUST deliver complete utterance
+ * buffers (upstream voice-activity-detected / endpointed). The voice
+ * channel calls `stt.transcribe()` once per emitted buffer; emitting
+ * per-packet would fragment transcripts and explode STT cost.
+ *
+ * **Outbound contract:** `sendUtterance` is invoked with the FULL ordered
+ * sequence of audio frames for one reply, atomically. The transport is
+ * responsible for either delivering the entire utterance or surfacing a
+ * single failure that leaves the user-audible state in a defined position
+ * (so the caller can retry idempotently). The channel does NOT stream
+ * chunk-by-chunk and does NOT supply resume tokens — atomicity is the
+ * transport's responsibility.
  */
 export interface VoiceTransport {
   readonly connect: () => Promise<void>;
   readonly disconnect: () => Promise<void>;
-  readonly sendAudio: (frame: Uint8Array) => Promise<void>;
-  /**
-   * Subscribe to inbound utterance buffers (already-endpointed speech).
-   * The handler receives one complete utterance per call. Returns an
-   * unsubscribe function.
-   */
-  readonly onUtterance: (handler: (utterance: Uint8Array) => void) => () => void;
+  readonly sendUtterance: (sessionId: string, frames: readonly Uint8Array[]) => Promise<void>;
+  readonly onUtterance: (handler: (sessionId: string, utterance: Uint8Array) => void) => () => void;
 }
 
 /** Speech-to-text. Returning `null` skips dispatch (e.g., silence/no speech detected). */
@@ -67,9 +77,22 @@ const VOICE_CAPABILITIES: ChannelCapabilities = {
   buttons: false,
   audio: true,
   video: false,
-  threads: false,
+  // Threads enabled: the transport's sessionId rides as InboundMessage.threadId
+  // so a host can multiplex multiple live calls through one adapter without
+  // cross-talk. Outbound MUST carry message.threadId to identify the session
+  // — sends without threadId throw.
+  threads: true,
   supportsA2ui: false,
 };
+
+export class VoiceMissingSessionError extends Error {
+  constructor() {
+    super(
+      "@koi/channel-voice: OutboundMessage.threadId is required (the transport sessionId of the call to reply to). Strict per-session routing prevents cross-talk between concurrent voice sessions.",
+    );
+    this.name = "VoiceMissingSessionError";
+  }
+}
 
 const DEFAULT_MAX_TTS_CHARS = 240;
 
@@ -88,24 +111,38 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     throw new Error(`maxTtsChars must be a positive finite number; got ${String(maxTtsChars)}`);
   }
 
-  return createChannelAdapter<Uint8Array>({
+  // Bridge transport's (sessionId, utterance) callback through the
+  // single-arg `onPlatformEvent` adapter contract by tunneling sessionId
+  // alongside the audio in a per-event tuple, then unpacking in normalize().
+  interface TransportEvent {
+    readonly sessionId: string;
+    readonly utterance: Uint8Array;
+  }
+
+  return createChannelAdapter<TransportEvent>({
     name: "voice",
     capabilities: VOICE_CAPABILITIES,
-    onNormalizationError: config.onSttError ?? defaultSttErrorLogger,
+    onNormalizationError: (err: unknown, event: TransportEvent) =>
+      (config.onSttError ?? defaultSttErrorLogger)(err, event.utterance),
     platformConnect: () => config.transport.connect(),
     platformDisconnect: () => config.transport.disconnect(),
     platformSend: async (message: OutboundMessage) => {
-      // Two-phase delivery to make mid-response failure recoverable:
-      //   Phase 1: synthesize EVERY chunk to audio. If any synth call rejects,
-      //            the user has heard nothing yet and the caller can retry the
-      //            whole utterance idempotently.
-      //   Phase 2: stream the prepared frames to the transport in order. A
-      //            transport failure mid-utterance is still user-visible, but
-      //            the synth phase having succeeded means the frames are
-      //            cached and a transport-level resume is possible without
-      //            re-running TTS.
-      // Without this split, a TTS failure on chunk N would leave chunks 0..N-1
-      // already spoken with no idempotent retry path.
+      // Strict per-session routing: outbound MUST identify which call leg
+      // it replies to, otherwise a host that fans multiple calls through
+      // one adapter could cross-talk one caller's reply to another.
+      if (message.threadId === undefined || message.threadId.length === 0) {
+        throw new VoiceMissingSessionError();
+      }
+      // Atomic two-phase delivery:
+      //   Phase 1: synthesize EVERY chunk so a TTS failure plays nothing.
+      //   Phase 2: hand the entire ordered frame sequence to the transport
+      //            atomically — the transport is responsible for either
+      //            delivering the whole utterance or failing in a way that
+      //            leaves user-audible state in a known position. The
+      //            channel never streams chunk-by-chunk, so a partial
+      //            playback / non-idempotent retry race lives at the
+      //            transport boundary (where it can use codec sequence
+      //            numbers / acks), not inside the channel.
       const pieces: string[] = [];
       for (const block of message.content) {
         const text =
@@ -118,23 +155,21 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       for (const piece of pieces) {
         frames.push(await config.tts.synthesize(piece));
       }
-      for (const audio of frames) {
-        await config.transport.sendAudio(audio);
-      }
+      await config.transport.sendUtterance(message.threadId, frames);
     },
-    onPlatformEvent: (handler) => config.transport.onUtterance(handler),
-    normalize: async (frame) => {
-      const text = await config.stt.transcribe(frame);
+    onPlatformEvent: (handler) =>
+      config.transport.onUtterance((sessionId, utterance) => handler({ sessionId, utterance })),
+    normalize: async (event: TransportEvent) => {
+      const text = await config.stt.transcribe(event.utterance);
       if (text === null) return null;
-      // Treat empty / whitespace-only transcripts as silence. Otherwise a
-      // clipped audio frame, end-of-utterance marker, or degraded provider
-      // response that returns "" would burn a full agent turn (and may even
-      // produce a spoken response to silence).
       const trimmed = text.trim();
       if (trimmed.length === 0) return null;
       return {
         content: [{ kind: "text", text: trimmed }],
         senderId,
+        // Surface the transport sessionId as threadId so handler routing
+        // (and replyToInbound-style helpers) keep replies on the right call.
+        threadId: event.sessionId,
         timestamp: Date.now(),
       };
     },

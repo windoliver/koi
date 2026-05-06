@@ -6,4 +6,4 @@
  */
 
 export type { Stt, Tts, VoiceChannelConfig, VoiceTransport } from "./voice-channel.js";
-export { createVoiceChannel } from "./voice-channel.js";
+export { createVoiceChannel, VoiceMissingSessionError } from "./voice-channel.js";

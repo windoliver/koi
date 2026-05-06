@@ -35,7 +35,7 @@ this package is pure protocol glue.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `transport` | `VoiceTransport` | Audio I/O implementation (`onUtterance`, `sendAudio`, `connect`, `disconnect`) |
+| `transport` | `VoiceTransport` | Audio I/O implementation (`onUtterance(handler)`, `sendUtterance(sessionId, frames)`, `connect`, `disconnect`) |
 | `stt` | `Stt` | `transcribe(audio: Uint8Array): Promise<string \| null>` |
 | `tts` | `Tts` | `synthesize(text: string): Promise<Uint8Array>` |
 | `senderId?` | `string` | Default `"voice-user"` |
@@ -45,13 +45,13 @@ this package is pure protocol glue.
 
 ```ts
 { text: true, audio: true, images: false, files: false,
-  buttons: false, video: false, threads: false, supportsA2ui: false }
+  buttons: false, video: false, threads: true, supportsA2ui: false }
 ```
 
 ## Flow
 
 ```
-audio frames ──▶ transport.onUtterance ──▶ stt.transcribe ──▶ InboundMessage{TextBlock}
-TextBlock ──▶ chunk(maxTtsChars) ──▶ tts.synthesize ──▶ transport.sendAudio
+utterance + sessionId ──▶ transport.onUtterance ──▶ stt.transcribe ──▶ InboundMessage{TextBlock, threadId=sessionId}
+OutboundMessage{threadId} ──▶ chunk(maxTtsChars) ──▶ tts.synthesize × N ──▶ transport.sendUtterance(sessionId, frames[])
 non-text blocks ──▶ degraded to text by @koi/channel-base renderBlocks ──▶ TTS
 ```

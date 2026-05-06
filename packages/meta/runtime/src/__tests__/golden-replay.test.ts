@@ -17020,7 +17020,7 @@ describe("Golden: @koi/channel-voice", () => {
       transport: {
         connect: async () => {},
         disconnect: async () => {},
-        sendAudio: async () => {},
+        sendUtterance: async () => {},
         onUtterance: () => () => {},
       },
       stt: { transcribe: async () => null },
@@ -17039,9 +17039,9 @@ describe("Golden: @koi/channel-voice", () => {
       transport: {
         connect: async () => {},
         disconnect: async () => {},
-        sendAudio: async () => {},
+        sendUtterance: async () => {},
         onUtterance: (h) => {
-          emit = h;
+          emit = (f) => h("session-1", f);
           return () => {};
         },
       },

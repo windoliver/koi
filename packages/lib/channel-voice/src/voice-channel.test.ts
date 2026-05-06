@@ -2,11 +2,17 @@ import { describe, expect, test } from "bun:test";
 import type { InboundMessage, TextBlock } from "@koi/core";
 import { createVoiceChannel, type Stt, type Tts, type VoiceTransport } from "./voice-channel.js";
 
+interface SentUtterance {
+  readonly sessionId: string;
+  readonly frames: readonly Uint8Array[];
+}
+
 interface Harness {
   readonly transport: VoiceTransport;
   readonly stt: Stt;
   readonly tts: Tts;
-  readonly emitAudio: (frame: Uint8Array) => void;
+  readonly emitAudio: (frame: Uint8Array, sessionId?: string) => void;
+  readonly sentUtterances: SentUtterance[];
   readonly sentAudio: Uint8Array[];
   readonly sttCalls: Uint8Array[];
   readonly ttsCalls: string[];
@@ -17,8 +23,10 @@ interface Harness {
 function harness(opts?: {
   readonly sttResult?: (audio: Uint8Array) => string | null;
   readonly ttsResult?: (text: string) => Uint8Array;
+  readonly sendUtterance?: (sessionId: string, frames: readonly Uint8Array[]) => Promise<void>;
 }): Harness {
-  let listener: ((frame: Uint8Array) => void) | undefined;
+  let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+  const sentUtterances: SentUtterance[] = [];
   const sentAudio: Uint8Array[] = [];
   const sttCalls: Uint8Array[] = [];
   const ttsCalls: string[] = [];
@@ -30,8 +38,12 @@ function harness(opts?: {
       disconnect: async () => {
         h.disconnectCount++;
       },
-      sendAudio: async (frame) => {
-        sentAudio.push(frame);
+      sendUtterance: async (sessionId, frames) => {
+        if (opts?.sendUtterance) {
+          await opts.sendUtterance(sessionId, frames);
+        }
+        sentUtterances.push({ sessionId, frames });
+        for (const f of frames) sentAudio.push(f);
       },
       onUtterance: (handler) => {
         listener = handler;
@@ -52,7 +64,8 @@ function harness(opts?: {
         return opts?.ttsResult ? opts.ttsResult(text) : new Uint8Array([text.length]);
       },
     },
-    emitAudio: (frame) => listener?.(frame),
+    emitAudio: (frame, sessionId = "session-1") => listener?.(sessionId, frame),
+    sentUtterances,
     sentAudio,
     sttCalls,
     ttsCalls,
@@ -152,7 +165,7 @@ describe("createVoiceChannel", () => {
     const h = harness();
     const ch = createVoiceChannel({ transport: h.transport, stt: h.stt, tts: h.tts });
     await ch.connect();
-    await ch.send({ content: [{ kind: "text", text: "reply" }] });
+    await ch.send({ threadId: "session-1", content: [{ kind: "text", text: "reply" }] });
     expect(h.ttsCalls).toEqual(["reply"]);
     expect(h.sentAudio).toHaveLength(1);
     await ch.disconnect();
@@ -167,7 +180,7 @@ describe("createVoiceChannel", () => {
       maxTtsChars: 5,
     });
     await ch.connect();
-    await ch.send({ content: [{ kind: "text", text: "abcdefghij" }] });
+    await ch.send({ threadId: "session-1", content: [{ kind: "text", text: "abcdefghij" }] });
     expect(h.ttsCalls).toEqual(["abcde", "fghij"]);
     expect(h.sentAudio).toHaveLength(2);
     await ch.disconnect();
@@ -180,6 +193,7 @@ describe("createVoiceChannel", () => {
     const ch = createVoiceChannel({ transport: h.transport, stt: h.stt, tts: h.tts });
     await ch.connect();
     await ch.send({
+      threadId: "session-1",
       content: [
         { kind: "image", url: "x", alt: "diagram" },
         { kind: "text", text: "ok" },
@@ -195,6 +209,7 @@ describe("createVoiceChannel", () => {
     const ch = createVoiceChannel({ transport: h.transport, stt: h.stt, tts: h.tts });
     await ch.connect();
     await ch.send({
+      threadId: "session-1",
       content: [
         { kind: "custom", type: "chart", data: {} },
         { kind: "text", text: "and the chart" },
@@ -255,9 +270,9 @@ describe("createVoiceChannel", () => {
       maxTtsChars: 5,
     });
     await ch.connect();
-    await expect(ch.send({ content: [{ kind: "text", text: "abcdefghij" }] })).rejects.toThrow(
-      "tts down",
-    );
+    await expect(
+      ch.send({ threadId: "session-1", content: [{ kind: "text", text: "abcdefghij" }] }),
+    ).rejects.toThrow("tts down");
     expect(h.sentAudio).toEqual([]);
     await ch.disconnect();
   });
@@ -300,6 +315,54 @@ describe("createVoiceChannel", () => {
     } finally {
       console.warn = originalWarn;
     }
+  });
+
+  test("threads:true — inbound carries transport sessionId as threadId for multi-session isolation", async () => {
+    const h = harness();
+    const ch = createVoiceChannel({ transport: h.transport, stt: h.stt, tts: h.tts });
+    expect(ch.capabilities.threads).toBe(true);
+    const received: InboundMessage[] = [];
+    ch.onMessage(async (m) => {
+      received.push(m);
+    });
+    await ch.connect();
+    h.emitAudio(new Uint8Array([1]), "call-A");
+    h.emitAudio(new Uint8Array([2]), "call-B");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(received).toHaveLength(2);
+    expect(received[0]?.threadId).toBe("call-A");
+    expect(received[1]?.threadId).toBe("call-B");
+    await ch.disconnect();
+  });
+
+  test("outbound: send without threadId throws (cross-talk guard)", async () => {
+    const h = harness();
+    const ch = createVoiceChannel({ transport: h.transport, stt: h.stt, tts: h.tts });
+    await ch.connect();
+    await expect(ch.send({ content: [{ kind: "text", text: "x" }] })).rejects.toThrow(
+      /threadId is required/,
+    );
+    await expect(ch.send({ threadId: "", content: [{ kind: "text", text: "x" }] })).rejects.toThrow(
+      /threadId is required/,
+    );
+    expect(h.sentUtterances).toEqual([]);
+    await ch.disconnect();
+  });
+
+  test("outbound: transport receives whole utterance atomically with sessionId", async () => {
+    const h = harness();
+    const ch = createVoiceChannel({
+      transport: h.transport,
+      stt: h.stt,
+      tts: h.tts,
+      maxTtsChars: 5,
+    });
+    await ch.connect();
+    await ch.send({ threadId: "call-X", content: [{ kind: "text", text: "abcdefghij" }] });
+    expect(h.sentUtterances).toHaveLength(1);
+    expect(h.sentUtterances[0]?.sessionId).toBe("call-X");
+    expect(h.sentUtterances[0]?.frames).toHaveLength(2);
+    await ch.disconnect();
   });
 
   test("custom senderId honored", async () => {
