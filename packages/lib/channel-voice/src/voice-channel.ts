@@ -48,14 +48,16 @@ export interface VoiceTransport {
   readonly disconnect: () => Promise<void>;
   /**
    * Send an utterance. The optional `signal` aborts when the channel
-   * has given up on this send (timeout). Implementations SHOULD honor
+   * has given up on this send (timeout). Implementations MUST honor
    * it — stop emitting frames, free transport resources, and reject
-   * with `signal.reason` (or any value) so the channel can fence the
-   * call cleanly. Implementations that do NOT honor the signal MAY
-   * still complete after the abort; in that case the channel cannot
-   * guarantee the audio stays out of a later session, so the host
-   * MUST treat the underlying transport as unrecoverable for the
-   * affected `sessionId`.
+   * promptly so the channel can fence the call cleanly before
+   * `disconnect()` clears the per-session poison flag. A transport
+   * that ignores the abort signal forfeits the channel's ordering
+   * guarantee on reconnect: a stale send may surface AFTER newer audio
+   * for the same `sessionId`, and the channel cannot detect the leak.
+   * Hosts whose transport cannot guarantee abort honoring MUST
+   * construct a fresh adapter on reconnect rather than reusing the
+   * disconnected one.
    */
   readonly sendUtterance: (
     sessionId: string,
@@ -74,9 +76,10 @@ export interface Stt {
 /**
  * Text-to-speech. Returns the encoded audio buffer to hand to the transport.
  * `signal` aborts when the channel has timed out the synthesis attempt.
- * Implementations SHOULD honor it to free provider resources and reject
- * promptly; non-cooperative impls leak compute but not audio (the
- * transport never sees the result of an aborted synthesize call).
+ * Implementations MUST honor it to free provider resources and reject
+ * promptly so the channel can clear per-session poison on disconnect.
+ * Non-cooperative impls leak compute (and potentially audio if the
+ * transport later receives the synthesized buffer post-abort).
  */
 export interface Tts {
   readonly synthesize: (text: string, signal?: AbortSignal) => Promise<Uint8Array>;
@@ -288,6 +291,16 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
   let pendingUtterances: Array<{ sessionId: string; utterance: Uint8Array }> = [];
   let unsubTransport: (() => void) | undefined;
 
+  // Per-session dispatch-completion tracker. The wrapped onMessage
+  // below records every async handler invocation's promise here so the
+  // STT chain (in onPlatformEvent) can await it before processing the
+  // next utterance for the same sessionId. This extends the per-
+  // session ordering guarantee from "STT serialized" to "full handler
+  // pipeline serialized" — a host whose onMessage handler does multi-
+  // second runtime work (model+tool calls) cannot have two same-session
+  // turns running concurrently.
+  const sessionDispatchInFlight = new Map<string, Promise<unknown>>();
+
   const inner = createChannelAdapter<TransportEvent>({
     name: "voice",
     capabilities: VOICE_CAPABILITIES,
@@ -328,15 +341,14 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       );
     },
     onPlatformEvent: (handler) => {
-      // Per-session STT serialization. Without this chain, two utterances
-      // arriving back-to-back on the same call leg both start STT in
-      // parallel; if turn 2's transcribe resolves first (faster speech /
-      // smaller buffer / different STT shard), the runtime sees
-      // "B then A" and the dialogue scrambles. Chaining each utterance's
-      // STT after the prior one for that sessionId guarantees in-order
-      // dispatch per call. Cross-session traffic stays parallel — distinct
-      // sessionIds get distinct chains, so a slow caller can't head-of-
-      // line block other callers' turns.
+      // Per-session full-pipeline serialization. The chain holds for
+      // STT AND for handler dispatch (when the host's onMessage handler
+      // returns a Promise via the per-session dispatch awaiter wired
+      // below). Without this, two utterances on the same call leg
+      // could overlap their handler work — mutating shared session
+      // state concurrently or emitting replies out of order. Cross-
+      // session traffic stays parallel: distinct sessionIds get
+      // distinct chains.
       const chains = new Map<string, Promise<unknown>>();
       const sttTimeoutMs = config.sttTimeoutMs ?? DEFAULT_STT_TIMEOUT_MS;
       const enqueue = (sessionId: string, utterance: Uint8Array): void => {
@@ -372,7 +384,19 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
               (config.onSttError ?? defaultSttErrorLogger)(err, utterance);
               return;
             }
+            // Mark this session as "dispatch in flight" BEFORE handler()
+            // synchronously enqueues the dispatch. The wrapped onMessage
+            // (below) populates `sessionDispatchInFlight[sessionId]`
+            // when each handler invocation returns a Promise. The STT
+            // chain then awaits it so the NEXT utterance for this
+            // session waits for all current handlers to finish. Cross-
+            // session traffic remains parallel.
             handler({ sessionId, utterance, text });
+            const inFlight = sessionDispatchInFlight.get(sessionId);
+            if (inFlight !== undefined) {
+              sessionDispatchInFlight.delete(sessionId);
+              await inFlight;
+            }
           });
         chains.set(sessionId, next);
         // Drop the chain entry once the tail settles so long-lived
@@ -592,6 +616,27 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       await inner.disconnect();
     },
     send: wrappedSend,
-    onMessage: inner.onMessage,
+    // Wrap onMessage so each handler invocation that returns a Promise
+    // gets recorded under sessionDispatchInFlight[threadId]. The STT
+    // chain awaits these before processing the next utterance,
+    // extending per-session ordering through the host's full handler
+    // pipeline (not just STT).
+    onMessage: (handler: import("@koi/core").MessageHandler): (() => void) =>
+      inner.onMessage((msg) => {
+        const result = handler(msg);
+        const sid = msg.threadId;
+        if (sid !== undefined && sid.length > 0 && result instanceof Promise) {
+          // Compose with any existing in-flight promise for this
+          // session — multiple handlers attached to the same session
+          // should all complete before the next utterance dispatches.
+          const prev = sessionDispatchInFlight.get(sid);
+          const tracked = prev !== undefined ? Promise.allSettled([prev, result]) : result;
+          sessionDispatchInFlight.set(
+            sid,
+            (tracked as Promise<unknown>).catch(() => undefined),
+          );
+        }
+        return result;
+      }),
   };
 }

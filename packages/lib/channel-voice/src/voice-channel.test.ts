@@ -783,6 +783,67 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("same-session handler dispatches serialize across full pipeline (no overlap)", async () => {
+    // Round-16 high finding: per-session STT chain only awaited
+    // transcribe(), not the host's handler. Two utterances on the same
+    // sessionId could overlap in the handler — concurrent model/tool
+    // work mutating shared session state and replying out of order.
+    // Fix: voice's wrapped onMessage records handler promises per
+    // threadId; the STT chain awaits them before processing the next
+    // utterance. Cross-session traffic stays parallel.
+    // let requires justification: harness state captured by closures
+    let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+    let inFlightSameSession = 0;
+    let maxInFlightSameSession = 0;
+    let inFlightCrossSession = 0;
+    let maxInFlightCrossSession = 0;
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (handler) => {
+        listener = handler;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = { transcribe: async () => "ok" };
+    const tts: Tts = { synthesize: async () => new Uint8Array(0) };
+    const ch = createVoiceChannel({ transport, stt, tts });
+    await ch.connect();
+    ch.onMessage(async (msg: InboundMessage) => {
+      // Slow handler simulating model+tool runtime work.
+      if (msg.threadId === "session-A") {
+        inFlightSameSession++;
+        if (inFlightSameSession > maxInFlightSameSession) {
+          maxInFlightSameSession = inFlightSameSession;
+        }
+        await new Promise((r) => setTimeout(r, 50));
+        inFlightSameSession--;
+      } else {
+        inFlightCrossSession++;
+        if (inFlightCrossSession > maxInFlightCrossSession) {
+          maxInFlightCrossSession = inFlightCrossSession;
+        }
+        await new Promise((r) => setTimeout(r, 50));
+        inFlightCrossSession--;
+      }
+    });
+    // Fire 3 same-session + 1 cross-session utterances back-to-back.
+    listener!("session-A", new Uint8Array([1]));
+    listener!("session-A", new Uint8Array([2]));
+    listener!("session-A", new Uint8Array([3]));
+    listener!("session-B", new Uint8Array([4]));
+    // Wait for the chain to fully settle.
+    await new Promise((r) => setTimeout(r, 250));
+    // Same-session handlers MUST NEVER overlap.
+    expect(maxInFlightSameSession).toBe(1);
+    // Cross-session can still run in parallel with same-session work.
+    expect(maxInFlightCrossSession).toBe(1);
+    await ch.disconnect();
+  });
+
   test("AbortSignal is forwarded to TTS and transport on timeout (cooperative cancellation)", async () => {
     // Round-14 high finding: withTimeout only races; underlying calls
     // could leak after the channel reports failure. Cooperative impls
