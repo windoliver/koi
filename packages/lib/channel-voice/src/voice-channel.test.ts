@@ -1391,4 +1391,54 @@ describe("createVoiceChannel", () => {
     expect(sttMaxConcurrent).toBe(3);
     await ch.disconnect();
   });
+
+  test("hung onMessage handler does not wedge later utterances forever (dispatch watchdog)", async () => {
+    // Regression (round 31 high): full-pipeline ordering awaited inFlight
+    // unconditionally. A handler that never settled would wedge every
+    // later utterance on the same sessionId behind a dead promise. The
+    // dispatch watchdog must surrender ordering after the configured
+    // timeout so the next utterance can proceed even if the prior
+    // handler is permanently stuck.
+    let listener: ((sessionId: string, audio: Uint8Array) => void) | undefined;
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (h) => {
+        listener = h;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = { transcribe: async () => "ok" };
+    const tts: Tts = { synthesize: async () => new Uint8Array() };
+    const ch = createVoiceChannel({
+      transport,
+      stt,
+      tts,
+      // Tight watchdog so the test runs fast.
+      dispatchHandlerTimeoutMs: 50,
+    });
+    const dispatched: string[] = [];
+    let firstHandlerStarted = false;
+    ch.onMessage(async (msg) => {
+      const text = msg.content[0]?.kind === "text" ? msg.content[0].text : "?";
+      dispatched.push(text);
+      if (!firstHandlerStarted) {
+        firstHandlerStarted = true;
+        // Permanently hung handler — never resolves.
+        await new Promise(() => {});
+      }
+    });
+    await ch.connect();
+    listener?.("call-A", new Uint8Array([1]));
+    listener?.("call-A", new Uint8Array([2]));
+    // Wait long enough for STT, the watchdog (50ms), and the next
+    // utterance to dispatch. Both should land even though the first
+    // handler never settles.
+    await new Promise((r) => setTimeout(r, 250));
+    expect(dispatched.length).toBe(2);
+    await ch.disconnect();
+  });
 });

@@ -127,6 +127,19 @@ export interface VoiceChannelConfig {
    */
   readonly ttsTimeoutMs?: number;
   /**
+   * Maximum milliseconds the per-session ordering chain waits for the
+   * downstream `onMessage` handler returned by a previous utterance to
+   * settle before admitting the next utterance for the same `sessionId`.
+   * STT/TTS/transport each have their own timeouts, but runtime work
+   * inside the handler does not — without this watchdog, a single hung
+   * handler call would queue every later utterance behind a dead
+   * promise indefinitely, with no way to recover short of disconnecting.
+   * On expiry the chain entry is dropped and the next utterance proceeds;
+   * the original handler promise is left to settle on its own. Default
+   * 60 s.
+   */
+  readonly dispatchHandlerTimeoutMs?: number;
+  /**
    * Maximum milliseconds to wait for `transport.sendUtterance()` to
    * resolve. Default 30 s. The send rejects with
    * `VoiceTransportSendTimeoutError` on expiry.
@@ -195,6 +208,13 @@ export class VoicePoisonedSessionError extends Error {
 const DEFAULT_STT_TIMEOUT_MS = 30_000;
 const DEFAULT_TTS_TIMEOUT_MS = 30_000;
 const DEFAULT_TRANSPORT_SEND_TIMEOUT_MS = 30_000;
+// Watchdog for the per-session dispatch wait. STT/TTS/transport each have
+// their own timeouts, but the runtime/tool work inside `onMessage` does
+// not — a single hung handler must not wedge every later utterance for
+// the same sessionId behind a dead promise. After this elapses we drop
+// the chain entry and let the next utterance proceed; the original
+// handler promise is left to settle on its own.
+const DEFAULT_DISPATCH_HANDLER_TIMEOUT_MS = 60_000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, makeError: () => Error): Promise<T> {
   // let requires justification: timer ref captured for cleanup
@@ -441,7 +461,22 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
             const inFlight = sessionDispatchInFlight.get(sessionId);
             if (inFlight !== undefined) {
               sessionDispatchInFlight.delete(sessionId);
-              await inFlight;
+              // Bounded wait: a hung handler must not wedge later
+              // utterances on the same session forever. On timeout we
+              // surrender ordering for the next utterance; the stuck
+              // promise is left to settle on its own.
+              const watchdogMs =
+                config.dispatchHandlerTimeoutMs ?? DEFAULT_DISPATCH_HANDLER_TIMEOUT_MS;
+              // let requires justification: timer ref captured for cleanup
+              let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+              const watchdog = new Promise<"watchdog">((resolve) => {
+                watchdogTimer = setTimeout(() => resolve("watchdog"), watchdogMs);
+              });
+              try {
+                await Promise.race([inFlight.then(() => "settled" as const), watchdog]);
+              } finally {
+                if (watchdogTimer !== undefined) clearTimeout(watchdogTimer);
+              }
             }
           });
         chains.set(sessionId, next);
