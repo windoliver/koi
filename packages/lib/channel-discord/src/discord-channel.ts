@@ -108,6 +108,20 @@ interface InteractionResponseLike {
   followUp?(payload: DiscordSendPayload): Promise<unknown>;
 }
 
+/**
+ * Slash commands edit their deferred reply (the "thinking..." state).
+ * Buttons follow up with a NEW message so we don't clobber the source
+ * message that contained the button — and so ephemeral component
+ * interactions stay scoped to the user who clicked them.
+ */
+type InteractionReplyKind = "slash" | "button";
+
+interface PendingInteraction {
+  readonly interaction: InteractionResponseLike;
+  readonly kind: InteractionReplyKind;
+  readonly expiresAt: number;
+}
+
 export function createDiscordChannel(config: DiscordChannelConfig): DiscordChannelAdapter {
   // let requires justification: client is created lazily inside platformConnect
   // because instantiating the real discord.js Client opens cache structures we
@@ -119,10 +133,7 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
   // so the first send() to threadId "interaction:<id>:<channelId>" routes
   // through editReply/followUp on the correct interaction handle. Entries are
   // dropped after first edit, on disconnect, or after INTERACTION_TTL_MS.
-  const pendingInteractions = new Map<
-    string,
-    { readonly interaction: InteractionResponseLike; readonly expiresAt: number }
-  >();
+  const pendingInteractions = new Map<string, PendingInteraction>();
 
   const getClient = (): DiscordClientLike => {
     if (client === undefined) {
@@ -156,23 +167,22 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
     // replies to (handler dropped the event, decided not to answer,
     // crashed, etc.) without scheduling a separate timer.
     sweepExpiredInteractions(pendingInteractions);
-    // Only stash slash-command interactions. For buttons we use
-    // deferUpdate() (keeps the source message intact); calling editReply
-    // on a deferred-update interaction would mutate the original message
-    // that contained the button — exactly what users do not want.
-    // Button replies fall through to channel.send via the channelId
-    // suffix in the threadId.
-    if (
-      isPlainObject(raw) &&
-      typeof raw.id === "string" &&
-      typeof raw.isChatInputCommand === "function" &&
-      raw.isChatInputCommand() === true &&
-      isInteractionResponseLike(raw)
-    ) {
-      pendingInteractions.set(raw.id, {
-        interaction: raw,
-        expiresAt: Date.now() + INTERACTION_TTL_MS,
-      });
+    // Stash both slash-command and button interactions so replies route
+    // through the interaction object (preserving ephemeral / private
+    // scope) rather than the channel. Slash commands edit the deferred
+    // reply; buttons followUp() (so the source message containing the
+    // button is left intact and ephemeral interactions stay user-scoped).
+    if (isPlainObject(raw) && typeof raw.id === "string" && isInteractionResponseLike(raw)) {
+      const isSlash =
+        typeof raw.isChatInputCommand === "function" && raw.isChatInputCommand() === true;
+      const isButton = typeof raw.isButton === "function" && raw.isButton() === true;
+      if (isSlash || isButton) {
+        pendingInteractions.set(raw.id, {
+          interaction: raw,
+          kind: isSlash ? "slash" : "button",
+          expiresAt: Date.now() + INTERACTION_TTL_MS,
+        });
+      }
     }
     const ev = toInteractionEvent(raw);
     if (ev !== null && dispatch !== undefined) dispatch(ev);
@@ -258,10 +268,7 @@ export function splitText(text: string, limit: number): readonly string[] {
 
 async function sendOutbound(
   client: DiscordClientLike,
-  pendingInteractions: Map<
-    string,
-    { readonly interaction: InteractionResponseLike; readonly expiresAt: number }
-  >,
+  pendingInteractions: Map<string, PendingInteraction>,
   message: OutboundMessage,
 ): Promise<void> {
   if (message.threadId === undefined) {
@@ -270,29 +277,52 @@ async function sendOutbound(
   const payloads = buildPayloads(message.content);
 
   // Interaction-response path: when the inbound threadId is
-  // "interaction:<id>:<channelId>", the first payload edits the deferred
-  // reply on the original interaction (so the slash-command's "thinking..."
-  // state resolves cleanly). Overflow payloads spill into the channel; the
-  // overflow channel must resolve, otherwise the agent's reply would be
-  // silently truncated.
+  // "interaction:<id>:<channelId>", route through the interaction object
+  // so ephemeral / private scope is preserved. Slash commands edit their
+  // deferred reply (cleanly resolving the "thinking..." state); buttons
+  // followUp() with a NEW message (so the source message containing the
+  // button is left intact and ephemeral component interactions stay
+  // user-scoped instead of leaking into the channel).
+  // Overflow payloads also use followUp() so they share the same
+  // visibility scope as the first reply.
   const interactionId = parseInteractionIdFromThreadId(message.threadId);
   if (interactionId !== undefined) {
     const entry = pendingInteractions.get(interactionId);
     if (entry !== undefined && entry.expiresAt > Date.now() && payloads.length > 0) {
       pendingInteractions.delete(interactionId);
       const first = payloads[0];
-      if (first !== undefined) await entry.interaction.editReply(first);
-      if (payloads.length > 1) {
-        const channelIdFallback = parseChannelIdFromThreadId(message.threadId);
-        const channel = await resolveChannel(client, channelIdFallback);
-        if (channel === null) {
+      const followUp = entry.interaction.followUp;
+      if (entry.kind === "button") {
+        if (typeof followUp !== "function") {
           throw new Error(
-            `[channel-discord] interaction overflow channel not found for "${message.threadId}" — refusing to silently drop ${payloads.length - 1} payload(s)`,
+            `[channel-discord] button interaction "${interactionId}" missing followUp() — cannot reply without leaking out of ephemeral scope`,
           );
         }
-        for (let i = 1; i < payloads.length; i++) {
-          const p = payloads[i];
-          if (p !== undefined) await channel.send(p);
+        for (const p of payloads) {
+          await followUp.call(entry.interaction, p);
+        }
+        return;
+      }
+      // slash
+      if (first !== undefined) await entry.interaction.editReply(first);
+      if (payloads.length > 1) {
+        if (typeof followUp === "function") {
+          for (let i = 1; i < payloads.length; i++) {
+            const p = payloads[i];
+            if (p !== undefined) await followUp.call(entry.interaction, p);
+          }
+        } else {
+          const channelIdFallback = parseChannelIdFromThreadId(message.threadId);
+          const channel = await resolveChannel(client, channelIdFallback);
+          if (channel === null) {
+            throw new Error(
+              `[channel-discord] interaction overflow channel not found for "${message.threadId}" — refusing to silently drop ${payloads.length - 1} payload(s)`,
+            );
+          }
+          for (let i = 1; i < payloads.length; i++) {
+            const p = payloads[i];
+            if (p !== undefined) await channel.send(p);
+          }
         }
       }
       return;
@@ -355,9 +385,7 @@ function isInteractionResponseLike(
 }
 
 /** Removes entries whose interaction tokens have expired (15 min). */
-function sweepExpiredInteractions(
-  map: Map<string, { readonly interaction: InteractionResponseLike; readonly expiresAt: number }>,
-): void {
+function sweepExpiredInteractions(map: Map<string, PendingInteraction>): void {
   const now = Date.now();
   for (const [id, entry] of map) {
     if (entry.expiresAt <= now) map.delete(id);
@@ -597,11 +625,23 @@ interface DiscordRestModule {
 
 async function instantiateClient(intents: readonly DiscordIntent[]): Promise<DiscordClientLike> {
   const mod = (await import("discord.js")) as unknown as {
-    readonly Client: new (opts: { readonly intents: readonly number[] }) => DiscordClientLike;
+    readonly Client: new (opts: {
+      readonly intents: readonly number[];
+      readonly partials?: readonly number[];
+    }) => DiscordClientLike;
     readonly GatewayIntentBits: Record<DiscordIntent, number>;
+    readonly Partials: { readonly Channel: number; readonly Message: number };
   };
   const bits = intents.map((name) => mod.GatewayIntentBits[name]);
-  return new mod.Client({ intents: bits });
+  // discord.js delivers DM `messageCreate` events through *partial* Channel
+  // structures (and partial Message structures for old DMs). Without
+  // Partials.Channel + Partials.Message enabled, the very DM events the
+  // adapter advertises support for never reach the listener.
+  const partials =
+    intents.includes("DirectMessages") && mod.Partials !== undefined
+      ? [mod.Partials.Channel, mod.Partials.Message]
+      : undefined;
+  return new mod.Client(partials !== undefined ? { intents: bits, partials } : { intents: bits });
 }
 
 async function loadDiscordRest(): Promise<DiscordRestModule> {

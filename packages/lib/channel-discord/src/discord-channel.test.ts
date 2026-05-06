@@ -339,11 +339,12 @@ describe("createDiscordChannel — interaction reply path", () => {
     await adapter.disconnect();
   });
 
-  test("button replies do NOT use editReply (would clobber the source message)", async () => {
+  test("button replies route through followUp (preserves ephemeral scope, leaves source intact)", async () => {
     const f = fakeClient();
     const adapter = createDiscordChannel({ token: "T", client: f.client });
     await adapter.connect();
     const edits: DiscordSendPayload[] = [];
+    const follows: DiscordSendPayload[] = [];
     f.emit("interactionCreate", {
       id: "btn-i1",
       isChatInputCommand: () => false,
@@ -358,17 +359,52 @@ describe("createDiscordChannel — interaction reply path", () => {
         edits.push(p);
         return undefined;
       },
+      followUp: async (p: DiscordSendPayload) => {
+        follows.push(p);
+        return undefined;
+      },
     });
     await new Promise((r) => setTimeout(r, 5));
     await adapter.send({
       content: [{ kind: "text", text: "thanks!" }],
       threadId: "interaction:btn-i1:C1",
     });
-    // editReply MUST NOT have been called — it would mutate the original
-    // message that contained the button.
+    // editReply MUST NOT be called — it would clobber the source message.
     expect(edits).toHaveLength(0);
-    expect(f.sent).toHaveLength(1);
-    expect(f.sent[0]?.payload.content).toBe("thanks!");
+    // followUp MUST be called so the response stays in the same scope as
+    // the original interaction (ephemeral or public).
+    expect(follows).toHaveLength(1);
+    expect(follows[0]?.content).toBe("thanks!");
+    // No channel.send fallback either — that would leak ephemeral replies
+    // into the public channel.
+    expect(f.sent).toHaveLength(0);
+    await adapter.disconnect();
+  });
+
+  test("button without followUp throws rather than leaking via channel.send", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    await adapter.connect();
+    f.emit("interactionCreate", {
+      id: "btn-no-fu",
+      isChatInputCommand: () => false,
+      isButton: () => true,
+      customId: "ok",
+      user: { id: "U1" },
+      channelId: "C1",
+      guildId: "G1",
+      createdTimestamp: 1,
+      deferUpdate: async () => undefined,
+      editReply: async () => undefined,
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    await expect(
+      adapter.send({
+        content: [{ kind: "text", text: "x" }],
+        threadId: "interaction:btn-no-fu:C1",
+      }),
+    ).rejects.toThrow(/missing followUp/);
+    expect(f.sent).toHaveLength(0);
     await adapter.disconnect();
   });
 
