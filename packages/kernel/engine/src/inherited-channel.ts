@@ -101,10 +101,15 @@ export function createInheritedChannel(
   for (const methodName of PARENT_EXTENSION_METHODS) {
     const original = (parentChannel as unknown as Record<string, unknown>)[methodName];
     if (typeof original === "function") {
-      const fn = original as (message: OutboundMessage) => Promise<void>;
-      child[methodName] = (message: OutboundMessage): Promise<void> => {
+      // Round-42 high: forward the full extension signature, not just the
+      // first arg. `MobileChannelAdapter.sendUnsolicited(message, {recipient})`
+      // uses the second argument to safely route mismatched-live or offline
+      // sends through pushNotifier — dropping it silently breaks explicit
+      // recipient targeting through composed/proxied paths.
+      const fn = original as (message: OutboundMessage, ...rest: unknown[]) => Promise<void>;
+      child[methodName] = (message: OutboundMessage, ...rest: unknown[]): Promise<void> => {
         if (resolved.mode === "none") return Promise.resolve();
-        return fn.call(parentChannel, attributeMessage(message));
+        return fn.call(parentChannel, attributeMessage(message), ...rest);
       };
     }
   }

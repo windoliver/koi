@@ -256,6 +256,42 @@ describe("createInheritedChannel", () => {
     expect(captured[0]?.metadata?.["senderName"]).toBe("child");
   });
 
+  test("forwards sendUnsolicited's optional opts (e.g. {recipient}) to parent (round-42 high)", async () => {
+    // Round-42 high: prior proxy forwarded sendUnsolicited as
+    // (message) => Promise<void>, silently dropping the {recipient} opt
+    // mobile adapters use to safely route offline / mismatched-live sends.
+    const seenOpts: Array<unknown> = [];
+    const parent: ChannelAdapter & {
+      sendUnsolicited: (m: OutboundMessage, opts?: unknown) => Promise<void>;
+    } = {
+      name: "mobile-parent",
+      capabilities: CAPABILITIES,
+      connect: () => Promise.resolve(),
+      disconnect: () => Promise.resolve(),
+      send: () => Promise.resolve(),
+      onMessage: () => () => {},
+      sendUnsolicited: (_m: OutboundMessage, opts?: unknown) => {
+        seenOpts.push(opts);
+        return Promise.resolve();
+      },
+    };
+    const childPid: ProcessId = {
+      id: agentId("child-id"),
+      name: "child",
+      type: "worker",
+      depth: 1,
+      parent: agentId("parent-1"),
+    };
+    const proxy = createInheritedChannel(parent, childPid) as ChannelAdapter & {
+      sendUnsolicited?: (m: OutboundMessage, opts?: unknown) => Promise<void>;
+    };
+    await proxy.sendUnsolicited?.(
+      { content: [{ kind: "text", text: "welcome" }] },
+      { recipient: "device-alice" },
+    );
+    expect(seenOpts).toEqual([{ recipient: "device-alice" }]);
+  });
+
   test("does not synthesize sendUnsolicited when parent does not provide it (round-40 medium)", async () => {
     // Only forward extensions the parent actually provides — never invent
     // a method that would silently no-op.

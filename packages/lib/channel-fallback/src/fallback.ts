@@ -83,9 +83,14 @@ export function wrapWithFallback<T extends ChannelAdapter>(
       if (typeof prop === "string" && OUTBOUND_EXTENSION_METHODS.has(prop)) {
         const original = Reflect.get(target, prop, receiver);
         if (typeof original === "function") {
-          const fn = original as (message: OutboundMessage) => Promise<void>;
-          return (message: OutboundMessage): Promise<void> =>
-            fn.call(target, downgradeMessage(message));
+          // Round-42 high: forward extension's full signature, not just the
+          // first arg. `MobileChannelAdapter.sendUnsolicited(message, opts)`
+          // uses `opts.recipient` to safely route mismatched-live or offline
+          // sends through pushNotifier — silently dropping `opts` would break
+          // explicit recipient targeting through the fallback wrapper.
+          const fn = original as (message: OutboundMessage, ...rest: unknown[]) => Promise<void>;
+          return (message: OutboundMessage, ...rest: unknown[]): Promise<void> =>
+            fn.call(target, downgradeMessage(message), ...rest);
         }
       }
       const value = Reflect.get(target, prop, receiver);

@@ -185,6 +185,35 @@ describe("wrapWithFallback", () => {
     expect((out[2] as TextBlock).text).toBe("hello");
   });
 
+  test("forwards sendUnsolicited's optional opts (e.g. {recipient}) to inner (round-42 high)", async () => {
+    // Round-42 high: prior proxy treated extension methods as
+    // (message) => Promise<void> and silently dropped subsequent args.
+    // MobileChannelAdapter.sendUnsolicited(message, {recipient}) uses the
+    // second arg to safely route mismatched-live / offline sends through
+    // pushNotifier — dropping it would break explicit recipient targeting.
+    const seenOpts: Array<unknown> = [];
+    interface ExtendedAdapter extends ChannelAdapter {
+      readonly sendUnsolicited: (m: OutboundMessage, opts?: unknown) => Promise<void>;
+    }
+    const inner: ExtendedAdapter = {
+      name: "extended",
+      capabilities: TEXT_ONLY,
+      connect: async () => {},
+      disconnect: async () => {},
+      send: async () => {},
+      onMessage: () => () => {},
+      sendUnsolicited: async (_m, opts) => {
+        seenOpts.push(opts);
+      },
+    };
+    const wrapped = wrapWithFallback(inner);
+    await wrapped.sendUnsolicited(
+      { content: [{ kind: "text", text: "hi" }] },
+      { recipient: "device-alice" },
+    );
+    expect(seenOpts).toEqual([{ recipient: "device-alice" }]);
+  });
+
   test("preserves prototype methods on class-backed adapters (round-39 regression)", async () => {
     // Round-39 medium: prior implementation used object spread which only
     // copies enumerable own properties. A class-backed ChannelAdapter whose
