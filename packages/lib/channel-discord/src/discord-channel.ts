@@ -84,6 +84,16 @@ export interface DiscordChannelConfig {
    * users by Discord's API contract.
    */
   readonly allowBots?: boolean;
+  /**
+   * Controls slash-command reply visibility. Discord requires the
+   * adapter to call `deferReply()` within 3 seconds of an interaction
+   * arriving, BEFORE the agent decides what to say — so visibility must
+   * be chosen at ack time. `true` defers every slash command as
+   * ephemeral (only the invoking user sees the reply); `false` (default)
+   * defers as a public reply. A function lets callers route by command
+   * name (e.g. `whoami`/diagnostics ephemeral, public commands public).
+   */
+  readonly slashCommandEphemeral?: boolean | ((commandName: string) => boolean);
 }
 
 export interface DiscordChannelAdapter extends ChannelAdapter {
@@ -192,7 +202,7 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
     // Eagerly acknowledge the interaction so the Discord client does not
     // show "This interaction failed" while the agent works. Fire-and-forget;
     // ack errors are non-fatal (e.g., already-acked).
-    ackInteraction(raw);
+    ackInteraction(raw, config.slashCommandEphemeral);
     // Sweep expired entries every time a new interaction arrives. This
     // bounds memory under traffic for slash commands the agent never
     // replies to (handler dropped the event, decided not to answer,
@@ -566,14 +576,31 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  * Calls deferReply() on slash commands and deferUpdate() on button presses so
  * the user does not see "This interaction failed" while the agent decides what
  * to send. The actual response still goes through the channel `send()` path.
+ *
+ * Slash-command visibility (public vs ephemeral) is locked in at defer time
+ * — Discord does not let callers downgrade an interaction from public to
+ * ephemeral once the deferred reply has been claimed. The `ephemeralPolicy`
+ * arg is consulted here so trust-sensitive commands can be deferred
+ * privately.
  */
-function ackInteraction(raw: unknown): void {
+function ackInteraction(
+  raw: unknown,
+  ephemeralPolicy: boolean | ((commandName: string) => boolean) | undefined,
+): void {
   if (!isPlainObject(raw)) return;
   if (typeof raw.isChatInputCommand === "function" && raw.isChatInputCommand() === true) {
     const fn = raw.deferReply;
     if (typeof fn === "function") {
+      const commandName = typeof raw.commandName === "string" ? raw.commandName : "";
+      const ephemeral =
+        typeof ephemeralPolicy === "function"
+          ? ephemeralPolicy(commandName)
+          : ephemeralPolicy === true;
       try {
-        void Promise.resolve(fn.call(raw)).catch(() => undefined);
+        const arg = ephemeral ? { ephemeral: true } : undefined;
+        void Promise.resolve(arg === undefined ? fn.call(raw) : fn.call(raw, arg)).catch(
+          () => undefined,
+        );
       } catch {
         // sync throw from defer*() — swallow; the agent response can still go through
       }

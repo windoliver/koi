@@ -616,6 +616,71 @@ describe("createDiscordChannel — interaction ack", () => {
     await adapter.disconnect();
   });
 
+  test("slashCommandEphemeral: true defers slash commands as ephemeral", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({
+      token: "T",
+      client: f.client,
+      slashCommandEphemeral: true,
+    });
+    await adapter.connect();
+    const deferArgs: unknown[] = [];
+    f.emit("interactionCreate", {
+      id: "i-eph",
+      isChatInputCommand: () => true,
+      isButton: () => false,
+      commandName: "diag",
+      options: { data: [] },
+      user: { id: "U1" },
+      channelId: "C1",
+      guildId: "G1",
+      createdTimestamp: 1,
+      deferReply: async (opts?: unknown) => {
+        deferArgs.push(opts);
+        return undefined;
+      },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(deferArgs).toEqual([{ ephemeral: true }]);
+    await adapter.disconnect();
+  });
+
+  test("slashCommandEphemeral: function gates by commandName", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({
+      token: "T",
+      client: f.client,
+      slashCommandEphemeral: (name) => name === "whoami",
+    });
+    await adapter.connect();
+    const deferArgs: unknown[] = [];
+    const emit = (cmd: string, id: string): void => {
+      f.emit("interactionCreate", {
+        id,
+        isChatInputCommand: () => true,
+        isButton: () => false,
+        commandName: cmd,
+        options: { data: [] },
+        user: { id: "U1" },
+        channelId: "C1",
+        guildId: "G1",
+        createdTimestamp: 1,
+        deferReply: async (opts?: unknown) => {
+          deferArgs.push({ cmd, opts });
+          return undefined;
+        },
+      });
+    };
+    emit("whoami", "i1");
+    emit("hello", "i2");
+    await new Promise((r) => setTimeout(r, 5));
+    expect(deferArgs).toEqual([
+      { cmd: "whoami", opts: { ephemeral: true } },
+      { cmd: "hello", opts: undefined },
+    ]);
+    await adapter.disconnect();
+  });
+
   test("button press triggers deferUpdate on the raw interaction", async () => {
     const f = fakeClient();
     const adapter = createDiscordChannel({ token: "T", client: f.client });
