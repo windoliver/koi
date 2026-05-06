@@ -17248,3 +17248,189 @@ describe("Golden: @koi/forge-policy", () => {
     expect(first.entry.configFingerprint).toBe(second.entry.configFingerprint);
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/channel-email (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/channel-email", () => {
+  test("createEmailChannel constructs an EmailChannelAdapter with required methods", async () => {
+    const { createEmailChannel, validateEmailConfig } = await import("@koi/channel-email");
+    const {
+      InMemoryIdempotencyStore,
+      InMemoryIngressQueue,
+      InMemoryOutboxStore,
+      InMemoryThreadStore,
+    } = await import("@koi/channel-base");
+
+    const cfg = validateEmailConfig({
+      imap: { host: "imap.test", port: 993, user: "u", pass: "p" },
+      smtp: {
+        host: "smtp.test",
+        port: 587,
+        user: "u",
+        pass: "p",
+        from: "agent@test.local",
+      },
+    });
+    if (!cfg.ok) throw new Error("config should validate");
+
+    const channel = createEmailChannel(cfg.value, {
+      imap: {
+        async open(): Promise<void> {},
+        async close(): Promise<void> {},
+        onNewMessage: () => () => {},
+      },
+      smtp: {
+        async sendMail() {
+          return { accepted: [], rejected: [], response: "250 OK" };
+        },
+      },
+      parser: {
+        async parse() {
+          return {};
+        },
+      },
+      threadStore: new InMemoryThreadStore(),
+      outboxStore: new InMemoryOutboxStore(),
+      idempotencyStore: new InMemoryIdempotencyStore(),
+      ingressQueue: new InMemoryIngressQueue(),
+    });
+
+    expect(channel.name).toBe("email");
+    expect(channel.capabilities.text).toBe(true);
+    expect(channel.capabilities.threads).toBe(true);
+    expect(typeof channel.connect).toBe("function");
+    expect(typeof channel.disconnect).toBe("function");
+    expect(typeof channel.send).toBe("function");
+    expect(typeof channel.onMessage).toBe("function");
+    expect(typeof channel.getPendingSends).toBe("function");
+    expect(typeof channel.resolvePending).toBe("function");
+  });
+
+  test("validateEmailConfig rejects missing imap host and invalid from address", async () => {
+    const { validateEmailConfig } = await import("@koi/channel-email");
+
+    const missingHost = validateEmailConfig({
+      imap: { host: "", port: 993, user: "u", pass: "p" },
+      smtp: { host: "h", port: 587, user: "u", pass: "p", from: "agent@test.local" },
+    });
+    expect(missingHost.ok).toBe(false);
+
+    const badFrom = validateEmailConfig({
+      imap: { host: "h", port: 993, user: "u", pass: "p" },
+      smtp: { host: "h", port: 587, user: "u", pass: "p", from: "not-an-email" },
+    });
+    expect(badFrom.ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/channel-teams (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/channel-teams", () => {
+  test("createTeamsChannel exposes Teams capabilities and HTTP handler", async () => {
+    const { createTeamsChannel, validateTeamsConfig } = await import("@koi/channel-teams");
+    const { InMemoryIdempotencyStore, InMemoryIngressQueue, InMemoryConversationAddressStore } =
+      await import("@koi/channel-base");
+
+    const cfg = validateTeamsConfig({
+      appId: "00000000-0000-0000-0000-000000000000",
+      appPassword: "secret",
+      tenantAllowlist: ["tenant-1"],
+      serviceUrlAllowlist: [
+        { scheme: "https", host: "smba.trafficmanager.net", hostMatch: "subdomain" },
+      ],
+    });
+    if (!cfg.ok) throw new Error("config should validate");
+
+    const fakeFetch = async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ): Promise<Response> => new Response("{}", { status: 200 });
+    const channel = createTeamsChannel(cfg.value, {
+      tokenVerifier: {
+        async verify() {
+          return {
+            ok: true,
+            claims: { aud: "x", tid: "tenant-1", iss: "x", exp: 0, nbf: 0 },
+          };
+        },
+        async appToken() {
+          return "tok";
+        },
+      },
+      fetch: fakeFetch,
+      idempotencyStore: new InMemoryIdempotencyStore(),
+      conversationAddressStore: new InMemoryConversationAddressStore(),
+      ingressQueue: new InMemoryIngressQueue(),
+    });
+
+    expect(channel.name).toBe("teams");
+    expect(channel.capabilities.text).toBe(true);
+    expect(channel.capabilities.buttons).toBe(true);
+    expect(typeof channel.handleHttpRequest).toBe("function");
+    expect(typeof channel.connect).toBe("function");
+  });
+
+  test("matchServiceUrl enforces dot-boundary subdomain match and https scheme", async () => {
+    const { matchServiceUrl } = await import("@koi/channel-teams");
+    const allowlist = [
+      { scheme: "https" as const, host: "example.com", hostMatch: "subdomain" as const },
+    ];
+    expect(matchServiceUrl("https://example.com/x", allowlist)).toBe(true);
+    expect(matchServiceUrl("https://a.example.com/x", allowlist)).toBe(true);
+    expect(matchServiceUrl("https://evilexample.com/x", allowlist)).toBe(false);
+    expect(matchServiceUrl("http://example.com/x", allowlist)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/channel-whatsapp (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/channel-whatsapp", () => {
+  test("createWhatsAppChannel exposes WhatsApp capabilities and webhook handler", async () => {
+    const { createWhatsAppChannel, validateWhatsAppConfig } = await import("@koi/channel-whatsapp");
+    const { InMemoryIdempotencyStore, InMemoryIngressQueue } = await import("@koi/channel-base");
+
+    const cfg = validateWhatsAppConfig({
+      phoneNumberId: "123",
+      accessToken: "tok",
+      verifyToken: "v",
+      appSecret: "s",
+    });
+    if (!cfg.ok) throw new Error("config should validate");
+
+    const fakeFetch = async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ): Promise<Response> => new Response("{}", { status: 200 });
+    const channel = createWhatsAppChannel(cfg.value, {
+      fetch: fakeFetch,
+      idempotencyStore: new InMemoryIdempotencyStore(),
+      ingressQueue: new InMemoryIngressQueue(),
+    });
+
+    expect(channel.name).toBe("whatsapp");
+    expect(channel.capabilities.text).toBe(true);
+    expect(typeof channel.handleHttpRequest).toBe("function");
+    expect(typeof channel.send).toBe("function");
+  });
+
+  test("verifyMetaSignature accepts valid HMAC and rejects mutated body", async () => {
+    const { verifyMetaSignature } = await import("@koi/channel-whatsapp");
+    const secret = "supersecret";
+    const body = '{"x":1}';
+    const hasher = new Bun.CryptoHasher("sha256", secret);
+    hasher.update(body);
+    const sig = `sha256=${hasher.digest("hex")}`;
+
+    expect(verifyMetaSignature({ rawBody: body, header: sig, appSecret: secret }).ok).toBe(true);
+    expect(verifyMetaSignature({ rawBody: `${body}x`, header: sig, appSecret: secret }).ok).toBe(
+      false,
+    );
+    expect(verifyMetaSignature({ rawBody: body, header: null, appSecret: secret }).ok).toBe(false);
+  });
+});

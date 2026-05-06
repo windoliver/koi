@@ -22,6 +22,7 @@
     { "path": "../../lib/harness" },
     { "path": "../../kernel/engine" },
     { "path": "../../kernel/engine-compose" },
+    { "path": "../../lib/channel-base" },
     { "path": "../../lib/channel-cli" },
     { "path": "../../lib/channel-discord" },
     { "path": "../../lib/channel-email" },
