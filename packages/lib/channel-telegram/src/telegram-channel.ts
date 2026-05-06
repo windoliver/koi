@@ -191,6 +191,22 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
   // rather than mask it by dropping inbound traffic.
   // let requires justification: drained when updateHandler is installed.
   let pending: TelegramUpdateLike[] = [];
+  // grammY has no middleware-unsubscribe API (`bot.use` runs for the
+  // life of the bot). When a caller injects a long-lived bot via
+  // config.bot, naive per-connect registration would stack a fresh
+  // dispatcher every reconnect; once a single update is delivered it
+  // would fan out through every stale registration and trigger
+  // duplicate agent turns. We install our dispatcher exactly ONCE per
+  // bot instance and gate dispatch on the adapter's `connected` flag
+  // so it lies dormant between connect cycles and resumes when the
+  // adapter is reconnected.
+  const wiredBots: WeakSet<TelegramBotLike> = new WeakSet();
+  // True only when this adapter created the bot itself. Injected
+  // (caller-owned) bots survive disconnect so the next connect can
+  // reuse the same wired middleware registration.
+  // let requires justification: flipped at platformConnect when we
+  // instantiate; remains false for injected bots throughout.
+  let botOwnedByAdapter = false;
 
   const deliver = (update: TelegramUpdateLike): void => {
     if (updateHandler !== undefined) {
@@ -245,19 +261,23 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
     platformConnect: async (): Promise<void> => {
       if (bot === undefined) {
         bot = await instantiateBot(config.token);
+        botOwnedByAdapter = true;
       }
       // Connect-time handshake: validate the bot token by calling getMe.
       await bot.api.getMe();
-      connected = true;
       if (deployment.mode === "polling") {
         const b = bot;
-        // Register the dispatcher middleware BEFORE start() — grammY drains
-        // the polling loop through registered middleware. `deliver` buffers
-        // updates that arrive before onPlatformEvent installs updateHandler.
-        b.use(async (ctx, next): Promise<void> => {
-          deliver(ctx.update);
-          await next();
-        });
+        // Install dispatcher middleware exactly once per bot instance.
+        // Gated by `connected` so it stays dormant between connect
+        // cycles and does not fan out duplicate updates through stale
+        // registrations on reconnect with an injected bot.
+        if (!wiredBots.has(b)) {
+          wiredBots.add(b);
+          b.use(async (ctx, next): Promise<void> => {
+            if (connected) deliver(ctx.update);
+            await next();
+          });
+        }
         // grammY's bot.start() is the long-poll loop and only resolves on
         // stop(). Race it against a short startup window so connect() fails
         // fast when polling startup itself rejects (e.g. another instance
@@ -275,13 +295,23 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
         ]);
         if (typeof result === "object") {
           // Polling rejected immediately. Tear back down so we don't leak
-          // a half-initialized bot into the rest of the lifecycle.
+          // a half-initialized bot into the rest of the lifecycle. Clear
+          // any updates the dispatcher buffered during the racing
+          // start() — connect() never completed, so there is no
+          // legitimate consumer for them.
           bot = undefined;
+          pending = [];
           throw new Error(
             `[channel-telegram] bot.start() rejected during connect: ${String(result.rejected)}`,
             { cause: result.rejected },
           );
         }
+        // Polling startup probe survived — flip the gate ON only now.
+        // Setting `connected` earlier would have allowed handleUpdate /
+        // handleWebhook to accept traffic during a connect that may
+        // still reject in the startup window, leaving silently buffered
+        // updates that survive into a later reconnect.
+        connected = true;
         // Polling is alive. Continue draining `start()` in the background.
         // A late rejection (network drop, auth revocation, server kicked
         // us off) is channel-fatal: revoke the adapter's connected state
@@ -302,6 +332,9 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
             );
           });
         });
+      } else {
+        // Webhook mode has no startup probe — flip the gate immediately.
+        connected = true;
       }
     },
 
@@ -313,7 +346,14 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
       }
       updateHandler = undefined;
       pending = [];
-      bot = undefined;
+      // Only release adapter-owned bots. Injected (caller-owned) bots
+      // stay alive across disconnect so a later connect() can reuse
+      // the same instance — the dispatcher middleware is already
+      // wired (see wiredBots) and gated by `connected`.
+      if (botOwnedByAdapter) {
+        bot = undefined;
+        botOwnedByAdapter = false;
+      }
     },
 
     platformSend: async (message: OutboundMessage): Promise<void> => {
