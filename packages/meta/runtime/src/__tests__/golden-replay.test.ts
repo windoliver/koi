@@ -2953,6 +2953,139 @@ describe("Golden: @koi/channel-slack", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/channel-discord (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/channel-discord", () => {
+  test("createDiscordChannel exposes Discord capabilities (text+images+files+buttons+threads)", async () => {
+    const { createDiscordChannel } = await import("@koi/channel-discord");
+    type DiscordCfg = Parameters<typeof createDiscordChannel>[0];
+    const cfg = {
+      token: "test-token",
+      // Inject a stub client so construction does not require real discord.js
+      // gateway connectivity.
+      client: {
+        once: () => undefined,
+        on: () => undefined,
+        off: () => undefined,
+        login: async () => "ok",
+        destroy: async () => undefined,
+        application: { commands: { set: async () => [] } },
+        rest: { setToken: () => undefined },
+        user: null,
+      },
+    } as unknown as DiscordCfg;
+    const channel = createDiscordChannel(cfg);
+    expect(channel.name).toBe("discord");
+    expect(channel.capabilities.text).toBe(true);
+    expect(channel.capabilities.images).toBe(true);
+    expect(channel.capabilities.files).toBe(true);
+    expect(channel.capabilities.buttons).toBe(true);
+    expect(channel.capabilities.threads).toBe(true);
+  });
+
+  test("splitText preserves Discord 2000-char ceiling and splits on natural boundaries", async () => {
+    const { splitText } = await import("@koi/channel-discord");
+    const big = "x".repeat(4500);
+    const chunks = splitText(big, 2000);
+    expect(chunks.length).toBeGreaterThanOrEqual(3);
+    for (const c of chunks) {
+      expect(c.length).toBeLessThanOrEqual(2000);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/channel-telegram (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/channel-telegram", () => {
+  test("createTelegramChannel exposes Telegram capabilities and webhook secret enforcement", async () => {
+    const { createTelegramChannel } = await import("@koi/channel-telegram");
+    const stubBot = {
+      api: {
+        sendMessage: async () => undefined,
+        sendPhoto: async () => undefined,
+        sendDocument: async () => undefined,
+        getFile: async () => ({ file_path: "x" }),
+        answerCallbackQuery: async () => undefined,
+        getMe: async () => ({ id: 1, username: "bot" }),
+      },
+      use: () => undefined,
+      start: async () => undefined,
+      stop: async () => undefined,
+    };
+    const channel = createTelegramChannel({ token: "T", bot: stubBot });
+    expect(channel.name).toBe("telegram");
+    expect(channel.capabilities.text).toBe(true);
+    expect(channel.capabilities.images).toBe(true);
+    expect(channel.capabilities.files).toBe(true);
+    expect(channel.capabilities.buttons).toBe(true);
+    // Webhook mode without secret must fail closed at construction.
+    expect(() =>
+      createTelegramChannel({ token: "T", bot: stubBot, deployment: { mode: "webhook" } }),
+    ).toThrow(/webhookSecret/);
+  });
+
+  test("createTelegramChannel webhook mode requires atomic claimWebhookUpdate (no racy dedupe)", async () => {
+    const { createTelegramChannel } = await import("@koi/channel-telegram");
+    const stubBot = {
+      api: {
+        sendMessage: async () => undefined,
+        sendPhoto: async () => undefined,
+        sendDocument: async () => undefined,
+        getFile: async () => ({ file_path: "x" }),
+        answerCallbackQuery: async () => undefined,
+        getMe: async () => ({ id: 1, username: "bot" }),
+      },
+      use: () => undefined,
+      start: async () => undefined,
+      stop: async () => undefined,
+    };
+    expect(() =>
+      createTelegramChannel({
+        token: "T",
+        bot: stubBot,
+        deployment: { mode: "webhook" },
+        webhookSecret: "s",
+        // claimWebhookUpdate intentionally omitted
+      }),
+    ).toThrow(/claimWebhookUpdate/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/channel-signal (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/channel-signal", () => {
+  test("createSignalChannel exposes Signal capabilities and rejects non-E.164 accounts", async () => {
+    const { createSignalChannel } = await import("@koi/channel-signal");
+    const channel = createSignalChannel({
+      account: "+15551234567",
+      spawn: () => ({}) as never,
+    });
+    expect(channel.name).toBe("signal");
+    expect(channel.capabilities.text).toBe(true);
+    expect(channel.capabilities.threads).toBe(true);
+    expect(channel.capabilities.images).toBe(false);
+    // Construction-time E.164 enforcement.
+    expect(() =>
+      createSignalChannel({ account: "not-a-number", spawn: () => ({}) as never }),
+    ).toThrow(/E\.164/);
+  });
+
+  test("isE164 accepts valid international numbers and rejects malformed input", async () => {
+    const { isE164 } = await import("@koi/channel-signal");
+    expect(isE164("+15551234567")).toBe(true);
+    expect(isE164("+447911123456")).toBe(true);
+    expect(isE164("15551234567")).toBe(false); // missing +
+    expect(isE164("+0123")).toBe(false); // leading 0 after +
+    expect(isE164("not-a-number")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/tools-web (2 queries)
 // ---------------------------------------------------------------------------
 
@@ -13791,7 +13924,7 @@ describe("Golden: @koi/workspace", () => {
       execSync("git init --initial-branch=main", { cwd: tmp, stdio: "ignore" });
       execSync('git config user.email "test@koi.dev"', { cwd: tmp, stdio: "ignore" });
       execSync('git config user.name "Koi Test"', { cwd: tmp, stdio: "ignore" });
-      execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "ignore" });
+      execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "pipe" });
 
       const worktreeBase = realpathSync(
         mkdtempSync(join(tmpdir(), `koi-golden-wt-${Date.now()}-`)),
@@ -13827,7 +13960,7 @@ describe("Golden: @koi/workspace", () => {
       execSync("git init --initial-branch=main", { cwd: tmp, stdio: "ignore" });
       execSync('git config user.email "test@koi.dev"', { cwd: tmp, stdio: "ignore" });
       execSync('git config user.name "Koi Test"', { cwd: tmp, stdio: "ignore" });
-      execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "ignore" });
+      execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "pipe" });
 
       const backend = createGitWorktreeBackend({ repoPath: tmp, worktreeBasePath: worktreeBase });
       const aid = agentId("golden-agent");
