@@ -46,10 +46,22 @@ import type {
 export interface VoiceTransport {
   readonly connect: () => Promise<void>;
   readonly disconnect: () => Promise<void>;
+  /**
+   * Send an utterance. The optional `signal` aborts when the channel
+   * has given up on this send (timeout). Implementations SHOULD honor
+   * it — stop emitting frames, free transport resources, and reject
+   * with `signal.reason` (or any value) so the channel can fence the
+   * call cleanly. Implementations that do NOT honor the signal MAY
+   * still complete after the abort; in that case the channel cannot
+   * guarantee the audio stays out of a later session, so the host
+   * MUST treat the underlying transport as unrecoverable for the
+   * affected `sessionId`.
+   */
   readonly sendUtterance: (
     sessionId: string,
     utteranceId: string,
     frames: readonly Uint8Array[],
+    signal?: AbortSignal,
   ) => Promise<void>;
   readonly onUtterance: (handler: (sessionId: string, utterance: Uint8Array) => void) => () => void;
 }
@@ -59,9 +71,15 @@ export interface Stt {
   readonly transcribe: (audio: Uint8Array) => Promise<string | null>;
 }
 
-/** Text-to-speech. Returns the encoded audio buffer to hand to the transport. */
+/**
+ * Text-to-speech. Returns the encoded audio buffer to hand to the transport.
+ * `signal` aborts when the channel has timed out the synthesis attempt.
+ * Implementations SHOULD honor it to free provider resources and reject
+ * promptly; non-cooperative impls leak compute but not audio (the
+ * transport never sees the result of an aborted synthesize call).
+ */
 export interface Tts {
-  readonly synthesize: (text: string) => Promise<Uint8Array>;
+  readonly synthesize: (text: string, signal?: AbortSignal) => Promise<Uint8Array>;
 }
 
 export interface VoiceChannelConfig {
@@ -433,20 +451,44 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     // newer audio (broken ordering) or alongside a retry (overlapping
     // playback), we mark the session poisoned so subsequent sends on
     // the same threadId fail-fast until the host disconnects.
+    // AbortController gives cooperative TTS / transport implementations
+    // a chance to free resources and reject promptly when our timeout
+    // fires. Non-cooperative impls cannot be force-cancelled — that's
+    // why we ALSO poison the session below: future sends on the same
+    // threadId fail-fast (within this connection), and disconnect does
+    // NOT clear the poison so even after a reconnect a stale call that
+    // eventually surfaces cannot be reordered with new audio on the
+    // same threadId. Full recovery requires creating a fresh adapter.
+    const ttsCtl = new AbortController();
+    const sendCtl = new AbortController();
     try {
       const frames: Uint8Array[] = [];
+      // Defer abort() to a microtask AFTER returning the timeout error so
+      // Promise.race surfaces the typed timeout error to the caller, not
+      // the cooperative impl's downstream "aborted" rejection. The
+      // underlying call still gets the abort signal — just one tick later,
+      // which is irrelevant for cleanup but critical for the caller's
+      // ability to discriminate timeout from arbitrary failure.
       for (const piece of pieces) {
         const audio = await withTimeout(
-          Promise.resolve(config.tts.synthesize(piece)),
+          Promise.resolve(config.tts.synthesize(piece, ttsCtl.signal)),
           ttsTimeoutMs,
-          () => new VoiceTtsTimeoutError(ttsTimeoutMs),
+          () => {
+            queueMicrotask(() => ttsCtl.abort());
+            return new VoiceTtsTimeoutError(ttsTimeoutMs);
+          },
         );
         frames.push(audio);
       }
       await withTimeout(
-        Promise.resolve(config.transport.sendUtterance(sessionId, utteranceId, frames)),
+        Promise.resolve(
+          config.transport.sendUtterance(sessionId, utteranceId, frames, sendCtl.signal),
+        ),
         transportSendTimeoutMs,
-        () => new VoiceTransportSendTimeoutError(transportSendTimeoutMs),
+        () => {
+          queueMicrotask(() => sendCtl.abort());
+          return new VoiceTransportSendTimeoutError(transportSendTimeoutMs);
+        },
       );
     } catch (e: unknown) {
       if (e instanceof VoiceTtsTimeoutError || e instanceof VoiceTransportSendTimeoutError) {
@@ -521,11 +563,14 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       // swallowed — they were already surfaced to their callers.
       const inflight = [...sessionSendChains.values()];
       sessionSendChains.clear();
-      // Disconnect is the host's recovery path; clear poison so a fresh
-      // connect() admits new sends. Stale operations from the prior
-      // connection remain abandoned (they cannot reach the new transport
-      // session because the transport has been torn down).
-      poisonedSessions.clear();
+      // Poison persists across disconnect/reconnect for the adapter's
+      // lifetime. We only saw the timeout race; we did NOT see the
+      // underlying tts.synthesize() / transport.sendUtterance() actually
+      // settle, so a non-cooperative impl could still surface audio
+      // after a reconnect onto the same sessionId. Forcing the host
+      // to construct a fresh adapter for full recovery is honest about
+      // that uncancellable-op risk. Cooperative impls that honor
+      // AbortSignal limit the leak in practice.
       await Promise.allSettled(inflight);
       await inner.disconnect();
     },

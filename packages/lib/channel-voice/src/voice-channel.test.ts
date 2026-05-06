@@ -766,16 +766,91 @@ describe("createVoiceChannel", () => {
     resolveStuck?.();
     await new Promise((r) => setTimeout(r, 20));
     expect(sentOrder).toEqual(["other", "stuck"]);
-    // Disconnect clears poison so a fresh connect admits new sends.
+    // Round-14: disconnect does NOT clear poison — the underlying call
+    // may still surface; admitting same-threadId sends on a reconnect
+    // would risk reorder/overlap with that stale audio. Recovery on the
+    // SAME threadId requires a fresh adapter; OR the host can keep
+    // using the same adapter by switching to a different threadId.
     await ch.disconnect();
     await ch.connect();
+    await expect(
+      ch.send({
+        threadId: "session-1",
+        content: [{ kind: "text", text: "still-poisoned" }],
+        metadata: { utteranceId: "still-poisoned" },
+      }),
+    ).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+    // Distinct threadId on the same reconnected adapter still works.
     await ch.send({
-      threadId: "session-1",
-      content: [{ kind: "text", text: "after-recovery" }],
-      metadata: { utteranceId: "after-recovery" },
+      threadId: "session-3",
+      content: [{ kind: "text", text: "fresh-thread" }],
+      metadata: { utteranceId: "fresh-thread" },
     });
-    expect(sentOrder).toContain("after-recovery");
+    expect(sentOrder).toContain("fresh-thread");
     await ch.disconnect();
+  });
+
+  test("AbortSignal is forwarded to TTS and transport on timeout (cooperative cancellation)", async () => {
+    // Round-14 high finding: withTimeout only races; underlying calls
+    // could leak after the channel reports failure. Cooperative impls
+    // get an AbortSignal and SHOULD reject promptly so the channel can
+    // fence the call. Verify the signal is plumbed and aborts on timeout.
+    let ttsSignal: AbortSignal | undefined;
+    let sendSignal: AbortSignal | undefined;
+    let ttsAborted = false;
+    let sendAborted = false;
+    const tts: Tts = {
+      synthesize: (_text, signal) => {
+        ttsSignal = signal;
+        return new Promise<Uint8Array>((_, reject) => {
+          signal?.addEventListener("abort", () => {
+            ttsAborted = true;
+            reject(new Error("aborted"));
+          });
+        });
+      },
+    };
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: (_s, _u, _f, signal) => {
+        sendSignal = signal;
+        return new Promise<void>((_, reject) => {
+          signal?.addEventListener("abort", () => {
+            sendAborted = true;
+            reject(new Error("aborted"));
+          });
+        });
+      },
+      onUtterance: () => () => {},
+    };
+    const stt: Stt = { transcribe: async () => null };
+    const ch = createVoiceChannel({ transport, stt, tts, ttsTimeoutMs: 30 });
+    await ch.connect();
+    await expect(
+      ch.send({ threadId: "tts-abort", content: [{ kind: "text", text: "hello" }] }),
+    ).rejects.toThrow(/TTS synthesize exceeded/);
+    expect(ttsSignal).toBeDefined();
+    expect(ttsAborted).toBe(true);
+    // Transport never reached because TTS aborted first.
+    expect(sendSignal).toBeUndefined();
+    await ch.disconnect();
+
+    // Now the transport-timeout path on a fresh adapter (poison persists
+    // per-adapter, so we use a new instance to test transport abort).
+    const ch2 = createVoiceChannel({
+      transport,
+      stt,
+      tts: { synthesize: async () => new Uint8Array(0) },
+      transportSendTimeoutMs: 30,
+    });
+    await ch2.connect();
+    await expect(
+      ch2.send({ threadId: "send-abort", content: [{ kind: "text", text: "hi" }] }),
+    ).rejects.toThrow(/transport.sendUtterance exceeded/);
+    expect(sendSignal).toBeDefined();
+    expect(sendAborted).toBe(true);
+    await ch2.disconnect();
   });
 
   test("does not serialize across distinct sessionIds (per-session chain only)", async () => {

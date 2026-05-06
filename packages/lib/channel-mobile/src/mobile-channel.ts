@@ -689,8 +689,24 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
           // Phase 2 begins: arm the safety timer only now, scoped to the
           // post-upgrade / pre-open() gap. Slow auth above could not have
           // released the slot.
-          const reservationTimer = setTimeout(releaseUpgrade, UPGRADE_RESERVATION_TIMEOUT_MS);
-          if (srv.upgrade(req, { data: { identity, releaseUpgrade, reservationTimer } })) {
+          // Reservation expiry MUST invalidate this specific upgrade, not
+          // just decrement the counter. Without isExpired(), a stalled
+          // open() whose timer fired could later still claim activeSocket
+          // (the timer freed the slot, a fresh client B raced in, A's
+          // delayed open() fires before B's, A binds the channel, B is
+          // rejected — stale wins, fresh loses). The flag fences A out.
+          // let requires justification: closure flag mutated by timer
+          let reservationExpired = false;
+          const reservationTimer = setTimeout(() => {
+            reservationExpired = true;
+            releaseUpgrade();
+          }, UPGRADE_RESERVATION_TIMEOUT_MS);
+          const isReservationExpired = (): boolean => reservationExpired;
+          if (
+            srv.upgrade(req, {
+              data: { identity, releaseUpgrade, reservationTimer, isReservationExpired },
+            })
+          ) {
             return undefined;
           }
           clearTimeout(reservationTimer);
@@ -704,9 +720,19 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
                 readonly identity?: string;
                 readonly releaseUpgrade?: () => void;
                 readonly reservationTimer?: ReturnType<typeof setTimeout>;
+                readonly isReservationExpired?: () => boolean;
               };
             },
           ) {
+            // Expired-reservation guard MUST run before we touch
+            // activeSocket: if our reservation already timed out, a
+            // newer client may already hold (or be about to hold) the
+            // slot, and binding this stale socket would either kick the
+            // fresh client out or admit a half-dead client.
+            if (ws.data?.isReservationExpired?.() === true) {
+              ws.close();
+              return;
+            }
             // open() owns the pendingUpgrades decrement that fetch()
             // deferred on success — the slot reservation now transitions
             // from in-flight to claimed (or, if a race somehow already
