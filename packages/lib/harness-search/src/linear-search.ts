@@ -275,6 +275,19 @@ export async function linearSearch(
       terminalDiagnostic = { kind: "eval_failed", iteration, causeClass: null };
       break;
     }
+    // Reject the other contract hole: under-threshold rate AND no
+    // failures. Refinement is gated on failures.length > 0, so this
+    // shape would have the loop record history and update Thompson
+    // posteriors while currentCode never changes — burning budget on
+    // duplicate evaluations and exiting as budget_exhausted /
+    // no_improvement / thompson_deploy when refinement was actually
+    // impossible from the first response. Surface as eval_failed so
+    // the caller can investigate the broken contract instead.
+    if (evalResult.successRate < convergenceThreshold && evalResult.failures.length === 0) {
+      stopReason = "eval_failed";
+      terminalDiagnostic = { kind: "eval_failed", iteration, causeClass: null };
+      break;
+    }
 
     const node: SearchNode = {
       id: `node-${nodeCounter++}`,

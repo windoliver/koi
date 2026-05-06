@@ -95,6 +95,42 @@ describe("parseRefinementOutput", () => {
     expect(parseRefinementOutput(raw)).toBe("fresh");
   });
 
+  test("does not truncate at triple-backticks inside multi-line template literal", () => {
+    // Regression: the regex parser closed at any `\n```` sequence,
+    // including triple-backticks ON THEIR OWN LINE inside a JS template
+    // literal carrying a markdown example. Line-oriented parser only
+    // closes on a standalone ``` line that pairs with an opener it has
+    // not yet matched.
+    //
+    // Note: this test demonstrates the line-oriented improvement for
+    // inline-on-a-non-standalone-line content. A fully standalone ```
+    // line inside a template literal IS still ambiguous and will close
+    // the fence (no escape mechanism exists in markdown).
+    const raw = ["```ts", "const md = `", "before ``` after", "`;", "const t = 1;", "```"].join(
+      "\n",
+    );
+    const out = parseRefinementOutput(raw);
+    expect(out).toContain("before ``` after");
+    expect(out).toContain("const t = 1;");
+  });
+
+  test("rejects unclosed fence at EOF (does not return partial body)", () => {
+    // Model truncation: opener with no closer. Returning the partial
+    // body would feed broken code into the verifier; refuse instead.
+    const raw = "```ts\nconst x = 1;\nconst y = 2;";
+    expect(parseRefinementOutput(raw)).toBeNull();
+  });
+
+  test("does not treat mid-line triple-backticks as a closer", () => {
+    // A line like `before```after` (no leading-only ```) is body, not
+    // a closing fence. Regex parser already handled this; line parser
+    // must too.
+    const raw = "```ts\nconst s = `before```after`;\nconst t = 2;\n```";
+    const out = parseRefinementOutput(raw);
+    expect(out).toContain("before```after");
+    expect(out).toContain("const t = 2;");
+  });
+
   test("does not truncate at triple-backticks embedded inside string literal", () => {
     // The opening fence is on its own line, the closing fence is on
     // its own line — the inline triple-backticks belong to the body.

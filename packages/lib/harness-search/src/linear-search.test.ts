@@ -484,6 +484,27 @@ describe("linearSearch", () => {
     expect(result.best).toBeNull();
   });
 
+  test("under-threshold rate AND empty failures rejected as eval_failed (no infinite same-code loop)", async () => {
+    // Regression: refine is gated on failures.length > 0. An evaluator
+    // returning rate < threshold with empty failures would leave
+    // currentCode unchanged forever — the loop would record duplicate
+    // history entries and exit as budget_exhausted / no_improvement
+    // / thompson_deploy with no actionable signal. Now surfaces as
+    // eval_failed before any history mutation.
+    let calls = 0;
+    const config = makeConfig({
+      maxIterations: 10,
+      evaluate: async () => {
+        calls += 1;
+        return { successRate: 0.5, sampleCount: 10, failures: [] };
+      },
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_failed");
+    expect(result.history.length).toBe(0);
+    expect(calls).toBe(1);
+  });
+
   test("contradictory eval (rate>=threshold + failures>0) rejected before history mutation", async () => {
     // Regression: result.best previously could point at the very node
     // whose payload was rejected as contradictory. SearchNode does not

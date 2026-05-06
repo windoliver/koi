@@ -17,21 +17,14 @@
  * (forge-verifier), invoked downstream of search.
  */
 
-// Match every fenced block in the output.
-//
-// Group 1: the language token (leading run of ASCII letters; may be
-//   empty). Standard markdown info strings allow trailing content
-//   after the language tag — e.g. ```ts title="candidate.ts" or
-//   ```typescript app.ts. Anything between the language token and the
-//   first newline is consumed but ignored, so common LLM formatting
-//   drift doesn't reject an otherwise-valid block.
-// Group 2: the body.
-//
-// The closing fence must appear at the START of a line (preceded by
-// `\n` or matching the very first newline after the body), so
-// triple-backticks embedded inside string / template literals in the
-// body don't truncate a valid candidate at the wrong place.
-const CODE_FENCE_GLOBAL = /```([a-zA-Z]*)[^\n]*\n([\s\S]*?)\n```(?:$|\n|\r)/g;
+// Line-oriented opener match: ``` followed by an ASCII-letter language
+// token (capture group 1; may be empty) plus an optional info-string
+// (filename, attrs) consumed and ignored. Must occupy the whole line —
+// triple-backticks mid-string in code don't open a fence.
+const FENCE_OPEN = /^```([a-zA-Z]*)[^\n]*$/;
+// Line-oriented closer: a line that is EXACTLY ``` (optionally trailed
+// by whitespace). A standalone ``` line on its own ends the block.
+const FENCE_CLOSE = /^```\s*$/;
 
 // Tags that count as "the canonical code block" in multi-block output.
 // Both TS and JS are accepted: refiners targeting JS-only tooling
@@ -62,11 +55,40 @@ const SOURCE_TAGS: ReadonlySet<string> = new Set(["", "typescript", "ts", "javas
  */
 export function parseRefinementOutput(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
+  // Line-oriented scan. A regex with `[\s\S]*?...\n```` will close at
+  // ANY newline-prefixed triple-backtick run, even one buried mid-line
+  // inside body content (e.g. a JS template literal carrying a markdown
+  // example). Walking lines explicitly lets us recognize a fence ONLY
+  // when it occupies a whole line — which is what markdown semantics
+  // actually require, and what most LLMs emit. Body content with inline
+  // triple-backticks (e.g. `before```after` on one line) is preserved
+  // verbatim.
+  const lines = raw.split("\n");
   const blocks: { readonly tag: string; readonly body: string }[] = [];
-  for (const match of raw.matchAll(CODE_FENCE_GLOBAL)) {
-    const tag = (match[1] ?? "").toLowerCase();
-    const body = match[2]?.trim() ?? "";
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i] ?? "";
+    const open = FENCE_OPEN.exec(line);
+    if (open === null) {
+      i += 1;
+      continue;
+    }
+    const tag = (open[1] ?? "").toLowerCase();
+    let j = i + 1;
+    while (j < lines.length && !FENCE_CLOSE.test(lines[j] ?? "")) j += 1;
+    if (j >= lines.length) {
+      // Unclosed fence at EOF — refuse to guess where the body ends.
+      // A trailing fragment without a closing line is almost always
+      // model truncation; evaluating the partial body would feed
+      // syntactically broken code into the verifier.
+      break;
+    }
+    const body = lines
+      .slice(i + 1, j)
+      .join("\n")
+      .trim();
     if (body.length > 0) blocks.push({ tag, body });
+    i = j + 1;
   }
 
   if (blocks.length === 0) return null;
