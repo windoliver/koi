@@ -106,6 +106,20 @@ const result = await linearSearch(initialCode, descriptor, {
 Every result carries the full `history` plus `converged: boolean` so
 callers can publish on success or triage on failure without re-running.
 
+`best` is `SearchNode | null`. It is `null` whenever no evaluation
+completed — e.g. the run aborted, timed out, or threw on the first
+iteration. Callers MUST handle null before treating the result as a
+verified candidate; the package deliberately does NOT synthesize a
+fallback node from the initial code, since that would be
+indistinguishable from a real evaluated winner and could lead to
+publishing unverified code after a transient failure.
+
+Convergence requires `failures.length === 0` in addition to the rate
+and sample gates. An evaluator returning a threshold-clearing
+`successRate` together with a non-empty `failures` array is treated
+as a contradictory payload and surfaces as `eval_failed`, not
+`converged`.
+
 Failure exits (`*_failed`, `*_timeout`, `aborted`) also populate
 `terminalDiagnostic: TerminalDiagnostic | null` — a redacted record
 with the failure `kind`, `iteration` index, and a static `causeClass`

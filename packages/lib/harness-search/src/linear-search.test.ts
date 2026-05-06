@@ -85,7 +85,7 @@ describe("linearSearch", () => {
     expect(result.converged).toBe(true);
     expect(result.stopReason).toBe("converged");
     expect(result.totalIterations).toBe(1);
-    expect(result.best.successRate).toBe(1.0);
+    expect(result.best?.successRate).toBe(1.0);
   });
 
   test("budget halts search when never converging", async () => {
@@ -152,7 +152,7 @@ describe("linearSearch", () => {
     expect(result.history.length).toBeGreaterThanOrEqual(3);
     const seen = result.history.map((n) => n.successRate);
     expect(seen[0]).toBeLessThan(seen[2] ?? 0);
-    expect(result.best.successRate).toBe(0.9);
+    expect(result.best?.successRate).toBe(0.9);
   });
 
   test("best result tracked across iterations even when fitness regresses", async () => {
@@ -169,7 +169,7 @@ describe("linearSearch", () => {
     });
     const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
 
-    expect(result.best.successRate).toBe(0.9);
+    expect(result.best?.successRate).toBe(0.9);
   });
 
   test("history covers every explored variant in order", async () => {
@@ -316,8 +316,8 @@ describe("linearSearch", () => {
 
     expect(result.stopReason).toBe("converged");
     expect(result.converged).toBe(true);
-    expect(result.best.evalSamples).toBe(10);
-    expect(result.best.successRate).toBe(1.0);
+    expect(result.best?.evalSamples).toBe(10);
+    expect(result.best?.successRate).toBe(1.0);
   });
 
   test("refine that throws (e.g. unparseable wire format) yields refine_failed (no silent reuse)", async () => {
@@ -457,6 +457,50 @@ describe("linearSearch", () => {
     setTimeout(() => ctrl.abort(), 20);
     const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
     expect(result.stopReason).toBe("aborted");
+  });
+
+  test("eval_failed before any history exits with best=null (no synthetic unverified candidate)", async () => {
+    // Regression: best previously fell back to a synthetic node wrapping
+    // initialCode, which a caller could mistake for an evaluated winner
+    // and publish after a transient eval_failed / aborted exit.
+    const config = makeConfig({
+      evaluate: async () => {
+        throw new Error("infra down");
+      },
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_failed");
+    expect(result.best).toBeNull();
+    expect(result.converged).toBe(false);
+    expect(result.history.length).toBe(0);
+  });
+
+  test("pre-aborted run exits with best=null", async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const config = makeConfig({ signal: ctrl.signal });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("aborted");
+    expect(result.best).toBeNull();
+  });
+
+  test("evaluator with rate=1.0 AND non-empty failures rejected as eval_failed (contradictory)", async () => {
+    // Regression: the loop previously treated this contradictory shape
+    // as a converged exit, shipping a candidate the evaluator just
+    // told us was still failing. Now the inconsistency surfaces as
+    // eval_failed so the caller can investigate evaluator drift.
+    const config = makeConfig({
+      convergenceThreshold: 1.0,
+      evaluate: async () => ({
+        successRate: 1.0,
+        sampleCount: 10,
+        failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+      }),
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_failed");
+    expect(result.converged).toBe(false);
+    expect(result.terminalDiagnostic?.kind).toBe("eval_failed");
   });
 
   test("evaluator returning sampleCount=0 with successRate=1 is rejected as eval_failed", async () => {
@@ -925,7 +969,7 @@ describe("linearSearch", () => {
 
     expect(result.stopReason).toBe("converged");
     expect(result.converged).toBe(true);
-    expect(result.best.evalSamples).toBe(5);
+    expect(result.best?.evalSamples).toBe(5);
   });
 
   test("adapterHonorsAbort rejects non-boolean values (truthy junk)", async () => {
@@ -1091,7 +1135,7 @@ describe("linearSearch", () => {
     const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
 
     expect(result.stopReason).toBe("converged");
-    expect(result.best.successRate).toBe(1.0);
+    expect(result.best?.successRate).toBe(1.0);
     expect(result.history.length).toBe(4);
   });
 

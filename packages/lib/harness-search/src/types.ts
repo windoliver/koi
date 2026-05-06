@@ -287,8 +287,16 @@ export interface TerminalDiagnostic {
 }
 
 export interface SearchResult {
-  /** Best variant found across the search. */
-  readonly best: SearchNode;
+  /**
+   * Best variant found across the search. `null` when no evaluation
+   * completed — e.g. abort/timeout/eval_failed on the first iteration.
+   * Callers MUST handle null before treating the result as a verified
+   * candidate; the package deliberately does NOT synthesize a fallback
+   * node from `initialCode` because that would be indistinguishable
+   * from an evaluated winner and could lead to publishing unverified
+   * code after a transient failure.
+   */
+  readonly best: SearchNode | null;
   /** All variants evaluated, in iteration order. */
   readonly history: readonly SearchNode[];
   readonly stopReason: StopReason;

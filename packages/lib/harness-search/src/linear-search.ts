@@ -305,9 +305,27 @@ export async function linearSearch(
 
     if (
       evalResult.successRate >= convergenceThreshold &&
-      evalResult.sampleCount >= minEvalSamples
+      evalResult.sampleCount >= minEvalSamples &&
+      // Logical-consistency invariant: an evaluator reporting a
+      // threshold-satisfying success rate while ALSO returning concrete
+      // failures contradicts itself. Buggy aggregation, stale failure
+      // carryover from a previous attempt, or rounding can produce this
+      // shape; treating it as "converged" would ship a candidate the
+      // evaluator just told us is still failing. Reject the inconsistent
+      // payload as eval_failed instead — refinement can pick up real
+      // signal from the next iteration.
+      evalResult.failures.length === 0
     ) {
       stopReason = "converged";
+      break;
+    }
+    if (
+      evalResult.successRate >= convergenceThreshold &&
+      evalResult.sampleCount >= minEvalSamples &&
+      evalResult.failures.length > 0
+    ) {
+      stopReason = "eval_failed";
+      terminalDiagnostic = { kind: "eval_failed", iteration, causeClass: null };
       break;
     }
 
@@ -409,26 +427,29 @@ export async function linearSearch(
     previousIterSamples = evalResult.sampleCount;
   }
 
-  const finalBest = bestNode ?? {
-    id: `node-${nodeCounter}`,
-    code: initialCode,
-    descriptor: frozenDescriptor,
-    iteration: 0,
-    successRate: null,
-    evalSamples: 0,
-    parentId: null,
-    createdAt: clock(),
-  };
-
+  // Do NOT synthesize a fallback node from initialCode when no
+  // evaluation completed. A synthetic best is indistinguishable from a
+  // real evaluated winner at the API surface, and a caller publishing
+  // result.best after a transient eval_timeout / aborted exit would
+  // ship unverified code. Returning null forces callers to make the
+  // "did we actually evaluate anything?" check explicit.
   return {
-    best: finalBest,
+    best: bestNode,
     history,
     stopReason,
     totalIterations: history.length,
+    // Only the explicit converged exit counts. A bestNode that happens
+    // to clear the rate/samples gates is NOT enough — it can still be
+    // accompanied by a contradictory failures payload (eval_failed) or
+    // a Thompson deploy decision the loop took before convergence
+    // landed. Tying this flag to stopReason keeps the success contract
+    // honest.
     converged:
-      finalBest.successRate !== null &&
-      finalBest.successRate >= convergenceThreshold &&
-      finalBest.evalSamples >= minEvalSamples,
+      stopReason === "converged" &&
+      bestNode !== null &&
+      bestNode.successRate !== null &&
+      bestNode.successRate >= convergenceThreshold &&
+      bestNode.evalSamples >= minEvalSamples,
     terminalDiagnostic,
   };
 }
