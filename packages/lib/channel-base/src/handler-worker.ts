@@ -6,12 +6,22 @@
  *
  * **Lease/claim model.** The queue claim and the idempotency lease are
  * BOTH taken with `leaseMs = handlerTimeoutMs + leaseGraceMs` (default
- * grace 5s) and never renewed. The grace buffer ensures the post-timeout
- * cleanup path (commit-as-tombstone + deadLetter) finishes BEFORE the
- * lease can expire — without it, a slow store could let a successor
- * reclaim the item while the original handler is still running. The
- * handler MUST complete within `handlerTimeoutMs` or be cancellable via
- * the `AbortSignal`. There is deliberately NO mid-handler renewal:
+ * grace 5s) and never renewed. The grace buffer ensures the cleanup
+ * paths (commit-as-tombstone + deadLetter) finish BEFORE the lease can
+ * expire on the max-retry terminal branch.
+ *
+ * **Timeout policy.** The public MessageHandler contract is single-arg
+ * (no AbortSignal), so a worker cannot reliably stop a handler that
+ * ignores cancellation. Timeouts therefore abort the lease and nack
+ * the queue item (transient retry), NEVER dead-letter or commit a
+ * poison tombstone. Declaring terminal failure while the original
+ * handler may still complete would let operators replay/compensate
+ * AND have the original handler emit the same side effects later.
+ * The max-retries path remains terminal (poison tombstone + dead-
+ * letter): an explicitly-thrown failure is something the handler
+ * decided to surface, distinct from a wall-clock-only timeout.
+ *
+ * There is deliberately NO mid-handler renewal:
  *
  *   - Renewal that can fail introduces an "ownership-lost" path where a
  *     successor worker may claim the same item while the original
@@ -132,36 +142,23 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
           // effects. So we dead-letter immediately and rely on the
           // operator to inspect / replay the stuck item.
           if (handlerResult.timedOut) {
-            // Timeout is terminal AND the original handler may still be
-            // running. The poison tombstone MUST land durably before we
-            // dead-letter — otherwise a swallowed commitPoison failure
-            // followed by deadLetter would remove the queue item with no
-            // durable terminal marker, and a future provider redelivery
-            // would run the handler again concurrently with the original.
-            // So if commitPoison throws, we nack instead of deadLetter:
-            // the queue item stays retryable, the next attempt will see
-            // the (still-live) lease as in-flight or expired, and
-            // operators get a visible failure rather than silent
-            // duplication.
-            const poisonOk = await commitPoisonDurably(
-              opts.idempotencyStore,
-              begin.lease,
-              opts.commitTtlMs,
-            );
-            if (poisonOk) {
-              await opts.queue.deadLetter(
-                opts.workerId,
-                claimed.key,
-                `handler-timeout: ${handlerResult.error.message}`,
-              );
-            } else {
-              // commitPoison failed — release the lease so a future retry
-              // can claim cleanly, and nack the queue item so the operator
-              // sees a retryable failure rather than a silently dead-
-              // lettered item with no terminal marker.
-              await opts.idempotencyStore.abort(begin.lease).catch(() => {});
-              await opts.queue.nack(opts.workerId, claimed.key);
-            }
+            // Timeout is NOT terminal. The public MessageHandler
+            // contract is single-arg (no AbortSignal), so we cannot
+            // guarantee the original handler stopped — declaring
+            // terminal failure while the handler keeps running would
+            // let operators replay/compensate AND have the original
+            // handler complete its side effects later. Instead we
+            // abort the lease and nack the queue item so a successor
+            // can re-claim once the original handler's lease window
+            // has expired. Operators see retries (the failure is
+            // visible) and a hung handler eventually backs off via
+            // the maxHandlerRetries terminal path. Channel adapters
+            // that can guarantee handler cancellation (process
+            // boundary, signal-aware handler) may opt into terminal-
+            // on-timeout in a future contract revision; until then
+            // we fail safe.
+            await opts.idempotencyStore.abort(begin.lease).catch(() => {});
+            await opts.queue.nack(opts.workerId, claimed.key);
             continue;
           }
           throw handlerResult.error;

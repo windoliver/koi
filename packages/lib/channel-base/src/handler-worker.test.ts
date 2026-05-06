@@ -87,7 +87,15 @@ describe("startHandlerWorker", () => {
     expect(renewals).toBe(0);
   });
 
-  test("handler timeout aborts lease and nacks", async () => {
+  test("handler timeout: transient nack, NOT terminal poison/dead-letter", async () => {
+    // The public MessageHandler contract is single-arg (no AbortSignal),
+    // so the worker cannot guarantee a hung handler stopped. Treating
+    // timeout as terminal would let operators replay/compensate AND
+    // have the original handler complete its side effects later — a
+    // duplicate-execution hazard. Timeouts therefore nack as transient
+    // and the queue item stays retryable. Hung handlers eventually
+    // converge via maxHandlerRetries on EXPLICIT throws (a different
+    // failure surface), not via wall-clock timeout.
     const queue = new InMemoryIngressQueue<{ readonly v: number }, null>();
     const idem = new InMemoryIdempotencyStore();
     let started = 0;
@@ -107,9 +115,9 @@ describe("startHandlerWorker", () => {
     await queue.enqueue("k1", { key: "k1", payload: { v: 1 }, normalized: null });
     await tick(80);
     await stop();
-    expect(started).toBeGreaterThanOrEqual(1);
+    expect(started).toBeGreaterThan(1);
     const dl = await queue.getDeadLetters();
-    expect(dl).toHaveLength(1);
+    expect(dl).toHaveLength(0);
   });
 
   test("already-committed key is acked without invoking handler", async () => {
@@ -139,15 +147,12 @@ describe("startHandlerWorker", () => {
   });
 
   test("commitPoison failure on max-retry blocks dead-letter (item stays retryable)", async () => {
-    // Regression: if the poison tombstone cannot land durably, dead-
-    // lettering would remove the queue item without a terminal marker
-    // — a future redelivery would then run the handler again with no
-    // dedupe protection. Worker MUST nack instead so operators see
-    // retries rather than silent duplication on redelivery.
-    //
-    // We use a slow-resolving handler with a short handlerTimeoutMs to
-    // hit the timeout path predictably without spinning a tight retry
-    // loop on the synchronous-throw path.
+    // Regression: if the poison tombstone cannot land durably on a
+    // max-retry terminal path, dead-lettering would remove the queue
+    // item without a terminal marker — a future redelivery would
+    // then run the handler again with no dedupe protection. Worker
+    // MUST nack instead so operators see retries rather than silent
+    // duplication.
     const queue = new InMemoryIngressQueue<{ readonly v: number }, null>();
     const idem = new InMemoryIdempotencyStore();
     const wrapped = {
@@ -165,22 +170,26 @@ describe("startHandlerWorker", () => {
       idempotencyStore: wrapped,
       handler: async () => {
         calls++;
-        await new Promise((r) => setTimeout(r, 50));
+        // Yield once so the loop doesn't starve macrotasks.
+        await new Promise((r) => setTimeout(r, 5));
+        throw new Error("explicit handler failure");
       },
       commitTtlMs: 1000,
-      handlerTimeoutMs: 5,
-      leaseGraceMs: 100,
+      handlerTimeoutMs: 1000,
+      maxHandlerRetries: 1,
       pollIntervalMs: 1,
       workerId: "w1",
     });
     await queue.enqueue("ky", { key: "ky", payload: { v: 1 }, normalized: null });
-    await tick(80);
+    await tick(60);
     await stop();
-    // Handler timed out at least twice: first terminal attempt → poison
-    // failed → abort + nack → re-claim → second terminal attempt. If
-    // the worker had dead-lettered despite poison failure, the second
-    // timeout would never have happened.
+    // Handler ran multiple times: each terminal attempt called
+    // commitPoison, failed, aborted lease + nacked → re-claim →
+    // handler ran again. If commitPoison failure had not blocked
+    // dead-letter, calls would be 1 (single terminal attempt).
     expect(calls).toBeGreaterThan(1);
+    const dl = await queue.getDeadLetters();
+    expect(dl).toHaveLength(0);
   });
 
   test("poisoned key replay is dead-lettered, not acked", async () => {

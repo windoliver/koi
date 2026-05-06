@@ -18,6 +18,7 @@ export type EmailErrorCode =
   | "SEND_FAILED"
   | "UNSUPPORTED_TRANSPORT"
   | "THREAD_BLOCKED_PENDING_RECOVERY"
+  | "THREAD_BUSY"
   | "RECOVERY_CONFLICT"
   | "ALREADY_RESOLVED";
 
@@ -63,18 +64,41 @@ function err(
   return ctx ? { code, message, context: ctx } : { code, message };
 }
 
-async function isThreadBlocked(outboxStore: OutboxStore, threadKey: string): Promise<boolean> {
+async function threadBlockReason(
+  outboxStore: OutboxStore,
+  threadKey: string,
+): Promise<"awaiting-recovery" | "in-flight" | null> {
   // Block on `awaiting-recovery` (operator must resolve) AND on `aborting`
   // (resolver-owned intermediate during failed-resolution; brief, but a
-  // racing send must not slip past a still-failing recovery).
-  const [pending, aborting] = await Promise.all([
+  // racing send must not slip past a still-failing recovery). Also block
+  // on any in-flight predecessor (`reserving` / `reserved` / `sending`):
+  // a tentative Message-ID is visible in the thread chain after
+  // reservation, so a concurrent second send would derive
+  // In-Reply-To/References from a parent that may yet be rolled back on
+  // pre-DATA failure — leaving a sent reply pointing at a Message-ID
+  // that never existed. Single in-flight send per thread is the only
+  // safe rule given the chain-derivation contract.
+  const [pending, aborting, reserving, reserved, sending] = await Promise.all([
     outboxStore.list({ status: "awaiting-recovery" }),
     outboxStore.list({ status: "aborting" }),
+    outboxStore.list({ status: "reserving" }),
+    outboxStore.list({ status: "reserved" }),
+    outboxStore.list({ status: "sending" }),
   ]);
-  return (
+  if (
     pending.some((r) => r.threadKey === threadKey) ||
     aborting.some((r) => r.threadKey === threadKey)
-  );
+  ) {
+    return "awaiting-recovery";
+  }
+  if (
+    reserving.some((r) => r.threadKey === threadKey) ||
+    reserved.some((r) => r.threadKey === threadKey) ||
+    sending.some((r) => r.threadKey === threadKey)
+  ) {
+    return "in-flight";
+  }
+  return null;
 }
 
 type Reservation = {
@@ -191,12 +215,23 @@ export async function executeOutbound(
   deps: OutboundDeps,
   input: OutboundInput,
 ): Promise<Result<OutboundSuccess>> {
-  if (await isThreadBlocked(deps.outboxStore, input.threadKey)) {
+  const blockReason = await threadBlockReason(deps.outboxStore, input.threadKey);
+  if (blockReason === "awaiting-recovery") {
     return {
       ok: false,
       error: err(
         "THREAD_BLOCKED_PENDING_RECOVERY",
         "thread has unresolved awaiting-recovery sends; operator must resolve first",
+        { threadKey: input.threadKey },
+      ),
+    };
+  }
+  if (blockReason === "in-flight") {
+    return {
+      ok: false,
+      error: err(
+        "THREAD_BUSY",
+        "thread has an in-flight send; serialize sends per thread to avoid header derivation atop tentative Message-IDs",
         { threadKey: input.threadKey },
       ),
     };

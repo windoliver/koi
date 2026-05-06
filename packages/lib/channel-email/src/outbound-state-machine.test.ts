@@ -158,6 +158,34 @@ describe("executeOutbound", () => {
     expect(result.error.code).toBe("THREAD_BLOCKED_PENDING_RECOVERY");
   });
 
+  test("sequential send: second call gets THREAD_BUSY while first's reserving row is in flight", async () => {
+    // Regression: tentative Message-IDs are visible in the chain
+    // immediately after reservation, so a second send issued AFTER the
+    // first reserved would derive In-Reply-To/References from a parent
+    // that may yet be rolled back on pre-DATA failure — leaving the
+    // sent reply pointing at a Message-ID that never existed. Only one
+    // in-flight send per thread is safe given the chain-derivation
+    // contract.
+    //
+    // Simulate "first send is mid-SMTP" by pre-placing a `sending` row
+    // for sampleInput.threadKey and confirming a fresh executeOutbound
+    // is rejected with THREAD_BUSY.
+    const outboxStore = new InMemoryOutboxStore();
+    await outboxStore.put({
+      messageId: "<inflight@test>",
+      threadKey: sampleInput.threadKey,
+      threadVersion: 1,
+      payloadHash: "x",
+      status: "sending",
+      createdAt: 0,
+    });
+    const deps = buildDeps({ outboxStore, smtp: fakeSmtp({ mode: "ok" }) });
+    const result = await executeOutbound(deps, sampleInput);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("THREAD_BUSY");
+  });
+
   test("crash mid-SMTP leaves row in `sending`, NOT auto-aborted on recovery", async () => {
     // Regression: previously the row was placed in `dispatching` before
     // sendViaSmtp and recovery auto-aborted dispatching rows. If the
