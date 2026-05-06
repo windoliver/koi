@@ -17,6 +17,7 @@ export {
   replyToVoiceInbound,
   VOICE_CALL_EPOCH_KEY,
   VOICE_ORIGIN_THREAD_KEY,
+  VOICE_SESSION_GEN_KEY,
   VOICE_TURN_ID_KEY,
   VoiceMissingSessionError,
   VoicePoisonedSessionError,

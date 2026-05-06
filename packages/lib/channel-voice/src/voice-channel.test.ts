@@ -1909,6 +1909,56 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("session-gen fence stays durable past 1024 later watchdog/endCall events (round-52 high)", async () => {
+    // Round-52 high: prior FIFO turn-id tombstone (cap 1024) silently
+    // evicted older fenced ids on busy adapters — a delayed reply
+    // tagged with an evicted turn id became admissible again. The
+    // per-session call generation is durable: a single integer per
+    // session, never evicted while connected. Even after thousands of
+    // later endCall events on OTHER sessions, an old reply stamped
+    // with a prior gen for THIS session still rejects.
+    // let requires justification: harness state captured by callbacks
+    let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (handler: (sessionId: string, frame: Uint8Array) => void) => {
+        listener = handler;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = { transcribe: async () => "u" };
+    const tts: Tts = { synthesize: async () => new Uint8Array([1]) };
+    const captured: InboundMessage[] = [];
+    const ch = createVoiceChannel({ transport, stt, tts });
+    ch.onMessage(async (msg: InboundMessage) => {
+      captured.push(msg);
+    });
+    await ch.connect();
+    listener?.("session-target", new Uint8Array([1]));
+    await new Promise((r) => setTimeout(r, 30));
+    const inboundOld = captured[0];
+    expect(inboundOld).toBeDefined();
+    ch.endCall("session-target");
+    // Now simulate massive churn on OTHER sessions — would have
+    // evicted the old turn id from a 1024-cap FIFO long ago. With
+    // session-gen the fence for "session-target" stays intact.
+    for (let i = 0; i < 2000; i++) {
+      ch.endCall(`other-session-${i}`);
+    }
+    if (inboundOld !== undefined) {
+      const replyOld = replyToVoiceInbound(inboundOld, {
+        threadId: "session-target",
+        content: [{ kind: "text", text: "stale" }],
+      });
+      await expect(ch.send(replyOld)).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+    }
+    await ch.disconnect();
+  });
+
   test("endCall(sessionId) blocks untagged stale sends to the reused threadId until next inbound (round-51 high)", async () => {
     // Round-51 high: endCall expired turn ids (tagged-reply path), but
     // a delayed old-call callback could still call bare
