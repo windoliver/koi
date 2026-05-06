@@ -174,6 +174,16 @@ const MAC_KEY = "mobileSessionMac";
 const UNSOLICITED_MAC_KEY = "mobileUnsolicitedMac";
 const ORIGIN_SENDER_KEY = "mobileOriginatingSenderId";
 const ORIGIN_THREAD_KEY = "mobileOriginatingThreadId";
+// Per-session unguessable nonce (16 random bytes hex). Generated on every
+// accepted socket open() and required to match for live delivery. Without
+// this binding, a host-supplied stable signingSecret combined with the
+// process-local epoch counter would let a stale replyToInbound() from a
+// prior process be live-delivered into a later session for the same
+// identity (epoch counts are reused across restarts; same identity passes
+// the identity-match check). The nonce is regenerated per session and is
+// not derivable from any cross-instance state, so cross-restart replays
+// can only ever route to push.
+const ORIGIN_NONCE_KEY = "mobileSessionNonce";
 
 /**
  * Build an `OutboundMessage` that explicitly replies to a given inbound.
@@ -188,6 +198,7 @@ export function replyToInbound(inbound: InboundMessage, message: OutboundMessage
   if (typeof epoch !== "number" || typeof mac !== "string") return message;
   const originSender = inbound.metadata?.[ORIGIN_SENDER_KEY];
   const originThread = inbound.metadata?.[ORIGIN_THREAD_KEY];
+  const originNonce = inbound.metadata?.[ORIGIN_NONCE_KEY];
   return {
     ...message,
     metadata: {
@@ -196,6 +207,7 @@ export function replyToInbound(inbound: InboundMessage, message: OutboundMessage
       [MAC_KEY]: mac,
       ...(typeof originSender === "string" ? { [ORIGIN_SENDER_KEY]: originSender } : {}),
       ...(typeof originThread === "string" ? { [ORIGIN_THREAD_KEY]: originThread } : {}),
+      ...(typeof originNonce === "string" ? { [ORIGIN_NONCE_KEY]: originNonce } : {}),
     },
   };
 }
@@ -213,6 +225,16 @@ interface InboundFrame {
  * staying well below typical WebSocket fragment limits.
  */
 const MAX_INBOUND_FRAME_BYTES = 64 * 1024;
+
+/**
+ * Upper bound on how long a passed-auth upgrade reservation can sit in
+ * `pendingUpgrades` without an `open()` callback firing. If Bun accepted
+ * the upgrade but the client died on the wire before the websocket opened,
+ * nothing else releases the slot and the channel would be stuck at 409
+ * forever. Five seconds is well above any realistic upgrade RTT and well
+ * below any human-perceivable retry window.
+ */
+const UPGRADE_RESERVATION_TIMEOUT_MS = 5_000;
 
 /**
  * Strict ContentBlock validator. Returns the input narrowed to ContentBlock
@@ -261,11 +283,18 @@ interface VerifiedReplyTag {
   readonly epoch: number;
   readonly senderId: string;
   readonly threadId: string;
+  readonly nonce: string;
 }
 
 function extractAndVerifyReply(
   message: OutboundMessage,
-  verify: (epoch: number, senderId: string, threadId: string, mac: string) => boolean,
+  verify: (
+    epoch: number,
+    nonce: string,
+    senderId: string,
+    threadId: string,
+    mac: string,
+  ) => boolean,
 ): VerifiedReplyTag | undefined {
   const meta = message.metadata;
   if (meta === undefined) return undefined;
@@ -277,9 +306,13 @@ function extractAndVerifyReply(
   // works (an inbound that genuinely had no threadId).
   const senderRaw = meta[ORIGIN_SENDER_KEY];
   const threadRaw = meta[ORIGIN_THREAD_KEY];
+  const nonceRaw = meta[ORIGIN_NONCE_KEY];
   const senderId = typeof senderRaw === "string" ? senderRaw : "";
   const threadId = typeof threadRaw === "string" ? threadRaw : "";
-  return verify(epoch, senderId, threadId, mac) ? { epoch, senderId, threadId } : undefined;
+  const nonce = typeof nonceRaw === "string" ? nonceRaw : "";
+  return verify(epoch, nonce, senderId, threadId, mac)
+    ? { epoch, senderId, threadId, nonce }
+    : undefined;
 }
 
 function stripInternalMetadata(message: OutboundMessage): OutboundMessage {
@@ -290,6 +323,7 @@ function stripInternalMetadata(message: OutboundMessage): OutboundMessage {
     [UNSOLICITED_MAC_KEY]: _u,
     [ORIGIN_SENDER_KEY]: _os,
     [ORIGIN_THREAD_KEY]: _ot,
+    [ORIGIN_NONCE_KEY]: _on,
     ...rest
   } = message.metadata;
   if (Object.keys(rest).length === 0) {
@@ -360,16 +394,22 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   // to the wrong device after the session closed. The HMAC payload is a
   // length-prefixed, NUL-delimited tuple so distinct field combinations
   // cannot collide via reordering or boundary ambiguity.
-  const canonicalize = (epoch: number, senderId: string, threadId: string): string =>
-    `${String(epoch)} ${String(senderId.length)}:${senderId} ${String(threadId.length)}:${threadId}`;
-  const sign = (epoch: number, senderId: string, threadId: string): string =>
+  const canonicalize = (epoch: number, nonce: string, senderId: string, threadId: string): string =>
+    `${String(epoch)} ${String(nonce.length)}:${nonce} ${String(senderId.length)}:${senderId} ${String(threadId.length)}:${threadId}`;
+  const sign = (epoch: number, nonce: string, senderId: string, threadId: string): string =>
     createHmac("sha256", instanceSecret)
-      .update(canonicalize(epoch, senderId, threadId))
+      .update(canonicalize(epoch, nonce, senderId, threadId))
       .digest("hex");
   const unsolicitedTag = createHmac("sha256", instanceSecret).update("unsolicited").digest("hex");
-  const verify = (epoch: number, senderId: string, threadId: string, mac: string): boolean => {
+  const verify = (
+    epoch: number,
+    nonce: string,
+    senderId: string,
+    threadId: string,
+    mac: string,
+  ): boolean => {
     try {
-      const expectedHex = sign(epoch, senderId, threadId);
+      const expectedHex = sign(epoch, nonce, senderId, threadId);
       if (expectedHex.length !== mac.length) return false;
       const expected = new Uint8Array(Buffer.from(expectedHex, "hex"));
       const provided = new Uint8Array(Buffer.from(mac, "hex"));
@@ -420,6 +460,14 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   // session boundary that strict-mode correlation can detect.
   // let requires justification: monotonic counter for session boundaries
   let sessionEpoch = 0;
+  // Per-session unguessable nonce. Refreshed on every accepted socket
+  // open() so that a stale tag from a prior session/process — even one
+  // signed with a stable cross-instance signingSecret and the same epoch
+  // value — cannot satisfy the live-delivery check. Empty string when no
+  // session is active; the sentinel never matches a real (16-byte hex)
+  // nonce, so off-session replies always fall through to push.
+  // let requires justification: refreshed per session
+  let sessionNonce = "";
 
   // ALS tags handler-chain sends with the originating session epoch (a
   // belt-and-suspenders signal alongside the metadata-borne HMAC tag) plus
@@ -428,6 +476,7 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   // hosts must use replyToInbound() so the HMAC tag rides on the message.
   interface AlsCtx {
     readonly epoch: number;
+    readonly nonce: string;
     readonly senderId: string;
     readonly threadId?: string;
   }
@@ -458,6 +507,20 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
             return new Response("conflict: another client connected", { status: 409 });
           }
           pendingUpgrades++;
+          // Safety net: if Bun's upgrade succeeds but the client drops the
+          // connection before websocket.open() ever fires (TCP RST during
+          // the upgrade gap, client crash, network blip), nothing else in
+          // this state machine clears the reservation — the channel would
+          // wedge in permanent 409 until process restart. A bounded timer
+          // guarantees the slot is released; legitimate opens cancel it.
+          // let requires justification: timer captured for cancel
+          let upgradeReleased = false;
+          const releaseUpgrade = (): void => {
+            if (upgradeReleased) return;
+            upgradeReleased = true;
+            if (pendingUpgrades > 0) pendingUpgrades--;
+          };
+          const reservationTimer = setTimeout(releaseUpgrade, UPGRADE_RESERVATION_TIMEOUT_MS);
           // authenticate() runs BEFORE upgrade so an unauthenticated
           // client never gets a socket and cannot occupy the single slot.
           // The verified identity rides through Bun's per-connection
@@ -476,26 +539,47 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
               // the isolation guarantee that live-delivery and push routing
               // depend on.
               if (result === null || result.trim().length === 0) {
-                pendingUpgrades--;
+                clearTimeout(reservationTimer);
+                releaseUpgrade();
                 return new Response("unauthorized", { status: 401 });
               }
               identity = result;
             }
           } catch (err) {
-            pendingUpgrades--;
+            clearTimeout(reservationTimer);
+            releaseUpgrade();
             throw err;
           }
-          if (srv.upgrade(req, { data: { identity } })) return undefined;
-          pendingUpgrades--;
+          if (srv.upgrade(req, { data: { identity, releaseUpgrade, reservationTimer } })) {
+            return undefined;
+          }
+          clearTimeout(reservationTimer);
+          releaseUpgrade();
           return new Response("expected websocket", { status: 426 });
         },
         websocket: {
-          open(ws: SocketLike & { readonly data?: { readonly identity?: string } }) {
+          open(
+            ws: SocketLike & {
+              readonly data?: {
+                readonly identity?: string;
+                readonly releaseUpgrade?: () => void;
+                readonly reservationTimer?: ReturnType<typeof setTimeout>;
+              };
+            },
+          ) {
             // open() owns the pendingUpgrades decrement that fetch()
             // deferred on success — the slot reservation now transitions
             // from in-flight to claimed (or, if a race somehow already
-            // gave the slot away, just released).
-            if (pendingUpgrades > 0) pendingUpgrades--;
+            // gave the slot away, just released). Cancel the safety
+            // timeout first so it cannot double-decrement later.
+            if (ws.data?.reservationTimer !== undefined) {
+              clearTimeout(ws.data.reservationTimer);
+            }
+            if (ws.data?.releaseUpgrade !== undefined) {
+              ws.data.releaseUpgrade();
+            } else if (pendingUpgrades > 0) {
+              pendingUpgrades--;
+            }
             // Strict single-client: a second concurrent connection is REJECTED,
             // not allowed to preempt. Removes the cross-client misroute class.
             if (activeSocket !== undefined) {
@@ -505,6 +589,11 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
             activeSocket = ws;
             activeIdentity = ws.data?.identity;
             sessionEpoch++;
+            // Fresh per-session nonce — 128 bits of randomness signed into
+            // every reply tag for this session. Cross-instance / cross-
+            // restart replays cannot reproduce it, so they cannot pass the
+            // live-delivery nonce-equality check.
+            sessionNonce = randomBytes(16).toString("hex");
           },
           message(ws: SocketLike, data: string | Uint8Array) {
             // Hard gate: the WS close handshake is asynchronous, so a
@@ -531,6 +620,10 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
               // wrong identity context.
               pendingLines = [];
               sessionEpoch++;
+              // Clear the nonce so any in-flight reply still carrying the
+              // just-closed session's nonce fails the equality check until
+              // the next open() generates a fresh one.
+              sessionNonce = "";
             }
           },
         },
@@ -545,6 +638,7 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       // stale identity context.
       pendingLines = [];
       pendingUpgrades = 0;
+      sessionNonce = "";
       server?.stop(true);
       server = undefined;
     },
@@ -584,15 +678,28 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         // same epoch — a cross-user message leak. Identity match means a
         // live write is only allowed when the same user is connected here
         // as the one who originated the inbound being replied to.
+        // Nonce equality is what makes a stable signingSecret safe across
+        // restarts: even if a stale tag still verifies HMAC and the same
+        // identity reconnects on the same epoch counter, the per-session
+        // nonce (16 random bytes regenerated on every accepted open()) is
+        // unguessable and unrecoverable from any cross-instance state, so
+        // off-session replies can never live-deliver.
         liveRecipient =
           verifiedReply !== undefined &&
           verifiedReply.epoch === sessionEpoch &&
+          verifiedReply.nonce === sessionNonce &&
+          sessionNonce.length > 0 &&
           activeSocket !== undefined &&
           verifiedReply.senderId === (activeIdentity ?? defaultSenderId);
       } else if (alsCtx !== undefined) {
-        // Same identity-match guard for ALS-tagged sends.
+        // Same identity + nonce guards for ALS-tagged sends. ALS context
+        // can outlive its session if a handler captures it into a detached
+        // callback; the nonce check stops that captured ctx from being used
+        // to live-deliver into a later session.
         liveRecipient =
           alsCtx.epoch === sessionEpoch &&
+          alsCtx.nonce === sessionNonce &&
+          sessionNonce.length > 0 &&
           activeSocket !== undefined &&
           alsCtx.senderId === (activeIdentity ?? defaultSenderId);
       } else {
@@ -703,9 +810,10 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
           metadata: {
             ...(inbound.metadata ?? {}),
             [EPOCH_KEY]: sessionEpoch,
-            [MAC_KEY]: sign(sessionEpoch, inbound.senderId, tagThread),
+            [MAC_KEY]: sign(sessionEpoch, sessionNonce, inbound.senderId, tagThread),
             [ORIGIN_SENDER_KEY]: inbound.senderId,
             ...(inbound.threadId !== undefined ? { [ORIGIN_THREAD_KEY]: inbound.threadId } : {}),
+            [ORIGIN_NONCE_KEY]: sessionNonce,
           },
         };
         return signedInbound;
@@ -735,8 +843,10 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         // inherit them and detached push fallback can still route.
         const metaEpoch = msg.metadata?.[EPOCH_KEY];
         const metaSender = msg.metadata?.[ORIGIN_SENDER_KEY];
+        const metaNonce = msg.metadata?.[ORIGIN_NONCE_KEY];
         const ctx: AlsCtx = {
           epoch: typeof metaEpoch === "number" ? metaEpoch : sessionEpoch,
+          nonce: typeof metaNonce === "string" ? metaNonce : sessionNonce,
           senderId: typeof metaSender === "string" ? metaSender : msg.senderId,
           ...(msg.threadId !== undefined ? { threadId: msg.threadId } : {}),
         };

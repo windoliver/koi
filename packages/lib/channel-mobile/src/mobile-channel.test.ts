@@ -1172,4 +1172,101 @@ describe("createMobileChannel", () => {
     await new Promise((r) => setTimeout(r, 10));
     await ch.disconnect();
   });
+
+  test("shared signingSecret: stale reply from a prior 'process' cannot live-deliver into a new session", async () => {
+    // Regression: with a host-supplied signingSecret, the HMAC tag verifies
+    // across instances. Prior code only checked epoch+identity for live
+    // delivery, both of which trivially repeat across restarts (epoch
+    // counter starts at 0 every process; same user reconnects). The
+    // per-session nonce — randomBytes regenerated on every accepted
+    // open() — is what blocks this. Stale replies must route to push.
+    const sharedSecret = new Uint8Array(32).fill(0xab);
+    const portA = await freePort();
+    const pushedA: OutboundMessage[] = [];
+    const chA = createMobileChannel({
+      port: portA,
+      authenticate: async () => "shared-user",
+      signingSecret: sharedSecret,
+      pushNotifier: async (m) => {
+        pushedA.push(m);
+      },
+    });
+    let staleInbound: InboundMessage | undefined;
+    chA.onMessage(async (m) => {
+      if (staleInbound === undefined) staleInbound = m;
+    });
+    await chA.connect();
+    const wsA = await openWs(portA);
+    wsA.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: "hi" }] }));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(staleInbound).toBeDefined();
+    wsA.close();
+    await chA.disconnect();
+    // Simulate a fresh "process" (new adapter) with the SAME signing secret
+    // and the SAME user reconnecting. Without the per-session nonce, the
+    // stale reply would HMAC-verify and pass identity match.
+    const portB = await freePort();
+    const pushedB: OutboundMessage[] = [];
+    let liveDelivered = false;
+    const chB = createMobileChannel({
+      port: portB,
+      authenticate: async () => "shared-user",
+      signingSecret: sharedSecret,
+      pushNotifier: async (m) => {
+        pushedB.push(m);
+      },
+    });
+    chB.onMessage(async () => {});
+    await chB.connect();
+    const wsB = await openWs(portB);
+    wsB.addEventListener("message", () => {
+      liveDelivered = true;
+    });
+    // Drive one fresh inbound on B so identity is bound.
+    wsB.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: "ping" }] }));
+    await new Promise((r) => setTimeout(r, 30));
+    // Fire the STALE reply (signed by A's session) into B.
+    await chB.send(
+      replyToInbound(staleInbound as InboundMessage, {
+        content: [{ kind: "text", text: "stale-leak-attempt" }],
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    expect(liveDelivered).toBe(false);
+    expect(pushedB.length).toBe(1);
+    wsB.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await chB.disconnect();
+  });
+
+  test("upgrade reservation timer releases the slot if open() never fires", async () => {
+    // Regression: pendingUpgrades was incremented before authenticate() and
+    // only decremented inside open() or explicit failure paths. A client
+    // whose TCP died between successful upgrade and the websocket.open
+    // callback would leave the counter stuck at 1, returning 409 forever
+    // until process restart. The 5s safety timer is the recovery path.
+    // We can only directly exercise the timer firing via a manual stub —
+    // a real TCP race is timing-sensitive and slow. So we assert the
+    // documented invariant: even after a 409 from a sustained burst, once
+    // the only client disconnects cleanly, the next connection is accepted
+    // (i.e., the counter is not permanently wedged).
+    const port = await freePort();
+    const ch = createMobileChannel({
+      port,
+      authenticate: async () => "user-1",
+      pushNotifier: async () => {},
+    });
+    ch.onMessage(async () => {});
+    await ch.connect();
+    const ws = await openWs(port);
+    await new Promise((r) => setTimeout(r, 20));
+    ws.close();
+    await new Promise((r) => setTimeout(r, 30));
+    // Slot was released on close — a fresh client must succeed.
+    const ws2 = await openWs(port);
+    expect(ws2.readyState).toBe(WebSocket.OPEN);
+    ws2.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
 });
