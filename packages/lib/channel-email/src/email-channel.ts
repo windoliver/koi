@@ -27,6 +27,7 @@ import type { EmailConfig } from "./config.js";
 import { type MimeParser, normalizeEmail } from "./normalize-bridge.js";
 import { executeOutbound } from "./outbound-state-machine.js";
 import type { SmtpTransport } from "./platform-send.js";
+import { recoverOrphanedReservations } from "./recover-orphans.js";
 import {
   getPendingSends,
   type ResolveOutcome,
@@ -105,6 +106,28 @@ function dispatchInbound(
   };
 }
 
+const SEED_THREAD_CAS_RETRIES = 8;
+
+async function seedInboundThread(
+  threadStore: ThreadStore,
+  threadKey: string,
+  messageId: string,
+): Promise<void> {
+  // Bounded CAS-loop. Idempotent: if messageId is already in the chain (e.g.
+  // duplicate webhook delivery, recovery replay), exit cleanly. Outbound
+  // header derivation reads `threadStore.get(threadKey).chain` to build
+  // `In-Reply-To`/`References`, so seeding here is what makes a normal
+  // receive-then-reply flow thread-correctly without caller intervention.
+  for (let i = 0; i < SEED_THREAD_CAS_RETRIES; i++) {
+    const cur = await threadStore.get(threadKey);
+    const v = cur?.version ?? 0;
+    const chain = cur?.state.chain ?? [];
+    if (chain.includes(messageId)) return;
+    const ok = await threadStore.cas(threadKey, v, { chain: [...chain, messageId] });
+    if (ok) return;
+  }
+}
+
 async function enqueueInbound(
   deps: EmailDependencies,
   env: InboundEnvelope,
@@ -116,6 +139,20 @@ async function enqueueInbound(
     clock,
   );
   if (!normalized.ok) return; // drop unparseable
+  const inboundMessageId = parsed.messageId;
+  const threadKey = normalized.value.threadId;
+  if (
+    typeof inboundMessageId === "string" &&
+    inboundMessageId.length > 0 &&
+    typeof threadKey === "string" &&
+    threadKey.length > 0
+  ) {
+    // Seed thread state BEFORE handler dispatch so reply-flows see the
+    // inbound `Message-ID` in the chain. Best-effort: contention bail-out
+    // is acceptable because the worst case is a degraded reply (unthreaded),
+    // not corruption.
+    await seedInboundThread(deps.threadStore, threadKey, inboundMessageId);
+  }
   await deps.ingressQueue.enqueue(envelopeKey(env), {
     key: envelopeKey(env),
     payload: env,
@@ -142,6 +179,13 @@ export function createEmailChannel(
 
     connect: async () => {
       if (connected) return;
+      // Reconcile any `reserving` outbox rows left over from a prior crash
+      // BEFORE accepting new sends, so the operator's pending list and the
+      // thread store agree on what is in-flight.
+      await recoverOrphanedReservations({
+        outboxStore: deps.outboxStore,
+        threadStore: deps.threadStore,
+      });
       await deps.imap.open();
       unsubscribeImap = deps.imap.onNewMessage((env) => {
         enqueueInbound(deps, env, clock).catch(() => {

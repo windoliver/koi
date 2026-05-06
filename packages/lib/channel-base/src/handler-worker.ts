@@ -63,16 +63,24 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
       const renewerInterval = Math.max(1, Math.floor(leaseMs / 3));
       const renewer = setInterval(() => {
         // Renew BOTH the idempotency lease AND the queue claim so neither
-        // expires under a long handler. Any failure aborts ownership.
+        // expires under a long handler. Any failure aborts ownership so the
+        // in-flight handler is cancelled before a successor claim could
+        // execute it concurrently.
         opts.idempotencyStore.renew(begin.lease, leaseMs).catch(() => {
           if (!ownership.signal.aborted) ownership.abort(new Error("lease-renewal-failed"));
         });
-        // Queue claim renewal: nack-then-reclaim is the only release primitive
-        // the IngressQueue exposes; instead, we keep our own watcher — if the
-        // claim's expiry would pass before the next renewer tick, abort.
-        if (claimed.leaseExpiresAt - Date.now() < renewerInterval) {
-          if (!ownership.signal.aborted) ownership.abort(new Error("queue-claim-near-expiry"));
-        }
+        opts.queue
+          .renew(opts.workerId, claimed.key, leaseMs)
+          .then((r) => {
+            if (!r.ok && !ownership.signal.aborted) {
+              ownership.abort(new Error("queue-claim-renewal-failed"));
+            }
+          })
+          .catch(() => {
+            if (!ownership.signal.aborted) {
+              ownership.abort(new Error("queue-claim-renewal-failed"));
+            }
+          });
       }, renewerInterval);
       try {
         const handlerResult = await runWithOwnership(

@@ -11,6 +11,8 @@ import * as channelEmail from "../index.js";
 describe("@koi/channel-email public API surface", () => {
   test("exported names are stable", () => {
     const names = Object.keys(channelEmail).sort();
-    expect(names).toEqual(["createEmailChannel", "validateEmailConfig"].sort());
+    expect(names).toEqual(
+      ["createEmailChannel", "recoverOrphanedReservations", "validateEmailConfig"].sort(),
+    );
   });
 });

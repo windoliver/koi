@@ -2,7 +2,19 @@
  * @koi/channel-base — OutboxStore: durable outbound state machine record.
  */
 
-export type OutboxStatus = "reserved" | "sending" | "sent" | "aborted" | "awaiting-recovery";
+/**
+ * `reserving` is the durable intent record written BEFORE thread CAS. After
+ * the CAS succeeds it advances to `reserved`; if the CAS loses contention
+ * it advances to `aborted`. A row stuck in `reserving` after a crash is
+ * recoverable — see `recoverOrphanedReservations` in `@koi/channel-email`.
+ */
+export type OutboxStatus =
+  | "reserving"
+  | "reserved"
+  | "sending"
+  | "sent"
+  | "aborted"
+  | "awaiting-recovery";
 
 export type OutboxRecord = {
   readonly messageId: string;

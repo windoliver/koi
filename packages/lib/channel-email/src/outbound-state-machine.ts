@@ -5,7 +5,7 @@
  * CAS-only writes. States: reserved → sending → sent | aborted | awaiting-recovery.
  */
 
-import type { OutboxRecord, OutboxStore, ThreadState, ThreadStore } from "@koi/channel-base";
+import type { OutboxStore, ThreadState, ThreadStore } from "@koi/channel-base";
 import type { OutboundMessage } from "@koi/core";
 import { formatOutbound } from "./format.js";
 import { type SmtpTransport, sendViaSmtp } from "./platform-send.js";
@@ -77,32 +77,73 @@ type Reservation = {
   readonly priorThread: ThreadState;
 };
 
-async function reserveThread(deps: OutboundDeps, threadKey: string): Promise<Result<Reservation>> {
+/**
+ * Reservation order is **outbox-first, thread-second** to eliminate the
+ * orphaned-thread-reservation crash window:
+ *
+ *   1. Write outbox row as `reserving` (durable intent, threadVersion = v+1)
+ *   2. CAS thread chain v -> v+1 to include messageId
+ *   3a. CAS success: outbox `reserving` -> `reserved`
+ *   3b. CAS contention: outbox `reserving` -> `aborted`, retry with same messageId
+ *
+ * If the process crashes between (1) and (2) the outbox carries a `reserving`
+ * row whose threadVersion does not match the thread store; recovery is
+ * straightforward via `recoverOrphanedReservations`. The opposite ordering
+ * (advance thread first) leaves the thread chain holding a phantom
+ * messageId with no outbox row, which is not recoverable from the stores'
+ * public API (ThreadStore has no list method).
+ */
+async function reserveThread(
+  deps: OutboundDeps,
+  input: OutboundInput,
+): Promise<Result<Reservation>> {
   const messageId = deps.idGenerator();
-  // CAS-loop retry — bounded to avoid pathological infinite loops.
+  const payloadHash = hashPayload(input);
+  const createdAt = deps.clock();
   for (let attempt = 0; attempt < MAX_CAS_RETRIES; attempt++) {
-    const current = await deps.threadStore.get(threadKey);
+    const current = await deps.threadStore.get(input.threadKey);
     const currentVersion = current?.version ?? 0;
     const currentChain = current?.state.chain ?? [];
+    const nextVersion = currentVersion + 1;
     const nextChain: readonly string[] = [...currentChain, messageId];
     const nextState: ThreadState = { chain: nextChain };
-    const ok = await deps.threadStore.cas(threadKey, currentVersion, nextState);
+    // (1) Durable intent record. On the first attempt this is a put; on a
+    // retry it overwrites the previous attempt's `aborted` row with a fresh
+    // `reserving` at the new threadVersion.
+    await deps.outboxStore.put({
+      messageId,
+      threadKey: input.threadKey,
+      threadVersion: nextVersion,
+      payloadHash,
+      status: "reserving",
+      createdAt,
+    });
+    const ok = await deps.threadStore.cas(input.threadKey, currentVersion, nextState);
     if (ok) {
+      const promoted = await deps.outboxStore.cas(messageId, "reserving", "reserved");
+      if (!promoted) {
+        return {
+          ok: false,
+          error: err("SEND_FAILED", "outbox CAS reserving→reserved failed", { messageId }),
+        };
+      }
       return {
         ok: true,
         value: {
           messageId,
-          threadVersion: currentVersion + 1,
+          threadVersion: nextVersion,
           thread: nextState,
           priorThread: { chain: currentChain },
         },
       };
     }
+    // CAS lost: cancel the intent so a recovery scan does not see a stale row.
+    await deps.outboxStore.cas(messageId, "reserving", "aborted");
   }
   return {
     ok: false,
     error: err("SEND_FAILED", "thread CAS contention exceeded retry budget", {
-      threadKey,
+      threadKey: input.threadKey,
     }),
   };
 }
@@ -118,24 +159,6 @@ async function rollbackThread(
   if (current.version !== expectedVersion) return; // someone else advanced — leave alone
   const stripped = current.state.chain.filter((id) => id !== messageId);
   await threadStore.cas(threadKey, expectedVersion, { chain: stripped });
-}
-
-async function writeOutbox(
-  outboxStore: OutboxStore,
-  reservation: Reservation,
-  threadKey: string,
-  payloadHash: string,
-  createdAt: number,
-): Promise<void> {
-  const record: OutboxRecord = {
-    messageId: reservation.messageId,
-    threadKey,
-    threadVersion: reservation.threadVersion,
-    payloadHash,
-    status: "reserved",
-    createdAt,
-  };
-  await outboxStore.put(record);
 }
 
 function hashPayload(input: OutboundInput): string {
@@ -161,17 +184,9 @@ export async function executeOutbound(
     };
   }
 
-  const reserved = await reserveThread(deps, input.threadKey);
+  const reserved = await reserveThread(deps, input);
   if (!reserved.ok) return reserved;
   const { messageId, threadVersion, priorThread } = reserved.value;
-
-  await writeOutbox(
-    deps.outboxStore,
-    reserved.value,
-    input.threadKey,
-    hashPayload(input),
-    deps.clock(),
-  );
 
   // reserved → sending
   const flipped = await deps.outboxStore.cas(messageId, "reserved", "sending");

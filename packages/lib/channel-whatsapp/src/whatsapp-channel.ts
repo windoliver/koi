@@ -63,6 +63,7 @@ const WHATSAPP_CAPABILITIES: ChannelCapabilities = {
 };
 
 const SIGNATURE_HEADER = "x-hub-signature-256";
+const WEBHOOK_LEASE_MS = 30_000;
 
 type HandlerRef = { current: MessageHandler | null };
 
@@ -171,15 +172,26 @@ export function createWhatsAppChannel(
       return new Response(null, { status: 200 });
     }
 
-    // Enqueue every message. Each gets its own dedupe key. Failures here are
-    // 5xx so Meta retries the full batch — but enqueue is idempotent (returns
-    // `duplicate` for already-seen keys), so retries converge.
+    // Probe IdempotencyStore BEFORE 200 ack so a healthy provider response
+    // implies durable dedupe capacity. If the store is at capacity or the
+    // key is in-flight under another worker, return 5xx and let Meta retry.
+    // Each message gets its own dedupe key + probe + enqueue. Probe outcome:
+    //   - committed              → already processed, skip and continue
+    //   - in-flight              → 503 (Meta retries whole batch)
+    //   - capacity-exhausted     → 503 (Meta retries whole batch)
+    //   - ok → enqueue → abort lease (worker re-claims via tryBegin)
     for (const msg of messages) {
       const norm = normalizeWhatsApp(msg, config.phoneNumberId, clock);
       if (!norm.ok) {
         return new Response(`INVALID_PAYLOAD: ${norm.error.message}`, { status: 400 });
       }
       const key = dedupeKey(config.phoneNumberId, msg);
+      const begin = await deps.idempotencyStore.tryBegin(key, WEBHOOK_LEASE_MS);
+      if (!begin.ok) {
+        if (begin.reason === "committed") continue;
+        // in-flight or capacity-exhausted: refuse the ack so Meta retries.
+        return new Response(begin.reason, { status: 503 });
+      }
       try {
         await deps.ingressQueue.enqueue(key, {
           key,
@@ -187,9 +199,11 @@ export function createWhatsAppChannel(
           normalized: norm.value,
         });
       } catch {
-        // Transient store failure — return 5xx so Meta retries the whole batch.
+        await deps.idempotencyStore.abort(begin.lease).catch(() => {});
         return new Response("ingress-queue-unavailable", { status: 503 });
       }
+      // Release the lease so the handler worker can re-claim via tryBegin.
+      await deps.idempotencyStore.abort(begin.lease).catch(() => {});
     }
     return new Response(null, { status: 200 });
   };

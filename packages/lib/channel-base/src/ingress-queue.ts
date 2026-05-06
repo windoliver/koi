@@ -26,9 +26,20 @@ export type EnqueueResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: "duplicate" };
 
+export type RenewResult =
+  | { readonly ok: true; readonly leaseExpiresAt: number }
+  | { readonly ok: false };
+
 export interface IngressQueue<P = unknown, N = unknown> {
   enqueue(key: string, item: QueueItem<P, N>): Promise<EnqueueResult>;
   claim(workerId: string, leaseMs: number): Promise<ClaimedItem<P, N> | null>;
+  /**
+   * Extend an existing claim's lease. Returns `{ok:false}` if the worker no
+   * longer owns the claim (expired, reassigned, or item gone). Workers MUST
+   * abort the in-flight handler on `{ok:false}` to prevent duplicate
+   * execution under a successor claim.
+   */
+  renew(workerId: string, key: string, leaseMs: number): Promise<RenewResult>;
   ack(workerId: string, key: string): Promise<void>;
   nack(workerId: string, key: string): Promise<void>;
   deadLetter(workerId: string, key: string, reason: string): Promise<void>;
@@ -85,6 +96,21 @@ export class InMemoryIngressQueue<P = unknown, N = unknown> implements IngressQu
       };
     }
     return null;
+  }
+
+  async renew(workerId: string, key: string, leaseMs: number): Promise<RenewResult> {
+    const now = this.#now();
+    const rec = this.#records.get(key);
+    if (!rec?.claim) return { ok: false };
+    if (rec.claim.workerId !== workerId) return { ok: false };
+    if (rec.claim.expiresAt <= now) return { ok: false };
+    const expiresAt = now + leaseMs;
+    this.#records.set(key, {
+      item: rec.item,
+      attempts: rec.attempts,
+      claim: { workerId, token: rec.claim.token, expiresAt },
+    });
+    return { ok: true, leaseExpiresAt: expiresAt };
   }
 
   async ack(workerId: string, key: string): Promise<void> {

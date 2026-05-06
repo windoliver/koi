@@ -28,6 +28,9 @@ export type {
   SmtpTransport,
 } from "./platform-send.js";
 
+export type { RecoverOutcome, RecoverResult } from "./recover-orphans.js";
+export { recoverOrphanedReservations } from "./recover-orphans.js";
+
 export type { ResolveOutcome, ResolveResult } from "./resolve-pending.js";
 
 export type { IncomingHeaders } from "./threading.js";
