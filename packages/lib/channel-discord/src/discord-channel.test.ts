@@ -287,6 +287,20 @@ describe("@koi/channel-discord createDiscordChannel", () => {
     await adapter.disconnect();
   });
 
+  test('button action containing ":" is rejected at encode (avoids inbound delimiter collision)', async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    await adapter.connect();
+    await expect(
+      adapter.send({
+        content: [{ kind: "button", label: "approve", action: "tenant:approve" }],
+        threadId: "G1:C1",
+      }),
+    ).rejects.toThrow(/collides with the customId action\/payload delimiter/);
+    expect(f.sent).toHaveLength(0);
+    await adapter.disconnect();
+  });
+
   test("discord:embed custom block is sent as embed", async () => {
     const f = fakeClient();
     const adapter = createDiscordChannel({ token: "T", client: f.client });

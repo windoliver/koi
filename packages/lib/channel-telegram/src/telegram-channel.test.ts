@@ -1027,6 +1027,20 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
+  test('send: button action containing ":" is rejected at encode (avoids inbound delimiter collision)', async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({ token: "T", bot: f.bot });
+    await adapter.connect();
+    await expect(
+      adapter.send({
+        content: [{ kind: "button", label: "approve", action: "tenant:approve" }],
+        threadId: "200",
+      }),
+    ).rejects.toThrow(/collides with the callback_data delimiter/);
+    expect(f.calls).toHaveLength(0);
+    await adapter.disconnect();
+  });
+
   test("send: image block calls sendPhoto with caption", async () => {
     const f = fakeBot();
     const adapter = createTelegramChannel({ token: "T", bot: f.bot });

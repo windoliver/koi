@@ -738,6 +738,16 @@ function buildPayloads(
         // distinguish per-item / per-tenant clicks. Discord limits
         // custom_id to 100 chars — fail loudly rather than silently
         // truncating when the operator's payload is too large.
+        // `:` is the action/payload delimiter on the inbound side
+        // (normalizeButton splits on indexOf(":")). An action like
+        // "tenant:approve" would round-trip as action="tenant" /
+        // payload="approve" and route the click to the wrong handler.
+        // Fail closed at encode time.
+        if (block.action.includes(":")) {
+          throw new Error(
+            `[channel-discord] button action "${block.action}" contains ":" which collides with the customId action/payload delimiter and would corrupt the inbound split. Use a different separator or store the payload behind an opaque token.`,
+          );
+        }
         const customId =
           block.payload === undefined
             ? block.action

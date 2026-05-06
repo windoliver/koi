@@ -897,6 +897,17 @@ export class TelegramPartialDeliveryError extends Error {
 const TELEGRAM_CALLBACK_DATA_LIMIT = 64;
 
 function encodeCallbackData(action: string, payload: unknown): string {
+  // `:` is the action/payload delimiter on the inbound side
+  // (normalizeCallbackQuery splits on indexOf(":")). Letting an action
+  // contain `:` means a benign id like "tenant:approve" round-trips as
+  // action="tenant" / payload="approve", which can route a button
+  // click to the wrong handler — a real authorization-boundary bug.
+  // Reject at encode time rather than silently corrupting the click.
+  if (action.includes(":")) {
+    throw new Error(
+      `[channel-telegram] button action "${action}" contains ":" which collides with the callback_data delimiter and would corrupt the inbound action/payload split. Use a different separator or store the payload behind an opaque token.`,
+    );
+  }
   const encoded = payload === undefined ? action : `${action}:${JSON.stringify(payload)}`;
   // Fail closed: Telegram rejects sendMessage entirely when any callback_data
   // exceeds the limit, so a normal-looking response with a too-large payload
