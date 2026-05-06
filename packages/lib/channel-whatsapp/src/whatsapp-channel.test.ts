@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { InMemoryIdempotencyStore, InMemoryIngressQueue } from "@koi/channel-base";
+import { InMemoryIdempotencyStore, InMemoryIngressQueue, markDurable } from "@koi/channel-base";
 import type { InboundMessage } from "@koi/core";
 import type { WhatsAppConfig } from "./config.js";
 import type { WhatsAppMessage } from "./normalize.js";
@@ -288,16 +288,14 @@ describe("createWhatsAppChannel", () => {
     // branch.
     const idem = new InMemoryIdempotencyStore();
     const queue = new InMemoryIngressQueue<WhatsAppMessage, InboundMessage>();
-    const durableLikeIdem = {
-      durability: "durable" as const,
+    const durableLikeIdem = markDurable({
       tryBegin: idem.tryBegin.bind(idem),
       commit: idem.commit.bind(idem),
       commitPoison: idem.commitPoison.bind(idem),
       abort: idem.abort.bind(idem),
       renew: idem.renew.bind(idem),
-    };
-    const durableLikeQueue = {
-      durability: "durable" as const,
+    });
+    const durableLikeQueue = markDurable({
       enqueue: queue.enqueue.bind(queue),
       claim: queue.claim.bind(queue),
       ack: queue.ack.bind(queue),
@@ -306,7 +304,7 @@ describe("createWhatsAppChannel", () => {
       renew: queue.renew.bind(queue),
       awaitDrain: queue.awaitDrain.bind(queue),
       getDeadLetters: queue.getDeadLetters.bind(queue),
-    };
+    });
     const prodConfig: WhatsAppConfig = { ...config, production: true };
     const prodDeps: WhatsAppDependencies = {
       fetch: async () => new Response("{}", { status: 200 }),

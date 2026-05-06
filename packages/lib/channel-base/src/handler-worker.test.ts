@@ -152,6 +152,45 @@ describe("startHandlerWorker", () => {
     expect(await queue.claim("w2", 100)).toBeNull();
   });
 
+  test("capacity-exhausted: dead-letters terminally after maxRetries (drain unblocks)", async () => {
+    // Regression: previously the worker treated a capacity-exhausted
+    // tryBegin result identically to in-flight — pure transient nack
+    // forever. Drain-gated channels (email IMAP) block the provider
+    // callback on awaitDrain; a permanently-full idempotency store
+    // would wedge mailbox progress with no operator surface. Now
+    // capacity-exhausted nacks while attempts are below maxRetries
+    // and dead-letters terminally on the last attempt.
+    const queue = new InMemoryIngressQueue<{ readonly v: number }, null>();
+    const idem = new InMemoryIdempotencyStore();
+    const wrapped = {
+      tryBegin: async () =>
+        ({ ok: false, reason: "capacity-exhausted" }) as Awaited<ReturnType<typeof idem.tryBegin>>,
+      commit: idem.commit.bind(idem),
+      commitPoison: idem.commitPoison.bind(idem),
+      abort: idem.abort.bind(idem),
+      renew: idem.renew.bind(idem),
+    };
+    const stop = startHandlerWorker({
+      queue,
+      idempotencyStore: wrapped,
+      handler: async () => {
+        // Should never run: tryBegin always says capacity-exhausted.
+      },
+      commitTtlMs: 1000,
+      handlerTimeoutMs: 1000,
+      maxHandlerRetries: 2,
+      pollIntervalMs: 1,
+      workerId: "w1",
+    });
+    await queue.enqueue("k1", { key: "k1", payload: { v: 1 }, normalized: null });
+    const drain = await queue.awaitDrain("k1");
+    await stop();
+    expect(drain.ok).toBe(false);
+    const dl = await queue.getDeadLetters();
+    expect(dl).toHaveLength(1);
+    expect(dl[0]?.reason).toContain("capacity-exhausted");
+  });
+
   test("handler timeout + poison-commit failure: still dead-letters (drain unblocks)", async () => {
     // Regression: previously the timeout branch left the queue item
     // in limbo when commitPoisonDurably failed (no ack, no

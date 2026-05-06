@@ -40,8 +40,13 @@ export type {
 export { InMemoryIngressQueue } from "./ingress-queue.js";
 export type { OutboxRecord, OutboxStatus, OutboxStore } from "./outbox-store.js";
 export { InMemoryOutboxStore } from "./outbox-store.js";
-export type { ProductionGuardError, ProductionGuardResult } from "./production-guards.js";
-export { assertDurableInProduction } from "./production-guards.js";
+export type {
+  DurabilityDeclaration,
+  DurableStore,
+  ProductionGuardError,
+  ProductionGuardResult,
+} from "./production-guards.js";
+export { assertDurableInProduction, isDurable, markDurable } from "./production-guards.js";
 
 export type { RateLimiter, RateLimiterConfig, SendFn } from "./rate-limit.js";
 export { createRateLimiter } from "./rate-limit.js";

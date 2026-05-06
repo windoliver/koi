@@ -18,27 +18,53 @@ export type ProductionGuardResult =
   | { readonly ok: false; readonly error: ProductionGuardError };
 
 /**
- * Stores must self-declare durability. Production refuses to start
- * unless each named store advertises `durability === "durable"`.
+ * Stores declare durability through a branded mechanism that is not
+ * spoofable from a plain object literal. Production refuses to start
+ * unless each named store carries the `DURABLE_BRAND` symbol — set
+ * only by `markDurable()`, which an external durable adapter must
+ * invoke after wiring its real durable backing store.
  *
- * Why an explicit property rather than `instanceof`-based detection:
- * a wrapper that forwards every method call to an `InMemory*Store`
- * would pass an `instanceof` check trivially while silently being
- * restart-fragile. Constructor identity is not a security boundary;
- * an explicit capability claim is.
+ * Why a brand symbol rather than a plain string property: a caller
+ * could trivially set `durability: "durable"` on a wrapper around an
+ * in-memory store and bypass the guard. The brand is an unexported
+ * `Symbol` keyed by package; the only way to attach it is via
+ * `markDurable()`, which forces the implementor to consciously
+ * attest "this backs to durable storage" rather than passively type
+ * a string. Constructor identity is not a security boundary; an
+ * intentional capability claim is.
  *
- * Implementors of durable stores MUST assign `durability: "durable"`
- * (see `InMemoryIdempotencyStore` etc. for the `"ephemeral"`
- * counterexample). Stores that omit the property are treated as
- * undeclared and rejected in production for the same reason a missing
- * claim is rejected: production cannot infer durability from absence.
+ * In-memory stores expose `durability: "ephemeral"` for inspection /
+ * test wiring. Durable stores import `markDurable` and wrap their
+ * concrete store before passing it to a channel factory.
  */
+const DURABLE_BRAND: unique symbol = Symbol.for("@koi/channel-base/durable");
+
 export type DurabilityDeclaration = "durable" | "ephemeral";
 
+export type DurableStore<T> = T & { readonly [DURABLE_BRAND]: true };
+
+/**
+ * Brand a store as durable. The implementor MUST own a real durable
+ * backing implementation (Postgres, Redis with persistence, S3, etc.)
+ * before calling this — it is the explicit production-readiness
+ * attestation. The returned object passes `assertDurableInProduction`.
+ */
+export function markDurable<T extends object>(store: T): DurableStore<T> {
+  return Object.assign(Object.create(Object.getPrototypeOf(store)), store, {
+    [DURABLE_BRAND]: true as const,
+  }) as DurableStore<T>;
+}
+
+export function isDurable(store: unknown): boolean {
+  if (typeof store !== "object" || store === null) return false;
+  return (store as { readonly [DURABLE_BRAND]?: unknown })[DURABLE_BRAND] === true;
+}
+
 export function getDurability(store: unknown): DurabilityDeclaration | null {
+  if (isDurable(store)) return "durable";
   if (typeof store !== "object" || store === null) return null;
   const v = (store as { readonly durability?: unknown }).durability;
-  if (v === "durable" || v === "ephemeral") return v;
+  if (v === "ephemeral") return "ephemeral";
   return null;
 }
 
@@ -59,7 +85,7 @@ export function assertDurableInProduction(
     ok: false,
     error: {
       code: "INVALID_CONFIG",
-      message: `production mode requires stores declaring durability: "durable"; offenders: ${offenders.join(", ")}`,
+      message: `production mode requires markDurable()-branded stores; offenders (not branded durable): ${offenders.join(", ")}`,
     },
   };
 }

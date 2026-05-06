@@ -110,12 +110,29 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
           // adapter keeps the message in a state requiring operator
           // resolution.
           await opts.queue.deadLetter(opts.workerId, claimed.key, "poisoned-key-replay");
-        } else {
-          // in-flight or capacity-exhausted — another worker still owns the
-          // idempotency lease, OR the store cannot accept more work right now.
-          // Release the queue claim so the item can be re-attempted later;
-          // never ack (acking would drop the message).
+        } else if (begin.reason === "in-flight") {
+          // Another worker still owns the idempotency lease — genuinely
+          // transient (lease will release on commit, abort, or natural
+          // expiry). Nack so the queue item can be re-claimed later.
           await opts.queue.nack(opts.workerId, claimed.key);
+        } else {
+          // capacity-exhausted: the idempotency store cannot accept
+          // new work. This MAY be transient (operator drains, store
+          // frees up) or persistent (storage outage, quota wall). To
+          // avoid wedging drain-gated adapters' awaitDrain forever
+          // we nack while attempts are below maxRetries, then dead-
+          // letter terminally so awaitDrain unblocks with ok:false.
+          // Without this terminal step, an email IMAP callback would
+          // wait indefinitely on a permanently-full store.
+          if (claimed.attempts + 1 >= maxRetries) {
+            await opts.queue.deadLetter(
+              opts.workerId,
+              claimed.key,
+              "idempotency-store-capacity-exhausted",
+            );
+          } else {
+            await opts.queue.nack(opts.workerId, claimed.key);
+          }
         }
         continue;
       }
