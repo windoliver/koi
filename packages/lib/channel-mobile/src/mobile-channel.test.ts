@@ -8,11 +8,28 @@ import {
 } from "./mobile-channel.js";
 
 async function freePort(): Promise<number> {
-  const server = Bun.serve({ port: 0, fetch: () => new Response("ok") });
-  const port = server.port ?? 0;
-  server.stop(true);
-  if (port === 0) throw new Error("failed to allocate port");
-  return port;
+  // Prefer OS-assigned ephemeral; fall back to randomized fixed-range
+  // probing in environments that restrict port:0 binding (sandboxes,
+  // some CI containers). The fallback retries up to 20 times.
+  try {
+    const server = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+    const port = server.port ?? 0;
+    server.stop(true);
+    if (port !== 0) return port;
+  } catch {
+    // fall through to fixed-range probing
+  }
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const candidate = 30_000 + Math.floor(Math.random() * 30_000);
+    try {
+      const server = Bun.serve({ port: candidate, fetch: () => new Response("ok") });
+      server.stop(true);
+      return candidate;
+    } catch {
+      // EADDRINUSE — try another candidate
+    }
+  }
+  throw new Error("failed to allocate port after 20 attempts");
 }
 
 function openWs(port: number): Promise<WebSocket> {

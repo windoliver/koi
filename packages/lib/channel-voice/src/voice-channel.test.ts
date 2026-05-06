@@ -7,6 +7,7 @@ import {
   VoicePoisonedSessionError,
   VoiceSttTimeoutError,
   type VoiceTransport,
+  VoiceTransportSendTimeoutError,
 } from "./voice-channel.js";
 
 interface SentUtterance {
@@ -738,13 +739,22 @@ describe("createVoiceChannel", () => {
     const ch = createVoiceChannel({ transport, stt, tts, transportSendTimeoutMs: 30 });
     await ch.connect();
     // First send hits the stuck path → times out → poisons session.
-    await expect(
-      ch.send({
+    // Round-37 high: the timeout error must carry the effective
+    // utteranceId AND sessionId so retry middleware has a stable
+    // dedupe key (transport.sendUtterance idempotency depends on it).
+    let captured: VoiceTransportSendTimeoutError | undefined;
+    try {
+      await ch.send({
         threadId: "session-1",
         content: [{ kind: "text", text: "first" }],
         metadata: { utteranceId: "stuck" },
-      }),
-    ).rejects.toThrow(/transport.sendUtterance exceeded/);
+      });
+    } catch (e) {
+      if (e instanceof VoiceTransportSendTimeoutError) captured = e;
+    }
+    expect(captured).toBeInstanceOf(VoiceTransportSendTimeoutError);
+    expect(captured?.utteranceId).toBe("stuck");
+    expect(captured?.sessionId).toBe("session-1");
     // Newer send on the same session must reject immediately, not queue
     // behind / interleave with the still-in-flight stale call.
     await expect(

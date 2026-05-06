@@ -160,20 +160,37 @@ export class VoiceSttTimeoutError extends Error {
 /** Thrown from `send()` when `tts.synthesize()` exceeds `ttsTimeoutMs`. */
 export class VoiceTtsTimeoutError extends Error {
   readonly timeoutMs: number;
-  constructor(timeoutMs: number) {
+  /** Effective utteranceId for the timed-out send. Carry on retry to dedupe. */
+  readonly utteranceId: string | undefined;
+  /** Originating session/threadId for the timed-out send. */
+  readonly sessionId: string | undefined;
+  constructor(timeoutMs: number, utteranceId?: string, sessionId?: string) {
     super(`@koi/channel-voice: TTS synthesize exceeded ${String(timeoutMs)}ms`);
     this.name = "VoiceTtsTimeoutError";
     this.timeoutMs = timeoutMs;
+    this.utteranceId = utteranceId;
+    this.sessionId = sessionId;
   }
 }
 
-/** Thrown from `send()` when `transport.sendUtterance()` exceeds `transportSendTimeoutMs`. */
+/**
+ * Thrown from `send()` when `transport.sendUtterance()` exceeds
+ * `transportSendTimeoutMs`. The error carries the effective `utteranceId`
+ * (whether host-supplied via `metadata.utteranceId` or adapter-minted)
+ * so retry middleware can replay with the same dedupe key — the
+ * transport contract guarantees idempotent suppression keyed on
+ * `utteranceId`. `sessionId` is the originating threadId.
+ */
 export class VoiceTransportSendTimeoutError extends Error {
   readonly timeoutMs: number;
-  constructor(timeoutMs: number) {
+  readonly utteranceId: string | undefined;
+  readonly sessionId: string | undefined;
+  constructor(timeoutMs: number, utteranceId?: string, sessionId?: string) {
     super(`@koi/channel-voice: transport.sendUtterance exceeded ${String(timeoutMs)}ms`);
     this.name = "VoiceTransportSendTimeoutError";
     this.timeoutMs = timeoutMs;
+    this.utteranceId = utteranceId;
+    this.sessionId = sessionId;
   }
 }
 
@@ -645,7 +662,7 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
         tracked.finally(() => inflightRawOps.delete(tracked));
         const audio = await withTimeout(rawTts, ttsTimeoutMs, () => {
           queueMicrotask(() => ttsCtl.abort());
-          return new VoiceTtsTimeoutError(ttsTimeoutMs);
+          return new VoiceTtsTimeoutError(ttsTimeoutMs, utteranceId, sessionId);
         });
         frames.push(audio);
       }
@@ -657,7 +674,7 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       trackedSend.finally(() => inflightRawOps.delete(trackedSend));
       await withTimeout(rawSend, transportSendTimeoutMs, () => {
         queueMicrotask(() => sendCtl.abort());
-        return new VoiceTransportSendTimeoutError(transportSendTimeoutMs);
+        return new VoiceTransportSendTimeoutError(transportSendTimeoutMs, utteranceId, sessionId);
       });
     } catch (e: unknown) {
       // Only TRANSPORT timeouts get persistent poison: by the time we

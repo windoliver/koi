@@ -17132,13 +17132,31 @@ describe("Golden: @koi/channel-mobile", () => {
 
   test("no in-process buffer: outbound while disconnected goes to pushNotifier", async () => {
     const { createMobileChannel } = await import("@koi/channel-mobile");
-    // Probe an OS-assigned port via Bun.serve({port:0}) then close it,
-    // because the mobile adapter intentionally does not accept port:0
-    // (it never exposes the bound port back to callers).
-    const probe = Bun.serve({ port: 0, fetch: () => new Response("ok") });
-    const port = probe.port;
-    probe.stop(true);
-    if (port === undefined) throw new Error("probe failed to bind");
+    // Pick a free port. Try OS-assigned ephemeral first; fall back to
+    // randomized fixed-range probing in environments that restrict
+    // port:0 binding (sandboxed CI containers).
+    const pickPort = (): number => {
+      try {
+        const probe = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+        const p = probe.port;
+        probe.stop(true);
+        if (p !== undefined && p !== 0) return p;
+      } catch {
+        // fall through
+      }
+      for (let i = 0; i < 20; i++) {
+        const candidate = 30_000 + Math.floor(Math.random() * 30_000);
+        try {
+          const probe = Bun.serve({ port: candidate, fetch: () => new Response("ok") });
+          probe.stop(true);
+          return candidate;
+        } catch {
+          // EADDRINUSE — keep trying
+        }
+      }
+      throw new Error("failed to allocate port");
+    };
+    const port = pickPort();
     const seen: number[] = [];
     const ch = createMobileChannel({
       port,
