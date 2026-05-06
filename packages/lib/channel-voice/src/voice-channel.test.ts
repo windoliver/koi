@@ -1835,7 +1835,7 @@ describe("createVoiceChannel", () => {
     const transportHangs: VoiceTransport = {
       connect: async () => {},
       disconnect: async () => {},
-      sendUtterance: async (sessionId: string, _u: string, _f: Uint8Array) => {
+      sendUtterance: async (sessionId: string) => {
         if (sessionId === "call-X") await new Promise(() => {});
       },
       onUtterance: () => () => {},
@@ -1905,6 +1905,113 @@ describe("createVoiceChannel", () => {
         content: [{ kind: "text", text: "too late" }],
       });
       await expect(ch.send(reply)).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+    }
+    await ch.disconnect();
+  });
+
+  test("endCall(sessionId) fences ALL turns from the ended call, not just the latest (round-49 high)", async () => {
+    // Round-49 high: round-48 tracked only the most-recent turn id per
+    // session, so endCall expired only the latest. A multi-turn call
+    // (A then B then hangup) left A's id valid — A's late reply could
+    // still speak into the ended/reused session. Now sessionToTurnIds
+    // is a Set per session and endCall expires every entry.
+    // let requires justification: harness state captured by callbacks
+    let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (handler: (sessionId: string, frame: Uint8Array) => void) => {
+        listener = handler;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = { transcribe: async () => "u" };
+    const tts: Tts = { synthesize: async () => new Uint8Array([1]) };
+    const captured: InboundMessage[] = [];
+    const ch = createVoiceChannel({ transport, stt, tts });
+    ch.onMessage(async (msg: InboundMessage) => {
+      captured.push(msg);
+    });
+    await ch.connect();
+    // Two turns on the same session BEFORE the call is ended.
+    listener?.("default", new Uint8Array([1]));
+    await new Promise((r) => setTimeout(r, 30));
+    listener?.("default", new Uint8Array([2]));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(captured.length).toBe(2);
+    const inboundA = captured[0];
+    const inboundB = captured[1];
+    // Caller hangs up — host calls endCall.
+    ch.endCall("default");
+    if (inboundA !== undefined && inboundB !== undefined) {
+      // BOTH detached replies must be rejected — entire logical call
+      // is fenced, not only the most recent turn.
+      const replyA = replyToVoiceInbound(inboundA, {
+        threadId: "default",
+        content: [{ kind: "text", text: "stale-A" }],
+      });
+      const replyB = replyToVoiceInbound(inboundB, {
+        threadId: "default",
+        content: [{ kind: "text", text: "stale-B" }],
+      });
+      await expect(ch.send(replyA)).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+      await expect(ch.send(replyB)).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+    }
+    await ch.disconnect();
+  });
+
+  test("explicit endCall(sessionId) fences the prior turn's detached reply (round-48 high)", async () => {
+    // Round-48 high: round-47 (correctly) removed auto-expiry of prior
+    // turn on next-utterance arrival because it dropped legitimate slow
+    // replies. Round-48 demands an enforceable call-incarnation boundary
+    // for hosts whose transport reuses a stable sessionId across calls.
+    // Resolution: explicit `endCall(sessionId)` API. Hosts that detect
+    // call-end (hangup, inactivity, transport EOC marker) call it; the
+    // current turn id for that session is expired, so any subsequent
+    // detached reply tagged with that turn id is rejected.
+    // let requires justification: harness state captured by callbacks
+    let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (handler: (sessionId: string, frame: Uint8Array) => void) => {
+        listener = handler;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = { transcribe: async () => "u" };
+    const tts: Tts = { synthesize: async () => new Uint8Array([1]) };
+    const captured: InboundMessage[] = [];
+    const ch = createVoiceChannel({ transport, stt, tts });
+    ch.onMessage(async (msg: InboundMessage) => {
+      captured.push(msg);
+    });
+    await ch.connect();
+    listener?.("default", new Uint8Array([1]));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(captured.length).toBe(1);
+    const inboundA = captured[0];
+    expect(inboundA).toBeDefined();
+    // Host detects call-end on this sessionId and ends the call. Now a
+    // new logical call B starts on the SAME sessionId.
+    ch.endCall("default");
+    listener?.("default", new Uint8Array([2]));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(captured.length).toBe(2);
+    if (inboundA !== undefined) {
+      // A's detached reply now arrives — must be rejected (server-enforced
+      // call-incarnation boundary via endCall).
+      const replyA = replyToVoiceInbound(inboundA, {
+        threadId: "default",
+        content: [{ kind: "text", text: "stale-from-A" }],
+      });
+      await expect(ch.send(replyA)).rejects.toBeInstanceOf(VoicePoisonedSessionError);
     }
     await ch.disconnect();
   });

@@ -121,7 +121,7 @@ export function createInheritedChannel(
   // and every such send rejects with VoicePoisonedSessionError. Pure
   // delegation — no attribution, no message rewrite — these helpers don't
   // produce wire traffic; they return data the caller passes back into send().
-  const PARENT_PURE_EXTENSIONS = ["stampForCurrentCall", "currentCallEpoch"] as const;
+  const PARENT_PURE_EXTENSIONS = ["stampForCurrentCall", "currentCallEpoch", "endCall"] as const;
   for (const methodName of PARENT_PURE_EXTENSIONS) {
     const original = (parentChannel as unknown as Record<string, unknown>)[methodName];
     if (typeof original === "function") {

@@ -386,6 +386,20 @@ export type VoiceChannelAdapter = ChannelAdapter & {
   readonly stampForCurrentCall: (outbound: OutboundMessage) => OutboundMessage;
   /** Read-only view of the current call epoch for hosts that prefer to stamp manually. */
   readonly currentCallEpoch: () => number;
+  /**
+   * Round-48 high: explicit host-driven call-incarnation boundary. When the
+   * host detects that the logical call on `sessionId` has ended (hangup,
+   * inactivity timeout, transport-side EOC marker, etc.), call this to
+   * expire the current turn id for that session. Any subsequent detached
+   * reply tagged with the just-expired turn id is rejected by `wrappedSend`,
+   * even if the same `sessionId` is reused for a new call.
+   *
+   * Hosts that mint a unique `sessionId` per logical call (the documented
+   * preferred contract) do not need to call this — the per-turn id is
+   * already isolated by the unique session. `endCall` exists for hosts
+   * whose transport reuses a stable `sessionId` across calls.
+   */
+  readonly endCall: (sessionId: string) => void;
 };
 
 export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdapter {
@@ -488,6 +502,16 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
       if (evict !== undefined) expiredTurnIds.delete(evict);
     }
   };
+  // Round-48/49 high: ALL active turn ids per sessionId (not just the
+  // latest). Round 47 removed auto-expiry of prior turn id on next-
+  // utterance arrival (it dropped legitimate slow replies). Round 48
+  // added explicit `endCall(sessionId)` for host-driven call-incarnation
+  // boundary. Round 49 caught: tracking only the LATEST turn id meant
+  // endCall expired only B; turn A's still-valid id could speak into
+  // the ended/reused session. Now we keep the SET of every turn id seen
+  // for this session and `endCall` expires ALL of them — the entire
+  // logical call is fenced, not just the most recent turn.
+  const sessionToTurnIds = new Map<string, Set<string>>();
   // Per-turn fence. Inserted by the dispatch watchdog when a handler
   // exceeds dispatchHandlerTimeoutMs; checked by wrappedSend so a hung
   // handler that eventually wakes up cannot inject late audio into a
@@ -633,6 +657,15 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
             // documented transport contract); the adapter cannot infer
             // call boundaries from utterance ordering alone.
             const turnId = randomBytes(16).toString("hex");
+            // Round-49 high: track ALL turn ids for this session so
+            // endCall() can expire the entire logical call.
+            // let requires justification: read-modify-write into the Map
+            let activeIds = sessionToTurnIds.get(sessionId);
+            if (activeIds === undefined) {
+              activeIds = new Set<string>();
+              sessionToTurnIds.set(sessionId, activeIds);
+            }
+            activeIds.add(turnId);
             inboundGenContext.run({ gen: capturedGen, turnToken, turnId, collector }, () => {
               handler({ sessionId, utterance, text });
             });
@@ -1083,5 +1116,15 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
     }),
     /** Read-only view of the current call epoch for hosts that prefer to stamp manually. */
     currentCallEpoch: (): number => connectGen,
+    endCall: (sessionId: string): void => {
+      // Round-49 high: expire EVERY turn id for this session, not just
+      // the most recent. A multi-turn call (A then B) needs both ids
+      // fenced — otherwise A's late detached reply still admits.
+      const activeIds = sessionToTurnIds.get(sessionId);
+      if (activeIds !== undefined) {
+        for (const id of activeIds) expireTurnId(id);
+        sessionToTurnIds.delete(sessionId);
+      }
+    },
   } satisfies VoiceChannelAdapter;
 }
