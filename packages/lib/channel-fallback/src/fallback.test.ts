@@ -3,6 +3,7 @@ import type {
   ChannelAdapter,
   ChannelCapabilities,
   ContentBlock,
+  InboundMessage,
   OutboundMessage,
   TextBlock,
 } from "@koi/core";
@@ -182,6 +183,49 @@ describe("wrapWithFallback", () => {
     expect((out[0] as TextBlock).text).toContain("[image: cat]");
     expect((out[1] as TextBlock).text).toBe("[OK]");
     expect((out[2] as TextBlock).text).toBe("hello");
+  });
+
+  test("preserves prototype methods on class-backed adapters (round-39 regression)", async () => {
+    // Round-39 medium: prior implementation used object spread which only
+    // copies enumerable own properties. A class-backed ChannelAdapter whose
+    // lifecycle methods (connect/disconnect/onMessage) live on the
+    // prototype lost those methods entirely while the return type still
+    // claimed the full adapter shape — silent runtime failure.
+    let connects = 0;
+    let disconnects = 0;
+    let sends = 0;
+    let listens = 0;
+    class ClassAdapter implements ChannelAdapter {
+      readonly name = "class-adapter";
+      readonly capabilities = TEXT_ONLY;
+      async connect(): Promise<void> {
+        connects++;
+      }
+      async disconnect(): Promise<void> {
+        disconnects++;
+      }
+      async send(_msg: OutboundMessage): Promise<void> {
+        sends++;
+      }
+      onMessage(_h: (m: InboundMessage) => Promise<void>): () => void {
+        listens++;
+        return () => {};
+      }
+    }
+    const inner = new ClassAdapter();
+    const wrapped = wrapWithFallback(inner);
+    expect(wrapped.name).toBe("class-adapter");
+    expect(typeof wrapped.connect).toBe("function");
+    expect(typeof wrapped.disconnect).toBe("function");
+    expect(typeof wrapped.onMessage).toBe("function");
+    await wrapped.connect();
+    await wrapped.disconnect();
+    await wrapped.send({ content: [{ kind: "text", text: "hi" }] });
+    wrapped.onMessage(async () => {});
+    expect(connects).toBe(1);
+    expect(disconnects).toBe(1);
+    expect(sends).toBe(1);
+    expect(listens).toBe(1);
   });
 
   test("connect/disconnect/onMessage delegate to inner", async () => {

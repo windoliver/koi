@@ -8,6 +8,8 @@
 export type { Stt, Tts, VoiceChannelConfig, VoiceTransport } from "./voice-channel.js";
 export {
   createVoiceChannel,
+  replyToVoiceInbound,
+  VOICE_CALL_EPOCH_KEY,
   VoiceMissingSessionError,
   VoicePoisonedSessionError,
   VoiceSttTimeoutError,

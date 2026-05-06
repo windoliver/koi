@@ -521,7 +521,7 @@ describe("createVoiceChannel", () => {
       },
       disconnect: async () => {},
       sendUtterance: async () => {},
-      onUtterance: (handler) => {
+      onUtterance: (handler: (sessionId: string, frame: Uint8Array) => void) => {
         listener = handler;
         return () => {
           listener = undefined;
@@ -532,7 +532,7 @@ describe("createVoiceChannel", () => {
     const tts: Tts = { synthesize: async () => new Uint8Array() };
     const ch = createVoiceChannel({ transport: racyTransport, stt, tts });
     const received: InboundMessage[] = [];
-    ch.onMessage(async (msg) => {
+    ch.onMessage(async (msg: InboundMessage) => {
       received.push(msg);
     });
     await ch.connect();

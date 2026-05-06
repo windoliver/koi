@@ -67,28 +67,32 @@ export function wrapWithFallback<T extends ChannelAdapter>(
   const wrappedSend = (message: OutboundMessage): Promise<void> =>
     inner.send(downgradeMessage(message));
 
-  // Preserve every property of the inner adapter (including extensions
-  // like sendUnsolicited) BUT also intercept known outbound entry points
-  // so the downgrade pass applies uniformly. Without this, an adapter
-  // method that bypasses send() (e.g. MobileChannelAdapter.sendUnsolicited)
-  // would push raw unsupported blocks through a narrow channel.
-  const wrapped: Record<string, unknown> = {
-    ...(inner as unknown as Record<string, unknown>),
-    send: wrappedSend,
-  };
-  // Any function-typed property whose name is a known outbound entry
-  // point gets the same downgrade-then-delegate treatment. Listed
-  // explicitly so a future innocuous-looking method (`onMessage`,
-  // `connect`) cannot accidentally be re-typed to look like an outbound
-  // and silently bypass downgrade.
-  const OUTBOUND_EXTENSION_METHODS = ["sendUnsolicited"] as const;
-  for (const methodName of OUTBOUND_EXTENSION_METHODS) {
-    const original = (inner as unknown as Record<string, unknown>)[methodName];
-    if (typeof original === "function") {
-      const fn = original as (message: OutboundMessage) => Promise<void>;
-      wrapped[methodName] = (message: OutboundMessage): Promise<void> =>
-        fn.call(inner, downgradeMessage(message));
-    }
-  }
-  return wrapped as T;
+  // Round-39 medium: object-spread (`{...inner, send: wrappedSend}`) only
+  // copies enumerable own properties. Class-backed adapters whose lifecycle
+  // methods (connect/disconnect/onMessage) live on the prototype lost
+  // those methods entirely while the return type still claimed the full
+  // adapter shape — silent breakage at runtime.
+  //
+  // Proxy delegates EVERY property access to `inner` (preserving prototype
+  // chain, getters, and `this` binding) and intercepts only the known
+  // outbound entry points so the downgrade pass applies uniformly.
+  const OUTBOUND_EXTENSION_METHODS = new Set<string>(["sendUnsolicited"]);
+  const wrapped = new Proxy(inner as unknown as Record<string, unknown>, {
+    get(target, prop, receiver) {
+      if (prop === "send") return wrappedSend;
+      if (typeof prop === "string" && OUTBOUND_EXTENSION_METHODS.has(prop)) {
+        const original = Reflect.get(target, prop, receiver);
+        if (typeof original === "function") {
+          const fn = original as (message: OutboundMessage) => Promise<void>;
+          return (message: OutboundMessage): Promise<void> =>
+            fn.call(target, downgradeMessage(message));
+        }
+      }
+      const value = Reflect.get(target, prop, receiver);
+      // Bind methods to inner so prototype `this`-references resolve correctly.
+      if (typeof value === "function") return value.bind(target);
+      return value;
+    },
+  });
+  return wrapped as unknown as T;
 }
