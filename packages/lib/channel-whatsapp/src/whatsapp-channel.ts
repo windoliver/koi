@@ -104,6 +104,11 @@ type ExtractedMessage = {
   readonly phoneNumberId: string;
 };
 
+type ExtractResult = {
+  readonly messages: readonly ExtractedMessage[];
+  readonly malformedCount: number;
+};
+
 /**
  * Walks the Meta webhook envelope and yields each `messages[]` entry
  * paired with the `metadata.phone_number_id` of the change it came from.
@@ -112,12 +117,19 @@ type ExtractedMessage = {
  * scoped to the WABA-id Meta actually delivered it under, NOT to the
  * adapter's static config value, so cross-number traffic cannot collide
  * on dedupe keys or be sent from the wrong business number on reply.
+ *
+ * Reports `malformedCount` separately so the caller can distinguish a
+ * status-only delivery (no `messages[]`) from one whose `messages[]`
+ * carries structurally bad entries; the latter should surface as
+ * INVALID_PAYLOAD instead of an empty 200.
  */
-function extractMessages(parsed: unknown): readonly ExtractedMessage[] {
-  if (typeof parsed !== "object" || parsed === null || !("entry" in parsed)) return [];
+function extractMessages(parsed: unknown): ExtractResult {
+  const empty: ExtractResult = { messages: [], malformedCount: 0 };
+  if (typeof parsed !== "object" || parsed === null || !("entry" in parsed)) return empty;
   const entry: unknown = parsed.entry;
-  if (!Array.isArray(entry)) return [];
+  if (!Array.isArray(entry)) return empty;
   const out: ExtractedMessage[] = [];
+  let malformed = 0;
   for (const e of entry) {
     if (typeof e !== "object" || e === null || !("changes" in e)) continue;
     const changes: unknown = e.changes;
@@ -126,10 +138,6 @@ function extractMessages(parsed: unknown): readonly ExtractedMessage[] {
       if (typeof change !== "object" || change === null || !("value" in change)) continue;
       const value: unknown = change.value;
       if (typeof value !== "object" || value === null) continue;
-      // Per Meta Cloud API docs the value carries
-      // metadata.phone_number_id identifying the WABA that received the
-      // message. Drop the change if it isn't a string (status callbacks
-      // and other event types).
       const meta =
         "metadata" in value && typeof value.metadata === "object" && value.metadata !== null
           ? (value.metadata as Record<string, unknown>)
@@ -141,11 +149,15 @@ function extractMessages(parsed: unknown): readonly ExtractedMessage[] {
       const msgs: unknown = value.messages;
       if (!Array.isArray(msgs)) continue;
       for (const m of msgs) {
-        if (isWhatsAppMessage(m)) out.push({ message: m, phoneNumberId });
+        if (isWhatsAppMessage(m)) {
+          out.push({ message: m, phoneNumberId });
+        } else {
+          malformed++;
+        }
       }
     }
   }
-  return out;
+  return { messages: out, malformedCount: malformed };
 }
 
 async function handleHandshake(request: Request, config: WhatsAppConfig): Promise<Response | null> {
@@ -206,8 +218,20 @@ export function createWhatsAppChannel(
       return new Response("INVALID_PAYLOAD", { status: 400 });
     }
     const extracted = extractMessages(parsed);
-    if (extracted.length === 0) {
-      // No messages (status callback or unknown shape) — ack so Meta stops retrying.
+    if (extracted.malformedCount > 0) {
+      // `messages[]` present but at least one entry is structurally
+      // invalid. Surface as INVALID_PAYLOAD so the malformed delivery is
+      // visible rather than silently 200-acked. Meta does not retry 4xx,
+      // but the alternative (silent drop on 200) is strictly worse —
+      // operators see the error in logs and can fix the producer.
+      return new Response(
+        `INVALID_PAYLOAD: ${extracted.malformedCount} malformed message entr${extracted.malformedCount === 1 ? "y" : "ies"}`,
+        { status: 400 },
+      );
+    }
+    if (extracted.messages.length === 0) {
+      // Genuinely no messages (status callback or unknown shape) — ack
+      // so Meta stops retrying.
       return new Response(null, { status: 200 });
     }
 
@@ -223,7 +247,7 @@ export function createWhatsAppChannel(
       readonly normalized: InboundMessage;
     };
     const items: Item[] = [];
-    for (const { message: msg, phoneNumberId } of extracted) {
+    for (const { message: msg, phoneNumberId } of extracted.messages) {
       if (phoneNumberId !== config.phoneNumberId) {
         return new Response(
           `INVALID_PAYLOAD: phone_number_id mismatch (expected ${config.phoneNumberId}, got ${phoneNumberId})`,

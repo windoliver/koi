@@ -196,8 +196,14 @@ export function createTeamsChannel(
     return new Response(null, { status: 200 });
 
     async function persistAndEnqueue(lease: Lease): Promise<void> {
-      // Address persistence is part of the post-claim path so a replayed
-      // webhook cannot overwrite the latest stored address with stale data.
+      // Use the activity's own timestamp (assigned by the source channel)
+      // as the monotonic ordering key, falling back to wall-clock if the
+      // activity omits one. This is what makes replay-vs-fresh
+      // distinguishable: a delayed redelivery of an OLDER activity must
+      // not overwrite a NEWER stored serviceUrl/recipient.
+      const activityTs =
+        typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : Number.NaN;
+      const lastSeenAt = Number.isFinite(activityTs) ? activityTs : clock();
       const address: ConversationAddress = {
         serviceUrl: parsed.serviceUrl,
         tenantId,
@@ -207,9 +213,16 @@ export function createTeamsChannel(
           id: parsed.from.id,
           ...(parsed.from.name !== undefined ? { name: parsed.from.name } : {}),
         },
-        lastSeenAt: clock(),
+        lastSeenAt,
       };
-      await deps.conversationAddressStore.put(addressKey, address);
+      // Monotonic update: only overwrite if the new delivery is at least
+      // as recent as the stored one. Bot Framework can rotate serviceUrl,
+      // and a replay of an older activity arriving after a newer one
+      // would otherwise clobber the fresh routing target.
+      const existing = await deps.conversationAddressStore.get(addressKey);
+      if (existing === null || existing.lastSeenAt <= lastSeenAt) {
+        await deps.conversationAddressStore.put(addressKey, address);
+      }
       await deps.ingressQueue.enqueue(key, { key, payload: parsed, normalized });
       await deps.idempotencyStore.abort(lease).catch(() => {});
     }
