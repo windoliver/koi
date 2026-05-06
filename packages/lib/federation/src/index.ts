@@ -28,5 +28,5 @@ export { advanceCursor, createNexusSyncClient, deduplicateEvents } from "./sync-
 export type { FederationConfig, FederationSyncEvent, SyncCursor } from "./types.js";
 export { DEFAULT_FEDERATION_CONFIG, FEDERATION_PROTOCOL_VERSION } from "./types.js";
 // zone registry (Nexus-backed)
-export type { ZoneRegistryNexusConfig } from "./zone-registry-nexus.js";
+export type { ServerReadsMode, ZoneRegistryNexusConfig } from "./zone-registry-nexus.js";
 export { createZoneRegistryNexus } from "./zone-registry-nexus.js";

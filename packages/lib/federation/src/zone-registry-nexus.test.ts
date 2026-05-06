@@ -54,9 +54,13 @@ function makeMethodTransport(handlers: Record<string, () => unknown>): {
     calls.push({ method, params });
     const handler = handlers[method];
     if (handler === undefined) {
+      // Mirror a Nexus hub that hasn't implemented the method: surfaces
+      // the JSON-RPC -32601 phrasing the auto-downgrade heuristic looks
+      // for. Tests that want a different failure mode register a
+      // handler that throws with their preferred error.
       const err: KoiError = {
         code: "EXTERNAL",
-        message: `unhandled rpc: ${method}`,
+        message: `Method not found: ${method}`,
         retryable: false,
       };
       return { ok: false, error: err };
@@ -151,12 +155,19 @@ describe("createZoneRegistryNexus", () => {
     await registry[Symbol.asyncDispose]();
   });
 
-  test("list (default) returns local projection of writer's registrations", async () => {
+  test("list (auto default) downgrades to projection when hub lacks zone_list", async () => {
+    // Regression for #1372 review-loop pass-3 round 10: default mode
+    // tries the hub first so fresh processes can discover peers, but
+    // gracefully falls back to the writer-local projection when the
+    // hub returns method-not-found. The fallback is sticky for the
+    // registry's lifetime so we don't pay the failed-RPC cost again.
     const a: ZoneDescriptor = { ...makeDescriptor("a"), status: "active" };
     const b: ZoneDescriptor = { ...makeDescriptor("b"), status: "draining" };
     let next: ZoneDescriptor = a;
-    const { transport } = makeMethodTransport({
+    const { transport, calls } = makeMethodTransport({
       "federation.zone_register": () => next,
+      // No zone_list handler → makeMethodTransport returns
+      // "Method not found", triggering the auto-downgrade.
     });
     const registry = createZoneRegistryNexus({ transport });
     await registry.register(a);
@@ -165,6 +176,19 @@ describe("createZoneRegistryNexus", () => {
 
     const all = await registry.list();
     expect(all).toHaveLength(2);
+    expect(calls.find((c) => c.method === "federation.zone_list")).toBeDefined();
+
+    // Second list call should NOT re-issue the failed RPC.
+    const before = calls.filter((c) => c.method === "federation.zone_list").length;
+    await registry.list();
+    expect(calls.filter((c) => c.method === "federation.zone_list").length).toBe(before);
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("list (always) propagates method-not-found as a hard error", async () => {
+    const { transport } = makeMethodTransport({});
+    const registry = createZoneRegistryNexus({ transport, serverReadsMode: "always" });
+    await expect(registry.list()).rejects.toThrow(/Method not found/);
     await registry[Symbol.asyncDispose]();
   });
 
@@ -193,19 +217,37 @@ describe("createZoneRegistryNexus", () => {
     await registry[Symbol.asyncDispose]();
   });
 
-  test("lookup (default) reads from writer-local projection without RPC", async () => {
-    // Regression for #1372 review-loop pass-3 round 5: opt-in server
-    // reads — the default must NOT call zone_lookup against hubs that
-    // have not implemented it. Default mode reads only from the local
-    // projection populated by this writer's own register() calls.
+  test("lookup (auto default) tries hub first, downgrades on method-not-found, reuses projection thereafter", async () => {
+    // Regression for #1372 review-loop pass-3 round 10: default mode
+    // is "auto" — try zone_lookup first so a fresh process can discover
+    // peers, fall back to projection if the hub doesn't implement it,
+    // and remember the downgrade so subsequent lookups skip the RPC.
     const desc = makeDescriptor();
     const { transport, calls } = makeMethodTransport({
       "federation.zone_register": () => desc,
     });
     const registry = createZoneRegistryNexus({ transport });
     await registry.register(desc);
+
+    // First lookup: server attempted, method-not-found, downgrades.
     expect(await registry.lookup(ZA)).toEqual(desc);
-    expect(calls.find((c) => c.method === "federation.zone_lookup")).toBeUndefined();
+    expect(calls.filter((c) => c.method === "federation.zone_lookup")).toHaveLength(1);
+
+    // Subsequent lookups: must NOT re-issue the RPC.
+    expect(await registry.lookup(ZA)).toEqual(desc);
+    expect(calls.filter((c) => c.method === "federation.zone_lookup")).toHaveLength(1);
+
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("lookup (auto default) propagates non-method-not-found errors instead of downgrading", async () => {
+    // Transient network errors must NOT permanently downgrade the
+    // registry — only signals that the method genuinely doesn't exist.
+    const { transport } = makeMethodTransport({
+      "federation.zone_lookup": () => new Error("connection refused"),
+    });
+    const registry = createZoneRegistryNexus({ transport });
+    await expect(registry.lookup(ZA)).rejects.toThrow(/connection refused/);
     await registry[Symbol.asyncDispose]();
   });
 

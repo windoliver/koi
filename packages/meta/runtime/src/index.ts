@@ -57,6 +57,7 @@ export type {
   FederationSyncEvent,
   NexusSyncClientConfig,
   RemoteHealth,
+  ServerReadsMode,
   SyncClient,
   SyncCursor,
   SyncEngineConfig,

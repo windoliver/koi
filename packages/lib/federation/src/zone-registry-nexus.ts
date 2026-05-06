@@ -2,34 +2,69 @@
  * Nexus-backed ZoneRegistry implementation.
  *
  * Uses NexusTransport JSON-RPC to manage zone lifecycle on a Nexus server.
- * Reads (`lookup`, `list`) default to writer-local projection — Phase 3
- * hubs do not implement `zone_lookup` / `zone_list` RPCs, so unconditional
- * server reads would be a control-plane outage. Operators can opt into
- * authoritative server reads via `useServerReads: true` once their hub
- * advertises the read handlers. Cross-process discovery against pre-v1
- * hubs and capability negotiation are tracked in #1410.
+ *
+ * Read semantics (`lookup`, `list`) follow `serverReadsMode`:
+ *   - `"auto"` (default): query the hub first via
+ *     `federation.zone_lookup` / `federation.zone_list`. If the hub
+ *     responds with a method-not-found-style error, this registry
+ *     downgrades to writer-local projection for the rest of its
+ *     lifetime so the call still returns. New/restarted processes get
+ *     authoritative discovery against upgraded hubs without breaking
+ *     against pre-v1 hubs that haven't shipped the read handlers.
+ *   - `"always"`: always query the hub; method-not-found surfaces as
+ *     a hard error (use after the rolling upgrade is complete).
+ *   - `"never"`: always read from the writer-local projection (legacy
+ *     baseline mode).
+ *
+ * The local projection is kept in lockstep with this writer's own
+ * `register()`/`deregister()` calls regardless of mode, so it powers
+ * `watch()` events and the `"never"`/downgraded reads.
  */
 
 import type { ZoneDescriptor, ZoneEvent, ZoneFilter, ZoneId, ZoneRegistry } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
 
+/** Strategy for `lookup()`/`list()` reads — see header docstring. */
+export type ServerReadsMode = "auto" | "always" | "never";
+
 /** Config for createZoneRegistryNexus. */
 export interface ZoneRegistryNexusConfig {
   readonly transport: NexusTransport;
   /**
-   * When `true`, `lookup()` and `list()` query the hub via
-   * `federation.zone_lookup` / `federation.zone_list` so processes
-   * that did not personally call `register()` can still discover peers.
-   *
-   * Defaults to `false` for wire compatibility: Phase 3 hubs only
-   * advertise `federation.zone_register` / `federation.zone_deregister`,
-   * and unconditionally issuing the read RPCs would turn discovery into
-   * a control-plane outage against unupgraded hubs. Operators must
-   * explicitly opt in once their hub implements the read handlers.
-   * In the default mode, reads come from the local projection — the
-   * same writer-only behavior the v1 baseline shipped with.
+   * Read mode for `lookup()` and `list()`. Defaults to `"auto"` —
+   * queries the hub first and silently downgrades to writer-local
+   * projection for this registry's lifetime if the hub responds with
+   * a method-not-found-style error. See header docstring.
+   */
+  readonly serverReadsMode?: ServerReadsMode;
+  /**
+   * Legacy boolean alias for `serverReadsMode`:
+   *   - `true`  → `"always"`
+   *   - `false` → `"never"`
+   * Prefer `serverReadsMode`. Ignored if `serverReadsMode` is set.
    */
   readonly useServerReads?: boolean;
+}
+
+/**
+ * Heuristic: does this transport error indicate the remote method is
+ * not implemented? JSON-RPC servers signal this with code -32601, but
+ * `NexusTransport` returns a `KoiError` whose code is `"EXTERNAL"`,
+ * so we additionally pattern-match the message for the standard
+ * phrases ("method not found", "unknown method", "not implemented").
+ * False positives are bounded — the worst case is a transient error
+ * that downgrades reads to projection, which is still a safer mode
+ * than throwing on every read.
+ */
+function isMethodNotFoundError(message: string, code: string): boolean {
+  if (code === "NOT_FOUND") return true;
+  const m = message.toLowerCase();
+  return (
+    m.includes("method not found") ||
+    m.includes("unknown method") ||
+    m.includes("not implemented") ||
+    m.includes("-32601")
+  );
 }
 
 const ZONE_STATUSES: ReadonlySet<string> = new Set(["active", "draining", "offline"]);
@@ -69,7 +104,15 @@ function isZoneDescriptor(value: unknown): value is ZoneDescriptor {
  */
 export function createZoneRegistryNexus(config: ZoneRegistryNexusConfig): ZoneRegistry {
   const { transport } = config;
-  const useServerReads = config.useServerReads ?? false;
+  // let: serverReadsMode may auto-downgrade to "never" when the hub
+  // signals method-not-found, so subsequent reads skip the RPC.
+  let mode: ServerReadsMode =
+    config.serverReadsMode ??
+    (config.useServerReads === true
+      ? "always"
+      : config.useServerReads === false
+        ? "never"
+        : "auto");
 
   // In-memory projection for fast reads
   const projection = new Map<string, ZoneDescriptor>();
@@ -143,13 +186,19 @@ export function createZoneRegistryNexus(config: ZoneRegistryNexusConfig): ZoneRe
     },
 
     lookup: async (id: ZoneId) => {
-      if (!useServerReads) {
-        return projection.get(id);
-      }
+      if (mode === "never") return projection.get(id);
+
       const result = await transport.call<ZoneDescriptor | null>("federation.zone_lookup", {
         zoneId: id,
       });
       if (!result.ok) {
+        if (mode === "auto" && isMethodNotFoundError(result.error.message, result.error.code)) {
+          // Hub doesn't implement zone_lookup — pin this registry to
+          // projection mode so subsequent reads don't keep paying the
+          // failed-RPC cost. Real network errors keep propagating.
+          mode = "never";
+          return projection.get(id);
+        }
         throw new Error(`Failed to lookup zone: ${result.error.message}`, {
           cause: result.error,
         });
@@ -164,7 +213,7 @@ export function createZoneRegistryNexus(config: ZoneRegistryNexusConfig): ZoneRe
     },
 
     list: async (filter?: ZoneFilter) => {
-      if (!useServerReads) {
+      const localList = (): readonly ZoneDescriptor[] => {
         const entries = [...projection.values()];
         if (filter === undefined) return entries;
         return entries.filter((d) => {
@@ -172,11 +221,18 @@ export function createZoneRegistryNexus(config: ZoneRegistryNexusConfig): ZoneRe
           if (filter.zoneId !== undefined && d.zoneId !== filter.zoneId) return false;
           return true;
         });
-      }
+      };
+
+      if (mode === "never") return localList();
+
       const result = await transport.call<readonly ZoneDescriptor[]>("federation.zone_list", {
         filter: filter ?? null,
       });
       if (!result.ok) {
+        if (mode === "auto" && isMethodNotFoundError(result.error.message, result.error.code)) {
+          mode = "never";
+          return localList();
+        }
         throw new Error(`Failed to list zones: ${result.error.message}`, {
           cause: result.error,
         });
