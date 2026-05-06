@@ -17,10 +17,13 @@ import type {
  * `sessionId` string identifying the call/leg/track the audio belongs to.
  * The voice channel surfaces it as `InboundMessage.threadId` and accepts
  * it back via `OutboundMessage.threadId` so the host can fan multiple live
- * sessions through one adapter without cross-talk. Transports that only
- * ever serve a single concurrent session may pass a constant string (e.g.
- * `"default"`) — but the field is REQUIRED so the contract cannot silently
- * collapse two callers into one conversation.
+ * sessions through one adapter without cross-talk. Hosts SHOULD mint a
+ * fresh sessionId per logical call rather than reusing a constant id —
+ * a transport-send timeout permanently poisons the threadId for the
+ * adapter's lifetime (the stale call could still surface audio later
+ * and reorder with newer audio on the same id), so a stable id like
+ * `"default"` would brick on a single transient timeout. Per-call
+ * fresh ids isolate failures to the affected call.
  *
  * **Inbound contract:** `onUtterance` MUST deliver complete utterance
  * buffers (upstream voice-activity-detected / endpointed). The voice
@@ -163,17 +166,26 @@ export class VoiceTransportSendTimeoutError extends Error {
 
 /**
  * Thrown when `send()` is called on a session whose previous outbound
- * timed out (TTS or transport). The original underlying call could not
- * be aborted and may still resolve later, so accepting newer sends would
- * risk overlapping/reordered playback. The session stays poisoned until
- * the adapter is disconnected (host recovery: `disconnect()` →
- * `connect()`, or use a different `threadId`).
+ * exceeded `transportSendTimeoutMs` (or whose handler is invoked from
+ * a now-disconnected generation). The original transport call could
+ * not be aborted and may still surface audio later, so accepting newer
+ * sends on the same `threadId` would risk overlapping/reordered
+ * playback. Recovery options:
+ *
+ *  - Use a different `threadId` on the same adapter (most realistic
+ *    for hosts that mint a unique session id per call).
+ *  - Construct a fresh adapter (required for hosts using a stable/
+ *    reused `threadId` whose transport ignored the abort signal).
+ *
+ * `disconnect()` + `connect()` does NOT clear poison for the same
+ * `threadId` — a stale transport call could still surface audio on
+ * a reconnected transport, and the channel cannot detect that.
  */
 export class VoicePoisonedSessionError extends Error {
   readonly sessionId: string;
   constructor(sessionId: string) {
     super(
-      `@koi/channel-voice: session ${sessionId} is poisoned by a prior TTS/transport timeout; the stale operation may still complete and would reorder with new audio. Disconnect/reconnect to recover.`,
+      `@koi/channel-voice: session ${sessionId} is poisoned by a prior transport-send timeout; the stale operation may still complete and would reorder with new audio. Use a different threadId or construct a fresh adapter to recover.`,
     );
     this.name = "VoicePoisonedSessionError";
     this.sessionId = sessionId;
@@ -673,10 +685,6 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     capabilities: inner.capabilities,
     connect: async (): Promise<void> => {
       await inner.connect();
-      // Bump generation: every prior poison entry now refers to a
-      // dead generation and is naturally ignored by wrappedSend's
-      // `poisonedSessions.get(...) === connectGen` check.
-      connectGen++;
       voiceConnected = true;
     },
     disconnect: async (): Promise<void> => {
@@ -684,11 +692,17 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       // Drain in-flight per-session sends before tearing down transport
       // so partial frames don't fly into a closing call. Failures are
       // swallowed — they were already surfaced to their callers.
+      // Bump the generation FIRST so any send queued in
+      // sessionSendChains (waiting behind a hung op) will see the
+      // mismatch when its `prev.then(() => performSend(...))` finally
+      // runs and reject with VoicePoisonedSessionError instead of
+      // executing performSend against a torn-down channel. Without
+      // this, a queued send could synthesize TTS and call
+      // transport.sendUtterance() AFTER disconnect completes.
+      connectGen++;
       // Abort every in-flight TTS / transport call. Cooperative impls
       // reject promptly; non-cooperative impls may keep running, but
-      // their results land in this (now-dead) generation — when the
-      // host reconnects, connectGen ticks and admission decisions
-      // ignore the old-generation poison entries entirely.
+      // their results land in this (now-dead) generation.
       for (const ctl of inflightControllers) ctl.abort();
       sessionSendChains.clear();
       // Bounded best-effort fence on raw ops so cooperative impls get

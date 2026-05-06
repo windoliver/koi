@@ -985,6 +985,54 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("queued sends do not execute after disconnect (without reconnect)", async () => {
+    // Round-23 high finding: previously connectGen only bumped on
+    // connect, not disconnect. A queued op behind a hung first send
+    // could later execute performSend AFTER disconnect completed —
+    // synthesizing TTS and writing to a torn-down transport that the
+    // host believed was drained. Fix: bump connectGen on disconnect
+    // too, so queued ops detect the gen mismatch and reject.
+    let resolveStuck: (() => void) | undefined;
+    const sentOrder: string[] = [];
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async (_s, utteranceId) => {
+        if (utteranceId === "stuck") {
+          await new Promise<void>((r) => {
+            resolveStuck = r;
+          });
+        }
+        sentOrder.push(utteranceId);
+      },
+      onUtterance: () => () => {},
+    };
+    const stt: Stt = { transcribe: async () => null };
+    const tts: Tts = { synthesize: async () => new Uint8Array(0) };
+    const ch = createVoiceChannel({ transport, stt, tts });
+    await ch.connect();
+    const stuckPromise = ch.send({
+      threadId: "session-q2",
+      content: [{ kind: "text", text: "first" }],
+      metadata: { utteranceId: "stuck" },
+    });
+    const queuedPromise = ch.send({
+      threadId: "session-q2",
+      content: [{ kind: "text", text: "queued" }],
+      metadata: { utteranceId: "queued-no-reconnect" },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    // Disconnect WITHOUT reconnecting.
+    await ch.disconnect();
+    // Release the stuck call so prev settles and the queued op fires.
+    resolveStuck?.();
+    await new Promise((r) => setTimeout(r, 30));
+    await expect(queuedPromise).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+    await stuckPromise;
+    // Queued utterance MUST NOT have reached the (torn-down) transport.
+    expect(sentOrder).not.toContain("queued-no-reconnect");
+  });
+
   test("queued sends behind a hung send do not execute after disconnect/reconnect", async () => {
     // Round-20 high finding: wrappedSend chains queued ops as
     // `prev.catch().then(() => performSend(...))`. If prev hangs and
