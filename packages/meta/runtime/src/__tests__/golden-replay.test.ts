@@ -17021,7 +17021,7 @@ describe("Golden: @koi/channel-voice", () => {
         connect: async () => {},
         disconnect: async () => {},
         sendAudio: async () => {},
-        onAudio: () => () => {},
+        onUtterance: () => () => {},
       },
       stt: { transcribe: async () => null },
       tts: { synthesize: async () => new Uint8Array() },
@@ -17040,7 +17040,7 @@ describe("Golden: @koi/channel-voice", () => {
         connect: async () => {},
         disconnect: async () => {},
         sendAudio: async () => {},
-        onAudio: (h) => {
+        onUtterance: (h) => {
           emit = h;
           return () => {};
         },

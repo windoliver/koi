@@ -115,6 +115,7 @@ describe("createMobileChannel", () => {
     const pushed: OutboundMessage[] = [];
     const ch = createMobileChannel({
       port,
+      authenticate: async () => "test-device",
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -150,6 +151,7 @@ describe("createMobileChannel", () => {
     const pushed: OutboundMessage[] = [];
     const ch = createMobileChannel({
       port,
+      authenticate: async () => "test-device",
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -187,6 +189,7 @@ describe("createMobileChannel", () => {
     const pushed: OutboundMessage[] = [];
     const ch = createMobileChannel({
       port,
+      authenticate: async () => "test-device",
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -224,6 +227,7 @@ describe("createMobileChannel", () => {
     const pushed: OutboundMessage[] = [];
     const ch = createMobileChannel({
       port,
+      authenticate: async () => "test-device",
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -278,6 +282,7 @@ describe("createMobileChannel", () => {
     const pushed: OutboundMessage[] = [];
     const ch = createMobileChannel({
       port,
+      authenticate: async () => "test-device",
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -329,7 +334,7 @@ describe("createMobileChannel", () => {
     const pushedCtx: MobilePushContext[] = [];
     const ch = createMobileChannel({
       port,
-      trustClientIdentity: true,
+      authenticate: async () => "device-abc",
       pushNotifier: async (_m, ctx) => {
         pushedCtx.push(ctx);
       },
@@ -343,7 +348,6 @@ describe("createMobileChannel", () => {
     ws1.send(
       JSON.stringify({
         kind: "msg",
-        senderId: "device-abc",
         content: [{ kind: "text", text: "hi" }],
       }),
     );
@@ -363,6 +367,34 @@ describe("createMobileChannel", () => {
     await ch.disconnect();
   });
 
+  test("createMobileChannel throws when pushNotifier wired without auth or trustClientIdentity", () => {
+    // Regression: prior version accepted this combination silently and then
+    // handed pushNotifier a shared placeholder senderId, so a host routing
+    // pushes by that field could misroute one user's reply to another
+    // device. Construction must fail closed.
+    expect(() =>
+      createMobileChannel({
+        port: 0,
+        pushNotifier: async () => {},
+      }),
+    ).toThrow(/pushNotifier requires/);
+  });
+
+  test("authenticate() rejection (returns null) closes the upgrade with 401", async () => {
+    const port = await freePort();
+    const ch = createMobileChannel({
+      port,
+      authenticate: () => null,
+      pushNotifier: async () => {},
+    });
+    await ch.connect();
+    const res = await fetch(`http://127.0.0.1:${port}/`, {
+      headers: { Upgrade: "websocket", Connection: "Upgrade" },
+    });
+    expect(res.status).toBe(401);
+    await ch.disconnect();
+  });
+
   test("replyToInbound tag from instance A is NOT honored by instance B (cross-instance scoping)", async () => {
     // Two adapters both have sessionEpoch=0 at start. Without instance
     // scoping, a reply tagged from A would be treated as live by B.
@@ -372,12 +404,14 @@ describe("createMobileChannel", () => {
     const pushedB: OutboundMessage[] = [];
     const chA = createMobileChannel({
       port: portA,
+      authenticate: async () => "test-device",
       pushNotifier: async (m) => {
         pushedA.push(m);
       },
     });
     const chB = createMobileChannel({
       port: portB,
+      authenticate: async () => "test-device",
       pushNotifier: async (m) => {
         pushedB.push(m);
       },
@@ -432,6 +466,7 @@ describe("createMobileChannel", () => {
     const pushed: OutboundMessage[] = [];
     const ch = createMobileChannel({
       port,
+      authenticate: async () => "test-device",
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -476,6 +511,7 @@ describe("createMobileChannel", () => {
     const pushed: OutboundMessage[] = [];
     const ch = createMobileChannel({
       port,
+      authenticate: async () => "test-device",
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -553,6 +589,7 @@ describe("createMobileChannel", () => {
     const port = await freePort();
     const ch = createMobileChannel({
       port,
+      authenticate: async () => "test-device",
       pushNotifier: async () => {
         throw new Error("APNs down");
       },
@@ -614,6 +651,7 @@ describe("createMobileChannel", () => {
     const pushed: OutboundMessage[] = [];
     const ch = createMobileChannel({
       port,
+      authenticate: async () => "test-device",
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -651,6 +689,7 @@ describe("createMobileChannel", () => {
     const pushed: OutboundMessage[] = [];
     const ch = createMobileChannel({
       port,
+      authenticate: async () => "test-device",
       pushNotifier: async (m) => {
         pushed.push(m);
       },

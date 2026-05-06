@@ -124,6 +124,22 @@ export interface MobileChannelConfig {
    * with mTLS or signed bearer token).
    */
   readonly trustClientIdentity?: boolean;
+  /**
+   * Server-side authentication and identity binding. Invoked on every
+   * WebSocket upgrade BEFORE the socket is assigned as the active session.
+   * Return a unique recipient identity string to accept the connection;
+   * return `null` to reject (the socket is closed before any frame is
+   * dispatched). The returned identity replaces the host-configured
+   * `senderId` for inbound frames from this socket and is the recipient
+   * key handed to `pushNotifier` via `MobilePushContext.originatingSenderId`.
+   *
+   * REQUIRED when `pushNotifier` is configured AND `trustClientIdentity`
+   * is left at default `false`: without it, every disconnected reply would
+   * carry the same shared placeholder and could be misrouted across users.
+   * `createMobileChannel()` throws at construction time if this invariant
+   * is violated.
+   */
+  readonly authenticate?: (req: Request) => Promise<string | null> | string | null;
 }
 
 export class MobileNoDeliveryTargetError extends Error {
@@ -230,6 +246,21 @@ interface SocketLike {
 export function createMobileChannel(config: MobileChannelConfig): MobileChannelAdapter {
   const defaultSenderId = config.senderId ?? "mobile-user";
   const trustClient = config.trustClientIdentity === true;
+  // Construction-time guard against ambiguous push routing. If a push
+  // notifier is wired but the adapter has no way to derive a unique
+  // per-recipient identity (no client-trust, no server auth hook), every
+  // pushed reply would carry the same shared placeholder senderId and
+  // could be misrouted across users. Refuse to construct rather than
+  // ship a silent footgun.
+  if (
+    config.pushNotifier !== undefined &&
+    config.trustClientIdentity !== true &&
+    config.authenticate === undefined
+  ) {
+    throw new Error(
+      "@koi/channel-mobile: pushNotifier requires either trustClientIdentity:true (transport-authenticated client identity) or an authenticate() handshake (server-authenticated identity). Without one, the adapter cannot supply a unique recipient key and could misroute delayed replies across users.",
+    );
+  }
   // Per-instance HMAC secret: tags from this adapter cannot be forged or
   // honored by another instance. The secret never leaves this closure.
   const instanceSecret = new Uint8Array(randomBytes(32));
@@ -263,6 +294,11 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   // let requires justification: socket and server lifecycle managed dynamically
   let server: ServerLike | undefined;
   let activeSocket: SocketLike | undefined;
+  // Identity bound to activeSocket by the authenticate() handshake. When
+  // set, this overrides defaultSenderId for inbound frames from this socket
+  // and is the recipient key passed to pushNotifier.
+  // let requires justification: per-socket identity reset on close
+  let activeIdentity: string | undefined;
   let lineHandler: ((line: string) => void) | undefined;
   // Monotonic counter that ticks on every open AND every close — any
   // disconnect/reconnect cycle (even with the same client) creates a new
@@ -292,12 +328,28 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       }
       server = bunGlobal.serve({
         port: config.port,
-        fetch(req: Request, srv: { upgrade: (r: Request) => boolean }) {
-          if (srv.upgrade(req)) return undefined;
+        fetch: async (
+          req: Request,
+          srv: { upgrade: (r: Request, opts?: { data?: unknown }) => boolean },
+        ) => {
+          // authenticate() runs BEFORE upgrade so an unauthenticated client
+          // never gets a socket and therefore cannot occupy the single-
+          // client slot. The verified identity rides through Bun's per-
+          // connection `data` so `open()` knows which identity to bind.
+          // let requires justification: identity computed conditionally
+          let identity: string | undefined;
+          if (config.authenticate !== undefined) {
+            const result = await config.authenticate(req);
+            if (result === null) {
+              return new Response("unauthorized", { status: 401 });
+            }
+            identity = result;
+          }
+          if (srv.upgrade(req, { data: { identity } })) return undefined;
           return new Response("expected websocket", { status: 426 });
         },
         websocket: {
-          open(ws: SocketLike) {
+          open(ws: SocketLike & { readonly data?: { readonly identity?: string } }) {
             // Strict single-client: a second concurrent connection is REJECTED,
             // not allowed to preempt. Removes the cross-client misroute class.
             if (activeSocket !== undefined) {
@@ -305,6 +357,7 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
               return;
             }
             activeSocket = ws;
+            activeIdentity = ws.data?.identity;
             sessionEpoch++;
           },
           message(ws: SocketLike, data: string | Uint8Array) {
@@ -320,6 +373,7 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
           close(ws: SocketLike) {
             if (activeSocket === ws) {
               activeSocket = undefined;
+              activeIdentity = undefined;
               sessionEpoch++;
             }
           },
@@ -417,9 +471,14 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         if (frame.kind !== "msg") return null;
         const content = frame.content ?? [];
         if (content.length === 0) return null;
+        // Identity precedence: server-authenticated handshake wins over
+        // client-supplied (even when trusted) wins over host placeholder.
+        // The authenticate() identity is the strongest server-side signal.
+        const senderId =
+          activeIdentity ?? (trustClient ? (frame.senderId ?? defaultSenderId) : defaultSenderId);
         const inbound: InboundMessage = {
           content,
-          senderId: trustClient ? (frame.senderId ?? defaultSenderId) : defaultSenderId,
+          senderId,
           timestamp: Date.now(),
         };
         // The signed-metadata stamping happens below in the return clause.

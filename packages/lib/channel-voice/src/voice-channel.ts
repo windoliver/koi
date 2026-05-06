@@ -1,13 +1,27 @@
 import { createChannelAdapter } from "@koi/channel-base";
 import type { ChannelAdapter, ChannelCapabilities, OutboundMessage } from "@koi/core";
 
-/** Audio I/O transport for the voice channel. Vendor wiring (LiveKit etc.) lives here. */
+/**
+ * Audio I/O transport for the voice channel. Vendor wiring (LiveKit, Twilio,
+ * a local PCM pipeline, etc.) lives here.
+ *
+ * **Inbound contract:** `onUtterance` MUST deliver complete utterance buffers
+ * — the result of upstream voice-activity detection / endpointing — NOT raw
+ * packetized PCM/Opus frames. The voice channel calls `stt.transcribe()`
+ * once per emitted buffer; emitting per-packet would fragment transcripts
+ * and explode STT cost. Transports built on streaming codecs MUST implement
+ * VAD/buffering before invoking the handler.
+ */
 export interface VoiceTransport {
   readonly connect: () => Promise<void>;
   readonly disconnect: () => Promise<void>;
   readonly sendAudio: (frame: Uint8Array) => Promise<void>;
-  /** Subscribe to inbound audio frames. Returns an unsubscribe function. */
-  readonly onAudio: (handler: (frame: Uint8Array) => void) => () => void;
+  /**
+   * Subscribe to inbound utterance buffers (already-endpointed speech).
+   * The handler receives one complete utterance per call. Returns an
+   * unsubscribe function.
+   */
+  readonly onUtterance: (handler: (utterance: Uint8Array) => void) => () => void;
 }
 
 /** Speech-to-text. Returning `null` skips dispatch (e.g., silence/no speech detected). */
@@ -108,7 +122,7 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
         await config.transport.sendAudio(audio);
       }
     },
-    onPlatformEvent: (handler) => config.transport.onAudio(handler),
+    onPlatformEvent: (handler) => config.transport.onUtterance(handler),
     normalize: async (frame) => {
       const text = await config.stt.transcribe(frame);
       if (text === null) return null;

@@ -33,7 +33,7 @@ function harness(opts?: {
       sendAudio: async (frame) => {
         sentAudio.push(frame);
       },
-      onAudio: (handler) => {
+      onUtterance: (handler) => {
         listener = handler;
         return () => {
           listener = undefined;
