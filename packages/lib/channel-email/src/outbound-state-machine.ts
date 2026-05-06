@@ -64,8 +64,17 @@ function err(
 }
 
 async function isThreadBlocked(outboxStore: OutboxStore, threadKey: string): Promise<boolean> {
-  const pending = await outboxStore.list({ status: "awaiting-recovery" });
-  return pending.some((r) => r.threadKey === threadKey);
+  // Block on `awaiting-recovery` (operator must resolve) AND on `aborting`
+  // (resolver-owned intermediate during failed-resolution; brief, but a
+  // racing send must not slip past a still-failing recovery).
+  const [pending, aborting] = await Promise.all([
+    outboxStore.list({ status: "awaiting-recovery" }),
+    outboxStore.list({ status: "aborting" }),
+  ]);
+  return (
+    pending.some((r) => r.threadKey === threadKey) ||
+    aborting.some((r) => r.threadKey === threadKey)
+  );
 }
 
 type Reservation = {

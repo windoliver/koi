@@ -118,6 +118,12 @@ export async function resolvePending(
 
   const thread = await deps.threadStore.get(current.threadKey);
   if (thread && thread.version !== current.threadVersion) {
+    // Conflict: a later send has stacked on top. Revert the resolver-owned
+    // intermediate so the row stays operator-visible (`awaiting-recovery`
+    // is the state `getPendingSends()` lists and `executeOutbound` blocks
+    // on). Leaving the row in `aborting` would silently unblock the
+    // thread while the failed Message-ID is still in the chain.
+    await deps.outboxStore.cas(messageId, "aborting", "awaiting-recovery").catch(() => {});
     return {
       ok: false,
       error: {
@@ -138,6 +144,8 @@ export async function resolvePending(
       chain: stripped,
     });
     if (!rolled) {
+      // Same conflict semantics: revert before surfacing.
+      await deps.outboxStore.cas(messageId, "aborting", "awaiting-recovery").catch(() => {});
       return {
         ok: false,
         error: {

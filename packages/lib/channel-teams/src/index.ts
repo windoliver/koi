@@ -8,6 +8,9 @@
 export type { CloudProfile, ServiceUrlPattern, TeamsConfig } from "./config.js";
 export { validateTeamsConfig } from "./config.js";
 
+export type { MintAppTokenOptions } from "./mint-app-token.js";
+export { createBotFrameworkAppTokenMinter } from "./mint-app-token.js";
+
 export type { Activity, ActivityAttachment } from "./normalize.js";
 
 export type {

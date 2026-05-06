@@ -12,6 +12,7 @@ describe("@koi/channel-teams public API surface", () => {
     const names = Object.keys(channelTeams).sort();
     expect(names).toEqual(
       [
+        "createBotFrameworkAppTokenMinter",
         "createTeamsChannel",
         "createTokenVerifier",
         "matchServiceUrl",

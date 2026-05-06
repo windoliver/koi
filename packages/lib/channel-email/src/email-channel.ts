@@ -157,7 +157,16 @@ async function enqueueInbound(
     { parsed, imap: { uidValidity: env.uidValidity, uid: env.uid } },
     clock,
   );
-  if (!normalized.ok) return; // drop unparseable
+  if (!normalized.ok) {
+    // Surface unparseable mail as an explicit error rather than a silent
+    // drop. The IMAP adapter sees the rejected callback and keeps the
+    // message un-acked / unread; an operator (or `onIngressError` hook)
+    // decides whether to dead-letter or wait for a parser fix. Silent
+    // drop on parse regressions = permanent inbound mail loss.
+    throw new Error(`PARSE_FAILED: ${normalized.error.message}`, {
+      cause: normalized.error,
+    });
+  }
   const inboundMessageId = parsed.messageId;
   const threadKey = normalized.value.threadId;
   if (
