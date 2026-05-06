@@ -1,6 +1,6 @@
 # @koi/sandbox-stack — Unified Sandboxed Code Execution
 
-> **PENDING RECONCILIATION (PR 2 of issue-1377).** The Cloudflare/Vercel sections below describe a `SandboxAdapter`-shaped contract that is being replaced by `EdgeFunctionAdapter` per `docs/superpowers/specs/2026-05-05-edge-sandboxes-design.md`. Until PR 2 lands, treat that design doc as authoritative for edge adapters; this L3 doc remains accurate for the wasm executor and the OS/SSH adapters but is stale for Cloudflare/Vercel.
+> **PROPOSAL (issue-1377, PR 1 of 5).** A successor design for the edge adapters (Cloudflare, Vercel) lives at `docs/superpowers/specs/2026-05-05-edge-sandboxes-design.md`. That spec is a PROPOSAL, NOT yet authoritative — the matching `EdgeFunctionAdapter` types, `koi.edge.cloudflare` runtime accessor, and substantive L3 rewrite land in PR 2 atomically. Until PR 2 merges, the Cloudflare/Vercel sections of this L3 doc are the existing forward-looking placeholder and the proposal in `docs/superpowers/specs/...` describes the FUTURE contract, not the current one. Implementers MUST NOT cite either as authoritative for shipped code until PR 2 reconciles them together. This L3 doc remains accurate for the wasm executor and the OS/SSH adapters.
 
 Unified L3 bundle for all sandbox functionality: cloud provider dispatch, stack composition, timeout guards, code execution tools, subprocess executors, and sandbox middleware. One import for everything sandbox — replaces the former `@koi/sandbox-cloud` meta-package.
 
