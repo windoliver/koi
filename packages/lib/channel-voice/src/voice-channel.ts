@@ -81,19 +81,31 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     platformConnect: () => config.transport.connect(),
     platformDisconnect: () => config.transport.disconnect(),
     platformSend: async (message: OutboundMessage) => {
-      // Convert every block to a spoken-text representation. createChannelAdapter
-      // already downgrades image/file/button via renderBlocks, but `custom` blocks
-      // pass through unchanged — without an explicit fallback here they would be
-      // silently dropped, producing missing/partial replies on the wire.
+      // Two-phase delivery to make mid-response failure recoverable:
+      //   Phase 1: synthesize EVERY chunk to audio. If any synth call rejects,
+      //            the user has heard nothing yet and the caller can retry the
+      //            whole utterance idempotently.
+      //   Phase 2: stream the prepared frames to the transport in order. A
+      //            transport failure mid-utterance is still user-visible, but
+      //            the synth phase having succeeded means the frames are
+      //            cached and a transport-level resume is possible without
+      //            re-running TTS.
+      // Without this split, a TTS failure on chunk N would leave chunks 0..N-1
+      // already spoken with no idempotent retry path.
+      const pieces: string[] = [];
       for (const block of message.content) {
         const text =
           block.kind === "text"
             ? block.text
             : `[${block.kind}: ${block.kind === "custom" ? block.type : block.kind}]`;
-        for (const piece of chunk(text, maxTtsChars)) {
-          const audio = await config.tts.synthesize(piece);
-          await config.transport.sendAudio(audio);
-        }
+        for (const piece of chunk(text, maxTtsChars)) pieces.push(piece);
+      }
+      const frames: Uint8Array[] = [];
+      for (const piece of pieces) {
+        frames.push(await config.tts.synthesize(piece));
+      }
+      for (const audio of frames) {
+        await config.transport.sendAudio(audio);
       }
     },
     onPlatformEvent: (handler) => config.transport.onAudio(handler),

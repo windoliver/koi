@@ -215,6 +215,34 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("outbound: TTS failure on a later chunk emits NO audio (idempotent retry possible)", async () => {
+    // Regression: prior version called sendAudio inside the synth loop, so a
+    // TTS failure on chunk N left chunks 0..N-1 already spoken with no
+    // idempotent retry path. Two-phase delivery: synth all chunks first, then
+    // stream. A TTS failure means the user has heard nothing yet.
+    const h = harness();
+    let synthCount = 0;
+    const flakyTts: Tts = {
+      synthesize: async (text: string) => {
+        synthCount++;
+        if (synthCount === 2) throw new Error("tts down");
+        return new Uint8Array([text.length]);
+      },
+    };
+    const ch = createVoiceChannel({
+      transport: h.transport,
+      stt: h.stt,
+      tts: flakyTts,
+      maxTtsChars: 5,
+    });
+    await ch.connect();
+    await expect(ch.send({ content: [{ kind: "text", text: "abcdefghij" }] })).rejects.toThrow(
+      "tts down",
+    );
+    expect(h.sentAudio).toEqual([]);
+    await ch.disconnect();
+  });
+
   test("STT failures are observable WITHOUT host wiring (default console.warn)", async () => {
     // Regression: prior version silently dropped STT failures unless the
     // host wired onSttError. A voice channel that black-holes speech errors

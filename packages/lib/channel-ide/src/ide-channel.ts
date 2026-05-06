@@ -7,12 +7,20 @@ import type {
   OutboundMessage,
 } from "@koi/core";
 
-/** Duplex line-oriented transport (TCP socket, stdio pair, named pipe, etc.). */
+/**
+ * Duplex line-oriented transport (TCP socket, stdio pair, named pipe, etc.).
+ *
+ * The string passed to `send()` is the **already-framed** payload — it
+ * includes the trailing `\n` delimiter. The transport writes it verbatim;
+ * delimiter insertion is the channel's responsibility, not the transport's.
+ * Inbound `onLine` callbacks receive one delimited line per invocation
+ * (the `\n` already stripped by the transport's line splitter).
+ */
 export interface IdeTransport {
   readonly connect: () => Promise<void>;
   readonly disconnect: () => Promise<void>;
-  readonly send: (line: string) => Promise<void>;
-  /** Subscribe to inbound lines. Returns unsubscribe. */
+  readonly send: (framed: string) => Promise<void>;
+  /** Subscribe to inbound lines (delimiter already stripped). Returns unsubscribe. */
   readonly onLine: (handler: (line: string) => void) => () => void;
 }
 
@@ -81,7 +89,10 @@ export function createIdeChannel(config: IdeChannelConfig): ChannelAdapter {
           ...(message.threadId !== undefined ? { threadId: message.threadId } : {}),
         },
       };
-      await config.transport.send(JSON.stringify(frame));
+      // Append the frame delimiter here so back-to-back sends never
+      // concatenate to "}{" on a raw byte stream that does not insert
+      // delimiters itself.
+      await config.transport.send(`${JSON.stringify(frame)}\n`);
     },
     onPlatformEvent: (handler) => config.transport.onLine(handler),
     normalize: (line: string): InboundMessage | null => {

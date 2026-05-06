@@ -102,16 +102,47 @@ describe("createIdeChannel", () => {
     await ch.disconnect();
   });
 
-  test("outbound: send writes JSON-RPC notify line", async () => {
+  test("outbound: send writes JSON-RPC notify line with newline framing", async () => {
     const h = harness();
     const ch = createIdeChannel({ transport: h.transport });
     await ch.connect();
     await ch.send({ content: [{ kind: "text", text: "from agent" }] });
     expect(h.sent).toHaveLength(1);
-    const parsed = JSON.parse(h.sent[0] ?? "");
+    const written = h.sent[0] ?? "";
+    expect(written.endsWith("\n")).toBe(true);
+    const parsed = JSON.parse(written.trimEnd());
     expect(parsed.jsonrpc).toBe("2.0");
     expect(parsed.method).toBe("notify");
     expect(parsed.params.content[0].text).toBe("from agent");
+    await ch.disconnect();
+  });
+
+  test("outbound: back-to-back sends concatenated on a raw byte stream are recoverable line-by-line", async () => {
+    // Regression: prior version omitted the delimiter, so two consecutive
+    // sends produced "}{" on a transport that does not insert framing
+    // itself (a real socket / stdio pair). Verify the channel inserts the
+    // newline so a downstream line splitter can recover frame boundaries.
+    let buffer = "";
+    const transport: IdeTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      send: async (framed: string) => {
+        buffer += framed;
+      },
+      onLine: () => () => {},
+    };
+    const ch = createIdeChannel({ transport });
+    await ch.connect();
+    await ch.send({ content: [{ kind: "text", text: "first" }] });
+    await ch.send({ content: [{ kind: "text", text: "second" }] });
+    await ch.send({ content: [{ kind: "text", text: "third" }] });
+    const lines = buffer.split("\n").filter((l) => l.length > 0);
+    expect(lines).toHaveLength(3);
+    const parsedTexts = lines.map((l) => {
+      const f = JSON.parse(l) as { params: { content: { text: string }[] } };
+      return f.params.content[0]?.text;
+    });
+    expect(parsedTexts).toEqual(["first", "second", "third"]);
     await ch.disconnect();
   });
 
