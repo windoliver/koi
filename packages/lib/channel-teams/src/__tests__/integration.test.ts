@@ -85,11 +85,11 @@ describe("teams-channel integration", () => {
     // wait for worker to drain
     await new Promise((r) => setTimeout(r, 400));
     expect(received.length).toBe(1);
-    expect(received[0]?.threadId).toBe("conv-1");
+    expect(received[0]?.threadId).toBe("msteams|tenant-1|conv-1");
 
     await channel.send({
       content: [{ kind: "text", text: "ack" }],
-      threadId: "conv-1",
+      threadId: "msteams|tenant-1|conv-1",
     });
     expect(fetchCalls.length).toBe(1);
     const call = fetchCalls[0];

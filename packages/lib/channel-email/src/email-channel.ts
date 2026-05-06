@@ -59,6 +59,15 @@ export type EmailDependencies = {
   readonly ingressQueue: IngressQueue<InboundEnvelope, InboundMessage>;
   readonly idGenerator?: () => string;
   readonly clock?: () => number;
+  /**
+   * REQUIRED for production. Invoked when inbound MIME parsing, thread
+   * seeding, or queue persistence fails. The IMAP adapter MUST use this
+   * signal to keep the message un-acked / unread so a future poll cycle
+   * retries it. The default implementation re-throws on a microtask so
+   * the failure surfaces via `unhandledRejection` telemetry — silent
+   * drop is never the default.
+   */
+  readonly onIngressError?: (error: unknown, envelope: InboundEnvelope) => void;
 };
 
 export type EmailChannelAdapter = ChannelAdapter & {
@@ -188,9 +197,19 @@ export function createEmailChannel(
       });
       await deps.imap.open();
       unsubscribeImap = deps.imap.onNewMessage((env) => {
-        enqueueInbound(deps, env, clock).catch(() => {
-          // Ingress failures are silently dropped at this layer; durable
-          // queue persistence + retries are the queue's responsibility.
+        enqueueInbound(deps, env, clock).catch((err: unknown) => {
+          // Surface the failure so the IMAP adapter can keep the message
+          // un-acked / unread for retry on the next poll cycle. If the
+          // caller has not provided an explicit handler, re-throw on a
+          // microtask so the failure raises `unhandledRejection` telemetry
+          // rather than disappearing silently.
+          if (deps.onIngressError) {
+            deps.onIngressError(err, env);
+          } else {
+            queueMicrotask(() => {
+              throw err instanceof Error ? err : new Error(String(err));
+            });
+          }
         });
       });
       stopWorker = startHandlerWorker({

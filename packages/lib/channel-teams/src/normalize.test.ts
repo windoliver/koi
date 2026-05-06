@@ -21,7 +21,7 @@ describe("normalizeActivity", () => {
     if (!r.ok) throw new Error("unreachable");
     expect(r.value.content).toEqual([{ kind: "text", text: "hello" }]);
     expect(r.value.senderId).toBe("user-1");
-    expect(r.value.threadId).toBe("conv-1");
+    expect(r.value.threadId).toBe("msteams|tenant-1|conv-1");
     expect(r.value.timestamp).toBe(Date.parse("2026-05-05T12:00:00.000Z"));
   });
 

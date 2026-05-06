@@ -32,7 +32,28 @@ export type NormalizeResult =
   | { readonly ok: true; readonly value: InboundMessage }
   | { readonly ok: false; readonly error: NormalizeError };
 
-export function normalizeActivity(activity: Activity, clock: () => number): NormalizeResult {
+/**
+ * Composite key scoping conversation identity to the verified routing tuple.
+ * Bot Framework's `conversation.id` is NOT globally unique — two tenants in
+ * different channels can collide. Using only `conversation.id` as the
+ * outbound routing key would let one tenant's reply land at another
+ * tenant's serviceUrl after both addresses have been written. The composite
+ * is the SAME tuple used for idempotency (see `dedupeKey` in
+ * `teams-channel.ts`), so routing identity and dedupe identity stay in sync.
+ */
+export function composeConversationKey(
+  channelId: string,
+  tenantId: string,
+  conversationId: string,
+): string {
+  return `${channelId}|${tenantId}|${conversationId}`;
+}
+
+export function normalizeActivity(
+  activity: Activity,
+  clock: () => number,
+  fallbackTenant = "",
+): NormalizeResult {
   if (activity.type !== "message") {
     return {
       ok: false,
@@ -57,10 +78,11 @@ export function normalizeActivity(activity: Activity, clock: () => number): Norm
   const timestamp =
     typeof activity.timestamp === "string" ? Date.parse(activity.timestamp) || clock() : clock();
 
+  const tenantId = activity.conversation.tenantId ?? fallbackTenant;
   const message: InboundMessage = {
     content: blocks,
     senderId: activity.from.id,
-    threadId: activity.conversation.id,
+    threadId: composeConversationKey(activity.channelId, tenantId, activity.conversation.id),
     timestamp,
     metadata: meta,
   };

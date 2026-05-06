@@ -8,6 +8,7 @@ const addr = (id: string): ConversationAddress => ({
   serviceUrl: "https://smba.trafficmanager.net/teams/",
   tenantId: "t1",
   channelId: "msteams",
+  conversationId: "raw-conv-id",
   recipient: { id, name: "x" },
   lastSeenAt: 0,
 });

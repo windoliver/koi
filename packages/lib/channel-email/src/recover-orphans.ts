@@ -1,24 +1,29 @@
 /**
- * @koi/channel-email — crash recovery for `reserving` outbox rows.
+ * @koi/channel-email — crash recovery for non-terminal outbox rows.
  *
- * Reservation order is outbox-first / thread-second (see
- * `outbound-state-machine.ts`), so a crash mid-reservation leaves an outbox
- * row in `reserving`. This scan reconciles each such row with the current
- * thread state and advances it to a terminal state:
+ * After a crash the outbox can hold rows in three non-terminal states.
+ * Recovery distinguishes pre-SMTP intent from post-SMTP uncertainty:
  *
- *  - thread missing OR thread.version < outbox.threadVersion         → aborted
- *      (thread CAS never happened)
- *  - thread.version === outbox.threadVersion AND chain has messageId → awaiting-recovery
- *      (thread CAS landed but we crashed before SMTP attempt; operator decides)
- *  - thread.version > outbox.threadVersion                            → aborted
- *      (a later reservation has stacked on top — best-effort rollback to keep
- *       the chain consistent)
+ *  - `reserving` (pre-SMTP, before reservation promotion)
+ *      Row was never sent. Strip messageId from the thread chain (only
+ *      if the thread CAS landed at this row's threadVersion) and abort.
  *
- * Run on channel startup (before accepting new sends) and never concurrently
- * with `executeOutbound` for the same thread key.
+ *  - `reserved`  (pre-SMTP, after reservation promotion, before flip
+ *                 to `sending`)
+ *      Row was never sent. Strip from the thread chain and abort.
+ *
+ *  - `sending`   (post-SMTP intent, before terminal flip)
+ *      We started talking to the SMTP server but did not record the
+ *      outcome. Bytes may or may not have hit the wire — flip to
+ *      `awaiting-recovery` and require an operator decision. Thread
+ *      state is preserved (consistent with the post-DATA crash branch
+ *      in `executeOutbound`).
+ *
+ * Run once on channel `connect()` BEFORE accepting new sends, never
+ * concurrently with `executeOutbound` for the same thread key.
  */
 
-import type { OutboxStore, ThreadStore } from "@koi/channel-base";
+import type { OutboxRecord, OutboxStore, ThreadStore } from "@koi/channel-base";
 
 export type RecoverDeps = {
   readonly outboxStore: OutboxStore;
@@ -33,38 +38,55 @@ export type RecoverResult = {
   readonly outcome: RecoverOutcome;
 };
 
+async function rollbackThreadIfPresent(threadStore: ThreadStore, row: OutboxRecord): Promise<void> {
+  const thread = await threadStore.get(row.threadKey);
+  if (thread === null) return;
+  if (!thread.state.chain.includes(row.messageId)) return;
+  // Only roll back if the thread version matches what we landed at —
+  // otherwise a later reservation has stacked on top and stripping
+  // would corrupt that send's ancestry.
+  if (thread.version !== row.threadVersion) return;
+  const stripped = thread.state.chain.filter((id) => id !== row.messageId);
+  await threadStore.cas(row.threadKey, thread.version, { chain: stripped });
+}
+
+async function abortPreSendRow(
+  deps: RecoverDeps,
+  row: OutboxRecord,
+  expected: "reserving" | "reserved",
+): Promise<RecoverResult> {
+  await rollbackThreadIfPresent(deps.threadStore, row);
+  const ok = await deps.outboxStore.cas(row.messageId, expected, "aborted");
+  return {
+    messageId: row.messageId,
+    threadKey: row.threadKey,
+    outcome: ok ? "aborted" : "no-op",
+  };
+}
+
 export async function recoverOrphanedReservations(
   deps: RecoverDeps,
 ): Promise<readonly RecoverResult[]> {
-  const orphans = await deps.outboxStore.list({ status: "reserving" });
   const results: RecoverResult[] = [];
-  for (const row of orphans) {
-    const thread = await deps.threadStore.get(row.threadKey);
-    const tv = thread?.version ?? 0;
-    const chain = thread?.state.chain ?? [];
-    const casLanded = tv === row.threadVersion && chain.includes(row.messageId);
-    if (casLanded) {
-      const ok = await deps.outboxStore.cas(row.messageId, "reserving", "awaiting-recovery");
-      results.push({
-        messageId: row.messageId,
-        threadKey: row.threadKey,
-        outcome: ok ? "awaiting-recovery" : "no-op",
-      });
-      continue;
-    }
-    // CAS never succeeded (or someone advanced past us); treat as aborted.
-    // If a later reservation stacked on top with messageId in the chain,
-    // best-effort strip it so the chain doesn't carry a phantom ancestor.
-    if (chain.includes(row.messageId) && thread !== null) {
-      const stripped = chain.filter((id) => id !== row.messageId);
-      await deps.threadStore.cas(row.threadKey, tv, { chain: stripped });
-    }
-    const ok = await deps.outboxStore.cas(row.messageId, "reserving", "aborted");
+
+  // Pre-SMTP: reserving and reserved rows were never handed to SMTP.
+  for (const row of await deps.outboxStore.list({ status: "reserving" })) {
+    results.push(await abortPreSendRow(deps, row, "reserving"));
+  }
+  for (const row of await deps.outboxStore.list({ status: "reserved" })) {
+    results.push(await abortPreSendRow(deps, row, "reserved"));
+  }
+
+  // Post-SMTP intent: `sending` rows reached the SMTP layer but we did
+  // not record the terminal outcome. Operator must decide.
+  for (const row of await deps.outboxStore.list({ status: "sending" })) {
+    const ok = await deps.outboxStore.cas(row.messageId, "sending", "awaiting-recovery");
     results.push({
       messageId: row.messageId,
       threadKey: row.threadKey,
-      outcome: ok ? "aborted" : "no-op",
+      outcome: ok ? "awaiting-recovery" : "no-op",
     });
   }
+
   return results;
 }

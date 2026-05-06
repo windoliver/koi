@@ -24,7 +24,7 @@ import type {
 } from "@koi/core";
 import type { TeamsConfig } from "./config.js";
 import { formatOutbound } from "./format.js";
-import { type Activity, normalizeActivity } from "./normalize.js";
+import { type Activity, composeConversationKey, normalizeActivity } from "./normalize.js";
 import { type FetchFn, sendActivity } from "./platform-send.js";
 import type { JwtVerifier } from "./verify-jwt.js";
 
@@ -122,22 +122,28 @@ function buildParsePayload(
   return async (request) => {
     const body = await request.text();
     const parsed = JSON.parse(body) as Activity;
-    const norm = normalizeActivity(parsed, clock);
+    const fallbackTenant = config.tenantAllowlist[0] ?? "";
+    const norm = normalizeActivity(parsed, clock, fallbackTenant);
     if (!norm.ok) {
       throw new Error(`INVALID_ACTIVITY: ${norm.error.message}`);
     }
-    const tenantId = parsed.conversation.tenantId ?? config.tenantAllowlist[0] ?? "";
+    const tenantId = parsed.conversation.tenantId ?? fallbackTenant;
     const address: ConversationAddress = {
       serviceUrl: parsed.serviceUrl,
       tenantId,
       channelId: parsed.channelId,
+      conversationId: parsed.conversation.id,
       recipient: {
         id: parsed.from.id,
         ...(parsed.from.name !== undefined ? { name: parsed.from.name } : {}),
       },
       lastSeenAt: clock(),
     };
-    await deps.conversationAddressStore.put(parsed.conversation.id, address);
+    // Store under the composite routing key so a later send() can resolve
+    // the correct serviceUrl/tenant pair. Bot Framework's conversation.id
+    // is not globally unique across tenants/channels.
+    const addressKey = composeConversationKey(parsed.channelId, tenantId, parsed.conversation.id);
+    await deps.conversationAddressStore.put(addressKey, address);
     return { payload: parsed, normalized: norm.value };
   };
 }
@@ -196,21 +202,23 @@ export function createTeamsChannel(
     },
 
     send: async (message: OutboundMessage) => {
-      const conversationId = message.threadId;
-      if (typeof conversationId !== "string" || conversationId.length === 0) {
+      const addressKey = message.threadId;
+      if (typeof addressKey !== "string" || addressKey.length === 0) {
         throw new Error(
-          "CONVERSATION_ADDRESS_UNKNOWN: send() requires message.threadId (the Teams conversation id)",
+          "CONVERSATION_ADDRESS_UNKNOWN: send() requires message.threadId (the composite Teams routing key)",
         );
       }
-      const address = await deps.conversationAddressStore.get(conversationId);
+      const address = await deps.conversationAddressStore.get(addressKey);
       if (address === null) {
         throw new Error(
-          `CONVERSATION_ADDRESS_UNKNOWN: no stored address for conversation ${conversationId}`,
+          `CONVERSATION_ADDRESS_UNKNOWN: no stored address for routing key ${addressKey}`,
         );
       }
       const bearer = await deps.tokenVerifier.appToken();
       const payload = formatOutbound(message);
-      const r = await sendActivity(deps.fetch, address, conversationId, bearer, { ...payload });
+      const r = await sendActivity(deps.fetch, address, address.conversationId, bearer, {
+        ...payload,
+      });
       if (!r.ok) {
         throw new Error(`${r.error.code}: ${r.error.message}`, { cause: r.error });
       }

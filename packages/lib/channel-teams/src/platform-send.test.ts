@@ -6,6 +6,7 @@ const address: ConversationAddress = {
   serviceUrl: "https://smba.trafficmanager.net/",
   tenantId: "tenant-1",
   channelId: "msteams",
+  conversationId: "conv-1",
   recipient: { id: "user-1", name: "Alice" },
   lastSeenAt: 1,
 };

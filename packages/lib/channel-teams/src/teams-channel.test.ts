@@ -121,7 +121,7 @@ describe("createTeamsChannel", () => {
     // give the worker a moment to drain.
     await new Promise((r) => setTimeout(r, 400));
     await ch.disconnect();
-    expect(seen.sort()).toEqual(["convA", "convB"]);
+    expect(seen.sort()).toEqual(["msteams|tenant-1|convA", "msteams|tenant-1|convB"]);
   });
 
   test("send() without prior inbound throws CONVERSATION_ADDRESS_UNKNOWN", async () => {
