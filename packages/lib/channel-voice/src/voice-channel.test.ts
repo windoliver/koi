@@ -985,6 +985,46 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("disconnect quiesces ingress immediately so no new utterances enter STT", async () => {
+    // Round-24 high finding: disconnect deferred ingress teardown
+    // until inner.disconnect ran AFTER the raw-op fence. During the
+    // fence window (up to 2 s), transport.onUtterance could still
+    // feed new audio into STT/dispatch — a host's onMessage handler
+    // could be triggered for a turn the host believed was past the
+    // shutdown boundary. Fix: clear rawUtteranceSink immediately at
+    // start of disconnect so subsequent utterances are dropped.
+    let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+    let sttCalls = 0;
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (handler) => {
+        listener = handler;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = {
+      transcribe: async () => {
+        sttCalls++;
+        return "noop";
+      },
+    };
+    const tts: Tts = { synthesize: async () => new Uint8Array(0) };
+    const ch = createVoiceChannel({ transport, stt, tts });
+    await ch.connect();
+    // Begin disconnect — but don't await it yet, so we can race an
+    // inbound utterance against the fence window.
+    const disconnectPromise = ch.disconnect();
+    // Fire utterance AFTER disconnect started but BEFORE it returned.
+    listener?.("session-ingress", new Uint8Array([1]));
+    await disconnectPromise;
+    // STT MUST NOT have been called for the post-disconnect utterance.
+    expect(sttCalls).toBe(0);
+  });
+
   test("queued sends do not execute after disconnect (without reconnect)", async () => {
     // Round-23 high finding: previously connectGen only bumped on
     // connect, not disconnect. A queued op behind a hung first send

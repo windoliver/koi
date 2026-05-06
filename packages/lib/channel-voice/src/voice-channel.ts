@@ -689,6 +689,16 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     },
     disconnect: async (): Promise<void> => {
       voiceConnected = false;
+      // Quiesce ingress IMMEDIATELY: any further utterances arriving
+      // during the fence window from transport.onUtterance must be
+      // dropped, not fed into STT/dispatch. Without this, a stale
+      // user turn could still trigger model+tool work AFTER the host
+      // started disconnect — defeating shutdown/failover ordering.
+      // Clearing the sink makes the inbound thunk a no-op (the
+      // pendingUtterances bound is also dropped so we don't replay
+      // them on a next connect).
+      rawUtteranceSink = undefined;
+      pendingUtterances = [];
       // Drain in-flight per-session sends before tearing down transport
       // so partial frames don't fly into a closing call. Failures are
       // swallowed — they were already surfaced to their callers.
