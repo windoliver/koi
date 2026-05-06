@@ -99,15 +99,28 @@ A future `sandbox-edge-router` package can offer cross-provider selection betwee
 
 This doc update is a required deliverable of this PR (see Acceptance below) so that no documented contract conflicts with what ships.
 
-### Workload-class acknowledgment (operator-declared, NOT adapter-enforced)
+### Adapter-enforced idempotency via mandatory durable dedupe store
 
-The duplicate-side-effect hazard introduced by timeout/abort/destroy + per-isolate dedupe is real and cannot be eliminated at the adapter layer with available provider primitives. The adapter does **NOT** enforce idempotency — that would require runtime verification of every deployed handler's behavior, which is impossible without a sandbox the size of the one we're trying to build. Instead, the contract makes the limitation explicit and forces operators to acknowledge it:
+The duplicate-side-effect hazard from timeout/abort/destroy + per-isolate dedupe is unacceptable on the honor system. The adapter therefore **mechanically enforces** cross-retry dedupe by requiring operators to bind a provider-side durable key-value store, and the shim consults it on every invoke before calling the handler:
 
-- **`createCloudflareAdapter` and `createVercelAdapter` REQUIRE `config.assertIdempotent: true`.** This is a literal-true field, not a default. The adapter refuses to construct otherwise (returns `KoiError { code: "IDEMPOTENCY_NOT_ASSERTED" }`). The flag is **acknowledgment-only**: it does not verify the handler's behavior, only forces the operator to read the docs and consciously opt in.
-- The flag's documented contract states unambiguously: "By setting this flag, the operator certifies that every deployed handler payload is idempotent under retry — that is, the operator has independently audited their handler and confirmed that downstream side effects are dedupe-keyed by `operationId`. The adapter does not verify this property and a non-idempotent handler will produce duplicate effects under retry."
-- **The adapter's safety contribution is bounded:** it ensures `operationId` reaches the handler reliably (mandatory wire field), provides shim-cache best-effort dedupe (per-isolate), and honestly reports `DestroyOutcome` so callers know when residual remote work is possible. The adapter does NOT provide exactly-once execution and the documentation says so explicitly.
-- Mutating workloads (non-idempotent payments, sequence-dependent writes, etc.) are accepted by the adapter contract — but the responsibility for correctness is fully on the operator's deployed handler. Operators who cannot guarantee handler-level idempotency MUST either implement an audited dedupe layer at their side-effect target before adopting the adapter OR wait for a future `sandbox-cloudflare-durable` package that backs dedupe with Durable Objects (out of scope here).
-- The `assertIdempotent: true` literal is logged on every `create()` and audit trails record the flag value with the timestamp, ownerId, and instance scriptName so post-incident review can confirm operator consent.
+- **Cloudflare:** `createCloudflareAdapter` REQUIRES `config.dedupeKvNamespaceId: string` — a Cloudflare Workers KV namespace ID owned by the operator. The deploy step wires the namespace as a binding (`KOI_DEDUPE_KV`) in the worker's `wrangler` config so the shim can read/write it. Adapter construction fails with `KoiError { code: "DEDUPE_STORE_REQUIRED" }` if `dedupeKvNamespaceId` is missing.
+- **Vercel:** `createVercelAdapter` REQUIRES `config.dedupeEdgeConfigId: string` — a Vercel Edge Config ID. The deploy step wires it as a binding (`KOI_DEDUPE_EDGE_CONFIG`). Same `DEDUPE_STORE_REQUIRED` error if missing.
+- **Shim-side enforcement (mandatory, not opt-in):** the deployed shim's request handler executes:
+  ```js
+  const existing = await KOI_DEDUPE_KV.get(operationId, { type: "json" });
+  if (existing !== null) {
+    return new Response(JSON.stringify(existing.result), { status: existing.status });
+  }
+  // call the operator's handler
+  const result = await handler({ payload, operationId, requestId });
+  // write-after-success: only cache successful outcomes; failures get a fresh attempt next time
+  await KOI_DEDUPE_KV.put(operationId, JSON.stringify({ status: 200, result }), { expirationTtl: 86400 });
+  return new Response(JSON.stringify(result));
+  ```
+- The store is keyed on `operationId` (the durable, caller-owned key), with a 24-hour TTL on entries. Two `invoke()` calls from any source — same instance, fresh instance after destroy/recreate, or even two different machines using the same Cloudflare account — see the same dedupe entry. **Cross-instance dedupe now actually works**, because the store is provider-side and shared across all isolates that import the binding.
+- **The `assertIdempotent: true` flag is still required** as an additional acknowledgment that the operator understands the dedupe boundary, but it is now belt-and-braces: the dedupe store is the enforcement mechanism, the flag is the operator's confirmation that they understood the contract.
+- **Cost note:** Cloudflare KV reads cost money; the adapter's documentation makes this explicit and exposes a `dedupeReadOptional?: boolean` flag (default false). Setting it true allows operators to skip dedupe for handlers they have personally certified as idempotent (rare, dangerous, but available); setting it requires the adapter to ALSO log a warning on every create indicating dedupe is bypassed.
+- A future `sandbox-cloudflare-durable` package can offer Durable-Object-backed dedupe with strong consistency for workloads that need it (KV is eventually consistent within ~60s, which is acceptable for the timeout/destroy retry window but not for hot-path back-to-back retries from the same caller). That is out of scope here.
 
 ### Kernel / runtime integration path
 
@@ -655,10 +668,9 @@ The implementation does not fit a single PR. The work is split into four sequent
 | 1 | This spec | Design doc (`docs/superpowers/specs/2026-05-05-edge-sandboxes-design.md`). No code, no doc reconciliation. | ~600 lines markdown |
 | 2 | Kernel + runtime extension for edge adapters | New `@koi/core` types (`EdgeFunctionAdapter` etc.), `CreateKoiOptions` extension on `@koi/engine`, `koi.edge.*` accessor, CI script extensions for `koi.adapter-kind`, `docs/L3/sandbox-stack.md` rewrite, `golden-edge-replay.test.ts` skeleton. **Reconciles existing L3 doc with the new contract.** | ~700 LOC |
 | 3 | `@koi/sandbox-wasm` | Full wasm executor package + binary scanner + tests + `docs/L2/sandbox-wasm.md` + golden replay assertion (uses the SandboxExecutor-style cassette path or the new edge replay; finalized in PR 2). | ~700 LOC |
-| 4 | `@koi/sandbox-cloudflare` + `@koi/sandbox-vercel` | Both cloud packages, shim templates, SQLite ledger, provider-smoke workflow, `docs/L2/sandbox-cloudflare.md` + `docs/L2/sandbox-vercel.md`, edge cassettes. | ~900 LOC |
-| 5 | `@koi/sandbox-sweep` | Continuous-mode janitor CLI (`koi-sandbox-sweep --watch`) that performs the cross-host tagged-artifact sweep described in the orphan-tracking section. Operator-deployable as a long-running daemon or per-minute cron. Includes provider-side credential handling, `koi-stale-after` evaluation, and DELETE issuance with retry/backoff. Without this PR shipped, multi-host orphan recovery does not exist. | ~400 LOC |
+| 4 | `@koi/sandbox-cloudflare` + `@koi/sandbox-vercel` + `@koi/sandbox-sweep` (single delivery unit) | Both cloud packages PLUS the cross-host sweeper janitor — they ship together because the cloud adapters' multi-host safety contract depends on the sweeper running. Includes shim templates with mandatory KV/EdgeConfig dedupe enforcement, SQLite ledger, provider-smoke workflow with adversarial scenarios, three L2 docs (`sandbox-cloudflare.md`, `sandbox-vercel.md`, `sandbox-sweep.md`), edge cassettes, and the sweeper CLI. | ~1300 LOC |
 
-PRs 3 and 4 can land in parallel after PR 2 merges. PR 5 (`sandbox-sweep`) blocks the multi-host safety claim — without it, the cloud adapters' documentation must declare single-host-only operation. PR 4's acceptance criteria therefore includes a "single-host-only" warning in the L2 docs that gets removed by PR 5 once the sweeper ships.
+PRs 3 and 4 can land in parallel after PR 2 merges. PR 4 ships the sweeper as part of the same delivery unit so the multi-host safety contract is honored from day one — the cloud adapters never reach `main` without the cross-host cleanup mechanism they depend on.
 
 ## Acceptance
 
@@ -698,16 +710,7 @@ PRs 3 and 4 can land in parallel after PR 2 merges. PR 5 (`sandbox-sweep`) block
 - [ ] Golden edge replay covers both packages with cassettes
 - [ ] `provider-smoke.yml` green: happy path + 4 adversarial scenarios + leak sweep
 - [ ] `docs/L2/sandbox-cloudflare.md` and `sandbox-vercel.md` committed, including "Single-host vs multi-host orphan handling" sections and the `assertIdempotent` workload-class restriction
-- [ ] PR < 1500 LOC each (if they don't fit together, split into PR 4a Cloudflare and PR 4b Vercel)
-- [ ] L2 docs include a "Multi-host operation requires `@koi/sandbox-sweep`" warning that PR 5 removes
-
-### PR 5 (`@koi/sandbox-sweep`)
-
-- [ ] Package compiles, lints, typechecks under TS6 strict
-- [ ] CLI binary `koi-sandbox-sweep` works in `--watch` (continuous) and `--once` (single pass) modes
-- [ ] Reads `koi-managed=v1` + `koi-owner=${ownerId}` + expired `koi-stale-after` artifacts only
-- [ ] Idempotent DELETE with retry/backoff and rate-limit handling
-- [ ] Smoke test: deploy 3 stub artifacts, expire 1 lease, run sweep, assert exactly the expired artifact is deleted
-- [ ] L2 doc `docs/L2/sandbox-sweep.md` covering operator deployment patterns
-- [ ] L2 docs in `sandbox-cloudflare`/`sandbox-vercel` updated to remove the single-host warning and link to `sandbox-sweep`
-- [ ] PR < 1500 LOC
+- [ ] `@koi/sandbox-sweep` package + `koi-sandbox-sweep --watch` CLI ship in the same PR
+- [ ] Sweep smoke test: deploy 3 stub artifacts, expire 1 lease, run sweep, assert exactly the expired artifact is deleted
+- [ ] L2 doc `docs/L2/sandbox-sweep.md` covering operator deployment patterns ships in this PR
+- [ ] PR < 1500 LOC. If the bundle exceeds the budget, split as: 4a (`sandbox-cloudflare` + `sandbox-sweep` for Cloudflare) and 4b (`sandbox-vercel` + Vercel sweep extension). Vercel sweep cannot ship without the Vercel adapter; the Cloudflare bundle is independent.
