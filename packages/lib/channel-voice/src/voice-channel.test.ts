@@ -766,27 +766,82 @@ describe("createVoiceChannel", () => {
     resolveStuck?.();
     await new Promise((r) => setTimeout(r, 20));
     expect(sentOrder).toEqual(["other", "stuck"]);
-    // Round-15: disconnect aborts every in-flight controller (cooperative
-    // Round-20 contract: poison persists across reconnect for the
-    // poisoned threadId. Hosts using stable threadIds with non-
-    // cooperative transports must construct a fresh adapter; same-
-    // adapter recovery requires a different threadId.
+    // Round-33 contract: once disconnect's bounded fence has positively
+    // confirmed all stale raw ops settled (cooperative transport that
+    // honored the abort, OR a stuck call that completed before
+    // disconnect ran), the poison clears so reused threadIds recover.
+    // The non-cooperative-transport case is covered by the next test.
     await ch.disconnect();
     resolveStuck = undefined;
     await ch.connect();
+    await ch.send({
+      threadId: "session-1",
+      content: [{ kind: "text", text: "recovered" }],
+      metadata: { utteranceId: "recovered" },
+    });
+    expect(sentOrder).toContain("recovered");
+    await ch.disconnect();
+  });
+
+  test("non-cooperative transport keeps poison across reconnect (fence cannot prove safety)", async () => {
+    // Regression (round 33 high counterpart): clean-fence recovery only
+    // applies when raw ops actually settled. A transport that ignores
+    // the abort signal leaves the inflight raw op pending past the
+    // disconnect fence — its stale audio could still surface later, so
+    // the poison MUST persist for the adapter's lifetime to prevent
+    // reorder/overlap into a fresh call on the same reused threadId.
+    let stuckPromise: Promise<void> | undefined;
+    const sentOrder: string[] = [];
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async (_s, utteranceId) => {
+        if (utteranceId === "stuck") {
+          // Never resolves and ignores any abort signal: a non-
+          // cooperative transport.
+          stuckPromise = new Promise<void>(() => {});
+          await stuckPromise;
+        }
+        sentOrder.push(utteranceId);
+      },
+      onUtterance: () => () => {},
+    };
+    const stt: Stt = { transcribe: async () => null };
+    const tts: Tts = { synthesize: async () => new Uint8Array(0) };
+    const ch = createVoiceChannel({ transport, stt, tts, transportSendTimeoutMs: 30 });
+    await ch.connect();
     await expect(
       ch.send({
-        threadId: "session-1",
+        threadId: "session-x",
+        content: [{ kind: "text", text: "first" }],
+        metadata: { utteranceId: "stuck" },
+      }),
+    ).rejects.toThrow(/transport.sendUtterance exceeded/);
+    // Disconnect fence runs against the still-stuck raw op; it cannot
+    // settle within DISCONNECT_FENCE_TIMEOUT_MS (2 s default — but the
+    // test cannot afford to wait). We override that by NOT awaiting
+    // disconnect's full fence; instead, we just verify post-reconnect
+    // poison is preserved when the raw op is still inflight at clear
+    // time. To keep the test fast we use a short disconnect fence
+    // through internal knowledge: poison persists IFF inflightRawOps
+    // is nonempty when the fence finishes.
+    // Use a parallel send to keep the raw op tracked, then a quick
+    // disconnect proves the persistence path. The 2 s wait is real
+    // here (the fence must time out) — accept it as the cost of
+    // verifying the safety contract.
+    const disconnectStarted = Date.now();
+    await ch.disconnect();
+    const disconnectDuration = Date.now() - disconnectStarted;
+    // Sanity: disconnect actually waited on the fence (gives ~2 s).
+    expect(disconnectDuration).toBeGreaterThanOrEqual(1900);
+    await ch.connect();
+    await expect(
+      ch.send({
+        threadId: "session-x",
         content: [{ kind: "text", text: "still-poisoned" }],
-        metadata: { utteranceId: "still-poisoned" },
+        metadata: { utteranceId: "after-reconnect" },
       }),
     ).rejects.toBeInstanceOf(VoicePoisonedSessionError);
-    await ch.send({
-      threadId: "session-recovered",
-      content: [{ kind: "text", text: "fresh" }],
-      metadata: { utteranceId: "after-recovery" },
-    });
-    expect(sentOrder).toContain("after-recovery");
     await ch.disconnect();
   });
 

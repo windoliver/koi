@@ -797,16 +797,26 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       for (const ctl of inflightControllers) ctl.abort();
       sessionSendChains.clear();
       // Bounded best-effort fence on raw ops so cooperative impls get
-      // a chance to settle before we tear down the transport. We do
-      // NOT touch poisonedSessions here — generation invalidation on
-      // the next connect handles recovery.
+      // a chance to settle before we tear down the transport.
       const rawOps = [...inflightRawOps];
+      // let requires justification: tracks fence outcome for poison clear
+      let fenceCleanlyCompleted = rawOps.length === 0;
       if (rawOps.length > 0) {
-        const fenceSettled = Promise.allSettled(rawOps).then(() => undefined);
-        const fenceTimedOut = new Promise<void>((resolve) => {
-          setTimeout(resolve, DISCONNECT_FENCE_TIMEOUT_MS);
+        const fenceSettled = Promise.allSettled(rawOps).then(() => "settled" as const);
+        const fenceTimedOut = new Promise<"timeout">((resolve) => {
+          setTimeout(() => resolve("timeout"), DISCONNECT_FENCE_TIMEOUT_MS);
         });
-        await Promise.race([fenceSettled, fenceTimedOut]);
+        const outcome = await Promise.race([fenceSettled, fenceTimedOut]);
+        fenceCleanlyCompleted = outcome === "settled";
+      }
+      // Recover poisoned sessions only when we proved no stale raw op
+      // can still surface audio. Cooperative transports (honoring the
+      // AbortSignal forwarded by performSend) settle inside the fence
+      // window; non-cooperative ones leave raw ops running, in which
+      // case poison persists for the adapter's lifetime so a stale
+      // late frame cannot interleave with a fresh post-reconnect call.
+      if (fenceCleanlyCompleted) {
+        poisonedSessions.clear();
       }
       await inner.disconnect();
     },
