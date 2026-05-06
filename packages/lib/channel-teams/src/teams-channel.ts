@@ -158,6 +158,16 @@ export function createTeamsChannel(
       return new Response("tenant-claim-mismatch", { status: 401 });
     }
     const tenantId = verifiedTid;
+    // Bot Framework sends many activity types that are valid lifecycle
+    // events but not user messages: `conversationUpdate` (members
+    // added/removed, install/uninstall), `messageReaction`,
+    // `messageDelete`, `event`, `invoke`, `typing`. These MUST 200-ack
+    // — Bot Framework retries on non-2xx and a 400 here would loop the
+    // service into install/update breakage. Only structurally-invalid
+    // payloads warrant 400 (already rejected by isActivity above).
+    if (parsed.type !== "message") {
+      return new Response(null, { status: 200 });
+    }
     const norm = normalizeActivity(parsed, clock, fallbackTenant);
     if (!norm.ok) {
       return new Response(`INVALID_ACTIVITY: ${norm.error.message}`, { status: 400 });
@@ -203,13 +213,16 @@ export function createTeamsChannel(
 
     async function persistAndEnqueue(lease: Lease): Promise<void> {
       // Use the activity's own timestamp (assigned by the source channel)
-      // as the monotonic ordering key, falling back to wall-clock if the
-      // activity omits one. This is what makes replay-vs-fresh
-      // distinguishable: a delayed redelivery of an OLDER activity must
-      // not overwrite a NEWER stored serviceUrl/recipient.
+      // as the monotonic ordering key. If the timestamp is missing or
+      // unparsable we treat the delivery as freshness-unknown: write
+      // the address ONLY if no entry exists yet (first-write), and
+      // never overwrite an existing one. Falling back to wall-clock
+      // would let a stale replay without a parseable timestamp
+      // clobber the live routing target.
       const activityTs =
         typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : Number.NaN;
-      const lastSeenAt = Number.isFinite(activityTs) ? activityTs : clock();
+      const hasTs = Number.isFinite(activityTs);
+      const lastSeenAt = hasTs ? activityTs : 0;
       const address: ConversationAddress = {
         serviceUrl: parsed.serviceUrl,
         tenantId,
@@ -221,12 +234,14 @@ export function createTeamsChannel(
         },
         lastSeenAt,
       };
-      // Monotonic update: only overwrite if the new delivery is at least
-      // as recent as the stored one. Bot Framework can rotate serviceUrl,
-      // and a replay of an older activity arriving after a newer one
-      // would otherwise clobber the fresh routing target.
+      // Monotonic update: with a parseable timestamp, overwrite only if
+      // the new delivery is at least as recent as the stored one. With
+      // no parseable timestamp, write only on first delivery (existing
+      // === null) so a stale replay cannot clobber a newer address.
       const existing = await deps.conversationAddressStore.get(addressKey);
-      if (existing === null || existing.lastSeenAt <= lastSeenAt) {
+      if (existing === null) {
+        await deps.conversationAddressStore.put(addressKey, address);
+      } else if (hasTs && existing.lastSeenAt <= lastSeenAt) {
         await deps.conversationAddressStore.put(addressKey, address);
       }
       await deps.ingressQueue.enqueue(key, { key, payload: parsed, normalized });

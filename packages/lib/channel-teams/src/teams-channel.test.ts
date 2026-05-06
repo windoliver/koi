@@ -147,4 +147,44 @@ describe("createTeamsChannel", () => {
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toContain("CONVERSATION_ADDRESS_UNKNOWN");
   });
+
+  test("non-message activity (conversationUpdate) returns 200, not 400", async () => {
+    // Bot Framework retries on non-2xx; rejecting normal lifecycle
+    // events with 400 would loop install/update flows. Authenticated
+    // activities of unsupported-but-valid types must be 200-acked.
+    const ch = createTeamsChannel(config, buildDeps(fakeVerifier(okVerdict)));
+    const update = makeActivity({ type: "conversationUpdate" });
+    const res = await ch.handleHttpRequest(makeRequest(update));
+    expect(res.status).toBe(200);
+  });
+
+  test("address store: replay without parseable timestamp does NOT overwrite existing", async () => {
+    // Regression: previously the wall-clock fallback let a stale
+    // replay missing/invalid `timestamp` clobber a fresh stored
+    // serviceUrl/recipient. Now no-timestamp replays only write on
+    // first delivery; existing addresses are preserved.
+    const addressStore = new InMemoryConversationAddressStore();
+    const deps: TeamsDependencies = {
+      ...buildDeps(fakeVerifier(okVerdict)),
+      conversationAddressStore: addressStore,
+    };
+    const ch = createTeamsChannel(config, deps);
+    // Fresh activity with timestamp lands first.
+    const fresh = makeActivity({
+      id: "act-fresh",
+      timestamp: "2026-05-05T12:00:00.000Z",
+      serviceUrl: "https://smba.trafficmanager.net/fresh/",
+    });
+    await ch.handleHttpRequest(makeRequest(fresh));
+    // Stale replay with NO timestamp must not overwrite.
+    const stale = makeActivity({
+      id: "act-stale",
+      serviceUrl: "https://smba.trafficmanager.net/stale/",
+    });
+    const { timestamp: _drop, ...staleNoTs } = stale;
+    void _drop;
+    await ch.handleHttpRequest(makeRequest(staleNoTs as Activity));
+    const stored = await addressStore.get("msteams|tenant-1|conv-1");
+    expect(stored?.serviceUrl).toBe("https://smba.trafficmanager.net/fresh/");
+  });
 });

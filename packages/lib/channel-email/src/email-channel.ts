@@ -291,6 +291,25 @@ export function createEmailChannel(
     },
 
     send: async (message: OutboundMessage) => {
+      // v1 rejects multi-recipient sends. Partial SMTP acceptance
+      // (some recipients accepted, some rejected) has no safe message-
+      // level resolution: marking the outbox sent loses the rejected
+      // subset; marking it failed rolls back thread state for accepted
+      // recipients who already saw the message. Per-recipient state is
+      // future work; until then we fail closed at the boundary so
+      // callers cannot silently produce mixed-delivery outcomes.
+      const meta = message.metadata ?? {};
+      const toRaw = meta.to;
+      const recipientCount = Array.isArray(toRaw)
+        ? toRaw.filter((x): x is string => typeof x === "string").length
+        : typeof toRaw === "string"
+          ? 1
+          : 0;
+      if (recipientCount > 1) {
+        throw new Error(
+          `MULTI_RECIPIENT_UNSUPPORTED: v1 email channel accepts a single recipient per send (got ${recipientCount}). Send one message per recipient until per-recipient delivery state is implemented.`,
+        );
+      }
       const result = await executeOutbound(
         {
           threadStore: deps.threadStore,

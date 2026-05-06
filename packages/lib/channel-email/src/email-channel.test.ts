@@ -209,6 +209,20 @@ describe("createEmailChannel", () => {
     await expect(adapter.send(out)).rejects.toThrow(/THREAD_BLOCKED_PENDING_RECOVERY/);
   });
 
+  test("send() with multi-recipient throws MULTI_RECIPIENT_UNSUPPORTED", async () => {
+    // v1 fails closed: partial SMTP acceptance has no safe per-message
+    // resolution, so the boundary refuses multi-recipient sends until
+    // per-recipient delivery state is implemented.
+    const deps = buildDeps();
+    adapter = createEmailChannel(makeConfig(), deps);
+    const out: OutboundMessage = {
+      content: [{ kind: "text", text: "hi" }],
+      threadId: "<thr-multi@test>",
+      metadata: { to: ["alice@test.local", "bob@test.local"], subject: "hi" },
+    };
+    await expect(adapter.send(out)).rejects.toThrow(/MULTI_RECIPIENT_UNSUPPORTED/);
+  });
+
   test("inbound CAS-exhausted thread seed surfaces as ingress error (IMAP keeps unread)", async () => {
     // Regression: previously seedInboundThread silently bailed after
     // 8 CAS conflicts and enqueueInbound continued, dispatching a
