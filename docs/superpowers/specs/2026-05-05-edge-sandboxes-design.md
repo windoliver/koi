@@ -156,6 +156,7 @@ src/
 
 - Auth: `apiToken` + `accountId` from config. Token never logged.
 - **Per-instance script naming:** every `create()` call deploys to a unique script name `${configPrefix}-${randomUUID()}` (e.g., `koi-sandbox-7f3a...`). Config supplies an optional `scriptPrefix` (default `koi-sandbox`); the random suffix is owned by the instance. Two concurrent `create()` calls cannot collide, and `destroy()` only deletes the instance's own script.
+- **Per-attempt client-side identity (Vercel-recovery key):** Vercel assigns `deploymentId` server-side, so a create timeout before the response returns can leave the host without an identity to use for cleanup. To make every create attempt independently recoverable, the adapter generates a per-attempt UUID `attemptId = randomUUID()` BEFORE issuing the deploy POST and writes it to deployment metadata: `meta = { ..., "koi-attempt-id": attemptId }`. On any create failure where the response did not return (timeout, network error, or unparseable response), the adapter calls `GET /v6/deployments?meta-koi-attempt-id=${attemptId}` to discover the `deploymentId` of the artifact (if it materialized) and uses it for the cleanup DELETE. The `attemptId` itself is recorded in the orphan ledger so a host crash before the `GET` resolves still leaves a deterministic recovery key — the next adapter to read the ledger can complete the lookup. Cloudflare uses the deterministic `scriptName` directly; Vercel uses the `attemptId` lookup as its equivalent.
 
 #### Create-failure state machine (orphan-safe)
 
@@ -184,6 +185,7 @@ The `unreachable` qualifier on intermediate states is a real provider-side prope
 For Vercel, the analogous gate requires **adapter-enforced deployment protection**, not an external account default:
 
 - The adapter's `createVercelAdapter(config)` requires `config.projectId` and verifies via `GET /v9/projects/{projectId}` at construction time that the project has `ssoProtection.deploymentType` (or `passwordProtection.deploymentType`) set to `"all"` or `"prod_deployment_urls_and_all_previews"`. If protection is disabled or scoped narrower, `createVercelAdapter` returns `KoiError { code: "VERCEL_PROTECTION_REQUIRED", reason: "preview-protection-not-enforced" }` and refuses to construct.
+- **Re-check inside every `create()`:** project protection settings can drift after adapter construction (operator changes them on the dashboard). Each `create()` therefore re-issues the same `GET /v9/projects/{projectId}` check before any deploy mutation. The check uses a 30-second-TTL cache to bound API call rate, but the cache is invalidated on any create failure path so a flap is detected on the next attempt. If the live check shows protection has been disabled or scoped narrower, `create()` returns `VERCEL_PROTECTION_REQUIRED` and never deploys. The structural reachability invariant is therefore guarded both at adapter construction (for fast failure of misconfigured deployments) and at every create call (against post-construction drift).
 - Each deployment is created with `target: "preview"` until activation, so it lands behind the protection gate. Activation either flips `target: "production"` (after secrets and protection are confirmed) or attaches a custom domain — both are explicit final-step transitions.
 - Pre-activation, the preview URL is reachable only with a valid Vercel SSO/password token bound to that project. The koi adapter never publishes that URL externally; even if leaked, the protection gate stops anonymous invocation.
 - The smoke workflow (`provider-smoke.yml`) includes a `vercel-protection-required` scenario: temporarily disable protection on the test project, attempt `createVercelAdapter`, assert it returns `VERCEL_PROTECTION_REQUIRED` and refuses to construct. Re-enable, assert success.
@@ -217,8 +219,9 @@ In-process delayed re-verify is necessary but not sufficient: a host crash, cont
     team_id TEXT,                       -- Vercel: nullable; Cloudflare: NULL
     project_id TEXT,                    -- Vercel: required; Cloudflare: NULL
     script_name TEXT,                   -- Cloudflare: required
-    deployment_id TEXT,                 -- Vercel: required
-    deployment_url TEXT,                -- Vercel: required
+    deployment_id TEXT,                 -- Vercel: NULL until discovered; recovery via attempt_id
+    deployment_url TEXT,                 -- Vercel: NULL until discovered
+    attempt_id TEXT,                     -- Vercel: required (per-attempt UUID written to deployment.meta.koi-attempt-id)
     created_at TEXT NOT NULL,
     last_tried_at TEXT NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0
@@ -308,11 +311,14 @@ This is documented prominently in `docs/L2/sandbox-cloudflare.md` and tested in 
 
 There is no `onStdout`/`onStderr` on `EdgeInvokeRequest` — streaming is not part of the contract, by design. Callers who need streaming use a different adapter.
 
-#### Request-ID idempotency (mandatory wire-protocol dedupe)
+#### Request-ID idempotency (best-effort dedupe — NOT exactly-once)
 
-Because `destroy()` and timeout/abort can leave remote work in flight (see `DestroyOutcome`), **`requestId` is required, not optional, on every `invoke()`**. The shim deduplicates by ID:
+Because `destroy()` and timeout/abort can leave remote work in flight (see `DestroyOutcome`), **`requestId` is required, not optional, on every `invoke()`**. The shim deduplicates by ID — but with explicit honest limits:
 
-- The shim caches `requestId → { status, result, expiresAt }` in a per-isolate Map for **300 seconds** after the original invocation completes (or fails). Expiration is wall-clock; entries are pruned lazily on each invoke.
+- **The dedupe is a best-effort cache, not an exactly-once guarantee.** The shim caches `requestId → { status, result, expiresAt }` in a per-isolate in-memory `Map`. Cloudflare and Vercel do not pin retries to the same isolate; isolates can also be evicted at any time. Therefore a retry can land on a fresh isolate where the dedupe entry does not exist, and the handler runs again.
+- **Contract claim:** the adapter does NOT promise exactly-once execution. The contract is "if the retry lands on the same warm isolate within the cache window, dedupe takes effect; otherwise the handler may run twice." This is documented at the top of `docs/L2/sandbox-cloudflare.md` and `sandbox-vercel.md` so callers cannot mistake the mechanism for a stronger guarantee.
+- **Caller-side correctness requirement:** for any `invoke()` whose `payload` triggers non-idempotent side effects (external writes, payments, state mutations), the caller MUST implement idempotency at the side-effect boundary using the same `requestId` (or a derivative) as the dedupe key — e.g., a unique constraint on the downstream database, an idempotency-key header on the downstream API, or an in-application dedupe table. The shim cache helps performance and reduces duplicate-effect probability; it does not eliminate it. This is the same posture HTTP retries take.
+- The shim caches entries for **300 seconds** after the original invocation completes (or fails). Expiration is wall-clock; entries are pruned lazily on each invoke.
 - On `POST /invoke` arrival:
   - **Unknown ID:** execute the handler, store result, return it.
   - **Known ID, in-flight:** the second request awaits the first's outcome (same Promise) and returns the same response. Two callers using the same `requestId` see the same result; the handler runs exactly once.
