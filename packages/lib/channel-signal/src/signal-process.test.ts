@@ -248,6 +248,35 @@ describe("@koi/channel-signal createSignalProcess", () => {
     await p.stop();
   });
 
+  test("send() rejects when signal-cli stays alive but never responds (per-request timeout)", async () => {
+    // Live-but-unresponsive child: stdin accepts writes, exited never
+    // resolves, no stdout traffic. Without a per-RPC timeout the send
+    // promise would hang forever and stall every queued send behind it.
+    const exited = new Promise<void>(() => {
+      /* never resolves */
+    });
+    const proc: SignalChildProcess = {
+      stdout: new ReadableStream<Uint8Array>(),
+      stdin: { write: () => undefined },
+      exited,
+      kill: () => undefined,
+    };
+    const spawn: SpawnFn = () => proc;
+    const p = createSignalProcess(
+      "+15551234567",
+      "signal-cli",
+      undefined,
+      spawn,
+      undefined,
+      undefined,
+      20, // 20ms RPC timeout for the test
+    );
+    await p.start();
+    await expect(
+      p.send({ method: "send", params: { recipient: "+15551234567", message: "hi" } }),
+    ).rejects.toThrow(/did not respond to send within/);
+  });
+
   test("send() rejects when signal-cli replies with a JSON-RPC error frame", async () => {
     // Custom fake: on stdin write, emit a JSON-RPC error response keyed
     // to the request id. send() must surface a typed rejection rather

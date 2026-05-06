@@ -6,6 +6,13 @@
  */
 
 export const SIGNAL_SHUTDOWN_TIMEOUT_MS = 5000;
+/**
+ * Per-RPC timeout. signal-cli normally responds within tens of milliseconds;
+ * 30s is generous but bounds the worst case so a wedged-but-alive subprocess
+ * (e.g. blocked on a JVM GC pause that never recovers, network hung mid-send)
+ * surfaces as an explicit rejection instead of a permanently stuck promise.
+ */
+export const SIGNAL_RPC_TIMEOUT_MS = 30_000;
 
 export interface SignalAttachment {
   readonly contentType: string;
@@ -54,6 +61,7 @@ export function createSignalProcess(
   spawn: SpawnFn,
   shutdownTimeoutMs: number = SIGNAL_SHUTDOWN_TIMEOUT_MS,
   onUnexpectedExit?: () => void,
+  rpcTimeoutMs: number = SIGNAL_RPC_TIMEOUT_MS,
 ): SignalProcess {
   // let requires justification: subprocess handle, undefined when not running
   let proc: SignalChildProcess | undefined;
@@ -283,13 +291,33 @@ export function createSignalProcess(
       const promise = new Promise<void>((resolve, reject) => {
         pendingRpc.set(id, { resolve, reject });
       });
+      // Per-request timeout: a live-but-unresponsive subprocess (JVM stall,
+      // network hung mid-send) would otherwise hold this promise forever
+      // and stall every queued send behind it. Reject explicitly so the
+      // caller sees the degraded-dependency state and can tear the
+      // adapter down instead of waiting on a wedged child.
+      const timer = setTimeout(() => {
+        const waiter = pendingRpc.get(id);
+        if (waiter === undefined) return;
+        pendingRpc.delete(id);
+        waiter.reject(
+          new Error(
+            `[channel-signal] signal-cli did not respond to send within ${rpcTimeoutMs}ms — subprocess may be wedged`,
+          ),
+        );
+      }, rpcTimeoutMs);
       try {
         proc.stdin.write(new TextEncoder().encode(`${JSON.stringify(rpc)}\n`));
       } catch (err: unknown) {
+        clearTimeout(timer);
         pendingRpc.delete(id);
         throw err;
       }
-      await promise;
+      try {
+        await promise;
+      } finally {
+        clearTimeout(timer);
+      }
     },
 
     onEvent: (handler): (() => void) => {

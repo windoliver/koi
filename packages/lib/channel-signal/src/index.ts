@@ -23,5 +23,6 @@ export type {
 export {
   createSignalProcess,
   parseEvent,
+  SIGNAL_RPC_TIMEOUT_MS,
   SIGNAL_SHUTDOWN_TIMEOUT_MS,
 } from "./signal-process.js";
