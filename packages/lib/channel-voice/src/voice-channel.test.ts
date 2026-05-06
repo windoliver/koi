@@ -10,6 +10,7 @@ import {
 
 interface SentUtterance {
   readonly sessionId: string;
+  readonly utteranceId: string;
   readonly frames: readonly Uint8Array[];
 }
 
@@ -29,7 +30,11 @@ interface Harness {
 function harness(opts?: {
   readonly sttResult?: (audio: Uint8Array) => string | null;
   readonly ttsResult?: (text: string) => Uint8Array;
-  readonly sendUtterance?: (sessionId: string, frames: readonly Uint8Array[]) => Promise<void>;
+  readonly sendUtterance?: (
+    sessionId: string,
+    utteranceId: string,
+    frames: readonly Uint8Array[],
+  ) => Promise<void>;
 }): Harness {
   let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
   const sentUtterances: SentUtterance[] = [];
@@ -44,11 +49,11 @@ function harness(opts?: {
       disconnect: async () => {
         h.disconnectCount++;
       },
-      sendUtterance: async (sessionId, frames) => {
+      sendUtterance: async (sessionId, utteranceId, frames) => {
         if (opts?.sendUtterance) {
-          await opts.sendUtterance(sessionId, frames);
+          await opts.sendUtterance(sessionId, utteranceId, frames);
         }
-        sentUtterances.push({ sessionId, frames });
+        sentUtterances.push({ sessionId, utteranceId, frames });
         for (const f of frames) sentAudio.push(f);
       },
       onUtterance: (handler) => {
@@ -534,6 +539,32 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("each send generates a unique utteranceId for transport-level dedup", async () => {
+    // Round-10 high finding: VoiceTransport.sendUtterance now takes a
+    // utteranceId so transports can implement idempotent dedup. Verify
+    // distinct sends get distinct ids and a single send chunked into
+    // multiple TTS pieces still uses ONE id (the dedup key is per
+    // channel-level send, not per chunk).
+    const h = harness();
+    const ch = createVoiceChannel({
+      transport: h.transport,
+      stt: h.stt,
+      tts: h.tts,
+      maxTtsChars: 5,
+    });
+    await ch.connect();
+    await ch.send({ threadId: "session-1", content: [{ kind: "text", text: "abcdefghij" }] });
+    await ch.send({ threadId: "session-1", content: [{ kind: "text", text: "second" }] });
+    expect(h.sentUtterances).toHaveLength(2);
+    const id1 = h.sentUtterances[0]?.utteranceId;
+    const id2 = h.sentUtterances[1]?.utteranceId;
+    expect(typeof id1).toBe("string");
+    expect(typeof id2).toBe("string");
+    expect(id1).not.toBe(id2);
+    expect(id1?.length).toBeGreaterThanOrEqual(16);
+    await ch.disconnect();
+  });
+
   test("hung STT call times out so the per-session chain does not deadlock all later utterances", async () => {
     // Regression: per-session STT chaining (added round 3) made one stuck
     // stt.transcribe() block every later utterance for that sessionId
@@ -600,7 +631,7 @@ describe("createVoiceChannel", () => {
     const transport: VoiceTransport = {
       connect: async () => {},
       disconnect: async () => {},
-      sendUtterance: async (sessionId, frames) => {
+      sendUtterance: async (sessionId, _utteranceId, frames) => {
         if (sessionId === "call-A") sentForA.push(frames.length);
         else sentForB.push(frames.length);
       },

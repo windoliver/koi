@@ -23,6 +23,31 @@ function openWs(port: number): Promise<WebSocket> {
   });
 }
 
+/**
+ * Drop-in replacement for `openWs` that also wires an auto-ack listener:
+ * any inbound frame carrying a `deliveryId` immediately triggers an
+ * `{kind:"ack",deliveryId}` reply. Use for tests that exercise the
+ * happy-path live-delivery flow — without this the adapter would wait
+ * for `ackTimeoutMs` and fall through to push.
+ */
+function openWsAutoAck(port: number): Promise<WebSocket> {
+  return openWs(port).then((ws) => {
+    ws.addEventListener("message", (ev) => {
+      try {
+        const f = JSON.parse(typeof ev.data === "string" ? ev.data : "") as {
+          deliveryId?: unknown;
+        };
+        if (typeof f.deliveryId === "string") {
+          ws.send(JSON.stringify({ kind: "ack", deliveryId: f.deliveryId }));
+        }
+      } catch {
+        // ignore non-JSON frames
+      }
+    });
+    return ws;
+  });
+}
+
 function nextFrame(ws: WebSocket): Promise<unknown> {
   return new Promise((resolve) => {
     ws.addEventListener(
@@ -95,7 +120,7 @@ describe("createMobileChannel", () => {
     const port = await freePort();
     const ch = createMobileChannel({ port });
     await ch.connect();
-    const ws = await openWs(port);
+    const ws = await openWsAutoAck(port);
     await new Promise((r) => setTimeout(r, 10));
     const framePromise = nextFrame(ws);
     await ch.sendUnsolicited({ content: [{ kind: "text", text: "down" }] });
@@ -111,13 +136,16 @@ describe("createMobileChannel", () => {
     const port = await freePort();
     const ch = createMobileChannel({ port });
     await ch.connect();
-    const ws1 = await openWs(port);
+    const ws1 = await openWsAutoAck(port);
     const got1: string[] = [];
     ws1.addEventListener("message", (ev) => {
       const f = JSON.parse(typeof ev.data === "string" ? ev.data : "") as {
-        content: { text: string }[];
+        kind?: string;
+        content?: { text: string }[];
       };
-      got1.push(f.content[0]?.text ?? "");
+      if (f.kind === "msg" && f.content !== undefined) {
+        got1.push(f.content[0]?.text ?? "");
+      }
     });
     await new Promise((r) => setTimeout(r, 20));
     const ws2 = new WebSocket(`ws://127.0.0.1:${port}`);
@@ -226,13 +254,16 @@ describe("createMobileChannel", () => {
     await new Promise((r) => setTimeout(r, 30));
     ws1.close();
     await new Promise((r) => setTimeout(r, 30));
-    const ws2 = await openWs(port);
+    const ws2 = await openWsAutoAck(port);
     const got: string[] = [];
     ws2.addEventListener("message", (ev) => {
       const f = JSON.parse(typeof ev.data === "string" ? ev.data : "") as {
-        content: { text: string }[];
+        kind?: string;
+        content?: { text: string }[];
       };
-      got.push(f.content[0]?.text ?? "");
+      if (f.kind === "msg" && f.content !== undefined) {
+        got.push(f.content[0]?.text ?? "");
+      }
     });
     await new Promise((r) => setTimeout(r, 30));
     await ch.sendUnsolicited({ content: [{ kind: "text", text: "welcome" }] });
@@ -1037,13 +1068,16 @@ describe("createMobileChannel", () => {
     await new Promise((r) => setTimeout(r, 20));
     ws1.close();
     await new Promise((r) => setTimeout(r, 30));
-    const ws2 = await openWs(port);
+    const ws2 = await openWsAutoAck(port);
     const got: string[] = [];
     ws2.addEventListener("message", (ev) => {
       const f = JSON.parse(typeof ev.data === "string" ? ev.data : "") as {
-        content: { text: string }[];
+        kind?: string;
+        content?: { text: string }[];
       };
-      got.push(f.content[0]?.text ?? "");
+      if (f.kind === "msg" && f.content !== undefined) {
+        got.push(f.content[0]?.text ?? "");
+      }
     });
     await new Promise((r) => setTimeout(r, 30));
     await ch.sendUnsolicited({ content: [{ kind: "text", text: "welcome" }] });
@@ -1149,7 +1183,7 @@ describe("createMobileChannel", () => {
       captured = m;
     });
     await ch.connect();
-    const ws = await openWs(port);
+    const ws = await openWsAutoAck(port);
     const recvP = nextFrame(ws);
     ws.send(
       JSON.stringify({
@@ -1276,6 +1310,108 @@ describe("createMobileChannel", () => {
     expect(received[0]?.senderId).toBe("device-good");
     ws.close();
     await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
+  test("live send waits for client ack and falls through to push on timeout", async () => {
+    // Round-10 high finding: socket.send() reporting bytes queued does not
+    // prove the client received the frame. The wire payload now carries a
+    // deliveryId; the client must ack within ackTimeoutMs or delivery
+    // routes to pushNotifier so a radio drop after queue cannot silently
+    // lose the message.
+    const port = await freePort();
+    const pushed: OutboundMessage[] = [];
+    const ch = createMobileChannel({
+      port,
+      authenticate: async () => "test-device",
+      pushNotifier: async (m) => {
+        pushed.push(m);
+      },
+      ackTimeoutMs: 50,
+    });
+    let captured: InboundMessage | undefined;
+    ch.onMessage(async (m: InboundMessage) => {
+      captured = m;
+    });
+    await ch.connect();
+    // NON-acking client (raw openWs, no auto-ack) — the live frame will
+    // queue but never be acked, so it must end up in pushed[].
+    const ws = await openWs(port);
+    ws.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: "hi" }] }));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(captured).toBeDefined();
+    await ch.send(
+      replyToInbound(captured as InboundMessage, {
+        content: [{ kind: "text", text: "needs-ack" }],
+      }),
+    );
+    expect(pushed).toHaveLength(1);
+    ws.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
+  test("client ack frame resolves the live send without push fallback", async () => {
+    const port = await freePort();
+    const pushed: OutboundMessage[] = [];
+    const ch = createMobileChannel({
+      port,
+      authenticate: async () => "test-device",
+      pushNotifier: async (m) => {
+        pushed.push(m);
+      },
+      ackTimeoutMs: 1000,
+    });
+    let captured: InboundMessage | undefined;
+    ch.onMessage(async (m: InboundMessage) => {
+      captured = m;
+    });
+    await ch.connect();
+    const ws = await openWsAutoAck(port);
+    ws.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: "hi" }] }));
+    await new Promise((r) => setTimeout(r, 30));
+    await ch.send(
+      replyToInbound(captured as InboundMessage, {
+        content: [{ kind: "text", text: "live-acked" }],
+      }),
+    );
+    // Auto-ack closes the loop; nothing should hit push.
+    expect(pushed).toHaveLength(0);
+    ws.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
+  test("disconnect rejects pending acks into push fallback", async () => {
+    // Without this drain, in-flight ack waits would hang past disconnect
+    // until ackTimeoutMs elapsed even though the socket is already gone.
+    const port = await freePort();
+    const pushed: OutboundMessage[] = [];
+    const ch = createMobileChannel({
+      port,
+      authenticate: async () => "test-device",
+      pushNotifier: async (m) => {
+        pushed.push(m);
+      },
+      ackTimeoutMs: 60_000,
+    });
+    let captured: InboundMessage | undefined;
+    ch.onMessage(async (m: InboundMessage) => {
+      captured = m;
+    });
+    await ch.connect();
+    const ws = await openWs(port);
+    ws.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: "hi" }] }));
+    await new Promise((r) => setTimeout(r, 30));
+    const sendPromise = ch.send(
+      replyToInbound(captured as InboundMessage, {
+        content: [{ kind: "text", text: "racing" }],
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    ws.close();
+    await sendPromise;
+    expect(pushed).toHaveLength(1);
     await ch.disconnect();
   });
 

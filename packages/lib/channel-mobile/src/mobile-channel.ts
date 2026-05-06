@@ -163,6 +163,21 @@ export interface MobileChannelConfig {
    * the upgrade returns 504. Default 10 s.
    */
   readonly authenticateTimeoutMs?: number;
+  /**
+   * Maximum milliseconds to wait for the client to ack a live-delivered
+   * frame before treating the send as failed and falling through to
+   * `pushNotifier`. The wire payload of every live send carries a
+   * `deliveryId`; the client must respond with `{kind:"ack",deliveryId}`
+   * within this window to confirm receipt. Without an ack, an unstable
+   * radio link could drop the frame after `socket.send()` reported it
+   * queued and the user would never receive the reply. Default 5 s.
+   *
+   * Set to `0` to disable the ack protocol — sends complete as soon as
+   * `socket.send()` reports the bytes queued. This restores the prior
+   * (round-9) behavior for hosts whose clients do not implement acks.
+   * Disabling it forfeits the radio-drop guarantee.
+   */
+  readonly ackTimeoutMs?: number;
 }
 
 export class MobileNoDeliveryTargetError extends Error {
@@ -224,6 +239,8 @@ interface InboundFrame {
   readonly kind?: string;
   readonly content?: readonly unknown[];
   readonly senderId?: string;
+  /** Set on `{kind:"ack", deliveryId}` frames the client sends to confirm receipt. */
+  readonly deliveryId?: unknown;
 }
 
 /**
@@ -247,8 +264,14 @@ const UPGRADE_RESERVATION_TIMEOUT_MS = 5_000;
 /** Default for {@link MobileChannelConfig.authenticateTimeoutMs}. */
 const DEFAULT_AUTHENTICATE_TIMEOUT_MS = 10_000;
 
+/** Default for {@link MobileChannelConfig.ackTimeoutMs}. */
+const DEFAULT_ACK_TIMEOUT_MS = 5_000;
+
 /** Sentinel for the auth race; using a unique symbol avoids collision with any user value. */
 const AUTH_TIMEOUT_SENTINEL: unique symbol = Symbol("authenticate-timeout");
+
+/** Sentinel that promotes an ack-timeout rejection into the push fallback path. */
+const ACK_TIMEOUT_SENTINEL: unique symbol = Symbol("ack-timeout");
 
 /**
  * Strict ContentBlock validator. Returns the input narrowed to ContentBlock
@@ -474,6 +497,22 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   // session boundary that strict-mode correlation can detect.
   // let requires justification: monotonic counter for session boundaries
   let sessionEpoch = 0;
+  // Pending application-level acks for live-delivered frames. The wire
+  // payload of every live send carries a `deliveryId` and the client
+  // must respond with `{kind:"ack", deliveryId}` within `ackTimeoutMs`.
+  // On ack: resolve the send. On timeout / disconnect: route to push
+  // notifier (or reject) so a radio-drop after `socket.send()` queued
+  // the frame doesn't silently lose the message.
+  // let requires justification: per-send pending state
+  const pendingAcks = new Map<
+    string,
+    {
+      readonly resolve: () => void;
+      readonly reject: (err: unknown) => void;
+      readonly timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+  const ackTimeoutMs = config.ackTimeoutMs ?? DEFAULT_ACK_TIMEOUT_MS;
   // Per-session unguessable nonce. Refreshed on every accepted socket
   // open() so that a stale tag from a prior session/process — even one
   // signed with a stable cross-instance signingSecret and the same epoch
@@ -495,6 +534,34 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
     readonly threadId?: string;
   }
   const sessionContext = new AsyncLocalStorage<AlsCtx>();
+
+  // Recipient context comes ONLY from authenticated material:
+  //   - VerifiedReplyTag if HMAC matches the (epoch, sender, thread)
+  //     tuple actually present in metadata. Mutated origin fields break
+  //     the signature → no context derived.
+  //   - ALS context otherwise (handler-chain inherited).
+  // Empty `{}` means the host has no authenticated routing key — its
+  // pushNotifier MUST refuse if it cannot identify a recipient.
+  const derivePushContext = (
+    verifiedReply: VerifiedReplyTag | undefined,
+    alsCtx: AlsCtx | undefined,
+  ): MobilePushContext => {
+    if (verifiedReply !== undefined) {
+      return {
+        originatingSenderId: verifiedReply.senderId,
+        ...(verifiedReply.threadId.length > 0
+          ? { originatingThreadId: verifiedReply.threadId }
+          : {}),
+      };
+    }
+    if (alsCtx !== undefined) {
+      return {
+        originatingSenderId: alsCtx.senderId,
+        ...(alsCtx.threadId !== undefined ? { originatingThreadId: alsCtx.threadId } : {}),
+      };
+    }
+    return {};
+  };
 
   const inner = createChannelAdapter<string>({
     name: "mobile",
@@ -669,6 +736,15 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
               // just-closed session's nonce fails the equality check until
               // the next open() generates a fresh one.
               sessionNonce = "";
+              // Reject any in-flight ack waits with the timeout sentinel
+              // so platformSend's catch arm routes them to push fallback.
+              // Without this they would hang until ackTimeoutMs naturally
+              // elapsed even though the socket is already gone.
+              for (const [id, pending] of pendingAcks) {
+                clearTimeout(pending.timer);
+                pendingAcks.delete(id);
+                pending.reject(ACK_TIMEOUT_SENTINEL);
+              }
             }
           },
         },
@@ -684,6 +760,13 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       pendingLines = [];
       pendingUpgrades = 0;
       sessionNonce = "";
+      // Drain pending ack waits — fail them via the sentinel so
+      // platformSend's catch arm routes them to push fallback.
+      for (const [id, pending] of pendingAcks) {
+        clearTimeout(pending.timer);
+        pendingAcks.delete(id);
+        pending.reject(ACK_TIMEOUT_SENTINEL);
+      }
       server?.stop(true);
       server = undefined;
     },
@@ -754,16 +837,53 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       // remote client has no use for them.
       const wireMessage = stripInternalMetadata(message);
       if (liveRecipient && activeSocket !== undefined) {
-        const payload = JSON.stringify({ kind: "msg", ...wireMessage, timestamp: Date.now() });
+        // Application-level ack: a fresh deliveryId rides on the wire
+        // payload. The client must respond with `{kind:"ack",deliveryId}`
+        // within ackTimeoutMs to confirm receipt — otherwise the radio
+        // could drop the frame after socket.send() reports it queued and
+        // the user would never see it. On timeout we fall through to
+        // push (or reject with no-target) so delivery is never silently
+        // lost. ackTimeoutMs <= 0 disables the protocol.
+        const deliveryId = randomBytes(12).toString("hex");
+        const payload = JSON.stringify({
+          kind: "msg",
+          ...wireMessage,
+          deliveryId,
+          timestamp: Date.now(),
+        });
         const expectedBytes = new TextEncoder().encode(payload).byteLength;
+        const socketAtSend = activeSocket;
         // let requires justification: capture write outcome
         let written = 0;
         try {
-          written = activeSocket.send(payload);
+          written = socketAtSend.send(payload);
         } catch {
           written = -1;
         }
-        if (written >= expectedBytes) return;
+        if (written >= expectedBytes) {
+          if (ackTimeoutMs <= 0) return;
+          // Wait for the client ack OR timeout, whichever fires first.
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              if (pendingAcks.delete(deliveryId)) {
+                // Promote to push fallback below by rejecting with a
+                // sentinel that the catch arm translates into pushNotifier.
+                reject(ACK_TIMEOUT_SENTINEL);
+              }
+            }, ackTimeoutMs);
+            pendingAcks.set(deliveryId, { resolve, reject, timer });
+          }).then(
+            () => undefined,
+            async (err) => {
+              if (err !== ACK_TIMEOUT_SENTINEL) throw err;
+              if (config.pushNotifier === undefined) {
+                throw new MobileNoDeliveryTargetError();
+              }
+              await config.pushNotifier(wireMessage, derivePushContext(verifiedReply, alsCtx));
+            },
+          );
+          return;
+        }
         // Partial write (0 < written < expectedBytes) is the dangerous case:
         // some bytes are already on the wire, so falling through to
         // pushNotifier would deliver the same logical message twice (once
@@ -771,7 +891,7 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         // to terminate the corrupt frame stream and surface the failure to
         // the caller; idempotent retry is the host's responsibility.
         if (written > 0) {
-          activeSocket.close();
+          socketAtSend.close();
           throw new Error(
             `@koi/channel-mobile: partial WebSocket write (${String(written)}/${String(expectedBytes)} bytes); socket closed to prevent duplicate delivery via push fallback`,
           );
@@ -782,29 +902,7 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       if (config.pushNotifier === undefined) {
         throw new MobileNoDeliveryTargetError();
       }
-      // Recipient context comes ONLY from authenticated material:
-      //   - VerifiedReplyTag if HMAC matches the (epoch, sender, thread)
-      //     tuple actually present in metadata. Mutated origin fields
-      //     break the signature → no context derived.
-      //   - ALS context otherwise (handler-chain inherited).
-      const ctx: MobilePushContext = (() => {
-        if (verifiedReply !== undefined) {
-          return {
-            originatingSenderId: verifiedReply.senderId,
-            ...(verifiedReply.threadId.length > 0
-              ? { originatingThreadId: verifiedReply.threadId }
-              : {}),
-          };
-        }
-        if (alsCtx !== undefined) {
-          return {
-            originatingSenderId: alsCtx.senderId,
-            ...(alsCtx.threadId !== undefined ? { originatingThreadId: alsCtx.threadId } : {}),
-          };
-        }
-        return {};
-      })();
-      await config.pushNotifier(wireMessage, ctx);
+      await config.pushNotifier(wireMessage, derivePushContext(verifiedReply, alsCtx));
     },
     onPlatformEvent: (handler) => {
       lineHandler = handler;
@@ -826,6 +924,20 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       if (Buffer.byteLength(line, "utf8") > MAX_INBOUND_FRAME_BYTES) return null;
       try {
         const frame = JSON.parse(line) as InboundFrame;
+        // Application-level ack from the client confirming receipt of a
+        // prior live-delivered frame. Resolves the pending send and
+        // clears the timeout so it cannot fall through to push later.
+        if (frame.kind === "ack" && typeof frame.deliveryId === "string") {
+          const pending = pendingAcks.get(frame.deliveryId);
+          if (pending !== undefined) {
+            clearTimeout(pending.timer);
+            pendingAcks.delete(frame.deliveryId);
+            pending.resolve();
+          }
+          // Acks are wire-protocol frames, not user messages — never
+          // dispatch them to message handlers.
+          return null;
+        }
         if (frame.kind !== "msg") return null;
         const rawContent = frame.content ?? [];
         if (!Array.isArray(rawContent) || rawContent.length === 0) return null;

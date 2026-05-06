@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { createChannelAdapter } from "@koi/channel-base";
 import type {
   ChannelAdapter,
@@ -26,17 +27,30 @@ import type {
  * per-packet would fragment transcripts and explode STT cost.
  *
  * **Outbound contract:** `sendUtterance` is invoked with the FULL ordered
- * sequence of audio frames for one reply, atomically. The transport is
- * responsible for either delivering the entire utterance or surfacing a
- * single failure that leaves the user-audible state in a defined position
- * (so the caller can retry idempotently). The channel does NOT stream
- * chunk-by-chunk and does NOT supply resume tokens — atomicity is the
- * transport's responsibility.
+ * sequence of audio frames for one reply, atomically, plus a unique
+ * `utteranceId` (a fresh hex string per channel-level send call). The
+ * transport is responsible for either delivering the entire utterance
+ * or surfacing a single failure that leaves the user-audible state in a
+ * defined position. The channel does NOT stream chunk-by-chunk and does
+ * NOT supply resume tokens.
+ *
+ * **Idempotent dedup MUST be enforced by the transport keyed on
+ * `utteranceId`**: if the channel-level send is retried (whether by the
+ * host or by an upstream retry middleware) the same `utteranceId` is
+ * passed in. The transport must not double-play. Without this contract,
+ * a transport that streams frames then errors mid-playback would force
+ * the caller to choose between losing audio (no retry) or duplicating
+ * playback prefixes (blind retry). With it, the transport can suppress
+ * a re-play whose id matches a recently-completed delivery.
  */
 export interface VoiceTransport {
   readonly connect: () => Promise<void>;
   readonly disconnect: () => Promise<void>;
-  readonly sendUtterance: (sessionId: string, frames: readonly Uint8Array[]) => Promise<void>;
+  readonly sendUtterance: (
+    sessionId: string,
+    utteranceId: string,
+    frames: readonly Uint8Array[],
+  ) => Promise<void>;
   readonly onUtterance: (handler: (sessionId: string, utterance: Uint8Array) => void) => () => void;
 }
 
@@ -379,7 +393,11 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
   // let requires justification: lifecycle gate flipped by connect/disconnect
   let voiceConnected = false;
 
-  const performSend = async (sessionId: string, pieces: readonly string[]): Promise<void> => {
+  const performSend = async (
+    sessionId: string,
+    utteranceId: string,
+    pieces: readonly string[],
+  ): Promise<void> => {
     // Two-phase atomic delivery: synthesize ALL pieces first, then hand
     // the complete ordered frame sequence to the transport. A TTS failure
     // mid-sequence plays nothing rather than half a sentence.
@@ -393,7 +411,7 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       frames.push(audio);
     }
     await withTimeout(
-      Promise.resolve(config.transport.sendUtterance(sessionId, frames)),
+      Promise.resolve(config.transport.sendUtterance(sessionId, utteranceId, frames)),
       transportSendTimeoutMs,
       () => new VoiceTransportSendTimeoutError(transportSendTimeoutMs),
     );
@@ -416,11 +434,16 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       for (const piece of chunk(text, maxTtsChars)) pieces.push(piece);
     }
     const sessionId = message.threadId;
+    // Stable utteranceId (16-byte hex) for transport-level dedup. The
+    // transport contract requires idempotent dedup keyed on this id, so
+    // a retried send (host or upstream middleware) reuses the same id
+    // and the transport can suppress double-playback.
+    const utteranceId = randomBytes(16).toString("hex");
     const prev = sessionSendChains.get(sessionId) ?? Promise.resolve();
     // .catch on prev swallows prior failures so a single bad turn doesn't
     // poison every later turn for the same session — the chain advances
     // and the next caller gets a fresh attempt.
-    const op = prev.catch(() => undefined).then(() => performSend(sessionId, pieces));
+    const op = prev.catch(() => undefined).then(() => performSend(sessionId, utteranceId, pieces));
     // Store a swallowed copy as the chain head. The caller still awaits
     // the rejecting `op` directly; the Map entry must not be a rejecting
     // promise or it would surface as an unhandled rejection when the
