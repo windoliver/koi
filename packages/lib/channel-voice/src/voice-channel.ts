@@ -243,6 +243,24 @@ const DEFAULT_DISPATCH_HANDLER_TIMEOUT_MS = 60_000;
 export const VOICE_CALL_EPOCH_KEY = "voiceCallEpoch";
 
 /**
+ * Per-turn token. The adapter mints a fresh random hex string for every
+ * inbound and stamps it onto the inbound metadata. Detached replies that
+ * carry this token (via `replyToVoiceInbound` or manual propagation) are
+ * fenced when:
+ *   • the dispatch watchdog fired for that turn (handler hung past
+ *     dispatchHandlerTimeoutMs, then resumed in a setTimeout / queue), OR
+ *   • a newer turn for the same sessionId has been admitted (so a delayed
+ *     reply tagged with a prior turn cannot speak into the current one
+ *     even when a host reuses the same `sessionId` across logical calls).
+ *
+ * Round-43 fix: the per-connection `voiceCallEpoch` was not enough — a
+ * detached send post-watchdog or a sessionId-reuse without disconnect both
+ * still passed the epoch check. Per-turn nonce closes both holes at the
+ * trust boundary instead of relying on host discipline.
+ */
+export const VOICE_TURN_ID_KEY = "voiceTurnId";
+
+/**
  * Copy the per-call epoch tag from an inbound onto an outbound reply.
  * Use this in any callsite where the reply is built outside the
  * inbound's ALS scope (e.g., after `await`-ing an external work
@@ -256,11 +274,20 @@ export function replyToVoiceInbound(
   outbound: OutboundMessage,
 ): OutboundMessage {
   const inboundEpoch = inbound.metadata?.[VOICE_CALL_EPOCH_KEY];
-  if (typeof inboundEpoch !== "number") return outbound;
-  return {
-    ...outbound,
-    metadata: { ...(outbound.metadata ?? {}), [VOICE_CALL_EPOCH_KEY]: inboundEpoch },
-  };
+  const inboundTurnId = inbound.metadata?.[VOICE_TURN_ID_KEY];
+  const next: Record<string, unknown> = { ...(outbound.metadata ?? {}) };
+  // let requires justification: nothing-to-copy is a valid no-op
+  let copied = false;
+  if (typeof inboundEpoch === "number") {
+    next[VOICE_CALL_EPOCH_KEY] = inboundEpoch;
+    copied = true;
+  }
+  if (typeof inboundTurnId === "string" && inboundTurnId.length > 0) {
+    next[VOICE_TURN_ID_KEY] = inboundTurnId;
+    copied = true;
+  }
+  if (!copied) return outbound;
+  return { ...outbound, metadata: next };
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, makeError: () => Error): Promise<T> {
@@ -410,8 +437,33 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
   const inboundGenContext = new AsyncLocalStorage<{
     readonly gen: number;
     readonly turnToken: object;
+    readonly turnId: string;
     readonly collector?: { readonly promises: Promise<unknown>[] };
   }>();
+  // Round-43 high: detached replies that survived the per-connection epoch
+  // check (carried `voiceCallEpoch`) but lost ALS context still bypassed
+  // the watchdog fence. AND a sessionId reused across logical calls within
+  // the same connection had no per-call incarnation to distinguish stale
+  // replies from the prior call. Solution: a per-turn random id stamped on
+  // every inbound, expired by the watchdog OR by the next turn for the
+  // same sessionId admitting itself. Bounded to prevent unbounded growth
+  // on long-lived adapters (FIFO eviction).
+  const expiredTurnIds = new Set<string>();
+  const expiredTurnIdQueue: string[] = [];
+  const MAX_EXPIRED_TURN_IDS = 1024;
+  const expireTurnId = (id: string): void => {
+    if (expiredTurnIds.has(id)) return;
+    expiredTurnIds.add(id);
+    expiredTurnIdQueue.push(id);
+    while (expiredTurnIdQueue.length > MAX_EXPIRED_TURN_IDS) {
+      const evict = expiredTurnIdQueue.shift();
+      if (evict !== undefined) expiredTurnIds.delete(evict);
+    }
+  };
+  // Most-recent turnId per sessionId. When the next turn for the same
+  // session is admitted, the prior turn's id is expired so any detached
+  // reply for the prior turn is rejected (closes the sessionId-reuse hole).
+  const sessionToCurrentTurnId = new Map<string, string>();
   // Per-turn fence. Inserted by the dispatch watchdog when a handler
   // exceeds dispatchHandlerTimeoutMs; checked by wrappedSend so a hung
   // handler that eventually wakes up cannot inject late audio into a
@@ -545,7 +597,15 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
             const turnToken: object = {};
             const collector: { readonly promises: Promise<unknown>[] } = { promises: [] };
             const capturedGen = connectGen;
-            inboundGenContext.run({ gen: capturedGen, turnToken, collector }, () => {
+            // Per-turn nonce. Mint a fresh id and expire any prior turn
+            // for this session so detached replies tagged with the prior
+            // turnId cannot speak into this newer turn (closes the
+            // sessionId-reuse-without-disconnect hole).
+            const turnId = randomBytes(16).toString("hex");
+            const priorTurnId = sessionToCurrentTurnId.get(sessionId);
+            if (priorTurnId !== undefined) expireTurnId(priorTurnId);
+            sessionToCurrentTurnId.set(sessionId, turnId);
+            inboundGenContext.run({ gen: capturedGen, turnToken, turnId, collector }, () => {
               handler({ sessionId, utterance, text });
             });
             if (collector.promises.length > 0) {
@@ -569,6 +629,10 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
                 ]);
                 if (outcome === "watchdog") {
                   expiredTurnTokens.add(turnToken);
+                  // Round-43 high: also expire by string id so detached
+                  // replies that lost ALS context but still carry the
+                  // turnId on metadata are rejected by wrappedSend.
+                  expireTurnId(turnId);
                 }
               } finally {
                 if (watchdogTimer !== undefined) clearTimeout(watchdogTimer);
@@ -608,6 +672,14 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
       if (event.text === null) return null;
       const trimmed = event.text.trim();
       if (trimmed.length === 0) return null;
+      // Read the per-turn id from ALS (set by enqueue before handler runs)
+      // so it travels on the inbound metadata for detached-reply fencing.
+      const ctx = inboundGenContext.getStore();
+      const turnIdMeta = ctx?.turnId;
+      const metadata: Record<string, unknown> = { [VOICE_CALL_EPOCH_KEY]: connectGen };
+      if (typeof turnIdMeta === "string" && turnIdMeta.length > 0) {
+        metadata[VOICE_TURN_ID_KEY] = turnIdMeta;
+      }
       return {
         content: [{ kind: "text", text: trimmed }],
         senderId,
@@ -615,13 +687,11 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
         // (and replyToInbound-style helpers) keep replies on the right call.
         threadId: event.sessionId,
         timestamp: Date.now(),
-        // Stamp the connect generation so detached replies (handlers
-        // that captured the inbound, returned, then resumed outside ALS)
-        // can still prove they belong to the call that produced them.
-        // wrappedSend rejects if this epoch no longer matches the
-        // current connectGen — preventing cross-call leakage when a
-        // host reuses a stable threadId across reconnects.
-        metadata: { [VOICE_CALL_EPOCH_KEY]: connectGen },
+        // Stamp the connect generation AND the per-turn id so detached
+        // replies (handlers that captured the inbound, returned, then
+        // resumed outside ALS) can still prove they belong to the
+        // specific TURN that produced them — not just to the connection.
+        metadata,
       };
     },
   });
@@ -789,6 +859,15 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
     } else if (inboundCtx === undefined && connectGen > 0) {
       return Promise.reject(new VoicePoisonedSessionError(message.threadId));
     }
+    // Round-43 high: per-turn id fence. Rejects detached replies tagged
+    // with an EXPIRED turnId regardless of ALS presence — closing both
+    // the post-watchdog detached path and the sessionId-reuse hole. The
+    // turnId is minted per inbound and expired by either the watchdog or
+    // by the next turn for the same sessionId being admitted.
+    const messageTurnIdRaw = message.metadata?.[VOICE_TURN_ID_KEY];
+    if (typeof messageTurnIdRaw === "string" && expiredTurnIds.has(messageTurnIdRaw)) {
+      return Promise.reject(new VoicePoisonedSessionError(message.threadId));
+    }
     // Poison persists for the adapter's lifetime once set. A non-
     // cooperative transport's stale call can still surface audio
     // later, so we MUST NOT admit a new send on the same threadId
@@ -887,6 +966,10 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
       // this, a queued send could synthesize TTS and call
       // transport.sendUtterance() AFTER disconnect completes.
       connectGen++;
+      // Per-turn tracking is connection-scoped — drop it on disconnect so
+      // a reconnect starts with a clean slate (the connection-epoch fence
+      // and the per-turn nonce both protect post-reconnect anyway).
+      sessionToCurrentTurnId.clear();
       // Abort every in-flight TTS / transport call. Cooperative impls
       // reject promptly; non-cooperative impls may keep running, but
       // their results land in this (now-dead) generation.

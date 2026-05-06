@@ -1777,6 +1777,112 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("detached post-watchdog reply is fenced even when only voiceCallEpoch+voiceTurnId are present (round-43 high)", async () => {
+    // Round-43 high: prior fence only checked the per-turn token in
+    // expiredTurnTokens when ALS was still present. A handler that hung
+    // past the watchdog and resumed later in a setTimeout (lost ALS)
+    // could replyToVoiceInbound() with matching voiceCallEpoch and slip
+    // through. Per-turn id stamped on inbound metadata + expired-on-
+    // watchdog Set closes that hole regardless of ALS presence.
+    // let requires justification: harness state captured by callbacks
+    let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (handler: (sessionId: string, frame: Uint8Array) => void) => {
+        listener = handler;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = { transcribe: async () => "hello" };
+    const tts: Tts = { synthesize: async () => new Uint8Array([1]) };
+    let captured: InboundMessage | undefined;
+    const ch = createVoiceChannel({
+      transport,
+      stt,
+      tts,
+      dispatchHandlerTimeoutMs: 30,
+    });
+    ch.onMessage(async (msg: InboundMessage) => {
+      captured = msg;
+      // Hang past the watchdog so expireTurnId fires for THIS turn.
+      await new Promise((r) => setTimeout(r, 100));
+    });
+    await ch.connect();
+    listener?.("call-X", new Uint8Array([1]));
+    await new Promise((r) => setTimeout(r, 80));
+    expect(captured).toBeDefined();
+    if (captured !== undefined) {
+      // Detached post-watchdog: replyToVoiceInbound carries both epoch
+      // AND turn id, but the watchdog already expired this turn.
+      const reply = replyToVoiceInbound(captured, {
+        threadId: "call-X",
+        content: [{ kind: "text", text: "too late" }],
+      });
+      await expect(ch.send(reply)).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+    }
+    await ch.disconnect();
+  });
+
+  test("reused sessionId fences the prior turn's detached reply (round-43 high)", async () => {
+    // Round-43 high: a transport that reuses the same sessionId for a
+    // logically-new call (without an adapter disconnect) had no per-call
+    // incarnation. A delayed reply for call A on threadId "default"
+    // remained valid during call B on the same threadId. Per-turn id
+    // expiry on next-turn admission closes this: B's inbound expires A's
+    // turn id, so a detached reply tagged with A's id is rejected.
+    // let requires justification: harness state captured by callbacks
+    let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (handler: (sessionId: string, frame: Uint8Array) => void) => {
+        listener = handler;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = { transcribe: async () => "u" };
+    const tts: Tts = { synthesize: async () => new Uint8Array([1]) };
+    const captured: InboundMessage[] = [];
+    const ch = createVoiceChannel({ transport, stt, tts });
+    ch.onMessage(async (msg: InboundMessage) => {
+      captured.push(msg);
+    });
+    await ch.connect();
+    // Turn A on shared sessionId.
+    listener?.("default", new Uint8Array([1]));
+    await new Promise((r) => setTimeout(r, 30));
+    // Turn B on the SAME sessionId — admitting B expires A's turn id.
+    listener?.("default", new Uint8Array([2]));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(captured.length).toBe(2);
+    const inboundA = captured[0];
+    const inboundB = captured[1];
+    expect(inboundA).toBeDefined();
+    expect(inboundB).toBeDefined();
+    if (inboundA !== undefined && inboundB !== undefined) {
+      // Detached reply carrying turn A's id is fenced.
+      const replyA = replyToVoiceInbound(inboundA, {
+        threadId: "default",
+        content: [{ kind: "text", text: "from-A" }],
+      });
+      await expect(ch.send(replyA)).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+      // Detached reply carrying turn B's id (the current turn) still works.
+      const replyB = replyToVoiceInbound(inboundB, {
+        threadId: "default",
+        content: [{ kind: "text", text: "from-B" }],
+      });
+      await ch.send(replyB);
+    }
+    await ch.disconnect();
+  });
+
   test("stampForCurrentCall lets server-initiated outbound survive the post-reconnect epoch fence (round-40 high)", async () => {
     // Round-40 high: post-reconnect, the wrappedSend epoch fence rejects
     // any send made outside an inbound's ALS scope unless metadata
