@@ -349,6 +349,29 @@ describe("createWhatsAppChannel", () => {
     expect(r.status).toBe(200);
   });
 
+  test("poisoned WAMID replay: 200-acks (terminal) instead of looping with 503", async () => {
+    // Regression: previously every non-committed reason from
+    // tryBegin returned 503; a redelivery whose WAMID had a poison
+    // tombstone (worker timeout / max-retry) would loop Meta
+    // forever even though the channel had already decided the
+    // message terminally cannot be processed. Now poisoned is
+    // skipped (200 batch ack) — the prior dead-letter is the
+    // operator's surface.
+    const deps = buildDeps();
+    const ch = createWhatsAppChannel(config, deps);
+    ch.onMessage(async () => {});
+    await ch.connect();
+    // Pre-poison the WAMID dedupe key.
+    const key = `${config.phoneNumberId}|wamid.ABC`;
+    const begin = await deps.idempotencyStore.tryBegin(key, 1000);
+    if (!begin.ok) throw new Error("unreachable");
+    await deps.idempotencyStore.commitPoison(begin.lease, 60_000);
+    const body = makeWebhookBody();
+    const res = await ch.handleHttpRequest(makePostRequest(body));
+    expect(res.status).toBe(200);
+    await ch.disconnect();
+  });
+
   test("send() with composite threadId from a different business number throws WRONG_BUSINESS_NUMBER", async () => {
     // Regression: previously send() stripped the prefix and posted
     // through this channel's phoneNumberId regardless of what

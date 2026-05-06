@@ -64,6 +64,35 @@ describe("createBotFrameworkAppTokenMinter", () => {
     expect(call?.body).toContain("scope=https%3A%2F%2Fapi.private.example%2F.default");
   });
 
+  test("inline cloud profile without explicit tenant/scope throws INVALID_CONFIG", () => {
+    // Regression: previously inline cloud profiles silently fell
+    // back to public-cloud endpoints. Inbound JWT verification
+    // worked against the supplied issuer/jwksUri but every
+    // outbound send went to the wrong authority. Now the minter
+    // refuses to construct without explicit tenant + scope so the
+    // misconfiguration surfaces at startup, not at first send.
+    const inlineConfig = {
+      ...baseConfig,
+      cloud: { issuer: "https://custom.example/", jwksUri: "https://custom.example/jwks" },
+    };
+    expect(() => createBotFrameworkAppTokenMinter(inlineConfig)).toThrow(/INVALID_CONFIG.*tenant/);
+  });
+
+  test("inline cloud profile with explicit overrides works", async () => {
+    const { fetch, calls } = captureFetch();
+    const inlineConfig = {
+      ...baseConfig,
+      cloud: { issuer: "https://custom.example/", jwksUri: "https://custom.example/jwks" },
+    };
+    const mint = createBotFrameworkAppTokenMinter(inlineConfig, {
+      fetch,
+      tenant: "custom.example",
+      scope: "https://api.custom.example/.default",
+    });
+    await mint();
+    expect(calls[0]?.url).toContain("/custom.example/");
+  });
+
   test("token cached until refresh window", async () => {
     let now = 0;
     const clock = (): number => now;

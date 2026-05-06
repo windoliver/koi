@@ -390,12 +390,18 @@ export function createWhatsAppChannel(
     // idempotent on dedupe key, so retries converge).
     //
     //   - committed              → already processed, skip
+    //   - poisoned                → terminal: prior attempt timed
+    //                                out / max-retried, dead-letter
+    //                                already exists. Skip — 503 here
+    //                                would loop Meta forever on a
+    //                                message we have already
+    //                                decided cannot be processed.
     //   - in-flight / capacity   → 503 (Meta retries whole batch)
     //   - ok → enqueue → abort lease (worker re-claims via tryBegin)
     for (const item of items) {
       const begin = await deps.idempotencyStore.tryBegin(item.key, WEBHOOK_LEASE_MS);
       if (!begin.ok) {
-        if (begin.reason === "committed") continue;
+        if (begin.reason === "committed" || begin.reason === "poisoned") continue;
         return new Response(begin.reason, { status: 503 });
       }
       try {

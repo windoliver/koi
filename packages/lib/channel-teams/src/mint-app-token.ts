@@ -19,7 +19,7 @@
 
 import type { CloudProfile, TeamsConfig } from "./config.js";
 
-function resolveCloudEndpoints(cloud: CloudProfile): { tenant: string; scope: string } {
+function resolveCloudEndpoints(cloud: CloudProfile): { tenant: string; scope: string } | null {
   if (cloud === "public") {
     return {
       tenant: "botframework.com",
@@ -33,13 +33,12 @@ function resolveCloudEndpoints(cloud: CloudProfile): { tenant: string; scope: st
     };
   }
   // Inline cloud profile: callers supply explicit issuer/jwksUri for
-  // verification, but the mint endpoints come from options or fall
-  // through to the public defaults if neither is supplied. Inline
-  // profiles SHOULD pass options.tenant/options.scope explicitly.
-  return {
-    tenant: "botframework.com",
-    scope: "https://api.botframework.com/.default",
-  };
+  // inbound JWT verification, but the OUTBOUND mint endpoints have
+  // no safe default — silently using public-cloud endpoints would
+  // verify inbound traffic correctly while every outbound send
+  // failed at the wrong authority. Return null so the caller is
+  // forced to provide options.tenant + options.scope explicitly.
+  return null;
 }
 
 export type MintAppTokenOptions = {
@@ -68,8 +67,18 @@ export function createBotFrameworkAppTokenMinter(
   // overrides remain available via options.tenant/options.scope for
   // private-cloud or test scenarios.
   const cloudDefaults = resolveCloudEndpoints(config.cloud);
-  const tenant = options.tenant ?? cloudDefaults.tenant;
-  const scope = options.scope ?? cloudDefaults.scope;
+  const tenant = options.tenant ?? cloudDefaults?.tenant;
+  const scope = options.scope ?? cloudDefaults?.scope;
+  if (typeof tenant !== "string" || tenant.length === 0) {
+    throw new Error(
+      "INVALID_CONFIG: inline cloud profile requires explicit options.tenant for the Microsoft identity-platform token endpoint (no safe default)",
+    );
+  }
+  if (typeof scope !== "string" || scope.length === 0) {
+    throw new Error(
+      "INVALID_CONFIG: inline cloud profile requires explicit options.scope for the Bot Framework resource scope (no safe default)",
+    );
+  }
   const fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
   const clock = options.clock ?? Date.now;
   const refreshSkewMs = options.refreshSkewMs ?? 60_000;
