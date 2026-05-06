@@ -45,6 +45,13 @@ export interface DiscordClientLike {
   login(token: string): Promise<unknown>;
   destroy(): Promise<unknown> | unknown;
   on(event: string, listener: (...args: readonly unknown[]) => void): unknown;
+  /**
+   * Remove a single previously-registered listener. Required when the
+   * adapter is given an injected client (caller-owned) so that adapter
+   * teardown does not nuke listeners belonging to other features sharing
+   * the same Client. discord.js Client implements `off` natively.
+   */
+  off(event: string, listener: (...args: readonly unknown[]) => void): unknown;
   removeAllListeners(): unknown;
 }
 
@@ -155,6 +162,14 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
   // because instantiating the real discord.js Client opens cache structures we
   // don't want to pay for if the caller never connects.
   let client: DiscordClientLike | undefined = config.client;
+  // Lifecycle ownership: true when the adapter created the Client itself.
+  // For caller-injected clients we must NOT call destroy() or
+  // removeAllListeners() — those wipe listeners and tear down a gateway
+  // session that other features in the same process may share. We can
+  // only remove the specific listeners we registered.
+  // let requires justification: flipped at platformConnect when we
+  // instantiate our own Client; remains false for injected clients.
+  let clientOwnedByAdapter = false;
   // let requires justification: bot user id resolved after login; used by normalizer
   let botUserId: string | undefined;
   // let requires justification: maps interaction id → live discord.js Interaction
@@ -243,13 +258,9 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
     capabilities: DISCORD_CAPABILITIES,
 
     platformConnect: async (): Promise<void> => {
-      // let requires justification: track whether we created the client
-      // here, so a login() failure only destroys/clears the client we own
-      // (caller-injected test doubles must survive a retry).
-      let createdHere = false;
       if (client === undefined) {
         client = await instantiateClient(config.intents ?? DEFAULT_INTENTS);
-        createdHere = true;
+        clientOwnedByAdapter = true;
       }
       const c = client;
       // Attach gateway listeners BEFORE login so we don't miss the first
@@ -259,19 +270,19 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
       try {
         await c.login(config.token);
       } catch (err: unknown) {
-        // Roll back listener registration so a retried connect() does not
-        // attach duplicates on top of the existing handlers — a single
-        // inbound event would otherwise fan out into multiple agent
-        // turns. Owned clients also get destroyed so the next connect
-        // starts from a clean instance.
-        c.removeAllListeners();
-        if (createdHere) {
+        // Roll back ONLY the listeners we registered. removeAllListeners
+        // would nuke handlers belonging to other features sharing an
+        // injected client; destroy() is reserved for clients we own.
+        c.off("messageCreate", onMessageCreate);
+        c.off("interactionCreate", onInteractionCreate);
+        if (clientOwnedByAdapter) {
           try {
             await c.destroy();
           } catch {
             // best-effort — original error matters more
           }
           client = undefined;
+          clientOwnedByAdapter = false;
         }
         pending = [];
         throw err;
@@ -281,8 +292,14 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
 
     platformDisconnect: async (): Promise<void> => {
       if (client === undefined) return;
-      client.removeAllListeners();
-      await client.destroy();
+      // Detach only our listeners. An injected (caller-owned) Client
+      // remains alive and continues serving its other consumers.
+      client.off("messageCreate", onMessageCreate);
+      client.off("interactionCreate", onInteractionCreate);
+      if (clientOwnedByAdapter) {
+        await client.destroy();
+        clientOwnedByAdapter = false;
+      }
       client = undefined;
       botUserId = undefined;
       dispatch = undefined;

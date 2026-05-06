@@ -43,6 +43,13 @@ function fakeClient(): {
       listeners[event] = bucket;
       return undefined;
     },
+    off: (event: string, listener: (...a: readonly unknown[]) => void) => {
+      const bucket = listeners[event];
+      if (bucket !== undefined) {
+        listeners[event] = bucket.filter((l) => l !== listener);
+      }
+      return undefined;
+    },
     removeAllListeners: () => {
       for (const k of Object.keys(listeners)) listeners[k] = [];
       return undefined;
@@ -92,10 +99,11 @@ describe("@koi/channel-discord createDiscordChannel", () => {
     await adapter.disconnect();
   });
 
-  test("connect / disconnect calls login and destroy", async () => {
+  test("connect calls login; disconnect does NOT destroy an injected (caller-owned) client", async () => {
     const { client } = fakeClient();
     let logins = 0;
     let destroys = 0;
+    let removeAllCalls = 0;
     const wrapped: DiscordClientLike = {
       ...client,
       login: async () => {
@@ -106,12 +114,40 @@ describe("@koi/channel-discord createDiscordChannel", () => {
         destroys++;
         return undefined;
       },
+      removeAllListeners: () => {
+        removeAllCalls++;
+        return undefined;
+      },
     };
     const adapter = createDiscordChannel({ token: "T", client: wrapped });
     await adapter.connect();
     expect(logins).toBe(1);
     await adapter.disconnect();
-    expect(destroys).toBe(1);
+    // Lifecycle ownership stays with the caller — destroy() and the
+    // listener-nuke must never run on a shared/injected Client.
+    expect(destroys).toBe(0);
+    expect(removeAllCalls).toBe(0);
+  });
+
+  test("disconnect leaves unrelated listeners on an injected client intact", async () => {
+    const f = fakeClient();
+    const otherFeatureCalls: unknown[] = [];
+    // Simulate another consumer of the same shared discord.js Client
+    // attaching its own messageCreate listener BEFORE the channel is
+    // wired in. Adapter teardown must not nuke this listener.
+    f.client.on("messageCreate", (m: unknown) => {
+      otherFeatureCalls.push(m);
+    });
+    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    await adapter.connect();
+    await adapter.disconnect();
+    f.emit("messageCreate", {
+      id: "m1",
+      content: "hi",
+      author: { id: "U1", bot: false },
+      channelId: "C1",
+    });
+    expect(otherFeatureCalls).toHaveLength(1);
   });
 
   test("inbound messageCreate dispatches an InboundMessage to handlers", async () => {
