@@ -361,6 +361,34 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("inbound: blank sessionId surfaces via onSttError (no one-way conversations)", async () => {
+    // Regression: prior version accepted "" / whitespace sessionId at
+    // ingress and only failed when replying with VoiceMissingSessionError,
+    // turning a transport bug into a one-way conversation.
+    const errors: unknown[] = [];
+    const h = harness();
+    const ch = createVoiceChannel({
+      transport: h.transport,
+      stt: h.stt,
+      tts: h.tts,
+      onSttError: (e) => {
+        errors.push(e);
+      },
+    });
+    const received: InboundMessage[] = [];
+    ch.onMessage(async (m) => {
+      received.push(m);
+    });
+    await ch.connect();
+    h.emitAudio(new Uint8Array([1]), "");
+    h.emitAudio(new Uint8Array([2]), "   ");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(received).toEqual([]);
+    expect(errors.length).toBe(2);
+    expect(String(errors[0])).toMatch(/empty sessionId/);
+    await ch.disconnect();
+  });
+
   test("outbound: send without threadId throws (cross-talk guard)", async () => {
     const h = harness();
     const ch = createVoiceChannel({ transport: h.transport, stt: h.stt, tts: h.tts });

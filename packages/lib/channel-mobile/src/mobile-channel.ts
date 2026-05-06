@@ -470,7 +470,12 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
           try {
             if (config.authenticate !== undefined) {
               const result = await config.authenticate(req);
-              if (result === null) {
+              // Reject null AND empty/whitespace-only identities. Treating
+              // an empty string as a valid recipient would collapse every
+              // such session into the same identity bucket — defeating
+              // the isolation guarantee that live-delivery and push routing
+              // depend on.
+              if (result === null || result.trim().length === 0) {
                 pendingUpgrades--;
                 return new Response("unauthorized", { status: 401 });
               }
@@ -598,10 +603,11 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       const wireMessage = stripInternalMetadata(message);
       if (liveRecipient && activeSocket !== undefined) {
         const payload = JSON.stringify({ kind: "msg", ...wireMessage, timestamp: Date.now() });
-        // Treat write failure (closed socket race, backpressure overflow,
-        // throw) as not-delivered so the message falls through to push
-        // instead of being silently swallowed by an instant-after-check
-        // disconnect.
+        // Bun's WebSocket.send returns the byte-count actually queued.
+        // Treat anything less than the full UTF-8 byte length as a
+        // failed/partial write and fall through to push, so a stressed
+        // connection can never silently truncate or drop the payload.
+        const expectedBytes = new TextEncoder().encode(payload).byteLength;
         // let requires justification: capture write outcome
         let written = 0;
         try {
@@ -609,7 +615,7 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         } catch {
           written = -1;
         }
-        if (written > 0) return;
+        if (written >= expectedBytes) return;
       }
       if (config.pushNotifier === undefined) {
         throw new MobileNoDeliveryTargetError();

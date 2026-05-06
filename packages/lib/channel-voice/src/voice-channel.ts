@@ -188,6 +188,16 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     onPlatformEvent: (handler) =>
       config.transport.onUtterance((sessionId, utterance) => handler({ sessionId, utterance })),
     normalize: async (event: TransportEvent) => {
+      // Fail fast at the trust boundary: a blank sessionId would let the
+      // runtime process a turn it can never reply to (outbound throws
+      // VoiceMissingSessionError), producing one-way conversations.
+      // Throwing routes through onNormalizationError → onSttError so the
+      // transport bug surfaces on ingress instead of every later reply.
+      if (typeof event.sessionId !== "string" || event.sessionId.trim().length === 0) {
+        throw new Error(
+          "@koi/channel-voice: transport delivered an utterance with empty sessionId; per-session routing is required",
+        );
+      }
       const text = await config.stt.transcribe(event.utterance);
       if (text === null) return null;
       const trimmed = text.trim();

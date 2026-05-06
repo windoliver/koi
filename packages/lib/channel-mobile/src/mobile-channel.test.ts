@@ -631,6 +631,25 @@ describe("createMobileChannel", () => {
     await ch.disconnect();
   });
 
+  test("authenticate() returning empty/whitespace identity is rejected as 401", async () => {
+    // Regression: prior version accepted "" as a valid recipient, collapsing
+    // every such session into the same identity bucket and defeating the
+    // live-delivery + push-routing isolation guarantees.
+    for (const blank of ["", "   ", "\n\t"]) {
+      const port = await freePort();
+      const ch = createMobileChannel({
+        port,
+        authenticate: () => blank,
+      });
+      await ch.connect();
+      const res = await fetch(`http://127.0.0.1:${port}/`, {
+        headers: { Upgrade: "websocket", Connection: "Upgrade" },
+      });
+      expect(res.status).toBe(401);
+      await ch.disconnect();
+    }
+  });
+
   test("createMobileChannel throws when pushNotifier wired without authenticate()", () => {
     // Regression: prior version accepted pushNotifier with no auth handshake
     // (or with only trustClientIdentity:true) and then handed pushNotifier a
