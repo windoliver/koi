@@ -18,12 +18,21 @@ export function createNormalizer(): (event: SignalEvent) => InboundMessage | nul
   return (event: SignalEvent): InboundMessage | null => {
     if (event.kind !== "message") return null;
     if (event.body.length === 0) return null;
-    const sender = normalizeE164(event.source) ?? event.source;
+    const sender = normalizeE164(event.source);
+    // For DMs the threadId IS the sender E.164 — outbound send() rejects
+    // any non-group threadId that is not valid E.164. If signal-cli ever
+    // emits a source we cannot coerce to E.164 (truncated, anonymized,
+    // username-only), drop the inbound message rather than handing the
+    // agent a thread it cannot reply on. Group messages route by groupId
+    // independently of sender, so they remain deliverable even when the
+    // sender's source cannot be normalized.
+    if (sender === null && event.groupId === undefined) return null;
+    const senderId = sender ?? event.source;
     const threadId =
-      event.groupId !== undefined ? `${GROUP_THREAD_PREFIX}${event.groupId}` : sender;
+      event.groupId !== undefined ? `${GROUP_THREAD_PREFIX}${event.groupId}` : senderId;
     return {
       content: [{ kind: "text", text: event.body }],
-      senderId: sender,
+      senderId,
       threadId,
       timestamp: event.timestamp,
     };

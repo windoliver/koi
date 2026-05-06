@@ -42,15 +42,28 @@ describe("@koi/channel-signal normalize", () => {
     expect(n({ kind: "typing", source: "+15551234567", started: true })).toBeNull();
   });
 
-  test("source that cannot be normalized falls back to raw", () => {
+  test("DM with non-E.164 source is dropped (outbound send would reject the threadId)", () => {
+    const n = createNormalizer();
+    expect(
+      n({
+        kind: "message",
+        source: "garbage",
+        timestamp: 1,
+        body: "hi",
+      }),
+    ).toBeNull();
+  });
+
+  test("group message with non-E.164 source still routes via groupId", () => {
     const n = createNormalizer();
     const out = n({
       kind: "message",
       source: "garbage",
       timestamp: 1,
       body: "hi",
+      groupId: "g==",
     });
+    expect(out?.threadId).toBe(`${GROUP_THREAD_PREFIX}g==`);
     expect(out?.senderId).toBe("garbage");
-    expect(out?.threadId).toBe("garbage");
   });
 });

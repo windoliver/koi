@@ -39,6 +39,14 @@ describe("@koi/channel-telegram normalize", () => {
     expect(out?.timestamp).toBe(1700000000 * 1000);
   });
 
+  test("update_id propagates into metadata.updateId so dedupe layers have a stable retry key", async () => {
+    const n = createNormalizer(deps());
+    const out1 = await n(tgUpdate({ update_id: 42, message: tgMessage({ text: "hi" }) }));
+    const out2 = await n(tgUpdate({ update_id: 42, message: tgMessage({ text: "hi" }) }));
+    expect(out1?.metadata?.updateId).toBe(42);
+    expect(out2?.metadata?.updateId).toBe(42);
+  });
+
   test("forum topic uses chatId:threadId convention", async () => {
     const n = createNormalizer(deps());
     const out = await n(tgUpdate({ message: tgMessage({ text: "hi", message_thread_id: 9 }) }));

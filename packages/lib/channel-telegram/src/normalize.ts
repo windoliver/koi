@@ -99,13 +99,23 @@ export function createNormalizer(
   deps: TelegramNormalizerDeps,
 ): (update: TelegramUpdateLike) => Promise<InboundMessage | null> {
   return async (update: TelegramUpdateLike): Promise<InboundMessage | null> => {
+    // let requires justification: result enriched with metadata.updateId below
+    let normalized: InboundMessage | null;
     if (update.callback_query !== undefined) {
-      return normalizeCallbackQuery(update.callback_query, deps);
+      normalized = await normalizeCallbackQuery(update.callback_query, deps);
+    } else if (update.message !== undefined) {
+      normalized = await normalizeMessage(update.message, deps);
+    } else {
+      return null;
     }
-    if (update.message !== undefined) {
-      return normalizeMessage(update.message, deps);
-    }
-    return null;
+    if (normalized === null) return null;
+    // Surface update_id so dedupe layers (HTTPS handler, durable queue)
+    // have a stable retry key even after normalization strips the outer
+    // wrapper. Telegram retries reuse update_id verbatim.
+    return {
+      ...normalized,
+      metadata: { ...(normalized.metadata ?? {}), updateId: update.update_id },
+    };
   };
 }
 
