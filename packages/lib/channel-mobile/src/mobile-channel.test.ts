@@ -438,6 +438,83 @@ describe("createMobileChannel", () => {
     await ch.disconnect();
   });
 
+  test("signingSecret: replyToInbound() tags survive a fresh adapter instance with the SAME secret", async () => {
+    // Regression: per-process random secret meant queued/persisted reply
+    // tags failed verification on a restarted instance, undeliverable
+    // even via push without recipient context. With a host-supplied
+    // stable secret, a new instance can verify and route the late reply.
+    const port = await freePort();
+    const port2 = await freePort();
+    const secret = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) secret[i] = i + 1;
+    const ch1 = createMobileChannel({ port, signingSecret: secret });
+    let captured: InboundMessage | undefined;
+    ch1.onMessage(async (m: InboundMessage) => {
+      if (captured === undefined) captured = m;
+    });
+    await ch1.connect();
+    const ws = await openWs(port);
+    ws.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: "hi" }] }));
+    await new Promise((r) => setTimeout(r, 30));
+    ws.close();
+    await new Promise((r) => setTimeout(r, 30));
+    await ch1.disconnect();
+    expect(captured).toBeDefined();
+
+    // Simulate restart: brand new instance, SAME secret + matching auth.
+    const pushedCtx: MobilePushContext[] = [];
+    const ch2 = createMobileChannel({
+      port: port2,
+      signingSecret: secret,
+      authenticate: async () => "device-real",
+      pushNotifier: async (_m, ctx) => {
+        pushedCtx.push(ctx);
+      },
+    });
+    await ch2.connect();
+    if (captured !== undefined) {
+      const reply = replyToInbound(captured, {
+        content: [{ kind: "text", text: "delayed-after-restart" }],
+      });
+      // No live client; tag verifies → push with recipient context.
+      await ch2.send(reply);
+    }
+    expect(pushedCtx).toHaveLength(1);
+    // Recipient context derived from the verified tag, even on a fresh
+    // instance — proves the stable secret unlocks cross-instance routing.
+    expect(pushedCtx[0]?.originatingSenderId).toBe("mobile-user");
+    await ch2.disconnect();
+  });
+
+  test("single-client: rejected concurrent upgrade does NOT invoke authenticate()", async () => {
+    // Regression: prior version called authenticate() even when activeSocket
+    // was already taken, turning the adapter into an auth-amplification
+    // point under load. The single-client check must short-circuit BEFORE
+    // the host's potentially expensive auth path runs.
+    const port = await freePort();
+    let authCalls = 0;
+    const ch = createMobileChannel({
+      port,
+      authenticate: async () => {
+        authCalls++;
+        return "device-1";
+      },
+    });
+    await ch.connect();
+    const ws1 = await openWs(port);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(authCalls).toBe(1);
+    // Second upgrade request while ws1 is active.
+    const res = await fetch(`http://127.0.0.1:${port}/`, {
+      headers: { Upgrade: "websocket", Connection: "Upgrade" },
+    });
+    expect(res.status).toBe(409);
+    expect(authCalls).toBe(1);
+    ws1.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
   test("createMobileChannel throws when pushNotifier wired without authenticate()", () => {
     // Regression: prior version accepted pushNotifier with no auth handshake
     // (or with only trustClientIdentity:true) and then handed pushNotifier a

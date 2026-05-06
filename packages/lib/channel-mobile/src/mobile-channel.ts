@@ -140,6 +140,21 @@ export interface MobileChannelConfig {
    * is violated.
    */
   readonly authenticate?: (req: Request) => Promise<string | null> | string | null;
+  /**
+   * Optional 32-byte HMAC secret for reply correlation tags. When unset,
+   * a per-process random secret is generated — sufficient for single-
+   * instance, in-memory delivery, but means a `replyToInbound()` message
+   * that is serialized to disk, queued externally, or replayed against a
+   * NEW process instance will fail signature verification on the new
+   * adapter and route to `pushNotifier` without recipient context.
+   *
+   * Hosts that need delayed replies to survive restart, failover, or
+   * cross-instance replay MUST provide a stable secret (e.g. loaded from
+   * a KMS/secret manager) shared by all adapter instances that should
+   * accept each other's reply tags. Rotating the secret invalidates all
+   * outstanding tags — by design.
+   */
+  readonly signingSecret?: Uint8Array;
 }
 
 export class MobileNoDeliveryTargetError extends Error {
@@ -328,7 +343,16 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   }
   // Per-instance HMAC secret: tags from this adapter cannot be forged or
   // honored by another instance. The secret never leaves this closure.
-  const instanceSecret = new Uint8Array(randomBytes(32));
+  // Use the host-supplied stable secret when present (so reply tags
+  // survive restart/failover/cross-instance replay), otherwise fall back
+  // to a per-process random secret for single-instance use.
+  if (config.signingSecret !== undefined && config.signingSecret.byteLength < 32) {
+    throw new Error("@koi/channel-mobile: signingSecret must be at least 32 bytes");
+  }
+  const instanceSecret =
+    config.signingSecret !== undefined
+      ? new Uint8Array(config.signingSecret)
+      : new Uint8Array(randomBytes(32));
   // The signed payload binds the session epoch AND the recipient context
   // (originating senderId + threadId) together. Without this binding, a
   // wrapper / queue / middleware that copies a valid (epoch, mac) pair onto
@@ -416,6 +440,15 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
           req: Request,
           srv: { upgrade: (r: Request, opts?: { data?: unknown }) => boolean },
         ) => {
+          // Single-client short-circuit: reject the upgrade BEFORE running
+          // authenticate(). Without this, an attacker spamming concurrent
+          // upgrade requests against a busy adapter would force the host's
+          // expensive auth path (JWT introspection, DB lookup, external
+          // service) on every rejected socket and turn the adapter into an
+          // auth-amplification point.
+          if (activeSocket !== undefined) {
+            return new Response("conflict: another client connected", { status: 409 });
+          }
           // authenticate() runs BEFORE upgrade so an unauthenticated client
           // never gets a socket and therefore cannot occupy the single-
           // client slot. The verified identity rides through Bun's per-
