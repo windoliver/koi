@@ -390,9 +390,15 @@ This is documented prominently in `docs/L2/sandbox-cloudflare.md` and tested in 
 
 | Field | Disposition | Notes |
 |-------|-------------|-------|
-| `payload` | mapped | JSON-serialized into POST body |
-| `timeoutMs` | mapped + host-enforced | Both passed in body and used for host AbortController. Capped by profile `resources.timeoutMs` and by the mandatory 30_000ms default. |
-| `signal` (`AbortSignal`) | bridged-locally + remote-cancel | (a) Local: abort the host `fetch` so the caller's promise rejects on schedule. (b) Remote: when signal fires OR `timeoutMs` elapses, fire-and-forget POST to a `/cancel` endpoint on the worker. The shim implements `/cancel` by aborting in-flight work it controls. |
+| `payload` | mapped | JSON-serialized into POST body as `body.payload`. |
+| `operationId` | mapped (mandatory) | JSON-serialized as `body.operationId` AND set as `X-Koi-Operation-Id` request header. Forwarded to the deployed handler in both forms — the handler reads from either. The shim does NOT use `operationId` for its own caching; it is downstream-correctness-only. |
+| `requestId` | mapped (mandatory) | JSON-serialized as `body.requestId` AND set as `X-Koi-Request-Id` request header. The shim's in-memory dedupe cache is keyed on `requestId`. The handler MAY observe `requestId` for tracing but MUST NOT use it for downstream dedupe. |
+| `timeoutMs` | mapped + host-enforced | Passed in body as `body.timeoutMs` and used for host `AbortController`. Capped by profile `resources.timeoutMs` and by the mandatory 30_000ms default. |
+| `signal` (`AbortSignal`) | bridged-locally + remote-cancel | (a) Local: abort the host `fetch` so the caller's promise rejects on schedule. (b) Remote: when signal fires OR `timeoutMs` elapses, fire-and-forget POST to `/cancel` with `requestId` so the shim can correlate. The shim implements `/cancel` by aborting in-flight work it controls. |
+
+`operationId` and `requestId` are sent as both body fields and headers for redundancy: middleware logging captures the headers without parsing JSON, and the shim's dedupe path reads the header without parsing the body. Both fields are validated as non-empty UUID-like strings before send; missing fields cause `KoiError { code: "MISSING_OPERATION_ID" | "MISSING_REQUEST_ID" }` before any fetch.
+
+The shim's deployed-handler invocation is `handler({ payload, operationId, requestId })`. The handler signature is documented in `docs/L2/sandbox-cloudflare.md` so deployers know which key to use for downstream dedupe (`operationId` only).
 
 There is no `onStdout`/`onStderr` on `EdgeInvokeRequest` — streaming is not part of the contract, by design. Callers who need streaming use a different adapter.
 
@@ -417,7 +423,7 @@ Because `destroy()` and timeout/abort can leave remote work in flight (see `Dest
 
 - **The dedupe is a best-effort cache, not an exactly-once guarantee.** The shim caches `requestId → { status, result, expiresAt }` in a per-isolate in-memory `Map`. Cloudflare and Vercel do not pin retries to the same isolate; isolates can also be evicted at any time. Therefore a retry can land on a fresh isolate where the dedupe entry does not exist, and the handler runs again.
 - **Contract claim:** the adapter does NOT promise exactly-once execution. The contract is "if the retry lands on the same warm isolate within the cache window, dedupe takes effect; otherwise the handler may run twice." This is documented at the top of `docs/L2/sandbox-cloudflare.md` and `sandbox-vercel.md` so callers cannot mistake the mechanism for a stronger guarantee.
-- **Caller-side correctness requirement:** for any `invoke()` whose `payload` triggers non-idempotent side effects (external writes, payments, state mutations), the caller MUST implement idempotency at the side-effect boundary using the same `requestId` (or a derivative) as the dedupe key — e.g., a unique constraint on the downstream database, an idempotency-key header on the downstream API, or an in-application dedupe table. The shim cache helps performance and reduces duplicate-effect probability; it does not eliminate it. This is the same posture HTTP retries take.
+- **Caller-side correctness requirement (downstream dedupe is keyed by `operationId` ONLY):** for any `invoke()` whose `payload` triggers non-idempotent side effects (external writes, payments, state mutations), the caller's deployed handler MUST implement idempotency at the side-effect boundary using **`operationId`** as the dedupe key — e.g., a unique constraint on the downstream database keyed on `operationId`, an idempotency-key header on the downstream API populated with `operationId`, or an in-application dedupe table indexed by `operationId`. **`requestId` MUST NOT be used for downstream dedupe** — it changes per attempt and across `destroy()`/`create()` boundaries, so keying downstream effects on it would make every retry look like a new operation and defeat the purpose. The shim cache (keyed on `requestId`) helps performance only; it is NOT a correctness mechanism.
 - The shim caches entries for **300 seconds** after the original invocation completes (or fails). Expiration is wall-clock; entries are pruned lazily on each invoke.
 - On `POST /invoke` arrival:
   - **Unknown ID:** execute the handler, store result, return it.
