@@ -242,16 +242,29 @@ function validateContentBlocks(value: readonly unknown[]): readonly ContentBlock
   return out;
 }
 
-function extractAndVerifyEpoch(
+interface VerifiedReplyTag {
+  readonly epoch: number;
+  readonly senderId: string;
+  readonly threadId: string;
+}
+
+function extractAndVerifyReply(
   message: OutboundMessage,
-  verify: (epoch: number, mac: string) => boolean,
-): number | undefined {
+  verify: (epoch: number, senderId: string, threadId: string, mac: string) => boolean,
+): VerifiedReplyTag | undefined {
   const meta = message.metadata;
   if (meta === undefined) return undefined;
   const epoch = meta[EPOCH_KEY];
   const mac = meta[MAC_KEY];
   if (typeof epoch !== "number" || typeof mac !== "string") return undefined;
-  return verify(epoch, mac) ? epoch : undefined;
+  // Recipient fields are part of the signed payload. Default to "" when
+  // absent so verification against the canonical empty-string signature
+  // works (an inbound that genuinely had no threadId).
+  const senderRaw = meta[ORIGIN_SENDER_KEY];
+  const threadRaw = meta[ORIGIN_THREAD_KEY];
+  const senderId = typeof senderRaw === "string" ? senderRaw : "";
+  const threadId = typeof threadRaw === "string" ? threadRaw : "";
+  return verify(epoch, senderId, threadId, mac) ? { epoch, senderId, threadId } : undefined;
 }
 
 function stripInternalMetadata(message: OutboundMessage): OutboundMessage {
@@ -315,12 +328,23 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   // Per-instance HMAC secret: tags from this adapter cannot be forged or
   // honored by another instance. The secret never leaves this closure.
   const instanceSecret = new Uint8Array(randomBytes(32));
-  const sign = (epoch: number): string =>
-    createHmac("sha256", instanceSecret).update(String(epoch)).digest("hex");
+  // The signed payload binds the session epoch AND the recipient context
+  // (originating senderId + threadId) together. Without this binding, a
+  // wrapper / queue / middleware that copies a valid (epoch, mac) pair onto
+  // a message with a mutated originatingSenderId could misroute the push
+  // to the wrong device after the session closed. The HMAC payload is a
+  // length-prefixed, NUL-delimited tuple so distinct field combinations
+  // cannot collide via reordering or boundary ambiguity.
+  const canonicalize = (epoch: number, senderId: string, threadId: string): string =>
+    `${String(epoch)} ${String(senderId.length)}:${senderId} ${String(threadId.length)}:${threadId}`;
+  const sign = (epoch: number, senderId: string, threadId: string): string =>
+    createHmac("sha256", instanceSecret)
+      .update(canonicalize(epoch, senderId, threadId))
+      .digest("hex");
   const unsolicitedTag = createHmac("sha256", instanceSecret).update("unsolicited").digest("hex");
-  const verify = (epoch: number, mac: string): boolean => {
+  const verify = (epoch: number, senderId: string, threadId: string, mac: string): boolean => {
     try {
-      const expectedHex = sign(epoch);
+      const expectedHex = sign(epoch, senderId, threadId);
       if (expectedHex.length !== mac.length) return false;
       const expected = new Uint8Array(Buffer.from(expectedHex, "hex"));
       const provided = new Uint8Array(Buffer.from(mac, "hex"));
@@ -456,7 +480,7 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       const isUnsolicited = typeof unsolicitedMac === "string" && verifyUnsolicited(unsolicitedMac);
       const hasReplyField =
         message.metadata?.[EPOCH_KEY] !== undefined || message.metadata?.[MAC_KEY] !== undefined;
-      const epochFromMeta = extractAndVerifyEpoch(message, verify);
+      const verifiedReply = extractAndVerifyReply(message, verify);
       const alsCtx = sessionContext.getStore();
       // let requires justification: classification depends on signal presence
       let liveRecipient: boolean;
@@ -464,10 +488,11 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         // Present-but-invalid unsolicited tag → fail closed.
         liveRecipient = isUnsolicited && activeSocket !== undefined;
       } else if (hasReplyField) {
-        // Present-but-invalid OR foreign reply tag → fail closed.
+        // Present-but-invalid OR foreign reply tag (incl. mutated recipient
+        // fields that no longer match the signed envelope) → fail closed.
         liveRecipient =
-          epochFromMeta !== undefined &&
-          epochFromMeta === sessionEpoch &&
+          verifiedReply !== undefined &&
+          verifiedReply.epoch === sessionEpoch &&
           activeSocket !== undefined;
       } else if (alsCtx !== undefined) {
         liveRecipient = alsCtx.epoch === sessionEpoch && activeSocket !== undefined;
@@ -484,20 +509,18 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       if (config.pushNotifier === undefined) {
         throw new MobileNoDeliveryTargetError();
       }
-      // Compute recipient-routing context from whatever signed signal the
-      // outbound carries: prefer the reply tag's stamped origin (survives
-      // detached callbacks), then fall back to ALS context (handler-chain).
-      // For unsolicited or untagged fallbacks, the adapter has no recipient
-      // to advise; the host's notifier must decide whether to drop or use
-      // an out-of-band lookup.
+      // Recipient context comes ONLY from authenticated material:
+      //   - VerifiedReplyTag if HMAC matches the (epoch, sender, thread)
+      //     tuple actually present in metadata. Mutated origin fields
+      //     break the signature → no context derived.
+      //   - ALS context otherwise (handler-chain inherited).
       const ctx: MobilePushContext = (() => {
-        const meta = message.metadata;
-        const metaSender = meta?.[ORIGIN_SENDER_KEY];
-        const metaThread = meta?.[ORIGIN_THREAD_KEY];
-        if (epochFromMeta !== undefined && typeof metaSender === "string") {
+        if (verifiedReply !== undefined) {
           return {
-            originatingSenderId: metaSender,
-            ...(typeof metaThread === "string" ? { originatingThreadId: metaThread } : {}),
+            originatingSenderId: verifiedReply.senderId,
+            ...(verifiedReply.threadId.length > 0
+              ? { originatingThreadId: verifiedReply.threadId }
+              : {}),
           };
         }
         if (alsCtx !== undefined) {
@@ -545,12 +568,13 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         // inbound's own metadata (rather than a WeakMap) ensures it
         // survives clone, persistence, and queue serialization — the tag
         // travels with the message itself.
+        const tagThread = inbound.threadId ?? "";
         const signedInbound: InboundMessage = {
           ...inbound,
           metadata: {
             ...(inbound.metadata ?? {}),
             [EPOCH_KEY]: sessionEpoch,
-            [MAC_KEY]: sign(sessionEpoch),
+            [MAC_KEY]: sign(sessionEpoch, inbound.senderId, tagThread),
             [ORIGIN_SENDER_KEY]: inbound.senderId,
             ...(inbound.threadId !== undefined ? { [ORIGIN_THREAD_KEY]: inbound.threadId } : {}),
           },

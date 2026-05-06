@@ -367,6 +367,52 @@ describe("createMobileChannel", () => {
     await ch.disconnect();
   });
 
+  test("mutating mobileOriginatingSenderId after replyToInbound() invalidates HMAC and fails closed", async () => {
+    // Regression: prior version signed only the epoch, so a buggy wrapper /
+    // queue / middleware that copied a valid (epoch, mac) pair onto a
+    // message with mutated originatingSenderId could misroute the push to
+    // the wrong device. The HMAC payload now binds (epoch, sender, thread)
+    // together, so any mutation breaks verification → push context drops to
+    // empty and the live-delivery path also rejects the tag.
+    const port = await freePort();
+    const pushedCtx: MobilePushContext[] = [];
+    const ch = createMobileChannel({
+      port,
+      authenticate: async () => "device-real",
+      pushNotifier: async (_m, ctx) => {
+        pushedCtx.push(ctx);
+      },
+    });
+    let captured: InboundMessage | undefined;
+    ch.onMessage(async (m: InboundMessage) => {
+      if (captured === undefined) captured = m;
+    });
+    await ch.connect();
+    const ws = await openWs(port);
+    ws.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: "hi" }] }));
+    await new Promise((r) => setTimeout(r, 30));
+    ws.close();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(captured).toBeDefined();
+    if (captured !== undefined) {
+      const reply = replyToInbound(captured, {
+        content: [{ kind: "text", text: "hello" }],
+      });
+      // Tamper with the recipient field while keeping the (now-stale) MAC.
+      const tampered = {
+        ...reply,
+        metadata: { ...(reply.metadata ?? {}), mobileOriginatingSenderId: "device-attacker" },
+      };
+      await ch.send(tampered);
+    }
+    await new Promise((r) => setTimeout(r, 30));
+    expect(pushedCtx).toHaveLength(1);
+    // Tampered tag → no recipient context derived (would have been
+    // "device-attacker" if the adapter trusted unsigned origin fields).
+    expect(pushedCtx[0]?.originatingSenderId).toBeUndefined();
+    await ch.disconnect();
+  });
+
   test("createMobileChannel throws when pushNotifier wired without auth or trustClientIdentity", () => {
     // Regression: prior version accepted this combination silently and then
     // handed pushNotifier a shared placeholder senderId, so a host routing

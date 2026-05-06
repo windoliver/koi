@@ -70,17 +70,19 @@ const defaultSttErrorLogger = (error: unknown, frame: Uint8Array): void => {
   );
 };
 
+// images/files/buttons declared TRUE so channel-base does NOT pre-downgrade
+// these blocks to a generic `[Image: alt]` text fallback that loses URLs,
+// mime types, and the distinction between alt-text and label semantics.
+// Voice CAN convey them — as a richer spoken-text rendering produced by
+// platformSend below. Threads true so a host can multiplex multiple live
+// calls through one adapter without cross-talk via InboundMessage.threadId.
 const VOICE_CAPABILITIES: ChannelCapabilities = {
   text: true,
-  images: false,
-  files: false,
-  buttons: false,
+  images: true,
+  files: true,
+  buttons: true,
   audio: true,
   video: false,
-  // Threads enabled: the transport's sessionId rides as InboundMessage.threadId
-  // so a host can multiplex multiple live calls through one adapter without
-  // cross-talk. Outbound MUST carry message.threadId to identify the session
-  // — sends without threadId throw.
   threads: true,
   supportsA2ui: false,
 };
@@ -143,12 +145,37 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       //            playback / non-idempotent retry race lives at the
       //            transport boundary (where it can use codec sequence
       //            numbers / acks), not inside the channel.
+      // Render each block to a spoken-text representation that preserves
+      // the user-visible meaning. Generic placeholders like `[image: image]`
+      // would lose alt text, file names, and button labels, leaving the
+      // listener with unintelligible audio for any rich reply.
       const pieces: string[] = [];
       for (const block of message.content) {
-        const text =
-          block.kind === "text"
-            ? block.text
-            : `[${block.kind}: ${block.kind === "custom" ? block.type : block.kind}]`;
+        // let requires justification: reduce to spoken text by kind
+        let text: string;
+        switch (block.kind) {
+          case "text":
+            text = block.text;
+            break;
+          case "image":
+            text =
+              block.alt !== undefined && block.alt.length > 0
+                ? `Image: ${block.alt}`
+                : `Image at ${block.url}`;
+            break;
+          case "file":
+            text =
+              block.name !== undefined && block.name.length > 0
+                ? `File ${block.name} (${block.mimeType}) at ${block.url}`
+                : `File (${block.mimeType}) at ${block.url}`;
+            break;
+          case "button":
+            text = `Button: ${block.label}`;
+            break;
+          case "custom":
+            text = `[custom ${block.type}]`;
+            break;
+        }
         for (const piece of chunk(text, maxTtsChars)) pieces.push(piece);
       }
       const frames: Uint8Array[] = [];

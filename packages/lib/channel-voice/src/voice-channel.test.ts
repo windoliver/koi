@@ -92,7 +92,7 @@ describe("createVoiceChannel", () => {
     const ch = createVoiceChannel({ transport: h.transport, stt: h.stt, tts: h.tts });
     expect(ch.capabilities.text).toBe(true);
     expect(ch.capabilities.audio).toBe(true);
-    expect(ch.capabilities.images).toBe(false);
+    expect(ch.capabilities.images).toBe(true);
   });
 
   test("name is 'voice'", () => {
@@ -215,7 +215,7 @@ describe("createVoiceChannel", () => {
         { kind: "text", text: "and the chart" },
       ],
     });
-    expect(h.ttsCalls).toContain("[custom: chart]");
+    expect(h.ttsCalls).toContain("[custom chart]");
     expect(h.ttsCalls).toContain("and the chart");
     await ch.disconnect();
   });
@@ -315,6 +315,32 @@ describe("createVoiceChannel", () => {
     } finally {
       console.warn = originalWarn;
     }
+  });
+
+  test("outbound: image/file/button block semantics preserved in spoken text", async () => {
+    // Regression: prior version emitted generic placeholders like
+    // [image: image] and [button: button], stripping alt text, file names,
+    // and button labels — leaving the listener with unintelligible audio
+    // for any rich reply.
+    const h = harness();
+    const ch = createVoiceChannel({ transport: h.transport, stt: h.stt, tts: h.tts });
+    await ch.connect();
+    await ch.send({
+      threadId: "session-1",
+      content: [
+        { kind: "image", url: "https://x/y.png", alt: "the diagram" },
+        { kind: "image", url: "https://x/no-alt.png" },
+        { kind: "file", url: "https://x/r.pdf", mimeType: "application/pdf", name: "report.pdf" },
+        { kind: "file", url: "https://x/u.bin", mimeType: "application/octet-stream" },
+        { kind: "button", label: "Open ticket", action: "open" },
+      ],
+    });
+    expect(h.ttsCalls).toContain("Image: the diagram");
+    expect(h.ttsCalls).toContain("Image at https://x/no-alt.png");
+    expect(h.ttsCalls).toContain("File report.pdf (application/pdf) at https://x/r.pdf");
+    expect(h.ttsCalls).toContain("File (application/octet-stream) at https://x/u.bin");
+    expect(h.ttsCalls).toContain("Button: Open ticket");
+    await ch.disconnect();
   });
 
   test("threads:true — inbound carries transport sessionId as threadId for multi-session isolation", async () => {
