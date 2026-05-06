@@ -20,6 +20,9 @@
     "@koi/core": "workspace:*",
     "@koi/forge-types": "workspace:*"
   },
+  "devDependencies": {
+    "fast-check": "4.3.0"
+  },
   "koi": {
     "optional": true
   }

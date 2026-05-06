@@ -528,6 +528,9 @@
         "@koi/core": "workspace:*",
         "@koi/forge-types": "workspace:*",
       },
+      "devDependencies": {
+        "fast-check": "4.3.0",
+      },
     },
     "packages/lib/harness-synth": {
       "name": "@koi/harness-synth",
