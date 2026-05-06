@@ -288,6 +288,8 @@ In-process delayed re-verify is necessary but not sufficient: a host crash, cont
     deployment_id TEXT,                 -- Vercel: NULL until discovered; recovery via attempt_id
     deployment_url TEXT,                 -- Vercel: NULL until discovered
     attempt_id TEXT,                     -- Vercel: required (per-attempt UUID written to deployment.meta.koi-attempt-id)
+    empty_lookups INTEGER NOT NULL DEFAULT 0, -- Vercel reconciliation: consecutive empty lookups before row removal
+    last_empty_lookup_at TEXT,           -- Vercel reconciliation: timestamp of most recent empty lookup
     created_at TEXT NOT NULL,
     last_tried_at TEXT NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0
@@ -307,14 +309,25 @@ In-process delayed re-verify is necessary but not sufficient: a host crash, cont
   - Each matched orphan triggers a provider-specific DELETE:
     - **Cloudflare:** `DELETE /workers/scripts/{scriptName}` (deterministic key already present).
     - **Vercel — `deployment_id` present:** `DELETE /v13/deployments/{deploymentId}` directly.
-    - **Vercel — `deployment_id` NULL (timeout/crash before discovery):** the reconciliation path FIRST issues `GET /v6/deployments?meta-koi-attempt-id=${attempt_id}&teamId=${teamId}` to discover `deploymentId`. If discovered, persist it back to the row, then DELETE. If the lookup returns no deployments (deploy never materialized), remove the row — there is nothing to clean. If the lookup itself fails (network error, rate limit), bump `lastTriedAt`, increment `attempts`, and retain the row with backoff (`2^min(attempts,6) * 1000ms` until the next reconcile pass). After 24 hours of repeated failure, the row is annotated `stuck=true` and surfaced in operator logs but still retained.
+    - **Vercel — `deployment_id` NULL (timeout/crash before discovery):** the reconciliation path FIRST issues `GET /v6/deployments?meta-koi-attempt-id=${attempt_id}&teamId=${teamId}` to discover `deploymentId`.
+      - **Lookup found a deployment:** persist `deploymentId` to the row, then DELETE.
+      - **Lookup returned empty (deploy may not have materialized yet — Vercel control-plane is eventually consistent):** treated as **indeterminate**, NOT as proof of non-existence. Increment `empty_lookups` counter (new schema column, defaults to 0) and update `last_tried_at`. The row is removed only after **3 consecutive empty lookups separated by at least 10 minutes each** (i.e., a sustained 30-minute observation window). Earlier removal is forbidden because the only durable recovery key would be lost if the deployment materializes after the lookup.
+      - **Lookup itself fails (network error, rate limit, 5xx):** bump `lastTriedAt`, increment `attempts`, retain the row with exponential backoff (`2^min(attempts,6) * 1000ms` until the next reconcile pass). NEVER counted as an empty lookup. After 24 hours of repeated failure, the row is annotated `stuck=true` and surfaced in operator logs but still retained.
+      - The `empty_lookups` column is reset to 0 on any non-empty result (including failures) so a single materialized observation always triggers DELETE on the next pass.
   - Successful deletions (or 404 confirmed by a follow-up GET) remove the entry; failures bump `lastTriedAt` and stay queued.
   - The Vercel adapter requires `projectId` AND `ownerId` in its config so reconciliation has both a deterministic key and a namespace — neither is optional.
-- **Ownership-tagged artifacts (cleanup is provider-metadata gated):** every create attempt tags the deployed artifact with provider-side metadata that uniquely identifies it as koi-managed:
-  - **Cloudflare:** uses Workers `tags` field on the script: `["koi-managed:v1", "koi-owner:${ownerId}"]` where `ownerId` is a stable opaque identifier from `config.ownerId` (required, no default — operators must set it per deployment to namespace their fleet).
-  - **Vercel:** uses the `meta` object on deployments: `{ "koi-managed": "v1", "koi-owner": "${ownerId}" }`.
+- **Ownership-tagged artifacts + heartbeat lease (cleanup gated on staleness, not just tags):** every create attempt tags the deployed artifact with provider-side metadata identifying it as koi-managed AND a heartbeat lease tag that says "this artifact is in active use until time X":
+  - **Cloudflare:** Workers `tags` field on the script: `["koi-managed:v1", "koi-owner:${ownerId}", "koi-stale-after:${ISO_TIMESTAMP}"]`.
+  - **Vercel:** `meta` object on deployments: `{ "koi-managed": "v1", "koi-owner": "${ownerId}", "koi-stale-after": "${ISO_TIMESTAMP}" }`.
+  At create time `koi-stale-after = now + 24h`. While the instance is alive, the host-side adapter renews this tag every 12 hours via `PATCH /workers/scripts/{name}/tags` (CF) or `PATCH /v13/deployments/{id}/meta` (Vercel) — set to `now + 24h`. On `destroy()` the entire artifact is deleted. On host crash, the tag stops renewing and naturally expires; the sweep picks it up once `koi-stale-after` is in the past.
   Artifacts created outside this adapter (or by other tools) lack these tags and are NEVER touched by sweep.
-- **External reconciliation:** the `provider-smoke.yml` nightly cron job lists scripts/deployments where `tags` (CF) or `meta` (Vercel) match `koi-managed=v1` AND `koi-owner=${expectedOwnerId}` AND age > 1 hour, then deletes them. Operators configure the workflow with the `ownerId`(s) they intend to sweep; multi-tenant accounts list each owner separately. The sweep additionally consults the local SQLite ledger to skip rows with `last_tried_at` within 5 minutes (some other host is actively reconciling), but the primary safety boundary is the provider-side tag — an artifact without the koi tag pair is invisible to the sweep regardless of age, prefix, or any other property. This is safe in shared accounts because non-koi resources are mechanically excluded.
+- **External reconciliation (only sweeps stale artifacts):** the cron job lists scripts/deployments where:
+  - `koi-managed=v1` AND
+  - `koi-owner=${expectedOwnerId}` AND
+  - `koi-stale-after` is in the past (artifact's lease has expired).
+  It then deletes them. Long-lived active instances renew their lease and are never swept regardless of age. The 1-hour threshold is replaced by the `koi-stale-after` lease check: sweep is gated on durable provider-side staleness, not just elapsed time.
+  - The sweep additionally consults the local SQLite ledger to skip rows with `last_tried_at` within 5 minutes (some other host is actively reconciling).
+- **Lease renewal failure handling:** if the host fails to renew a lease (network error, expired token, etc.), the local adapter logs `LEASE_RENEWAL_FAILED` and increments a counter. After 3 consecutive failures over 30 minutes, the host considers the artifact lost and tears down the local handle (POISONED state) so callers stop sending invokes. The artifact then ages out via lease expiry as normal.
 - **Tag-application failure is a create failure:** if the provider does not accept the tags during deploy (older API, plan limitation), `create()` returns `KoiError { code: "TAGS_UNSUPPORTED" }` and tears down. We refuse to deploy untracked artifacts.
 - **Synchronous cleanup option:** for callers that cannot tolerate any deferred cleanup, config exposes `synchronousCreateCleanup: boolean` (default `false`). When `true`, the adapter does not return until either (a) the cleanup DELETE returns confirmed-deleted (success path), or (b) cleanup fails and the orphan is persisted to the ledger. INDETERMINATE results are never returned with a still-pending in-process re-verify scheduled — the caller blocks until the durable trace is written. This trades latency for an absolute guarantee that no artifact exists outside the ledger.
 - **Idempotent retries are caller responsibility:** the adapter never auto-retries `create`. Each retry produces a new UUID and is independent.
