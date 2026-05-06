@@ -569,10 +569,10 @@ In-process delayed re-verify is necessary but not sufficient: a host crash, cont
 - Endpoint: `https://api.cloudflare.com/client/v4/accounts/{accountId}/workers/scripts/{instanceScriptName}` for deploy/delete; deployed worker URL for invoke.
 - Network: only `fetch` — no SDK dep.
 - Instance (`EdgeFunctionInstance`):
-  - Owns its own `scriptName` (private field, set at create time, never reused).
-  - `invoke(req)` posts `{ payload, timeoutMs }` to its own worker URL → translates JSON response to `EdgeInvokeResult`. Only JSON-serializable input; the worker shim parses request, calls the deployed JS handler, returns `{ output, durationMs }`.
-  - No `exec`, `spawn`, `readFile`, or `writeFile` methods exist on the type. Direct callers cannot accidentally invoke them — TypeScript catches at compile time. This is the value of the narrower contract.
-  - `destroy()` → DELETE only this instance's script. Idempotent (404 on re-destroy is success).
+  - Owns its own `scriptName` for Worker A (gateway) AND companion `scriptName` for Worker B (handler runner) — both private fields, set at create time, never reused.
+  - `invoke(req)` posts `{ payload, operationId, requestId, timeoutMs }` to **Worker A's** URL only (the gateway is the public surface). Worker A internally invokes Worker B via Service Binding (CF) or signed inter-deployment fetch (Vercel). The host adapter never talks directly to Worker B.
+  - No `exec`, `spawn`, `readFile`, or `writeFile` methods exist on the type. Direct callers cannot accidentally invoke them — TypeScript catches at compile time.
+  - `destroy()` → issues DELETE for **both** Worker A and Worker B atomically (under the instance mutex). Idempotent (404 on re-destroy is success). Both DELETEs must succeed for `DestroyOutcome.kind === "destroyed-clean"`; if either fails, the outcome is `leaked` or `uncertain` and `providerArtifact` reports BOTH names so the orphan ledger and any downstream remediation can target both.
 
 #### Stateless contract — `create()` is fail-closed for unsupported profile shapes
 
@@ -607,8 +607,8 @@ Cloudflare and Vercel offer no authoritative provider-side per-invocation kill c
 export type DestroyOutcome =
   | { readonly kind: "destroyed-clean" }                          // local + remote DELETE confirmed; no in-flight invoke at start
   | { readonly kind: "destroyed-local-remote-indeterminate"; readonly inflightAtDestroy: number }
-  | { readonly kind: "destroyed-local-remote-leaked"; readonly providerArtifact: string; readonly cause: KoiError }
-  | { readonly kind: "destroyed-local-remote-uncertain"; readonly providerArtifact: string; readonly cause: KoiError };
+  | { readonly kind: "destroyed-local-remote-leaked"; readonly providerArtifacts: readonly string[]; readonly cause: KoiError }
+  | { readonly kind: "destroyed-local-remote-uncertain"; readonly providerArtifacts: readonly string[]; readonly cause: KoiError };
 
 // EdgeFunctionInstance.destroy returns Result so the contract surfaces failures explicitly:
 readonly destroy: () => Promise<Result<DestroyOutcome, KoiError>>;
@@ -616,17 +616,17 @@ readonly destroy: () => Promise<Result<DestroyOutcome, KoiError>>;
 
 - `destroyed-clean`: no `invoke()` was in flight; remote DELETE returned 200/204 (or 404 confirmed by follow-up GET). Local handle gone, no possible residual side effects.
 - `destroyed-local-remote-indeterminate`: at least one `invoke()` was active when destroy fired; remote DELETE confirmed but in-flight remote work may still complete. Inflight count reported.
-- `destroyed-local-remote-leaked`: remote DELETE returned a definitive failure status (e.g., 4xx for permission, 5xx persistent). The local handle is gone, but the provider artifact is **known to still exist**. The artifact identifier is in `providerArtifact` so the caller can trigger an out-of-band cleanup or alert. **Write-before-return invariant:** the orphan row is persisted to the SQLite ledger with `synchronous=FULL` and `wal_checkpoint(FULL)` BEFORE this outcome is returned to the caller. If the ledger write itself fails, `destroy()` returns `Result.err(KoiError { code: "ORPHAN_LEDGER_WRITE_FAILED" })` instead of a `DestroyOutcome`, mirroring the create-failure path. Crash-safety is identical: the orphan survives `kill -9` immediately after the call returns.
-- `destroyed-local-remote-uncertain`: the DELETE call timed out or errored before any response was received. Whether the artifact exists is unknown. Same write-before-return invariant as `leaked` — orphan ledger persistence is durable before this outcome is returned. The follow-up reconciliation will determine state via `GET`.
+- `destroyed-local-remote-leaked`: at least one of the two paired DELETEs (Worker A or Worker B) returned a definitive failure status. The local handle is gone, but at least one provider artifact is **known to still exist**. The list of leaked artifact identifiers is in `providerArtifacts: readonly string[]` (always carries both names if both leaked, the leaked one if only one failed). **Write-before-return invariant:** orphan rows for ALL leaked artifacts are persisted to the SQLite ledger with `synchronous=FULL` and `wal_checkpoint(FULL)` BEFORE this outcome is returned. If the ledger write itself fails, `destroy()` returns `Result.err(KoiError { code: "ORPHAN_LEDGER_WRITE_FAILED" })` instead of a `DestroyOutcome`, mirroring the create-failure path.
+- `destroyed-local-remote-uncertain`: at least one DELETE call timed out or errored before any response. Whether the artifacts exist is unknown. Same write-before-return invariant; `providerArtifacts` lists every artifact whose state is uncertain.
 
-**Crash-recovery test (mandatory for destroy paths too):** `__tests__/destroy-leak-crash.test.ts` simulates a hard crash by spawning a subprocess that calls `destroy()` against a stub provider returning a 5xx, blocks just before the function returns, then is killed with `SIGKILL`. The parent reopens the database and asserts the orphan row is present with the leaked `providerArtifact` identifier. CI runs this on every PR that touches the destroy path.
+**Crash-recovery test (mandatory):** `__tests__/destroy-leak-crash.test.ts` simulates a hard crash by spawning a subprocess that calls `destroy()` against a stub provider returning a 5xx for both paired artifacts, blocks just before return, then is killed with `SIGKILL`. The parent reopens the database and asserts BOTH orphan rows are present (one per artifact in the pair). CI runs this on every PR that touches the destroy path.
 - `Result.err`: the destroy attempt itself failed before any cleanup could be attempted (e.g., the local mutex was poisoned by a prior bug). This is the only path where the local handle MIGHT still be holding state. Documented as "should not happen in normal operation"; if observed, the instance is in an inconsistent state and the caller should log and exit.
 
 Callers MUST read the result:
 - `Result.err` → unrecoverable instance bug; log + escalate.
 - `destroyed-clean` → fully safe to discard.
 - `destroyed-local-remote-indeterminate` → safe to discard local handle; downstream side effects may still arrive (idempotency at side-effect targets handles this).
-- `destroyed-local-remote-leaked` / `uncertain` → log the `providerArtifact` for operator visibility; the orphan is in the ledger. Optionally `await` the next reconciliation pass to confirm cleanup.
+- `destroyed-local-remote-leaked` / `uncertain` → log every entry in `providerArtifacts` for operator visibility; orphan rows are in the ledger for each. Optionally `await` the next reconciliation pass to confirm cleanup.
 - The threat model is updated accordingly: "destroy reliably terminates locally; remote completion of in-flight work is not preventable on these providers and callers must design `invoke()` payloads to be idempotent or carry a unique request token the caller can deduplicate at side-effect targets".
 
 Caller-visible: `invoke()` is awaited as usual; the only behavioral change vs. an OS sandbox is that calls are not parallel within an instance. Callers that need parallelism create multiple instances. Calling `destroy()` while an `invoke()` is in flight rejects that invoke promptly — destroy is never blocked behind hung remote work — and the returned `DestroyOutcome` documents whether residual remote effects are possible.
@@ -700,8 +700,8 @@ Because `destroy()` and timeout/abort can leave remote work in flight (see `Dest
   ```
   The deployed handler reads `operationId` from the wire payload and uses it as the idempotency key for any downstream side effect — e.g., as `Idempotency-Key` header on Stripe calls, or as a primary key on an event-log table. The shim's `requestId` cache is invisible to the handler.
   Frameworks built on top of the adapter (retry wrappers, higher-level helpers) are responsible for retaining `operationId` for the operation's lifetime — they MUST NOT regenerate it on retry. The two-field model means there is exactly one canonical answer to "which key does what": `operationId` for correctness, `requestId` for performance.
-- Cross-instance retries (after `destroy()` + new `create()`) cannot benefit from shim dedupe — the shim cache is per-isolate and a new instance is on a fresh script entirely. The recovery is `operationId`-driven at the side-effect target, not `requestId`-driven at the shim. This is the correct boundary: provider-side dedupe across instance recreation is impossible without durable cross-instance state (out of scope), so we push the cross-instance case to where it can actually be solved — the side-effect target where `operationId` is the dedupe key.
-- The shim's per-isolate cache is bounded: max 1000 entries with LRU eviction. Above that, oldest entries are dropped, and a duplicate request for an evicted ID re-runs the handler. Operators tune this via deployed code if higher concurrency requires it.
+- **Cross-instance retries (after `destroy()` + new `create()`) ARE deduped by the durable store.** The Cloudflare DO and Vercel KV stores live at the fleet level (per `ownerId`), not per-instance, so a fresh `create()` after `destroy()` produces a new pair of Worker A/Worker B but they STILL bind to the same DO namespace / KV instance. When the new Worker A receives the retried `invoke({ operationId, requestId: <new> })`, it consults the same `${ownerId}:result:${operationId}` key as the old instance and observes the prior outcome. **This is the primary cross-retry safety mechanism**, exactly as defined in the dedupe sections above. The earlier statement that "cross-instance retries cannot benefit from shim dedupe" is true only of the per-isolate `requestId` Map — the durable store is fleet-wide and does work across instance boundaries. Downstream idempotency is the residual safety net for the documented persistence-failure paths (DEDUPE_PERSISTENCE_FAILED, LEASE_LOST, OWNERSHIP_LOST, RESULT_TOO_LARGE), not the primary mechanism.
+- The shim's per-isolate `requestId` cache is bounded: max 1000 entries with LRU eviction. This is a performance optimization for same-isolate retries within 300s only; the durable store handles cross-isolate and cross-instance correctness.
 - Caller-visible (single source of truth): **`operationId` is the logical-operation key, owned and retained by the caller for the full lifetime of the operation including across `destroy()`/`create()` boundaries; `requestId` is per-attempt and ephemeral.** The SDK does NOT auto-generate either field. Wrappers that hide id generation MUST persist `operationId` in their own state for the operation's lifetime. Documented prominently in `docs/L2/sandbox-cloudflare.md`.
 
 #### Cancellation honesty (always-poison on timeout)
@@ -867,7 +867,7 @@ Each follows existing `docs/L2/sandbox-*.md` template: purpose, contract, config
 ## Threat model
 
 - **wasm:** in-process. Memory cap enforced by `WebAssembly.Memory({ maximum })`. CPU cap = wall-clock timeout (no instruction-count metering — `AbortSignal` only). No filesystem or network unless host imports are explicitly provided. Default config: zero host imports.
-- **cloudflare/vercel:** remote. API tokens are secrets — validated for shape, never logged, never returned in errors. SSRF: deploy endpoint is hardcoded, exec endpoint comes from CF/Vercel response — validate it's HTTPS and on the expected domain before invocation. Cleanup on `destroy()` MUST succeed before instance is considered destroyed (deleted scripts/deployments do not bill).
+- **cloudflare/vercel:** remote. API tokens are secrets — validated for shape, never logged, never returned in errors. SSRF: deploy endpoint is hardcoded, invoke endpoint is pinned to provider-owned subdomains (`*.workers.dev`, `*.vercel.app`) — custom domains are out of scope. **`destroy()` does NOT guarantee remote cleanup succeeded**: the local handle is terminated reliably, but the remote artifacts may be `leaked` or `uncertain`, in which case `DestroyOutcome` reports the artifact identifiers and the orphan ledger plus tagged sweeper handle eventual cleanup. Operators MUST treat `destroyed-local-remote-leaked` and `destroyed-local-remote-uncertain` outcomes as **active cleanup incidents requiring follow-up**, not as successful teardown. Billing exposure and live-code exposure are bounded by the lease/sweep window (~5-6 minutes for Cloudflare via cron, sweeper cadence for Vercel), not by the synchronous `destroy()` call. The L2 docs require operators to set up alerting on non-clean destroy outcomes.
 
 ## Out of scope (deferred)
 
