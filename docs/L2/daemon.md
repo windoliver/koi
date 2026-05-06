@@ -1,6 +1,6 @@
 # @koi/daemon — OS-Process Worker Supervisor
 
-Supervise OS-level worker processes for long-running agent work. Provides a pluggable `WorkerBackend` contract (swappable execution substrates), a pool-managing `Supervisor` with restart/maxWorkers/graceful-shutdown, and an in-tree Bun subprocess backend.
+Supervise OS-level worker processes for long-running agent work. Provides a pluggable `WorkerBackend` contract (swappable execution substrates), a pool-managing `Supervisor` with restart/maxWorkers/graceful-shutdown, and in-tree subprocess and tmux worker backends.
 
 ## Recent updates
 
@@ -181,6 +181,29 @@ Uses `Bun.spawn(command, { cwd, env, stdin: "inherit", stdout: "pipe", stderr: "
 - `exited` when `proc.exited` resolves with code=0
 - `crashed` (with `INTERNAL` KoiError, retryable=true) when code≠0
 - `crashed` (with `INTERNAL`, retryable=false) if the backend watch stream itself fails
+
+### createTmuxBackend
+
+Tmux-backed worker backend for interactive panes:
+
+```typescript
+const backend = createTmuxBackend();
+// backend.kind === "tmux"
+// backend.isAvailable() probes `tmux -V`
+```
+
+Workers launch into a worktree-scoped tmux session named
+`<worktree-slug>-daemon-workers`, where the slug is derived from the request
+cwd and normalized for tmux-safe reuse. Each spawned worker returns tmux
+targets on its `WorkerHandle`:
+
+- `tmuxSessionName`
+- `tmuxWindowTarget`
+- `tmuxPaneId`
+
+The backend reuses the session when it already exists, allocates a distinct
+pane per worker, and honors `watch(id, signal?)` aborts so supervisor stop and
+shutdown do not leak backend watchers.
 
 ### createFileSessionRegistry
 
@@ -397,11 +420,13 @@ Non-heartbeat-tracked workers (those spawned without `backendHints.heartbeat: tr
 
 ## Testing
 
-- **21 tests** across 5 test files
+- **tmux backend unit coverage** in `tmux-backend.test.ts` for availability, spawn, cleanup, terminate/kill, multi-worker pane allocation, and abort-aware watch behavior
+- **gated tmux integration coverage** in `subprocess-supervision.integration.test.ts` guarded by `$RUN_E2E`
 - Key test files:
   - `supervisor.test.ts` — start, maxWorkers, stop, shutdown, watchAll (including concurrent subscribers, rapid-publish burst)
   - `restart-policy.test.ts` — transient restart, temporary no-restart, budget exhaustion
   - `subprocess-backend.test.ts` — spawn + exit, SIGTERM terminate, crashed on non-zero exit
+  - `tmux-backend.test.ts` — pane/session lifecycle, pane-target metadata, abort-aware watch
   - `backoff.test.ts` — doubling, ceiling cap, zero base
   - `signal-handlers.test.ts` — SIGTERM/SIGINT → shutdown, cleanup fn removes listeners
 - `fake-backend.ts` test helper — in-memory `WorkerBackend` with synchronous crash/exit controls
@@ -419,16 +444,23 @@ disk:
 | `koi bg ps` | List registered sessions (table by default, `--json` for structured output) |
 | `koi bg logs <id>` | Tail a session's log file; `--follow` keeps streaming while the session is live |
 | `koi bg kill <id>` | SIGTERM the session's PID; escalate to SIGKILL after 5 s if still alive; update the registry |
-| `koi bg attach <id>` | Interactive attach — subprocess backend falls back to read-only log tail; full bi-directional attach ships with the tmux backend (3b-6) |
-| `koi bg detach` | Operator notice — subprocess backend has no detachable session; tmux backend handles the flow |
+| `koi bg attach <id>` | Interactive attach — subprocess backend falls back to read-only log tail; tmux backend switches or attaches to the recorded tmux session/pane and marks the registry record `running` on successful handoff |
+| `koi bg detach` | Subprocess backend remains informational; tmux backend resolves the attached pane, runs `tmux detach-client`, and best-effort marks the registry record `detached` |
 
 Default registry directory: `$KOI_STATE_DIR/daemon/sessions`; falls back to
 `~/.koi/daemon/sessions`. Override with `--registry-dir`.
 
+When a session is tmux-backed, the persisted `BackgroundSessionRecord` carries
+the tmux targets needed for cross-process attach and detach:
+
+- `tmuxSessionName`
+- `tmuxWindowTarget`
+- `tmuxPaneId`
+
 ## Limitations / Follow-Ups
 
 - Event buffer is bounded at 1000 events with FIFO eviction; `supervisor.health().metrics.eventDropCount` surfaces eviction count.
-- **Only subprocess backend ships in this package.** `in-process`, `tmux`, and `remote` backends are reserved kinds but not implemented — future peer L2 packages (e.g. `@koi/daemon-backend-tmux`).
+- **Tmux tests are opt-in.** Live tmux coverage is gated behind `$RUN_E2E` so default CI stays hermetic and does not require tmux.
 - **Subprocess integration with `SupervisionReconciler` is deferred to #1866 (3b-5c).** 3b-5a activates the reconciler for in-process children (see `docs/L2/supervision-activation.md`); 3b-5c wires a daemon-backed `SpawnChildFn` adapter.
 - **No subscriber-abandonment cleanup.** If a `watchAll` consumer abandons its iterator, the closed-over waker leaks until the next publish.
 

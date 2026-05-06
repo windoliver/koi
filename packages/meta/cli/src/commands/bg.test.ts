@@ -9,13 +9,29 @@ import { ExitCode } from "../types.js";
 import { defaultRegistryDir, run } from "./bg.js";
 
 let dir: string;
+let savedTmuxEnv: string | undefined;
+let savedAttachedBackendEnv: string | undefined;
+let savedAttachedWorkerEnv: string | undefined;
+let savedAttachedSessionEnv: string | undefined;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "koi-bg-test-"));
+  savedTmuxEnv = process.env.TMUX;
+  savedAttachedBackendEnv = process.env.KOI_BG_ATTACHED_BACKEND;
+  savedAttachedWorkerEnv = process.env.KOI_BG_ATTACHED_WORKER_ID;
+  savedAttachedSessionEnv = process.env.KOI_BG_ATTACHED_SESSION_NAME;
 });
 
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
+  if (savedTmuxEnv === undefined) delete process.env.TMUX;
+  else process.env.TMUX = savedTmuxEnv;
+  if (savedAttachedBackendEnv === undefined) delete process.env.KOI_BG_ATTACHED_BACKEND;
+  else process.env.KOI_BG_ATTACHED_BACKEND = savedAttachedBackendEnv;
+  if (savedAttachedWorkerEnv === undefined) delete process.env.KOI_BG_ATTACHED_WORKER_ID;
+  else process.env.KOI_BG_ATTACHED_WORKER_ID = savedAttachedWorkerEnv;
+  if (savedAttachedSessionEnv === undefined) delete process.env.KOI_BG_ATTACHED_SESSION_NAME;
+  else process.env.KOI_BG_ATTACHED_SESSION_NAME = savedAttachedSessionEnv;
 });
 
 async function writeSession(
@@ -35,6 +51,44 @@ async function writeSession(
   };
   await writeFile(join(registryDir, `${record.workerId}.json`), JSON.stringify(record), "utf8");
   return record;
+}
+
+function makeSpawnResult(
+  code: number,
+  stdout: string = "",
+  stderr: string = "",
+): ReturnType<typeof Bun.spawn> {
+  return {
+    exited: Promise.resolve(code),
+    stdout: new Blob([stdout]).stream(),
+    stderr: new Blob([stderr]).stream(),
+  } as ReturnType<typeof Bun.spawn>;
+}
+
+function withMockedPsFingerprint(
+  fingerprint: string,
+): (
+  argv: string[],
+  options?: Bun.SpawnOptions.OptionsObject<
+    string,
+    Bun.SpawnOptions.Writable,
+    Bun.SpawnOptions.Readable
+  >,
+) => ReturnType<typeof Bun.spawn> {
+  const realSpawn = Bun.spawn;
+  return (
+    argv: string[],
+    options?: Bun.SpawnOptions.OptionsObject<
+      string,
+      Bun.SpawnOptions.Writable,
+      Bun.SpawnOptions.Readable
+    >,
+  ) => {
+    if (argv[0] === "ps" && argv[1] === "-p") {
+      return makeSpawnResult(0, `${fingerprint}\n`);
+    }
+    return realSpawn(argv, options);
+  };
 }
 
 describe("parseBgFlags", () => {
@@ -285,6 +339,9 @@ describe("bg kill", () => {
       stdout: "ignore",
       stderr: "ignore",
     });
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation(
+      withMockedPsFingerprint("Mon Jan  1 00:00:00 2024"),
+    );
     try {
       await writeSession(dir, {
         workerId: workerId("w-live"),
@@ -309,6 +366,7 @@ describe("bg kill", () => {
       expect(record.status).toBe("exited");
       expect(record.endedAt).toBeGreaterThan(0);
     } finally {
+      spawnSpy.mockRestore();
       try {
         proc.kill();
       } catch {
@@ -341,6 +399,9 @@ describe("bg kill", () => {
         throw err;
       },
     );
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation(() =>
+      makeSpawnResult(0, "Mon Jan  1 00:00:00 2024\n"),
+    );
 
     const freshStamp = Date.now();
     await writeSession(dir, {
@@ -363,6 +424,7 @@ describe("bg kill", () => {
       stdoutSpy.mockRestore();
       errSpy.mockRestore();
       killSpy.mockRestore();
+      spawnSpy.mockRestore();
     }
 
     // Outcome assertions: kill returns OK, writes exited with the
@@ -386,4 +448,706 @@ describe("bg kill", () => {
     expect(record.status).toBe("exited");
     expect(record.signaledAt).toBe(freshStamp);
   }, 15_000);
+});
+
+describe("bg attach", () => {
+  it("keeps subprocess attach as a log-follow fallback", async () => {
+    const logPath = join(dir, "w-subprocess.log");
+    await writeFile(logPath, "attached via logs\n", "utf8");
+    await writeSession(dir, {
+      workerId: workerId("w-subprocess"),
+      backendKind: "subprocess",
+      logPath,
+      status: "exited",
+      endedAt: Date.now(),
+      exitCode: 0,
+    });
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const stdoutSpy = spyOn(process.stdout, "write").mockImplementation((c: unknown) => {
+      stdout.push(String(c));
+      return true;
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation((c: unknown) => {
+      stderr.push(String(c));
+      return true;
+    });
+
+    try {
+      const code = await run(parseBgFlags(["attach", "w-subprocess", "--registry-dir", dir]));
+      expect(code).toBe(ExitCode.OK);
+      expect(stderr.join("")).toContain(
+        "Interactive attach is not supported on the subprocess backend",
+      );
+      expect(stdout.join("")).toContain("attached via logs");
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it("dispatches tmux attach when tmux metadata is present outside tmux", async () => {
+    await writeSession(dir, {
+      workerId: workerId("w-tmux-attach"),
+      backendKind: "tmux",
+      status: "detached",
+      tmuxSessionName: "alpha-daemon-workers",
+      tmuxWindowTarget: "alpha-daemon-workers:0",
+      tmuxPaneId: "%7",
+    });
+    delete process.env.TMUX;
+
+    const spawnCalls: string[][] = [];
+    let resolveAttach: ((code: number) => void) | undefined;
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
+      spawnCalls.push([...argv]);
+      if (argv[0] === "tmux" && argv[1] === "attach-session") {
+        const exited = new Promise<number>((resolve) => {
+          resolveAttach = resolve;
+        });
+        return {
+          exited,
+          stdout: new Blob([]).stream(),
+          stderr: new Blob([]).stream(),
+        } as ReturnType<typeof Bun.spawn>;
+      }
+      return makeSpawnResult(0);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      const runPromise = run(parseBgFlags(["attach", "w-tmux-attach", "--registry-dir", dir]));
+      for (let attempt = 0; attempt < 50; attempt++) {
+        if (spawnCalls.some((call) => call[0] === "tmux" && call[1] === "attach-session")) break;
+        await Bun.sleep(1);
+      }
+      expect(spawnCalls).toContainEqual([
+        "tmux",
+        "set-option",
+        "-p",
+        "-t",
+        "%7",
+        "@koi_bg_attached_backend",
+        "tmux",
+      ]);
+      expect(spawnCalls).toContainEqual([
+        "tmux",
+        "set-option",
+        "-p",
+        "-t",
+        "%7",
+        "@koi_bg_attached_worker_id",
+        "w-tmux-attach",
+      ]);
+      expect(spawnCalls).toContainEqual([
+        "tmux",
+        "set-option",
+        "-p",
+        "-t",
+        "%7",
+        "@koi_bg_attached_session_name",
+        "alpha-daemon-workers",
+      ]);
+      expect(spawnCalls).toContainEqual(["tmux", "select-window", "-t", "alpha-daemon-workers:0"]);
+      expect(spawnCalls).toContainEqual(["tmux", "select-pane", "-t", "%7"]);
+      expect(spawnCalls).toContainEqual(["tmux", "attach-session", "-t", "alpha-daemon-workers"]);
+
+      const inFlightText = await Bun.file(join(dir, "w-tmux-attach.json")).text();
+      const inFlightRecord = JSON.parse(inFlightText) as BackgroundSessionRecord;
+      expect(inFlightRecord.status).toBe("running");
+
+      resolveAttach?.(0);
+      const code = await runPromise;
+      expect(code).toBe(ExitCode.OK);
+    } finally {
+      stderrSpy.mockRestore();
+      spawnSpy.mockRestore();
+    }
+  });
+
+  it("switches tmux clients in-place when already inside tmux", async () => {
+    await writeSession(dir, {
+      workerId: workerId("w-tmux-switch"),
+      backendKind: "tmux",
+      status: "detached",
+      tmuxSessionName: "alpha-daemon-workers",
+      tmuxWindowTarget: "alpha-daemon-workers:0",
+      tmuxPaneId: "%11",
+    });
+    process.env.TMUX = "/tmp/tmux-1000/default,456,0";
+
+    const spawnCalls: string[][] = [];
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
+      spawnCalls.push([...argv]);
+      return makeSpawnResult(0);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      const code = await run(parseBgFlags(["attach", "w-tmux-switch", "--registry-dir", dir]));
+      expect(code).toBe(ExitCode.OK);
+      expect(spawnCalls).toContainEqual([
+        "tmux",
+        "set-option",
+        "-p",
+        "-t",
+        "%11",
+        "@koi_bg_attached_worker_id",
+        "w-tmux-switch",
+      ]);
+      expect(spawnCalls).toContainEqual(["tmux", "switch-client", "-t", "alpha-daemon-workers"]);
+      expect(spawnCalls).toContainEqual(["tmux", "select-window", "-t", "alpha-daemon-workers:0"]);
+      expect(spawnCalls).toContainEqual(["tmux", "select-pane", "-t", "%11"]);
+
+      const text = await Bun.file(join(dir, "w-tmux-switch.json")).text();
+      const record = JSON.parse(text) as BackgroundSessionRecord;
+      expect(record.status).toBe("running");
+    } finally {
+      stderrSpy.mockRestore();
+      spawnSpy.mockRestore();
+    }
+  });
+
+  it("rolls back the pre-handoff running state if outside-tmux attach-session fails immediately", async () => {
+    await writeSession(dir, {
+      workerId: workerId("w-tmux-attach-fail"),
+      backendKind: "tmux",
+      status: "detached",
+      tmuxSessionName: "alpha-daemon-workers",
+      tmuxWindowTarget: "alpha-daemon-workers:0",
+      tmuxPaneId: "%13",
+    });
+    delete process.env.TMUX;
+
+    const spawnCalls: string[][] = [];
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
+      spawnCalls.push([...argv]);
+      if (argv[0] === "tmux" && argv[1] === "attach-session") {
+        return makeSpawnResult(1);
+      }
+      return makeSpawnResult(0);
+    });
+    const stderr: string[] = [];
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation((c: unknown) => {
+      stderr.push(String(c));
+      return true;
+    });
+
+    try {
+      const code = await run(parseBgFlags(["attach", "w-tmux-attach-fail", "--registry-dir", dir]));
+      expect(code).toBe(ExitCode.FAILURE);
+      expect(spawnCalls).toContainEqual(["tmux", "attach-session", "-t", "alpha-daemon-workers"]);
+      expect(stderr.join("")).toContain("tmux attach-session -t alpha-daemon-workers failed");
+
+      const text = await Bun.file(join(dir, "w-tmux-attach-fail.json")).text();
+      const record = JSON.parse(text) as BackgroundSessionRecord;
+      expect(record.status).toBe("detached");
+    } finally {
+      stderrSpy.mockRestore();
+      spawnSpy.mockRestore();
+    }
+  });
+
+  it("rolls back the pre-handoff running state if outside-tmux attach-session spawn throws synchronously", async () => {
+    await writeSession(dir, {
+      workerId: workerId("w-tmux-attach-throw"),
+      backendKind: "tmux",
+      status: "detached",
+      tmuxSessionName: "alpha-daemon-workers",
+      tmuxWindowTarget: "alpha-daemon-workers:0",
+      tmuxPaneId: "%14",
+    });
+    delete process.env.TMUX;
+
+    const spawnCalls: string[][] = [];
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
+      spawnCalls.push([...argv]);
+      if (argv[0] === "tmux" && argv[1] === "attach-session") {
+        throw new Error("spawn failed");
+      }
+      return makeSpawnResult(0);
+    });
+    const stderr: string[] = [];
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation((c: unknown) => {
+      stderr.push(String(c));
+      return true;
+    });
+
+    try {
+      const code = await run(
+        parseBgFlags(["attach", "w-tmux-attach-throw", "--registry-dir", dir]),
+      );
+      expect(code).toBe(ExitCode.FAILURE);
+      expect(spawnCalls).toContainEqual(["tmux", "attach-session", "-t", "alpha-daemon-workers"]);
+
+      const text = await Bun.file(join(dir, "w-tmux-attach-throw.json")).text();
+      const record = JSON.parse(text) as BackgroundSessionRecord;
+      expect(record.status).toBe("detached");
+      expect(stderr.join("")).toContain("spawn failed");
+    } finally {
+      stderrSpy.mockRestore();
+      spawnSpy.mockRestore();
+    }
+  });
+
+  it("fails clearly when tmux attach metadata is missing", async () => {
+    await writeSession(dir, {
+      workerId: workerId("w-tmux-missing"),
+      backendKind: "tmux",
+    });
+
+    const stderr: string[] = [];
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation((c: unknown) => {
+      stderr.push(String(c));
+      return true;
+    });
+
+    try {
+      const code = await run(parseBgFlags(["attach", "w-tmux-missing", "--registry-dir", dir]));
+      expect(code).toBe(ExitCode.FAILURE);
+      expect(stderr.join("")).toContain("missing persisted tmux metadata");
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+});
+
+describe("bg detach", () => {
+  it("stays informational for non-tmux backends", async () => {
+    delete process.env.KOI_BG_ATTACHED_BACKEND;
+    delete process.env.KOI_BG_ATTACHED_WORKER_ID;
+    delete process.env.KOI_BG_ATTACHED_SESSION_NAME;
+
+    const stderr: string[] = [];
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation((c: unknown) => {
+      stderr.push(String(c));
+      return true;
+    });
+
+    try {
+      const code = await run(parseBgFlags(["detach", "--registry-dir", dir]));
+      expect(code).toBe(ExitCode.OK);
+      expect(stderr.join("")).toContain("subprocess backend has no detachable session");
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it("detaches tmux-backed sessions through the pane-scoped attach-path contract", async () => {
+    await writeSession(dir, {
+      workerId: workerId("w-tmux-detach"),
+      backendKind: "tmux",
+      status: "running",
+      tmuxSessionName: "alpha-daemon-workers",
+      tmuxWindowTarget: "alpha-daemon-workers:0",
+      tmuxPaneId: "%9",
+    });
+    process.env.TMUX = "/tmp/tmux-1000/default,123,0";
+    delete process.env.KOI_BG_ATTACHED_BACKEND;
+    delete process.env.KOI_BG_ATTACHED_WORKER_ID;
+    delete process.env.KOI_BG_ATTACHED_SESSION_NAME;
+
+    const spawnCalls: string[][] = [];
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
+      spawnCalls.push([...argv]);
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "display-message" &&
+        argv[2] === "-p" &&
+        argv[3] === "#{pane_id}"
+      ) {
+        return makeSpawnResult(0, "%9\n");
+      }
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "show-options" &&
+        argv[2] === "-p" &&
+        argv[3] === "-t" &&
+        argv[4] === "%9" &&
+        argv[5] === "-v" &&
+        argv[6] === "@koi_bg_attached_backend"
+      ) {
+        return makeSpawnResult(0, "tmux\n");
+      }
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "show-options" &&
+        argv[2] === "-p" &&
+        argv[3] === "-t" &&
+        argv[4] === "%9" &&
+        argv[5] === "-v" &&
+        argv[6] === "@koi_bg_attached_worker_id"
+      ) {
+        return makeSpawnResult(0, "w-tmux-detach\n");
+      }
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "show-options" &&
+        argv[2] === "-p" &&
+        argv[3] === "-t" &&
+        argv[4] === "%9" &&
+        argv[5] === "-v" &&
+        argv[6] === "@koi_bg_attached_session_name"
+      ) {
+        return makeSpawnResult(0, "alpha-daemon-workers\n");
+      }
+      return makeSpawnResult(0);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      const code = await run(parseBgFlags(["detach", "--registry-dir", dir]));
+      expect(code).toBe(ExitCode.OK);
+      expect(spawnCalls).toContainEqual(["tmux", "display-message", "-p", "#{pane_id}"]);
+      expect(spawnCalls).toContainEqual(["tmux", "detach-client"]);
+
+      const text = await Bun.file(join(dir, "w-tmux-detach.json")).text();
+      const record = JSON.parse(text) as BackgroundSessionRecord;
+      expect(record.status).toBe("detached");
+    } finally {
+      stderrSpy.mockRestore();
+      spawnSpy.mockRestore();
+    }
+  });
+
+  it("falls back to pane-scoped tmux options when process env is absent", async () => {
+    await writeSession(dir, {
+      workerId: workerId("w-tmux-fallback"),
+      backendKind: "tmux",
+      status: "running",
+      tmuxSessionName: "alpha-daemon-workers",
+      tmuxWindowTarget: "alpha-daemon-workers:0",
+      tmuxPaneId: "%21",
+    });
+    process.env.TMUX = "/tmp/tmux-1000/default,789,0";
+    delete process.env.KOI_BG_ATTACHED_BACKEND;
+    delete process.env.KOI_BG_ATTACHED_WORKER_ID;
+    delete process.env.KOI_BG_ATTACHED_SESSION_NAME;
+
+    const spawnCalls: string[][] = [];
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
+      spawnCalls.push([...argv]);
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "display-message" &&
+        argv[2] === "-p" &&
+        argv[3] === "#{pane_id}"
+      ) {
+        return makeSpawnResult(0, "%21\n");
+      }
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "show-options" &&
+        argv[2] === "-p" &&
+        argv[3] === "-t" &&
+        argv[4] === "%21" &&
+        argv[5] === "-v" &&
+        argv[6] === "@koi_bg_attached_backend"
+      ) {
+        return makeSpawnResult(0, "tmux\n");
+      }
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "show-options" &&
+        argv[2] === "-p" &&
+        argv[3] === "-t" &&
+        argv[4] === "%21" &&
+        argv[5] === "-v" &&
+        argv[6] === "@koi_bg_attached_worker_id"
+      ) {
+        return makeSpawnResult(0, "w-tmux-fallback\n");
+      }
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "show-options" &&
+        argv[2] === "-p" &&
+        argv[3] === "-t" &&
+        argv[4] === "%21" &&
+        argv[5] === "-v" &&
+        argv[6] === "@koi_bg_attached_session_name"
+      ) {
+        return makeSpawnResult(0, "alpha-daemon-workers\n");
+      }
+      return makeSpawnResult(0);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      const code = await run(parseBgFlags(["detach", "--registry-dir", dir]));
+      expect(code).toBe(ExitCode.OK);
+      expect(spawnCalls).toContainEqual(["tmux", "display-message", "-p", "#{pane_id}"]);
+      expect(spawnCalls).toContainEqual([
+        "tmux",
+        "show-options",
+        "-p",
+        "-t",
+        "%21",
+        "-v",
+        "@koi_bg_attached_worker_id",
+      ]);
+      expect(spawnCalls).toContainEqual(["tmux", "detach-client"]);
+
+      const text = await Bun.file(join(dir, "w-tmux-fallback.json")).text();
+      const record = JSON.parse(text) as BackgroundSessionRecord;
+      expect(record.status).toBe("detached");
+    } finally {
+      stderrSpy.mockRestore();
+      spawnSpy.mockRestore();
+    }
+  });
+
+  it("resolves the current pane so same-session workers do not collide on detach fallback", async () => {
+    await writeSession(dir, {
+      workerId: workerId("w-pane-a"),
+      backendKind: "tmux",
+      status: "running",
+      tmuxSessionName: "alpha-daemon-workers",
+      tmuxWindowTarget: "alpha-daemon-workers:0",
+      tmuxPaneId: "%31",
+    });
+    await writeSession(dir, {
+      workerId: workerId("w-pane-b"),
+      backendKind: "tmux",
+      status: "running",
+      tmuxSessionName: "alpha-daemon-workers",
+      tmuxWindowTarget: "alpha-daemon-workers:0",
+      tmuxPaneId: "%32",
+    });
+    process.env.TMUX = "/tmp/tmux-1000/default,999,0";
+    delete process.env.KOI_BG_ATTACHED_BACKEND;
+    delete process.env.KOI_BG_ATTACHED_WORKER_ID;
+    delete process.env.KOI_BG_ATTACHED_SESSION_NAME;
+
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "display-message" &&
+        argv[2] === "-p" &&
+        argv[3] === "#{pane_id}"
+      ) {
+        return makeSpawnResult(0, "%32\n");
+      }
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "show-options" &&
+        argv[2] === "-p" &&
+        argv[3] === "-t" &&
+        argv[4] === "%32" &&
+        argv[5] === "-v" &&
+        argv[6] === "@koi_bg_attached_backend"
+      ) {
+        return makeSpawnResult(0, "tmux\n");
+      }
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "show-options" &&
+        argv[2] === "-p" &&
+        argv[3] === "-t" &&
+        argv[4] === "%32" &&
+        argv[5] === "-v" &&
+        argv[6] === "@koi_bg_attached_worker_id"
+      ) {
+        return makeSpawnResult(0, "w-pane-b\n");
+      }
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "show-options" &&
+        argv[2] === "-p" &&
+        argv[3] === "-t" &&
+        argv[4] === "%32" &&
+        argv[5] === "-v" &&
+        argv[6] === "@koi_bg_attached_session_name"
+      ) {
+        return makeSpawnResult(0, "alpha-daemon-workers\n");
+      }
+      return makeSpawnResult(0);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      const code = await run(parseBgFlags(["detach", "--registry-dir", dir]));
+      expect(code).toBe(ExitCode.OK);
+
+      const paneA = JSON.parse(
+        await Bun.file(join(dir, "w-pane-a.json")).text(),
+      ) as BackgroundSessionRecord;
+      const paneB = JSON.parse(
+        await Bun.file(join(dir, "w-pane-b.json")).text(),
+      ) as BackgroundSessionRecord;
+      expect(paneA.status).toBe("running");
+      expect(paneB.status).toBe("detached");
+    } finally {
+      stderrSpy.mockRestore();
+      spawnSpy.mockRestore();
+    }
+  });
+
+  it("prefers current pane metadata over stale process env when already inside tmux", async () => {
+    await writeSession(dir, {
+      workerId: workerId("w-stale-env"),
+      backendKind: "tmux",
+      status: "running",
+      tmuxSessionName: "alpha-daemon-workers",
+      tmuxWindowTarget: "alpha-daemon-workers:0",
+      tmuxPaneId: "%41",
+    });
+    await writeSession(dir, {
+      workerId: workerId("w-live-pane"),
+      backendKind: "tmux",
+      status: "running",
+      tmuxSessionName: "alpha-daemon-workers",
+      tmuxWindowTarget: "alpha-daemon-workers:0",
+      tmuxPaneId: "%42",
+    });
+    process.env.TMUX = "/tmp/tmux-1000/default,111,0";
+    process.env.KOI_BG_ATTACHED_BACKEND = "tmux";
+    process.env.KOI_BG_ATTACHED_WORKER_ID = "w-stale-env";
+    process.env.KOI_BG_ATTACHED_SESSION_NAME = "alpha-daemon-workers";
+
+    const spawnCalls: string[][] = [];
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
+      spawnCalls.push([...argv]);
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "display-message" &&
+        argv[2] === "-p" &&
+        argv[3] === "#{pane_id}"
+      ) {
+        return makeSpawnResult(0, "%42\n");
+      }
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "show-options" &&
+        argv[2] === "-p" &&
+        argv[3] === "-t" &&
+        argv[4] === "%42" &&
+        argv[5] === "-v" &&
+        argv[6] === "@koi_bg_attached_backend"
+      ) {
+        return makeSpawnResult(0, "tmux\n");
+      }
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "show-options" &&
+        argv[2] === "-p" &&
+        argv[3] === "-t" &&
+        argv[4] === "%42" &&
+        argv[5] === "-v" &&
+        argv[6] === "@koi_bg_attached_worker_id"
+      ) {
+        return makeSpawnResult(0, "w-live-pane\n");
+      }
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "show-options" &&
+        argv[2] === "-p" &&
+        argv[3] === "-t" &&
+        argv[4] === "%42" &&
+        argv[5] === "-v" &&
+        argv[6] === "@koi_bg_attached_session_name"
+      ) {
+        return makeSpawnResult(0, "alpha-daemon-workers\n");
+      }
+      return makeSpawnResult(0);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      const code = await run(parseBgFlags(["detach", "--registry-dir", dir]));
+      expect(code).toBe(ExitCode.OK);
+      expect(spawnCalls).toContainEqual(["tmux", "display-message", "-p", "#{pane_id}"]);
+      expect(spawnCalls).toContainEqual([
+        "tmux",
+        "show-options",
+        "-p",
+        "-t",
+        "%42",
+        "-v",
+        "@koi_bg_attached_worker_id",
+      ]);
+
+      const staleEnv = JSON.parse(
+        await Bun.file(join(dir, "w-stale-env.json")).text(),
+      ) as BackgroundSessionRecord;
+      const livePane = JSON.parse(
+        await Bun.file(join(dir, "w-live-pane.json")).text(),
+      ) as BackgroundSessionRecord;
+      expect(staleEnv.status).toBe("running");
+      expect(livePane.status).toBe("detached");
+    } finally {
+      stderrSpy.mockRestore();
+      spawnSpy.mockRestore();
+    }
+  });
+
+  it("fails closed inside tmux when pane metadata is missing even if stale env is present", async () => {
+    await writeSession(dir, {
+      workerId: workerId("w-stale-only"),
+      backendKind: "tmux",
+      status: "running",
+      tmuxSessionName: "alpha-daemon-workers",
+      tmuxWindowTarget: "alpha-daemon-workers:0",
+      tmuxPaneId: "%51",
+    });
+    process.env.TMUX = "/tmp/tmux-1000/default,222,0";
+    process.env.KOI_BG_ATTACHED_BACKEND = "tmux";
+    process.env.KOI_BG_ATTACHED_WORKER_ID = "w-stale-only";
+    process.env.KOI_BG_ATTACHED_SESSION_NAME = "alpha-daemon-workers";
+
+    const spawnCalls: string[][] = [];
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
+      spawnCalls.push([...argv]);
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "display-message" &&
+        argv[2] === "-p" &&
+        argv[3] === "#{pane_id}"
+      ) {
+        return makeSpawnResult(0, "%52\n");
+      }
+      if (
+        argv[0] === "tmux" &&
+        argv[1] === "show-options" &&
+        argv[2] === "-p" &&
+        argv[3] === "-t" &&
+        argv[4] === "%52" &&
+        argv[5] === "-v"
+      ) {
+        return makeSpawnResult(1, "", "unknown option\n");
+      }
+      return makeSpawnResult(0);
+    });
+    const stderr: string[] = [];
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation((c: unknown) => {
+      stderr.push(String(c));
+      return true;
+    });
+
+    try {
+      const code = await run(parseBgFlags(["detach", "--registry-dir", dir]));
+      expect(code).toBe(ExitCode.FAILURE);
+      expect(spawnCalls).toContainEqual(["tmux", "display-message", "-p", "#{pane_id}"]);
+      expect(spawnCalls).toContainEqual([
+        "tmux",
+        "show-options",
+        "-p",
+        "-t",
+        "%52",
+        "-v",
+        "@koi_bg_attached_worker_id",
+      ]);
+      expect(stderr.join("")).toContain(
+        "could not resolve the attached worker from the current tmux pane",
+      );
+
+      const staleOnly = JSON.parse(
+        await Bun.file(join(dir, "w-stale-only.json")).text(),
+      ) as BackgroundSessionRecord;
+      expect(staleOnly.status).toBe("running");
+    } finally {
+      stderrSpy.mockRestore();
+      spawnSpy.mockRestore();
+    }
+  });
 });
