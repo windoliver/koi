@@ -67,6 +67,15 @@ describe("parseRefinementOutput", () => {
     expect(parseRefinementOutput("```md\n# title\n```")).toBeNull();
   });
 
+  test("does not truncate at triple-backticks embedded inside string literal", () => {
+    // The opening fence is on its own line, the closing fence is on
+    // its own line — the inline triple-backticks belong to the body.
+    const raw = '```ts\nconst s = "before```after";\nconst t = 1;\n```';
+    const out = parseRefinementOutput(raw);
+    expect(out).toContain("before```after");
+    expect(out).toContain("const t = 1;");
+  });
+
   test("returns null for non-string input (no throw)", () => {
     expect(parseRefinementOutput(null)).toBeNull();
     expect(parseRefinementOutput(undefined)).toBeNull();

@@ -837,6 +837,23 @@ describe("linearSearch", () => {
     expect(result.history.length).toBe(4);
   });
 
+  test("sanitizer that throws is contained as refine_failed (no top-level rejection)", async () => {
+    const config = makeConfig({
+      maxIterations: 2,
+      evaluate: async () => ({
+        successRate: 0.5,
+        sampleCount: 10,
+        failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+      }),
+      sanitizeFailures: () => {
+        throw new Error("buggy sanitizer");
+      },
+      random: () => 0.99,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("refine_failed");
+  });
+
   test("never exceeds maxIterations even with infinite-failure evaluator", async () => {
     const config = makeConfig({
       maxIterations: 7,

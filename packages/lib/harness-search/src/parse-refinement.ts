@@ -18,8 +18,12 @@
  */
 
 // Match every fenced block in the output. Capture group 1 is the
-// language tag (may be empty), group 2 the body.
-const CODE_FENCE_GLOBAL = /```([a-zA-Z]*)\s*\n([\s\S]*?)```/g;
+// language tag (may be empty), group 2 the body. The closing fence
+// must appear at the START of a line (preceded by `\n` or matching
+// the very first newline after the body), so triple-backticks
+// embedded inside string / template literals in the body don't
+// truncate a valid candidate at the wrong place.
+const CODE_FENCE_GLOBAL = /```([a-zA-Z]*)\s*\n([\s\S]*?)\n```(?:$|\n|\r)/g;
 
 const TS_TAGS: ReadonlySet<string> = new Set(["typescript", "ts"]);
 // Source-language tags accepted as candidate code on the single-block

@@ -302,8 +302,18 @@ export async function linearSearch(
     if (iteration < maxIterations - 1 && evalResult.failures.length > 0) {
       // Sanitize failures across the LLM trust boundary — see
       // SanitizeFailures docstring. Default redacts free-text fields;
-      // callers must opt in to forwarding diagnostic detail.
-      const sanitized = sanitizeFailures(evalResult.failures);
+      // callers must opt in to forwarding diagnostic detail. The hook
+      // is caller-supplied so a buggy or hostile sanitizer throwing on
+      // cyclic objects / accessors must NOT escape as a top-level
+      // rejection — contain it as refine_failed so the package's
+      // typed-failure contract holds across every callback boundary.
+      let sanitized: readonly EvalFailure[];
+      try {
+        sanitized = sanitizeFailures(evalResult.failures);
+      } catch (_err: unknown) {
+        stopReason = "refine_failed";
+        break;
+      }
       const refineOutcome = await withDeadline(
         (sig) => refine(currentCode, sanitized, iteration + 1, maxIterations, sig),
         signal,
