@@ -56,16 +56,39 @@ export function wrapWithFallback<T extends ChannelAdapter>(
   inner: T,
   opts: FallbackOptions = {},
 ): T {
-  const wrappedSend = (message: OutboundMessage): Promise<void> => {
+  const downgradeMessage = (message: OutboundMessage): OutboundMessage => {
     const next: ContentBlock[] = [];
     for (const b of message.content) {
       const d = downgrade(b, inner.capabilities, opts);
       if (d !== null) next.push(d);
     }
-    return inner.send({ ...message, content: next });
+    return { ...message, content: next };
   };
+  const wrappedSend = (message: OutboundMessage): Promise<void> =>
+    inner.send(downgradeMessage(message));
+
   // Preserve every property of the inner adapter (including extensions
-  // like sendUnsolicited) and only override send() with the
-  // capability-driven downgrade pass.
-  return { ...inner, send: wrappedSend } as T;
+  // like sendUnsolicited) BUT also intercept known outbound entry points
+  // so the downgrade pass applies uniformly. Without this, an adapter
+  // method that bypasses send() (e.g. MobileChannelAdapter.sendUnsolicited)
+  // would push raw unsupported blocks through a narrow channel.
+  const wrapped: Record<string, unknown> = {
+    ...(inner as unknown as Record<string, unknown>),
+    send: wrappedSend,
+  };
+  // Any function-typed property whose name is a known outbound entry
+  // point gets the same downgrade-then-delegate treatment. Listed
+  // explicitly so a future innocuous-looking method (`onMessage`,
+  // `connect`) cannot accidentally be re-typed to look like an outbound
+  // and silently bypass downgrade.
+  const OUTBOUND_EXTENSION_METHODS = ["sendUnsolicited"] as const;
+  for (const methodName of OUTBOUND_EXTENSION_METHODS) {
+    const original = (inner as unknown as Record<string, unknown>)[methodName];
+    if (typeof original === "function") {
+      const fn = original as (message: OutboundMessage) => Promise<void>;
+      wrapped[methodName] = (message: OutboundMessage): Promise<void> =>
+        fn.call(inner, downgradeMessage(message));
+    }
+  }
+  return wrapped as T;
 }

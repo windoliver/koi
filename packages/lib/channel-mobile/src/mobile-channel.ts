@@ -188,12 +188,16 @@ export interface MobileChannelConfig {
    * `deliveryId`; the client must respond with `{kind:"ack",deliveryId}`
    * within this window to confirm receipt. Without an ack, an unstable
    * radio link could drop the frame after `socket.send()` reported it
-   * queued and the user would never receive the reply. Default 5 s.
+   * queued and the user would never receive the reply.
    *
-   * Set to `0` to disable the ack protocol — sends complete as soon as
-   * `socket.send()` reports the bytes queued. This restores the prior
-   * (round-9) behavior for hosts whose clients do not implement acks.
-   * Disabling it forfeits the radio-drop guarantee.
+   * Default `0` (disabled). Defaulting on would be a wire-protocol
+   * breaking change for already-deployed clients that don't know how to
+   * emit `{kind:"ack",deliveryId}`: every reply would sit for the full
+   * window then either fall through to `pushNotifier` (duplicate
+   * delivery if the live frame actually arrived) or throw
+   * `MobileNoDeliveryTargetError`. Hosts MUST opt in by setting a
+   * positive value, and SHOULD only do so after confirming all
+   * connected client versions implement the ack frame.
    */
   readonly ackTimeoutMs?: number;
 }
@@ -283,7 +287,9 @@ const UPGRADE_RESERVATION_TIMEOUT_MS = 5_000;
 const DEFAULT_AUTHENTICATE_TIMEOUT_MS = 10_000;
 
 /** Default for {@link MobileChannelConfig.ackTimeoutMs}. */
-const DEFAULT_ACK_TIMEOUT_MS = 5_000;
+// Off by default: opt-in to preserve wire compatibility with clients
+// that don't know how to send `{kind:"ack",deliveryId}` frames.
+const DEFAULT_ACK_TIMEOUT_MS = 0;
 
 /** Sentinel for the auth race; using a unique symbol avoids collision with any user value. */
 const AUTH_TIMEOUT_SENTINEL: unique symbol = Symbol("authenticate-timeout");

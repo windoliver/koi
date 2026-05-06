@@ -147,6 +147,43 @@ describe("wrapWithFallback", () => {
     expect(unsolicitedCalls).toBe(1);
   });
 
+  test("sendUnsolicited extension method runs the same downgrade pass as send()", async () => {
+    // Round-13 medium finding: preserving sendUnsolicited as a passthrough
+    // bypassed the fallback downgrade — a host could wrap an adapter
+    // expecting all outbound to be safe for a narrow channel, then call
+    // sendUnsolicited() and push raw unsupported blocks anyway.
+    const seen: OutboundMessage[] = [];
+    interface ExtendedAdapter extends ChannelAdapter {
+      readonly sendUnsolicited: (m: OutboundMessage) => Promise<void>;
+    }
+    const inner: ExtendedAdapter = {
+      name: "extended",
+      capabilities: TEXT_ONLY, // images/files/buttons NOT supported
+      connect: async () => {},
+      disconnect: async () => {},
+      send: async () => {},
+      onMessage: () => () => {},
+      sendUnsolicited: async (m) => {
+        seen.push(m);
+      },
+    };
+    const wrapped = wrapWithFallback(inner);
+    await wrapped.sendUnsolicited({
+      content: [
+        { kind: "image", url: "https://example.com/x.png", alt: "cat" },
+        { kind: "button", label: "OK", action: "ok" },
+        { kind: "text", text: "hello" },
+      ],
+    });
+    expect(seen).toHaveLength(1);
+    const out = seen[0]!.content;
+    // All non-text blocks downgraded to text — none escaped raw.
+    expect(out.every((b) => b.kind === "text")).toBe(true);
+    expect((out[0] as TextBlock).text).toContain("[image: cat]");
+    expect((out[1] as TextBlock).text).toBe("[OK]");
+    expect((out[2] as TextBlock).text).toBe("hello");
+  });
+
   test("connect/disconnect/onMessage delegate to inner", async () => {
     let connects = 0;
     let disconnects = 0;
