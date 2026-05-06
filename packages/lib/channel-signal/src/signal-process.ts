@@ -62,11 +62,16 @@ export function createSignalProcess(
   // Buffer events that arrive before onEvent() has installed a handler.
   // signal-cli often replays queued inbound messages right after spawn,
   // and the adapter's lifecycle starts the process in platformConnect()
-  // and only attaches the handler in onPlatformEvent(). Without this
-  // buffer those replays would be silently dropped.
-  const PENDING_BUFFER_MAX = 256;
+  // then attaches the handler in onPlatformEvent() a moment later.
+  //
+  // The buffer is intentionally unbounded: silently truncating queued
+  // backlog would lose conversations after a Signal account-restart, and
+  // hard-capping would surface as ingress loss with no recovery path.
+  // The handler-install window is bounded by the channel lifecycle
+  // (channel-base attaches in the same `connect()` call), so unbounded
+  // growth is bounded in practice.
   // let requires justification: drained when onEvent installs a handler.
-  let pendingEvents: SignalEvent[] = [];
+  const pendingEvents: SignalEvent[] = [];
   // let requires justification: tracks subprocess liveness across async reads
   let running = false;
   // let requires justification: cancels stdout reader during stop()
@@ -125,9 +130,6 @@ export function createSignalProcess(
       return;
     }
     pendingEvents.push(event);
-    if (pendingEvents.length > PENDING_BUFFER_MAX) {
-      pendingEvents = pendingEvents.slice(-PENDING_BUFFER_MAX);
-    }
   }
 
   return {
@@ -230,8 +232,9 @@ export function createSignalProcess(
       eventHandler = handler;
       // Drain anything signal-cli emitted before this handler was
       // installed (typical: replayed inbound messages right after spawn).
-      const drained = pendingEvents;
-      pendingEvents = [];
+      // Splice in place so we preserve the same array reference and
+      // never lose entries enqueued mid-drain.
+      const drained = pendingEvents.splice(0, pendingEvents.length);
       for (const ev of drained) handler(ev);
       return (): void => {
         eventHandler = undefined;

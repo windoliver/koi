@@ -333,12 +333,18 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
   adapter = {
     ...base,
     handleUpdate: (update: TelegramUpdateLike): void => {
-      // Trusted-only entrypoint. The adapter does NO authenticity check
-      // here — production webhook callers MUST use `handleWebhook` so
-      // the secret-token header is verified. handleUpdate exists for
-      // tests and in-process queues that have already authenticated the
-      // sender. Routes through `deliver()` so updates that arrive before
-      // onPlatformEvent installs the handler are buffered, not dropped.
+      // In webhook mode `handleUpdate` is hard-disabled. The same
+      // adapter instance must not expose two ingress paths — one
+      // verified (`handleWebhook`) and one not (`handleUpdate`) — or a
+      // single bad route wiring (`adapter.handleUpdate(req.body)`)
+      // silently bypasses authenticity. Production webhook callers go
+      // through `handleWebhook`. In polling mode `handleUpdate` is a
+      // trusted in-process entrypoint for tests / verified queues.
+      if (deployment.mode === "webhook") {
+        throw new Error(
+          "[channel-telegram] handleUpdate is disabled in webhook mode — use handleWebhook(secretHeaderValue, update) so the X-Telegram-Bot-Api-Secret-Token header is verified",
+        );
+      }
       if (!connected) {
         throw new Error(
           "[channel-telegram] handleUpdate called while disconnected — refusing to swallow update silently",

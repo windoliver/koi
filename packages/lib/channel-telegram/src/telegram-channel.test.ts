@@ -277,7 +277,7 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     ).toThrow(/disconnected/);
   });
 
-  test("webhook: handleUpdate is a trusted-only entry — works after connect, throws when disconnected", async () => {
+  test("webhook: handleUpdate is hard-disabled (closes the secret-bypass path)", async () => {
     const f = fakeBot();
     const adapter = createTelegramChannel({
       token: "T",
@@ -285,6 +285,19 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       deployment: { mode: "webhook" },
       webhookSecret: "s",
     });
+    await adapter.connect();
+    expect(() =>
+      adapter.handleUpdate({
+        update_id: 1,
+        message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "x" },
+      }),
+    ).toThrow(/disabled in webhook mode/);
+    await adapter.disconnect();
+  });
+
+  test("polling: handleUpdate is a trusted-only entry — works after connect, throws when disconnected", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({ token: "T", bot: f.bot });
     await adapter.connect();
     const seen: unknown[] = [];
     adapter.onMessage(async (m) => {
