@@ -1,9 +1,29 @@
 /**
  * @koi/channel-base — handler worker loop.
  *
- * Polls an IngressQueue, claims items, runs the user's async handler under
- * an automatically-renewed IdempotencyStore lease, then commits + acks on
- * success or aborts + nacks/dead-letters on failure.
+ * Polls an IngressQueue, claims items, runs the user's async handler, and
+ * commits + acks on success or aborts + nacks/dead-letters on failure.
+ *
+ * **Lease/claim model.** The queue claim and the idempotency lease are
+ * BOTH taken with `leaseMs = handlerTimeoutMs` and never renewed. The
+ * handler MUST complete within that window or be cancellable via the
+ * `AbortSignal`. There is deliberately NO mid-handler renewal:
+ *
+ *   - Renewal that can fail introduces an "ownership-lost" path where a
+ *     successor worker may claim the same item while the original
+ *     handler is still running. Channel adapters cannot guarantee the
+ *     user's `MessageHandler` honours an `AbortSignal` (the public
+ *     contract in `@koi/core` does not expose one), so concurrent
+ *     execution under one ingress key cannot be safely reasoned about.
+ *
+ *   - Without renewal, the only way a successor sees the same item is
+ *     after `handlerTimeoutMs` has elapsed — the same contract the
+ *     handler-side timeout already imposes, applied uniformly.
+ *
+ * Operators that need stronger guarantees should provide an
+ * `IdempotencyStore` whose `tryBegin` returns `committed` once the
+ * handler's side effects are durably visible (e.g., a database row or
+ * an outbound provider acknowledgement).
  */
 
 import type { IdempotencyStore } from "./idempotency-store.js";
@@ -16,12 +36,8 @@ export type HandlerInput<P, N> = {
 };
 
 /**
- * `signal` aborts when the worker loses ownership (lease/queue-claim
- * renewal failure) or hits `handlerTimeoutMs`. Handlers that perform
- * non-idempotent side effects (outbound sends, durable writes) MUST
- * honour the signal — otherwise a successor claim may execute the
- * handler concurrently, violating dedupe guarantees. Pure or naturally
- * idempotent handlers can ignore it.
+ * `signal` aborts when the handler exceeds `handlerTimeoutMs`. Handlers
+ * SHOULD honour it; pure or naturally-idempotent handlers may ignore it.
  */
 export type Handler<P, N> = (input: HandlerInput<P, N>, signal: AbortSignal) => Promise<void>;
 
@@ -31,14 +47,14 @@ export type HandlerWorkerOptions<P, N> = {
   readonly handler: Handler<P, N>;
   readonly commitTtlMs: number;
   readonly handlerTimeoutMs: number;
-  readonly leaseMs?: number;
   readonly pollIntervalMs?: number;
   readonly maxHandlerRetries?: number;
   readonly workerId: string;
 };
 
 export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () => Promise<void> {
-  const leaseMs = opts.leaseMs ?? 30_000;
+  // Lease IS the handler deadline. No renewal — see file header.
+  const leaseMs = opts.handlerTimeoutMs;
   const pollMs = opts.pollIntervalMs ?? 250;
   const maxRetries = opts.maxHandlerRetries ?? 3;
   let stopped = false;
@@ -53,76 +69,40 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
       const begin = await opts.idempotencyStore.tryBegin(claimed.key, leaseMs);
       if (!begin.ok) {
         if (begin.reason === "committed") {
-          // True duplicate — handler already ran successfully elsewhere.
           await opts.queue.ack(opts.workerId, claimed.key);
         } else {
           // in-flight or capacity-exhausted — another worker still owns the
           // idempotency lease, OR the store cannot accept more work right now.
-          // Release the queue claim so the item can be re-attempted; do NOT
-          // ack (acking would drop the item and lose the message if the other
-          // worker fails before commit).
+          // Release the queue claim so the item can be re-attempted later;
+          // never ack (acking would drop the message).
           await opts.queue.nack(opts.workerId, claimed.key);
         }
         continue;
       }
-      // Two AbortControllers track ownership: one for lease renewal failure,
-      // one for queue-claim renewal failure. If either firing renewal cycle
-      // fails, we abort the in-flight handler so duplicate execution under
-      // the new owner cannot happen.
-      const ownership = new AbortController();
-      const renewerInterval = Math.max(1, Math.floor(leaseMs / 3));
-      const renewer = setInterval(() => {
-        // Renew BOTH the idempotency lease AND the queue claim so neither
-        // expires under a long handler. Any failure aborts ownership so the
-        // in-flight handler is cancelled before a successor claim could
-        // execute it concurrently.
-        opts.idempotencyStore.renew(begin.lease, leaseMs).catch(() => {
-          if (!ownership.signal.aborted) ownership.abort(new Error("lease-renewal-failed"));
-        });
-        opts.queue
-          .renew(opts.workerId, claimed.key, leaseMs)
-          .then((r) => {
-            if (!r.ok && !ownership.signal.aborted) {
-              ownership.abort(new Error("queue-claim-renewal-failed"));
-            }
-          })
-          .catch(() => {
-            if (!ownership.signal.aborted) {
-              ownership.abort(new Error("queue-claim-renewal-failed"));
-            }
-          });
-      }, renewerInterval);
+      const timeoutCtl = new AbortController();
       try {
-        const handlerResult = await runWithOwnership(
+        const handlerResult = await runWithTimeout(
           opts.handler(
             {
               key: claimed.key,
               payload: claimed.payload,
               normalized: claimed.normalized,
             },
-            ownership.signal,
+            timeoutCtl.signal,
           ),
           opts.handlerTimeoutMs,
-          ownership.signal,
+          timeoutCtl,
         );
         if (!handlerResult.ok) throw handlerResult.error;
         await opts.idempotencyStore.commit(begin.lease, opts.commitTtlMs);
         await opts.queue.ack(opts.workerId, claimed.key);
       } catch (e) {
         await opts.idempotencyStore.abort(begin.lease).catch(() => {});
-        // If ownership was lost, do NOT count this against the retry budget —
-        // the failure was infrastructure, not a bad message. Nack so the next
-        // claim-cycle re-attempts.
-        const ownershipLost = ownership.signal.aborted;
-        if (ownershipLost) {
-          await opts.queue.nack(opts.workerId, claimed.key);
-        } else if (claimed.attempts + 1 >= maxRetries) {
+        if (claimed.attempts + 1 >= maxRetries) {
           await opts.queue.deadLetter(opts.workerId, claimed.key, errorMessage(e));
         } else {
           await opts.queue.nack(opts.workerId, claimed.key);
         }
-      } finally {
-        clearInterval(renewer);
       }
     }
   };
@@ -138,47 +118,33 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-type OwnershipResult<T> =
+type TimeoutResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: Error };
 
-function runWithOwnership<T>(
+function runWithTimeout<T>(
   p: Promise<T>,
   ms: number,
-  ownership: AbortSignal,
-): Promise<OwnershipResult<T>> {
+  ctl: AbortController,
+): Promise<TimeoutResult<T>> {
   return new Promise((resolve) => {
     let settled = false;
-    const settle = (r: OwnershipResult<T>): void => {
+    const settle = (r: TimeoutResult<T>): void => {
       if (settled) return;
       settled = true;
       resolve(r);
     };
     const t = setTimeout(() => {
+      ctl.abort(new Error(`handler timeout after ${ms}ms`));
       settle({ ok: false, error: new Error(`handler timeout after ${ms}ms`) });
     }, ms);
-    const onAbort = (): void => {
-      clearTimeout(t);
-      const reason = ownership.reason;
-      settle({
-        ok: false,
-        error: reason instanceof Error ? reason : new Error("ownership-lost"),
-      });
-    };
-    if (ownership.aborted) {
-      onAbort();
-      return;
-    }
-    ownership.addEventListener("abort", onAbort, { once: true });
     p.then(
       (v) => {
         clearTimeout(t);
-        ownership.removeEventListener("abort", onAbort);
         settle({ ok: true, value: v });
       },
       (e: unknown) => {
         clearTimeout(t);
-        ownership.removeEventListener("abort", onAbort);
         settle({
           ok: false,
           error: e instanceof Error ? e : new Error(String(e)),

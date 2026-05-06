@@ -47,7 +47,7 @@ function makeFakeImap(): ImapClient & {
   emit(env: InboundEnvelope): void;
   readonly state: { opened: boolean; closed: boolean };
 } {
-  const subs: Array<(env: InboundEnvelope) => void> = [];
+  const subs: Array<(env: InboundEnvelope) => Promise<void>> = [];
   const state = { opened: false, closed: false };
   return {
     state,

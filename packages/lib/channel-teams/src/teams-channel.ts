@@ -7,6 +7,7 @@
  */
 
 import {
+  assertDurableInProduction,
   type ConversationAddress,
   type ConversationAddressStore,
   type IdempotencyStore,
@@ -89,6 +90,14 @@ export function createTeamsChannel(
   config: TeamsConfig,
   deps: TeamsDependencies,
 ): TeamsChannelAdapter {
+  const guard = assertDurableInProduction(config.production, [
+    { name: "idempotencyStore", store: deps.idempotencyStore },
+    { name: "ingressQueue", store: deps.ingressQueue },
+    { name: "conversationAddressStore", store: deps.conversationAddressStore },
+  ]);
+  if (!guard.ok) {
+    throw new Error(`${guard.error.code}: ${guard.error.message}`);
+  }
   const clock = deps.clock ?? Date.now;
   const handlerRef: HandlerRef = { current: null };
   const fallbackTenant = config.tenantAllowlist[0] ?? "";

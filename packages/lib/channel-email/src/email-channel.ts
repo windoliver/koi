@@ -9,6 +9,7 @@
  */
 
 import {
+  assertDurableInProduction,
   type IdempotencyStore,
   type IngressQueue,
   type OutboxRecord,
@@ -181,17 +182,37 @@ async function enqueueInbound(
     // not corruption.
     await seedInboundThread(deps.threadStore, threadKey, inboundMessageId);
   }
-  await deps.ingressQueue.enqueue(envelopeKey(env), {
-    key: envelopeKey(env),
+  const key = envelopeKey(env);
+  await deps.ingressQueue.enqueue(key, {
+    key,
     payload: env,
     normalized: normalized.value,
   });
+  // Block the IMAP callback on terminal handler outcome so the IMAP
+  // adapter does NOT acknowledge / advance its cursor until the user
+  // handler has succeeded (or the message has been dead-lettered, which
+  // we surface as an error so the adapter can keep the message un-acked
+  // for operator triage). Without this, a handler crash after enqueue
+  // would leave no provider-side redelivery surface.
+  const drain = await deps.ingressQueue.awaitDrain(key);
+  if (!drain.ok) {
+    throw new Error(`HANDLER_DEAD_LETTERED: ${drain.details}`);
+  }
 }
 
 export function createEmailChannel(
   config: EmailConfig,
   deps: EmailDependencies,
 ): EmailChannelAdapter {
+  const guard = assertDurableInProduction(config.production, [
+    { name: "idempotencyStore", store: deps.idempotencyStore },
+    { name: "ingressQueue", store: deps.ingressQueue },
+    { name: "threadStore", store: deps.threadStore },
+    { name: "outboxStore", store: deps.outboxStore },
+  ]);
+  if (!guard.ok) {
+    throw new Error(`${guard.error.code}: ${guard.error.message}`);
+  }
   const clock = deps.clock ?? Date.now;
   const idGenerator = deps.idGenerator ?? defaultIdGenerator(deviceDomain(config));
   const handlerRef: HandlerRef = { current: null };

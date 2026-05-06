@@ -30,14 +30,19 @@ export { InMemoryIdempotencyStore } from "./idempotency-store.js";
 export type {
   ClaimedItem,
   DeadLetterItem,
+  DrainResult,
   EnqueueResult,
   IngressQueue,
   InMemoryIngressQueueOptions,
   QueueItem,
+  RenewResult,
 } from "./ingress-queue.js";
 export { InMemoryIngressQueue } from "./ingress-queue.js";
 export type { OutboxRecord, OutboxStatus, OutboxStore } from "./outbox-store.js";
 export { InMemoryOutboxStore } from "./outbox-store.js";
+export type { ProductionGuardError, ProductionGuardResult } from "./production-guards.js";
+export { assertDurableInProduction } from "./production-guards.js";
+
 export type { RateLimiter, RateLimiterConfig, SendFn } from "./rate-limit.js";
 export { createRateLimiter } from "./rate-limit.js";
 export { renderBlocks } from "./render-blocks.js";

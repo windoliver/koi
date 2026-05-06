@@ -30,7 +30,7 @@ const CONFIG: EmailConfig = {
 };
 
 function fakeImap(): ImapClient & { emit(env: InboundEnvelope): void } {
-  const subs: Array<(env: InboundEnvelope) => void> = [];
+  const subs: Array<(env: InboundEnvelope) => Promise<void>> = [];
   return {
     async open() {},
     async close() {},

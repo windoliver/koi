@@ -17,7 +17,12 @@
  * because enqueue is idempotent on dedupe key.
  */
 
-import { type IdempotencyStore, type IngressQueue, startHandlerWorker } from "@koi/channel-base";
+import {
+  assertDurableInProduction,
+  type IdempotencyStore,
+  type IngressQueue,
+  startHandlerWorker,
+} from "@koi/channel-base";
 import type {
   ChannelAdapter,
   ChannelCapabilities,
@@ -133,6 +138,13 @@ export function createWhatsAppChannel(
   config: WhatsAppConfig,
   deps: WhatsAppDependencies,
 ): WhatsAppChannelAdapter {
+  const guard = assertDurableInProduction(config.production, [
+    { name: "idempotencyStore", store: deps.idempotencyStore },
+    { name: "ingressQueue", store: deps.ingressQueue },
+  ]);
+  if (!guard.ok) {
+    throw new Error(`${guard.error.code}: ${guard.error.message}`);
+  }
   const clock = deps.clock ?? Date.now;
   const handlerRef: HandlerRef = { current: null };
 

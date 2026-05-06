@@ -30,6 +30,10 @@ export type RenewResult =
   | { readonly ok: true; readonly leaseExpiresAt: number }
   | { readonly ok: false };
 
+export type DrainResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: "dead-letter"; readonly details: string };
+
 export interface IngressQueue<P = unknown, N = unknown> {
   enqueue(key: string, item: QueueItem<P, N>): Promise<EnqueueResult>;
   claim(workerId: string, leaseMs: number): Promise<ClaimedItem<P, N> | null>;
@@ -44,6 +48,14 @@ export interface IngressQueue<P = unknown, N = unknown> {
   nack(workerId: string, key: string): Promise<void>;
   deadLetter(workerId: string, key: string, reason: string): Promise<void>;
   getDeadLetters(): Promise<readonly DeadLetterItem<P, N>[]>;
+  /**
+   * Resolves when the worker reaches a terminal state for `key`:
+   * `{ok:true}` on `ack`, `{ok:false, reason:"dead-letter"}` on
+   * `deadLetter`. Resolves immediately if `key` is already terminal or
+   * unknown. Used by ingress paths that need to gate provider
+   * acknowledgement on handler success (e.g., IMAP for email).
+   */
+  awaitDrain(key: string): Promise<DrainResult>;
 }
 
 type ClaimRecord = {
@@ -62,10 +74,15 @@ export type InMemoryIngressQueueOptions = {
   readonly now?: () => number;
 };
 
+type DrainWaiter = {
+  readonly resolve: (r: DrainResult) => void;
+};
+
 export class InMemoryIngressQueue<P = unknown, N = unknown> implements IngressQueue<P, N> {
   readonly #records = new Map<string, InternalRecord<P, N>>();
   readonly #dead: DeadLetterItem<P, N>[] = [];
   readonly #now: () => number;
+  readonly #drainWaiters = new Map<string, DrainWaiter[]>();
 
   constructor(options: InMemoryIngressQueueOptions = {}) {
     this.#now = options.now ?? Date.now;
@@ -115,7 +132,10 @@ export class InMemoryIngressQueue<P = unknown, N = unknown> implements IngressQu
 
   async ack(workerId: string, key: string): Promise<void> {
     const rec = this.#records.get(key);
-    if (rec?.claim?.workerId === workerId) this.#records.delete(key);
+    if (rec?.claim?.workerId === workerId) {
+      this.#records.delete(key);
+      this.#fireDrain(key, { ok: true });
+    }
   }
 
   async nack(workerId: string, key: string): Promise<void> {
@@ -133,9 +153,32 @@ export class InMemoryIngressQueue<P = unknown, N = unknown> implements IngressQu
     if (rec?.claim?.workerId !== workerId) return;
     this.#dead.push({ ...rec.item, attempts: rec.attempts, reason });
     this.#records.delete(key);
+    this.#fireDrain(key, { ok: false, reason: "dead-letter", details: reason });
   }
 
   async getDeadLetters(): Promise<readonly DeadLetterItem<P, N>[]> {
     return this.#dead.slice();
+  }
+
+  async awaitDrain(key: string): Promise<DrainResult> {
+    // If the key is unknown, treat as already drained (ack-equivalent).
+    // If it sits in the dead-letter list, surface that.
+    if (!this.#records.has(key)) {
+      const dl = this.#dead.find((d) => d.key === key);
+      if (dl) return { ok: false, reason: "dead-letter", details: dl.reason };
+      return { ok: true };
+    }
+    return new Promise<DrainResult>((resolve) => {
+      const waiters = this.#drainWaiters.get(key) ?? [];
+      waiters.push({ resolve });
+      this.#drainWaiters.set(key, waiters);
+    });
+  }
+
+  #fireDrain(key: string, result: DrainResult): void {
+    const waiters = this.#drainWaiters.get(key);
+    if (!waiters) return;
+    this.#drainWaiters.delete(key);
+    for (const w of waiters) w.resolve(result);
   }
 }

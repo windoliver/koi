@@ -52,7 +52,8 @@ describe("startHandlerWorker", () => {
     expect(dl).toHaveLength(1);
   });
 
-  test("auto-renews lease while handler runs", async () => {
+  test("lease equals handlerTimeoutMs (no mid-handler renewal)", async () => {
+    // Renewal-free model: see handler-worker.ts file header.
     const queue = new InMemoryIngressQueue<{ readonly v: number }, null>();
     const idem = new InMemoryIdempotencyStore();
     let renewals = 0;
@@ -74,14 +75,15 @@ describe("startHandlerWorker", () => {
       handler: async () => new Promise((r) => setTimeout(r, 60)),
       commitTtlMs: 1000,
       handlerTimeoutMs: 1000,
-      leaseMs: 30,
       pollIntervalMs: 1,
       workerId: "w1",
     });
     await queue.enqueue("k1", { key: "k1", payload: { v: 1 }, normalized: null });
-    await tick(80);
+    await tick(120);
     await stop();
-    expect(renewals).toBeGreaterThan(0);
+    // renewals MUST be zero — the new architecture takes the lease for
+    // the full handlerTimeoutMs and never renews mid-flight.
+    expect(renewals).toBe(0);
   });
 
   test("handler timeout aborts lease and nacks", async () => {
@@ -98,7 +100,6 @@ describe("startHandlerWorker", () => {
       commitTtlMs: 1000,
       handlerTimeoutMs: 20,
       maxHandlerRetries: 1,
-      leaseMs: 100,
       pollIntervalMs: 1,
       workerId: "w1",
     });
