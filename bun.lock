@@ -272,6 +272,15 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/channel-whatsapp": {
+      "name": "@koi/channel-whatsapp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/lib/checkpoint": {
       "name": "@koi/checkpoint",
       "version": "0.0.0",
@@ -2428,6 +2437,8 @@
     "@koi/channel-telegram": ["@koi/channel-telegram@workspace:packages/lib/channel-telegram"],
 
     "@koi/channel-web": ["@koi/channel-web@workspace:packages/lib/channel-web"],
+
+    "@koi/channel-whatsapp": ["@koi/channel-whatsapp@workspace:packages/lib/channel-whatsapp"],
 
     "@koi/checkpoint": ["@koi/checkpoint@workspace:packages/lib/checkpoint"],
 
