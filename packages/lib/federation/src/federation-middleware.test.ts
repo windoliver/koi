@@ -733,4 +733,36 @@ describe("createFederationMiddleware", () => {
 
     expect(calls).toEqual([]);
   });
+
+  test("abort listener is removed after a successful remote call (no zone_cancel on later abort)", async () => {
+    // Regression for gap item 17: a successful call must remove its abort
+    // listener in the finally block. If the caller later aborts the (now
+    // unrelated) controller, the middleware must NOT emit a stray
+    // federation.zone_cancel — that would target a callId the remote has
+    // already completed and forgotten.
+    const { transport, calls } = makeTransport((method) => {
+      if (method === "federation.zone_execute") return { output: "ok" } satisfies ToolResponse;
+      return { ok: true };
+    });
+    const mw = createFederationMiddleware({
+      localZoneId: ZA,
+      remoteTransports: new Map([["zone-b", transport]]),
+      remoteCapabilities: cancelCapableForB,
+    });
+
+    const controller = new AbortController();
+    const result = await mw.wrapToolCall?.(
+      makeCtx({ targetZoneId: ZB }),
+      { toolId: "bash", input: {}, callId: "call-clean", signal: controller.signal },
+      localHandler,
+    );
+    expect(result?.output).toBe("ok");
+
+    // Now abort AFTER the call settled. If the listener leaked, this
+    // would synchronously fire onAbort → sendCancel → a second RPC.
+    controller.abort();
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(calls.filter((c) => c.method === "federation.zone_cancel")).toEqual([]);
+  });
 });
