@@ -407,12 +407,17 @@ export function createWhatsAppChannel(
         typeof message.metadata?.contextMessageId === "string"
           ? message.metadata.contextMessageId
           : undefined;
-      const payload = formatOutbound({
+      const formatted = formatOutbound({
         message,
         recipient,
         ...(ctxId !== undefined ? { contextMessageId: ctxId } : {}),
       });
-      const r = await sendWhatsAppMessage(deps.fetch, config, payload);
+      if (!formatted.ok) {
+        throw new Error(`${formatted.error.code}: ${formatted.error.message}`, {
+          cause: formatted.error,
+        });
+      }
+      const r = await sendWhatsAppMessage(deps.fetch, config, formatted.value);
       if (!r.ok) {
         throw new Error(`${r.error.code}: ${r.error.message}`, { cause: r.error });
       }

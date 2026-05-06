@@ -4,9 +4,13 @@
  * Pure function that converts an `OutboundMessage` plus `ThreadState` plus a
  * pre-generated `Message-ID` into an SMTP envelope ready for delivery.
  *
- * Non-text content blocks (file/image/button/custom) are dropped from the
- * body for v1 — plain SMTP cannot represent them. Attachment support is
- * deferred to a future iteration.
+ * Non-text blocks (image/file/button/custom) fail closed with
+ * `UNSUPPORTED_BLOCK` until SMTP attachment / multipart support is wired
+ * in. Silently dropping them is silent data loss: the outbox advances to
+ * `sent` while the recipient sees a partial mail (or empty body, on
+ * all-non-text content) with no operator signal. Capability flags
+ * advertise text-only — silent drops mask sender bugs and stale
+ * capability data.
  */
 
 import type { ThreadState } from "@koi/channel-base";
@@ -16,6 +20,16 @@ import { deriveReplyHeaders } from "./threading.js";
 
 export type { SmtpEnvelope } from "./platform-send.js";
 
+export type FormatError = {
+  readonly code: "UNSUPPORTED_BLOCK";
+  readonly message: string;
+  readonly context: { readonly kind: string };
+};
+
+export type FormatResult =
+  | { readonly ok: true; readonly value: SmtpEnvelope }
+  | { readonly ok: false; readonly error: FormatError };
+
 export function formatOutbound(input: {
   readonly message: OutboundMessage;
   readonly thread: ThreadState;
@@ -23,13 +37,24 @@ export function formatOutbound(input: {
   readonly from: string;
   readonly to: readonly string[];
   readonly subject: string;
-}): SmtpEnvelope {
+}): FormatResult {
   const { message, thread, outboundMessageId, from, to, subject } = input;
 
-  const text = message.content
-    .filter((b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text")
-    .map((b) => b.text)
-    .join("\n\n");
+  const texts: string[] = [];
+  for (const b of message.content) {
+    if (b.kind === "text") {
+      texts.push(b.text);
+      continue;
+    }
+    return {
+      ok: false,
+      error: {
+        code: "UNSUPPORTED_BLOCK",
+        message: `Email outbound does not support content block "${b.kind}" (only "text" is wired). Capability flags advertise text-only — sender should check capabilities.images/files/buttons before including non-text blocks.`,
+        context: { kind: b.kind },
+      },
+    };
+  }
 
   const html = typeof message.metadata?.html === "string" ? message.metadata.html : undefined;
 
@@ -39,11 +64,14 @@ export function formatOutbound(input: {
   };
 
   return {
-    from,
-    to,
-    subject,
-    text,
-    ...(html !== undefined ? { html } : {}),
-    headers,
+    ok: true,
+    value: {
+      from,
+      to,
+      subject,
+      text: texts.join("\n\n"),
+      ...(html !== undefined ? { html } : {}),
+      headers,
+    },
   };
 }

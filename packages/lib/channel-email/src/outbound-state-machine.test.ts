@@ -70,6 +70,35 @@ describe("executeOutbound", () => {
     expect(thread?.state.chain).toEqual([result.value.messageId]);
   });
 
+  test("non-text content rejected pre-flight without reserving thread", async () => {
+    // Regression: previously formatOutbound silently dropped non-text
+    // blocks and the outbox advanced to `sent` for a truncated mail
+    // (or empty body, on all-non-text content). Now executeOutbound
+    // rejects pre-flight with UNSUPPORTED_BLOCK before reserving any
+    // thread slot — so the outbox is empty and the thread chain is
+    // untouched on the failed call.
+    const deps = buildDeps({ smtp: fakeSmtp({ mode: "ok" }) });
+    const result = await executeOutbound(deps, {
+      ...sampleInput,
+      message: {
+        content: [
+          { kind: "text", text: "hi" },
+          { kind: "image", url: "https://x/y.png" },
+        ],
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("UNSUPPORTED_BLOCK");
+    expect(result.error.context?.kind).toBe("image");
+    const thread = await deps.threadStore.get(sampleInput.threadKey);
+    expect(thread?.state.chain ?? []).toEqual([]);
+    const reserved = await deps.outboxStore.list({ status: "reserved" });
+    const sending = await deps.outboxStore.list({ status: "sending" });
+    expect(reserved.length).toBe(0);
+    expect(sending.length).toBe(0);
+  });
+
   test("pre-data failure aborts and rolls back thread", async () => {
     const deps = buildDeps({ smtp: fakeSmtp({ mode: "pre-data" }) });
     const result = await executeOutbound(deps, sampleInput);

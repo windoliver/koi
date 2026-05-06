@@ -6,9 +6,13 @@
  * `contextMessageId` is supplied, the resulting payload threads as a reply
  * via Meta's `context.message_id` field.
  *
- * Non-text blocks are silently dropped from the body — this mirrors the
- * channel-teams convention. Outbound media + interactive payloads are out
- * of scope for v1.
+ * Non-text blocks (image/file/buttons/audio/video) fail closed with
+ * `UNSUPPORTED_BLOCK` until the Cloud API media + interactive serializers
+ * are wired in. Silently dropping them is silent data loss — `send()`
+ * resolves while the recipient sees a partial or empty WhatsApp message
+ * with no operator signal. Capability flags advertise text-only, so any
+ * caller passing a non-text block is bypassing the capability check or
+ * holding stale data — both warrant a hard failure.
  */
 
 import type { OutboundMessage } from "@koi/core";
@@ -28,17 +32,44 @@ export type FormatOutboundOptions = {
   readonly contextMessageId?: string;
 };
 
-export function formatOutbound(opts: FormatOutboundOptions): WhatsAppOutboundPayload {
-  const texts = opts.message.content.flatMap((b) => (b.kind === "text" ? [b.text] : []));
+export type FormatError = {
+  readonly code: "UNSUPPORTED_BLOCK";
+  readonly message: string;
+  readonly context: { readonly kind: string };
+};
+
+export type FormatResult =
+  | { readonly ok: true; readonly value: WhatsAppOutboundPayload }
+  | { readonly ok: false; readonly error: FormatError };
+
+export function formatOutbound(opts: FormatOutboundOptions): FormatResult {
+  const texts: string[] = [];
+  for (const b of opts.message.content) {
+    if (b.kind === "text") {
+      texts.push(b.text);
+      continue;
+    }
+    return {
+      ok: false,
+      error: {
+        code: "UNSUPPORTED_BLOCK",
+        message: `WhatsApp outbound does not support content block "${b.kind}" (only "text" is wired). Capability flags advertise text-only — sender should check capabilities.images/files/buttons before including non-text blocks.`,
+        context: { kind: b.kind },
+      },
+    };
+  }
   const body = texts.join("\n\n");
   return {
-    messaging_product: "whatsapp",
-    recipient_type: "individual",
-    to: opts.recipient,
-    type: "text",
-    text: { body, preview_url: false },
-    ...(opts.contextMessageId !== undefined
-      ? { context: { message_id: opts.contextMessageId } }
-      : {}),
+    ok: true,
+    value: {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: opts.recipient,
+      type: "text",
+      text: { body, preview_url: false },
+      ...(opts.contextMessageId !== undefined
+        ? { context: { message_id: opts.contextMessageId } }
+        : {}),
+    },
   };
 }

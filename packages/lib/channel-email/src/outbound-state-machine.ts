@@ -20,6 +20,7 @@ export type EmailErrorCode =
   | "THREAD_BLOCKED_PENDING_RECOVERY"
   | "THREAD_BUSY"
   | "RECOVERY_CONFLICT"
+  | "UNSUPPORTED_BLOCK"
   | "ALREADY_RESOLVED";
 
 export type KoiError = {
@@ -243,6 +244,23 @@ export async function executeOutbound(
   deps: OutboundDeps,
   input: OutboundInput,
 ): Promise<Result<OutboundSuccess>> {
+  // Pre-flight content validation: reject unsupported blocks BEFORE
+  // reserving a thread slot or writing outbox state. Otherwise an
+  // image-only message would reserve the thread, advance the outbox,
+  // and either mark a partial / empty SMTP send as `sent` or wedge
+  // recovery on the orphaned reservation.
+  const unsupported = input.message.content.find((b) => b.kind !== "text");
+  if (unsupported !== undefined) {
+    return {
+      ok: false,
+      error: err(
+        "UNSUPPORTED_BLOCK",
+        `Email outbound does not support content block "${unsupported.kind}" (only "text" is wired). Capability flags advertise text-only.`,
+        { kind: unsupported.kind },
+      ),
+    };
+  }
+
   const blockReason = await threadBlockReason(deps.outboxStore, input.threadKey);
   if (blockReason === "awaiting-recovery") {
     return {
@@ -290,8 +308,11 @@ export async function executeOutbound(
     };
   }
 
-  // Build envelope and send via SMTP.
-  const envelope = formatOutbound({
+  // Build envelope and send via SMTP. Pre-flight validation at the top
+  // of executeOutbound has already rejected unsupported blocks, so this
+  // formatter call is expected to succeed; treat a failure as an
+  // internal invariant break (rolls back thread + outbox).
+  const formatted = formatOutbound({
     message: input.message,
     thread: priorThread,
     outboundMessageId: messageId,
@@ -299,7 +320,15 @@ export async function executeOutbound(
     to: input.to,
     subject: input.subject,
   });
-  const result = await sendViaSmtp(deps.smtp, envelope);
+  if (!formatted.ok) {
+    await deps.outboxStore.cas(messageId, "sending", "aborted");
+    await rollbackThread(deps.threadStore, input.threadKey, threadVersion, messageId);
+    return {
+      ok: false,
+      error: err("UNSUPPORTED_BLOCK", formatted.error.message, formatted.error.context),
+    };
+  }
+  const result = await sendViaSmtp(deps.smtp, formatted.value);
 
   if (result.phase === "pre-data") {
     // Pre-DATA failure (sync return → no DATA bytes written). Safe to

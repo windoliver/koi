@@ -307,6 +307,28 @@ describe("createWhatsAppChannel", () => {
     );
   });
 
+  test("send() with non-text block throws UNSUPPORTED_BLOCK", async () => {
+    // Regression: previously send() silently dropped non-text blocks
+    // and posted a (possibly empty) text payload to Graph. Capability
+    // flags advertise text-only; sending a non-text block must fail
+    // closed at the channel boundary so the caller learns immediately.
+    const ch = createWhatsAppChannel(config, buildDeps());
+    let err: unknown = null;
+    try {
+      await ch.send({
+        threadId: "15551234567",
+        content: [
+          { kind: "text", text: "hi" },
+          { kind: "image", url: "https://x/y.png" },
+        ],
+      });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain("UNSUPPORTED_BLOCK");
+  });
+
   test("send() without threadId throws INVALID_PAYLOAD", async () => {
     const ch = createWhatsAppChannel(config, buildDeps());
     let err: unknown = null;
