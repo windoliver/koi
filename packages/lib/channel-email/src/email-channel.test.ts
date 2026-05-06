@@ -104,6 +104,7 @@ function buildDeps(overrides: Partial<EmailDependencies> = {}): EmailDependencie
     ingressQueue: overrides.ingressQueue ?? ingressQueue,
     ...(overrides.idGenerator ? { idGenerator: overrides.idGenerator } : {}),
     ...(overrides.clock ? { clock: overrides.clock } : {}),
+    ...(overrides.onIngressError ? { onIngressError: overrides.onIngressError } : {}),
   };
 }
 
@@ -206,5 +207,46 @@ describe("createEmailChannel", () => {
       metadata: { to: ["user@test.local"], subject: "hi" },
     };
     await expect(adapter.send(out)).rejects.toThrow(/THREAD_BLOCKED_PENDING_RECOVERY/);
+  });
+
+  test("inbound CAS-exhausted thread seed surfaces as ingress error (IMAP keeps unread)", async () => {
+    // Regression: previously seedInboundThread silently bailed after
+    // 8 CAS conflicts and enqueueInbound continued, dispatching a
+    // message whose Message-ID was never added to the chain. Replies
+    // would then ship without In-Reply-To/References. Now the
+    // exhausted CAS surfaces as a thrown error so the IMAP callback
+    // rejects and the adapter keeps the message unread for the next
+    // poll cycle.
+    const failingThreadStore = {
+      async get() {
+        return { state: { chain: [] }, version: 0 };
+      },
+      async cas() {
+        return false;
+      },
+    };
+    const subs: Array<(env: InboundEnvelope) => Promise<void>> = [];
+    const imap: ImapClient = {
+      async open() {},
+      async close() {},
+      onNewMessage(cb) {
+        subs.push(cb);
+        return () => {};
+      },
+    };
+    const ingressErrors: unknown[] = [];
+    const deps = buildDeps({
+      imap,
+      threadStore: failingThreadStore,
+      onIngressError: (err) => ingressErrors.push(err),
+    });
+    adapter = createEmailChannel(makeConfig(), deps);
+    await adapter.connect();
+    const cb = subs[0];
+    if (!cb) throw new Error("no subscriber");
+    await expect(cb({ raw: new Uint8Array([]), uidValidity: 1, uid: 1 })).rejects.toThrow(
+      /THREAD_SEED_CAS_EXHAUSTED/,
+    );
+    expect(ingressErrors.length).toBe(1);
   });
 });

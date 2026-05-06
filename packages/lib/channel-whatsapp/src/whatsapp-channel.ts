@@ -45,11 +45,25 @@ export type WhatsAppErrorCode =
   | "SEND_FAILED"
   | "UNSUPPORTED_BLOCK";
 
+export type WhatsAppIngressIssue =
+  | { readonly kind: "malformed-entry"; readonly count: number }
+  | { readonly kind: "phone-number-mismatch"; readonly expected: string; readonly got: string }
+  | { readonly kind: "normalize-failed"; readonly reason: string };
+
 export type WhatsAppDependencies = {
   readonly fetch: FetchFn;
   readonly idempotencyStore: IdempotencyStore;
   readonly ingressQueue: IngressQueue<WhatsAppMessage, InboundMessage>;
   readonly clock?: () => number;
+  /**
+   * Called for each per-message ingress issue (malformed entry, phone-
+   * number-id mismatch, normalize failure). Webhook-level batches with
+   * mixed-validity entries no longer 400 the entire batch — valid
+   * siblings are enqueued and invalid ones surface here for telemetry
+   * / dead-letter handling. Default is silent (operators that need
+   * visibility MUST supply this hook).
+   */
+  readonly onIngressIssue?: (issue: WhatsAppIngressIssue) => void;
 };
 
 export type WhatsAppChannelAdapter = ChannelAdapter & {
@@ -225,28 +239,21 @@ export function createWhatsAppChannel(
     }
     const extracted = extractMessages(parsed);
     if (extracted.malformedCount > 0) {
-      // `messages[]` present but at least one entry is structurally
-      // invalid. Surface as INVALID_PAYLOAD so the malformed delivery is
-      // visible rather than silently 200-acked. Meta does not retry 4xx,
-      // but the alternative (silent drop on 200) is strictly worse —
-      // operators see the error in logs and can fix the producer.
-      return new Response(
-        `INVALID_PAYLOAD: ${extracted.malformedCount} malformed message entr${extracted.malformedCount === 1 ? "y" : "ies"}`,
-        { status: 400 },
-      );
-    }
-    if (extracted.messages.length === 0) {
-      // Genuinely no messages (status callback or unknown shape) — ack
-      // so Meta stops retrying.
-      return new Response(null, { status: 200 });
+      // Surface malformed-entry count via the ingress-issue hook so
+      // operators see the producer regression, but do NOT 400 the
+      // whole batch — that would also discard structurally-valid
+      // sibling messages in the same delivery. Meta does not retry
+      // 4xx, so combining valid-and-invalid in one batch and rejecting
+      // the lot is strict data loss for the valid subset.
+      deps.onIngressIssue?.({ kind: "malformed-entry", count: extracted.malformedCount });
     }
 
-    // Step 1: validate ALL messages in the batch BEFORE any persistence.
-    // A single bad message must fail the whole webhook with 400 — no
-    // partial-persist + 4xx split, which would silently drop later items
-    // because Meta does not retry 4xx. Each message's WABA scope is
-    // checked against config.phoneNumberId so cross-number webhook
-    // misroutes cannot be normalized under the wrong identity.
+    // Step 1: per-message validation. Invalid entries (mismatched
+    // phone_number_id, normalize failure) are dropped from the batch
+    // and surfaced via onIngressIssue. Valid entries continue. This
+    // matches the Bot-Framework / SMTP convention of partial-success +
+    // structured failure reporting instead of all-or-nothing 4xx, which
+    // is the strictly worse choice when the provider does not retry.
     type Item = {
       readonly msg: WhatsAppMessage;
       readonly key: string;
@@ -255,16 +262,25 @@ export function createWhatsAppChannel(
     const items: Item[] = [];
     for (const { message: msg, phoneNumberId } of extracted.messages) {
       if (phoneNumberId !== config.phoneNumberId) {
-        return new Response(
-          `INVALID_PAYLOAD: phone_number_id mismatch (expected ${config.phoneNumberId}, got ${phoneNumberId})`,
-          { status: 400 },
-        );
+        deps.onIngressIssue?.({
+          kind: "phone-number-mismatch",
+          expected: config.phoneNumberId,
+          got: phoneNumberId,
+        });
+        continue;
       }
       const norm = normalizeWhatsApp(msg, phoneNumberId, clock);
       if (!norm.ok) {
-        return new Response(`INVALID_PAYLOAD: ${norm.error.message}`, { status: 400 });
+        deps.onIngressIssue?.({ kind: "normalize-failed", reason: norm.error.message });
+        continue;
       }
       items.push({ msg, key: dedupeKey(phoneNumberId, msg), normalized: norm.value });
+    }
+    if (items.length === 0) {
+      // Nothing valid to enqueue (status callback, all entries
+      // malformed/mismatched, or empty messages[]). 200-ack so Meta
+      // stops retrying — issues already surfaced via onIngressIssue.
+      return new Response(null, { status: 200 });
     }
 
     // Step 2: probe IdempotencyStore + enqueue per message. All items are

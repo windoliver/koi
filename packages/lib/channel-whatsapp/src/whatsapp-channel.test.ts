@@ -151,6 +151,60 @@ describe("createWhatsAppChannel", () => {
     expect(seen.length).toBe(1);
   });
 
+  test("mixed-validity batch enqueues valid sibling and reports issues for invalid entries", async () => {
+    // Regression: previously a single malformed/mismatched entry 400'd
+    // the entire webhook and Meta-no-retry-on-4xx silently dropped the
+    // valid siblings. Now valid entries are enqueued, invalid ones
+    // surface via onIngressIssue, and the response is 200.
+    const issues: unknown[] = [];
+    const deps = buildDeps();
+    const seen: InboundMessage[] = [];
+    const validMsg: WhatsAppMessage = {
+      id: "wamid.VALID",
+      from: "15551111111",
+      timestamp: "1700000000",
+      type: "text",
+      text: { body: "ok" },
+    };
+    const body = JSON.stringify({
+      object: "whatsapp_business_account",
+      entry: [
+        {
+          id: "biz-1",
+          changes: [
+            {
+              value: {
+                metadata: { phone_number_id: config.phoneNumberId },
+                messages: [
+                  validMsg,
+                  // Structurally malformed: missing id/type → reported
+                  // as malformed-entry by extractMessages.
+                  { from: "x", timestamp: "1" },
+                ],
+              },
+              field: "messages",
+            },
+          ],
+        },
+      ],
+    });
+    const ch = createWhatsAppChannel(config, {
+      ...deps,
+      onIngressIssue: (issue) => issues.push(issue),
+    });
+    ch.onMessage(async (m) => {
+      seen.push(m);
+    });
+    await ch.connect();
+    const res = await ch.handleHttpRequest(makePostRequest(body));
+    await new Promise((r) => setTimeout(r, 350));
+    await ch.disconnect();
+    expect(res.status).toBe(200);
+    expect(seen.length).toBe(1);
+    expect(seen[0]?.threadId).toContain("15551111111");
+    expect(issues).toEqual([{ kind: "malformed-entry", count: 1 }]);
+  });
+
   test("send() without threadId throws INVALID_PAYLOAD", async () => {
     const ch = createWhatsAppChannel(config, buildDeps());
     let err: unknown = null;

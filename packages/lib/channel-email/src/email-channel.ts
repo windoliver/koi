@@ -139,20 +139,24 @@ async function seedInboundThread(
   threadStore: ThreadStore,
   threadKey: string,
   messageId: string,
-): Promise<void> {
+): Promise<boolean> {
   // Bounded CAS-loop. Idempotent: if messageId is already in the chain (e.g.
   // duplicate webhook delivery, recovery replay), exit cleanly. Outbound
   // header derivation reads `threadStore.get(threadKey).chain` to build
   // `In-Reply-To`/`References`, so seeding here is what makes a normal
   // receive-then-reply flow thread-correctly without caller intervention.
+  // Returns false if the CAS bound is exhausted; caller must treat that
+  // as an ingress failure (silent return would let an unthreaded reply
+  // ship and break recovery semantics).
   for (let i = 0; i < SEED_THREAD_CAS_RETRIES; i++) {
     const cur = await threadStore.get(threadKey);
     const v = cur?.version ?? 0;
     const chain = cur?.state.chain ?? [];
-    if (chain.includes(messageId)) return;
+    if (chain.includes(messageId)) return true;
     const ok = await threadStore.cas(threadKey, v, { chain: [...chain, messageId] });
-    if (ok) return;
+    if (ok) return true;
   }
+  return false;
 }
 
 async function enqueueInbound(
@@ -185,10 +189,18 @@ async function enqueueInbound(
     threadKey.length > 0
   ) {
     // Seed thread state BEFORE handler dispatch so reply-flows see the
-    // inbound `Message-ID` in the chain. Best-effort: contention bail-out
-    // is acceptable because the worst case is a degraded reply (unthreaded),
-    // not corruption.
-    await seedInboundThread(deps.threadStore, threadKey, inboundMessageId);
+    // inbound `Message-ID` in the chain. CAS bound exhaustion is rare
+    // but real under high contention; treat it as ingress failure so
+    // the IMAP adapter keeps the message un-acked and retries on the
+    // next poll, rather than dispatching a message whose chain entry
+    // never landed (which would silently produce unthreaded replies
+    // and break recovery semantics).
+    const seeded = await seedInboundThread(deps.threadStore, threadKey, inboundMessageId);
+    if (!seeded) {
+      throw new Error(
+        `THREAD_SEED_CAS_EXHAUSTED: failed to add ${inboundMessageId} to thread ${threadKey} after ${SEED_THREAD_CAS_RETRIES} attempts`,
+      );
+    }
   }
   const key = envelopeKey(config, env);
   await deps.ingressQueue.enqueue(key, {
