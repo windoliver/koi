@@ -68,9 +68,12 @@ export interface MobileChannelAdapter extends ChannelAdapter {
  *    to `pushNotifier` (or `send()` rejects). The adapter never replays a
  *    backlog to a future client.
  *
- * `send()` BEFORE any inbound has happened is treated as host-initiated:
- * a host that issues outbound on a virgin channel necessarily knows the
- * only possible recipient is whoever is connected.
+ * 7. **No virgin-channel escape hatch** — even on a fresh adapter with no
+ *    prior inbound, `send()` without a valid tag fails closed. This stops a
+ *    delayed reply or replayed outbound (after restart, after instance
+ *    failover) from live-delivering to whichever client happens to be
+ *    connected on the new instance. Hosts that need to address the current
+ *    client unconditionally must use `sendUnsolicited()`.
  */
 
 export interface MobileChannelConfig {
@@ -224,11 +227,6 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   // session boundary that strict-mode correlation can detect.
   // let requires justification: monotonic counter for session boundaries
   let sessionEpoch = 0;
-  // Tracks whether *any* inbound has dispatched on this adapter. Until the
-  // first inbound, untagged sends are treated as host-initiated (no possible
-  // cross-session recipient yet). After, they fail closed without a tag.
-  // let requires justification: tracks first-inbound transition
-  let lastInboundEpoch = -1;
 
   // ALS tags handler-chain sends with the originating session epoch (a
   // belt-and-suspenders signal alongside the metadata-borne HMAC tag).
@@ -287,29 +285,39 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       server = undefined;
     },
     platformSend: async (message: OutboundMessage) => {
-      // Classify the outbound by what correlation signal (if any) it carries:
-      //   1. HMAC-signed unsolicited tag — explicit `sendUnsolicited()` call;
-      //      route to whichever client is currently connected.
-      //   2. HMAC-signed reply tag — `replyToInbound()` survives wrappers and
-      //      clones; only the originating session matches.
-      //   3. AsyncLocalStorage tag — handler-chain convenience signal.
-      //   4. No tag AND no inbound has ever dispatched — host-initiated on a
-      //      virgin channel; route live (only one possible recipient).
-      //   5. No tag AND at least one inbound has dispatched — FAIL CLOSED;
-      //      route to pushNotifier (or reject) instead of silently leaking.
+      // Strict-by-default classification. Live delivery requires an explicit,
+      // locally-verifiable correlation signal — there is NO virgin-channel
+      // escape hatch, NO untagged-passthrough, and NO foreign-instance trust.
+      // The four live-delivery paths:
+      //   1. Unsolicited HMAC tag — `sendUnsolicited()` opt-in for genuinely
+      //      host-initiated outbound (welcome banner, resume notification).
+      //   2. Reply HMAC tag (this instance) — `replyToInbound()` correlation
+      //      whose epoch matches the current session.
+      //   3. AsyncLocalStorage tag (this instance) — handler-chain convenience
+      //      whose epoch matches the current session.
+      // Anything else — including a reply tag from another instance, a
+      // replayed reply for a closed session, an untagged plain `send()` —
+      // routes to `pushNotifier` (or rejects with `MobileNoDeliveryTargetError`).
       const unsolicitedMac = message.metadata?.[UNSOLICITED_MAC_KEY];
+      const hasUnsolicitedField = unsolicitedMac !== undefined;
       const isUnsolicited = typeof unsolicitedMac === "string" && verifyUnsolicited(unsolicitedMac);
+      const hasReplyField =
+        message.metadata?.[EPOCH_KEY] !== undefined || message.metadata?.[MAC_KEY] !== undefined;
       const epochFromMeta = extractAndVerifyEpoch(message, verify);
       const epochFromAls = sessionContext.getStore();
-      const taggedEpoch = epochFromMeta ?? epochFromAls;
       // let requires justification: classification depends on signal presence
       let liveRecipient: boolean;
-      if (isUnsolicited) {
-        liveRecipient = activeSocket !== undefined;
-      } else if (taggedEpoch !== undefined) {
-        liveRecipient = taggedEpoch === sessionEpoch && activeSocket !== undefined;
-      } else if (lastInboundEpoch === -1) {
-        liveRecipient = activeSocket !== undefined;
+      if (hasUnsolicitedField) {
+        // Present-but-invalid unsolicited tag → fail closed.
+        liveRecipient = isUnsolicited && activeSocket !== undefined;
+      } else if (hasReplyField) {
+        // Present-but-invalid OR foreign reply tag → fail closed.
+        liveRecipient =
+          epochFromMeta !== undefined &&
+          epochFromMeta === sessionEpoch &&
+          activeSocket !== undefined;
+      } else if (epochFromAls !== undefined) {
+        liveRecipient = epochFromAls === sessionEpoch && activeSocket !== undefined;
       } else {
         liveRecipient = false;
       }
@@ -348,7 +356,6 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         // inbound's own metadata (rather than a WeakMap) ensures it
         // survives clone, persistence, and queue serialization — the tag
         // travels with the message itself.
-        lastInboundEpoch = sessionEpoch;
         const signedInbound: InboundMessage = {
           ...inbound,
           metadata: {

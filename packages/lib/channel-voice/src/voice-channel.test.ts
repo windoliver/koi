@@ -215,6 +215,46 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("STT failures are observable WITHOUT host wiring (default console.warn)", async () => {
+    // Regression: prior version silently dropped STT failures unless the
+    // host wired onSttError. A voice channel that black-holes speech errors
+    // is a production recovery problem. Default-on logger fixes that.
+    const sttErr = new Error("transcribe failed (default-logger test)");
+    const h = harness();
+    const failingStt: Stt = {
+      transcribe: async () => {
+        throw sttErr;
+      },
+    };
+    const ch = createVoiceChannel({
+      transport: h.transport,
+      stt: failingStt,
+      tts: h.tts,
+      // NOTE: no onSttError — proves default-on behavior.
+    });
+    const received: InboundMessage[] = [];
+    ch.onMessage(async (m) => {
+      received.push(m);
+    });
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    try {
+      await ch.connect();
+      h.emitAudio(new Uint8Array([1, 2, 3]));
+      await new Promise((r) => setTimeout(r, 10));
+      expect(received).toHaveLength(0);
+      expect(warnings.length).toBeGreaterThan(0);
+      const flat = warnings.flat();
+      expect(flat.some((w) => w === sttErr)).toBe(true);
+      await ch.disconnect();
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
   test("custom senderId honored", async () => {
     const h = harness();
     const ch = createVoiceChannel({

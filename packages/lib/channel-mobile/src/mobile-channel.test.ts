@@ -72,7 +72,7 @@ describe("createMobileChannel", () => {
     const ws = await openWs(port);
     await new Promise((r) => setTimeout(r, 10));
     const framePromise = nextFrame(ws);
-    await ch.send({ content: [{ kind: "text", text: "down" }] });
+    await ch.sendUnsolicited({ content: [{ kind: "text", text: "down" }] });
     const frame = (await framePromise) as { kind: string; content: { text: string }[] };
     expect(frame.kind).toBe("msg");
     expect(frame.content[0]?.text).toBe("down");
@@ -101,7 +101,7 @@ describe("createMobileChannel", () => {
     });
     await new Promise((r) => setTimeout(r, 50));
     expect(ws2Closed).toBe(true);
-    await ch.send({ content: [{ kind: "text", text: "for-ws1" }] });
+    await ch.sendUnsolicited({ content: [{ kind: "text", text: "for-ws1" }] });
     await new Promise((r) => setTimeout(r, 30));
     expect(got1).toEqual(["for-ws1"]);
     ws1.close();
@@ -120,8 +120,8 @@ describe("createMobileChannel", () => {
     });
     await ch.connect();
     // No client connected — outbound is forwarded to push, not buffered.
-    await ch.send({ content: [{ kind: "text", text: "ping-1" }] });
-    await ch.send({ content: [{ kind: "text", text: "ping-2" }] });
+    await ch.sendUnsolicited({ content: [{ kind: "text", text: "ping-1" }] });
+    await ch.sendUnsolicited({ content: [{ kind: "text", text: "ping-2" }] });
     expect(pushed).toHaveLength(2);
     // A subsequent client must NOT receive the prior pushes (no replay).
     const ws = await openWs(port);
@@ -356,8 +356,9 @@ describe("createMobileChannel", () => {
       gotB.push(f.content[0]?.text ?? "");
     });
     await new Promise((r) => setTimeout(r, 30));
-    // Tag a reply with A's inbound, but send through B. The tag is for the
-    // wrong instance — B treats it as untagged → delivers to current B socket.
+    // Tag a reply with A's inbound, but send through B. The tag carries A's
+    // session metadata + A's HMAC, which B's secret cannot verify. B MUST
+    // fail closed — present-but-foreign reply tag → push, never live.
     expect(capturedA).toBeDefined();
     if (capturedA !== undefined) {
       const reply = replyToInbound(capturedA, {
@@ -366,11 +367,8 @@ describe("createMobileChannel", () => {
       await chB.send(reply);
     }
     await new Promise((r) => setTimeout(r, 30));
-    // The reply DID reach wsB because the tag was inert on B (delivered
-    // via plain send semantics). What matters: B's behavior is NOT influenced
-    // by A's tag — no special routing, no false push, no false skip.
-    expect(gotB).toEqual(["cross-instance"]);
-    expect(pushedB).toEqual([]);
+    expect(gotB).toEqual([]);
+    expect(pushedB).toHaveLength(1);
     // A is unaffected.
     expect(pushedA).toEqual([]);
     wsA.close();
@@ -563,10 +561,10 @@ describe("createMobileChannel", () => {
     await ch.disconnect();
   });
 
-  test("post-reconnect host-initiated outbound delivers to the new client (not push)", async () => {
-    // After a clean disconnect/reconnect cycle with no in-flight inbound from
-    // the prior session, the new client is treated as the live recipient and
-    // should receive directly — no false MobileNoDeliveryTargetError, no push.
+  test("post-reconnect host-initiated outbound via sendUnsolicited delivers to the new client", async () => {
+    // After a clean disconnect/reconnect cycle, plain `send()` still fails
+    // closed (strict-by-default — no virgin-channel escape). The host must
+    // opt into broadcast-to-current-client semantics via sendUnsolicited().
     const port = await freePort();
     const pushed: OutboundMessage[] = [];
     const ch = createMobileChannel({
@@ -589,12 +587,44 @@ describe("createMobileChannel", () => {
       got.push(f.content[0]?.text ?? "");
     });
     await new Promise((r) => setTimeout(r, 30));
-    // Host-initiated welcome — no inbound has arrived from ws2 yet.
-    await ch.send({ content: [{ kind: "text", text: "welcome" }] });
+    await ch.sendUnsolicited({ content: [{ kind: "text", text: "welcome" }] });
     await new Promise((r) => setTimeout(r, 30));
     expect(got).toEqual(["welcome"]);
     expect(pushed).toEqual([]);
     ws2.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
+  test("strict-by-default: virgin adapter (no inbound ever) plain send() fails closed → push", async () => {
+    // Regression for the no-virgin-escape rule: even before any inbound has
+    // dispatched on this instance, plain `send()` MUST NOT live-deliver to
+    // a connected client. This stops a delayed reply or replayed outbound
+    // (after restart, after instance failover) from leaking to whoever
+    // happens to be connected on the new instance.
+    const port = await freePort();
+    const pushed: OutboundMessage[] = [];
+    const ch = createMobileChannel({
+      port,
+      pushNotifier: async (m) => {
+        pushed.push(m);
+      },
+    });
+    await ch.connect();
+    const ws = await openWs(port);
+    const got: string[] = [];
+    ws.addEventListener("message", (ev) => {
+      const f = JSON.parse(typeof ev.data === "string" ? ev.data : "") as {
+        content: { text: string }[];
+      };
+      got.push(f.content[0]?.text ?? "");
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    await ch.send({ content: [{ kind: "text", text: "replayed-reply" }] });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(got).toEqual([]);
+    expect(pushed).toHaveLength(1);
+    ws.close();
     await new Promise((r) => setTimeout(r, 10));
     await ch.disconnect();
   });

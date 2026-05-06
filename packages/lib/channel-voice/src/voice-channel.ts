@@ -28,12 +28,23 @@ export interface VoiceChannelConfig {
   readonly maxTtsChars?: number;
   /**
    * Invoked when STT transcription throws/rejects on an inbound audio frame.
-   * The default (no callback) silently drops the frame, which makes a transient
-   * STT outage look like the user said nothing. Hosts SHOULD provide this
-   * callback to surface failures via logging / metrics / status events.
+   * Defaults to a `console.warn` so a transient STT outage is at least
+   * observable in stderr instead of silently masquerading as user silence.
+   * Hosts SHOULD override this with their own logging / metrics / status
+   * pipeline; passing `() => {}` explicitly opts into silent drop.
    */
   readonly onSttError?: (error: unknown, frame: Uint8Array) => void;
 }
+
+const defaultSttErrorLogger = (error: unknown, frame: Uint8Array): void => {
+  // Default-on observability: at minimum, leave a breadcrumb in stderr so a
+  // failing STT pipeline does not look identical to the user being silent.
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[@koi/channel-voice] STT transcribe failed on ${frame.byteLength}-byte frame:`,
+    error,
+  );
+};
 
 const VOICE_CAPABILITIES: ChannelCapabilities = {
   text: true,
@@ -66,7 +77,7 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
   return createChannelAdapter<Uint8Array>({
     name: "voice",
     capabilities: VOICE_CAPABILITIES,
-    ...(config.onSttError !== undefined ? { onNormalizationError: config.onSttError } : {}),
+    onNormalizationError: config.onSttError ?? defaultSttErrorLogger,
     platformConnect: () => config.transport.connect(),
     platformDisconnect: () => config.transport.disconnect(),
     platformSend: async (message: OutboundMessage) => {
