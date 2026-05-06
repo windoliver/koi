@@ -484,6 +484,68 @@ describe("linearSearch", () => {
     expect(result.best).toBeNull();
   });
 
+  test("contradictory eval (rate>=threshold + failures>0) rejected before history mutation", async () => {
+    // Regression: result.best previously could point at the very node
+    // whose payload was rejected as contradictory. SearchNode does not
+    // carry the failures list, so downstream callers had no way to tell
+    // the returned winner came from a poisoned eval. Now the rejection
+    // happens before history.push and bestNode update.
+    const config = makeConfig({
+      convergenceThreshold: 1.0,
+      evaluate: async () => ({
+        successRate: 1.0,
+        sampleCount: 10,
+        failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+      }),
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_failed");
+    expect(result.best).toBeNull();
+    expect(result.history.length).toBe(0);
+  });
+
+  test("hanging async sanitizeFailures surfaces as refine_timeout (no unbounded stall)", async () => {
+    // Regression: sanitizeFailures previously ran inline on the search
+    // thread, bypassing withDeadline. An async sanitizer that never
+    // resolves would hang the loop indefinitely. Now it's raced against
+    // the same per-attempt deadline as evaluate/refine.
+    const config = makeConfig({
+      maxIterations: 3,
+      attemptTimeoutMs: 30,
+      evaluate: async () => ({
+        successRate: 0.5,
+        sampleCount: 10,
+        failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+      }),
+      sanitizeFailures: () => new Promise(() => []),
+    });
+    const start = Date.now();
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    const elapsed = Date.now() - start;
+    expect(result.stopReason).toBe("refine_timeout");
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  test("async sanitizer that throws on second iteration surfaces as refine_failed", async () => {
+    let calls = 0;
+    const config = makeConfig({
+      maxIterations: 5,
+      evaluate: async () => ({
+        successRate: 0.5,
+        sampleCount: 10,
+        failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+      }),
+      sanitizeFailures: async (f) => {
+        if (++calls === 2) throw new TypeError("hostile");
+        return f;
+      },
+      random: () => 0.99,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("refine_failed");
+    expect(result.terminalDiagnostic?.causeClass).toBe("TypeError");
+  });
+
   test("evaluator with rate=1.0 AND non-empty failures rejected as eval_failed (contradictory)", async () => {
     // Regression: the loop previously treated this contradictory shape
     // as a converged exit, shipping a candidate the evaluator just

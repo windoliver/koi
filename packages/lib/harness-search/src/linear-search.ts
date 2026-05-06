@@ -260,6 +260,22 @@ export async function linearSearch(
       break;
     }
 
+    // Reject contradictory payloads (rate >= threshold AND non-empty
+    // failures) BEFORE materializing a node, pushing to history, or
+    // updating bestNode. Otherwise result.best could point at the very
+    // candidate the loop just rejected as invalid — SearchNode does
+    // not carry the failures list, so downstream callers would have
+    // no way to tell the returned winner came from a poisoned eval.
+    if (
+      evalResult.successRate >= convergenceThreshold &&
+      evalResult.sampleCount >= minEvalSamples &&
+      evalResult.failures.length > 0
+    ) {
+      stopReason = "eval_failed";
+      terminalDiagnostic = { kind: "eval_failed", iteration, causeClass: null };
+      break;
+    }
+
     const node: SearchNode = {
       id: `node-${nodeCounter++}`,
       code: currentCode,
@@ -306,26 +322,12 @@ export async function linearSearch(
     if (
       evalResult.successRate >= convergenceThreshold &&
       evalResult.sampleCount >= minEvalSamples &&
-      // Logical-consistency invariant: an evaluator reporting a
-      // threshold-satisfying success rate while ALSO returning concrete
-      // failures contradicts itself. Buggy aggregation, stale failure
-      // carryover from a previous attempt, or rounding can produce this
-      // shape; treating it as "converged" would ship a candidate the
-      // evaluator just told us is still failing. Reject the inconsistent
-      // payload as eval_failed instead — refinement can pick up real
-      // signal from the next iteration.
+      // Failure-count invariant is enforced earlier (before history
+      // mutation). At this point a non-empty failures array is a
+      // shape we cannot see — already exited as eval_failed.
       evalResult.failures.length === 0
     ) {
       stopReason = "converged";
-      break;
-    }
-    if (
-      evalResult.successRate >= convergenceThreshold &&
-      evalResult.sampleCount >= minEvalSamples &&
-      evalResult.failures.length > 0
-    ) {
-      stopReason = "eval_failed";
-      terminalDiagnostic = { kind: "eval_failed", iteration, causeClass: null };
       break;
     }
 
@@ -354,22 +356,43 @@ export async function linearSearch(
       // Sanitize failures across the LLM trust boundary — see
       // SanitizeFailures docstring. Default redacts free-text fields;
       // callers must opt in to forwarding diagnostic detail. The hook
-      // is caller-supplied so a buggy or hostile sanitizer throwing on
-      // cyclic objects / accessors must NOT escape as a top-level
-      // rejection — contain it as refine_failed so the package's
-      // typed-failure contract holds across every callback boundary.
-      let sanitized: readonly EvalFailure[];
-      try {
-        sanitized = sanitizeFailures(evalResult.failures);
-      } catch (err: unknown) {
-        stopReason = "refine_failed";
+      // is caller-supplied so:
+      //   (a) a buggy / hostile sanitizer that throws (cyclic objects,
+      //       accessor traps, …) must surface as refine_failed, not
+      //       reject linearSearch().
+      //   (b) one that loops, walks an exponentially-large structure,
+      //       or otherwise blocks indefinitely must NOT stall the
+      //       search — bounded termination is the package's headline
+      //       contract. Race the sync call against the same per-attempt
+      //       deadline and parent-abort signal as evaluate/refine, so
+      //       a runaway sanitizer surfaces as refine_timeout instead
+      //       of hanging the loop forever.
+      const sanitizeOutcome = await withDeadline(
+        () => Promise.resolve(sanitizeFailures(evalResult.failures)),
+        signal,
+        attemptTimeoutMs,
+      );
+      if (!sanitizeOutcome.ok) {
+        stopReason =
+          sanitizeOutcome.kind === "aborted"
+            ? "aborted"
+            : sanitizeOutcome.kind === "timeout"
+              ? "refine_timeout"
+              : "refine_failed";
         terminalDiagnostic = {
-          kind: "refine_failed",
+          kind:
+            sanitizeOutcome.kind === "aborted"
+              ? "aborted"
+              : sanitizeOutcome.kind === "timeout"
+                ? "refine_timeout"
+                : "refine_failed",
           iteration,
-          causeClass: classifyCause(err),
+          causeClass:
+            sanitizeOutcome.kind === "error" ? (sanitizeOutcome.causeClass ?? null) : null,
         };
         break;
       }
+      const sanitized: readonly EvalFailure[] = sanitizeOutcome.value;
       const refineOutcome = await withDeadline(
         (sig) => refine(currentCode, sanitized, iteration + 1, maxIterations, sig),
         signal,

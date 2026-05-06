@@ -116,6 +116,14 @@ export type EvaluateCallback = (
  * callers do not want exfiltrated to the model. Mirrors the
  * `sanitizeVerifierReason` pattern in `@koi/harness-synth`.
  *
+ * May be sync or async (`T | Promise<T>`); the search loop races each
+ * call against `attemptTimeoutMs` and parent abort, so an async
+ * sanitizer that hangs surfaces as `refine_timeout` instead of
+ * stalling the whole search. Note: a TRULY synchronous busy loop in
+ * the sanitizer body cannot be preempted by the JS event loop, so
+ * callers should keep this hook fast or make it async if it does
+ * non-trivial traversal.
+ *
  * Default ({@link DEFAULT_SEARCH_CONFIG}) redacts every field —
  * including `toolName`, since nothing in the evaluator contract
  * guarantees it isn't a tenant-scoped or user-derived label. Callers
@@ -123,7 +131,9 @@ export type EvaluateCallback = (
  * `(f) => f`, or supply a sanitizer that re-includes specific vetted
  * fields (e.g. allowlisting toolName against the frozen descriptor).
  */
-export type SanitizeFailures = (failures: readonly EvalFailure[]) => readonly EvalFailure[];
+export type SanitizeFailures = (
+  failures: readonly EvalFailure[],
+) => readonly EvalFailure[] | Promise<readonly EvalFailure[]>;
 
 export interface SearchConfig {
   readonly refine: RefineCallback;
