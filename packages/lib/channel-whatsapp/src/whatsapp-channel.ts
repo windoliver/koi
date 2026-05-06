@@ -99,11 +99,25 @@ function isWhatsAppMessage(v: unknown): v is WhatsAppMessage {
   );
 }
 
-function pickFirstMessage(parsed: unknown): readonly WhatsAppMessage[] {
+type ExtractedMessage = {
+  readonly message: WhatsAppMessage;
+  readonly phoneNumberId: string;
+};
+
+/**
+ * Walks the Meta webhook envelope and yields each `messages[]` entry
+ * paired with the `metadata.phone_number_id` of the change it came from.
+ * Webhook recipients can be subscribed to events for multiple WABA
+ * numbers, and Meta occasionally misroutes — every message MUST be
+ * scoped to the WABA-id Meta actually delivered it under, NOT to the
+ * adapter's static config value, so cross-number traffic cannot collide
+ * on dedupe keys or be sent from the wrong business number on reply.
+ */
+function extractMessages(parsed: unknown): readonly ExtractedMessage[] {
   if (typeof parsed !== "object" || parsed === null || !("entry" in parsed)) return [];
   const entry: unknown = parsed.entry;
   if (!Array.isArray(entry)) return [];
-  const messages: WhatsAppMessage[] = [];
+  const out: ExtractedMessage[] = [];
   for (const e of entry) {
     if (typeof e !== "object" || e === null || !("changes" in e)) continue;
     const changes: unknown = e.changes;
@@ -111,15 +125,27 @@ function pickFirstMessage(parsed: unknown): readonly WhatsAppMessage[] {
     for (const change of changes) {
       if (typeof change !== "object" || change === null || !("value" in change)) continue;
       const value: unknown = change.value;
-      if (typeof value !== "object" || value === null || !("messages" in value)) continue;
+      if (typeof value !== "object" || value === null) continue;
+      // Per Meta Cloud API docs the value carries
+      // metadata.phone_number_id identifying the WABA that received the
+      // message. Drop the change if it isn't a string (status callbacks
+      // and other event types).
+      const meta =
+        "metadata" in value && typeof value.metadata === "object" && value.metadata !== null
+          ? (value.metadata as Record<string, unknown>)
+          : null;
+      const phoneNumberId =
+        meta && typeof meta.phone_number_id === "string" ? meta.phone_number_id : null;
+      if (phoneNumberId === null) continue;
+      if (!("messages" in value)) continue;
       const msgs: unknown = value.messages;
       if (!Array.isArray(msgs)) continue;
       for (const m of msgs) {
-        if (isWhatsAppMessage(m)) messages.push(m);
+        if (isWhatsAppMessage(m)) out.push({ message: m, phoneNumberId });
       }
     }
   }
-  return messages;
+  return out;
 }
 
 async function handleHandshake(request: Request, config: WhatsAppConfig): Promise<Response | null> {
@@ -179,8 +205,8 @@ export function createWhatsAppChannel(
     } catch {
       return new Response("INVALID_PAYLOAD", { status: 400 });
     }
-    const messages = pickFirstMessage(parsed);
-    if (messages.length === 0) {
+    const extracted = extractMessages(parsed);
+    if (extracted.length === 0) {
       // No messages (status callback or unknown shape) — ack so Meta stops retrying.
       return new Response(null, { status: 200 });
     }
@@ -188,19 +214,27 @@ export function createWhatsAppChannel(
     // Step 1: validate ALL messages in the batch BEFORE any persistence.
     // A single bad message must fail the whole webhook with 400 — no
     // partial-persist + 4xx split, which would silently drop later items
-    // because Meta does not retry 4xx.
+    // because Meta does not retry 4xx. Each message's WABA scope is
+    // checked against config.phoneNumberId so cross-number webhook
+    // misroutes cannot be normalized under the wrong identity.
     type Item = {
       readonly msg: WhatsAppMessage;
       readonly key: string;
       readonly normalized: InboundMessage;
     };
     const items: Item[] = [];
-    for (const msg of messages) {
-      const norm = normalizeWhatsApp(msg, config.phoneNumberId, clock);
+    for (const { message: msg, phoneNumberId } of extracted) {
+      if (phoneNumberId !== config.phoneNumberId) {
+        return new Response(
+          `INVALID_PAYLOAD: phone_number_id mismatch (expected ${config.phoneNumberId}, got ${phoneNumberId})`,
+          { status: 400 },
+        );
+      }
+      const norm = normalizeWhatsApp(msg, phoneNumberId, clock);
       if (!norm.ok) {
         return new Response(`INVALID_PAYLOAD: ${norm.error.message}`, { status: 400 });
       }
-      items.push({ msg, key: dedupeKey(config.phoneNumberId, msg), normalized: norm.value });
+      items.push({ msg, key: dedupeKey(phoneNumberId, msg), normalized: norm.value });
     }
 
     // Step 2: probe IdempotencyStore + enqueue per message. All items are

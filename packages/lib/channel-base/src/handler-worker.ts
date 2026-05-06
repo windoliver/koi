@@ -124,10 +124,19 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
         await opts.idempotencyStore.commit(begin.lease, opts.commitTtlMs);
         await opts.queue.ack(opts.workerId, claimed.key);
       } catch (e) {
-        await opts.idempotencyStore.abort(begin.lease).catch(() => {});
         if (claimed.attempts + 1 >= maxRetries) {
+          // Dead-letter is terminal: commit the idempotency lease as a
+          // tombstone so any future re-delivery of the same ingress key
+          // (provider redelivery, IMAP redelivery, operator replay
+          // returning the message to the queue) is suppressed via the
+          // ack-without-running path. Aborting here would leave the key
+          // un-tombstoned and the same poison ingress could loop forever.
+          await opts.idempotencyStore.commit(begin.lease, opts.commitTtlMs).catch(() => {});
           await opts.queue.deadLetter(opts.workerId, claimed.key, errorMessage(e));
         } else {
+          // Transient: abort lease so a successor retry can re-claim and
+          // re-run the handler.
+          await opts.idempotencyStore.abort(begin.lease).catch(() => {});
           await opts.queue.nack(opts.workerId, claimed.key);
         }
       }
