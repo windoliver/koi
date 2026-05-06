@@ -90,6 +90,7 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
   const maxRetries = opts.maxHandlerRetries ?? 3;
   let stopped = false;
 
+  const ctx: WorkerCtx<P, N> = { opts, leaseMs, maxRetries };
   const loop = async (): Promise<void> => {
     while (!stopped) {
       const claimed = await opts.queue.claim(opts.workerId, leaseMs);
@@ -97,150 +98,7 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
         await sleep(pollMs);
         continue;
       }
-      const begin = await opts.idempotencyStore.tryBegin(claimed.key, leaseMs);
-      if (!begin.ok) {
-        if (begin.reason === "committed") {
-          await opts.queue.ack(opts.workerId, claimed.key);
-        } else if (begin.reason === "poisoned") {
-          // A prior attempt for this key terminally failed (handler timeout
-          // or max-retry exhaustion). Acking the redelivered queue item
-          // would let drain-gated channel adapters (notably email IMAP)
-          // mark the source message handled despite no successful run.
-          // Dead-letter instead so awaitDrain reports failure and the
-          // adapter keeps the message in a state requiring operator
-          // resolution.
-          await opts.queue.deadLetter(opts.workerId, claimed.key, "poisoned-key-replay");
-        } else if (begin.reason === "in-flight") {
-          // Another worker still owns the idempotency lease — genuinely
-          // transient (lease will release on commit, abort, or natural
-          // expiry). Nack so the queue item can be re-claimed later.
-          await opts.queue.nack(opts.workerId, claimed.key);
-        } else {
-          // capacity-exhausted: the idempotency store cannot accept
-          // new work. We nack indefinitely (no terminal deadLetter)
-          // because terminal-deadLetter without a poison tombstone
-          // would create a redelivery loop: the source-side keeps
-          // the message un-acked (drain ok:false), the next poll
-          // re-enqueues the same key, capacity is still exhausted,
-          // and we deadLetter again. The drain-wedge during a
-          // capacity outage is preferable to an unbounded
-          // deadLetter storm — operators must drain the store
-          // before new traffic can flow either way, and the wedge
-          // surfaces the outage explicitly.
-          await opts.queue.nack(opts.workerId, claimed.key);
-        }
-        continue;
-      }
-      const timeoutCtl = new AbortController();
-      try {
-        const handlerResult = await runWithTimeout(
-          opts.handler(
-            {
-              key: claimed.key,
-              payload: claimed.payload,
-              normalized: claimed.normalized,
-            },
-            timeoutCtl.signal,
-          ),
-          opts.handlerTimeoutMs,
-          timeoutCtl,
-        );
-        if (!handlerResult.ok) {
-          // Timeout is terminal: even with the AbortSignal in hand, the
-          // original handler may still be running and we cannot stop it
-          // from outside (the public MessageHandler contract is
-          // single-arg). Releasing the queue claim for retry would let a
-          // successor execute the SAME ingress concurrently with the
-          // still-running original handler and produce duplicate side
-          // effects. So we dead-letter immediately and rely on the
-          // operator to inspect / replay the stuck item.
-          if (handlerResult.timedOut) {
-            // Timeout requires a TERMINAL observable outcome and
-            // single-execution preservation:
-            //
-            // - TERMINAL because drain-gated channel adapters (email
-            //   IMAP) block their provider callback on awaitDrain;
-            //   silently moving on would leave that callback waiting
-            //   forever and wedge mailbox progress with no operator
-            //   surface.
-            // - SINGLE-EXECUTION because the public MessageHandler
-            //   contract is single-arg (no AbortSignal); the original
-            //   handler may still be running, and a successor reclaim
-            //   would duplicate side effects.
-            //
-            // Resolution: commit a POISON tombstone (so any future
-            // redelivery — IMAP replay, provider redelivery — sees
-            // `poisoned` on tryBegin and is dead-lettered, never
-            // re-executed) and deadLetter the queue item (so
-            // awaitDrain fires with ok:false and the source-side
-            // callback can keep the message un-acked / unread for
-            // operator triage). The original handler runs to
-            // completion in the background; nothing else does.
-            const poisonOk = await commitPoisonDurably(
-              opts.idempotencyStore,
-              begin.lease,
-              opts.commitTtlMs,
-            );
-            // Dead-letter UNCONDITIONALLY on timeout — even if poison
-            // commit failed. Drain-gated channels (email IMAP) block
-            // their provider callback on awaitDrain; without a
-            // terminal queue resolution the callback would wait
-            // forever and wedge mailbox progress with no operator
-            // surface. The deadLetter resolves awaitDrain(ok:false)
-            // so the source-side keeps the message un-acked for
-            // triage.
-            //
-            // We deliberately do NOT abort the idempotency lease
-            // here: the original handler is still running, and the
-            // active (or naturally-expiring) lease blocks any
-            // successor reclaim during that window via tryBegin's
-            // in-flight check. Residual risk: if the
-            // idempotency-store outage outlasts the lease AND the
-            // source provider redelivers, a fresh tryBegin could
-            // succeed and a second handler could run concurrently
-            // with the still-running original. That risk is
-            // strictly bounded by leaseMs and is preferable to a
-            // wedged drain — the wedge has no operator surface,
-            // duplication does (the dead-letter entry).
-            const reason = poisonOk
-              ? `handler-timeout: ${handlerResult.error.message}`
-              : `handler-timeout (poison-commit-failed): ${handlerResult.error.message}`;
-            await opts.queue.deadLetter(opts.workerId, claimed.key, reason);
-            continue;
-          }
-          throw handlerResult.error;
-        }
-        await opts.idempotencyStore.commit(begin.lease, opts.commitTtlMs);
-        await opts.queue.ack(opts.workerId, claimed.key);
-      } catch (e) {
-        if (claimed.attempts + 1 >= maxRetries) {
-          // Dead-letter is terminal: a POISON tombstone MUST land
-          // durably before deadLetter. If commitPoison throws (store
-          // unavailable, lease expired) we nack rather than deadLetter
-          // so a future redelivery cannot find a brand-new key and
-          // re-run the handler. Operators see retries instead of
-          // silent duplication on the redelivery.
-          const poisonOk = await commitPoisonDurably(
-            opts.idempotencyStore,
-            begin.lease,
-            opts.commitTtlMs,
-          );
-          if (poisonOk) {
-            await opts.queue.deadLetter(opts.workerId, claimed.key, errorMessage(e));
-          } else {
-            // Same as the timeout path: release the lease so a retry
-            // can claim, and nack instead of dead-lettering so no
-            // terminal-marker-less drop is possible.
-            await opts.idempotencyStore.abort(begin.lease).catch(() => {});
-            await opts.queue.nack(opts.workerId, claimed.key);
-          }
-        } else {
-          // Transient: abort lease so a successor retry can re-claim and
-          // re-run the handler.
-          await opts.idempotencyStore.abort(begin.lease).catch(() => {});
-          await opts.queue.nack(opts.workerId, claimed.key);
-        }
-      }
+      await processClaim(ctx, claimed);
     }
   };
 
@@ -307,5 +165,106 @@ async function commitPoisonDurably(
     return true;
   } catch {
     return false;
+  }
+}
+
+type WorkerCtx<P, N> = {
+  readonly opts: HandlerWorkerOptions<P, N>;
+  readonly leaseMs: number;
+  readonly maxRetries: number;
+};
+
+async function processClaim<P, N>(
+  ctx: WorkerCtx<P, N>,
+  claimed: {
+    readonly key: string;
+    readonly payload: P;
+    readonly normalized: N;
+    readonly attempts: number;
+  },
+): Promise<void> {
+  const { opts, leaseMs } = ctx;
+  const begin = await opts.idempotencyStore.tryBegin(claimed.key, leaseMs);
+  if (!begin.ok) {
+    await handleBeginFailure(opts, claimed.key, begin.reason);
+    return;
+  }
+  const ctl = new AbortController();
+  try {
+    const r = await runWithTimeout(
+      opts.handler(
+        { key: claimed.key, payload: claimed.payload, normalized: claimed.normalized },
+        ctl.signal,
+      ),
+      opts.handlerTimeoutMs,
+      ctl,
+    );
+    if (!r.ok) {
+      if (r.timedOut) {
+        await handleTimeout(opts, claimed.key, begin.lease, r.error);
+        return;
+      }
+      throw r.error;
+    }
+    await opts.idempotencyStore.commit(begin.lease, opts.commitTtlMs);
+    await opts.queue.ack(opts.workerId, claimed.key);
+  } catch (e) {
+    await handleHandlerError(ctx, claimed.key, claimed.attempts, begin.lease, e);
+  }
+}
+
+async function handleBeginFailure<P, N>(
+  opts: HandlerWorkerOptions<P, N>,
+  key: string,
+  reason: "committed" | "in-flight" | "capacity-exhausted" | "poisoned",
+): Promise<void> {
+  if (reason === "committed") {
+    await opts.queue.ack(opts.workerId, key);
+  } else if (reason === "poisoned") {
+    await opts.queue.deadLetter(opts.workerId, key, "poisoned-key-replay");
+  } else {
+    // in-flight or capacity-exhausted: nack (no terminal deadLetter for
+    // capacity to avoid redelivery storms; in-flight is naturally transient).
+    await opts.queue.nack(opts.workerId, key);
+  }
+}
+
+async function handleTimeout<P, N>(
+  opts: HandlerWorkerOptions<P, N>,
+  key: string,
+  lease: Lease,
+  error: Error,
+): Promise<void> {
+  // Commit POISON tombstone so future redelivery sees `poisoned` and is
+  // dead-lettered. DeadLetter unconditionally so drain-gated channels
+  // (email IMAP awaitDrain) get a terminal outcome and don't wedge.
+  const poisonOk = await commitPoisonDurably(opts.idempotencyStore, lease, opts.commitTtlMs);
+  const reason = poisonOk
+    ? `handler-timeout: ${error.message}`
+    : `handler-timeout (poison-commit-failed): ${error.message}`;
+  await opts.queue.deadLetter(opts.workerId, key, reason);
+}
+
+async function handleHandlerError<P, N>(
+  ctx: WorkerCtx<P, N>,
+  key: string,
+  attempts: number,
+  lease: Lease,
+  e: unknown,
+): Promise<void> {
+  const { opts, maxRetries } = ctx;
+  if (attempts + 1 < maxRetries) {
+    await opts.idempotencyStore.abort(lease).catch(() => {});
+    await opts.queue.nack(opts.workerId, key);
+    return;
+  }
+  // Terminal: poison must land before deadLetter; if it fails, fall back to
+  // nack so a redelivery cannot find a brand-new key and re-run.
+  const poisonOk = await commitPoisonDurably(opts.idempotencyStore, lease, opts.commitTtlMs);
+  if (poisonOk) {
+    await opts.queue.deadLetter(opts.workerId, key, errorMessage(e));
+  } else {
+    await opts.idempotencyStore.abort(lease).catch(() => {});
+    await opts.queue.nack(opts.workerId, key);
   }
 }

@@ -100,12 +100,8 @@ function defaultIdGenerator(domain: string): () => string {
 }
 
 function envelopeKey(config: EmailConfig, env: InboundEnvelope): string {
-  // Scope dedupe by mailbox identity so a durable IdempotencyStore shared
-  // across multiple email channels (different inboxes / accounts on one
-  // process) cannot collide on `UIDVALIDITY|UID` values that are only
-  // unique within a single mailbox. Without this, the second inbox to
-  // see the same UID pair would be treated as a duplicate and lose the
-  // message.
+  // Scope dedupe by mailbox identity: durable stores shared across multiple
+  // inboxes can collide on UIDVALIDITY|UID, which is only mailbox-unique.
   const { host, user, mailbox } = config.imap;
   return `${host}|${user}|${mailbox}|${env.uidValidity}|${env.uid}`;
 }

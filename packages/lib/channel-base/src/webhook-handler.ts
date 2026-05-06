@@ -53,42 +53,53 @@ export async function handleWebhookIngress<P, N>(
   }
   const key = o.extractKey(parsed.payload);
 
-  const begin = await o.idempotencyStore.tryBegin(key, o.leaseMs);
-  if (!begin.ok && begin.reason === "committed") {
-    return new Response(null, { status: 200 });
-  }
-  if (!begin.ok && begin.reason === "in-flight") {
-    const t0 = Date.now();
-    while (Date.now() - t0 < o.inFlightWaitMs) {
-      await sleep(5);
-      const r2 = await o.idempotencyStore.tryBegin(key, o.leaseMs);
-      if (!r2.ok && r2.reason === "committed") {
-        return new Response(null, { status: 200 });
-      }
-      if (r2.ok) {
-        await o.idempotencyStore.abort(r2.lease);
-        break;
-      }
-    }
-    return new Response("in-flight", { status: 503 });
-  }
-  if (!begin.ok && begin.reason === "capacity-exhausted") {
-    return new Response("capacity", { status: 503 });
-  }
-  if (!begin.ok) return new Response("unknown", { status: 500 });
+  const begin = await beginOrResolve(o, key);
+  if (begin.kind === "response") return begin.response;
 
-  // ok: enqueue then release lease (the worker will re-claim).
   const item: QueueItem<P, N> = {
     key,
     payload: parsed.payload,
     normalized: parsed.normalized,
   };
-  const enq = await o.ingressQueue.enqueue(key, item);
+  await o.ingressQueue.enqueue(key, item);
   await o.idempotencyStore.abort(begin.lease);
-  if (!enq.ok && enq.reason === "duplicate") {
-    return new Response(null, { status: 200 });
-  }
   return new Response(null, { status: 200 });
+}
+
+type BeginResolution =
+  | { readonly kind: "response"; readonly response: Response }
+  | { readonly kind: "ok"; readonly lease: import("./idempotency-store.js").Lease };
+
+async function beginOrResolve<P, N>(
+  o: WebhookIngressOptions<P, N>,
+  key: string,
+): Promise<BeginResolution> {
+  const begin = await o.idempotencyStore.tryBegin(key, o.leaseMs);
+  if (begin.ok) return { kind: "ok", lease: begin.lease };
+  if (begin.reason === "committed") return ok200();
+  if (begin.reason === "capacity-exhausted") return resp("capacity", 503);
+  if (begin.reason === "in-flight") {
+    const t0 = Date.now();
+    while (Date.now() - t0 < o.inFlightWaitMs) {
+      await sleep(5);
+      const r2 = await o.idempotencyStore.tryBegin(key, o.leaseMs);
+      if (!r2.ok && r2.reason === "committed") return ok200();
+      if (r2.ok) {
+        await o.idempotencyStore.abort(r2.lease);
+        break;
+      }
+    }
+    return resp("in-flight", 503);
+  }
+  return resp("unknown", 500);
+}
+
+function ok200(): BeginResolution {
+  return { kind: "response", response: new Response(null, { status: 200 }) };
+}
+
+function resp(body: string, status: number): BeginResolution {
+  return { kind: "response", response: new Response(body, { status }) };
 }
 
 function sleep(ms: number): Promise<void> {
