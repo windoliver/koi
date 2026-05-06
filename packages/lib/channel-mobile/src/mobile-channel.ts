@@ -155,6 +155,14 @@ export interface MobileChannelConfig {
    * outstanding tags — by design.
    */
   readonly signingSecret?: Uint8Array;
+  /**
+   * Maximum milliseconds to wait for `authenticate()` before treating the
+   * upgrade as failed. Without a bound, a hung IdP request would hold the
+   * single-client reservation forever and reject every later client with
+   * 409, taking the channel offline. On timeout the slot is released and
+   * the upgrade returns 504. Default 10 s.
+   */
+  readonly authenticateTimeoutMs?: number;
 }
 
 export class MobileNoDeliveryTargetError extends Error {
@@ -235,6 +243,12 @@ const MAX_INBOUND_FRAME_BYTES = 64 * 1024;
  * below any human-perceivable retry window.
  */
 const UPGRADE_RESERVATION_TIMEOUT_MS = 5_000;
+
+/** Default for {@link MobileChannelConfig.authenticateTimeoutMs}. */
+const DEFAULT_AUTHENTICATE_TIMEOUT_MS = 10_000;
+
+/** Sentinel for the auth race; using a unique symbol avoids collision with any user value. */
+const AUTH_TIMEOUT_SENTINEL: unique symbol = Symbol("authenticate-timeout");
 
 /**
  * Strict ContentBlock validator. Returns the input narrowed to ContentBlock
@@ -540,7 +554,28 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
           let identity: string | undefined;
           try {
             if (config.authenticate !== undefined) {
-              const result = await config.authenticate(req);
+              // Bounded auth — without this, a hung IdP request holds
+              // pendingUpgrades=1 forever and bricks the channel until
+              // process restart. The timeout races authenticate() against
+              // a bounded timer; on expiry the slot releases and we
+              // surface 504 to the client. The original auth promise is
+              // not cancellable from this layer, so it may keep running
+              // in the background — that is the host's problem to bound
+              // in their authenticate() implementation if they care.
+              const authTimeoutMs = config.authenticateTimeoutMs ?? DEFAULT_AUTHENTICATE_TIMEOUT_MS;
+              // let requires justification: timer ref captured for cleanup
+              let authTimer: ReturnType<typeof setTimeout> | undefined;
+              const timeoutPromise = new Promise<typeof AUTH_TIMEOUT_SENTINEL>((resolve) => {
+                authTimer = setTimeout(() => resolve(AUTH_TIMEOUT_SENTINEL), authTimeoutMs);
+              });
+              const authPromise = Promise.resolve(config.authenticate(req));
+              const raced = await Promise.race([authPromise, timeoutPromise]);
+              if (authTimer !== undefined) clearTimeout(authTimer);
+              if (raced === AUTH_TIMEOUT_SENTINEL) {
+                releaseUpgrade();
+                return new Response("authenticate timeout", { status: 504 });
+              }
+              const result = raced;
               // Reject null AND empty/whitespace-only identities. Treating
               // an empty string as a valid recipient would collapse every
               // such session into the same identity bucket — defeating

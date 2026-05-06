@@ -1239,6 +1239,37 @@ describe("createMobileChannel", () => {
     await chB.disconnect();
   });
 
+  test("hung authenticate() releases the reservation slot via timeout", async () => {
+    // Regression: a hung IdP would hold pendingUpgrades=1 forever and
+    // wedge the channel until process restart. authenticateTimeoutMs
+    // bounds the auth race; on expiry the slot is released, the upgrade
+    // returns 504, and a later legitimate client can reconnect.
+    const port = await freePort();
+    const ch = createMobileChannel({
+      port,
+      authenticate: () => new Promise(() => {}),
+      authenticateTimeoutMs: 50,
+      pushNotifier: async () => {},
+    });
+    ch.onMessage(async () => {});
+    await ch.connect();
+    // First upgrade: hangs in auth, then 504 after 50ms.
+    const first = fetch(`http://127.0.0.1:${port}`, {
+      headers: { Upgrade: "websocket", Connection: "Upgrade", "Sec-WebSocket-Version": "13" },
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    const firstRes = await first;
+    expect(firstRes.status).toBe(504);
+    // Slot must be free again — a fresh client (still hung auth, but the
+    // hang is per-request, not per-channel) returns 504 too rather than 409.
+    const second = await fetch(`http://127.0.0.1:${port}`, {
+      headers: { Upgrade: "websocket", Connection: "Upgrade", "Sec-WebSocket-Version": "13" },
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(second.status).not.toBe(409);
+    await ch.disconnect();
+  });
+
   test("upgrade reservation timer releases the slot if open() never fires", async () => {
     // Regression: pendingUpgrades was incremented before authenticate() and
     // only decremented inside open() or explicit failure paths. A client

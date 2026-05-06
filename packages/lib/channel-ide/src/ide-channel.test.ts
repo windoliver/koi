@@ -237,4 +237,50 @@ describe("createIdeChannel", () => {
     expect(received[0]?.threadId).toBe("thread-1");
     await ch.disconnect();
   });
+
+  test("trustClientIdentity: malformed senderId/threadId values drop the frame", async () => {
+    // Regression: round-5 trust-mode forwarded params.senderId / params.threadId
+    // verbatim with only ?? checks, so a buggy or compromised plugin could
+    // smuggle non-string values into InboundMessage and corrupt downstream
+    // routing (which assumes string IDs). Each malformed shape MUST be
+    // rejected; a well-formed frame still gets through.
+    const h = harness();
+    const ch = createIdeChannel({ transport: h.transport, trustClientIdentity: true });
+    const received: InboundMessage[] = [];
+    ch.onMessage(async (m) => {
+      received.push(m);
+    });
+    await ch.connect();
+    const malformed: ReadonlyArray<Record<string, unknown>> = [
+      { senderId: 42 },
+      { senderId: "" },
+      { senderId: null },
+      { senderId: { evil: true } },
+      { threadId: 42 },
+      { threadId: "" },
+      { threadId: null },
+      { threadId: ["thread"] },
+    ];
+    for (const params of malformed) {
+      h.emitLine(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          method: "notify",
+          params: { content: [{ kind: "text", text: "x" }], ...params },
+        }),
+      );
+    }
+    h.emitLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notify",
+        params: { content: [{ kind: "text", text: "ok" }], senderId: "good", threadId: "t1" },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toHaveLength(1);
+    expect(received[0]?.senderId).toBe("good");
+    expect(received[0]?.threadId).toBe("t1");
+    await ch.disconnect();
+  });
 });

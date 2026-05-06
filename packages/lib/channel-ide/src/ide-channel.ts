@@ -146,11 +146,30 @@ export function createIdeChannel(config: IdeChannelConfig): ChannelAdapter {
       // untyped editor-plugin objects into downstream handlers.
       const content = validateContentBlocks(rawContent);
       if (content === null) return null;
+      // trustClientIdentity-mode: a buggy or compromised plugin could
+      // emit non-string senderId/threadId values. The InboundMessage
+      // contract requires strings, so smuggling a number / object / null
+      // through would corrupt downstream routing and serialization. Drop
+      // the frame entirely if either field is present-but-malformed; an
+      // absent field is fine and falls back to defaults.
+      // let requires justification: validated identity vars
+      let trustedSender: string | undefined;
+      let trustedThread: string | undefined;
+      if (trustClient) {
+        if (params.senderId !== undefined) {
+          if (typeof params.senderId !== "string" || params.senderId.length === 0) return null;
+          trustedSender = params.senderId;
+        }
+        if (params.threadId !== undefined) {
+          if (typeof params.threadId !== "string" || params.threadId.length === 0) return null;
+          trustedThread = params.threadId;
+        }
+      }
       return {
         content,
-        senderId: trustClient ? (params.senderId ?? defaultSenderId) : defaultSenderId,
+        senderId: trustClient ? (trustedSender ?? defaultSenderId) : defaultSenderId,
         timestamp: Date.now(),
-        ...(trustClient && params.threadId !== undefined ? { threadId: params.threadId } : {}),
+        ...(trustedThread !== undefined ? { threadId: trustedThread } : {}),
       };
     },
   });

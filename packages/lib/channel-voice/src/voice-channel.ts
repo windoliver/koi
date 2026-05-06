@@ -73,6 +73,19 @@ export interface VoiceChannelConfig {
    * `onSttError` fires with a `VoiceSttTimeoutError`. Default 30 s.
    */
   readonly sttTimeoutMs?: number;
+  /**
+   * Maximum milliseconds to wait for `tts.synthesize()` on a single text
+   * chunk before treating it as failed. Default 30 s. The send rejects
+   * with `VoiceTtsTimeoutError` so a stuck TTS provider cannot hang the
+   * caller indefinitely.
+   */
+  readonly ttsTimeoutMs?: number;
+  /**
+   * Maximum milliseconds to wait for `transport.sendUtterance()` to
+   * resolve. Default 30 s. The send rejects with
+   * `VoiceTransportSendTimeoutError` on expiry.
+   */
+  readonly transportSendTimeoutMs?: number;
 }
 
 /** Thrown into `onSttError` when STT exceeds `sttTimeoutMs`. */
@@ -85,7 +98,40 @@ export class VoiceSttTimeoutError extends Error {
   }
 }
 
+/** Thrown from `send()` when `tts.synthesize()` exceeds `ttsTimeoutMs`. */
+export class VoiceTtsTimeoutError extends Error {
+  readonly timeoutMs: number;
+  constructor(timeoutMs: number) {
+    super(`@koi/channel-voice: TTS synthesize exceeded ${String(timeoutMs)}ms`);
+    this.name = "VoiceTtsTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/** Thrown from `send()` when `transport.sendUtterance()` exceeds `transportSendTimeoutMs`. */
+export class VoiceTransportSendTimeoutError extends Error {
+  readonly timeoutMs: number;
+  constructor(timeoutMs: number) {
+    super(`@koi/channel-voice: transport.sendUtterance exceeded ${String(timeoutMs)}ms`);
+    this.name = "VoiceTransportSendTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 const DEFAULT_STT_TIMEOUT_MS = 30_000;
+const DEFAULT_TTS_TIMEOUT_MS = 30_000;
+const DEFAULT_TRANSPORT_SEND_TIMEOUT_MS = 30_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, makeError: () => Error): Promise<T> {
+  // let requires justification: timer ref captured for cleanup
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(makeError()), ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
 
 const defaultSttErrorLogger = (error: unknown, frame: Uint8Array): void => {
   // Default-on observability: at minimum, leave a breadcrumb in stderr so a
@@ -186,37 +232,18 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       (config.onSttError ?? defaultSttErrorLogger)(err, event.utterance),
     platformConnect: () => config.transport.connect(),
     platformDisconnect: () => config.transport.disconnect(),
-    platformSend: async (message: OutboundMessage) => {
-      // Strict per-session routing: outbound MUST identify which call leg
-      // it replies to, otherwise a host that fans multiple calls through
-      // one adapter could cross-talk one caller's reply to another.
-      if (message.threadId === undefined || message.threadId.length === 0) {
-        throw new VoiceMissingSessionError();
-      }
-      // Atomic two-phase delivery:
-      //   Phase 1: synthesize EVERY chunk so a TTS failure plays nothing.
-      //   Phase 2: hand the entire ordered frame sequence to the transport
-      //            atomically — the transport is responsible for either
-      //            delivering the whole utterance or failing in a way that
-      //            leaves user-audible state in a known position. The
-      //            channel never streams chunk-by-chunk, so a partial
-      //            playback / non-idempotent retry race lives at the
-      //            transport boundary (where it can use codec sequence
-      //            numbers / acks), not inside the channel.
-      // By the time platformSend runs, the outer wrapper has already
-      // collapsed every block to a `text` block via renderBlockToSpokenText,
-      // so this loop only sees text. Chunking is per-text-block so very
-      // long replies fit the TTS engine's input limits.
-      const pieces: string[] = [];
-      for (const block of message.content) {
-        if (block.kind !== "text") continue;
-        for (const piece of chunk(block.text, maxTtsChars)) pieces.push(piece);
-      }
-      const frames: Uint8Array[] = [];
-      for (const piece of pieces) {
-        frames.push(await config.tts.synthesize(piece));
-      }
-      await config.transport.sendUtterance(message.threadId, frames);
+    // platformSend is intentionally a no-op stub. channel-base serializes
+    // all sends through a single global promise chain, which would let
+    // one stuck TTS or stalled transport.sendUtterance() head-of-line
+    // block every other live voice session. Voice instead overrides the
+    // wrapper send() below to do per-`threadId` serialization with
+    // bounded TTS / transport timeouts, so concurrent calls cannot freeze
+    // each other. Anyone bypassing the wrapper and calling inner.send()
+    // directly will get this error rather than silently sending nothing.
+    platformSend: async () => {
+      throw new Error(
+        "@koi/channel-voice: inner platformSend must not be called directly; use the wrapper send() which handles per-session concurrency",
+      );
     },
     onPlatformEvent: (handler) => {
       // Per-session STT serialization. Without this chain, two utterances
@@ -298,16 +325,94 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     },
   });
 
-  // Wrap send() to pre-render rich blocks → text BEFORE channel-base sees
-  // them, so its capability-driven renderBlocks pass cannot lose semantics.
+  // Per-`threadId` outbound serialization. Each session gets its own
+  // promise chain so a stuck TTS / stalled transport for caller A cannot
+  // block caller B's reply. TTS synthesize and transport.sendUtterance
+  // are both bounded by timeouts so a wedged provider cannot stall the
+  // chain forever — the per-session chain advances via rejection.
+  const sessionSendChains = new Map<string, Promise<void>>();
+  const ttsTimeoutMs = config.ttsTimeoutMs ?? DEFAULT_TTS_TIMEOUT_MS;
+  const transportSendTimeoutMs = config.transportSendTimeoutMs ?? DEFAULT_TRANSPORT_SEND_TIMEOUT_MS;
+
+  // let requires justification: lifecycle gate flipped by connect/disconnect
+  let voiceConnected = false;
+
+  const performSend = async (sessionId: string, pieces: readonly string[]): Promise<void> => {
+    // Two-phase atomic delivery: synthesize ALL pieces first, then hand
+    // the complete ordered frame sequence to the transport. A TTS failure
+    // mid-sequence plays nothing rather than half a sentence.
+    const frames: Uint8Array[] = [];
+    for (const piece of pieces) {
+      const audio = await withTimeout(
+        Promise.resolve(config.tts.synthesize(piece)),
+        ttsTimeoutMs,
+        () => new VoiceTtsTimeoutError(ttsTimeoutMs),
+      );
+      frames.push(audio);
+    }
+    await withTimeout(
+      Promise.resolve(config.transport.sendUtterance(sessionId, frames)),
+      transportSendTimeoutMs,
+      () => new VoiceTransportSendTimeoutError(transportSendTimeoutMs),
+    );
+  };
+
+  const wrappedSend = (message: OutboundMessage): Promise<void> => {
+    if (!voiceConnected) {
+      return Promise.reject(new Error('Channel "voice" is not connected'));
+    }
+    if (message.threadId === undefined || message.threadId.length === 0) {
+      return Promise.reject(new VoiceMissingSessionError());
+    }
+    // Pre-render rich blocks → text so non-text content (image alt, file
+    // names, button labels) survives the wire as spoken text. channel-
+    // base's renderBlocks pass is bypassed entirely now that this wrapper
+    // owns the outbound path.
+    const pieces: string[] = [];
+    for (const block of message.content) {
+      const text = renderBlockToSpokenText(block);
+      for (const piece of chunk(text, maxTtsChars)) pieces.push(piece);
+    }
+    const sessionId = message.threadId;
+    const prev = sessionSendChains.get(sessionId) ?? Promise.resolve();
+    // .catch on prev swallows prior failures so a single bad turn doesn't
+    // poison every later turn for the same session — the chain advances
+    // and the next caller gets a fresh attempt.
+    const op = prev.catch(() => undefined).then(() => performSend(sessionId, pieces));
+    // Store a swallowed copy as the chain head. The caller still awaits
+    // the rejecting `op` directly; the Map entry must not be a rejecting
+    // promise or it would surface as an unhandled rejection when the
+    // tail-cleanup .then runs.
+    const tracked = op.catch(() => undefined);
+    sessionSendChains.set(sessionId, tracked);
+    tracked.then(() => {
+      // Release the Map entry once this op is the chain's tail, so
+      // long-lived adapters don't accumulate one entry per call leg.
+      if (sessionSendChains.get(sessionId) === tracked) {
+        sessionSendChains.delete(sessionId);
+      }
+    });
+    return op;
+  };
+
   return {
-    ...inner,
-    send: (message: OutboundMessage): Promise<void> =>
-      inner.send({
-        ...message,
-        content: message.content.map(
-          (block): ContentBlock => ({ kind: "text", text: renderBlockToSpokenText(block) }),
-        ),
-      }),
+    name: inner.name,
+    capabilities: inner.capabilities,
+    connect: async (): Promise<void> => {
+      await inner.connect();
+      voiceConnected = true;
+    },
+    disconnect: async (): Promise<void> => {
+      voiceConnected = false;
+      // Drain in-flight per-session sends before tearing down transport
+      // so partial frames don't fly into a closing call. Failures are
+      // swallowed — they were already surfaced to their callers.
+      const inflight = [...sessionSendChains.values()];
+      sessionSendChains.clear();
+      await Promise.allSettled(inflight);
+      await inner.disconnect();
+    },
+    send: wrappedSend,
+    onMessage: inner.onMessage,
   };
 }

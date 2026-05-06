@@ -548,6 +548,73 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("one stuck TTS does not block another session's reply (per-threadId outbound)", async () => {
+    // Regression: round-5 channel-base globally serialized send(), so a
+    // wedged tts.synthesize() for call-A blocked call-B's reply behind
+    // the same chain. The voice wrapper now keeps a per-threadId chain
+    // and bypasses inner.send entirely so distinct sessions are
+    // concurrent on the outbound side.
+    const sentForA: number[] = [];
+    const sentForB: number[] = [];
+    let resolveAFirst: (() => void) | undefined;
+    const aGate = new Promise<void>((r) => {
+      resolveAFirst = r;
+    });
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async (sessionId, frames) => {
+        if (sessionId === "call-A") sentForA.push(frames.length);
+        else sentForB.push(frames.length);
+      },
+      onUtterance: () => () => {},
+    };
+    const tts: Tts = {
+      synthesize: async (text) => {
+        if (text === "stuck") {
+          await aGate;
+          return new Uint8Array([1]);
+        }
+        return new Uint8Array([text.length]);
+      },
+    };
+    const stt: Stt = { transcribe: async () => null };
+    const ch = createVoiceChannel({ transport, stt, tts, transportSendTimeoutMs: 5000 });
+    await ch.connect();
+    // Fire A first — its TTS hangs on aGate. B fires immediately after.
+    const aPromise = ch.send({ threadId: "call-A", content: [{ kind: "text", text: "stuck" }] });
+    const bPromise = ch.send({ threadId: "call-B", content: [{ kind: "text", text: "fast" }] });
+    // B should complete despite A being blocked.
+    await bPromise;
+    expect(sentForB).toHaveLength(1);
+    expect(sentForA).toHaveLength(0);
+    resolveAFirst?.();
+    await aPromise;
+    expect(sentForA).toHaveLength(1);
+    await ch.disconnect();
+  });
+
+  test("TTS timeout rejects send (host can retry idempotently)", async () => {
+    // Regression: without ttsTimeoutMs, a stuck tts.synthesize() would
+    // hang the per-session chain forever even though the global queue is
+    // gone. The bounded timeout surfaces VoiceTtsTimeoutError so the
+    // session chain advances on the next send and the host knows to retry.
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: () => () => {},
+    };
+    const tts: Tts = { synthesize: () => new Promise(() => {}) };
+    const stt: Stt = { transcribe: async () => null };
+    const ch = createVoiceChannel({ transport, stt, tts, ttsTimeoutMs: 30 });
+    await ch.connect();
+    await expect(
+      ch.send({ threadId: "session-1", content: [{ kind: "text", text: "x" }] }),
+    ).rejects.toThrow(/TTS synthesize exceeded/);
+    await ch.disconnect();
+  });
+
   test("does not serialize across distinct sessionIds (per-session chain only)", async () => {
     // Independent calls must not head-of-line block each other's STT.
     // let requires justification: harness state captured by callbacks
