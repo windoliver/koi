@@ -93,7 +93,26 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
           opts.handlerTimeoutMs,
           timeoutCtl,
         );
-        if (!handlerResult.ok) throw handlerResult.error;
+        if (!handlerResult.ok) {
+          // Timeout is terminal: even with the AbortSignal in hand, the
+          // original handler may still be running and we cannot stop it
+          // from outside (the public MessageHandler contract is
+          // single-arg). Releasing the queue claim for retry would let a
+          // successor execute the SAME ingress concurrently with the
+          // still-running original handler and produce duplicate side
+          // effects. So we dead-letter immediately and rely on the
+          // operator to inspect / replay the stuck item.
+          if (handlerResult.timedOut) {
+            await opts.idempotencyStore.abort(begin.lease).catch(() => {});
+            await opts.queue.deadLetter(
+              opts.workerId,
+              claimed.key,
+              `handler-timeout: ${handlerResult.error.message}`,
+            );
+            continue;
+          }
+          throw handlerResult.error;
+        }
         await opts.idempotencyStore.commit(begin.lease, opts.commitTtlMs);
         await opts.queue.ack(opts.workerId, claimed.key);
       } catch (e) {
@@ -120,7 +139,7 @@ function sleep(ms: number): Promise<void> {
 
 type TimeoutResult<T> =
   | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: Error };
+  | { readonly ok: false; readonly timedOut: boolean; readonly error: Error };
 
 function runWithTimeout<T>(
   p: Promise<T>,
@@ -135,8 +154,9 @@ function runWithTimeout<T>(
       resolve(r);
     };
     const t = setTimeout(() => {
-      ctl.abort(new Error(`handler timeout after ${ms}ms`));
-      settle({ ok: false, error: new Error(`handler timeout after ${ms}ms`) });
+      const err = new Error(`handler timeout after ${ms}ms`);
+      ctl.abort(err);
+      settle({ ok: false, timedOut: true, error: err });
     }, ms);
     p.then(
       (v) => {
@@ -147,6 +167,7 @@ function runWithTimeout<T>(
         clearTimeout(t);
         settle({
           ok: false,
+          timedOut: false,
           error: e instanceof Error ? e : new Error(String(e)),
         });
       },

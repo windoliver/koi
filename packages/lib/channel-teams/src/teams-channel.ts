@@ -24,7 +24,12 @@ import type {
 } from "@koi/core";
 import type { TeamsConfig } from "./config.js";
 import { formatOutbound } from "./format.js";
-import { type Activity, composeConversationKey, normalizeActivity } from "./normalize.js";
+import {
+  type Activity,
+  composeConversationKey,
+  isActivity,
+  normalizeActivity,
+} from "./normalize.js";
 import { type FetchFn, sendActivity } from "./platform-send.js";
 import type { JwtVerifier } from "./verify-jwt.js";
 
@@ -117,15 +122,23 @@ export function createTeamsChannel(
     } catch {
       return new Response("unreadable body", { status: 400 });
     }
-    let parsed: Activity;
+    let parsedRaw: unknown;
     try {
-      parsed = JSON.parse(raw) as Activity;
+      parsedRaw = JSON.parse(raw);
     } catch {
       return new Response("invalid json", { status: 400 });
     }
+    // Validate structural shape BEFORE dereferencing nested fields, so
+    // a malformed-but-authenticated payload produces a deterministic
+    // 400 / INVALID_ACTIVITY rather than a TypeError-driven 500 (which
+    // Bot Framework would retry indefinitely).
+    if (!isActivity(parsedRaw)) {
+      return new Response("INVALID_ACTIVITY: malformed activity shape", { status: 400 });
+    }
+    const parsed: Activity = parsedRaw;
     const auth = request.headers.get("authorization") ?? "";
     const verifyResult = await deps.tokenVerifier.verify(auth, {
-      serviceUrl: parsed.serviceUrl ?? "",
+      serviceUrl: parsed.serviceUrl,
     });
     if (!verifyResult.ok) {
       return new Response(verifyResult.code, { status: 401 });

@@ -41,6 +41,30 @@ export type NormalizeResult =
  * is the SAME tuple used for idempotency (see `dedupeKey` in
  * `teams-channel.ts`), so routing identity and dedupe identity stay in sync.
  */
+/**
+ * Hand-rolled structural guard: returns the input as `Activity` only if
+ * the required nested shape is present. Used by the webhook handler
+ * BEFORE any property dereferencing so a malformed-but-authenticated
+ * body produces a deterministic 400, not a 500.
+ */
+export function isActivity(v: unknown): v is Activity {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  if (typeof o.type !== "string" || typeof o.id !== "string") return false;
+  if (typeof o.serviceUrl !== "string" || typeof o.channelId !== "string") return false;
+  const conv = o.conversation;
+  if (typeof conv !== "object" || conv === null) return false;
+  const cv = conv as Record<string, unknown>;
+  if (typeof cv.id !== "string") return false;
+  if (cv.tenantId !== undefined && typeof cv.tenantId !== "string") return false;
+  const from = o.from;
+  if (typeof from !== "object" || from === null) return false;
+  const fv = from as Record<string, unknown>;
+  if (typeof fv.id !== "string") return false;
+  if (fv.name !== undefined && typeof fv.name !== "string") return false;
+  return true;
+}
+
 export function composeConversationKey(
   channelId: string,
   tenantId: string,
