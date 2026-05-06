@@ -117,6 +117,17 @@ export async function linearSearch(
       "linearSearch: attemptTimeoutMs must be a positive finite number or Infinity",
     );
   }
+  // Bounded-termination contract requires SOME way to escape a wedged
+  // callback. With attemptTimeoutMs=Infinity AND no parent signal,
+  // there is no remaining liveness path — Promise.race only sees the
+  // (potentially never-resolving) callback. Refuse this combination.
+  if (!Number.isFinite(attemptTimeoutMs) && signal === undefined) {
+    throw new TypeError(
+      "linearSearch: attemptTimeoutMs=Infinity requires a parent signal " +
+        "(otherwise a wedged callback can hang the search indefinitely). " +
+        "Either pass a finite attemptTimeoutMs, or supply config.signal as a cancellation source.",
+    );
+  }
   if (
     typeof convergenceThreshold !== "number" ||
     !Number.isFinite(convergenceThreshold) ||
@@ -156,6 +167,14 @@ export async function linearSearch(
   // score. Lineage and best-tracking are different questions.
   let lastNode: SearchNode | null = null;
   let bestSuccessRate = -1;
+  // Plateau and Thompson signals MUST compare each iteration to its
+  // immediate predecessor, not to the all-time best. A refinement that
+  // recovers from a regression (0.9 → 0.2 → 0.8 → 1.0) is genuine
+  // progress at iter 2 even though 0.8 < 0.9; a best-keyed signal
+  // would burn plateau budget and bias Thompson toward deploy on the
+  // exact trajectories search is meant to ride out.
+  let previousIterRate = -1;
+  let previousIterSamples = -1;
   let consecutiveNoImprovement = 0;
   let continueState = createThompsonState();
   let deployState = createThompsonState();
@@ -225,25 +244,31 @@ export async function linearSearch(
     history.push(node);
     lastNode = node;
 
-    // Replace best on strict rate improvement OR on a tie that brings more
-    // evidence (higher sampleCount) — otherwise an early under-sampled hit
-    // at successRate=1.0 sticks around even after a later, fully-sampled
-    // tie satisfies the convergence gate, and `best` would not match the
-    // node that triggered the convergence stop.
-    const beatsRate = evalResult.successRate > bestSuccessRate;
-    const tiesRateWithMoreEvidence =
+    // Best replacement is keyed off the all-time best (correct for the
+    // returned winner). Plateau / Thompson use the immediate-predecessor
+    // delta below — see the previousIterRate comment up at declaration.
+    const beatsBest = evalResult.successRate > bestSuccessRate;
+    const tiesBestWithMoreEvidence =
       bestNode !== null &&
       evalResult.successRate === bestSuccessRate &&
       evalResult.sampleCount > bestNode.evalSamples;
-    if (beatsRate || tiesRateWithMoreEvidence) {
+    if (beatsBest || tiesBestWithMoreEvidence) {
       bestSuccessRate = evalResult.successRate;
       bestNode = node;
-      // Both strict-rate gains AND evidence accumulation on the same
-      // rate are progress — the latter pushes a candidate toward the
-      // minEvalSamples gate. Counting it as "no improvement" caused
-      // the loop to stop with stopReason="no_improvement" before a
-      // legitimate convergence could be reached (e.g. successRate=1.0
-      // with sampleCount climbing 1, 2, 3, 4 toward minEvalSamples=5).
+    }
+
+    // Predecessor-keyed progress signal for plateau + Thompson.
+    // - iter 0 has no predecessor: never count it as "no progress".
+    // - rate gain over predecessor → progress.
+    // - rate tie with predecessor AND more samples → progress
+    //   (evidence accumulation on the same candidate).
+    const beatsPredecessor = previousIterRate >= 0 && evalResult.successRate > previousIterRate;
+    const tiesPredecessorWithMoreEvidence =
+      previousIterRate >= 0 &&
+      evalResult.successRate === previousIterRate &&
+      evalResult.sampleCount > previousIterSamples;
+    const progressedOverPredecessor = beatsPredecessor || tiesPredecessorWithMoreEvidence;
+    if (iteration === 0 || progressedOverPredecessor) {
       consecutiveNoImprovement = 0;
     } else {
       consecutiveNoImprovement++;
@@ -264,19 +289,13 @@ export async function linearSearch(
 
     // Update Thompson posteriors BEFORE the deploy decision so the
     // sampler always reflects the latest observed improvement /
-    // regression. Updating after meant iteration N's evidence was
-    // invisible to its own continue/deploy choice — the sampler ran
-    // one step behind, sometimes deploying right after a strong gain.
+    // regression. The "improved" signal is the same predecessor-keyed
+    // delta plateau uses — a refinement that recovers from a regression
+    // is genuine progress for the continue arm even when it stays
+    // below the all-time best.
     if (iteration > 0) {
-      // Treat evidence accumulation on the same rate as "improved" for
-      // Thompson updates, mirroring the plateau rule above. Otherwise
-      // a successful but under-sampled best (e.g. rate 1.0 sampleCount 1)
-      // teaches the deploy arm on every subsequent evidence-gathering
-      // iteration and the sampler bails out before reaching
-      // minEvalSamples.
-      const improved = beatsRate || tiesRateWithMoreEvidence;
-      continueState = updateThompson(continueState, improved);
-      deployState = updateThompson(deployState, !improved);
+      continueState = updateThompson(continueState, progressedOverPredecessor);
+      deployState = updateThompson(deployState, !progressedOverPredecessor);
     }
 
     if (iteration > 0 && !shouldContinue(continueState, deployState, random)) {
@@ -323,6 +342,12 @@ export async function linearSearch(
       }
       currentCode = parsed;
     }
+    // Record THIS iteration's rate/samples so the NEXT iteration's
+    // plateau + Thompson logic can compare against the immediate
+    // predecessor (this iteration), not whatever historical node
+    // currently holds the best score.
+    previousIterRate = evalResult.successRate;
+    previousIterSamples = evalResult.sampleCount;
   }
 
   const finalBest = bestNode ?? {

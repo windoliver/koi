@@ -382,11 +382,13 @@ describe("linearSearch", () => {
     expect(elapsed).toBeLessThan(500);
   });
 
-  test("Infinity attemptTimeoutMs disables deadline (cooperative-only)", async () => {
+  test("Infinity attemptTimeoutMs disables deadline (cooperative-only, requires parent signal)", async () => {
+    const ctrl = new AbortController();
     let i = 0;
     const config = makeConfig({
       maxIterations: 3,
       attemptTimeoutMs: Number.POSITIVE_INFINITY,
+      signal: ctrl.signal,
       evaluate: async () => ({
         successRate: ++i * 0.4,
         sampleCount: 10,
@@ -805,6 +807,61 @@ describe("linearSearch", () => {
   test("invalid maxRefinedCodeBytes throws fast", async () => {
     const config = makeConfig({ maxRefinedCodeBytes: 0 });
     expect(linearSearch(INITIAL_CODE, DESCRIPTOR, config)).rejects.toThrow(/maxRefinedCodeBytes/);
+  });
+
+  test("attemptTimeoutMs=Infinity without parent signal throws fast (cannot guarantee bounded termination)", async () => {
+    const config = makeConfig({ attemptTimeoutMs: Number.POSITIVE_INFINITY });
+    expect(linearSearch(INITIAL_CODE, DESCRIPTOR, config)).rejects.toThrow(
+      /attemptTimeoutMs=Infinity requires a parent signal/,
+    );
+  });
+
+  test("attemptTimeoutMs=Infinity is allowed when a parent signal is provided", async () => {
+    const ctrl = new AbortController();
+    let i = 0;
+    const config = makeConfig({
+      maxIterations: 3,
+      attemptTimeoutMs: Number.POSITIVE_INFINITY,
+      signal: ctrl.signal,
+      evaluate: async () => ({
+        successRate: ++i * 0.4,
+        sampleCount: 10,
+        failures:
+          i < 3 ? [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }] : [],
+      }),
+      random: () => 0.99,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.totalIterations).toBeGreaterThan(0);
+  });
+
+  test("recovery sequence (0.9 → 0.2 → 0.8 → 1.0) does not stop on plateau before reaching 1.0", async () => {
+    // Best-keyed plateau accounting (the pre-fix behavior) treated iter
+    // 2's 0.8 as 'no improvement' because 0.8 < 0.9 (best so far),
+    // burning plateau budget on a refinement that genuinely recovered
+    // from the regression at iter 1. Predecessor-keyed accounting
+    // resets the counter at iter 2 and lets the search reach 1.0.
+    let i = 0;
+    const rates = [0.9, 0.2, 0.8, 1.0];
+    const config = makeConfig({
+      maxIterations: 4,
+      noImprovementLimit: 2,
+      convergenceThreshold: 1.0,
+      minEvalSamples: 5,
+      evaluate: async () => ({
+        successRate: rates[i++] ?? 1.0,
+        sampleCount: 10,
+        failures:
+          i < 4 ? [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }] : [],
+      }),
+      // Bias the Thompson sampler toward continue so we isolate plateau.
+      random: () => 0.0,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+
+    expect(result.stopReason).toBe("converged");
+    expect(result.best.successRate).toBe(1.0);
+    expect(result.history.length).toBe(4);
   });
 
   test("never exceeds maxIterations even with infinite-failure evaluator", async () => {
