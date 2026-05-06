@@ -844,6 +844,41 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("disconnect with an abort-ignoring transport completes within the fence (no 30s hang)", async () => {
+    // Round-18 high finding: disconnect awaited the timeout-wrapped
+    // performSend chain, which doesn't settle until ttsTimeoutMs /
+    // transportSendTimeoutMs if the impl ignores AbortSignal. A
+    // non-cooperative provider would hold disconnect open for the
+    // full 30s default — defeating the purpose of having a fence.
+    // Fix: skip the chain wait, fence only on the raw ops with a
+    // bounded 2 s timeout.
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      // Ignores signal entirely — never settles.
+      sendUtterance: () => new Promise(() => {}),
+      onUtterance: () => () => {},
+    };
+    const stt: Stt = { transcribe: async () => null };
+    const tts: Tts = { synthesize: async () => new Uint8Array(0) };
+    const ch = createVoiceChannel({
+      transport,
+      stt,
+      tts,
+      transportSendTimeoutMs: 30_000, // would dominate disconnect time
+    });
+    await ch.connect();
+    // Fire and forget — we know it'll never settle.
+    ch.send({ threadId: "ignored", content: [{ kind: "text", text: "x" }] }).catch(() => {});
+    // Wait for the send to register its raw op.
+    await new Promise((r) => setTimeout(r, 30));
+    const start = Date.now();
+    await ch.disconnect();
+    const elapsed = Date.now() - start;
+    // Bounded by DISCONNECT_FENCE_TIMEOUT_MS (2 s) plus small slack.
+    expect(elapsed).toBeLessThan(3_000);
+  });
+
   test("AbortSignal is forwarded to TTS and transport on timeout (cooperative cancellation)", async () => {
     // Round-14 high finding: withTimeout only races; underlying calls
     // could leak after the channel reports failure. Cooperative impls

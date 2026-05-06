@@ -612,19 +612,20 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       // Drain in-flight per-session sends before tearing down transport
       // so partial frames don't fly into a closing call. Failures are
       // swallowed — they were already surfaced to their callers.
-      const inflight = [...sessionSendChains.values()];
-      sessionSendChains.clear();
-      // Abort every in-flight TTS / transport call so cooperative impls
-      // reject promptly instead of running to their per-call timeout.
+      // Abort every in-flight TTS / transport call FIRST. Cooperative
+      // impls reject promptly; non-cooperative impls keep running.
       for (const ctl of inflightControllers) ctl.abort();
-      await Promise.allSettled(inflight);
-      // Recovery fence: wait for the RAW underlying promises to settle
-      // (not the timeout-wrapped ones in sessionSendChains, which
-      // already settled when their timer fired). Cooperative impls
-      // honor the abort and settle promptly; non-cooperative impls
-      // that ignore the signal are bounded by DISCONNECT_FENCE_TIMEOUT_MS
-      // — after that, poison stays set for safety because we cannot
-      // prove the underlying call won't surface audio later.
+      // Drop the per-session chain map without awaiting it — those
+      // promises hold the timeout-WRAPPED performSend, which doesn't
+      // settle until ttsTimeoutMs/transportSendTimeoutMs (30 s default)
+      // if the underlying impl ignores abort. Awaiting them would let
+      // a non-cooperative provider stall disconnect for tens of seconds.
+      sessionSendChains.clear();
+      // Bounded recovery fence: race the RAW underlying promises'
+      // settlement against DISCONNECT_FENCE_TIMEOUT_MS. Cooperative
+      // impls finish well within the fence; non-cooperative impls
+      // trip the fence, leaving poison set so a stale resolve cannot
+      // overlap newer audio after reconnect.
       const rawOps = [...inflightRawOps];
       if (rawOps.length > 0) {
         const fenceSettled = Promise.allSettled(rawOps).then(() => true);
@@ -633,14 +634,11 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
         });
         const settled = await Promise.race([fenceSettled, fenceTimedOut]);
         if (settled) {
-          // Every underlying call confirmed settlement → safe to clear.
           poisonedSessions.clear();
         }
-        // Else: poison persists. Hosts MUST construct a fresh adapter
-        // for any sessionId that timed out, since a stale call could
-        // still surface audio against a reconnected transport.
+        // Else: poison persists. Host MUST construct a fresh adapter
+        // for any affected sessionId.
       } else {
-        // No in-flight ops — nothing to leak.
         poisonedSessions.clear();
       }
       await inner.disconnect();

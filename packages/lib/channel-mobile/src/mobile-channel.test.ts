@@ -1415,6 +1415,53 @@ describe("createMobileChannel", () => {
     await ch.disconnect();
   });
 
+  test("ack-timeout fallback uses identity captured at live-send, not current activeIdentity", async () => {
+    // Round-18 high finding: derivePushContext fell back to the GLOBAL
+    // mutable activeIdentity, so if user A's send hit live, A
+    // disconnected, then user B reconnected before the ack timer
+    // fired, the fallback push was routed to B — A's message
+    // delivered to the wrong user. Fix: capture identity at the
+    // live-write moment and pass it through to the fallback.
+    const port = await freePort();
+    const pushedContexts: MobilePushContext[] = [];
+    // let requires justification: cycle the auth identity per upgrade
+    let nextIdentity = "user-A";
+    const ch = createMobileChannel({
+      port,
+      authenticate: async () => {
+        const id = nextIdentity;
+        nextIdentity = "user-B"; // next connection becomes B
+        return id;
+      },
+      pushNotifier: async (_m, ctx) => {
+        pushedContexts.push(ctx);
+      },
+      ackTimeoutMs: 200,
+    });
+    await ch.connect();
+    // User A connects, no ack support.
+    const wsA = await openWs(port);
+    await new Promise((r) => setTimeout(r, 30));
+    // Unsolicited send to A — writes to wire, awaits ack.
+    const sendPromise = ch.sendUnsolicited({ content: [{ kind: "text", text: "for A" }] });
+    // Give the live write a microtask to register pendingAcks.
+    await new Promise((r) => setTimeout(r, 30));
+    // A disconnects, B reconnects BEFORE the ack timer fires.
+    wsA.close();
+    await new Promise((r) => setTimeout(r, 30));
+    const wsB = await openWs(port);
+    await new Promise((r) => setTimeout(r, 30));
+    // Ack timer fires (200 ms total) — fallback to push.
+    await sendPromise;
+    expect(pushedContexts).toHaveLength(1);
+    // MUST be A (the user we wrote the live frame to), not B
+    // (the user currently connected when the timer fired).
+    expect(pushedContexts[0]?.originatingSenderId).toBe("user-A");
+    wsB.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
   test("sendUnsolicited ack-timeout fallback carries authenticated identity to push", async () => {
     // Round-17 medium finding: unsolicited live sends have no
     // verifiedReply / alsCtx, so derivePushContext used to return an

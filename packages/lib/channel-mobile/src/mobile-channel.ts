@@ -578,6 +578,13 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
     verifiedReply: VerifiedReplyTag | undefined,
     alsCtx: AlsCtx | undefined,
     deliveryId?: string,
+    // Identity captured at the moment the live frame was written to
+    // the socket. ONLY pass this for ack-timeout fallback after a
+    // successful live write — never for plain push (no live attempt)
+    // or for sends that didn't reach the wire. Reading the mutable
+    // global activeIdentity here would let user A's late fallback
+    // re-route to user B if B reconnected in between.
+    capturedIdentityAtLiveSend?: string,
   ): MobilePushContext => {
     const idPart = deliveryId !== undefined ? { deliveryId } : {};
     if (verifiedReply !== undefined) {
@@ -596,14 +603,11 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         ...idPart,
       };
     }
-    // Unsolicited ack-timeout fallback: no reply tag, no ALS context, but
-    // the live frame DID write to a server-authenticated socket. Promote
-    // that authenticated identity into the push context so the host's
-    // notifier can still target the right device. Without this, an
-    // unsolicited send whose ack was lost on a flaky link becomes a
-    // push with no recipient — the message is dropped.
-    if (activeIdentity !== undefined && activeIdentity.length > 0) {
-      return { originatingSenderId: activeIdentity, ...idPart };
+    if (capturedIdentityAtLiveSend !== undefined && capturedIdentityAtLiveSend.length > 0) {
+      // Unsolicited ack-timeout fallback: the identity was bound to
+      // the SPECIFIC delivery attempt (captured at live-write time),
+      // so this push targets exactly the user the message was sent to.
+      return { originatingSenderId: capturedIdentityAtLiveSend, ...idPart };
     }
     return idPart;
   };
@@ -944,6 +948,12 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         });
         const expectedBytes = new TextEncoder().encode(payload).byteLength;
         const socketAtSend = activeSocket;
+        // Capture identity at live-write time so an ack-timeout
+        // fallback later targets the SAME user we wrote to. Reading
+        // the global activeIdentity from the fallback would cross-
+        // route to whoever is connected then if A disconnected and
+        // B reconnected in between.
+        const identityAtSend = activeIdentity ?? defaultSenderId;
         // let requires justification: capture write outcome
         let written = 0;
         try {
@@ -972,7 +982,7 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
               }
               await config.pushNotifier(
                 wireMessage,
-                derivePushContext(verifiedReply, alsCtx, deliveryId),
+                derivePushContext(verifiedReply, alsCtx, deliveryId, identityAtSend),
               );
             },
           );
