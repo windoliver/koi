@@ -255,7 +255,23 @@ export function createEmailChannel(
         outboxStore: deps.outboxStore,
         threadStore: deps.threadStore,
       });
-      await deps.imap.open();
+      // Start the handler worker BEFORE subscribing to IMAP. The
+      // onNewMessage callback awaits ingressQueue.awaitDrain, which
+      // requires a running worker to resolve; if an IMAP adapter
+      // synchronously delivers already-pending mail during
+      // subscription registration, a worker started AFTER
+      // onNewMessage would never run because connect() blocks on
+      // the callback's awaitDrain. Worker first → subscription
+      // second → IMAP open last guarantees the consumer is live
+      // when the producer wakes up.
+      stopWorker = startHandlerWorker({
+        queue: deps.ingressQueue,
+        idempotencyStore: deps.idempotencyStore,
+        handler: dispatchInbound(handlerRef),
+        commitTtlMs: config.commitTtlMs,
+        handlerTimeoutMs: config.handlerTimeoutMs,
+        workerId: `email-${crypto.randomUUID()}`,
+      });
       unsubscribeImap = deps.imap.onNewMessage(async (env) => {
         try {
           await enqueueInbound(config, deps, env, clock);
@@ -268,14 +284,7 @@ export function createEmailChannel(
           throw err;
         }
       });
-      stopWorker = startHandlerWorker({
-        queue: deps.ingressQueue,
-        idempotencyStore: deps.idempotencyStore,
-        handler: dispatchInbound(handlerRef),
-        commitTtlMs: config.commitTtlMs,
-        handlerTimeoutMs: config.handlerTimeoutMs,
-        workerId: `email-${crypto.randomUUID()}`,
-      });
+      await deps.imap.open();
       connected = true;
     },
 

@@ -153,9 +153,11 @@ describe("createTeamsChannel", () => {
     // events with 400 would loop install/update flows. Authenticated
     // activities of unsupported-but-valid types must be 200-acked.
     const ch = createTeamsChannel(config, buildDeps(fakeVerifier(okVerdict)));
+    await ch.connect();
     const update = makeActivity({ type: "conversationUpdate" });
     const res = await ch.handleHttpRequest(makeRequest(update));
     expect(res.status).toBe(200);
+    await ch.disconnect();
   });
 
   test("non-message activity seeds ConversationAddressStore so welcome/proactive sends work", async () => {
@@ -169,6 +171,7 @@ describe("createTeamsChannel", () => {
       conversationAddressStore: addressStore,
     };
     const ch = createTeamsChannel(config, deps);
+    await ch.connect();
     const update = makeActivity({
       type: "conversationUpdate",
       id: "act-install",
@@ -179,6 +182,7 @@ describe("createTeamsChannel", () => {
     const stored = await addressStore.get("msteams|tenant-1|conv-1");
     expect(stored).not.toBeNull();
     expect(stored?.serviceUrl).toBe("https://smba.trafficmanager.net/install/");
+    await ch.disconnect();
   });
 
   test("VERIFIER_UNAVAILABLE returns 503 (retryable), not 401", async () => {
@@ -199,6 +203,26 @@ describe("createTeamsChannel", () => {
     expect(res.status).toBe(503);
   });
 
+  test("handleHttpRequest before connect() returns 503 (worker not running)", async () => {
+    // Regression: previously the webhook accepted and 200-acked
+    // requests regardless of channel state, including before
+    // connect() and after disconnect(). Bot Framework treats 200 as
+    // processed, so any traffic landing before/after the worker
+    // lifecycle was silent loss. Now the handler fails closed with
+    // 503 (retryable) until the worker is live.
+    const ch = createTeamsChannel(config, buildDeps(fakeVerifier(okVerdict)));
+    const res = await ch.handleHttpRequest(makeRequest(makeActivity()));
+    expect(res.status).toBe(503);
+  });
+
+  test("handleHttpRequest after disconnect() returns 503", async () => {
+    const ch = createTeamsChannel(config, buildDeps(fakeVerifier(okVerdict)));
+    await ch.connect();
+    await ch.disconnect();
+    const res = await ch.handleHttpRequest(makeRequest(makeActivity()));
+    expect(res.status).toBe(503);
+  });
+
   test("address store: replay without parseable timestamp does NOT overwrite existing", async () => {
     // Regression: previously the wall-clock fallback let a stale
     // replay missing/invalid `timestamp` clobber a fresh stored
@@ -210,6 +234,7 @@ describe("createTeamsChannel", () => {
       conversationAddressStore: addressStore,
     };
     const ch = createTeamsChannel(config, deps);
+    await ch.connect();
     // Fresh activity with timestamp lands first.
     const fresh = makeActivity({
       id: "act-fresh",
@@ -227,5 +252,6 @@ describe("createTeamsChannel", () => {
     await ch.handleHttpRequest(makeRequest(staleNoTs as Activity));
     const stored = await addressStore.get("msteams|tenant-1|conv-1");
     expect(stored?.serviceUrl).toBe("https://smba.trafficmanager.net/fresh/");
+    await ch.disconnect();
   });
 });

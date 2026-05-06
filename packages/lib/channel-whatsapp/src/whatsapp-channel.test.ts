@@ -220,6 +220,7 @@ describe("createWhatsAppChannel", () => {
       onIngressIssue: (i) => issues.push(i),
     };
     const ch = createWhatsAppChannel(config, deps);
+    await ch.connect();
     const body = JSON.stringify({
       object: "whatsapp_business_account",
       entry: [
@@ -251,6 +252,7 @@ describe("createWhatsAppChannel", () => {
       { kind: "malformed-entry", count: 1 },
       { kind: "all-invalid-batch", rawBody: body, malformedCount: 1 },
     ]);
+    await ch.disconnect();
   });
 
   test("envelope-shape drift: 200 + onIngressIssue with raw body (no permanent loss)", async () => {
@@ -267,10 +269,12 @@ describe("createWhatsAppChannel", () => {
       onIngressIssue: (i) => issues.push(i),
     };
     const ch = createWhatsAppChannel(config, deps);
+    await ch.connect();
     const body = JSON.stringify({ object: "whatsapp_business_account" });
     const res = await ch.handleHttpRequest(makePostRequest(body));
     expect(res.status).toBe(200);
     expect(issues).toEqual([{ kind: "envelope-unrecognized", rawBody: body }]);
+    await ch.disconnect();
   });
 
   test("production mode requires onIngressIssue hook", async () => {
@@ -312,6 +316,39 @@ describe("createWhatsAppChannel", () => {
     expect(() => createWhatsAppChannel(prodConfig, prodDeps)).toThrow(
       /MISSING_PRODUCTION_DEPENDENCY/,
     );
+  });
+
+  test("POST before connect() returns 503 (worker not running)", async () => {
+    // Regression: previously the webhook accepted and 200-acked POSTs
+    // regardless of channel state. Meta treats 200 as processed and
+    // does not retry, so any inbound landing before connect() / after
+    // disconnect() was silent message loss. Now the handler fails
+    // closed with 503 (retryable on Meta's side) until the worker is
+    // live.
+    const ch = createWhatsAppChannel(config, buildDeps());
+    const res = await ch.handleHttpRequest(makePostRequest(makeWebhookBody()));
+    expect(res.status).toBe(503);
+  });
+
+  test("POST after disconnect() returns 503", async () => {
+    const ch = createWhatsAppChannel(config, buildDeps());
+    await ch.connect();
+    await ch.disconnect();
+    const res = await ch.handleHttpRequest(makePostRequest(makeWebhookBody()));
+    expect(res.status).toBe(503);
+  });
+
+  test("GET handshake works before connect() (no worker required)", async () => {
+    // GET is verification-only and answers from config — should
+    // remain available pre-connect so Meta's initial handshake
+    // succeeds before the channel is brought up.
+    const ch = createWhatsAppChannel(config, buildDeps());
+    const url =
+      "https://localhost/webhook?hub.mode=subscribe" +
+      `&hub.verify_token=${encodeURIComponent(config.verifyToken)}` +
+      "&hub.challenge=42";
+    const r = await ch.handleHttpRequest(new Request(url, { method: "GET" }));
+    expect(r.status).toBe(200);
   });
 
   test("send() with non-text block throws UNSUPPORTED_BLOCK", async () => {

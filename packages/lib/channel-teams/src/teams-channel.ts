@@ -171,6 +171,16 @@ export function createTeamsChannel(
     // — Bot Framework retries on non-2xx and a 400 here would loop the
     // service into install/update breakage. Only structurally-invalid
     // payloads warrant 400 (already rejected by isActivity above).
+    // Lifecycle gate (post-auth): we only refuse to ack the
+    // delivery once we know it's a VALID message we'd otherwise
+    // 200-ack into a void. Auth failures (401) and shape failures
+    // (400) above still return their real status pre-connect so
+    // the operator sees the actual issue. From here on we either
+    // persist address-only (lifecycle activity) or enqueue for
+    // handler dispatch — both require the worker to be running.
+    if (!connected) {
+      return new Response("CHANNEL_NOT_CONNECTED", { status: 503 });
+    }
     if (parsed.type !== "message") {
       // Lifecycle activities (conversationUpdate on install,
       // proactive welcome triggers, etc.) MUST seed the address

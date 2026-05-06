@@ -144,6 +144,50 @@ describe("createEmailChannel", () => {
     expect(imap.state.closed).toBe(true);
   });
 
+  test("connect order: handler worker is live BEFORE IMAP subscription registers", async () => {
+    // Regression: previously connect() registered onNewMessage
+    // BEFORE startHandlerWorker. If an IMAP adapter synchronously
+    // invokes the callback during onNewMessage registration (e.g.
+    // for already-pending mail at open time), the callback's
+    // awaitDrain would block forever — connect() would never reach
+    // startHandlerWorker. Now the worker starts first, so a sync-
+    // delivered envelope at subscription time still drains.
+    let workerStarted = false;
+    let subscribedAtWorkerState: boolean | null = null;
+    const baseImap = makeFakeImap();
+    const imap: ImapClient = {
+      open: () => baseImap.open(),
+      close: () => baseImap.close(),
+      onNewMessage: (cb) => {
+        // At the moment subscription registers, the worker MUST
+        // already be live so a sync-delivered envelope can drain.
+        subscribedAtWorkerState = workerStarted;
+        return baseImap.onNewMessage(cb);
+      },
+    };
+    const queue = new InMemoryIngressQueue<InboundEnvelope, InboundMessage>();
+    const wrappedQueue = {
+      durability: "ephemeral" as const,
+      enqueue: queue.enqueue.bind(queue),
+      claim: async (workerId: string, leaseMs: number) => {
+        workerStarted = true;
+        return queue.claim(workerId, leaseMs);
+      },
+      ack: queue.ack.bind(queue),
+      nack: queue.nack.bind(queue),
+      deadLetter: queue.deadLetter.bind(queue),
+      renew: queue.renew.bind(queue),
+      awaitDrain: queue.awaitDrain.bind(queue),
+      getDeadLetters: queue.getDeadLetters.bind(queue),
+    };
+    const deps = buildDeps({ imap, ingressQueue: wrappedQueue });
+    adapter = createEmailChannel(makeConfig(), deps);
+    await adapter.connect();
+    // Allow worker first poll.
+    await tick(20);
+    expect(subscribedAtWorkerState).toBe(true);
+  });
+
   test("inbound flows from IMAP → handler", async () => {
     const imap = makeFakeImap();
     const deps = buildDeps({ imap });

@@ -256,6 +256,9 @@ export function createWhatsAppChannel(
 
   const handleHttpRequest = async (request: Request): Promise<Response> => {
     if (request.method === "GET") {
+      // GET handshake (Meta verification) does not need a worker —
+      // it answers from config alone, so we deliberately allow it
+      // pre-connect. POST is gated below.
       const r = await handleHandshake(request, config);
       if (r) return r;
     }
@@ -280,6 +283,13 @@ export function createWhatsAppChannel(
       parsed = JSON.parse(raw);
     } catch {
       return new Response("INVALID_PAYLOAD", { status: 400 });
+    }
+    // Lifecycle gate (post-auth): once signature is verified we know
+    // this is a valid Meta delivery; if no worker is running we 503
+    // so Meta retries instead of 200-acking into a void. Auth and
+    // parse failures above still return 401/400 even pre-connect.
+    if (!connected) {
+      return new Response("CHANNEL_NOT_CONNECTED", { status: 503 });
     }
     const extracted = extractMessages(parsed);
     if (!extracted.envelopeRecognized) {
