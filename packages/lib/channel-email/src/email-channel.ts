@@ -99,8 +99,15 @@ function defaultIdGenerator(domain: string): () => string {
   return () => `<${crypto.randomUUID()}@${domain}>`;
 }
 
-function envelopeKey(env: InboundEnvelope): string {
-  return `${env.uidValidity}|${env.uid}`;
+function envelopeKey(config: EmailConfig, env: InboundEnvelope): string {
+  // Scope dedupe by mailbox identity so a durable IdempotencyStore shared
+  // across multiple email channels (different inboxes / accounts on one
+  // process) cannot collide on `UIDVALIDITY|UID` values that are only
+  // unique within a single mailbox. Without this, the second inbox to
+  // see the same UID pair would be treated as a duplicate and lose the
+  // message.
+  const { host, user, mailbox } = config.imap;
+  return `${host}|${user}|${mailbox}|${env.uidValidity}|${env.uid}`;
 }
 
 function deriveDomain(from: string): string {
@@ -149,6 +156,7 @@ async function seedInboundThread(
 }
 
 async function enqueueInbound(
+  config: EmailConfig,
   deps: EmailDependencies,
   env: InboundEnvelope,
   clock: () => number,
@@ -182,7 +190,7 @@ async function enqueueInbound(
     // not corruption.
     await seedInboundThread(deps.threadStore, threadKey, inboundMessageId);
   }
-  const key = envelopeKey(env);
+  const key = envelopeKey(config, env);
   await deps.ingressQueue.enqueue(key, {
     key,
     payload: env,
@@ -238,7 +246,7 @@ export function createEmailChannel(
       await deps.imap.open();
       unsubscribeImap = deps.imap.onNewMessage(async (env) => {
         try {
-          await enqueueInbound(deps, env, clock);
+          await enqueueInbound(config, deps, env, clock);
         } catch (err: unknown) {
           // Surface for telemetry, then re-throw so the IMAP adapter keeps
           // the message un-acked / unread for redelivery. The `await` in

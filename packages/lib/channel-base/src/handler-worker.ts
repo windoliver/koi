@@ -5,9 +5,13 @@
  * commits + acks on success or aborts + nacks/dead-letters on failure.
  *
  * **Lease/claim model.** The queue claim and the idempotency lease are
- * BOTH taken with `leaseMs = handlerTimeoutMs` and never renewed. The
- * handler MUST complete within that window or be cancellable via the
- * `AbortSignal`. There is deliberately NO mid-handler renewal:
+ * BOTH taken with `leaseMs = handlerTimeoutMs + leaseGraceMs` (default
+ * grace 5s) and never renewed. The grace buffer ensures the post-timeout
+ * cleanup path (commit-as-tombstone + deadLetter) finishes BEFORE the
+ * lease can expire — without it, a slow store could let a successor
+ * reclaim the item while the original handler is still running. The
+ * handler MUST complete within `handlerTimeoutMs` or be cancellable via
+ * the `AbortSignal`. There is deliberately NO mid-handler renewal:
  *
  *   - Renewal that can fail introduces an "ownership-lost" path where a
  *     successor worker may claim the same item while the original
@@ -50,11 +54,27 @@ export type HandlerWorkerOptions<P, N> = {
   readonly pollIntervalMs?: number;
   readonly maxHandlerRetries?: number;
   readonly workerId: string;
+  /**
+   * Extra wall-clock buffer added to the queue claim and idempotency lease
+   * on top of `handlerTimeoutMs`. The cleanup path that runs AFTER a handler
+   * times out (commit-as-tombstone + deadLetter) must complete BEFORE the
+   * lease expires and a successor worker reclaims the item. Without this
+   * buffer, a slow store under load could let a successor see no live lease
+   * and no committed tombstone, opening a window for concurrent re-execution
+   * of a still-running handler. Default 5s is conservative for in-memory
+   * stores; durable-store deployments should size this to p99 store latency.
+   */
+  readonly leaseGraceMs?: number;
 };
 
+const DEFAULT_LEASE_GRACE_MS = 5_000;
+
 export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () => Promise<void> {
-  // Lease IS the handler deadline. No renewal — see file header.
-  const leaseMs = opts.handlerTimeoutMs;
+  // Lease > handler deadline. No renewal — see file header. The grace
+  // buffer keeps the lease live long enough for the post-timeout cleanup
+  // path (commit-as-tombstone + deadLetter) to run before a successor can
+  // reclaim and re-execute concurrently.
+  const leaseMs = opts.handlerTimeoutMs + (opts.leaseGraceMs ?? DEFAULT_LEASE_GRACE_MS);
   const pollMs = opts.pollIntervalMs ?? 250;
   const maxRetries = opts.maxHandlerRetries ?? 3;
   let stopped = false;
