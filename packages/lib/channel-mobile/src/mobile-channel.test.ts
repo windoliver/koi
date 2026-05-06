@@ -515,6 +515,122 @@ describe("createMobileChannel", () => {
     await ch.disconnect();
   });
 
+  test("shared signingSecret: cross-instance reply is NOT live-delivered to mismatched identity", async () => {
+    // Regression: two adapters sharing signingSecret could live-deliver
+    // each other's tagged replies whenever both happened to be on the
+    // same epoch — a cross-user message leak. Identity-match guard now
+    // requires verifiedReply.senderId === currently-connected identity.
+    const portA = await freePort();
+    const portB = await freePort();
+    const secret = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) secret[i] = i + 7;
+    const chA = createMobileChannel({
+      port: portA,
+      signingSecret: secret,
+      authenticate: async () => "alice",
+    });
+    let capturedA: InboundMessage | undefined;
+    chA.onMessage(async (m: InboundMessage) => {
+      if (capturedA === undefined) capturedA = m;
+    });
+    await chA.connect();
+    const wsA = await openWs(portA);
+    wsA.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: "hi" }] }));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(capturedA).toBeDefined();
+
+    // Instance B has bob connected, same epoch, same secret. A reply
+    // tagged for alice MUST NOT live-deliver to bob.
+    const pushedB: OutboundMessage[] = [];
+    const chB = createMobileChannel({
+      port: portB,
+      signingSecret: secret,
+      authenticate: async () => "bob",
+      pushNotifier: async (m) => {
+        pushedB.push(m);
+      },
+    });
+    await chB.connect();
+    const wsB = await openWs(portB);
+    const gotB: string[] = [];
+    wsB.addEventListener("message", (ev) => {
+      const f = JSON.parse(typeof ev.data === "string" ? ev.data : "") as {
+        content: { text: string }[];
+      };
+      gotB.push(f.content[0]?.text ?? "");
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    if (capturedA !== undefined) {
+      const reply = replyToInbound(capturedA, {
+        content: [{ kind: "text", text: "for-alice" }],
+      });
+      await chB.send(reply);
+    }
+    await new Promise((r) => setTimeout(r, 30));
+    expect(gotB).toEqual([]);
+    expect(pushedB).toHaveLength(1);
+    wsA.close();
+    wsB.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await chA.disconnect();
+    await chB.disconnect();
+  });
+
+  test("disconnect clears pendingLines (no replay of buffered frames into next session)", async () => {
+    // Regression: pendingLines + activeIdentity were not cleared on
+    // platformDisconnect, so frames buffered during one session could be
+    // replayed into the next connect's handler with stale identity.
+    const port = await freePort();
+    const ch = createMobileChannel({ port });
+    await ch.connect();
+    // Trigger a brief startup-buffer fill by NOT installing the handler
+    // before sending. Then disconnect WITHOUT installing the handler.
+    const ws = await openWs(port);
+    ws.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: "first" }] }));
+    await new Promise((r) => setTimeout(r, 20));
+    ws.close();
+    await new Promise((r) => setTimeout(r, 20));
+    await ch.disconnect();
+
+    // Reconnect with a fresh adapter on the same port. Install the
+    // handler — must NOT receive the frame from the previous session.
+    const ch2 = createMobileChannel({ port });
+    const received: InboundMessage[] = [];
+    ch2.onMessage(async (m: InboundMessage) => {
+      received.push(m);
+    });
+    await ch2.connect();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(received).toEqual([]);
+    await ch2.disconnect();
+  });
+
+  test("concurrent upgrade burst: authenticate() runs at most once for the winner", async () => {
+    // Regression: pendingUpgrades counter prevents N parallel handshakes
+    // from all racing past the activeSocket-empty check and all invoking
+    // the host's expensive auth path.
+    const port = await freePort();
+    let authCalls = 0;
+    const ch = createMobileChannel({
+      port,
+      authenticate: async () => {
+        authCalls++;
+        // Make auth slow to maximize the race window.
+        await new Promise((r) => setTimeout(r, 40));
+        return "device-1";
+      },
+    });
+    await ch.connect();
+    const reqs = Array.from({ length: 10 }, () =>
+      fetch(`http://127.0.0.1:${port}/`, {
+        headers: { Upgrade: "websocket", Connection: "Upgrade" },
+      }).catch(() => null),
+    );
+    await Promise.all(reqs);
+    expect(authCalls).toBe(1);
+    await ch.disconnect();
+  });
+
   test("createMobileChannel throws when pushNotifier wired without authenticate()", () => {
     // Regression: prior version accepted pushNotifier with no auth handshake
     // (or with only trustClientIdentity:true) and then handed pushNotifier a

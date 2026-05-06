@@ -408,6 +408,13 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   // let requires justification: bounded startup buffer
   let pendingLines: string[] = [];
   const MAX_PENDING_LINES = 32;
+  // Tracks upgrade requests that have passed the single-client gate but
+  // not yet reached websocket.open(). Concurrent upgrades that observe
+  // a non-zero count are rejected before authenticate() runs, so a
+  // handshake burst cannot force the host's expensive auth path on
+  // every doomed second-client.
+  // let requires justification: in-flight slot counter
+  let pendingUpgrades = 0;
   // Monotonic counter that ticks on every open AND every close — any
   // disconnect/reconnect cycle (even with the same client) creates a new
   // session boundary that strict-mode correlation can detect.
@@ -440,33 +447,50 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
           req: Request,
           srv: { upgrade: (r: Request, opts?: { data?: unknown }) => boolean },
         ) => {
-          // Single-client short-circuit: reject the upgrade BEFORE running
-          // authenticate(). Without this, an attacker spamming concurrent
-          // upgrade requests against a busy adapter would force the host's
-          // expensive auth path (JWT introspection, DB lookup, external
-          // service) on every rejected socket and turn the adapter into an
-          // auth-amplification point.
-          if (activeSocket !== undefined) {
+          // Single-client short-circuit: reserve the slot BEFORE running
+          // authenticate() — and BEFORE awaiting any other in-flight
+          // handshake. Without the pendingUpgrades counter, concurrent
+          // requests that arrive before the first open() would all see an
+          // empty activeSocket slot and all execute the host's potentially
+          // expensive auth path, turning the adapter into an auth-
+          // amplification point under handshake bursts.
+          if (activeSocket !== undefined || pendingUpgrades > 0) {
             return new Response("conflict: another client connected", { status: 409 });
           }
-          // authenticate() runs BEFORE upgrade so an unauthenticated client
-          // never gets a socket and therefore cannot occupy the single-
-          // client slot. The verified identity rides through Bun's per-
-          // connection `data` so `open()` knows which identity to bind.
+          pendingUpgrades++;
+          // authenticate() runs BEFORE upgrade so an unauthenticated
+          // client never gets a socket and cannot occupy the single slot.
+          // The verified identity rides through Bun's per-connection
+          // `data` so `open()` knows which identity to bind. We only
+          // decrement pendingUpgrades on failure paths — open() owns the
+          // decrement on success so the slot stays reserved across the
+          // upgrade-to-open async gap.
           // let requires justification: identity computed conditionally
           let identity: string | undefined;
-          if (config.authenticate !== undefined) {
-            const result = await config.authenticate(req);
-            if (result === null) {
-              return new Response("unauthorized", { status: 401 });
+          try {
+            if (config.authenticate !== undefined) {
+              const result = await config.authenticate(req);
+              if (result === null) {
+                pendingUpgrades--;
+                return new Response("unauthorized", { status: 401 });
+              }
+              identity = result;
             }
-            identity = result;
+          } catch (err) {
+            pendingUpgrades--;
+            throw err;
           }
           if (srv.upgrade(req, { data: { identity } })) return undefined;
+          pendingUpgrades--;
           return new Response("expected websocket", { status: 426 });
         },
         websocket: {
           open(ws: SocketLike & { readonly data?: { readonly identity?: string } }) {
+            // open() owns the pendingUpgrades decrement that fetch()
+            // deferred on success — the slot reservation now transitions
+            // from in-flight to claimed (or, if a race somehow already
+            // gave the slot away, just released).
+            if (pendingUpgrades > 0) pendingUpgrades--;
             // Strict single-client: a second concurrent connection is REJECTED,
             // not allowed to preempt. Removes the cross-client misroute class.
             if (activeSocket !== undefined) {
@@ -497,6 +521,10 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
             if (activeSocket === ws) {
               activeSocket = undefined;
               activeIdentity = undefined;
+              // Frames buffered during the just-closed session must not
+              // be replayed into the next session's handler with the
+              // wrong identity context.
+              pendingLines = [];
               sessionEpoch++;
             }
           },
@@ -506,6 +534,12 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
     platformDisconnect: async () => {
       activeSocket?.close();
       activeSocket = undefined;
+      activeIdentity = undefined;
+      // Drop any frames buffered during the prior session's startup gap so
+      // they cannot be replayed into the next session's handler with
+      // stale identity context.
+      pendingLines = [];
+      pendingUpgrades = 0;
       server?.stop(true);
       server = undefined;
     },
@@ -538,12 +572,24 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       } else if (hasReplyField) {
         // Present-but-invalid OR foreign reply tag (incl. mutated recipient
         // fields that no longer match the signed envelope) → fail closed.
+        // Also enforce that the verified recipient identity matches the
+        // CURRENTLY connected authenticated identity. Without this check,
+        // two adapter instances sharing a signingSecret could live-deliver
+        // each other's tagged replies whenever they happen to be on the
+        // same epoch — a cross-user message leak. Identity match means a
+        // live write is only allowed when the same user is connected here
+        // as the one who originated the inbound being replied to.
         liveRecipient =
           verifiedReply !== undefined &&
           verifiedReply.epoch === sessionEpoch &&
-          activeSocket !== undefined;
+          activeSocket !== undefined &&
+          verifiedReply.senderId === (activeIdentity ?? defaultSenderId);
       } else if (alsCtx !== undefined) {
-        liveRecipient = alsCtx.epoch === sessionEpoch && activeSocket !== undefined;
+        // Same identity-match guard for ALS-tagged sends.
+        liveRecipient =
+          alsCtx.epoch === sessionEpoch &&
+          activeSocket !== undefined &&
+          alsCtx.senderId === (activeIdentity ?? defaultSenderId);
       } else {
         liveRecipient = false;
       }
