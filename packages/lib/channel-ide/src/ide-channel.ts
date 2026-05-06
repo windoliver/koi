@@ -149,7 +149,17 @@ export function createIdeChannel(config: IdeChannelConfig): ChannelAdapter {
           pendingLines.push(line);
         }
       });
-      await config.transport.connect();
+      // Roll back the pre-connect subscription if connect() throws so a
+      // retry doesn't accumulate listeners. Without this, each transient
+      // connect failure would double subsequent inbound dispatch.
+      try {
+        await config.transport.connect();
+      } catch (err) {
+        unsubTransport?.();
+        unsubTransport = undefined;
+        pendingLines = [];
+        throw err;
+      }
     },
     platformDisconnect: async () => {
       unsubTransport?.();

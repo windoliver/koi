@@ -356,4 +356,56 @@ describe("createIdeChannel", () => {
     expect((received[0]?.content[0] as TextBlock | undefined)?.text).toBe("ok");
     await ch.disconnect();
   });
+
+  test("connect failure rolls back the pre-subscribed onLine listener (no duplicate dispatch on retry)", async () => {
+    // Round-26 high finding: ide subscribes to transport.onLine BEFORE
+    // awaiting transport.connect() so a synchronous startup line isn't
+    // lost. Without rollback on connect failure, the leaked listener
+    // accumulated across retries and each inbound line would be
+    // dispatched once per leaked subscription.
+    let attemptsBeforeSuccess = 1;
+    let liveListeners = 0;
+    let pushLine: ((line: string) => void) | undefined;
+    const transport = {
+      connect: async (): Promise<void> => {
+        if (attemptsBeforeSuccess > 0) {
+          attemptsBeforeSuccess--;
+          throw new Error("transient connect failure");
+        }
+      },
+      disconnect: async (): Promise<void> => {},
+      send: async (): Promise<void> => {},
+      onLine: (handler: (line: string) => void): (() => void) => {
+        liveListeners++;
+        pushLine = handler;
+        return () => {
+          liveListeners--;
+          pushLine = undefined;
+        };
+      },
+    };
+    const { createIdeChannel } = await import("./ide-channel.js");
+    const ch = createIdeChannel({ transport });
+    await expect(ch.connect()).rejects.toThrow(/transient/);
+    // After the failed connect, the pre-subscription must be unwired.
+    expect(liveListeners).toBe(0);
+    // Now succeed.
+    await ch.connect();
+    expect(liveListeners).toBe(1);
+    const received: { content: { kind: string }[] }[] = [];
+    ch.onMessage(async (m) => {
+      received.push({ content: m.content as unknown as { kind: string }[] });
+    });
+    pushLine?.(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notify",
+        params: { content: [{ kind: "text", text: "hi" }] },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    // Exactly ONE dispatch — not doubled by a leaked listener.
+    expect(received).toHaveLength(1);
+    await ch.disconnect();
+  });
 });

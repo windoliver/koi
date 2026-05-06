@@ -985,6 +985,41 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("connect failure rolls back the pre-subscribed onUtterance listener", async () => {
+    // Round-26 high finding: voice subscribes to transport.onUtterance
+    // BEFORE awaiting transport.connect() to avoid the startup race.
+    // Without rollback, a transient connect failure leaked the
+    // listener; on retry each utterance would be transcribed and
+    // dispatched once per leaked subscription — duplicate STT/TTS
+    // work and duplicate spoken replies.
+    let attemptsBeforeSuccess = 1;
+    let liveListeners = 0;
+    const transport: VoiceTransport = {
+      connect: async () => {
+        if (attemptsBeforeSuccess > 0) {
+          attemptsBeforeSuccess--;
+          throw new Error("transient connect failure");
+        }
+      },
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: () => {
+        liveListeners++;
+        return () => {
+          liveListeners--;
+        };
+      },
+    };
+    const stt: Stt = { transcribe: async () => null };
+    const tts: Tts = { synthesize: async () => new Uint8Array(0) };
+    const ch = createVoiceChannel({ transport, stt, tts });
+    await expect(ch.connect()).rejects.toThrow(/transient/);
+    expect(liveListeners).toBe(0);
+    await ch.connect();
+    expect(liveListeners).toBe(1);
+    await ch.disconnect();
+  });
+
   test("disconnect quiesces ingress immediately so no new utterances enter STT", async () => {
     // Round-24 high finding: disconnect deferred ingress teardown
     // until inner.disconnect ran AFTER the raw-op fence. During the
