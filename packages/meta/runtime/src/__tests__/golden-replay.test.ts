@@ -17369,7 +17369,12 @@ describe("Golden: @koi/channel-teams", () => {
 
     expect(channel.name).toBe("teams");
     expect(channel.capabilities.text).toBe(true);
-    expect(channel.capabilities.buttons).toBe(true);
+    // Teams adapter v1 advertises text-only honestly; rich-block
+    // serialization (images/files/buttons) is future work — see
+    // packages/lib/channel-teams/src/teams-channel.ts capabilities note.
+    expect(channel.capabilities.buttons).toBe(false);
+    expect(channel.capabilities.images).toBe(false);
+    expect(channel.capabilities.files).toBe(false);
     expect(typeof channel.handleHttpRequest).toBe("function");
     expect(typeof channel.connect).toBe("function");
   });

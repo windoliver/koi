@@ -30,7 +30,7 @@
  * an outbound provider acknowledgement).
  */
 
-import type { IdempotencyStore } from "./idempotency-store.js";
+import type { IdempotencyStore, Lease } from "./idempotency-store.js";
 import type { IngressQueue } from "./ingress-queue.js";
 
 export type HandlerInput<P, N> = {
@@ -133,19 +133,35 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
           // operator to inspect / replay the stuck item.
           if (handlerResult.timedOut) {
             // Timeout is terminal AND the original handler may still be
-            // running. We MUST prevent any future delivery of the same
-            // ingress key (provider redelivery, operator replay) from
-            // producing a concurrent duplicate execution. So we COMMIT
-            // the idempotency lease — future tryBegin on this key returns
-            // `committed` and the worker ack-without-running path takes
-            // over — and dead-letter the queue item so operators retain
-            // visibility for diagnostic replay.
-            await opts.idempotencyStore.commitPoison(begin.lease, opts.commitTtlMs).catch(() => {});
-            await opts.queue.deadLetter(
-              opts.workerId,
-              claimed.key,
-              `handler-timeout: ${handlerResult.error.message}`,
+            // running. The poison tombstone MUST land durably before we
+            // dead-letter — otherwise a swallowed commitPoison failure
+            // followed by deadLetter would remove the queue item with no
+            // durable terminal marker, and a future provider redelivery
+            // would run the handler again concurrently with the original.
+            // So if commitPoison throws, we nack instead of deadLetter:
+            // the queue item stays retryable, the next attempt will see
+            // the (still-live) lease as in-flight or expired, and
+            // operators get a visible failure rather than silent
+            // duplication.
+            const poisonOk = await commitPoisonDurably(
+              opts.idempotencyStore,
+              begin.lease,
+              opts.commitTtlMs,
             );
+            if (poisonOk) {
+              await opts.queue.deadLetter(
+                opts.workerId,
+                claimed.key,
+                `handler-timeout: ${handlerResult.error.message}`,
+              );
+            } else {
+              // commitPoison failed — release the lease so a future retry
+              // can claim cleanly, and nack the queue item so the operator
+              // sees a retryable failure rather than a silently dead-
+              // lettered item with no terminal marker.
+              await opts.idempotencyStore.abort(begin.lease).catch(() => {});
+              await opts.queue.nack(opts.workerId, claimed.key);
+            }
             continue;
           }
           throw handlerResult.error;
@@ -154,14 +170,26 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
         await opts.queue.ack(opts.workerId, claimed.key);
       } catch (e) {
         if (claimed.attempts + 1 >= maxRetries) {
-          // Dead-letter is terminal: commit a POISON tombstone so any
-          // future re-delivery of the same ingress key (provider
-          // redelivery, IMAP redelivery, operator replay returning the
-          // message to the queue) is dead-lettered rather than silently
-          // acked. A plain success-tombstone would let drain-gated
-          // adapters mark the source message handled despite the failure.
-          await opts.idempotencyStore.commitPoison(begin.lease, opts.commitTtlMs).catch(() => {});
-          await opts.queue.deadLetter(opts.workerId, claimed.key, errorMessage(e));
+          // Dead-letter is terminal: a POISON tombstone MUST land
+          // durably before deadLetter. If commitPoison throws (store
+          // unavailable, lease expired) we nack rather than deadLetter
+          // so a future redelivery cannot find a brand-new key and
+          // re-run the handler. Operators see retries instead of
+          // silent duplication on the redelivery.
+          const poisonOk = await commitPoisonDurably(
+            opts.idempotencyStore,
+            begin.lease,
+            opts.commitTtlMs,
+          );
+          if (poisonOk) {
+            await opts.queue.deadLetter(opts.workerId, claimed.key, errorMessage(e));
+          } else {
+            // Same as the timeout path: release the lease so a retry
+            // can claim, and nack instead of dead-lettering so no
+            // terminal-marker-less drop is possible.
+            await opts.idempotencyStore.abort(begin.lease).catch(() => {});
+            await opts.queue.nack(opts.workerId, claimed.key);
+          }
         } else {
           // Transient: abort lease so a successor retry can re-claim and
           // re-run the handler.
@@ -223,4 +251,17 @@ function runWithTimeout<T>(
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+async function commitPoisonDurably(
+  store: IdempotencyStore,
+  lease: Lease,
+  commitTtlMs: number,
+): Promise<boolean> {
+  try {
+    await store.commitPoison(lease, commitTtlMs);
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -45,11 +45,19 @@ const PRE_DATA_CODES: ReadonlySet<string> = new Set([
 export async function sendViaSmtp(t: SmtpTransport, env: SmtpEnvelope): Promise<SendResult> {
   try {
     const r = await t.sendMail(env);
-    if (r.accepted.length > 0) return { phase: "post-data", ok: true };
+    // Partial acceptance is treated as failure: marking the outbox `sent`
+    // while some recipients were rejected would silently lose mail for
+    // the rejected subset (no retry, no operator surface). The whole
+    // message must succeed atomically — operators handle the post-data
+    // failed branch via resolvePending. v1 does not implement per-
+    // recipient retry; that is a future enhancement.
+    if (r.accepted.length > 0 && r.rejected.length === 0) {
+      return { phase: "post-data", ok: true };
+    }
     return {
       phase: "post-data",
       ok: false,
-      error: `rejected: ${r.rejected.join(",")}; response: ${r.response}`,
+      error: `accepted: ${r.accepted.join(",") || "none"}; rejected: ${r.rejected.join(",") || "none"}; response: ${r.response}`,
     };
   } catch (e) {
     const code = (e as { readonly code?: unknown }).code;

@@ -138,6 +138,51 @@ describe("startHandlerWorker", () => {
     expect(await queue.claim("w2", 100)).toBeNull();
   });
 
+  test("commitPoison failure on max-retry blocks dead-letter (item stays retryable)", async () => {
+    // Regression: if the poison tombstone cannot land durably, dead-
+    // lettering would remove the queue item without a terminal marker
+    // — a future redelivery would then run the handler again with no
+    // dedupe protection. Worker MUST nack instead so operators see
+    // retries rather than silent duplication on redelivery.
+    //
+    // We use a slow-resolving handler with a short handlerTimeoutMs to
+    // hit the timeout path predictably without spinning a tight retry
+    // loop on the synchronous-throw path.
+    const queue = new InMemoryIngressQueue<{ readonly v: number }, null>();
+    const idem = new InMemoryIdempotencyStore();
+    const wrapped = {
+      tryBegin: idem.tryBegin.bind(idem),
+      commit: idem.commit.bind(idem),
+      commitPoison: async () => {
+        throw new Error("store unavailable");
+      },
+      abort: idem.abort.bind(idem),
+      renew: idem.renew.bind(idem),
+    };
+    let calls = 0;
+    const stop = startHandlerWorker({
+      queue,
+      idempotencyStore: wrapped,
+      handler: async () => {
+        calls++;
+        await new Promise((r) => setTimeout(r, 50));
+      },
+      commitTtlMs: 1000,
+      handlerTimeoutMs: 5,
+      leaseGraceMs: 100,
+      pollIntervalMs: 1,
+      workerId: "w1",
+    });
+    await queue.enqueue("ky", { key: "ky", payload: { v: 1 }, normalized: null });
+    await tick(80);
+    await stop();
+    // Handler timed out at least twice: first terminal attempt → poison
+    // failed → abort + nack → re-claim → second terminal attempt. If
+    // the worker had dead-lettered despite poison failure, the second
+    // timeout would never have happened.
+    expect(calls).toBeGreaterThan(1);
+  });
+
   test("poisoned key replay is dead-lettered, not acked", async () => {
     // Drain-gated adapters (email IMAP) treat ack as handler success.
     // A redelivered queue item whose key has a POISON tombstone must
