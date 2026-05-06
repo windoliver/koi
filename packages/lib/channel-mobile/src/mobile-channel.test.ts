@@ -170,7 +170,10 @@ describe("createMobileChannel", () => {
     ws2.addEventListener("close", () => {
       ws2Closed = true;
     });
-    await new Promise((r) => setTimeout(r, 50));
+    const deadline = Date.now() + 2000;
+    while (!ws2Closed && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
     expect(ws2Closed).toBe(true);
     await ch.sendUnsolicited({ content: [{ kind: "text", text: "for-ws1" }] });
     await new Promise((r) => setTimeout(r, 30));
@@ -346,7 +349,10 @@ describe("createMobileChannel", () => {
       };
       await ch.send(wrapperRebuilt);
     }
-    await new Promise((r) => setTimeout(r, 30));
+    const deadline = Date.now() + 2000;
+    while (pushed.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
     expect(got).toEqual([]);
     expect(pushed).toHaveLength(1);
     ws2.close();
