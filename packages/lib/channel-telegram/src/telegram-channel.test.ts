@@ -654,6 +654,47 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
+  test("webhook: update arriving before any onMessage handler is wired fails closed (releases claim, throws)", async () => {
+    const f = fakeBot();
+    const claims = new Set<number>();
+    const releases: number[] = [];
+    let processed: number | undefined;
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "s",
+      claimWebhookUpdate: (id: number) => {
+        if (claims.has(id)) return "duplicate";
+        claims.add(id);
+        return "claimed";
+      },
+      releaseWebhookClaim: (id: number) => {
+        releases.push(id);
+        claims.delete(id);
+      },
+      markWebhookProcessed: (id) => {
+        processed = id;
+      },
+    });
+    await adapter.connect();
+    // Intentionally NO adapter.onMessage(...) call here — simulate the
+    // startup race / rolling restart window.
+    const update = {
+      update_id: 99,
+      message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+    };
+    await expect(adapter.handleWebhook("s", update)).rejects.toThrow(
+      /before any onMessage handler was registered/,
+    );
+    // Claim released so a Telegram retry (after handlers wire up) can re-enter.
+    expect(releases).toEqual([99]);
+    expect(claims.has(99)).toBe(false);
+    // markWebhookProcessed must NOT have fired — nothing was processed.
+    expect(processed).toBeUndefined();
+    await adapter.disconnect();
+  });
+
   test('webhook: claimWebhookUpdate result "reclaimed" is treated as a fresh claim (stale-lease takeover path)', async () => {
     const f = fakeBot();
     let executions = 0;
@@ -1008,6 +1049,29 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       threadId: "200",
     });
     expect(f.calls[0]?.method).toBe("sendDocument");
+    await adapter.disconnect();
+  });
+
+  test("send: preserves caller's block order across mixed text/image/text/button", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({ token: "T", bot: f.bot });
+    await adapter.connect();
+    await adapter.send({
+      content: [
+        { kind: "text", text: "intro" },
+        { kind: "image", url: "https://x/p.jpg", alt: "cat" },
+        { kind: "text", text: "outro" },
+        { kind: "button", label: "ok", action: "ok" },
+      ],
+      threadId: "200",
+    });
+    expect(f.calls.map((c) => c.method)).toEqual(["sendMessage", "sendPhoto", "sendMessage"]);
+    expect(f.calls[0]?.args).toMatchObject({ chat_id: 200, text: "intro" });
+    expect(f.calls[1]?.args).toMatchObject({ chat_id: 200, photo: "https://x/p.jpg" });
+    // Trailing sendMessage carries the button keyboard.
+    expect(f.calls[2]?.args).toMatchObject({ chat_id: 200, text: "outro" });
+    const last = f.calls[2]?.args as { reply_markup?: { inline_keyboard: unknown[][] } };
+    expect(last.reply_markup?.inline_keyboard?.[0]).toHaveLength(1);
     await adapter.disconnect();
   });
 

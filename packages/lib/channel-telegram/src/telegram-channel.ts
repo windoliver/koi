@@ -7,7 +7,7 @@
  */
 
 import { createChannelAdapter } from "@koi/channel-base";
-import type { ChannelAdapter, ChannelCapabilities, ContentBlock, OutboundMessage } from "@koi/core";
+import type { ChannelAdapter, ChannelCapabilities, OutboundMessage } from "@koi/core";
 import type { TelegramUpdateLike } from "./normalize.js";
 import { createNormalizer } from "./normalize.js";
 
@@ -521,13 +521,14 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
 
   type DispatchResult =
     | { readonly kind: "skipped" }
+    | { readonly kind: "no-handlers" }
     | { readonly kind: "ok" }
     | { readonly kind: "rejected"; readonly fulfilled: number; readonly error: Error };
   const dispatchWebhook = async (update: TelegramUpdateLike): Promise<DispatchResult> => {
     const msg = await normalize(update);
     if (msg === null) return { kind: "skipped" };
     const handlers = webhookHandlers;
-    if (handlers.length === 0) return { kind: "skipped" };
+    if (handlers.length === 0) return { kind: "no-handlers" };
     const results = await Promise.allSettled(handlers.map((h) => h.fn(msg)));
     let fulfilled = 0;
     let rejected: PromiseRejectedResult | undefined;
@@ -625,6 +626,28 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
       // handlers succeeded) follow the same "claim stays reserved"
       // rule for the same reason.
       const dispatchResult = await dispatchWebhook(update);
+      if (dispatchResult.kind === "no-handlers") {
+        // Fail closed: an update arrived before any onMessage handler
+        // was wired (startup race, rolling restart, mis-ordered
+        // composition). Returning success here would silently lose the
+        // update — Telegram would stop retrying and the message would
+        // never reach a handler. Release the claim (no side effects
+        // were produced) and throw so the HTTPS layer returns non-200
+        // and Telegram retries when handlers are wired.
+        if (usedClaim && config.releaseWebhookClaim !== undefined) {
+          try {
+            await config.releaseWebhookClaim(update.update_id);
+          } catch (releaseErr: unknown) {
+            console.error(
+              `[channel-telegram] releaseWebhookClaim(${update.update_id}) failed during no-handler fail-closed:`,
+              releaseErr,
+            );
+          }
+        }
+        throw new Error(
+          "[channel-telegram] handleWebhook received an update before any onMessage handler was registered — refusing to ACK so Telegram retries (wire onMessage before exposing the webhook route)",
+        );
+      }
       if (dispatchResult.kind === "rejected") {
         if (dispatchResult.fulfilled === 0) {
           if (usedClaim && config.releaseWebhookClaim !== undefined) {
@@ -721,24 +744,17 @@ async function sendOutbound(api: TelegramApiLike, message: OutboundMessage): Pro
   }
   const { chatId, threadId } = parseThreadId(message.threadId);
 
-  const parts = partitionContent(message.content);
-
-  // Validate the entire outbound plan BEFORE the first side-effecting API
-  // call. Photos and documents are non-revertible — if a later button payload
-  // turned out to exceed Telegram's 64-byte callback_data cap, the user would
-  // see an orphaned media attachment with no explanatory text. Encoding now
-  // throws synchronously and aborts the whole send before any media leaves.
-  const keyboard: TelegramReplyMarkup | undefined =
-    parts.buttons.length > 0
-      ? {
-          inline_keyboard: [
-            parts.buttons.map((b) => ({
-              text: b.label,
-              callback_data: encodeCallbackData(b.action, b.payload),
-            })),
-          ],
-        }
-      : undefined;
+  // Pre-validate ALL button callback_data BEFORE any side-effecting API
+  // call. Photos and documents are non-revertible — if a later button
+  // payload turned out to exceed Telegram's 64-byte limit, the user
+  // would see an orphaned attachment with no explanatory text. Encoding
+  // now throws synchronously and aborts the whole send before any media
+  // leaves. Walk the original block order; we emit API calls in that
+  // same order below so a `[text, image, text, button]` message
+  // arrives as text → image → text+button, NOT image → all-text.
+  for (const b of message.content) {
+    if (b.kind === "button") encodeCallbackData(b.action, b.payload);
+  }
 
   const photoOther = (alt: string | undefined): TelegramSendPhotoOther | undefined => {
     const o: { -readonly [K in keyof TelegramSendPhotoOther]: TelegramSendPhotoOther[K] } = {};
@@ -753,8 +769,7 @@ async function sendOutbound(api: TelegramApiLike, message: OutboundMessage): Pro
   // leaves earlier parts already delivered to the user. Track how many
   // parts succeeded so the error we throw tells callers exactly how
   // many parts went through, and that retrying the same OutboundMessage
-  // will duplicate them. The wrapper class lets retry/queue middleware
-  // recognise and skip blind retries.
+  // will duplicate them.
   // let requires justification: accumulates across sub-calls below
   let delivered = 0;
   const tryStep = async (step: () => Promise<unknown>): Promise<void> => {
@@ -767,37 +782,33 @@ async function sendOutbound(api: TelegramApiLike, message: OutboundMessage): Pro
     }
   };
 
-  // Photos: one API call each
-  for (const photo of parts.images) {
-    const other = photoOther(photo.alt);
-    await tryStep(() =>
-      callWith429Retry(() =>
-        other === undefined
-          ? api.sendPhoto(chatId, photo.url)
-          : api.sendPhoto(chatId, photo.url, other),
-      ),
-    );
-  }
+  // Walk blocks in original order, batching contiguous text + buttons
+  // into a single sendMessage group; flushing at every media boundary
+  // and at the end so the chat order matches the caller's intent.
+  // let requires justification: accumulates text for the current sendMessage group
+  let pendingText = "";
+  let pendingButtons: {
+    readonly label: string;
+    readonly action: string;
+    readonly payload?: unknown;
+  }[] = [];
 
-  // Documents: one API call each
-  for (const doc of parts.files) {
-    const other = docOther();
-    await tryStep(() =>
-      callWith429Retry(() =>
-        other === undefined
-          ? api.sendDocument(chatId, doc.url)
-          : api.sendDocument(chatId, doc.url, other),
-      ),
-    );
-  }
-
-  // Text + inline keyboard: one or more sendMessage calls.
-  if (parts.text.length > 0 || parts.buttons.length > 0) {
-    // Telegram rejects sendMessage with empty `text`. When the caller wants a
-    // button-only response (no text blocks), synthesize a single non-empty
-    // character so the API accepts the call. Single space is the smallest
-    // payload that survives Telegram's whitespace trim.
-    const chunks = parts.text.length > 0 ? splitText(parts.text, TEXT_LIMIT) : [" "];
+  const flushPending = async (): Promise<void> => {
+    if (pendingText.length === 0 && pendingButtons.length === 0) return;
+    const keyboard: TelegramReplyMarkup | undefined =
+      pendingButtons.length > 0
+        ? {
+            inline_keyboard: [
+              pendingButtons.map((b) => ({
+                text: b.label,
+                callback_data: encodeCallbackData(b.action, b.payload),
+              })),
+            ],
+          }
+        : undefined;
+    // Telegram rejects sendMessage with empty `text`. Button-only
+    // groups synthesize a single non-empty character.
+    const chunks = pendingText.length > 0 ? splitText(pendingText, TEXT_LIMIT) : [" "];
     for (let i = 0; i < chunks.length; i++) {
       const text = chunks[i] ?? "";
       const isLast = i === chunks.length - 1;
@@ -813,7 +824,52 @@ async function sendOutbound(api: TelegramApiLike, message: OutboundMessage): Pro
         ),
       );
     }
+    pendingText = "";
+    pendingButtons = [];
+  };
+
+  for (const b of message.content) {
+    switch (b.kind) {
+      case "text":
+        pendingText = pendingText.length > 0 ? `${pendingText}\n${b.text}` : b.text;
+        break;
+      case "button":
+        pendingButtons.push(
+          b.payload !== undefined
+            ? { label: b.label, action: b.action, payload: b.payload }
+            : { label: b.label, action: b.action },
+        );
+        break;
+      case "image": {
+        await flushPending();
+        const other = photoOther(b.alt);
+        await tryStep(() =>
+          callWith429Retry(() =>
+            other === undefined
+              ? api.sendPhoto(chatId, b.url)
+              : api.sendPhoto(chatId, b.url, other),
+          ),
+        );
+        break;
+      }
+      case "file": {
+        await flushPending();
+        const other = docOther();
+        await tryStep(() =>
+          callWith429Retry(() =>
+            other === undefined
+              ? api.sendDocument(chatId, b.url)
+              : api.sendDocument(chatId, b.url, other),
+          ),
+        );
+        break;
+      }
+      case "custom":
+        // Custom blocks are skipped — telegram has no generic escape hatch.
+        break;
+    }
   }
+  await flushPending();
 }
 
 /**
@@ -835,50 +891,6 @@ export class TelegramPartialDeliveryError extends Error {
     this.deliveredParts = deliveredParts;
     this.cause = cause;
   }
-}
-
-interface PartitionedContent {
-  readonly text: string;
-  readonly images: readonly { readonly url: string; readonly alt?: string }[];
-  readonly files: readonly { readonly url: string }[];
-  readonly buttons: readonly {
-    readonly label: string;
-    readonly action: string;
-    readonly payload?: unknown;
-  }[];
-}
-
-function partitionContent(blocks: readonly ContentBlock[]): PartitionedContent {
-  const images: { readonly url: string; readonly alt?: string }[] = [];
-  const files: { readonly url: string }[] = [];
-  const buttons: { readonly label: string; readonly action: string; readonly payload?: unknown }[] =
-    [];
-  // let requires justification: accumulator for joined text content
-  let text = "";
-  for (const b of blocks) {
-    switch (b.kind) {
-      case "text":
-        text = text.length > 0 ? `${text}\n${b.text}` : b.text;
-        break;
-      case "image":
-        images.push(b.alt !== undefined ? { url: b.url, alt: b.alt } : { url: b.url });
-        break;
-      case "file":
-        files.push({ url: b.url });
-        break;
-      case "button":
-        buttons.push(
-          b.payload !== undefined
-            ? { label: b.label, action: b.action, payload: b.payload }
-            : { label: b.label, action: b.action },
-        );
-        break;
-      case "custom":
-        // Custom blocks are skipped — telegram has no generic escape hatch.
-        break;
-    }
-  }
-  return { text, images, files, buttons };
 }
 
 /** Bot API callback_data limit: 64 bytes (UTF-8) per Telegram docs. */
