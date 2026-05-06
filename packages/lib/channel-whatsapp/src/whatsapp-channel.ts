@@ -10,20 +10,14 @@
  * Meta does not include a freshness timestamp on the envelope, so replay
  * protection is durable WAMID-based dedupe (no time-window check).
  *
- * v1 scope: text-only outbound, single-message inbound webhooks. If a Meta
- * delivery contains multiple messages the first is processed via
- * handleWebhookIngress and the remainder are enqueued directly so the
- * handler still sees them — but only the first message's WAMID gates the
- * HTTP response.
+ * v1 scope: text-only outbound. Inbound webhooks may contain multiple
+ * messages — every message is normalized + enqueued under its own WAMID
+ * dedupe key before the HTTP 200 ack. Meta retries the full webhook on
+ * non-2xx, so any single enqueue failure returns 5xx; retries converge
+ * because enqueue is idempotent on dedupe key.
  */
 
-import {
-  handleWebhookIngress,
-  type IdempotencyStore,
-  type IngressQueue,
-  type VerifyResult as IngressVerifyResult,
-  startHandlerWorker,
-} from "@koi/channel-base";
+import { type IdempotencyStore, type IngressQueue, startHandlerWorker } from "@koi/channel-base";
 import type {
   ChannelAdapter,
   ChannelCapabilities,
@@ -68,8 +62,6 @@ const WHATSAPP_CAPABILITIES: ChannelCapabilities = {
   supportsA2ui: false,
 };
 
-const DEFAULT_LEASE_MS = 30_000;
-const DEFAULT_INFLIGHT_WAIT_MS = 2_000;
 const SIGNATURE_HEADER = "x-hub-signature-256";
 
 type HandlerRef = { current: MessageHandler | null };
@@ -135,52 +127,6 @@ async function handleHandshake(request: Request, config: WhatsAppConfig): Promis
   return new Response("forbidden", { status: 403 });
 }
 
-type RawBodyCache = { value: string | null };
-
-function buildVerify(
-  config: WhatsAppConfig,
-  cache: RawBodyCache,
-): (request: Request) => Promise<IngressVerifyResult> {
-  return async (request) => {
-    // `let` justified: body capture inside try/catch.
-    let raw: string;
-    try {
-      raw = await request.clone().text();
-    } catch {
-      return { ok: false, status: 401, message: "unreadable body" };
-    }
-    cache.value = raw;
-    const r = verifyMetaSignature({
-      rawBody: raw,
-      header: request.headers.get(SIGNATURE_HEADER),
-      appSecret: config.appSecret,
-    });
-    if (!r.ok) return { ok: false, status: 401, message: "INVALID_SIGNATURE" };
-    return { ok: true };
-  };
-}
-
-function buildParsePayload(
-  config: WhatsAppConfig,
-  cache: RawBodyCache,
-  clock: () => number,
-): (
-  request: Request,
-) => Promise<{ readonly payload: WhatsAppMessage; readonly normalized: InboundMessage }> {
-  return async (request) => {
-    const raw = cache.value ?? (await request.text());
-    const parsed: unknown = JSON.parse(raw);
-    const messages = pickFirstMessage(parsed);
-    const first = messages[0];
-    if (first === undefined) {
-      throw new Error("INVALID_PAYLOAD: no messages in webhook entry");
-    }
-    const norm = normalizeWhatsApp(first, config.phoneNumberId, clock);
-    if (!norm.ok) throw new Error(`INVALID_PAYLOAD: ${norm.error.message}`);
-    return { payload: first, normalized: norm.value };
-  };
-}
-
 export function createWhatsAppChannel(
   config: WhatsAppConfig,
   deps: WhatsAppDependencies,
@@ -197,17 +143,55 @@ export function createWhatsAppChannel(
       const r = await handleHandshake(request, config);
       if (r) return r;
     }
-    const cache: RawBodyCache = { value: null };
-    return handleWebhookIngress<WhatsAppMessage, InboundMessage>({
-      request,
-      verify: buildVerify(config, cache),
-      extractKey: (msg) => dedupeKey(config.phoneNumberId, msg),
-      parsePayload: buildParsePayload(config, cache, clock),
-      idempotencyStore: deps.idempotencyStore,
-      ingressQueue: deps.ingressQueue,
-      leaseMs: DEFAULT_LEASE_MS,
-      inFlightWaitMs: DEFAULT_INFLIGHT_WAIT_MS,
+    // POST: read raw body once, verify signature, then enqueue ALL messages
+    // in the batch. Meta retries the full webhook on non-2xx, so we cannot
+    // ack 200 until every message is durably enqueued (or already deduped).
+    let raw: string;
+    try {
+      raw = await request.text();
+    } catch {
+      return new Response("unreadable body", { status: 400 });
+    }
+    const sig = verifyMetaSignature({
+      rawBody: raw,
+      header: request.headers.get(SIGNATURE_HEADER),
+      appSecret: config.appSecret,
     });
+    if (!sig.ok) return new Response("INVALID_SIGNATURE", { status: 401 });
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return new Response("INVALID_PAYLOAD", { status: 400 });
+    }
+    const messages = pickFirstMessage(parsed);
+    if (messages.length === 0) {
+      // No messages (status callback or unknown shape) — ack so Meta stops retrying.
+      return new Response(null, { status: 200 });
+    }
+
+    // Enqueue every message. Each gets its own dedupe key. Failures here are
+    // 5xx so Meta retries the full batch — but enqueue is idempotent (returns
+    // `duplicate` for already-seen keys), so retries converge.
+    for (const msg of messages) {
+      const norm = normalizeWhatsApp(msg, config.phoneNumberId, clock);
+      if (!norm.ok) {
+        return new Response(`INVALID_PAYLOAD: ${norm.error.message}`, { status: 400 });
+      }
+      const key = dedupeKey(config.phoneNumberId, msg);
+      try {
+        await deps.ingressQueue.enqueue(key, {
+          key,
+          payload: msg,
+          normalized: norm.value,
+        });
+      } catch {
+        // Transient store failure — return 5xx so Meta retries the whole batch.
+        return new Response("ingress-queue-unavailable", { status: 503 });
+      }
+    }
+    return new Response(null, { status: 200 });
   };
 
   const adapter: WhatsAppChannelAdapter = {
