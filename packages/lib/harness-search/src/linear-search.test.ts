@@ -285,6 +285,63 @@ describe("linearSearch", () => {
     expect(codeSeen[1]).toContain("refined");
   });
 
+  test("tied success rate with more samples replaces best (covers convergence consistency)", async () => {
+    // Iter 0: rate=1.0 sampleCount=2 (under-sampled, fails minEvalSamples=5).
+    // Iter 1: rate=1.0 sampleCount=10 — must satisfy convergence gate AND
+    // become the returned best. Otherwise stopReason="converged" but
+    // best.evalSamples=2 and result.converged=false (broken contract).
+    let i = 0;
+    const samples = [2, 10];
+    const config = makeConfig({
+      maxIterations: 5,
+      convergenceThreshold: 1.0,
+      minEvalSamples: 5,
+      evaluate: async () => ({
+        successRate: 1.0,
+        sampleCount: samples[i++] ?? 10,
+        failures: [],
+      }),
+      random: () => 0.99,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+
+    expect(result.stopReason).toBe("converged");
+    expect(result.converged).toBe(true);
+    expect(result.best.evalSamples).toBe(10);
+    expect(result.best.successRate).toBe(1.0);
+  });
+
+  test("unparseable refinement output yields refine_failed (no silent reuse)", async () => {
+    const config = makeConfig({
+      maxIterations: 5,
+      refine: async () => "no fenced code block here, just prose",
+      evaluate: async () => ({
+        successRate: 0.5,
+        sampleCount: 10,
+        failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+      }),
+      random: () => 0.99,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("refine_failed");
+    expect(result.totalIterations).toBe(1);
+  });
+
+  test("empty fenced refinement output yields refine_failed", async () => {
+    const config = makeConfig({
+      maxIterations: 5,
+      refine: async () => "```ts\n   \n```",
+      evaluate: async () => ({
+        successRate: 0.5,
+        sampleCount: 10,
+        failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+      }),
+      random: () => 0.99,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("refine_failed");
+  });
+
   test("never exceeds maxIterations even with infinite-failure evaluator", async () => {
     const config = makeConfig({
       maxIterations: 7,

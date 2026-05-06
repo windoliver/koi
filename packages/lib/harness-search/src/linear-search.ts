@@ -110,10 +110,21 @@ export async function linearSearch(
 
     const previousBestRate = bestSuccessRate;
 
-    if (evalResult.successRate > bestSuccessRate) {
+    // Replace best on strict rate improvement OR on a tie that brings more
+    // evidence (higher sampleCount) — otherwise an early under-sampled hit
+    // at successRate=1.0 sticks around even after a later, fully-sampled
+    // tie satisfies the convergence gate, and `best` would not match the
+    // node that triggered the convergence stop.
+    const beatsRate = evalResult.successRate > bestSuccessRate;
+    const tiesRateWithMoreEvidence =
+      bestNode !== null &&
+      evalResult.successRate === bestSuccessRate &&
+      evalResult.sampleCount > bestNode.evalSamples;
+    if (beatsRate || tiesRateWithMoreEvidence) {
       bestSuccessRate = evalResult.successRate;
       bestNode = node;
-      consecutiveNoImprovement = 0;
+      if (beatsRate) consecutiveNoImprovement = 0;
+      else consecutiveNoImprovement++;
     } else {
       consecutiveNoImprovement++;
     }
@@ -152,7 +163,15 @@ export async function linearSearch(
           signal ?? neverAbort(),
         );
         const parsed = parseRefinementOutput(refinedRaw);
-        currentCode = parsed ?? currentCode;
+        if (parsed === null) {
+          // Unparseable / empty refinement is a partial-failure mode the
+          // caller must be able to distinguish from "candidate unchanged" —
+          // silently reusing the prior code burns budget and hides broken
+          // refiners. Surface it as refine_failed.
+          stopReason = "refine_failed";
+          break;
+        }
+        currentCode = parsed;
       } catch (_err: unknown) {
         stopReason = isAborted(signal) ? "aborted" : "refine_failed";
         break;
@@ -176,7 +195,10 @@ export async function linearSearch(
     history,
     stopReason,
     totalIterations: history.length,
-    converged: bestSuccessRate >= convergenceThreshold && finalBest.evalSamples >= minEvalSamples,
+    converged:
+      finalBest.successRate !== null &&
+      finalBest.successRate >= convergenceThreshold &&
+      finalBest.evalSamples >= minEvalSamples,
   };
 }
 
