@@ -22,8 +22,11 @@ export function validateFederationConfig(
   const offlineAfterFailures =
     config.offlineAfterFailures ?? DEFAULT_FEDERATION_CONFIG.offlineAfterFailures;
 
-  if (pollIntervalMs <= 0) {
-    return { ok: false, error: validation("pollIntervalMs must be positive") };
+  if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
+    return {
+      ok: false,
+      error: validation("pollIntervalMs must be a positive finite number"),
+    };
   }
   if (!Number.isInteger(offlineAfterFailures) || offlineAfterFailures <= 0) {
     return {

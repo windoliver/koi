@@ -13,6 +13,9 @@ export { validateFederationConfig } from "./config.js";
 export type {
   FederationAbortError,
   FederationMiddlewareConfig,
+  FederationPrincipalPolicy,
+  FederationRemoteCapabilities,
+  TenantResolverContext,
 } from "./federation-middleware.js";
 export { createFederationMiddleware } from "./federation-middleware.js";
 // sync engine

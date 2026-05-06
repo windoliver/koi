@@ -262,7 +262,14 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
     // Per-zone fetchDelta timeout: a hung remote becomes a counted
     // failure for that zone instead of a stuck promise that blocks
     // replication for everyone.
-    const fetchPromise = client.fetchDelta(cursor);
+    //
+    // Wrap the invocation in `Promise.resolve().then(...)` so that a
+    // SyncClient that throws synchronously (custom impl, transport
+    // bug, etc.) lands as a rejected promise instead of escaping
+    // syncZone() before bumpFailure() can fire. Without the wrap, a
+    // sync throw would surface only as an unhandled rejection swallowed
+    // by Promise.allSettled in syncAll(), leaving the zone stuck-active.
+    const fetchPromise = Promise.resolve().then(() => client.fetchDelta(cursor));
     const fetchToken = Symbol("fetch");
     outstandingFetches.set(remoteId, { startedAt: Date.now(), token: fetchToken });
     // Clear the entry only if THIS fetch still owns it. A stale
@@ -284,7 +291,20 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
     const timeoutPromise = new Promise<typeof timeoutSentinel>((resolve) => {
       timeoutId = setTimeout(() => resolve(timeoutSentinel), fetchTimeoutMs);
     });
-    const raced = await Promise.race([fetchPromise, timeoutPromise]);
+    // SyncClient implementations are expected to return Result, but a
+    // buggy transport, custom client, or thrown timeout wrapper may
+    // reject instead. Treat rejection identically to Result.error so
+    // the remote eventually transitions offline rather than staying
+    // active with a stuck cursor — the silent-replication-failure
+    // mode is exactly what offlineAfterFailures is meant to surface.
+    let raced: Awaited<typeof fetchPromise> | typeof timeoutSentinel;
+    try {
+      raced = await Promise.race([fetchPromise, timeoutPromise]);
+    } catch (_e: unknown) {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      bumpFailure(remoteId);
+      return;
+    }
     if (timeoutId !== undefined) clearTimeout(timeoutId);
     if (raced === timeoutSentinel) {
       // Timeout: count failure NOW. The original fetchPromise stays in
@@ -318,7 +338,8 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
       // Empty fetch is a clean liveness signal — reset health.
       failures.set(remoteId, 0);
       statuses.set(remoteId, "active");
-      cursors.set(remoteId, advanceCursor(cursor, []));
+      const advanced = advanceCursor(cursor, []);
+      if (advanced.ok) cursors.set(remoteId, advanced.value);
       return;
     }
 
@@ -358,7 +379,22 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
       notifyHandlers(event);
     }
 
-    cursors.set(remoteId, advanceCursor(cursor, deliverable));
+    const advanced = advanceCursor(cursor, deliverable);
+    if (advanced.ok) {
+      cursors.set(remoteId, advanced.value);
+    } else {
+      // The validator already accepted this prefix as ascending+
+      // contiguous, so a fault here would indicate a bug in this
+      // module rather than a remote protocol violation. Count it as
+      // a failure and bail out of state mutation rather than write a
+      // half-progressed cursor.
+      const next = (failures.get(remoteId) ?? 0) + 1;
+      failures.set(remoteId, next);
+      if (next >= offlineAfterFailures) {
+        statuses.set(remoteId, "offline");
+      }
+      return;
+    }
     const log = eventLogs.get(remoteId) ?? [];
     const merged = [...log, ...deliverable];
     // Optional ring-buffer cap. Default is unbounded — opt in by setting

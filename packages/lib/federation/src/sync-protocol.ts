@@ -66,41 +66,73 @@ export function createNexusSyncClient(config: NexusSyncClientConfig): SyncClient
 // ---------------------------------------------------------------------------
 
 /**
- * Advance a sync cursor after processing a batch of events.
+ * Advance a sync cursor after processing a batch of events under the
+ * v1 wire contract: ascending, contiguous arrival starting at
+ * `cursor.lastSequence + 1`. Returns a `Result` so callers can fail
+ * closed on protocol faults rather than silently acknowledging an
+ * out-of-order or gapped batch.
  *
- * Advances `lastSequence` only through the highest contiguous prefix
- * starting at `cursor.lastSequence + 1`. If the batch is gapped or
- * out-of-order, the cursor stops at the last contiguous sequence — the
- * remaining events are NOT acknowledged and will be redelivered on the
- * next sync. This prevents permanent event loss when a remote returns
- * a non-contiguous batch (pagination, retry, partial replay).
+ * - **Empty batch**: cursor unchanged (`lastSyncAt` bumped).
+ * - **Ascending contiguous prefix from cursor**: cursor advances
+ *   through the longest such prefix. Trailing events that break the
+ *   prefix are reported as a fault and not acknowledged.
+ * - **Reordered batch (e.g. `[2,1]`)** or **gap before cursor+1**:
+ *   protocol fault. Cursor is NOT advanced — caller must treat the
+ *   remote as faulty for this cycle (sync-engine counts it as a
+ *   fetch failure toward `offlineAfterFailures`).
+ *
+ * The strict variant is the only safe one for the wire contract.
+ * Permissive contiguous-prefix advancement against unsorted input
+ * is intentionally not exported, because it lets a buggy or
+ * compromised peer hide events behind reordered batches.
  */
 export function advanceCursor(
   cursor: SyncCursor,
   events: readonly FederationSyncEvent[],
   now: number = Date.now(),
-): SyncCursor {
+): Result<SyncCursor, KoiError> {
   if (events.length === 0) {
-    return { zoneId: cursor.zoneId, lastSequence: cursor.lastSequence, lastSyncAt: now };
+    return {
+      ok: true,
+      value: { zoneId: cursor.zoneId, lastSequence: cursor.lastSequence, lastSyncAt: now },
+    };
   }
 
-  const seen = new Set<number>();
-  for (const event of events) {
-    if (event.sequence > cursor.lastSequence) {
-      seen.add(event.sequence);
-    }
-  }
-
-  // let: walks the contiguous prefix above the prior cursor
+  // let: walks the expected next sequence; ascending-only.
+  let expected = cursor.lastSequence + 1;
+  // let: tracks the highest sequence we accepted from this batch.
   let advanced = cursor.lastSequence;
-  while (seen.has(advanced + 1)) {
-    advanced += 1;
+  for (const event of events) {
+    // Drop already-acknowledged sequences silently — peers retransmit
+    // duplicates legitimately on retry. Only events strictly above the
+    // cursor participate in advancement.
+    if (event.sequence <= cursor.lastSequence) continue;
+    if (event.sequence !== expected) {
+      return {
+        ok: false,
+        error: {
+          code: "EXTERNAL",
+          message: `Sync batch fault for zone "${cursor.zoneId}": expected sequence ${expected}, saw ${event.sequence}. Reordered or gapped batches violate the v1 wire contract; cursor not advanced.`,
+          retryable: true,
+          context: {
+            zoneId: cursor.zoneId,
+            expectedSequence: expected,
+            sawSequence: event.sequence,
+          },
+        },
+      };
+    }
+    advanced = event.sequence;
+    expected += 1;
   }
 
   return {
-    zoneId: cursor.zoneId,
-    lastSequence: advanced,
-    lastSyncAt: now,
+    ok: true,
+    value: {
+      zoneId: cursor.zoneId,
+      lastSequence: advanced,
+      lastSyncAt: now,
+    },
   };
 }
 

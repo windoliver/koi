@@ -21,40 +21,53 @@ const baseCursor: SyncCursor = { zoneId: ZB, lastSequence: 0, lastSyncAt: 0 };
 
 describe("advanceCursor", () => {
   test("returns cursor with refreshed lastSyncAt when events empty", () => {
-    const next = advanceCursor(baseCursor, [], 12_345);
-    expect(next.lastSequence).toBe(0);
-    expect(next.lastSyncAt).toBe(12_345);
-    expect(next.zoneId).toBe(ZB);
+    const result = advanceCursor(baseCursor, [], 12_345);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.lastSequence).toBe(0);
+      expect(result.value.lastSyncAt).toBe(12_345);
+      expect(result.value.zoneId).toBe(ZB);
+    }
   });
 
-  test("advances lastSequence to max sequence in batch", () => {
-    const next = advanceCursor(baseCursor, [evt(1), evt(3), evt(2)], 999);
-    expect(next.lastSequence).toBe(3);
-    expect(next.lastSyncAt).toBe(999);
+  test("advances through ascending contiguous batch", () => {
+    const result = advanceCursor(baseCursor, [evt(1), evt(2), evt(3)], 999);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.lastSequence).toBe(3);
+      expect(result.value.lastSyncAt).toBe(999);
+    }
   });
 
-  test("never moves lastSequence backward", () => {
-    const cursor: SyncCursor = { zoneId: ZB, lastSequence: 10, lastSyncAt: 0 };
-    const next = advanceCursor(cursor, [evt(2), evt(5)]);
-    expect(next.lastSequence).toBe(10);
+  test("rejects reordered batches as a v1 protocol fault", () => {
+    // Regression for #1372 review-loop pass-3 round 2: [2,1] is a
+    // wire-contract violation. The exported helper must NOT silently
+    // acknowledge it — that lets a buggy or compromised peer hide
+    // events behind reordered batches.
+    const result = advanceCursor(baseCursor, [evt(2), evt(1)]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("EXTERNAL");
+      expect(result.error.message).toMatch(/expected sequence 1, saw 2/);
+    }
   });
 
-  test("stops at the highest contiguous prefix when batch has a gap", () => {
-    // Regression for #1372 review-loop: a remote returning [1,2,4,5] (missing 3)
-    // must not advance past 2, otherwise event 3 is lost forever.
-    const next = advanceCursor(baseCursor, [evt(1), evt(2), evt(4), evt(5)]);
-    expect(next.lastSequence).toBe(2);
+  test("rejects gapped batches and does not advance", () => {
+    // Regression: [1,2,4,5] (missing 3) is a fault under v1.
+    const result = advanceCursor(baseCursor, [evt(1), evt(2), evt(4), evt(5)]);
+    expect(result.ok).toBe(false);
   });
 
-  test("does not advance when the next sequence is missing", () => {
-    // Out-of-order delivery: [5] before [1..4]. Cursor must not jump to 5.
-    const next = advanceCursor(baseCursor, [evt(5)]);
-    expect(next.lastSequence).toBe(0);
+  test("rejects an out-of-order [5] when cursor is 0", () => {
+    const result = advanceCursor(baseCursor, [evt(5)]);
+    expect(result.ok).toBe(false);
   });
 
-  test("ignores duplicates while still advancing through contiguous prefix", () => {
-    const next = advanceCursor(baseCursor, [evt(1), evt(1), evt(2), evt(3)]);
-    expect(next.lastSequence).toBe(3);
+  test("silently drops already-acknowledged duplicates and advances", () => {
+    const cursor: SyncCursor = { zoneId: ZB, lastSequence: 2, lastSyncAt: 0 };
+    const result = advanceCursor(cursor, [evt(1), evt(2), evt(3), evt(4)]);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.lastSequence).toBe(4);
   });
 });
 

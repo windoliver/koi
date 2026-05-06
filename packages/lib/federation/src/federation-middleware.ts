@@ -95,6 +95,31 @@ export interface FederationMiddlewareConfig {
    * channel metadata, gateway-injected ctx field, etc.).
    */
   readonly tenantIdResolver?: (ctx: TenantResolverContext) => string | undefined;
+  /**
+   * Allowlist of `request.metadata` keys that may be forwarded over the
+   * federation boundary. **Required** — operators must make an explicit
+   * choice rather than rely on a default.
+   *
+   * `request.metadata` is a generic JsonObject. Two failure modes pull
+   * in opposite directions:
+   * 1. Forwarding it wholesale lets a compromised or misconfigured
+   *    origin fabricate elevated context (approval flags, credentials
+   *    accidentally stashed by upstream middleware) that a remote
+   *    receiver may trust to short-circuit its own approval flow.
+   * 2. Dropping it wholesale silently desynchronizes authorization:
+   *    permissions middleware keys policy on `request.metadata`, so a
+   *    federated call can be allowed locally but denied remotely (or
+   *    vice versa) just because the bag was stripped.
+   *
+   * There is no safe default. Operators must enumerate the keys their
+   * remote permissions/policy layer relies on (so cross-zone
+   * authorization sees the same inputs) AND that they trust to
+   * traverse the federation boundary. Use `new Set()` only after
+   * confirming no policy depends on per-request metadata. A signed
+   * envelope that lets the remote authoritatively re-derive context
+   * lands in #1410.
+   */
+  readonly forwardedMetadataKeys?: ReadonlySet<string>;
   /** Optional callback invoked when a tool call is delegated to a remote zone. */
   readonly onDelegated?: (zoneId: string, request: ToolRequest) => void;
 }
@@ -119,6 +144,7 @@ export function createFederationMiddleware(config: FederationMiddlewareConfig): 
     remoteCapabilities,
     principalForwarding,
     tenantIdResolver,
+    forwardedMetadataKeys,
     onDelegated,
   } = config;
 
@@ -309,14 +335,31 @@ export function createFederationMiddleware(config: FederationMiddlewareConfig): 
         };
       }
 
+      // Filter request.metadata through the operator-supplied allowlist.
+      // When metadata is present on the request, the operator MUST have
+      // explicitly chosen a policy: cross-zone permission middleware
+      // commonly keys on `request.metadata`, and silently dropping or
+      // tunneling the bag desynchronizes authorization. Fail closed at
+      // call time if the operator has not declared forwardedMetadataKeys.
+      // (Empty `new Set()` is a valid explicit choice — drop everything.)
+      let filteredMetadata: Record<string, unknown> | undefined;
+      if (request.metadata !== undefined) {
+        if (forwardedMetadataKeys === undefined) {
+          throw new Error(
+            `Federation routing aborted: tool=${request.toolId} → zone="${targetZoneId}" carries request.metadata but createFederationMiddleware was constructed without forwardedMetadataKeys. Permissions/policy middleware keys on metadata; configure an explicit allowlist (or pass new Set() if you have confirmed no remote policy depends on it) so cross-zone authorization sees the same inputs as local authorization.`,
+          );
+        }
+        filteredMetadata = pickAllowedKeys(request.metadata, forwardedMetadataKeys);
+      }
+
       const callPromise = remoteTransport.call<ToolResponse>("federation.zone_execute", {
         protocolVersion: FEDERATION_PROTOCOL_VERSION,
         toolId: request.toolId,
         input: request.input,
-        metadata: request.metadata,
         callId: federationCallId,
         targetZoneId,
         originZoneId: localZoneId,
+        ...(filteredMetadata !== undefined ? { metadata: filteredMetadata } : {}),
         ...(sendPrincipalFields ? { principalPolicy } : {}),
         ...(principal !== undefined ? { principal } : {}),
       });
@@ -335,7 +378,18 @@ export function createFederationMiddleware(config: FederationMiddlewareConfig): 
             { cause: result.error },
           );
         }
-        return result.value;
+        // Validate the cross-zone response shape before handing it to
+        // the local runtime. A skewed or buggy remote can return a
+        // primitive, omit `output`, or send malformed `metadata`; we
+        // must fail closed rather than turn schema drift into latent
+        // runtime corruption.
+        const validated = validateRemoteToolResponse(result.value);
+        if (!validated.ok) {
+          throw new Error(
+            `Federation remote call returned malformed ToolResponse from zone "${targetZoneId}" (tool=${request.toolId}): ${validated.reason}`,
+          );
+        }
+        return validated.value;
       } finally {
         if (signal !== undefined && onAbort !== undefined) {
           signal.removeEventListener("abort", onAbort);
@@ -382,4 +436,52 @@ function newAbortError(
   err.toolId = toolId;
   err.callId = callId;
   return err;
+}
+
+/**
+ * Runtime validator for ToolResponse shapes returned across the
+ * federation boundary. Phase 3 baseline contract: an object with a
+ * defined `output` field; `metadata`, if present, must be a plain
+ * object (no arrays, no primitives). Anything else is rejected so
+ * the local runtime never observes a half-formed remote response.
+ */
+function validateRemoteToolResponse(
+  value: unknown,
+): { ok: true; value: ToolResponse } | { ok: false; reason: string } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, reason: `expected object, got ${value === null ? "null" : typeof value}` };
+  }
+  const obj = value as Record<string, unknown>;
+  if (!("output" in obj)) {
+    return { ok: false, reason: "missing required field 'output'" };
+  }
+  if (obj["output"] === undefined) {
+    return { ok: false, reason: "field 'output' is undefined" };
+  }
+  if ("metadata" in obj && obj["metadata"] !== undefined) {
+    const meta = obj["metadata"];
+    if (meta === null || typeof meta !== "object" || Array.isArray(meta)) {
+      return {
+        ok: false,
+        reason: `field 'metadata' must be a plain object, got ${
+          meta === null ? "null" : Array.isArray(meta) ? "array" : typeof meta
+        }`,
+      };
+    }
+  }
+  return { ok: true, value: obj as unknown as ToolResponse };
+}
+
+function pickAllowedKeys(
+  source: Readonly<Record<string, unknown>>,
+  allowed: ReadonlySet<string>,
+): Record<string, unknown> | undefined {
+  if (allowed.size === 0) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const key of allowed) {
+    if (Object.hasOwn(source, key)) {
+      out[key] = source[key];
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }

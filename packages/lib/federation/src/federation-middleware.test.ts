@@ -140,15 +140,20 @@ describe("createFederationMiddleware", () => {
     expect(mw.describeCapabilities?.(makeCtx({}))).toBeUndefined();
   });
 
-  test("forwards metadata, callId, and originZoneId to remote zone_execute", async () => {
-    // Regression for #1372 review-loop: delegated calls must preserve the
-    // full invocation envelope so the remote zone can enforce the same
-    // policy/approval semantics as the local path.
+  test("forwards callId/originZoneId; explicit empty allowlist drops request.metadata", async () => {
+    // Regression for #1372 review-loop pass-3: arbitrary
+    // request.metadata must NOT cross the federation boundary unless
+    // the operator explicitly enumerates keys via
+    // forwardedMetadataKeys. An empty Set is a valid explicit choice
+    // (drop everything) and prevents tunneling local-only approval
+    // flags or trace context that could spoof elevated authority
+    // remotely.
     const remoteResponse: ToolResponse = { output: "remote-result" };
     const { transport, calls } = makeTransport(() => remoteResponse);
     const mw = createFederationMiddleware({
       localZoneId: ZA,
       remoteTransports: new Map([["zone-b", transport]]),
+      forwardedMetadataKeys: new Set(),
     });
 
     const richRequest: ToolRequest = {
@@ -167,7 +172,52 @@ describe("createFederationMiddleware", () => {
     expect(params?.["callId"]).toBe("call-42");
     expect(params?.["originZoneId"]).toBe(ZA);
     expect(params?.["targetZoneId"]).toBe(ZB);
-    expect(params?.["metadata"]).toEqual({ reason: "investigation", traceId: "t-1" });
+    expect(params?.["metadata"]).toBeUndefined();
+  });
+
+  test("aborts when request carries metadata but forwardedMetadataKeys was not configured", async () => {
+    // Regression for #1372 review-loop pass-3 round 3: silently
+    // dropping metadata desynchronizes auth across zones. Force the
+    // operator to make an explicit choice when metadata is in play.
+    const remoteResponse: ToolResponse = { output: "remote-result" };
+    const { transport } = makeTransport(() => remoteResponse);
+    const mw = createFederationMiddleware({
+      localZoneId: ZA,
+      remoteTransports: new Map([["zone-b", transport]]),
+      // forwardedMetadataKeys deliberately omitted
+    });
+
+    const richRequest: ToolRequest = {
+      toolId: "bash",
+      input: {},
+      metadata: { traceId: "t-1" },
+    };
+
+    await expect(
+      mw.wrapToolCall?.(makeCtx({ targetZoneId: ZB }), richRequest, localHandler),
+    ).rejects.toThrow(/forwardedMetadataKeys/);
+  });
+
+  test("forwardedMetadataKeys allowlist sends only listed keys", async () => {
+    // Regression for #1372 review-loop pass-3 round 1: opt-in
+    // forwarding restricts the metadata bag to an explicit subset.
+    const { transport, calls } = makeTransport(() => ({ output: "ok" }) as ToolResponse);
+    const mw = createFederationMiddleware({
+      localZoneId: ZA,
+      remoteTransports: new Map([["zone-b", transport]]),
+      forwardedMetadataKeys: new Set(["traceId"]),
+    });
+
+    const richRequest: ToolRequest = {
+      toolId: "bash",
+      input: {},
+      metadata: { reason: "secret", traceId: "t-1", approval: "pre-approved" },
+    };
+
+    await mw.wrapToolCall?.(makeCtx({ targetZoneId: ZB }), richRequest, localHandler);
+
+    const params = calls.filter((c) => c.method === "federation.zone_execute")[0]?.params;
+    expect(params?.["metadata"]).toEqual({ traceId: "t-1" });
   });
 
   test("bridges caller AbortSignal as federation.zone_cancel on remote", async () => {
