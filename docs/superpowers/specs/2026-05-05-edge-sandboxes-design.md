@@ -220,12 +220,21 @@ All dedupe keys are **fleet-namespaced** to prevent cross-tenant collision when 
 ```js
 const dedupeKey = `${ownerId}:${operationId}`;
 const stub = KOI_DEDUPE_DO.get(KOI_DEDUPE_DO.idFromName(dedupeKey));
+// dedupeFingerprint binds the dedupe record to the payload so operationId reuse with a different
+// payload returns OPERATION_ID_CONFLICT. handlerCodeHash and pairUUID are intentionally excluded.
+const dedupeFingerprint = sha256(`${ownerId}:${sha256(payloadCanonical)}`);
 const claimResult = await stub.fetch("https://do/claim", {
   method: "POST",
-  body: JSON.stringify({ operationId, requestId }),
+  body: JSON.stringify({ operationId, requestId, dedupeFingerprint, dedupeExpiresAtMs }),
 });
 const claim = await claimResult.json();
-// claim.status: "fresh" | "in-progress" | "completed" | "failed-permanent"
+// claim.status: "fresh" | "in-progress" | "completed" | "failed-permanent" | "fingerprint-conflict" | "operation-expired"
+if (claim.status === "fingerprint-conflict") {
+  return new Response(JSON.stringify({ error: "OPERATION_ID_CONFLICT", storedFingerprint: claim.storedFingerprint }), { status: 409, headers: { "X-Koi-Result-Kind": "operation-id-conflict" } });
+}
+if (claim.status === "operation-expired") {
+  return new Response(JSON.stringify({ error: "OPERATION_EXPIRED", dedupeExpiresAtMs }), { status: 410, headers: { "X-Koi-Result-Kind": "operation-expired" } });
+}
 if (claim.status === "completed") {
   // Always 200; outcome encoded in X-Koi-Result-Kind. claim.statusCode is application-layer only — the handler chose to put it in the body if it cared.
   return new Response(JSON.stringify(claim.result), { status: 200, headers: { "X-Koi-Result-Kind": "success" } });
@@ -246,7 +255,10 @@ if (claim.status === "in-progress") {
 const result = await handler({ payload, operationId, requestId });
 await stub.fetch("https://do/complete", {
   method: "POST",
-  body: JSON.stringify({ operationId, result, statusCode: 200 }),
+  // ttlExpiresAtMs and the previously-claimed requestId/dedupeFingerprint are required so the DO
+  // can (a) verify the caller still owns the claim, (b) refuse to overwrite a record whose stored
+  // fingerprint differs (post-aliasing safety), and (c) schedule the purge alarm at ttlExpiresAtMs.
+  body: JSON.stringify({ operationId, requestId, dedupeFingerprint, result, statusCode: 200, ttlExpiresAtMs: dedupeExpiresAtMs + 3_600_000 }),
 });
 return new Response(JSON.stringify(result), { status: 200, headers: { "X-Koi-Result-Kind": "success" } });
 ```
@@ -869,7 +881,7 @@ In-process delayed re-verify is necessary but not sufficient: a host crash, cont
   - Host-side renewal cadence: **every 2 minutes** with a 30-second PATCH timeout.
   - Renewal tolerance: up to **3 consecutive failures (~6 minutes)** before the local handle poisons; the lease itself only expires after 15 minutes regardless of host renewals, which is what backstops the sweeper.
   - Fleet sweeper cadence: **every 1 minute** (Cloudflare Cron Trigger).
-  - **Host-originated DO lease cadence:** every 5 minutes the host issues `POST /workers/scripts/${A-name}/__do_lease` to refresh `host-lease-until = now + 30 minutes` inside Worker A's DO. This is the SECOND host-originated signal that gates the DO alarm callback (specified below). Two host signals are required: PATCH for `koi-stale-after`, POST for `__do_lease`.
+  - **Host-originated DO lease cadence:** every 5 minutes the host issues `POST https://${A-name}.${subdomain}.workers.dev/__do_lease` (deployed Worker A runtime URL, bearer-authenticated with `KOI_INSTANCE_TOKEN`) to refresh `host-lease-until = now + 30 minutes` inside Worker A's DO. (The control-plane API path is NOT used.) This is the SECOND host-originated signal that gates the DO alarm callback (specified below). Two host signals are required: PATCH for `koi-stale-after`, POST for `__do_lease`.
   - Worst-case post-crash leak window: 30-minute `host-lease-until` + 90-second `worker-alive` natural TTL + 1-minute sweep ≈ **32 minutes** on Cloudflare. The 15-minute `koi-stale-after` lease alone is NOT the bound because the DO-alarm `worker-alive` backstop keeps refreshing until `host-lease-until` expires. Both gates (`koi-stale-after` past AND `worker-alive` stale) must hold before sweep deletes — that is what closes the false-kill case during control-plane outages.
 
   **Vercel lease parameters (single source of truth):**
@@ -901,17 +913,16 @@ In-process delayed re-verify is necessary but not sufficient: a host crash, cont
   - **Adversarial test (mandatory):** `__tests__/vercel-multi-host-rejected.test.ts` constructs the adapter with every multi-host config value and asserts each rejects with `VERCEL_MULTI_HOST_UNSUPPORTED`. Test must pass for every PR that touches Vercel adapter construction.
   - This deliberately removes the sweeper-heartbeat / sweeper-loss / SWEEPER_LOST machinery from the v1 surface. Those terms are removed from the implementation contract; if reintroduced in a future PR they will require a worker-originated liveness signal that does not exist today.
   Artifacts created outside this adapter (or by other tools) lack the `koi-managed:v1` tag and are NEVER touched by any sweep.
-- **External reconciliation (only sweeps stale artifacts):** the cron job lists scripts/deployments where:
-  - `koi-managed=v1` AND
-  - `koi-owner=${expectedOwnerId}` AND
-  - `koi-stale-after` is in the past (artifact's lease has expired).
-  It then deletes them. Long-lived active instances renew their lease and are never swept regardless of age. The 1-hour threshold is replaced by the `koi-stale-after` lease check: sweep is gated on durable provider-side staleness, not just elapsed time.
+- **External reconciliation (provider-specific deletion predicate — single source of truth, see CF/Vercel-specific subsections below for the authoritative full predicate):** the cron job lists scripts/deployments where `koi-managed=v1` AND `koi-owner=${expectedOwnerId}` AND `koi-stale-after` is in the past. **Stale `koi-stale-after` is necessary but NOT sufficient on its own.** Each provider adds a second mandatory gate:
+  - **Cloudflare:** sweeper deletes only when `koi-stale-after` is past AND the `worker-alive` DO-backed liveness signal has gone stale. The DO-alarm liveness gate is itself bounded on a host-originated `host-lease-until` (see CF liveness section). Both gates must hold.
+  - **Vercel:** reconciler deletes only when `koi-stale-after` is past AND the artifact's stamped `processInstanceId` is no longer the holder of `koi:vercel:exclusive:${ownerId}` AND `koi-stale-after` has been past for at least 30 minutes (the confirmation window). All three gates must hold.
+  Long-lived active instances renew their `koi-stale-after` lease and are never swept regardless of age. The earlier "stale-after alone is enough" wording is REMOVED — that rule would have allowed a control-plane renewal outage to delete a still-serving worker.
   - The sweep additionally consults the local SQLite ledger to skip rows with `last_tried_at` within 5 minutes (some other host is actively reconciling).
 - **Cloudflare lease parameters (restating the single source of truth above for outage-tolerance analysis):** lease 15 minutes, renewal every 2 minutes, 3-failure tolerance (~6 minutes) before the local handle poisons. These are tuned so transient control-plane outages cannot cause the sweeper to kill healthy artifacts:
   - The host attempts a PATCH renewal every 2 minutes with a 30-second timeout.
   - A SINGLE missed renewal does NOT poison or sweep. Up to 3 consecutive failures over ~6 minutes are tolerated. After 3 consecutive misses, the host marks the local handle as POISONED and stops accepting new invokes (defense in depth — at this point control plane has been down for many minutes and the artifact's reachability is suspect anyway). The lease itself remains valid for the full 15 minutes and is what gates the sweeper.
   - **Worker-originated liveness signal — Cloudflare only, BOUNDED on host ownership:** on Cloudflare, Worker A writes a `worker-alive` heartbeat to a DO storage key `${ownerId}:alive:${pairUUID}` with a 90-second TTL refreshed every 30 seconds via the DO `setAlarm` API. **The DO does NOT self-refresh indefinitely**; the alarm callback is gated on a host-originated lease that the host must renew separately:
-    - **Host-originated DO lease:** every 5 minutes the host issues `POST /workers/scripts/${A-name}/__do_lease` against Worker A, which invokes a DO method that writes `host-lease-until = now + 30 minutes` to the SAME DO's storage. This call is authenticated with `KOI_INSTANCE_TOKEN` (same bearer the host uses for every other call) and is rate-limited to once per minute per pair to prevent unbounded write traffic.
+    - **Host-originated DO lease:** every 5 minutes the host issues `POST https://${A-name}.${subdomain}.workers.dev/__do_lease` against the **deployed Worker A runtime URL** (NOT the Cloudflare control-plane API). The bearer-authenticated request hits Worker A's `fetch` handler, which routes the path `/__do_lease` to a DO method that writes `host-lease-until = now + 30 minutes` to the same DO's storage. The same `Authorization: Bearer ${KOI_INSTANCE_TOKEN}` mechanism that protects `/invoke` protects this path; Worker A's request router rejects unauthenticated `/__do_lease` calls with 401. The earlier draft's `/workers/scripts/${A-name}/__do_lease` URL was incorrect — that is the Cloudflare control-plane API path, which cannot route into Worker A's runtime. The corrected runtime endpoint is the one specified here, and every other reference to `__do_lease` in this document means this runtime path. Rate-limited to once per minute per pair to prevent unbounded write traffic.
     - **Alarm callback gate:** when the DO alarm fires, the callback reads `host-lease-until`. If `host-lease-until > now`, it refreshes `worker-alive` and schedules the next alarm. If `host-lease-until <= now`, the callback does NOT refresh the key, does NOT schedule the next alarm, and the alive key expires at its natural 90-second TTL. The alarm chain stops — no more self-refresh.
     - **Net behavior:** a host hard-crash stops the 5-minute `__do_lease` calls. Within at most 30 minutes (the host-lease-until window) the DO alarm callback observes the expired lease and stops refreshing. After the alive key's 90-second natural TTL, the sweeper observes both `koi-stale-after` past AND `worker-alive` stale, and DELETEs.
     - **Worst-case post-crash leak window: 30 minutes (host-lease-until) + 90 seconds (alive TTL) + 1 minute (sweeper cadence) ≈ 32 minutes.** The earlier "16 minutes" claim was inconsistent with the DO-alarm self-refresh; the corrected number is 32 minutes and is now used in every restating site.
