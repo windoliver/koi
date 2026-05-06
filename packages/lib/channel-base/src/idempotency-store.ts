@@ -50,6 +50,7 @@ type CommittedRecord = {
 };
 
 export class InMemoryIdempotencyStore implements IdempotencyStore {
+  readonly durability = "ephemeral" as const;
   readonly #leases = new Map<string, LeaseRecord>();
   readonly #committed = new Map<string, CommittedRecord>();
   readonly #maxCommitted: number;
@@ -71,6 +72,16 @@ export class InMemoryIdempotencyStore implements IdempotencyStore {
     if (live && live.expiresAt > now) {
       return { ok: false, reason: "in-flight" };
     }
+    // Prune globally-expired committed records before the capacity
+    // check. Otherwise unrelated keys whose TTL has already elapsed
+    // still count toward `maxCommittedRecords` until they happen to
+    // be retried, and a long-running process can wedge in
+    // `capacity-exhausted` even though no live committed records
+    // remain. The check runs on every tryBegin only when capacity is
+    // at risk, so it is cheap in steady state.
+    if (this.#committed.size >= this.#maxCommitted) {
+      this.#pruneExpiredCommitted(now);
+    }
     if (this.#committed.size >= this.#maxCommitted) {
       return { ok: false, reason: "capacity-exhausted" };
     }
@@ -78,6 +89,12 @@ export class InMemoryIdempotencyStore implements IdempotencyStore {
     const expiresAt = now + leaseMs;
     this.#leases.set(key, { token, expiresAt });
     return { ok: true, lease: { key, token, expiresAt } };
+  }
+
+  #pruneExpiredCommitted(now: number): void {
+    for (const [k, rec] of this.#committed) {
+      if (rec.expiresAt <= now) this.#committed.delete(k);
+    }
   }
 
   async commit(lease: Lease, commitTtlMs: number): Promise<void> {

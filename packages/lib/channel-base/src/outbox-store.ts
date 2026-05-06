@@ -54,6 +54,7 @@ export interface OutboxStore {
 }
 
 export class InMemoryOutboxStore implements OutboxStore {
+  readonly durability = "ephemeral" as const;
   readonly #map = new Map<string, OutboxRecord>();
 
   async put(r: OutboxRecord): Promise<void> {

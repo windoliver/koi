@@ -217,6 +217,7 @@ describe("createWhatsAppChannel", () => {
     const idem = new InMemoryIdempotencyStore();
     const queue = new InMemoryIngressQueue<WhatsAppMessage, InboundMessage>();
     const durableLikeIdem = {
+      durability: "durable" as const,
       tryBegin: idem.tryBegin.bind(idem),
       commit: idem.commit.bind(idem),
       commitPoison: idem.commitPoison.bind(idem),
@@ -224,6 +225,7 @@ describe("createWhatsAppChannel", () => {
       renew: idem.renew.bind(idem),
     };
     const durableLikeQueue = {
+      durability: "durable" as const,
       enqueue: queue.enqueue.bind(queue),
       claim: queue.claim.bind(queue),
       ack: queue.ack.bind(queue),

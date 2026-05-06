@@ -15,6 +15,7 @@ type ThreadRecord = {
 };
 
 export class InMemoryThreadStore implements ThreadStore {
+  readonly durability = "ephemeral" as const;
   readonly #map = new Map<string, ThreadRecord>();
 
   async get(k: string): Promise<{ readonly state: ThreadState; readonly version: number } | null> {

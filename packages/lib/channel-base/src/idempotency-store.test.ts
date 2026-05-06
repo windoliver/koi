@@ -89,4 +89,26 @@ describe("InMemoryIdempotencyStore", () => {
     expect(r3).toEqual({ ok: false, reason: "in-flight" });
     await s.commit(r2.lease, 1000);
   });
+
+  test("global TTL prune: expired committed records do not block fresh keys at capacity", async () => {
+    // Regression: previously expired committed records were only
+    // deleted when their exact key was retried. After enough churn,
+    // unrelated stale entries counted toward maxCommittedRecords and
+    // fresh keys returned `capacity-exhausted` permanently. The store
+    // now prunes globally when capacity is at risk.
+    let now = 0;
+    const s = new InMemoryIdempotencyStore({ maxCommittedRecords: 2, now: () => now });
+    const r1 = await s.tryBegin("a", 100);
+    if (!r1.ok) throw new Error();
+    await s.commit(r1.lease, 50);
+    const r2 = await s.tryBegin("b", 100);
+    if (!r2.ok) throw new Error();
+    await s.commit(r2.lease, 50);
+    // Both expire.
+    now = 100;
+    // A fresh key would have been rejected as capacity-exhausted
+    // before the prune fix, despite both stored entries being stale.
+    const r3 = await s.tryBegin("c", 100);
+    expect(r3.ok).toBe(true);
+  });
 });

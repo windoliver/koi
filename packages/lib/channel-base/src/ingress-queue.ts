@@ -79,6 +79,7 @@ type DrainWaiter = {
 };
 
 export class InMemoryIngressQueue<P = unknown, N = unknown> implements IngressQueue<P, N> {
+  readonly durability = "ephemeral" as const;
   readonly #records = new Map<string, InternalRecord<P, N>>();
   readonly #dead: DeadLetterItem<P, N>[] = [];
   readonly #now: () => number;

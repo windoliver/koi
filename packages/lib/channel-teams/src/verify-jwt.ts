@@ -162,6 +162,21 @@ export function createTokenVerifier(
   config: TeamsConfig,
   options: CreateTokenVerifierOptions,
 ): JwtVerifier {
+  // Explicit guard for callers from JavaScript or older binding code
+  // that may omit `options`. `mintAppToken` has no safe default
+  // (Bot Framework rejects the appPassword as a Bearer token), so we
+  // fail with a clear error rather than crashing on `options.clock`
+  // dereference. TypeScript callers cannot reach this branch — it
+  // exists for runtime defense at the package boundary.
+  if (
+    typeof options !== "object" ||
+    options === null ||
+    typeof (options as { mintAppToken?: unknown }).mintAppToken !== "function"
+  ) {
+    throw new Error(
+      "INVALID_CONFIG: createTokenVerifier requires options.mintAppToken (Bot Framework OAuth2 client-credentials minter; no safe default — see createBotFrameworkAppTokenMinter)",
+    );
+  }
   const { issuer, jwksUri } = resolveIssuer(config);
   const clock = options.clock ?? Date.now;
   const verifyToken: VerifyTokenFn =

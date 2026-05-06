@@ -29,6 +29,7 @@ export interface ConversationAddressStore {
 }
 
 export class InMemoryConversationAddressStore implements ConversationAddressStore {
+  readonly durability = "ephemeral" as const;
   readonly #map = new Map<string, ConversationAddress>();
 
   async put(id: string, addr: ConversationAddress): Promise<void> {
