@@ -151,11 +151,11 @@ describe("@koi/channel-telegram normalize", () => {
     expect(out).not.toBeNull();
   });
 
-  test("callback_query without message uses fromId as numeric threadId (parseable by send)", async () => {
+  test("callback_query without message emits non-repliable inline:cq:<id> (fails closed, no DM leak)", async () => {
     const n = createNormalizer(deps());
     const cq: TelegramCallbackQueryLike = { id: "cb", from: { id: 7 }, data: "ping" };
     const out = await n(tgUpdate({ callback_query: cq }));
-    expect(out?.threadId).toBe("7");
+    expect(out?.threadId).toBe("inline:cq:cb");
   });
 
   test("inline-mode callback_query produces a non-repliable inline:<id> threadId", async () => {

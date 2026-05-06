@@ -578,6 +578,30 @@ describe("createDiscordChannel — coverage of less-trodden paths", () => {
     await adapter.disconnect();
   });
 
+  test("more than 10 file blocks chunk across multiple sends (Discord 10-attachment cap)", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    await adapter.connect();
+    const files = Array.from(
+      { length: 25 },
+      (_, i) =>
+        ({
+          kind: "file",
+          url: `https://x/${i}.bin`,
+          name: `f${i}.bin`,
+          mimeType: "application/octet-stream",
+        }) as const,
+    );
+    await adapter.send({ content: files, threadId: "G1:C1" });
+    expect(f.sent.length).toBeGreaterThanOrEqual(3);
+    for (const s of f.sent) {
+      expect(s.payload.files?.length ?? 0).toBeLessThanOrEqual(10);
+    }
+    const total = f.sent.reduce((n, s) => n + (s.payload.files?.length ?? 0), 0);
+    expect(total).toBe(25);
+    await adapter.disconnect();
+  });
+
   test("image block is sent as an embed with description", async () => {
     const f = fakeClient();
     const adapter = createDiscordChannel({ token: "T", client: f.client });

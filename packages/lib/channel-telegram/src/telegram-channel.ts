@@ -263,6 +263,23 @@ async function sendOutbound(api: TelegramApiLike, message: OutboundMessage): Pro
 
   const parts = partitionContent(message.content);
 
+  // Validate the entire outbound plan BEFORE the first side-effecting API
+  // call. Photos and documents are non-revertible — if a later button payload
+  // turned out to exceed Telegram's 64-byte callback_data cap, the user would
+  // see an orphaned media attachment with no explanatory text. Encoding now
+  // throws synchronously and aborts the whole send before any media leaves.
+  const keyboard: TelegramReplyMarkup | undefined =
+    parts.buttons.length > 0
+      ? {
+          inline_keyboard: [
+            parts.buttons.map((b) => ({
+              text: b.label,
+              callback_data: encodeCallbackData(b.action, b.payload),
+            })),
+          ],
+        }
+      : undefined;
+
   const photoOther = (alt: string | undefined): TelegramSendPhotoOther | undefined => {
     const o: { -readonly [K in keyof TelegramSendPhotoOther]: TelegramSendPhotoOther[K] } = {};
     if (alt !== undefined) o.caption = alt;
@@ -299,17 +316,6 @@ async function sendOutbound(api: TelegramApiLike, message: OutboundMessage): Pro
     // character so the API accepts the call. Single space is the smallest
     // payload that survives Telegram's whitespace trim.
     const chunks = parts.text.length > 0 ? splitText(parts.text, TEXT_LIMIT) : [" "];
-    const keyboard: TelegramReplyMarkup | undefined =
-      parts.buttons.length > 0
-        ? {
-            inline_keyboard: [
-              parts.buttons.map((b) => ({
-                text: b.label,
-                callback_data: encodeCallbackData(b.action, b.payload),
-              })),
-            ],
-          }
-        : undefined;
     for (let i = 0; i < chunks.length; i++) {
       const text = chunks[i] ?? "";
       const isLast = i === chunks.length - 1;

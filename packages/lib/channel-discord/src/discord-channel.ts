@@ -96,6 +96,8 @@ const DISCORD_CAPABILITIES: ChannelCapabilities = {
 const TEXT_LIMIT = 2000;
 const MAX_EMBEDS = 10;
 const MAX_ACTION_ROWS = 5;
+/** Discord rejects messages with more than 10 attachments. */
+const MAX_ATTACHMENTS = 10;
 
 /** Discord interaction tokens are valid for 15 minutes after creation. */
 const INTERACTION_TTL_MS = 15 * 60 * 1000;
@@ -413,6 +415,10 @@ function buildPayloads(
         break;
       case "file":
         files.push({ attachment: block.url, name: block.name ?? "file" });
+        // Discord rejects > 10 attachments on a single message; flush before
+        // we cross the cap so a batch with many file blocks splits into
+        // multiple deliveries instead of failing as a single rejected send.
+        if (files.length >= MAX_ATTACHMENTS) flush();
         break;
       case "button":
         components.push({

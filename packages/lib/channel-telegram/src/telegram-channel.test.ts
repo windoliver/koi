@@ -317,6 +317,25 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
+  test("send: oversized callback_data fails before any media is sent (no partial delivery)", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({ token: "T", bot: f.bot });
+    await adapter.connect();
+    const big = "x".repeat(80);
+    await expect(
+      adapter.send({
+        content: [
+          { kind: "image", url: "https://x/p.jpg" },
+          { kind: "text", text: "pick" },
+          { kind: "button", label: "Long", action: big },
+        ],
+        threadId: "200",
+      }),
+    ).rejects.toThrow(/callback_data exceeds/);
+    expect(f.calls).toHaveLength(0);
+    await adapter.disconnect();
+  });
+
   test("send: very long text is split at 4096-char boundary", async () => {
     const f = fakeBot();
     const adapter = createTelegramChannel({ token: "T", bot: f.bot });

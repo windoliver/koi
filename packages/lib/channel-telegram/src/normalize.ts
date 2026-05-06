@@ -102,22 +102,25 @@ async function normalizeCallbackQuery(
   const payloadStr = idx === -1 ? undefined : data.slice(idx + 1);
   const payload = payloadStr === undefined ? undefined : safeParse(payloadStr);
 
-  // Inline-mode callbacks have no chat context. Replying would require
-  // editMessageText with inline_message_id, which this adapter does not
-  // support. Emit a non-repliable `inline:<id>` threadId so `send()` fails
-  // closed instead of silently DMing the clicking user.
-  // `parseThreadId` expects a numeric chatId for repliable destinations; a
-  // private-chat user id IS the chat id, so we use `String(from.id)` as the
-  // chat fallback when the callback's `message` is missing but the click
-  // did NOT come from inline mode.
+  // Routing rules — fail closed on every ambiguous shape:
+  //  - Inline-mode (`inline_message_id`): emit non-repliable `inline:<id>`
+  //  - Chat-bound: derive thread from `message.chat.id` (+ optional topic)
+  //  - Neither present: emit non-repliable `inline:cq:<id>` to refuse send
+  //
+  // The previous fallback to `cq.from.id` looked benign (the user's id IS
+  // their DM chat id) but silently rerouted *group-originated* callbacks
+  // into the clicking user's private chat whenever Telegram delivered no
+  // `message` payload — leaking workflow replies and breaking auditability.
   // let requires justification: branchy threadId derivation
   let threadId: string;
   if (cq.inline_message_id !== undefined) {
     threadId = `inline:${cq.inline_message_id}`;
-  } else {
-    const chatId = cq.message?.chat.id ?? cq.from.id;
-    const threadIdFromMsg = cq.message?.message_thread_id;
+  } else if (cq.message !== undefined) {
+    const chatId = cq.message.chat.id;
+    const threadIdFromMsg = cq.message.message_thread_id;
     threadId = threadIdFromMsg === undefined ? String(chatId) : `${chatId}:${threadIdFromMsg}`;
+  } else {
+    threadId = `inline:cq:${cq.id}`;
   }
 
   const block: ContentBlock = {
