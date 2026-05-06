@@ -516,6 +516,45 @@ describe("linearSearch", () => {
     expect(result.terminalDiagnostic).toBeNull();
   });
 
+  test("forged constructor.name in thrown object collapses to 'Object' (no caller-controlled leak)", async () => {
+    // Regression: classifyCause previously trusted any constructor.name
+    // < 64 chars. A hostile callback could smuggle tenant identifiers
+    // into terminalDiagnostic.causeClass via { constructor: { name: ... } }
+    // — defeating the redaction contract for failure exits. Now only
+    // an allowlist of built-in error classes passes through.
+    const config = makeConfig({
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately exercise hostile rejection
+      evaluate: () =>
+        Promise.reject({
+          constructor: { name: "tenant-abc-secret-token" },
+        } as any),
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_failed");
+    expect(result.terminalDiagnostic?.causeClass).toBe("Object");
+    expect(result.terminalDiagnostic?.causeClass).not.toContain("tenant");
+  });
+
+  test("custom Error subclass with sensitive name collapses to 'Object' (allowlist enforcement)", async () => {
+    // A custom Error subclass whose name embeds caller-controlled data
+    // must NOT propagate into the diagnostic — only the fixed allowlist
+    // of built-in error classes is safe to surface.
+    class TenantSpecificError extends Error {
+      constructor(msg: string) {
+        super(msg);
+        this.name = "TenantSpecificError";
+      }
+    }
+    const config = makeConfig({
+      evaluate: async () => {
+        throw new TenantSpecificError("boom");
+      },
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_failed");
+    expect(result.terminalDiagnostic?.causeClass).toBe("Object");
+  });
+
   test("refine throw classifies cause as RangeError when refiner throws RangeError", async () => {
     const config = makeConfig({
       evaluate: async () => ({
@@ -715,7 +754,7 @@ describe("linearSearch", () => {
     expect(result.stopReason).toBe("eval_failed");
   });
 
-  test("default sanitizer redacts errorMessage, parameters, AND errorCode (only toolName preserved)", async () => {
+  test("default sanitizer redacts every field including toolName (fail-closed across LLM trust boundary)", async () => {
     let receivedFailures: readonly {
       toolName: string;
       errorCode: string;
@@ -745,7 +784,7 @@ describe("linearSearch", () => {
     await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
 
     expect(receivedFailures.length).toBe(1);
-    expect(receivedFailures[0]?.toolName).toBe("tool");
+    expect(receivedFailures[0]?.toolName).toBe("redacted");
     expect(receivedFailures[0]?.errorCode).toBe("redacted");
     expect(receivedFailures[0]?.errorMessage).toBe("redacted");
     expect(receivedFailures[0]?.parameters).toEqual({});

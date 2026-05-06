@@ -454,21 +454,41 @@ type DeadlineOutcome<T> =
     };
 
 /**
+ * Allowlist of built-in JS/Web error class names safe to surface in
+ * terminal diagnostics. Anything else collapses to "Object"/"Unknown"
+ * so a hostile callback cannot smuggle tenant identifiers, user data,
+ * or PII through `constructor.name` (which IS caller-controlled —
+ * either by extending Error or by forging an object literal whose
+ * `constructor.name` is a sensitive string).
+ */
+const SAFE_ERROR_CLASSES: ReadonlySet<string> = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "ReferenceError",
+  "SyntaxError",
+  "URIError",
+  "EvalError",
+  "AbortError",
+  "AggregateError",
+  "DOMException",
+]);
+
+/**
  * Best-effort extraction of an error class name for terminal
  * diagnostics. Avoids stringifying the message itself — that would
  * leak caller-controlled or sandbox-stderr content across the trust
- * boundary the package fails closed on. Constructor name is a static
- * label (TypeError, RangeError, ...) chosen by the runtime, safe to
- * surface.
+ * boundary the package fails closed on. Only allowlisted built-in
+ * error class names pass through; anything else (custom Error
+ * subclasses, forged constructors, plain objects) collapses to a
+ * fixed label so caller-controlled metadata cannot reach logs.
  */
 function classifyCause(err: unknown): string {
   if (err === null || err === undefined) return "Unknown";
-  // Object with a constructor name we trust (Error subclasses, custom
-  // classes). Hostile values may forge `.constructor` so guard tightly.
   if (typeof err === "object") {
     try {
       const name = (err as { constructor?: { name?: unknown } }).constructor?.name;
-      if (typeof name === "string" && name.length > 0 && name.length < 64) return name;
+      if (typeof name === "string" && SAFE_ERROR_CLASSES.has(name)) return name;
     } catch (_e: unknown) {
       // Accessor threw — fall through.
     }

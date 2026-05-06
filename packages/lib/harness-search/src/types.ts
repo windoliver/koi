@@ -116,10 +116,12 @@ export type EvaluateCallback = (
  * callers do not want exfiltrated to the model. Mirrors the
  * `sanitizeVerifierReason` pattern in `@koi/harness-synth`.
  *
- * Default ({@link DEFAULT_SEARCH_CONFIG}) keeps only `toolName` (a
- * static identifier) and redacts every other field. Callers wrapping
- * trusted in-process evaluators may pass through with `(f) => f`, or
- * supply a partial redactor that re-includes specific vetted fields.
+ * Default ({@link DEFAULT_SEARCH_CONFIG}) redacts every field —
+ * including `toolName`, since nothing in the evaluator contract
+ * guarantees it isn't a tenant-scoped or user-derived label. Callers
+ * wrapping trusted in-process evaluators may pass through with
+ * `(f) => f`, or supply a sanitizer that re-includes specific vetted
+ * fields (e.g. allowlisting toolName against the frozen descriptor).
  */
 export type SanitizeFailures = (failures: readonly EvalFailure[]) => readonly EvalFailure[];
 
@@ -182,9 +184,8 @@ export interface SearchConfig {
   readonly adapterHonorsAbort?: boolean;
   /**
    * Sanitizer applied to evaluator failures before they are passed into
-   * `refine()`. Default keeps only `toolName` and redacts every other
-   * field to prevent caller-controlled data from leaking into the LLM
-   * prompt.
+   * `refine()`. Default redacts every field (including `toolName`) to
+   * prevent caller-controlled data from leaking into the LLM prompt.
    */
   readonly sanitizeFailures?: SanitizeFailures;
   /** Wall-clock source. Default Date.now. */
@@ -196,19 +197,22 @@ export interface SearchConfig {
 }
 
 /**
- * Default redactor — keeps only `toolName` (typically a static
- * descriptor identifier baked at synthesis time) and replaces every
- * other field with a fixed string / empty object. `errorCode` is
- * redacted in addition to `errorMessage` and `parameters` because
- * evaluator code-vocabularies can encode tenant identifiers, sandbox
- * paths, or user-derived tags; the package fails closed on this trust
- * boundary so callers must opt in to passing diagnostic detail through
- * to the model. Pass-through `(f) => f` is supported for in-process
- * trusted evaluators; partial redactors can re-include vetted fields.
+ * Default redactor — fails closed on every field. `toolName` is also
+ * redacted by default because nothing in the evaluator contract
+ * constrains it to a static descriptor identifier: an evaluator using
+ * tenant-scoped routing names, user-derived labels, or runtime tool
+ * IDs would otherwise forward those strings into the LLM prompt even
+ * when every other field is sanitized. Callers wanting to surface a
+ * vetted name (e.g. matching the frozen descriptor.name) must supply
+ * a custom sanitizer that allowlists it explicitly. `errorCode`,
+ * `errorMessage`, and `parameters` are likewise redacted because
+ * evaluator code-vocabularies / stderr / payloads can carry tenant
+ * identifiers, sandbox paths, or user data. Pass-through `(f) => f`
+ * is supported for in-process trusted evaluators.
  */
 const DEFAULT_SANITIZE_FAILURES: SanitizeFailures = (failures) =>
-  failures.map((f) => ({
-    toolName: f.toolName,
+  failures.map((_f) => ({
+    toolName: "redacted",
     errorCode: "redacted",
     errorMessage: "redacted",
     parameters: {},
