@@ -184,50 +184,87 @@ if (claim !== "OK") {
   return await waitForTerminal(resultKey, failedKey, timeoutMs);
 }
 
-// 3. Spawn heartbeat: every 30s, atomic CAS that extends the lease IFF still owned by us
+// 3. Spawn heartbeat: every 30s, ownership-checked TTL extension via Lua EVAL
+//    Lua: extend TTL ONLY IF the current value still matches our requestId.
+const HEARTBEAT_LUA = `
+  if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('EXPIRE', KEYS[1], ARGV[2])
+  else
+    return 0
+  end
+`;
+let lostLease = false;
 const heartbeat = setInterval(async () => {
-  await kvCommand("SET", [claimKey, requestId, "XX", "EX", "60"]); // XX = only if exists
+  const result = await kvCommand("EVAL", [HEARTBEAT_LUA, "1", claimKey, requestId, "60"]);
+  if (result === 0) {
+    // We no longer own the claim. Some other isolate has taken it (lease expired and got reclaimed).
+    // Stop the heartbeat and POISON ourselves — the in-flight handler must NOT commit results.
+    lostLease = true;
+    clearInterval(heartbeat);
+  }
 }, 30_000);
 
 try {
   const result = await handler({ payload, operationId, requestId });
   clearInterval(heartbeat);
+  if (lostLease) {
+    // We ran handler but our lease was stolen mid-flight. We must not commit — another isolate
+    // is now authoritative. Log that side effects MAY have leaked (workload-class accepts this) and return.
+    console.warn("DEDUPE_LEASE_LOST_DURING_HANDLER", { operationId, requestId });
+    return new Response(JSON.stringify({ koi: { error: "LEASE_LOST" } }), { status: 503 });
+  }
 
-  // 4. Atomic commit: write result via POST body (NOT URL path — handles arbitrary size up to KV limit)
+  // 4. Atomic ownership-checked commit via Lua EVAL: write result + delete claim ONLY IF still owned.
+  const COMMIT_LUA = `
+    if redis.call('GET', KEYS[1]) == ARGV[1] then
+      redis.call('SET', KEYS[2], ARGV[2], 'EX', 86400)
+      redis.call('DEL', KEYS[1])
+      return 1
+    else
+      return 0
+    end
+  `;
   const resultJson = JSON.stringify(result);
   if (resultJson.length > MAX_DEDUPE_RESULT_BYTES /* = 8 MB, configurable */) {
-    // Result too large to cache durably. Log and return without persisting; lease will expire and next retry will re-run the handler.
+    // Result too large to cache durably. Ownership-checked claim release; if not owned, do nothing.
+    const RELEASE_LUA = `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end`;
+    await kvCommand("EVAL", [RELEASE_LUA, "1", claimKey, requestId]);
     console.warn("DEDUPE_RESULT_TOO_LARGE", { operationId, size: resultJson.length });
-    await kvCommand("DEL", [claimKey]); // release claim early so retries don't wait full 60s
     return new Response(resultJson, { status: 200 });
   }
-  // POST body, not URL path. Upstash REST supports binary-safe SET via the body endpoint.
-  const setResp = await fetch(`${KOI_DEDUPE_KV_URL}/set/${encodeURIComponent(resultKey)}?EX=86400`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${KOI_DEDUPE_KV_TOKEN}`, "content-type": "application/json" },
-    body: resultJson,
-  });
-  if (!setResp.ok) {
-    // Persistence failed after side effects. Retry up to 3x with backoff; if still failing, log and continue.
-    // Same posture as Cloudflare: the workload-class restriction (assertIdempotent) makes this acceptable.
-    await retryPersistResult(resultKey, resultJson, 86400, 3);
+  const committed = await kvCommand("EVAL", [COMMIT_LUA, "2", claimKey, resultKey, requestId, resultJson]);
+  if (committed === 0) {
+    // Lost ownership between handler completion and commit attempt. Don't write result; another
+    // isolate will produce its own result. Side effects may have leaked (workload-class accepts).
+    console.warn("DEDUPE_OWNERSHIP_LOST_AT_COMMIT", { operationId, requestId });
+    return new Response(JSON.stringify({ koi: { error: "OWNERSHIP_LOST" } }), { status: 503 });
   }
-  await kvCommand("DEL", [claimKey]);
   return new Response(resultJson, { status: 200 });
 } catch (err) {
   clearInterval(heartbeat);
-  // Don't cache transient handler errors; only operator-marked terminal failures.
-  await kvCommand("DEL", [claimKey]);
+  // Don't cache transient handler errors. Ownership-checked DEL only.
+  const RELEASE_LUA = `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end`;
+  await kvCommand("EVAL", [RELEASE_LUA, "1", claimKey, requestId]);
   throw err;
 }
 ```
 
 Rules mirror the Cloudflare design:
 - Strong consistency via Redis `SET NX` for the claim and `MGET` for the terminal-cache check.
-- 60-second lease with 30-second heartbeat ensures crashed isolates don't block retries indefinitely.
-- Stuck-claim recovery: a polling caller that observes `claim` expire (TTL hit) without `result`/`failed` being set transitions to its own claim and re-runs.
+- 60-second lease with 30-second heartbeat. **All heartbeat, commit, and release operations use ownership-checked Lua scripts** that compare the current value of `claim:${operationId}` against this isolate's `requestId` before mutating anything. A stale claimer whose lease expired and was re-acquired by another isolate cannot extend its lease, write results, or delete the new owner's claim — the Lua script's `GET == ARGV[1]` guard fails and the operation returns 0.
+- **Lease loss → poison and abort:** if the heartbeat detects ownership loss mid-handler, the isolate marks `lostLease = true`, clears the heartbeat, and returns a `503 LEASE_LOST` response WITHOUT writing any result or releasing the claim. The new owner's state is preserved untouched. The handler may already have committed external side effects — that risk is covered by the workload-class restriction.
+- **Commit ownership check:** the final write of `result` and `DEL` of `claim` is a single atomic Lua `EVAL`. If ownership has been lost in the gap between handler completion and commit attempt, the script returns 0 and the isolate returns `503 OWNERSHIP_LOST` without polluting the new owner's state.
 - Result writes use POST body, not URL path, to handle arbitrary size up to a configurable `MAX_DEDUPE_RESULT_BYTES` (default 8 MB).
 - Persistence failures after side effects fall back to "log and serve result without caching" — same as Cloudflare DO, justified by the workload-class restriction.
+
+**Adversarial test (mandatory):** `__tests__/vercel-dedupe-lease-race.test.ts` spawns two stubbed shim invocations with the same `operationId`. Test scenarios:
+1. Isolate A claims, then sleeps past lease TTL (simulated via fake timers).
+2. Isolate B claims successfully (A's lease expired).
+3. Isolate A wakes up and attempts heartbeat → assert it detects ownership loss and returns `LEASE_LOST` without mutating any key.
+4. Isolate A attempts commit → assert the Lua script returns 0 and no key is mutated.
+5. Isolate B completes normally → assert its result is the only one cached, its claim is the only one cleared.
+
+CI runs this on every PR that touches the Vercel dedupe code; the test fails if any of A's late operations succeed.
 
 #### No opt-out
 
