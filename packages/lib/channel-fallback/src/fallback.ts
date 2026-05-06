@@ -93,6 +93,9 @@ export function wrapWithFallback<T extends ChannelAdapter>(
             fn.call(target, downgradeMessage(message), ...rest);
         }
       }
+      // Pure helpers (e.g. VoiceChannelAdapter.stampForCurrentCall,
+      // currentCallEpoch) pass through unchanged via the catchall below —
+      // they don't need downgrade, just `this`-binding to the inner adapter.
       const value = Reflect.get(target, prop, receiver);
       // Bind methods to inner so prototype `this`-references resolve correctly.
       if (typeof value === "function") return value.bind(target);

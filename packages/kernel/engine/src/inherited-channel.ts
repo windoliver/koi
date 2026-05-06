@@ -89,16 +89,15 @@ export function createInheritedChannel(
     },
   };
 
-  // Round-40 medium: forward adapter-specific extension methods that bypass
-  // send() (e.g. MobileChannelAdapter.sendUnsolicited — the ONLY explicit
-  // "deliver to currently connected socket" path on the mobile adapter).
-  // Without this, child agents spawned onto a mobile parent channel lose
-  // every proactive/live-delivery capability, silently downgrading to push
-  // fallback or rejection. Listed explicitly so plain-looking methods on
-  // the parent (`onMessage`, `connect`) cannot be re-typed and accidentally
-  // forwarded — only documented outbound extensions get the bypass.
-  const PARENT_EXTENSION_METHODS = ["sendUnsolicited"] as const;
-  for (const methodName of PARENT_EXTENSION_METHODS) {
+  // Round-40 medium: forward adapter-specific OUTBOUND extension methods
+  // that bypass send() (e.g. MobileChannelAdapter.sendUnsolicited — the
+  // ONLY explicit "deliver to currently connected socket" path on the
+  // mobile adapter). These get attribution applied (just like send()).
+  // Listed explicitly so plain-looking methods on the parent (`onMessage`,
+  // `connect`) cannot be re-typed and accidentally forwarded — only
+  // documented outbound extensions get the bypass.
+  const PARENT_OUTBOUND_EXTENSIONS = ["sendUnsolicited"] as const;
+  for (const methodName of PARENT_OUTBOUND_EXTENSIONS) {
     const original = (parentChannel as unknown as Record<string, unknown>)[methodName];
     if (typeof original === "function") {
       // Round-42 high: forward the full extension signature, not just the
@@ -111,6 +110,23 @@ export function createInheritedChannel(
         if (resolved.mode === "none") return Promise.resolve();
         return fn.call(parentChannel, attributeMessage(message), ...rest);
       };
+    }
+  }
+
+  // Round-44 high: forward adapter-specific PURE HELPERS that do not go
+  // through send() and need no attribution — `VoiceChannelAdapter`'s
+  // `stampForCurrentCall(outbound)` and `currentCallEpoch()`. Without these,
+  // child agents inheriting a voice parent lose the ONLY supported way to
+  // mint a current-epoch tag for server-initiated outbound after reconnect,
+  // and every such send rejects with VoicePoisonedSessionError. Pure
+  // delegation — no attribution, no message rewrite — these helpers don't
+  // produce wire traffic; they return data the caller passes back into send().
+  const PARENT_PURE_EXTENSIONS = ["stampForCurrentCall", "currentCallEpoch"] as const;
+  for (const methodName of PARENT_PURE_EXTENSIONS) {
+    const original = (parentChannel as unknown as Record<string, unknown>)[methodName];
+    if (typeof original === "function") {
+      const fn = original as (...args: unknown[]) => unknown;
+      child[methodName] = (...args: unknown[]): unknown => fn.apply(parentChannel, args);
     }
   }
   return child as unknown as ChannelAdapter;

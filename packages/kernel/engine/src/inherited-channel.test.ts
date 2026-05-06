@@ -292,6 +292,53 @@ describe("createInheritedChannel", () => {
     expect(seenOpts).toEqual([{ recipient: "device-alice" }]);
   });
 
+  test("forwards voice pure helpers stampForCurrentCall + currentCallEpoch (round-44 high)", async () => {
+    // Round-44 high: a child agent inheriting a VoiceChannelAdapter must be
+    // able to mint a current-epoch tag for server-initiated outbound after
+    // reconnect — without these helpers the post-reconnect fence rejects
+    // every such send. Pure pass-through (no attribution): `stampForCurrentCall`
+    // returns a tagged outbound; `currentCallEpoch` returns a number.
+    let stampCalls = 0;
+    let epochCalls = 0;
+    const parent: ChannelAdapter & {
+      stampForCurrentCall: (m: OutboundMessage) => OutboundMessage;
+      currentCallEpoch: () => number;
+    } = {
+      name: "voice-parent",
+      capabilities: CAPABILITIES,
+      connect: () => Promise.resolve(),
+      disconnect: () => Promise.resolve(),
+      send: () => Promise.resolve(),
+      onMessage: () => () => {},
+      stampForCurrentCall: (m: OutboundMessage) => {
+        stampCalls++;
+        return { ...m, metadata: { ...(m.metadata ?? {}), voiceCallEpoch: 7 } };
+      },
+      currentCallEpoch: () => {
+        epochCalls++;
+        return 7;
+      },
+    };
+    const childPid: ProcessId = {
+      id: agentId("child-id"),
+      name: "child",
+      type: "worker",
+      depth: 1,
+      parent: agentId("parent-1"),
+    };
+    const proxy = createInheritedChannel(parent, childPid) as ChannelAdapter & {
+      stampForCurrentCall?: (m: OutboundMessage) => OutboundMessage;
+      currentCallEpoch?: () => number;
+    };
+    expect(typeof proxy.stampForCurrentCall).toBe("function");
+    expect(typeof proxy.currentCallEpoch).toBe("function");
+    const stamped = proxy.stampForCurrentCall?.({ content: [{ kind: "text", text: "hi" }] });
+    expect(stamped?.metadata?.["voiceCallEpoch"]).toBe(7);
+    expect(stampCalls).toBe(1);
+    expect(proxy.currentCallEpoch?.()).toBe(7);
+    expect(epochCalls).toBe(1);
+  });
+
   test("does not synthesize sendUnsolicited when parent does not provide it (round-40 medium)", async () => {
     // Only forward extensions the parent actually provides — never invent
     // a method that would silently no-op.
