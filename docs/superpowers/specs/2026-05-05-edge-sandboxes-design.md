@@ -133,20 +133,21 @@ A future `sandbox-edge-router` package can offer cross-provider selection betwee
 
 This doc update is a required deliverable of this PR (see Acceptance below) so that no documented contract conflicts with what ships.
 
-### Idempotency model: best-effort durable dedupe + operator-attested downstream idempotency
+### Idempotency model: durable dedupe + class-A workload restriction (single contract for v1)
 
-**The contract is honest about what is mechanical and what is attestation.** The adapter provides cross-retry dedupe via a **strongly-consistent** provider-side durable store (CF Durable Objects, Vercel KV — eventually-consistent stores like Cloudflare KV are insufficient because their 60-second propagation window allows cross-instance retries to miss just-written entries). The durable store DOES mechanically enforce dedupe on the **happy path** and on **most failure paths** — a retry that arrives after a successful commit observes the cached terminal record and never re-runs the handler.
+**v1 admits ONLY `workloadClass: "A"` (side-effect-free handlers).** This is the single authoritative idempotency story for the release: there is no operator-attestation path, no `assertIdempotent` flag, no class-B mediated-outbound path in v1. All those concepts are deferred to a future PR and explicitly NOT part of the v1 contract.
 
-**However, several documented partial-failure paths still permit handler re-execution after side effects may have committed externally:**
+The adapter provides cross-retry dedupe via a strongly-consistent provider-side durable store (CF Durable Objects; Vercel KV — eventually-consistent stores like Cloudflare KV are insufficient because their 60-second propagation window allows cross-instance retries to miss just-written entries). The durable store mechanically enforces dedupe on the happy path and on the majority of failure paths — a retry that arrives after a successful commit observes the cached terminal record and never re-runs the handler.
+
+**Several documented partial-failure paths still permit handler re-execution after the handler ran but before the terminal record persisted:**
 - Cloudflare DO `complete` retry exhaustion (`DEDUPE_PERSISTENCE_FAILED` after 3 attempts) — handler ran, terminal record never persisted, lease expires, retry re-runs.
 - Vercel KV lease loss mid-handler (`LEASE_LOST`) — handler ran, lease was reclaimed by another isolate before commit, this isolate cannot commit, the new owner re-runs.
 - Vercel KV ownership loss at commit (`OWNERSHIP_LOST`) — same shape: handler ran, commit blocked because another isolate took ownership, re-runs.
-- Oversized successful results were a fourth such path; that one is now closed by writing a permanent `RESULT_TOO_LARGE_PERMANENT` failed-permanent terminal record (see Vercel section).
+- Oversized successful results were a fourth such path; that one is now closed by writing a permanent `RESULT_TOO_LARGE_PERMANENT` failed-permanent terminal record.
 
-For the three remaining paths, **the only protection against duplicate external side effects is operator-attested downstream idempotency keyed on `operationId`** — this is attestation + AST-lint, not a runtime guarantee (see the dedupe-contract section below for the full honest framing). The contract therefore is:
-- **Mechanical:** strongly-consistent durable dedupe on the happy path and on the majority of failure paths.
-- **Attestation + lint:** downstream-target idempotency for the three crash/persistence paths above. Bypassable in principle; deploy-blocked AST gate in practice.
-- **Best-effort under partial-failure stress:** the adapter does NOT promise exactly-once external side effects under arbitrary network/persistence failure; it promises strongly-consistent durable cache with documented re-execution paths whose duplicate-effect risk is the operator's audit responsibility.
+**Under the v1 class-A restriction these re-execution paths are intrinsically harmless** — a class-A handler is a pure function of `payload`, has no external side effects (no `fetch`, no DB writes, no queue publishes — enforced by the runtime fence + recursive AST scan + provider-mutable globals catalogue), and re-running it produces no observable duplicate effect beyond compute cost. The dedupe store's job in v1 is therefore to cache OUTPUTS for caller convenience, not to mechanically prevent duplicate side effects (because there are no side effects to prevent).
+
+**The deferred class-B story (mediated outbound side effects with attestation + lint + downstream-idempotency keying)** is preserved in this spec for the future PR but does NOT participate in v1's contract. Any reference to "operator-attested downstream idempotency" elsewhere in this document refers to that future class-B work, not v1.
 
 The L2 doc carries this contract verbatim in its first section so callers cannot mistake the mechanism for stronger.
 
@@ -175,7 +176,7 @@ Adapter construction fails with `KoiError { code: "DEDUPE_STORE_REQUIRED" | "OWN
 1. Creating an empty DO namespace via Cloudflare dashboard or `wrangler` (one-time per fleet) and providing its ID.
 2. Granting the API token DO migration permissions.
 
-The adapter then binds the koi-shipped DO class to that namespace as part of the create flow. **Gateway integrity is verified on the INVOKE path with a fail-closed contract — there is NO blind execution window.** A 60-second background poll cannot satisfy the trust boundary: a mutated Worker A holds dedupe credentials and request-authentication state during the polling gap, and induced poll failures only widen that window. The corrected design eliminates the polling-gap exposure with a two-part mechanism:
+The adapter then binds the koi-shipped DO class to that namespace as part of the create flow. **Gateway integrity is verified on the INVOKE path with a fail-closed contract.** Per-mode tamper-window guarantees: **`strict`** (opt-in) collapses the window to ≈0; **`cached`** (DEFAULT) admits a bounded ≤1s window in exchange for amortized API rate; **`async`** (opt-in) admits a ≤30s window in exchange for full data-plane decoupling. Earlier prose that read "NO blind execution window" referred to strict mode specifically and is REWRITTEN here so the per-mode bounds are explicit at the section header. The earlier 60-second background-poll design (with no on-path verify) was rejected because it left a wider, undocumented gap; the three-mode architecture documents its bounds explicitly. The integrity mechanism:
 
   1. **Comprehensive deploy-time attestation pinning across BOTH workers in the pair.** At create time the adapter records the FULL set of mutable surface for Worker A AND Worker B — not just the gateway — as the **expected attestation bundle**. The `koi-attestation-fingerprint = sha256(canonicalJson({ A: workerAttestation, B: workerAttestation }))` where each `workerAttestation` is computed from:
      - `etag` from `PUT /workers/scripts/${name}` response (CF's content hash of the deployed bundle).
