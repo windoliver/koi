@@ -2167,6 +2167,54 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("freshly-minted stamp AFTER endCall is also rejected — hard call boundary (round-54 high)", async () => {
+    // Round-54 high: round-51's untagged-fence excused sends carrying
+    // epoch+sessionGen metadata. So a caller could do:
+    //   ch.endCall(sid);
+    //   await ch.send(ch.stampForCurrentCall(sid, msg));
+    // The fresh stamp used the NEW gen and slipped through every
+    // generation check — defeating the call boundary entirely. Now the
+    // sessionsAwaitingNewTurn check is a HARD deny regardless of
+    // stamped metadata: nothing speaks into an ended call until a new
+    // user turn arrives.
+    // let requires justification: harness state captured by callbacks
+    let listener54: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+    const transport54: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (handler: (sessionId: string, frame: Uint8Array) => void) => {
+        listener54 = handler;
+        return () => {
+          listener54 = undefined;
+        };
+      },
+    };
+    const stt54: Stt = { transcribe: async () => "u" };
+    const tts54: Tts = { synthesize: async () => new Uint8Array([1]) };
+    const ch54 = createVoiceChannel({ transport: transport54, stt: stt54, tts: tts54 });
+    ch54.onMessage(async () => {});
+    await ch54.connect();
+    listener54?.("default", new Uint8Array([1]));
+    await new Promise((r) => setTimeout(r, 30));
+    ch54.endCall("default");
+    // Mint a stamp AFTER endCall — would carry the new gen. Must still reject.
+    const freshStamp = ch54.stampForCurrentCall("default", {
+      threadId: "default",
+      content: [{ kind: "text", text: "should not speak" }],
+    });
+    await expect(ch54.send(freshStamp)).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+    // After a new user turn arrives, the session reopens.
+    listener54?.("default", new Uint8Array([2]));
+    await new Promise((r) => setTimeout(r, 30));
+    const postFreshStamp = ch54.stampForCurrentCall("default", {
+      threadId: "default",
+      content: [{ kind: "text", text: "now ok" }],
+    });
+    await ch54.send(postFreshStamp);
+    await ch54.disconnect();
+  });
+
   test("stampForCurrentCall is rejected after endCall(sessionId) until next inbound (round-53 high)", async () => {
     // Round-53 high: stampForCurrentCall(outbound) used to stamp ONLY
     // the connection epoch — it bypassed the per-session call boundary

@@ -944,18 +944,16 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
     } else if (inboundCtx === undefined && connectGen > 0) {
       return Promise.reject(new VoicePoisonedSessionError(message.threadId));
     }
-    // Round-51 high: hard call boundary. After endCall(sessionId), any
-    // untagged send to that threadId is rejected until a new inbound
-    // turn establishes a fresh incarnation. Tagged sends are still
-    // governed by the per-turn-id fence below (which endCall already
-    // expired). This blocks delayed old-call callbacks that issue bare
-    // `ch.send({threadId: reused, ...})` with no metadata after the
-    // host declared the prior call ended.
-    if (
-      sessionsAwaitingNewTurn.has(message.threadId) &&
-      messageEpochRaw === undefined &&
-      message.metadata?.[VOICE_SESSION_GEN_KEY] === undefined
-    ) {
+    // Round-51/54 high: hard call boundary. After endCall(sessionId),
+    // ALL sends to that threadId reject until a new inbound turn
+    // establishes a fresh incarnation. Round-54 caught a bypass: the
+    // round-51 check excused sends carrying epoch+sessionGen metadata,
+    // which let `stampForCurrentCall(sessionId, ...)` AFTER endCall mint
+    // a fresh stamp at the new generation and slip through. Now the
+    // boundary is a hard deny regardless of stamped metadata — once the
+    // host declares the call ended, nothing speaks into it until the
+    // next user turn arrives.
+    if (sessionsAwaitingNewTurn.has(message.threadId)) {
       return Promise.reject(new VoicePoisonedSessionError(message.threadId));
     }
     // Round-52 high: per-session call-generation fence (durable, no
