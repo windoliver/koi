@@ -156,11 +156,44 @@ async function sendOutbound(
     );
   }
 
+  // let requires justification: counts chunks that successfully went out
+  // so we can escalate to a typed partial-delivery error after the first
+  // success. Without this, a transient failure on chunk 2 looks like a
+  // total failure to retry middleware, which would resend chunk 1 and
+  // duplicate it in the recipient's chat.
+  let delivered = 0;
   for (const chunk of chunks) {
     const params: Record<string, unknown> = isGroup
       ? { account, message: chunk, groupId: target }
       : { account, message: chunk, recipient: target };
-    await proc.send({ method: "send", params });
+    try {
+      await proc.send({ method: "send", params });
+      delivered++;
+    } catch (err: unknown) {
+      if (delivered === 0) throw err;
+      throw new SignalPartialDeliveryError(delivered, err);
+    }
+  }
+}
+
+/**
+ * Thrown when a multi-chunk Signal send fails after at least one chunk
+ * has already been delivered. Retry/queue middleware should detect this
+ * error class and NOT blindly retry the same `OutboundMessage` —
+ * doing so would duplicate the already-sent chunks in the recipient's
+ * chat. Surface to the caller so they can compose a manual recovery
+ * (resend only the missing tail) or accept partial delivery.
+ */
+export class SignalPartialDeliveryError extends Error {
+  readonly deliveredParts: number;
+  override readonly cause: unknown;
+  constructor(deliveredParts: number, cause: unknown) {
+    super(
+      `[channel-signal] partial delivery: ${deliveredParts} chunk(s) sent before failure; retrying the same OutboundMessage will duplicate them`,
+    );
+    this.name = "SignalPartialDeliveryError";
+    this.deliveredParts = deliveredParts;
+    this.cause = cause;
   }
 }
 

@@ -235,7 +235,11 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
-  test("webhook: handleWebhook dedupes by update_id (Telegram retry should not re-fire)", async () => {
+  test("webhook: handleWebhook does NOT dedupe in-memory (callers must layer dedupe at a durable boundary)", async () => {
+    // Adapter-level dedupe is unsafe: deliver() is fire-and-forget, so
+    // marking an update as seen before it is durably processed would
+    // suppress legitimate Telegram retries after a crash mid-handling
+    // and lose the message permanently. Verify retries are forwarded.
     const f = fakeBot();
     const adapter = createTelegramChannel({
       token: "T",
@@ -254,9 +258,8 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     };
     adapter.handleWebhook("s", update);
     adapter.handleWebhook("s", update);
-    adapter.handleWebhook("s", update);
     await new Promise((r) => setTimeout(r, 10));
-    expect(seen).toHaveLength(1);
+    expect(seen).toHaveLength(2);
     await adapter.disconnect();
   });
 

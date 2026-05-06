@@ -172,26 +172,6 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
   const PENDING_BUFFER_MAX = 256;
   // let requires justification: drained when updateHandler is installed.
   let pending: TelegramUpdateLike[] = [];
-  // Webhook dedupe ring. Telegram retries a webhook delivery on any
-  // ambiguous response (timeout, 5xx, network blip), so the same
-  // update_id can land more than once. Without this guard each retry
-  // would re-run the same agent turn and any attached tool side effects.
-  // The ring holds the last N update_ids — adequate because Telegram
-  // only retries the most recent undelivered update, not arbitrarily
-  // old ones.
-  const WEBHOOK_DEDUPE_RING_SIZE = 1024;
-  const seenUpdateIds = new Set<number>();
-  const seenUpdateOrder: number[] = [];
-  const isDuplicateUpdate = (id: number): boolean => {
-    if (seenUpdateIds.has(id)) return true;
-    seenUpdateIds.add(id);
-    seenUpdateOrder.push(id);
-    if (seenUpdateOrder.length > WEBHOOK_DEDUPE_RING_SIZE) {
-      const evicted = seenUpdateOrder.shift();
-      if (evicted !== undefined) seenUpdateIds.delete(evicted);
-    }
-    return false;
-  };
 
   const deliver = (update: TelegramUpdateLike): void => {
     if (updateHandler !== undefined) {
@@ -394,14 +374,17 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
           "[channel-telegram] handleWebhook called while disconnected — return a non-200 so Telegram retries",
         );
       }
-      // Replay protection: Telegram retries webhook delivery on
-      // timeouts/5xx/network blips, so the same update_id can land
-      // more than once. Drop duplicates BEFORE dispatch so an
-      // already-processed agent turn does not re-fire its tool calls.
-      if (isDuplicateUpdate(update.update_id)) return;
-      // Use the same buffered delivery path as polling so updates that
-      // arrive between connect() and onPlatformEvent's handler install
-      // are not silently dropped.
+      // NOTE on replay protection: Telegram retries webhook delivery
+      // on timeouts/5xx/network blips, so the same `update_id` can
+      // land more than once. We deliberately do NOT dedupe inside the
+      // adapter — `deliver()` is fire-and-forget and provides no
+      // signal for "downstream processed this successfully", so an
+      // in-process dedupe would suppress legitimate retries that
+      // arrive after a crash mid-handling and cause permanent message
+      // loss. Operators MUST layer dedupe at the HTTPS handler keyed
+      // on `update.update_id` (or in their queue/persistence layer)
+      // around a durable success boundary. We surface `update_id` on
+      // the inbound message so the gateway has it to work with.
       deliver(update);
     },
     resolveMediaUrl,

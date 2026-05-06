@@ -370,6 +370,26 @@ async function sendOutbound(
   // user-scoped instead of leaking into the channel).
   // Overflow payloads also use followUp() so they share the same
   // visibility scope as the first reply.
+  // One logical OutboundMessage may map to several Discord API calls
+  // (long text → text chunks, attachment batching, interaction overflow).
+  // Each call is non-revertible, so a transient failure mid-way leaves
+  // earlier payloads delivered to the user. Track the count so the
+  // error escalates to a typed partial-delivery surface — retry/queue
+  // middleware MUST detect it and refuse to blindly resend the same
+  // OutboundMessage (which would duplicate the already-delivered
+  // chunks).
+  // let requires justification: accumulates across sub-calls below
+  let delivered = 0;
+  const tryStep = async (step: () => Promise<unknown>): Promise<void> => {
+    try {
+      await step();
+      delivered++;
+    } catch (err: unknown) {
+      if (delivered === 0) throw err;
+      throw new DiscordPartialDeliveryError(delivered, err);
+    }
+  };
+
   const parsed = parseInteractionThread(message.threadId);
   if (parsed !== undefined) {
     const entry = pendingInteractions.get(parsed.interactionId);
@@ -386,23 +406,23 @@ async function sendOutbound(
         // failure can be retried on the same threadId without losing the
         // interaction handle (which would otherwise force the retry to
         // hard-fail per the button-fail-closed rule above).
-        if (first !== undefined) await followUp.call(entry.interaction, first);
+        if (first !== undefined) await tryStep(() => followUp.call(entry.interaction, first));
         pendingInteractions.delete(parsed.interactionId);
         for (let i = 1; i < payloads.length; i++) {
           const p = payloads[i];
-          if (p !== undefined) await followUp.call(entry.interaction, p);
+          if (p !== undefined) await tryStep(() => followUp.call(entry.interaction, p));
         }
         return;
       }
       // slash — keep the entry until editReply() succeeds so transient
       // failures (network, 5xx) can be retried on the same threadId.
-      if (first !== undefined) await entry.interaction.editReply(first);
+      if (first !== undefined) await tryStep(() => entry.interaction.editReply(first));
       pendingInteractions.delete(parsed.interactionId);
       if (payloads.length > 1) {
         if (typeof followUp === "function") {
           for (let i = 1; i < payloads.length; i++) {
             const p = payloads[i];
-            if (p !== undefined) await followUp.call(entry.interaction, p);
+            if (p !== undefined) await tryStep(() => followUp.call(entry.interaction, p));
           }
         } else {
           const channel = await resolveChannel(client, parsed.channelId);
@@ -413,7 +433,7 @@ async function sendOutbound(
           }
           for (let i = 1; i < payloads.length; i++) {
             const p = payloads[i];
-            if (p !== undefined) await channel.send(p);
+            if (p !== undefined) await tryStep(() => channel.send(p));
           }
         }
       }
@@ -446,7 +466,29 @@ async function sendOutbound(
     throw new Error(`[channel-discord] channel not found for threadId "${message.threadId}"`);
   }
   for (const payload of payloads) {
-    await channel.send(payload);
+    await tryStep(() => channel.send(payload));
+  }
+}
+
+/**
+ * Thrown when a multi-payload Discord send fails after at least one
+ * payload has already been delivered. Retry/queue middleware should
+ * detect this error class and NOT blindly retry the same `OutboundMessage` —
+ * doing so would duplicate the already-sent chunks (long-text overflow,
+ * batched attachments, or interaction-overflow followUps). Surface to
+ * the caller so they can compose a manual recovery (e.g. resend only
+ * the missing chunks) or accept partial delivery.
+ */
+export class DiscordPartialDeliveryError extends Error {
+  readonly deliveredParts: number;
+  override readonly cause: unknown;
+  constructor(deliveredParts: number, cause: unknown) {
+    super(
+      `[channel-discord] partial delivery: ${deliveredParts} payload(s) sent before failure; retrying the same OutboundMessage will duplicate them`,
+    );
+    this.name = "DiscordPartialDeliveryError";
+    this.deliveredParts = deliveredParts;
+    this.cause = cause;
   }
 }
 

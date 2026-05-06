@@ -9,6 +9,7 @@ export {
   blocksToText,
   createSignalChannel,
   defaultSignalSpawn,
+  SignalPartialDeliveryError,
   splitText,
 } from "./signal-channel.js";
 export type {

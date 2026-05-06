@@ -11,7 +11,11 @@ export type {
   DiscordSendTargetLike,
   DiscordSlashCommand,
 } from "./discord-channel.js";
-export { createDiscordChannel, splitText } from "./discord-channel.js";
+export {
+  createDiscordChannel,
+  DiscordPartialDeliveryError,
+  splitText,
+} from "./discord-channel.js";
 export type {
   DiscordAttachment,
   DiscordAuthor,
