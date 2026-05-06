@@ -373,6 +373,17 @@ export function createWhatsAppChannel(
       return new Response(null, { status: 200 });
     }
 
+    // Handler-presence gate: we have valid items to enqueue, but no
+    // onMessage() handler is installed. 200-acking would tell Meta
+    // the messages were processed while the worker would later
+    // throw NO_HANDLER and dead-letter — silent permanent loss from
+    // Meta's perspective. 503 lets Meta retry until the handler is
+    // wired. Placed AFTER the malformed/envelope-issue branches so
+    // those still 200-ack with operator-visible signal.
+    if (handlerRef.current === null) {
+      return new Response("NO_HANDLER", { status: 503 });
+    }
+
     // Step 2: probe IdempotencyStore + enqueue per message. All items are
     // already known-valid, so any failure here is transient store/dedupe
     // pressure → 503 so Meta retries the whole batch (enqueue is
@@ -440,7 +451,24 @@ export function createWhatsAppChannel(
         );
       }
       const sep = tid.indexOf("|");
-      const recipient = sep >= 0 ? tid.slice(sep + 1) : tid;
+      let recipient: string;
+      if (sep >= 0) {
+        const tidPid = tid.slice(0, sep);
+        recipient = tid.slice(sep + 1);
+        // Composite threadId carries the originating business
+        // number. Reject sends whose embedded phoneNumberId does
+        // not match this channel's config — otherwise a reply
+        // routed against the wrong channel instance would still
+        // ship from this number to the recipient, leaking the
+        // conversation across business numbers / brands.
+        if (tidPid !== config.phoneNumberId) {
+          throw new Error(
+            `WRONG_BUSINESS_NUMBER: threadId business number "${tidPid}" does not match this channel's phoneNumberId "${config.phoneNumberId}"`,
+          );
+        }
+      } else {
+        recipient = tid;
+      }
       if (recipient.length === 0) {
         throw new Error("INVALID_PAYLOAD: empty recipient phone in composite threadId");
       }

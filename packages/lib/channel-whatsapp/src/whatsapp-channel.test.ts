@@ -349,6 +349,28 @@ describe("createWhatsAppChannel", () => {
     expect(r.status).toBe(200);
   });
 
+  test("send() with composite threadId from a different business number throws WRONG_BUSINESS_NUMBER", async () => {
+    // Regression: previously send() stripped the prefix and posted
+    // through this channel's phoneNumberId regardless of what
+    // business number the inbound originally arrived on — a reply
+    // routed against the wrong channel instance would still ship
+    // from the wrong brand's number to the recipient. Now mismatch
+    // throws so the bug surfaces at the caller instead of leaking
+    // cross-number traffic.
+    const ch = createWhatsAppChannel(config, buildDeps());
+    let err: unknown = null;
+    try {
+      await ch.send({
+        threadId: "pn-OTHER|15551234567",
+        content: [{ kind: "text", text: "hi" }],
+      });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain("WRONG_BUSINESS_NUMBER");
+  });
+
   test("send() with non-text block throws UNSUPPORTED_BLOCK", async () => {
     // Regression: previously send() silently dropped non-text blocks
     // and posted a (possibly empty) text payload to Graph. Capability

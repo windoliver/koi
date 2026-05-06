@@ -203,25 +203,42 @@ describe("createTeamsChannel", () => {
     expect(res.status).toBe(503);
   });
 
-  test("inbound delivered before onMessage handler is installed: NOT silently committed", async () => {
-    // Regression: previously the worker treated handlerRef.current === null
-    // as success and acked the queue item, returning 200 to Bot
-    // Framework while user code never saw the message. Now the
-    // dispatcher throws NO_HANDLER so the worker nacks (and on
-    // terminal exhaustion dead-letters) — operators see an explicit
-    // ingress failure rather than missing inbound traffic.
+  test("poisoned dedupe key replay: 200-acks (terminal) instead of looping with 5xx", async () => {
+    // Regression: previously a redelivery whose key carried a
+    // poison tombstone fell through to a generic 500 because the
+    // webhook ingress did not handle reason:"poisoned". Bot
+    // Framework would loop on 5xx — but the channel had already
+    // decided this message terminally cannot be processed (worker
+    // committed poison after timeout / max-retry). 200 is the
+    // terminal provider response; the prior dead-letter is the
+    // operator's surface.
+    const deps = buildDeps(fakeVerifier(okVerdict));
+    const ch = createTeamsChannel(config, deps);
+    await ch.connect();
+    ch.onMessage(async () => {});
+    // Pre-poison the dedupe key for the activity we're about to send.
+    const activity = makeActivity({ id: "act-poison" });
+    const key = `msteams|tenant-1|conv-1|act-poison`;
+    const begin = await deps.idempotencyStore.tryBegin(key, 1000);
+    if (!begin.ok) throw new Error("unreachable: fresh tryBegin");
+    await deps.idempotencyStore.commitPoison(begin.lease, 60_000);
+    const res = await ch.handleHttpRequest(makeRequest(activity));
+    expect(res.status).toBe(200);
+    await ch.disconnect();
+  });
+
+  test("message activity before onMessage handler is installed: 503 (retryable)", async () => {
+    // Regression: previously the webhook 200-acked even with no
+    // handler installed. Bot Framework treats 200 as terminal so
+    // any inbound landing between connect() and onMessage() was
+    // permanently lost. The webhook now fails closed with 503
+    // until the handler is wired so Bot Framework retries.
     const deps = buildDeps(fakeVerifier(okVerdict));
     const ch = createTeamsChannel(config, deps);
     await ch.connect();
     // Note: NO ch.onMessage() registration before sending traffic.
     const res = await ch.handleHttpRequest(makeRequest(makeActivity()));
-    expect(res.status).toBe(200);
-    // Give the worker a moment to claim the queue item, fail
-    // dispatch (NO_HANDLER), and after maxRetries dead-letter it.
-    await new Promise((r) => setTimeout(r, 500));
-    const dl = await deps.ingressQueue.getDeadLetters();
-    expect(dl.length).toBeGreaterThan(0);
-    expect(dl[0]?.reason).toContain("NO_HANDLER");
+    expect(res.status).toBe(503);
     await ch.disconnect();
   });
 
@@ -257,6 +274,7 @@ describe("createTeamsChannel", () => {
     };
     const ch = createTeamsChannel(config, deps);
     await ch.connect();
+    ch.onMessage(async () => {});
     // Fresh activity with timestamp lands first.
     const fresh = makeActivity({
       id: "act-fresh",

@@ -193,6 +193,15 @@ export function createTeamsChannel(
     if (!connected) {
       return new Response("CHANNEL_NOT_CONNECTED", { status: 503 });
     }
+    // Handler-presence gate: if no onMessage() handler has been
+    // installed yet we cannot dispatch anything. 200-acking would
+    // tell Bot Framework the message was processed while the
+    // worker would later throw NO_HANDLER and dead-letter — silent
+    // permanent loss from the provider's perspective. 503 lets
+    // Bot Framework retry until the handler is wired.
+    if (parsed.type === "message" && handlerRef.current === null) {
+      return new Response("NO_HANDLER", { status: 503 });
+    }
     if (parsed.type !== "message") {
       // Lifecycle activities (conversationUpdate on install,
       // proactive welcome triggers, etc.) MUST seed the address
@@ -245,6 +254,15 @@ export function createTeamsChannel(
     }
     if (!begin.ok && begin.reason === "capacity-exhausted") {
       return new Response("capacity", { status: 503 });
+    }
+    if (!begin.ok && begin.reason === "poisoned") {
+      // The dedupe key carries a poison tombstone (a prior attempt
+      // terminally failed: handler timeout or max-retry). Returning
+      // 5xx here would loop Bot Framework on a message we have
+      // already decided cannot be processed. 200-ack is terminal
+      // for the provider; the prior dead-letter entry is the
+      // operator's surface for replay decisions.
+      return new Response(null, { status: 200 });
     }
     if (!begin.ok) return new Response("unknown", { status: 500 });
 
