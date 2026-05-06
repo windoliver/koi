@@ -12,11 +12,11 @@ This branch contains only this spec. It is not the implementation. Per CLAUDE.md
 
 Port three v1 sandbox packages to v2:
 
-- `@koi/sandbox-wasm` — in-process WebAssembly executor
-- `@koi/sandbox-cloudflare` — Cloudflare Workers deploy + invoke adapter
-- `@koi/sandbox-vercel` — Vercel Functions deploy + invoke adapter
+- `@koi/sandbox-wasm` — in-process WebAssembly executor (SHIPS — PR 3)
+- `@koi/sandbox-cloudflare` — Cloudflare Workers deploy + invoke adapter (SHIPS — PR 4)
+- `@koi/sandbox-vercel` — Vercel Functions deploy + invoke adapter (**DEFERRED — design-only, NOT published, NOT runtime-integrated in this release**; see PR 5 acceptance for the promotion criteria)
 
-All three are L2 packages, depend only on `@koi/core` (and minimal L0u utilities), implement contracts already defined in `packages/kernel/core/`, and ship in one PR.
+All three are L2 packages depending only on `@koi/core` (and minimal L0u utilities) and implementing contracts defined in `packages/kernel/core/`. **The shipping bundle for this release is wasm + Cloudflare. The Vercel package is design-only:** its source lives in a `private` workspace excluded from the public-publish manifest, it is NOT wired into `@koi/runtime`, and its CI gates do NOT participate in the merge contract for v1. Vercel ships only after a separate promotion event documented in PR 5. Reviewers should treat any Vercel-touching change as deferred work, never as part of the v1 ship contract.
 
 ## Contracts
 
@@ -343,7 +343,7 @@ if (checkResult.startsWith("claim:in-progress:")) {
   //   { kind: "takeover" }                → fall through; this isolate now holds the claim, run handler
   //   { kind: "timeout" }                 → return 504 to caller
   // SHIM_POLL_DEADLINE_MS = 25_000 is the koi-shim INTERNAL bound; NOT the caller's waiterTimeoutMs.
-  const wait = await waitForTerminal(resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, SHIM_POLL_DEADLINE_MS);
+  const wait = await waitForTerminal(resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, dedupeExpiresAtMs, SHIM_POLL_DEADLINE_MS);
   // EVERY tagged outcome handled explicitly. Unknown kinds are a fatal protocol bug, not a takeover.
   if (wait.kind === "completed") return new Response(wait.body, { status: 200, headers: { "X-Koi-Result-Kind": "success" } });
   if (wait.kind === "failed") return new Response(wait.body, { status: 200, headers: { "X-Koi-Result-Kind": "failed-permanent" } });
@@ -469,7 +469,7 @@ try {
 
 ```js
 // Tagged result discriminated on `kind`. Caller branches explicitly.
-async function waitForTerminal(resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, shimPollDeadlineMs) {
+async function waitForTerminal(resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, dedupeExpiresAtMs, shimPollDeadlineMs) {
   const start = Date.now();
   const POLL_MS = 1000;
   while (Date.now() - start < shimPollDeadlineMs) {
@@ -1057,15 +1057,13 @@ Because `destroy()` and timeout/abort can leave remote work in flight (see `Dest
 
   With class A as the only supported class, the documented re-execution paths (`DEDUPE_PERSISTENCE_FAILED`, `LEASE_LOST`, `OWNERSHIP_LOST`, oversized-result) cannot cause duplicate external side effects — there ARE no external side effects in the handler. Re-execution is safe by construction. The dedupe store still mechanically handles the happy path; the partial-failure paths still re-run, but re-running a pure function is harmless. **This is what makes the v1 contract honest:** the durable dedupe is mechanical for caching success/failure outcomes, AND duplicate execution risk is eliminated by restricting the workload class rather than by trusting operator discipline.
 
-  Several documented failure paths still allow the handler to be re-run before the operation is durably retried (now harmless under class A):
+  Several documented failure paths still allow the handler to be re-run before the operation is durably retried — **all harmless under class A** because a class-A handler has no side effects to duplicate:
   - Cloudflare DO `complete` retry exhaustion (`DEDUPE_PERSISTENCE_FAILED` after 3 attempts).
   - Vercel KV lease loss mid-handler (`LEASE_LOST`) and ownership loss at commit (`OWNERSHIP_LOST`).
-  - Result exceeds `MAX_DEDUPE_RESULT_BYTES` after handler commit.
-  In every case the handler's external side effects already happened, the next retry will re-run the handler, and the only remaining defense is downstream idempotency keyed on `operationId`. **Honesty correction.** Worker B runs arbitrary operator JavaScript inside a `globalThis` where `fetch`, database clients, and any imported library remain reachable. No spec-level mechanism prevents the operator's handler from calling `fetch(externalUrl)` directly and skipping the koi runtime helper. CF Workers and Vercel Functions do not expose per-Worker outbound network policy. The earlier draft framed this as "mechanically constrained" — that was inaccurate.
-  - **`assertIdempotent: true` is an attestation flag** — the operator certifies every side-effect target the handler touches is `operationId`-keyed and idempotent at the target. Required at construction; absence rejects with `IDEMPOTENCY_ATTESTATION_REQUIRED`.
-  - **The koi handler runtime PROVIDES (does not mandate) supported-class wrappers**: `koi.fetchWithIdempotencyKey({ url, body, idempotencyKey })`, `koi.sqlInsertWithOnConflict`, `koi.kafkaPublish`. Using them is the only way the runtime can log/audit side-effect points. Bypassing them via raw `fetch` or raw DB client emits no telemetry but is structurally permitted.
-  - **Static-analysis CI gate (deploy-blocking, NOT a runtime guarantee):** `scripts/check-handler-side-effects.ts` parses the operator handler bundle (esbuild AST, NOT regex on text) and flags raw `fetch(...)` calls, common DB-client constructors, and producer publish calls that are NOT routed through the koi wrappers. **The gate FAILS the deploy on any finding** — `config.failOnRawSideEffect` is a constant `true` for the durable-dedupe profile (no opt-out). Bypassing the gate requires the operator to actively delete the check from their CI config, which is auditable. The gate raises the cost of accidentally bypassing the wrappers; it cannot prevent intentional bypass via dynamic imports (`globalThis['fet'+'ch']`), indirect references, or third-party libraries whose internals are not scanned — but those constructs are themselves auditable AST patterns and are listed in the gate's "deploy-blocking suspicious idioms" rule set (`globalThis[*]` access of side-effecting names, `new Function(...)`, `import(${nonStaticString})`). The L2 doc enumerates the rule set and lists the supported third-party libraries whose AST has been audited. Adding a non-audited library is a deploy-blocking event until its AST is audited and added to the allowlist.
-  - **The L2 doc is explicit about this limit:** "Side-effect class enforcement is attestation + lint, not runtime-isolated. The koi runtime cannot intercept arbitrary outbound network or library calls from operator code on Cloudflare Workers or Vercel Functions; mechanically-enforced isolation requires either Workers' future per-Worker network policy or a dedicated isolated-runtime substrate. Until then, every handler that touches a side-effect target is the operator's audit responsibility." This honest framing replaces the earlier "structurally constrained" wording.
+  - Oversized success result is now closed by writing a permanent `RESULT_TOO_LARGE_PERMANENT` failed-permanent terminal record (see Vercel section).
+
+  **The deferred class-B subsystem (NOT in v1) is described elsewhere with its own attestation/wrapper/lint posture.** Class B will reintroduce `assertIdempotent`, the koi.fetchWithIdempotencyKey wrappers, the runtime fetch fence, and the deploy-blocking AST allowlist. Until class B ships, **none of those mechanisms exist in v1's adapter**: there is no `assertIdempotent` flag, no `koi.fetchWith*` wrappers in the runtime, no failOnRawSideEffect knob. The only enforcement is the create-time AST scan that rejects ANY side-effect-shaped construct, and re-execution is safe because there are no side effects to duplicate. The earlier draft's references to wrappers being "provided but optional" are ARTIFACTS of the class-B design that has been deferred — they do not describe v1 behavior.
+
   - **`requestId` MUST NOT be used for any dedupe purpose** — neither the durable store nor the downstream target should key on it.
 - The shim caches entries for **300 seconds** after the original invocation completes (or fails). Expiration is wall-clock; entries are pruned lazily on each invoke.
 - On `POST /invoke` arrival, the shim looks up the composite key `(operationId, requestId)`:
