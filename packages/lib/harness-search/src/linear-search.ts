@@ -74,11 +74,24 @@ export async function linearSearch(
     random = DEFAULT_SEARCH_CONFIG.random,
     signal,
   } = config;
-  // Best-effort mode forces single-shot — a timed-out / aborted attempt
-  // may keep running in the background, so starting another one would
-  // overlap side effects. Callers that wrap abort-safe adapters opt in
-  // to retries by setting adapterHonorsAbort: true.
-  const maxIterations = adapterHonorsAbort ? requestedMaxIterations : 1;
+  // A timed-out / aborted attempt may keep running in the background,
+  // so multi-iteration search is unsafe unless callbacks are abort-aware.
+  // Refuse to silently downgrade maxIterations > 1 to single-shot —
+  // callers thinking they shipped refinement but getting one eval and
+  // a budget_exhausted stop is the worst kind of quiet quality loss.
+  // Force callers to make the choice explicit: either set
+  // adapterHonorsAbort: true (asserting abort-safety, accepting the
+  // background-leak cost as the price of retries) or pass
+  // maxIterations: 1 (and surface the constraint in their integration).
+  if (requestedMaxIterations > 1 && !adapterHonorsAbort) {
+    throw new TypeError(
+      "linearSearch: maxIterations > 1 requires adapterHonorsAbort: true. " +
+        "Set adapterHonorsAbort: true to opt into retries (asserting both " +
+        "evaluate and refine honor their AbortSignal), or pass maxIterations: 1 " +
+        "for single-shot evaluation.",
+    );
+  }
+  const maxIterations = requestedMaxIterations;
 
   // Fail-fast on config bugs that would otherwise silently break the
   // bounded-search guarantee (NaN slips past Number.isFinite into the
@@ -345,14 +358,20 @@ async function withDeadline<T>(
       });
 
   try {
-    const callbackPromise = fn(controller.signal).then(
-      (value): DeadlineOutcome<T> => ({ ok: true, value }),
-      (): DeadlineOutcome<T> => {
-        if (timedOut) return { ok: false, kind: "timeout" };
-        if (isAborted(parentSignal)) return { ok: false, kind: "aborted" };
-        return { ok: false, kind: "error" };
-      },
-    );
+    // Wrap fn() in Promise.resolve().then so a synchronous throw before
+    // the first await converts to a typed `error` outcome instead of
+    // escaping withDeadline and rejecting the whole search. Adapters
+    // that validate inputs at call entry routinely throw synchronously.
+    const callbackPromise = Promise.resolve()
+      .then(() => fn(controller.signal))
+      .then(
+        (value): DeadlineOutcome<T> => ({ ok: true, value }),
+        (): DeadlineOutcome<T> => {
+          if (timedOut) return { ok: false, kind: "timeout" };
+          if (isAborted(parentSignal)) return { ok: false, kind: "aborted" };
+          return { ok: false, kind: "error" };
+        },
+      );
     return await Promise.race([callbackPromise, timeoutPromise, abortPromise]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);

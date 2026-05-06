@@ -535,14 +535,47 @@ describe("linearSearch", () => {
     expect(receivedMessage).toBe("diagnostic");
   });
 
-  test("config compiles with only required callbacks (defaulted fields are optional)", async () => {
+  test("config compiles with only required callbacks plus minimal safety flag", async () => {
     // Type-level test: this would be a tsc error if SearchConfig still
     // marked maxIterations / convergenceThreshold / etc. as required.
+    // adapterHonorsAbort is required to enable the default 20-iteration
+    // budget — otherwise linearSearch refuses to run multi-iteration
+    // search with potentially non-cooperative callbacks.
     const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, {
       refine: async () => "```ts\nrefined\n```",
       evaluate: async () => ({ successRate: 1.0, sampleCount: 10, failures: [] }),
+      adapterHonorsAbort: true,
     });
     expect(result.stopReason).toBe("converged");
+  });
+
+  test("sync throw from evaluate is converted to eval_failed (not propagated as rejection)", async () => {
+    const config = makeConfig({
+      // Non-async function that throws synchronously before returning a
+      // promise — adapters that validate inputs at call entry do this.
+      evaluate: (() => {
+        throw new Error("invalid input");
+      }) as unknown as SearchConfig["evaluate"],
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_failed");
+    expect(result.totalIterations).toBe(0);
+  });
+
+  test("sync throw from refine is converted to refine_failed (not propagated as rejection)", async () => {
+    const config = makeConfig({
+      evaluate: async () => ({
+        successRate: 0.5,
+        sampleCount: 10,
+        failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+      }),
+      refine: (() => {
+        throw new Error("setup failure");
+      }) as unknown as SearchConfig["refine"],
+      random: () => 0.99,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("refine_failed");
   });
 
   test("evidence accumulation on tied rate is progress, not plateau (reaches minEvalSamples)", async () => {
@@ -579,9 +612,21 @@ describe("linearSearch", () => {
     expect(linearSearch(INITIAL_CODE, DESCRIPTOR, config)).rejects.toThrow(/adapterHonorsAbort/);
   });
 
-  test("adapterHonorsAbort defaults to false — forces single-shot", async () => {
+  test("default adapterHonorsAbort=false rejects multi-iteration config (no silent single-shot)", async () => {
+    // Pre-fix: maxIterations=10 silently became 1 — caller thought
+    // they shipped refinement but production only ran one eval and
+    // exited with budget_exhausted. Now the misconfiguration throws.
+    expect(
+      linearSearch(INITIAL_CODE, DESCRIPTOR, {
+        refine: async () => "```ts\nrefined\n```",
+        evaluate: async () => ({ successRate: 0.4, sampleCount: 10, failures: [] }),
+        maxIterations: 10,
+      }),
+    ).rejects.toThrow(/adapterHonorsAbort/);
+  });
+
+  test("default adapterHonorsAbort=false accepts single-shot config (maxIterations=1)", async () => {
     let evalCalls = 0;
-    // Note: explicitly NOT using makeConfig (which sets adapterHonorsAbort: true).
     const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, {
       refine: async () => "```ts\nrefined\n```",
       evaluate: async () => {
@@ -592,7 +637,7 @@ describe("linearSearch", () => {
           failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
         };
       },
-      maxIterations: 10,
+      maxIterations: 1,
     });
     expect(evalCalls).toBe(1);
     expect(result.totalIterations).toBe(1);
