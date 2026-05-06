@@ -13,11 +13,9 @@ const INITIAL_CODE = `export function createMiddleware() {
   return { name: "harness-test" };
 }`;
 
-const REFINED_CODE = `\`\`\`typescript
-export function createMiddleware() {
+const REFINED_CODE = `export function createMiddleware() {
   return { name: "harness-test", refined: true };
-}
-\`\`\``;
+}`;
 
 /** Deterministic seeded PRNG (Park-Miller). */
 function seededRandom(seed: number): () => number {
@@ -271,7 +269,7 @@ describe("linearSearch", () => {
     let i = 0;
     const config = makeConfig({
       maxIterations: 3,
-      refine: async (current) => `\`\`\`ts\n${current}\n// refined-${i}\n\`\`\``,
+      refine: async (current) => `${current}\n// refined-${i}`,
       evaluate: async (code) => {
         codeSeen.push(code);
         i++;
@@ -318,10 +316,12 @@ describe("linearSearch", () => {
     expect(result.best.successRate).toBe(1.0);
   });
 
-  test("unparseable refinement output yields refine_failed (no silent reuse)", async () => {
+  test("refine that throws (e.g. unparseable wire format) yields refine_failed (no silent reuse)", async () => {
     const config = makeConfig({
       maxIterations: 5,
-      refine: async () => "no fenced code block here, just prose",
+      refine: async () => {
+        throw new Error("unparseable LLM response");
+      },
       evaluate: async () => ({
         successRate: 0.5,
         sampleCount: 10,
@@ -334,10 +334,54 @@ describe("linearSearch", () => {
     expect(result.totalIterations).toBe(1);
   });
 
-  test("empty fenced refinement output yields refine_failed", async () => {
+  test("JSON-envelope refiner (synth-style) integrates without fenced-code coupling", async () => {
+    // Regression: linearSearch must NOT impose a wire format. A caller
+    // wiring @koi/harness-synth's JSON-object refinement contract should
+    // succeed across iterations as long as their refine() unwraps the
+    // envelope and returns plain code. Pre-fix, linearSearch routed
+    // every refine() output through a fenced-code parser, which broke
+    // this integration on iter 1.
+    let i = 0;
+    const synthStyleRefine = async (current: string): Promise<string> => {
+      i += 1;
+      const modelResponse = JSON.stringify({
+        descriptor: { name: "harness-test" },
+        code: `${current}\n// json-refined-${i}`,
+      });
+      const parsed: unknown = JSON.parse(modelResponse);
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        typeof (parsed as { code?: unknown }).code !== "string"
+      ) {
+        throw new Error("malformed envelope");
+      }
+      return (parsed as { code: string }).code;
+    };
+    const codeSeen: string[] = [];
+    const config = makeConfig({
+      maxIterations: 3,
+      refine: synthStyleRefine,
+      evaluate: async (code) => {
+        codeSeen.push(code);
+        return {
+          successRate: 0.4,
+          sampleCount: 10,
+          failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+        };
+      },
+      random: () => 0.99,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).not.toBe("refine_failed");
+    expect(codeSeen.length).toBeGreaterThanOrEqual(2);
+    expect(codeSeen[1]).toContain("json-refined-1");
+  });
+
+  test("whitespace-only refinement yields refine_failed", async () => {
     const config = makeConfig({
       maxIterations: 5,
-      refine: async () => "```ts\n   \n```",
+      refine: async () => "   \n   ",
       evaluate: async () => ({
         successRate: 0.5,
         sampleCount: 10,
@@ -615,7 +659,7 @@ describe("linearSearch", () => {
       }),
       refine: async (_code, failures) => {
         receivedFailures = failures;
-        return "```ts\nrefined\n```";
+        return "refined";
       },
       random: () => 0.99,
     });
@@ -639,7 +683,7 @@ describe("linearSearch", () => {
       }),
       refine: async (_code, failures) => {
         receivedMessage = failures[0]?.errorMessage ?? "";
-        return "```ts\nrefined\n```";
+        return "refined";
       },
       sanitizeFailures: (f) => f,
       random: () => 0.99,
@@ -655,7 +699,7 @@ describe("linearSearch", () => {
     // budget — otherwise linearSearch refuses to run multi-iteration
     // search with potentially non-cooperative callbacks.
     const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, {
-      refine: async () => "```ts\nrefined\n```",
+      refine: async () => "refined",
       evaluate: async () => ({ successRate: 1.0, sampleCount: 10, failures: [] }),
       adapterHonorsAbort: true,
     });
@@ -731,7 +775,7 @@ describe("linearSearch", () => {
     // exited with budget_exhausted. Now the misconfiguration throws.
     expect(
       linearSearch(INITIAL_CODE, DESCRIPTOR, {
-        refine: async () => "```ts\nrefined\n```",
+        refine: async () => "refined",
         evaluate: async () => ({ successRate: 0.4, sampleCount: 10, failures: [] }),
         maxIterations: 10,
       }),
@@ -741,7 +785,7 @@ describe("linearSearch", () => {
   test("default adapterHonorsAbort=false accepts single-shot config (maxIterations=1)", async () => {
     let evalCalls = 0;
     const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, {
-      refine: async () => "```ts\nrefined\n```",
+      refine: async () => "refined",
       evaluate: async () => {
         evalCalls++;
         return {
@@ -816,7 +860,7 @@ describe("linearSearch", () => {
     const huge = "x".repeat(100_000);
     const config = makeConfig({
       maxRefinedCodeBytes: 1024,
-      refine: async () => `\`\`\`ts\n${huge}\n\`\`\``,
+      refine: async () => huge,
       evaluate: async () => ({
         successRate: 0.5,
         sampleCount: 10,

@@ -15,9 +15,16 @@ search/refinement loop, nothing more.
 The package exports `linearSearch` and `parseRefinementOutput`. Inject
 the refine + evaluate callbacks via config — no direct dependency on a
 model adapter or `@koi/harness-synth` (peer L2-to-L2 imports are
-forbidden). Typical L3 wiring builds `refine` from harness-synth's
-`buildRefinementPrompt` + an LLM, and `evaluate` from a verifier + eval
-harness.
+forbidden).
+
+`refine` returns the next candidate source as a plain string. **Wire-
+format extraction is the caller's job**: `linearSearch` does not
+impose a fenced-code, JSON-envelope, or any other contract on the
+model response — that decision belongs to whoever wired the LLM. Use
+`parseRefinementOutput` for fenced-code adapters, or unwrap a JSON
+envelope yourself for `@koi/harness-synth`-style refiners. If the
+wire format is unparseable, throw — the loop contains it as
+`stopReason: "refine_failed"`.
 
 ```ts
 const result = await linearSearch(initialCode, descriptor, {
@@ -45,8 +52,11 @@ const result = await linearSearch(initialCode, descriptor, {
 - `shouldContinue(continueState, deployState, random): boolean`
   — exposed for testing the Thompson-sampled explore/exploit decision.
 - `parseRefinementOutput(raw): string | null`
-  — extracts the first fenced code block from refinement output;
-  caller keeps the prior code on `null`.
+  — optional helper for fenced-code adapters: extracts the canonical
+  fenced code block from a model response. Returns `null` when the
+  output is multi-block ambiguous, has a non-source language tag, or
+  is empty. NOT called by `linearSearch` itself — callers pick a
+  parser that matches their wire format.
 - Types: `SearchNode`, `EvalResult`, `EvalFailure`, `RefineCallback`,
   `EvaluateCallback`, `SearchConfig`, `SearchResult`, `StopReason`,
   `DEFAULT_SEARCH_CONFIG`.

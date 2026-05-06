@@ -8,7 +8,6 @@
  */
 
 import type { ToolDescriptor } from "@koi/core";
-import { parseRefinementOutput } from "./parse-refinement.js";
 import { createThompsonState, type ThompsonState, updateThompson } from "./thompson.js";
 import {
   DEFAULT_SEARCH_CONFIG,
@@ -328,12 +327,15 @@ export async function linearSearch(
               : "refine_failed";
         break;
       }
-      const parsed = parseRefinementOutput(refineOutcome.value);
-      if (parsed === null) {
-        // Unparseable / empty refinement is a partial-failure mode the
-        // caller must be able to distinguish from "candidate unchanged" —
-        // silently reusing the prior code burns budget and hides broken
-        // refiners. Surface it as refine_failed.
+      // RefineCallback returns the candidate source directly. Wire-format
+      // extraction (fenced code, JSON envelopes, structured tool output)
+      // is the caller's responsibility — see parseRefinementOutput in
+      // ./parse-refinement.ts for a fenced-code helper, or wire a
+      // synth-style JSON parser inside your refine() before returning.
+      // Centralizing parsing here would couple search to one wire format
+      // and break callers using a different one (e.g. @koi/harness-synth).
+      const next = refineOutcome.value;
+      if (typeof next !== "string" || next.trim().length === 0) {
         stopReason = "refine_failed";
         break;
       }
@@ -342,11 +344,11 @@ export async function linearSearch(
       // without this, every iteration would carry that payload forward
       // in `history` and into the next prompt, blowing up memory and
       // cost. Same failure mode harness-synth caps explicitly.
-      if (byteLength(parsed) > maxRefinedCodeBytes) {
+      if (byteLength(next) > maxRefinedCodeBytes) {
         stopReason = "refine_failed";
         break;
       }
-      currentCode = parsed;
+      currentCode = next;
     }
     // Record THIS iteration's rate/samples so the NEXT iteration's
     // plateau + Thompson logic can compare against the immediate

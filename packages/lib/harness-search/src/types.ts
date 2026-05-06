@@ -54,7 +54,21 @@ export interface EvalFailure {
 
 /**
  * Refine existing code given new failures. Returns the next candidate
- * source — typically wraps an LLM call.
+ * source as a plain code string — typically wraps an LLM call.
+ *
+ * Wire-format extraction (fenced code blocks, JSON envelopes,
+ * structured tool output) is the CALLER's responsibility: parse the
+ * model response inside this callback and return only the candidate
+ * source. The search loop does not impose a wire format, so callers
+ * pairing this package with `@koi/harness-synth`-style JSON-object
+ * responses, fenced-code adapters, or any other contract all share the
+ * same surface. See `parseRefinementOutput` in `parse-refinement.ts`
+ * for a fenced-code helper if that's the format you want.
+ *
+ * Returning a non-string, an empty/whitespace-only string, or a string
+ * exceeding `maxRefinedCodeBytes` surfaces as `refine_failed`. Throwing
+ * is contained as `refine_failed` — useful when the wire format is
+ * unparseable.
  *
  * The signal aborts on caller cancellation OR per-attempt timeout; the
  * loop also races this promise against a deadline so a non-cooperative
