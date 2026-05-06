@@ -87,15 +87,15 @@ describe("startHandlerWorker", () => {
     expect(renewals).toBe(0);
   });
 
-  test("handler timeout: transient nack, NOT terminal poison/dead-letter", async () => {
+  test("handler timeout: lease retained until expiry, no successor reclaim, no dead-letter", async () => {
     // The public MessageHandler contract is single-arg (no AbortSignal),
-    // so the worker cannot guarantee a hung handler stopped. Treating
-    // timeout as terminal would let operators replay/compensate AND
-    // have the original handler complete its side effects later — a
-    // duplicate-execution hazard. Timeouts therefore nack as transient
-    // and the queue item stays retryable. Hung handlers eventually
-    // converge via maxHandlerRetries on EXPLICIT throws (a different
-    // failure surface), not via wall-clock timeout.
+    // so the worker cannot guarantee a hung handler stopped. Releasing
+    // the queue claim or idempotency lease on timeout would let a
+    // successor reclaim and re-execute concurrently with the original.
+    // The worker therefore moves on without releasing — the lease
+    // expires naturally after handlerTimeoutMs + leaseGraceMs and the
+    // queue/store machinery handles post-expiry reclaim. Within the
+    // lease window, no second invocation occurs.
     const queue = new InMemoryIngressQueue<{ readonly v: number }, null>();
     const idem = new InMemoryIdempotencyStore();
     let started = 0;
@@ -108,14 +108,18 @@ describe("startHandlerWorker", () => {
       },
       commitTtlMs: 1000,
       handlerTimeoutMs: 20,
-      maxHandlerRetries: 1,
+      leaseGraceMs: 5_000,
       pollIntervalMs: 1,
       workerId: "w1",
     });
     await queue.enqueue("k1", { key: "k1", payload: { v: 1 }, normalized: null });
     await tick(80);
     await stop();
-    expect(started).toBeGreaterThan(1);
+    // Within the 80ms test window, only the original invocation ran:
+    // the lease window (20+5000=5020ms) protects against successor
+    // reclaim. Releasing on timeout would have allowed multiple
+    // concurrent invocations.
+    expect(started).toBe(1);
     const dl = await queue.getDeadLetters();
     expect(dl).toHaveLength(0);
   });

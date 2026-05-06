@@ -142,23 +142,22 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
           // effects. So we dead-letter immediately and rely on the
           // operator to inspect / replay the stuck item.
           if (handlerResult.timedOut) {
-            // Timeout is NOT terminal. The public MessageHandler
-            // contract is single-arg (no AbortSignal), so we cannot
-            // guarantee the original handler stopped — declaring
-            // terminal failure while the handler keeps running would
-            // let operators replay/compensate AND have the original
-            // handler complete its side effects later. Instead we
-            // abort the lease and nack the queue item so a successor
-            // can re-claim once the original handler's lease window
-            // has expired. Operators see retries (the failure is
-            // visible) and a hung handler eventually backs off via
-            // the maxHandlerRetries terminal path. Channel adapters
-            // that can guarantee handler cancellation (process
-            // boundary, signal-aware handler) may opt into terminal-
-            // on-timeout in a future contract revision; until then
-            // we fail safe.
-            await opts.idempotencyStore.abort(begin.lease).catch(() => {});
-            await opts.queue.nack(opts.workerId, claimed.key);
+            // Timeout: the public MessageHandler contract is single-
+            // arg (no AbortSignal), so the worker cannot guarantee
+            // the original handler stopped. We must NOT release the
+            // queue claim or idempotency lease — calling nack/abort
+            // would let a successor reclaim and re-execute the same
+            // key while the original handler is still running,
+            // duplicating side effects. Instead the worker simply
+            // moves on to the next item; the queue claim and lease
+            // expire naturally after `leaseMs` (handlerTimeoutMs +
+            // grace), at which point a successor can claim. This is
+            // the only safe contract until the public MessageHandler
+            // type carries an enforceable AbortSignal.
+            //
+            // Trade-off: per-key throughput stalls for one leaseMs
+            // window after each timeout. That is acceptable; silent
+            // duplication is not.
             continue;
           }
           throw handlerResult.error;

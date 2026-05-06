@@ -125,20 +125,27 @@ describe("executeOutbound", () => {
     expect(thread?.state.chain.length).toBe(1);
   });
 
-  test("concurrent sends on same thread: both reservations land in order", async () => {
+  test("concurrent sends on same thread: one wins, the other gets THREAD_BUSY", async () => {
+    // Single in-flight send per thread is the safety contract — the
+    // chain may carry a tentative parent that gets rolled back on
+    // pre-DATA failure, so a second send must NOT derive headers
+    // atop it. With concurrent calls, the first to win the
+    // threadStore CAS reserves; the second sees that tentative
+    // predecessor on its retry and refuses with THREAD_BUSY rather
+    // than threading atop an unresolved parent.
     const deps = buildDeps({ smtp: fakeSmtp({ mode: "ok" }) });
     const [r1, r2] = await Promise.all([
       executeOutbound(deps, sampleInput),
       executeOutbound(deps, sampleInput),
     ]);
-    expect(r1.ok).toBe(true);
-    expect(r2.ok).toBe(true);
-    if (!r1.ok || !r2.ok) return;
-    const ids = new Set([r1.value.messageId, r2.value.messageId]);
-    expect(ids.size).toBe(2);
-    const thread = await deps.threadStore.get(sampleInput.threadKey);
-    expect(thread?.state.chain.length).toBe(2);
-    expect(new Set(thread?.state.chain ?? [])).toEqual(ids);
+    const oks = [r1, r2].filter((r) => r.ok);
+    const errs = [r1, r2].filter((r) => !r.ok);
+    expect(oks.length).toBe(1);
+    expect(errs.length).toBe(1);
+    const errResult = errs[0];
+    if (errResult && !errResult.ok) {
+      expect(errResult.error.code).toBe("THREAD_BUSY");
+    }
   });
 
   test("blocks new sends if thread has awaiting-recovery row", async () => {

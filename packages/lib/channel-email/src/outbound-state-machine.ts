@@ -64,6 +64,12 @@ function err(
   return ctx ? { code, message, context: ctx } : { code, message };
 }
 
+const IN_FLIGHT_OUTBOX_STATUSES: ReadonlySet<string> = new Set([
+  "reserving",
+  "reserved",
+  "sending",
+]);
+
 async function threadBlockReason(
   outboxStore: OutboxStore,
   threadKey: string,
@@ -137,6 +143,28 @@ async function reserveThread(
     const current = await deps.threadStore.get(input.threadKey);
     const currentVersion = current?.version ?? 0;
     const currentChain = current?.state.chain ?? [];
+    // Atomic-ish in-flight check: if the latest chain entry corresponds
+    // to a non-terminal outbox row, refuse the reservation. Both the
+    // chain read AND the outbox status query are on consistent
+    // pre-CAS state — and any concurrent reservation that lands AFTER
+    // this read will still lose its threadStore.cas (version
+    // contention), so the second send cannot derive headers from a
+    // tentative parent that gets rolled back. This complements the
+    // outer `threadBlockReason` precheck for races between calls.
+    if (currentChain.length > 0) {
+      const lastId = currentChain[currentChain.length - 1] ?? "";
+      const lastRow = await deps.outboxStore.get(lastId);
+      if (lastRow !== null && IN_FLIGHT_OUTBOX_STATUSES.has(lastRow.status)) {
+        return {
+          ok: false,
+          error: err(
+            "THREAD_BUSY",
+            "thread has an in-flight predecessor; serialize sends per thread to avoid header derivation atop tentative Message-IDs",
+            { threadKey: input.threadKey, predecessor: lastId },
+          ),
+        };
+      }
+    }
     const nextVersion = currentVersion + 1;
     const nextChain: readonly string[] = [...currentChain, messageId];
     const nextState: ThreadState = { chain: nextChain };
