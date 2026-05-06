@@ -114,6 +114,16 @@ export {
   createReplayContext,
   loadCassette,
 } from "@koi/replay";
+// Cloudflare edge function adapter (issue #1377). Vercel adapter is design-only and NOT exported here.
+export type { CloudflareAdapterConfig } from "@koi/sandbox-cloudflare";
+export {
+  CLOUDFLARE_ADAPTER_VERSION,
+  computeDedupeFingerprint,
+  createCloudflareAdapter,
+  jcsCanonicalise,
+  mapShimResponse,
+  validateCloudflareAdapterConfig,
+} from "@koi/sandbox-cloudflare";
 // Sandbox router (multi-backend executor — issue #1641)
 export type {
   BuildDecisionInput,
@@ -133,6 +143,16 @@ export type {
   SshTarget,
 } from "@koi/sandbox-ssh";
 export { createSshAdapter, defaultSshClientFactory } from "@koi/sandbox-ssh";
+// In-process WASM executor (issue #1377). Package-local `WasmExecutor` contract — NOT `SandboxExecutor`.
+export type {
+  WasmCall,
+  WasmError,
+  WasmErrorCode,
+  WasmExecuteOptions,
+  WasmExecutor,
+  WasmResult,
+} from "@koi/sandbox-wasm";
+export { createWasmExecutor } from "@koi/sandbox-wasm";
 // Activity-based stream timeouts (#1638)
 export type {
   ActivityTerminationReason,

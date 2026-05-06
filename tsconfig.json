@@ -37,6 +37,8 @@
     { "path": "packages/sandbox/sandbox-daytona" },
     { "path": "packages/sandbox/sandbox-e2b" },
     { "path": "packages/sandbox/sandbox-os" },
+    { "path": "packages/sandbox/sandbox-cloudflare" },
+    { "path": "packages/sandbox/sandbox-wasm" },
     { "path": "packages/security/permissions" },
     { "path": "packages/meta/runtime" }
   ]

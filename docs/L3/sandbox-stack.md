@@ -1,6 +1,6 @@
 # @koi/sandbox-stack — Unified Sandboxed Code Execution
 
-> Edge adapters: see `docs/superpowers/specs/2026-05-05-edge-sandboxes-design.md` (issue-1377). The Cloudflare/Vercel rows below are not currently shipped.
+> Edge adapters (Cloudflare Workers, Vercel Functions) implement a different L2 contract — `EdgeFunctionAdapter` from `@koi/core/edge-function-adapter` — NOT `SandboxAdapter`. They are NOT consumed by `createCloudSandbox()` or by `@koi/sandbox-router`. See `docs/superpowers/specs/2026-05-05-edge-sandboxes-design.md` (issue-1377) for the normative contract; this page lists only `SandboxAdapter`-shaped backends.
 
 Unified L3 bundle for all sandbox functionality: cloud provider dispatch, stack composition, timeout guards, code execution tools, subprocess executors, and sandbox middleware. One import for everything sandbox — replaces the former `@koi/sandbox-cloud` meta-package.
 
@@ -317,13 +317,11 @@ Returns `{ ok: true, value: SandboxAdapter }` on success, `{ ok: false, error: K
 
 ```typescript
 type CloudSandboxConfig =
-  | { readonly provider: "cloudflare" } & CloudflareAdapterConfig
   | { readonly provider: "daytona" } & DaytonaAdapterConfig
   | { readonly provider: "docker" } & DockerAdapterConfig
-  | { readonly provider: "e2b" } & E2bAdapterConfig
-  | { readonly provider: "vercel" } & VercelAdapterConfig;
+  | { readonly provider: "e2b" } & E2bAdapterConfig;
 
-type CloudSandboxProvider = "cloudflare" | "daytona" | "docker" | "e2b" | "vercel";
+type CloudSandboxProvider = "daytona" | "docker" | "e2b";
 ```
 
 ### Lazy-Loaded Adapter Factories
@@ -332,11 +330,20 @@ Each factory lazy-loads its backend package on first call. Install the provider 
 
 | Factory | Provider Package | Install |
 |---------|-----------------|---------|
-| `createCloudflareAdapter` | `@koi/sandbox-cloudflare` | `bun add @koi/sandbox-cloudflare` |
 | `createDaytonaAdapter` | `@koi/sandbox-daytona` | `bun add @koi/sandbox-daytona` |
 | `createDockerAdapter` | `@koi/sandbox-docker` | `bun add @koi/sandbox-docker` |
 | `createE2bAdapter` | `@koi/sandbox-e2b` | `bun add @koi/sandbox-e2b` |
-| `createVercelAdapter` | `@koi/sandbox-vercel` | `bun add @koi/sandbox-vercel` |
+
+### Edge functions (separate contract)
+
+Cloudflare Workers and Vercel Edge Functions execute JavaScript with no `argv` / exit-code / shell model, so they implement `EdgeFunctionAdapter` (from `@koi/core/edge-function-adapter`) rather than `SandboxAdapter`. They expose `invoke(payload)` on a deployed JS function — not `exec(command, args)` — and are accessed directly through their package, never through `createCloudSandbox()` or `@koi/sandbox-router`.
+
+| Factory | Provider Package | Status |
+|---------|-----------------|--------|
+| `createCloudflareAdapter` | `@koi/sandbox-cloudflare` | ships v1 |
+| `createVercelAdapter` | `@koi/sandbox-vercel` | DEFERRED — design-only, not published in v1 |
+
+See `docs/superpowers/specs/2026-05-05-edge-sandboxes-design.md` for the durable-dedupe / two-worker / class-A workload contract.
 
 ### Re-Exported Cloud Base Utilities
 

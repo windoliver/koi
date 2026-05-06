@@ -491,6 +491,17 @@ export {
   WORKSPACE,
   ZONE_REGISTRY,
 } from "./ecs.js";
+// edge function adapter — JS-only edge runtimes (Cloudflare/Vercel) with durable dedupe
+export type {
+  EdgeDestroyOutcome,
+  EdgeFunctionAdapter,
+  EdgeFunctionCreateConfig,
+  EdgeFunctionInstance,
+  EdgeIntegrityVerification,
+  EdgeInvokeRequest,
+  EdgeInvokeResult,
+  EdgeWorkloadClass,
+} from "./edge-function-adapter.js";
 // elicitation — structured user questioning contract
 export type {
   ElicitationOption,
@@ -974,6 +985,11 @@ export type {
   RunDuration,
   RunReport,
 } from "./run-report.js";
+// runtime-fence target catalogue — class-A handler forbidden globals
+export {
+  RUNTIME_FENCE_TARGETS,
+  RUNTIME_FENCE_TOP_LEVEL_IDENTIFIERS,
+} from "./runtime-fence-targets.js";
 // sandbox adapter — pluggable sandbox backends (OS-level, cloud, WASM)
 export type {
   SandboxAdapter,
