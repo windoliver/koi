@@ -271,10 +271,18 @@ const dedupeFingerprint = sha256(`${ns}:${sha256(payloadCanonical)}`);
 // the claim and the fingerprint atomically so subsequent attempts can be compared.
 // Returns one of:
 //   "fingerprint-conflict:<storedFingerprint>"
+//   "operation-expired"
 //   "result:<json>"
 //   "failed:<json>"
 //   "claim:fresh"
 //   "claim:in-progress:<requestId>"
+//
+// Argument order: ARGV[1]=requestId, ARGV[2]=dedupeFingerprint, ARGV[3]=retentionSec,
+// ARGV[4]=nowMs, ARGV[5]=dedupeExpiresAtMs.
+// Expiry is checked AFTER terminal-record lookups (so retries arriving after expiry
+// but within the 1h grace observe the cached result/failed) but BEFORE writing a
+// fresh claim — past expiry with no terminal record returns "operation-expired"
+// and the shim maps to 410 + X-Koi-Result-Kind: operation-expired.
 const CHECK_OR_CLAIM_LUA = `
   local fp = redis.call('GET', KEYS[4])
   if fp and fp ~= ARGV[2] then return 'fingerprint-conflict:'..fp end
@@ -282,14 +290,18 @@ const CHECK_OR_CLAIM_LUA = `
   if r then return 'result:'..r end
   local f = redis.call('GET', KEYS[2])
   if f then return 'failed:'..f end
+  if tonumber(ARGV[4]) > tonumber(ARGV[5]) then return 'operation-expired' end
   local c = redis.call('GET', KEYS[3])
   if c then return 'claim:in-progress:'..c end
   redis.call('SET', KEYS[3], ARGV[1], 'EX', '15')
-  if not fp then redis.call('SET', KEYS[4], ARGV[2], 'EX', ARGV[3]) end -- ARGV[3] = retentionSec = (dedupeExpiresAtMs + 3_600_000 - now) / 1000
+  if not fp then redis.call('SET', KEYS[4], ARGV[2], 'EX', ARGV[3]) end
   return 'claim:fresh'
 `;
 const initialRetentionSec = Math.floor((dedupeExpiresAtMs + 3_600_000 - Date.now()) / 1000);
-const checkResult = await kvCommand("EVAL", [CHECK_OR_CLAIM_LUA, "4", resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, String(initialRetentionSec)]);
+const checkResult = await kvCommand("EVAL", [CHECK_OR_CLAIM_LUA, "4", resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, String(initialRetentionSec), String(Date.now()), String(dedupeExpiresAtMs)]);
+if (checkResult === "operation-expired") {
+  return new Response(JSON.stringify({ error: "OPERATION_EXPIRED", dedupeExpiresAtMs }), { status: 410, headers: { "X-Koi-Result-Kind": "operation-expired" } });
+}
 if (checkResult.startsWith("fingerprint-conflict:")) {
   // operationId was reused with a different payload OR handler version. Reject loudly — never
   // serve a stale-aliased result. Host-side adapter maps this to KoiError { code: "OPERATION_ID_CONFLICT" }.
@@ -357,22 +369,21 @@ try {
     return new Response(JSON.stringify({ koi: { error: "LEASE_LOST" } }), { status: 503 });
   }
 
-  // FAILED-PERMANENT path: ownership-checked terminal write to failedKey + claim release.
-  // Symmetric with COMMIT_LUA below; produces the same fleet-wide cached terminal that future
-  // claim/wait paths return as { kind: "failed", body }.
+  // FAILED-PERMANENT path AND oversized-result path both use FAIL_LUA — hoisted here so the
+  // success branch's oversized-result handling can also reuse it.
   // retentionSec = (dedupeExpiresAtMs + 3_600_000 - now) / 1000 — the caller-supplied retry horizon plus 1h grace.
   const retentionSec = Math.floor((dedupeExpiresAtMs + 3_600_000 - Date.now()) / 1000);
+  const FAIL_LUA = `
+    if redis.call('GET', KEYS[1]) == ARGV[1] then
+      redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
+      redis.call('DEL', KEYS[1])
+      return 1
+    else
+      return 0
+    end
+  `;
 
   if (outcome === "failed-permanent") {
-    const FAIL_LUA = `
-      if redis.call('GET', KEYS[1]) == ARGV[1] then
-        redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
-        redis.call('DEL', KEYS[1])
-        return 1
-      else
-        return 0
-      end
-    `;
     const failedJson = body; // body = JSON-encoded error envelope from Worker B
     const failCommitted = await kvCommand("EVAL", [FAIL_LUA, "2", claimKey, failedKey, requestId, failedJson, String(retentionSec)]);
     if (failCommitted === 0) {
@@ -394,11 +405,20 @@ try {
   `;
   const resultJson = body; // outcome === "success"; body is JSON-encoded handler output
   if (resultJson.length > MAX_DEDUPE_RESULT_BYTES /* = 8 MB, configurable */) {
-    // Result too large to cache durably. FAIL CLOSED: do not return success, do not release claim.
-    // The handler's side effects already happened, but the caller does not get a success result.
-    // Same posture as DEDUPE_PERSISTENCE_FAILED above. Lease will expire normally, retries re-run.
-    console.error("DEDUPE_RESULT_TOO_LARGE", { operationId, size: resultJson.length });
-    return new Response(JSON.stringify({ koi: { error: "RESULT_TOO_LARGE", maxBytes: MAX_DEDUPE_RESULT_BYTES } }), { status: 503 });
+    // Result too large to cache durably. The handler's side effects already happened, so the
+    // RIGHT behavior is to persist a TERMINAL failed-permanent record so retries observe a
+    // cached outcome rather than re-running the handler. Earlier draft returned 503 without
+    // persisting and let the lease expire — which guaranteed the next retry re-ran side effects
+    // (deterministic duplicate-execution path). Now: write { error: "RESULT_TOO_LARGE_PERMANENT",
+    //   maxBytes, observedBytes } into failedKey via FAIL_LUA and return failed-permanent.
+    const tooLargeError = JSON.stringify({ error: "RESULT_TOO_LARGE_PERMANENT", maxBytes: MAX_DEDUPE_RESULT_BYTES, observedBytes: resultJson.length });
+    const failCommitted = await kvCommand("EVAL", [FAIL_LUA, "2", claimKey, failedKey, requestId, tooLargeError, String(retentionSec)]);
+    if (failCommitted === 0) {
+      console.warn("DEDUPE_OWNERSHIP_LOST_AT_TOO_LARGE_COMMIT", { operationId, requestId });
+      return new Response(JSON.stringify({ koi: { error: "OWNERSHIP_LOST" } }), { status: 503 });
+    }
+    console.error("DEDUPE_RESULT_TOO_LARGE_PERMANENT", { operationId, size: resultJson.length });
+    return new Response(tooLargeError, { status: 200, headers: { "X-Koi-Result-Kind": "failed-permanent" } });
   }
   const committed = await kvCommand("EVAL", [COMMIT_LUA, "2", claimKey, resultKey, requestId, resultJson, String(retentionSec)]);
   if (committed === 0) {
@@ -438,7 +458,8 @@ async function waitForTerminal(resultKey, failedKey, claimKey, fingerprintKey, r
     // in one Lua script — terminal results that appeared in the gap between the GETs and the EVAL
     // are returned by CHECK_OR_CLAIM_LUA and MUST be honored, not ignored.
     const reclaimRetentionSec = Math.floor((dedupeExpiresAtMs + 3_600_000 - Date.now()) / 1000);
-    const reclaim = await kvCommand("EVAL", [CHECK_OR_CLAIM_LUA, "4", resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, String(reclaimRetentionSec)]);
+    const reclaim = await kvCommand("EVAL", [CHECK_OR_CLAIM_LUA, "4", resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, String(reclaimRetentionSec), String(Date.now()), String(dedupeExpiresAtMs)]);
+    if (reclaim === "operation-expired") return { kind: "operation-expired" };
     if (reclaim.startsWith("fingerprint-conflict:")) {
       // Cannot happen for a legitimate waiter — would mean operationId aliased mid-wait. Surface loudly.
       return { kind: "operation-id-conflict", storedFingerprint: reclaim.slice("fingerprint-conflict:".length) };
@@ -1000,7 +1021,7 @@ Because `destroy()` and timeout/abort can leave remote work in flight (see `Dest
   In every case the handler's external side effects already happened, the next retry will re-run the handler, and the only remaining defense is downstream idempotency keyed on `operationId`. **Honesty correction.** Worker B runs arbitrary operator JavaScript inside a `globalThis` where `fetch`, database clients, and any imported library remain reachable. No spec-level mechanism prevents the operator's handler from calling `fetch(externalUrl)` directly and skipping the koi runtime helper. CF Workers and Vercel Functions do not expose per-Worker outbound network policy. The earlier draft framed this as "mechanically constrained" — that was inaccurate.
   - **`assertIdempotent: true` is an attestation flag** — the operator certifies every side-effect target the handler touches is `operationId`-keyed and idempotent at the target. Required at construction; absence rejects with `IDEMPOTENCY_ATTESTATION_REQUIRED`.
   - **The koi handler runtime PROVIDES (does not mandate) supported-class wrappers**: `koi.fetchWithIdempotencyKey({ url, body, idempotencyKey })`, `koi.sqlInsertWithOnConflict`, `koi.kafkaPublish`. Using them is the only way the runtime can log/audit side-effect points. Bypassing them via raw `fetch` or raw DB client emits no telemetry but is structurally permitted.
-  - **Static-analysis CI gate (best-effort lint, NOT a runtime guarantee):** `scripts/check-handler-side-effects.ts` parses the operator handler bundle (esbuild AST, NOT regex on text) and flags raw `fetch(...)` calls, common DB-client constructors, and producer publish calls that are NOT routed through the koi wrappers. Findings emit `HANDLER_RAW_SIDE_EFFECT_DETECTED` warnings. The gate raises the cost of accidentally bypassing the wrappers; it cannot prevent intentional bypass via dynamic imports, indirect references, or third-party libraries whose internals are not scanned. Operators MAY configure the gate to fail the deploy on findings (`config.failOnRawSideEffect: true`) — even then, AST-defeating constructs in third-party code are admitted.
+  - **Static-analysis CI gate (deploy-blocking, NOT a runtime guarantee):** `scripts/check-handler-side-effects.ts` parses the operator handler bundle (esbuild AST, NOT regex on text) and flags raw `fetch(...)` calls, common DB-client constructors, and producer publish calls that are NOT routed through the koi wrappers. **The gate FAILS the deploy on any finding** — `config.failOnRawSideEffect` is a constant `true` for the durable-dedupe profile (no opt-out). Bypassing the gate requires the operator to actively delete the check from their CI config, which is auditable. The gate raises the cost of accidentally bypassing the wrappers; it cannot prevent intentional bypass via dynamic imports (`globalThis['fet'+'ch']`), indirect references, or third-party libraries whose internals are not scanned — but those constructs are themselves auditable AST patterns and are listed in the gate's "deploy-blocking suspicious idioms" rule set (`globalThis[*]` access of side-effecting names, `new Function(...)`, `import(${nonStaticString})`). The L2 doc enumerates the rule set and lists the supported third-party libraries whose AST has been audited. Adding a non-audited library is a deploy-blocking event until its AST is audited and added to the allowlist.
   - **The L2 doc is explicit about this limit:** "Side-effect class enforcement is attestation + lint, not runtime-isolated. The koi runtime cannot intercept arbitrary outbound network or library calls from operator code on Cloudflare Workers or Vercel Functions; mechanically-enforced isolation requires either Workers' future per-Worker network policy or a dedicated isolated-runtime substrate. Until then, every handler that touches a side-effect target is the operator's audit responsibility." This honest framing replaces the earlier "structurally constrained" wording.
   - **`requestId` MUST NOT be used for any dedupe purpose** — neither the durable store nor the downstream target should key on it.
 - The shim caches entries for **300 seconds** after the original invocation completes (or fails). Expiration is wall-clock; entries are pruned lazily on each invoke.
