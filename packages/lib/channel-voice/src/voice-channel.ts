@@ -261,6 +261,17 @@ export const VOICE_CALL_EPOCH_KEY = "voiceCallEpoch";
 export const VOICE_TURN_ID_KEY = "voiceTurnId";
 
 /**
+ * Originating session/threadId stamped on detached replies. Round-46 fix:
+ * `voiceCallEpoch` + `voiceTurnId` proved the reply belongs to a turn, but
+ * NOT to which call's threadId. A delayed background reply built from call
+ * A's inbound could be redirected to call B by mutating `threadId` before
+ * `send()` (concurrent-call leak). The helper now stamps `voiceOriginThreadId`
+ * AND overwrites the outbound `threadId` from the inbound; `wrappedSend`
+ * rejects when an outbound carrying this stamp is sent to a different thread.
+ */
+export const VOICE_ORIGIN_THREAD_KEY = "voiceOriginThreadId";
+
+/**
  * Copy the per-call epoch tag from an inbound onto an outbound reply.
  * Use this in any callsite where the reply is built outside the
  * inbound's ALS scope (e.g., after `await`-ing an external work
@@ -275,6 +286,7 @@ export function replyToVoiceInbound(
 ): OutboundMessage {
   const inboundEpoch = inbound.metadata?.[VOICE_CALL_EPOCH_KEY];
   const inboundTurnId = inbound.metadata?.[VOICE_TURN_ID_KEY];
+  const inboundThread = inbound.threadId;
   const next: Record<string, unknown> = { ...(outbound.metadata ?? {}) };
   // let requires justification: nothing-to-copy is a valid no-op
   let copied = false;
@@ -286,8 +298,24 @@ export function replyToVoiceInbound(
     next[VOICE_TURN_ID_KEY] = inboundTurnId;
     copied = true;
   }
+  // Round-46 high: bind the reply to the originating session. Without
+  // this, a delayed reply could be redirected into a concurrent call by
+  // changing `threadId` before send() (epoch+turnId would still match).
+  // Always overwrite outbound `threadId` from the inbound so the helper
+  // is the safe default; the originating thread also rides on metadata
+  // so wrappedSend can reject any later mutation.
+  if (typeof inboundThread === "string" && inboundThread.length > 0) {
+    next[VOICE_ORIGIN_THREAD_KEY] = inboundThread;
+    copied = true;
+  }
   if (!copied) return outbound;
-  return { ...outbound, metadata: next };
+  return {
+    ...outbound,
+    ...(typeof inboundThread === "string" && inboundThread.length > 0
+      ? { threadId: inboundThread }
+      : {}),
+    metadata: next,
+  };
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, makeError: () => Error): Promise<T> {
@@ -866,6 +894,20 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
     // by the next turn for the same sessionId being admitted.
     const messageTurnIdRaw = message.metadata?.[VOICE_TURN_ID_KEY];
     if (typeof messageTurnIdRaw === "string" && expiredTurnIds.has(messageTurnIdRaw)) {
+      return Promise.reject(new VoicePoisonedSessionError(message.threadId));
+    }
+    // Round-46 high: origin-thread fence. A reply tagged via
+    // replyToVoiceInbound() carries `voiceOriginThreadId` — the inbound's
+    // session it was built from. If a caller (or buggy middleware) mutated
+    // `message.threadId` to point at a DIFFERENT live call, reject — that
+    // is a cross-call data leak (concurrent calls A and B; reply built
+    // from A's inbound redirected to B by changing threadId).
+    const originThreadRaw = message.metadata?.[VOICE_ORIGIN_THREAD_KEY];
+    if (
+      typeof originThreadRaw === "string" &&
+      originThreadRaw.length > 0 &&
+      originThreadRaw !== message.threadId
+    ) {
       return Promise.reject(new VoicePoisonedSessionError(message.threadId));
     }
     // Poison persists for the adapter's lifetime once set. A non-

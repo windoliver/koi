@@ -1777,6 +1777,53 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("detached reply cannot be redirected to a different concurrent threadId (round-46 high)", async () => {
+    // Round-46 high: replyToVoiceInbound() previously copied only
+    // voiceCallEpoch + voiceTurnId. A delayed/background reply built
+    // from call A's inbound could be redirected into a concurrent call
+    // B simply by mutating message.threadId before send() — epoch +
+    // turnId still matched. wrappedSend now checks the stamped
+    // voiceOriginThreadId against message.threadId and rejects mismatches.
+    // let requires justification: harness state captured by callbacks
+    let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (handler: (sessionId: string, frame: Uint8Array) => void) => {
+        listener = handler;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = { transcribe: async () => "u" };
+    const tts: Tts = { synthesize: async () => new Uint8Array([1]) };
+    const captured: InboundMessage[] = [];
+    const ch = createVoiceChannel({ transport, stt, tts });
+    ch.onMessage(async (msg: InboundMessage) => {
+      captured.push(msg);
+    });
+    await ch.connect();
+    listener?.("call-A", new Uint8Array([1]));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(captured.length).toBe(1);
+    const inboundA = captured[0];
+    expect(inboundA).toBeDefined();
+    if (inboundA !== undefined) {
+      // Build a reply for A, then mutate threadId to point at concurrent B.
+      const replyForA = replyToVoiceInbound(inboundA, {
+        threadId: "call-A",
+        content: [{ kind: "text", text: "for-A" }],
+      });
+      const redirected = { ...replyForA, threadId: "call-B" };
+      await expect(ch.send(redirected)).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+      // The unmutated reply still works (correct routing).
+      await ch.send(replyForA);
+    }
+    await ch.disconnect();
+  });
+
   test("queued send is rejected once a prior in-flight send poisons the session (round-45 high)", async () => {
     // Round-45 high: the wrappedSend entry-point poison check only ran
     // at queue-admission time. If send A was in flight (transport
