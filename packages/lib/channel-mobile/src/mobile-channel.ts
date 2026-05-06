@@ -254,6 +254,37 @@ export class MobileNoDeliveryTargetError extends Error {
   }
 }
 
+/**
+ * Thrown by `send()` when a live WebSocket write completes only partially
+ * (some bytes reached the wire but not the full frame) — typically a
+ * radio link closing under us or transport backpressure mid-write. The
+ * adapter closes the corrupt socket to terminate the truncated frame
+ * stream, but does NOT push-fall-back automatically: the client may
+ * have already received and processed the truncated bytes (or could
+ * receive them post-resume), and pushing the same logical message
+ * again would deliver it twice.
+ *
+ * Recovery contract: the host SHOULD retry by calling `pushNotifier`
+ * itself with the carried `deliveryId` — the client SDK already dedupes
+ * on every `deliveryId` it has ever seen, so the retry is safe even if
+ * the truncated bytes did reach the device. `bytesWritten` and
+ * `bytesExpected` are surfaced for diagnostics.
+ */
+export class MobilePartialWriteError extends Error {
+  readonly deliveryId: string;
+  readonly bytesWritten: number;
+  readonly bytesExpected: number;
+  constructor(deliveryId: string, bytesWritten: number, bytesExpected: number) {
+    super(
+      `@koi/channel-mobile: partial WebSocket write (${String(bytesWritten)}/${String(bytesExpected)} bytes); socket closed to prevent duplicate delivery — host may safely retry via pushNotifier with deliveryId=${deliveryId}`,
+    );
+    this.name = "MobilePartialWriteError";
+    this.deliveryId = deliveryId;
+    this.bytesWritten = bytesWritten;
+    this.bytesExpected = bytesExpected;
+  }
+}
+
 // Tags travel through `metadata` on both InboundMessage and OutboundMessage
 // so they survive cross-boundary wrappers, clones, and queue serialization.
 // Forgery is prevented by HMAC: only the adapter that produced the inbound
@@ -934,13 +965,29 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
               ws.close();
               return;
             }
-            const text = typeof data === "string" ? data : new TextDecoder().decode(data);
-            if (lineHandler !== undefined) {
-              lineHandler(text);
-            } else if (pendingLines.length < MAX_PENDING_LINES) {
-              // Startup race: handler not yet installed. Buffer briefly so
-              // the first inbound after a fresh connect/restart isn't lost.
-              pendingLines.push(text);
+            // Trust-boundary size cap MUST run before any decode/alloc so
+            // an attacker cannot force an oversized binary frame to
+            // allocate a megabyte-scale TextDecoder output before the
+            // 64-KiB guard kicks in. Reject frames over the cap on the
+            // raw bytes; for binary frames also short-circuit decoding.
+            if (typeof data === "string") {
+              if (Buffer.byteLength(data, "utf8") > MAX_INBOUND_FRAME_BYTES) {
+                return;
+              }
+              if (lineHandler !== undefined) {
+                lineHandler(data);
+              } else if (pendingLines.length < MAX_PENDING_LINES) {
+                pendingLines.push(data);
+              }
+              return;
+            }
+            // Binary frame: this protocol is JSON-over-text. Reject any
+            // binary payload — there is no legitimate sender. (Also
+            // closes the byte-vs-decoded-codepoint discrepancy: invalid
+            // UTF-8 could otherwise alter post-decode length and bypass
+            // the cap.)
+            if (data.byteLength > 0) {
+              return;
             }
           },
           close(ws: SocketLike) {
@@ -1153,9 +1200,7 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         // the caller; idempotent retry is the host's responsibility.
         if (written > 0) {
           socketAtSend.close();
-          throw new Error(
-            `@koi/channel-mobile: partial WebSocket write (${String(written)}/${String(expectedBytes)} bytes); socket closed to prevent duplicate delivery via push fallback`,
-          );
+          throw new MobilePartialWriteError(deliveryId, written, expectedBytes);
         }
         // written <= 0: nothing reached the wire (closed / -1 / 0), so it
         // is safe to fall through to push without risk of duplication.
