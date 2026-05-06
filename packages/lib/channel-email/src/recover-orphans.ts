@@ -39,15 +39,19 @@ export type RecoverResult = {
 };
 
 async function rollbackThreadIfPresent(threadStore: ThreadStore, row: OutboxRecord): Promise<void> {
-  const thread = await threadStore.get(row.threadKey);
-  if (thread === null) return;
-  if (!thread.state.chain.includes(row.messageId)) return;
-  // Only roll back if the thread version matches what we landed at —
-  // otherwise a later reservation has stacked on top and stripping
-  // would corrupt that send's ancestry.
-  if (thread.version !== row.threadVersion) return;
-  const stripped = thread.state.chain.filter((id) => id !== row.messageId);
-  await threadStore.cas(row.threadKey, thread.version, { chain: stripped });
+  // Bounded CAS-loop strip-by-id: an unsent `messageId` should not appear
+  // at any thread version. Earlier behaviour bailed on version mismatch
+  // which permanently leaked the id into newer chains. Stripping is
+  // content-only repair; CAS still synchronises against concurrent
+  // writers.
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const thread = await threadStore.get(row.threadKey);
+    if (thread === null) return;
+    if (!thread.state.chain.includes(row.messageId)) return;
+    const stripped = thread.state.chain.filter((id) => id !== row.messageId);
+    const ok = await threadStore.cas(row.threadKey, thread.version, { chain: stripped });
+    if (ok) return;
+  }
 }
 
 async function abortPreSendRow(

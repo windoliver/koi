@@ -82,12 +82,16 @@ describe("executeOutbound", () => {
     expect(list.length).toBe(1);
   });
 
-  test("pre-data failure with concurrent thread advance leaves thread alone", async () => {
+  test("pre-data failure strips unsent id even after concurrent advance", async () => {
+    // Updated behaviour (round 10): rollback is a CAS-loop strip-by-id
+    // that removes the unsent Message-ID from ANY chain version. An
+    // unsent id should never appear in the chain — the previous
+    // version-match-only rollback permanently leaked it into newer
+    // ancestry.
     const threadStore = new InMemoryThreadStore();
     let calls = 0;
     const smtp: SmtpTransport = {
       async sendMail() {
-        // Between reserve and rollback, advance the thread independently.
         if (calls === 0) {
           calls++;
           await threadStore.cas("<root@test>", 1, {
@@ -103,8 +107,9 @@ describe("executeOutbound", () => {
     const result = await executeOutbound(deps, sampleInput);
     expect(result.ok).toBe(false);
     const thread = await threadStore.get("<root@test>");
-    // Rollback was skipped → chain untouched (still has both ids).
-    expect(thread?.state.chain).toEqual([`<msg-1@test>`, `<concurrent@test>`]);
+    // The unsent `<msg-1@test>` is stripped; the legitimately-advanced
+    // `<concurrent@test>` survives.
+    expect(thread?.state.chain).toEqual([`<concurrent@test>`]);
   });
 
   test("post-data crash → awaiting-recovery; thread state preserved", async () => {

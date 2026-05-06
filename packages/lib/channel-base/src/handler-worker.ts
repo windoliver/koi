@@ -103,7 +103,15 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
           // effects. So we dead-letter immediately and rely on the
           // operator to inspect / replay the stuck item.
           if (handlerResult.timedOut) {
-            await opts.idempotencyStore.abort(begin.lease).catch(() => {});
+            // Timeout is terminal AND the original handler may still be
+            // running. We MUST prevent any future delivery of the same
+            // ingress key (provider redelivery, operator replay) from
+            // producing a concurrent duplicate execution. So we COMMIT
+            // the idempotency lease — future tryBegin on this key returns
+            // `committed` and the worker ack-without-running path takes
+            // over — and dead-letter the queue item so operators retain
+            // visibility for diagnostic replay.
+            await opts.idempotencyStore.commit(begin.lease, opts.commitTtlMs).catch(() => {});
             await opts.queue.deadLetter(
               opts.workerId,
               claimed.key,

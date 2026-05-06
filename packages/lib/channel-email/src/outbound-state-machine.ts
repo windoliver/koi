@@ -160,14 +160,23 @@ async function reserveThread(
 async function rollbackThread(
   threadStore: ThreadStore,
   threadKey: string,
-  expectedVersion: number,
+  _expectedVersion: number,
   messageId: string,
 ): Promise<void> {
-  const current = await threadStore.get(threadKey);
-  if (!current) return;
-  if (current.version !== expectedVersion) return; // someone else advanced — leave alone
-  const stripped = current.state.chain.filter((id) => id !== messageId);
-  await threadStore.cas(threadKey, expectedVersion, { chain: stripped });
+  // Strip the unsent `messageId` from the chain via a bounded CAS loop.
+  // Earlier behaviour bailed when the thread version had advanced, which
+  // permanently leaked the unsent id into the ancestry of every future
+  // reply. Removing a known-unsent id from any chain version is a
+  // content-only repair: there is no version at which the id legitimately
+  // belongs, and CAS still synchronises us against concurrent writers.
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const current = await threadStore.get(threadKey);
+    if (!current) return;
+    if (!current.state.chain.includes(messageId)) return; // someone already stripped it
+    const stripped = current.state.chain.filter((id) => id !== messageId);
+    const ok = await threadStore.cas(threadKey, current.version, { chain: stripped });
+    if (ok) return;
+  }
 }
 
 function hashPayload(input: OutboundInput): string {
