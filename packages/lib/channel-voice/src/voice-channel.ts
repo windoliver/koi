@@ -393,8 +393,18 @@ function chunk(text: string, max: number): readonly string[] {
  * way for hosts to mint such a tag for server-initiated speech.
  */
 export type VoiceChannelAdapter = ChannelAdapter & {
-  /** Returns a clone of `outbound` stamped with the current call epoch. */
-  readonly stampForCurrentCall: (outbound: OutboundMessage) => OutboundMessage;
+  /**
+   * Returns a clone of `outbound` stamped with the current connection
+   * epoch, the current per-session call generation for `sessionId`, and
+   * the originating session/threadId. Round-53 high: the prior
+   * `stampForCurrentCall(outbound)` (no sessionId) bypassed the per-
+   * session boundary set by `endCall(sessionId)` because it stamped
+   * only the connection epoch — a stamped send for a freshly ended
+   * call still admitted. Now session-aware: callers MUST name the
+   * session they're speaking on, and the stamp tracks that session's
+   * current incarnation.
+   */
+  readonly stampForCurrentCall: (sessionId: string, outbound: OutboundMessage) => OutboundMessage;
   /** Read-only view of the current call epoch for hosts that prefer to stamp manually. */
   readonly currentCallEpoch: () => number;
   /**
@@ -1148,9 +1158,19 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
     // returns a clone of the outbound with the live `connectGen`
     // stamped into metadata — the only supported way for hosts to
     // produce a current-call outbound that survives the fence.
-    stampForCurrentCall: (outbound: OutboundMessage): OutboundMessage => ({
+    stampForCurrentCall: (sessionId: string, outbound: OutboundMessage): OutboundMessage => ({
       ...outbound,
-      metadata: { ...(outbound.metadata ?? {}), [VOICE_CALL_EPOCH_KEY]: connectGen },
+      // Force-route to the named session — a stamped outbound that
+      // accidentally carried a different threadId would still be
+      // rejected by wrappedSend's origin-thread fence, but pinning
+      // threadId here makes the safe path the only path.
+      threadId: sessionId,
+      metadata: {
+        ...(outbound.metadata ?? {}),
+        [VOICE_CALL_EPOCH_KEY]: connectGen,
+        [VOICE_SESSION_GEN_KEY]: getSessionGen(sessionId),
+        [VOICE_ORIGIN_THREAD_KEY]: sessionId,
+      },
     }),
     /** Read-only view of the current call epoch for hosts that prefer to stamp manually. */
     currentCallEpoch: (): number => connectGen,

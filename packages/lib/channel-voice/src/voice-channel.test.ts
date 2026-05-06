@@ -2167,6 +2167,49 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("stampForCurrentCall is rejected after endCall(sessionId) until next inbound (round-53 high)", async () => {
+    // Round-53 high: stampForCurrentCall(outbound) used to stamp ONLY
+    // the connection epoch — it bypassed the per-session call boundary
+    // set by endCall, so a stamped send for an ended call still
+    // admitted. Now session-aware: takes (sessionId, outbound) and
+    // stamps the current per-session gen + origin thread. After
+    // endCall, the cached old-gen stamp goes stale; a fresh stamp
+    // (post-endCall) is rejected by the untagged-fence/origin checks
+    // until a new inbound establishes a fresh incarnation. This pins
+    // the contract.
+    // let requires justification: harness state captured by callbacks
+    let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (handler: (sessionId: string, frame: Uint8Array) => void) => {
+        listener = handler;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = { transcribe: async () => "u" };
+    const tts: Tts = { synthesize: async () => new Uint8Array([1]) };
+    const ch = createVoiceChannel({ transport, stt, tts });
+    ch.onMessage(async () => {});
+    await ch.connect();
+    listener?.("default", new Uint8Array([1]));
+    await new Promise((r) => setTimeout(r, 30));
+    // Capture a stamp during the live call (gen 0).
+    const stampedDuringCall = ch.stampForCurrentCall("default", {
+      threadId: "default",
+      content: [{ kind: "text", text: "during" }],
+    });
+    // Caller hangs up: session-gen bumps to 1.
+    ch.endCall("default");
+    // The stamp captured at gen 0 must be rejected (it carries gen 0,
+    // session is now at gen 1).
+    await expect(ch.send(stampedDuringCall)).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+    await ch.disconnect();
+  });
+
   test("stampForCurrentCall lets server-initiated outbound survive the post-reconnect epoch fence (round-40 high)", async () => {
     // Round-40 high: post-reconnect, the wrappedSend epoch fence rejects
     // any send made outside an inbound's ALS scope unless metadata
@@ -2186,7 +2229,7 @@ describe("createVoiceChannel", () => {
       ch.send({ threadId: "session-1", content: [{ kind: "text", text: "would reject" }] }),
     ).rejects.toBeInstanceOf(VoicePoisonedSessionError);
     // Same outbound stamped via the public helper passes the fence.
-    const stamped = ch.stampForCurrentCall({
+    const stamped = ch.stampForCurrentCall("session-1", {
       threadId: "session-1",
       content: [{ kind: "text", text: "welcome back" }],
     });

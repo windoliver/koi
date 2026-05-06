@@ -89,15 +89,16 @@ export function createInheritedChannel(
     },
   };
 
-  // Round-40 medium: forward adapter-specific OUTBOUND extension methods
-  // that bypass send() (e.g. MobileChannelAdapter.sendUnsolicited — the
-  // ONLY explicit "deliver to currently connected socket" path on the
-  // mobile adapter). These get attribution applied (just like send()).
-  // Listed explicitly so plain-looking methods on the parent (`onMessage`,
-  // `connect`) cannot be re-typed and accidentally forwarded — only
-  // documented outbound extensions get the bypass.
-  const PARENT_OUTBOUND_EXTENSIONS = ["sendUnsolicited"] as const;
-  for (const methodName of PARENT_OUTBOUND_EXTENSIONS) {
+  // Round-40 medium / Round-53 high: forward PRIVILEGED OUTBOUND
+  // extensions (sendUnsolicited — the explicit escape hatch that targets
+  // the currently connected socket OR an explicit offline recipient via
+  // opts.recipient). Stronger than the normal reply-correlation path:
+  // round-53 review correctly flagged that an output-only child must NOT
+  // be able to initiate proactive delivery on its own. Required:
+  // `mode === "all"` (full bidirectional channel access). Output-only
+  // and none are both blocked. When admitted, attribution still applies.
+  const PARENT_PRIVILEGED_OUTBOUND_EXTENSIONS = ["sendUnsolicited"] as const;
+  for (const methodName of PARENT_PRIVILEGED_OUTBOUND_EXTENSIONS) {
     const original = (parentChannel as unknown as Record<string, unknown>)[methodName];
     if (typeof original === "function") {
       // Round-42 high: forward the full extension signature, not just the
@@ -107,7 +108,7 @@ export function createInheritedChannel(
       // recipient targeting through composed/proxied paths.
       const fn = original as (message: OutboundMessage, ...rest: unknown[]) => Promise<void>;
       child[methodName] = (message: OutboundMessage, ...rest: unknown[]): Promise<void> => {
-        if (resolved.mode === "none") return Promise.resolve();
+        if (resolved.mode !== "all") return Promise.resolve();
         return fn.call(parentChannel, attributeMessage(message), ...rest);
       };
     }

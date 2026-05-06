@@ -245,15 +245,58 @@ describe("createInheritedChannel", () => {
       depth: 1,
       parent: agentId("parent-1"),
     };
-    const proxy = createInheritedChannel(parent, childPid) as ChannelAdapter & {
+    // Round-53: sendUnsolicited is privileged — requires mode:"all".
+    const proxy = createInheritedChannel(parent, childPid, {
+      mode: "all",
+      attribution: "metadata",
+      propagateStatus: false,
+    }) as ChannelAdapter & {
       sendUnsolicited?: (m: OutboundMessage) => Promise<void>;
     };
     expect(typeof proxy.sendUnsolicited).toBe("function");
     await proxy.sendUnsolicited?.({ content: [{ kind: "text", text: "welcome" }] });
     expect(captured).toHaveLength(1);
-    // Default attribution mode is "metadata" — child sender stamped.
     expect(captured[0]?.metadata?.["sender"]).toBe(childPid.id);
     expect(captured[0]?.metadata?.["senderName"]).toBe("child");
+  });
+
+  test("sendUnsolicited requires mode:'all' — output-only is blocked (round-53 high)", async () => {
+    // Round-53 high: sendUnsolicited is the privileged escape hatch
+    // that targets the currently connected socket OR an explicit
+    // offline recipient via {recipient}. An output-only child must
+    // NOT be able to initiate proactive delivery on its own. Same
+    // gate as endCall: mode === "all".
+    let invocations = 0;
+    const parent: ChannelAdapter & {
+      sendUnsolicited: (m: OutboundMessage) => Promise<void>;
+    } = {
+      name: "mobile-parent",
+      capabilities: CAPABILITIES,
+      connect: () => Promise.resolve(),
+      disconnect: () => Promise.resolve(),
+      send: () => Promise.resolve(),
+      onMessage: () => () => {},
+      sendUnsolicited: () => {
+        invocations++;
+        return Promise.resolve();
+      },
+    };
+    const childPid: ProcessId = {
+      id: agentId("child-id"),
+      name: "child",
+      type: "worker",
+      depth: 1,
+      parent: agentId("parent-1"),
+    };
+    const outputOnlyProxy = createInheritedChannel(parent, childPid, {
+      mode: "output-only",
+      attribution: "metadata",
+      propagateStatus: false,
+    }) as ChannelAdapter & {
+      sendUnsolicited?: (m: OutboundMessage) => Promise<void>;
+    };
+    await outputOnlyProxy.sendUnsolicited?.({ content: [{ kind: "text", text: "hi" }] });
+    expect(invocations).toBe(0);
   });
 
   test("forwards sendUnsolicited's optional opts (e.g. {recipient}) to parent (round-42 high)", async () => {
@@ -282,7 +325,11 @@ describe("createInheritedChannel", () => {
       depth: 1,
       parent: agentId("parent-1"),
     };
-    const proxy = createInheritedChannel(parent, childPid) as ChannelAdapter & {
+    const proxy = createInheritedChannel(parent, childPid, {
+      mode: "all",
+      attribution: "metadata",
+      propagateStatus: false,
+    }) as ChannelAdapter & {
       sendUnsolicited?: (m: OutboundMessage, opts?: unknown) => Promise<void>;
     };
     await proxy.sendUnsolicited?.(
