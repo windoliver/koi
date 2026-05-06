@@ -118,10 +118,13 @@ function normalizeSlashCommand(cmd: DiscordSlashCommandLike): InboundMessage {
   return {
     content: [block],
     senderId: cmd.userId,
-    // "interaction:<id>:<channelId>" so the first outbound reply edits the
+    // "interaction:cmd:<id>:<channelId>" so the first outbound reply edits the
     // deferred interaction; the channelId suffix is the fallback for spillover
-    // payloads or expired tokens.
-    threadId: `interaction:${cmd.id}:${cmd.channelId}`,
+    // payloads or expired tokens. The `cmd` discriminator lets sendOutbound
+    // distinguish slash-command threads (channel.send fallback is safe — the
+    // command was already public) from button threads (must fail closed to
+    // preserve ephemeral scope) without consulting external state.
+    threadId: `interaction:cmd:${cmd.id}:${cmd.channelId}`,
     timestamp: cmd.createdTimestamp,
   };
 }
@@ -138,8 +141,11 @@ function normalizeButton(btn: DiscordButtonInteractionLike): InboundMessage {
   return {
     content: [block],
     senderId: btn.userId,
-    // Same convention as slash commands — see normalizeSlashCommand.
-    threadId: `interaction:${btn.id}:${btn.channelId}`,
+    // "interaction:btn:<id>:<channelId>" — the `btn` discriminator marks
+    // this thread as fail-closed: when the live interaction handle is
+    // missing/expired, sendOutbound refuses to fall back to channel.send
+    // because that would repost an ephemeral/private reply publicly.
+    threadId: `interaction:btn:${btn.id}:${btn.channelId}`,
     timestamp: btn.createdTimestamp,
   };
 }

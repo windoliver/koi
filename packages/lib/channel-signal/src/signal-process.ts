@@ -168,7 +168,31 @@ export function createSignalProcess(
           setTimeout(() => resolve("timeout"), shutdownTimeoutMs),
         ),
       ]);
-      if (result === "timeout") child.kill(9);
+      if (result === "timeout") {
+        // Graceful shutdown failed — force-kill and WAIT for the kernel to
+        // reap the child before returning. Without this await, callers can
+        // reconnect and spawn a fresh signal-cli while the old JVM is still
+        // terminating, which races on account/config locks and produces
+        // duplicate-process / connect-flap failures during restart loops.
+        // A second short timeout bounds the worst case so a wedged child
+        // does not hang stop() forever; if even SIGKILL does not exit we
+        // surface that as a teardown failure rather than pretending success.
+        child.kill(9);
+        const SIGKILL_REAP_TIMEOUT_MS = 2000;
+        const reaped = await Promise.race([
+          child.exited.then(() => "exited" as const),
+          new Promise<"timeout">((resolve) =>
+            setTimeout(() => resolve("timeout"), SIGKILL_REAP_TIMEOUT_MS),
+          ),
+        ]);
+        if (reaped === "timeout") {
+          proc = undefined;
+          stopping = false;
+          throw new Error(
+            `[channel-signal] signal-cli did not exit within ${SIGKILL_REAP_TIMEOUT_MS}ms after SIGKILL — old process may still hold account locks`,
+          );
+        }
+      }
       proc = undefined;
       stopping = false;
     },

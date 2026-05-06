@@ -228,7 +228,7 @@ describe("createDiscordChannel — interaction reply path", () => {
     await new Promise((r) => setTimeout(r, 5));
     await adapter.send({
       content: [{ kind: "text", text: "answer" }],
-      threadId: "interaction:i100:C1",
+      threadId: "interaction:cmd:i100:C1",
     });
     expect(edits).toHaveLength(1);
     expect(edits[0]?.content).toBe("answer");
@@ -257,11 +257,11 @@ describe("createDiscordChannel — interaction reply path", () => {
     await new Promise((r) => setTimeout(r, 5));
     await adapter.send({
       content: [{ kind: "text", text: "first" }],
-      threadId: "interaction:i101:C1",
+      threadId: "interaction:cmd:i101:C1",
     });
     await adapter.send({
       content: [{ kind: "text", text: "second" }],
-      threadId: "interaction:i101:C1",
+      threadId: "interaction:cmd:i101:C1",
     });
     expect(f.sent).toHaveLength(1);
     expect(f.sent[0]?.payload.content).toBe("second");
@@ -293,7 +293,7 @@ describe("createDiscordChannel — interaction reply path", () => {
     const big = "x".repeat(4500);
     await adapter.send({
       content: [{ kind: "text", text: big }],
-      threadId: "interaction:i102:C1",
+      threadId: "interaction:cmd:i102:C1",
     });
     expect(edits).toHaveLength(1);
     expect(f.sent.length).toBeGreaterThanOrEqual(2);
@@ -331,7 +331,7 @@ describe("createDiscordChannel — interaction reply path", () => {
     // because the sweep on NEW evicted it.
     await adapter.send({
       content: [{ kind: "text", text: "late" }],
-      threadId: "interaction:OLD:C1",
+      threadId: "interaction:cmd:OLD:C1",
     });
     expect(editsByInteraction.OLD ?? 0).toBe(0);
     expect(f.sent).toHaveLength(1);
@@ -367,7 +367,7 @@ describe("createDiscordChannel — interaction reply path", () => {
     await new Promise((r) => setTimeout(r, 5));
     await adapter.send({
       content: [{ kind: "text", text: "thanks!" }],
-      threadId: "interaction:btn-i1:C1",
+      threadId: "interaction:btn:btn-i1:C1",
     });
     // editReply MUST NOT be called — it would clobber the source message.
     expect(edits).toHaveLength(0);
@@ -401,7 +401,7 @@ describe("createDiscordChannel — interaction reply path", () => {
     await expect(
       adapter.send({
         content: [{ kind: "text", text: "x" }],
-        threadId: "interaction:btn-no-fu:C1",
+        threadId: "interaction:btn:btn-no-fu:C1",
       }),
     ).rejects.toThrow(/missing followUp/);
     expect(f.sent).toHaveLength(0);
@@ -414,9 +414,59 @@ describe("createDiscordChannel — interaction reply path", () => {
     await adapter.connect();
     await adapter.send({
       content: [{ kind: "text", text: "x" }],
-      threadId: "interaction:unknown-id:C1",
+      threadId: "interaction:cmd:unknown-id:C1",
     });
     expect(f.sent).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
+  test("expired/missing button interaction fails closed (no public channel leak)", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    await adapter.connect();
+    // No matching pending button interaction. A retry / replay landing on
+    // a button thread MUST NOT fall through to channel.send because the
+    // original interaction may have been ephemeral.
+    await expect(
+      adapter.send({
+        content: [{ kind: "text", text: "leak?" }],
+        threadId: "interaction:btn:vanished:C1",
+      }),
+    ).rejects.toThrow(/expired or missing/);
+    expect(f.sent).toHaveLength(0);
+    await adapter.disconnect();
+  });
+
+  test("events arriving during the platformConnect login window are buffered and drained", async () => {
+    // Simulates Discord delivering an event between listener attachment
+    // and dispatcher installation: the fake client.login() fires a
+    // messageCreate before resolving, so the listener sees an event while
+    // channel-base has not yet called onPlatformEvent. Without buffering,
+    // that event would be silently dropped with no retry path.
+    const base = fakeClient();
+    const wrapped: DiscordClientLike = {
+      ...base.client,
+      login: async () => {
+        base.emit("messageCreate", {
+          id: "early",
+          content: "during-login",
+          author: { id: "U1", bot: false },
+          channelId: "C1",
+          guildId: "G1",
+          createdTimestamp: 1,
+          attachments: new Map(),
+        });
+        return undefined;
+      },
+    };
+    const adapter = createDiscordChannel({ token: "T", client: wrapped });
+    const seen: unknown[] = [];
+    adapter.onMessage(async (m) => {
+      seen.push(m);
+    });
+    await adapter.connect();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(seen).toHaveLength(1);
     await adapter.disconnect();
   });
 });

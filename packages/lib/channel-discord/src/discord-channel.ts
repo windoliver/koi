@@ -146,15 +146,34 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
 
   // let requires justification: the dispatch handler is set by onPlatformEvent
   // after platformConnect has already attached gateway listeners. We register
-  // listeners BEFORE client.login() to close the race window where Discord
-  // delivers events between login completion and listener attachment; events
-  // arriving before onPlatformEvent installs the dispatcher are dropped, which
-  // matches the previous behavior (no handler => no delivery).
+  // listeners BEFORE client.login() to close the race where Discord delivers
+  // events between login and listener attachment, AND we buffer events that
+  // arrive before onPlatformEvent installs the dispatcher (createChannelAdapter
+  // calls platformConnect before onPlatformEvent — there is otherwise a window
+  // during login/READY where slash commands would be silently dropped with no
+  // retry path on the gateway).
   let dispatch: ((event: DiscordEvent) => void) | undefined;
+  // let requires justification: drained when dispatch is installed.
+  // Bounded so a stuck/never-installed dispatcher cannot exhaust memory under
+  // sustained traffic; oldest entries are dropped first (typical inbound
+  // queue semantics — old commands are stale by the time we recover anyway).
+  const PENDING_BUFFER_MAX = 256;
+  let pending: DiscordEvent[] = [];
+
+  const deliver = (event: DiscordEvent): void => {
+    if (dispatch !== undefined) {
+      dispatch(event);
+      return;
+    }
+    pending.push(event);
+    if (pending.length > PENDING_BUFFER_MAX) {
+      pending = pending.slice(-PENDING_BUFFER_MAX);
+    }
+  };
 
   const onMessageCreate = (...args: readonly unknown[]): void => {
     const m = toMessageLike(args[0]);
-    if (m !== null && dispatch !== undefined) dispatch({ kind: "message", message: m });
+    if (m !== null) deliver({ kind: "message", message: m });
   };
   const onInteractionCreate = (...args: readonly unknown[]): void => {
     const raw = args[0];
@@ -185,7 +204,7 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
       }
     }
     const ev = toInteractionEvent(raw);
-    if (ev !== null && dispatch !== undefined) dispatch(ev);
+    if (ev !== null) deliver(ev);
   };
 
   const base = createChannelAdapter<DiscordEvent>({
@@ -211,6 +230,7 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
       client = undefined;
       botUserId = undefined;
       dispatch = undefined;
+      pending = [];
       pendingInteractions.clear();
     },
 
@@ -220,6 +240,12 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
 
     onPlatformEvent: (handler): (() => void) => {
       dispatch = handler;
+      // Drain events that arrived during the connect window (after listener
+      // attachment but before this handler was installed). Without this,
+      // slash commands sent during login/READY would be silently dropped.
+      const drained = pending;
+      pending = [];
+      for (const ev of drained) handler(ev);
       return (): void => {
         dispatch = undefined;
       };
@@ -285,17 +311,17 @@ async function sendOutbound(
   // user-scoped instead of leaking into the channel).
   // Overflow payloads also use followUp() so they share the same
   // visibility scope as the first reply.
-  const interactionId = parseInteractionIdFromThreadId(message.threadId);
-  if (interactionId !== undefined) {
-    const entry = pendingInteractions.get(interactionId);
+  const parsed = parseInteractionThread(message.threadId);
+  if (parsed !== undefined) {
+    const entry = pendingInteractions.get(parsed.interactionId);
     if (entry !== undefined && entry.expiresAt > Date.now() && payloads.length > 0) {
-      pendingInteractions.delete(interactionId);
+      pendingInteractions.delete(parsed.interactionId);
       const first = payloads[0];
       const followUp = entry.interaction.followUp;
       if (entry.kind === "button") {
         if (typeof followUp !== "function") {
           throw new Error(
-            `[channel-discord] button interaction "${interactionId}" missing followUp() — cannot reply without leaking out of ephemeral scope`,
+            `[channel-discord] button interaction "${parsed.interactionId}" missing followUp() — cannot reply without leaking out of ephemeral scope`,
           );
         }
         for (const p of payloads) {
@@ -312,8 +338,7 @@ async function sendOutbound(
             if (p !== undefined) await followUp.call(entry.interaction, p);
           }
         } else {
-          const channelIdFallback = parseChannelIdFromThreadId(message.threadId);
-          const channel = await resolveChannel(client, channelIdFallback);
+          const channel = await resolveChannel(client, parsed.channelId);
           if (channel === null) {
             throw new Error(
               `[channel-discord] interaction overflow channel not found for "${message.threadId}" — refusing to silently drop ${payloads.length - 1} payload(s)`,
@@ -327,7 +352,16 @@ async function sendOutbound(
       }
       return;
     }
-    // Interaction expired/missing — fall through to channel.send
+    // Interaction expired/missing. For BUTTON threads, fail closed: the
+    // interaction was ephemeral or otherwise scoped, and falling through
+    // to channel.send would repost a private reply publicly. For slash
+    // commands, the original command was already public, so channel.send
+    // is a safe (degraded) fallback.
+    if (parsed.kind === "button") {
+      throw new Error(
+        `[channel-discord] button interaction "${parsed.interactionId}" expired or missing — refusing channel fallback to preserve ephemeral scope`,
+      );
+    }
   }
 
   const channelId = parseChannelIdFromThreadId(message.threadId);
@@ -358,24 +392,33 @@ async function resolveChannel(
   return null;
 }
 
+/** Parsed shape of `interaction:<kind>:<id>:<channelId>`. */
+interface ParsedInteractionThread {
+  readonly kind: InteractionReplyKind;
+  readonly interactionId: string;
+  readonly channelId: string;
+}
+
+function parseInteractionThread(threadId: string): ParsedInteractionThread | undefined {
+  if (!threadId.startsWith("interaction:")) return undefined;
+  const parts = threadId.slice("interaction:".length).split(":");
+  // Expected: [kind, id, channelId]. Older threadIds without the kind
+  // discriminator are rejected — the safety story (slash vs button
+  // routing) depends on the discriminator being present.
+  if (parts.length < 3) return undefined;
+  const [kind, interactionId, channelId] = parts;
+  if (interactionId === undefined || channelId === undefined) return undefined;
+  if (kind !== "cmd" && kind !== "btn") return undefined;
+  return { kind: kind === "cmd" ? "slash" : "button", interactionId, channelId };
+}
+
 function parseChannelIdFromThreadId(threadId: string): string {
-  // "interaction:<id>:<channelId>" → <channelId>
-  if (threadId.startsWith("interaction:")) {
-    const rest = threadId.slice("interaction:".length);
-    const idx = rest.indexOf(":");
-    return idx < 0 ? rest : rest.slice(idx + 1);
-  }
+  const parsed = parseInteractionThread(threadId);
+  if (parsed !== undefined) return parsed.channelId;
   const parts = threadId.split(":");
   // "guildId:channelId" → channelId; "dm:channelId" → channelId. Both forms
   // resolve through `client.channels.cache` keyed on channelId.
   return parts.length >= 2 ? (parts[1] ?? threadId) : threadId;
-}
-
-function parseInteractionIdFromThreadId(threadId: string): string | undefined {
-  if (!threadId.startsWith("interaction:")) return undefined;
-  const rest = threadId.slice("interaction:".length);
-  const idx = rest.indexOf(":");
-  return idx < 0 ? rest : rest.slice(0, idx);
 }
 
 function isInteractionResponseLike(

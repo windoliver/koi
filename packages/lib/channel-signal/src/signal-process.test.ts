@@ -169,15 +169,42 @@ describe("@koi/channel-signal createSignalProcess", () => {
     await p.stop();
   });
 
-  test("stop() sends SIGTERM, then SIGKILL after timeout", async () => {
+  test("stop() sends SIGTERM, then SIGKILL after timeout, awaiting reap", async () => {
     const f = makeFake();
-    const spawn: SpawnFn = () => f.proc;
+    const wrapped: SignalChildProcess = {
+      ...f.proc,
+      kill: (signal?: number): void => {
+        f.killSignals.push(signal ?? 15);
+        // Simulate the kernel reaping the child after SIGKILL so stop()'s
+        // post-SIGKILL await on `exited` resolves.
+        if (signal === 9) f.finishExit();
+      },
+    };
+    const spawn: SpawnFn = () => wrapped;
     const p = createSignalProcess("+15551234567", "signal-cli", undefined, spawn, 5);
     await p.start();
     await p.stop();
     expect(f.killSignals[0]).toBe(15);
     expect(f.killSignals[1]).toBe(9);
   });
+
+  test("stop() throws when even SIGKILL fails to reap the child (no false-success)", async () => {
+    // Wedged child: never resolves `exited`. stop() must surface a teardown
+    // failure rather than reporting success and clearing state.
+    const exited = new Promise<void>(() => {
+      /* never resolves */
+    });
+    const proc: SignalChildProcess = {
+      stdout: new ReadableStream<Uint8Array>(),
+      stdin: { write: () => undefined },
+      exited,
+      kill: () => undefined,
+    };
+    const spawn: SpawnFn = () => proc;
+    const p = createSignalProcess("+15551234567", "signal-cli", undefined, spawn, 5);
+    await p.start();
+    await expect(p.stop()).rejects.toThrow(/did not exit within/);
+  }, 10000);
 
   test("send() throws when not running", async () => {
     const f = makeFake();
