@@ -284,6 +284,45 @@ describe("createIdeChannel", () => {
     await ch.disconnect();
   });
 
+  test("startup race: line emitted synchronously during transport.connect() is NOT lost", async () => {
+    // Regression: previously the IDE adapter only registered its
+    // line listener AFTER awaiting transport.connect(), so a transport
+    // that flushed a queued first notify synchronously inside its own
+    // connect() (real-world case: editor plugins that buffer outbound
+    // and drain on pipe-open) lost that frame. Subscribing BEFORE
+    // connect routes it into the bounded pre-handler buffer instead.
+    const queuedLine = JSON.stringify({
+      jsonrpc: "2.0",
+      method: "notify",
+      params: { content: [{ kind: "text", text: "racing-first" }] },
+    });
+    // let requires justification: captured by transport callback wiring
+    let listener: ((line: string) => void) | undefined;
+    const racyTransport = {
+      connect: async (): Promise<void> => {
+        listener?.(queuedLine);
+      },
+      disconnect: async (): Promise<void> => {},
+      send: async (): Promise<void> => {},
+      onLine: (handler: (l: string) => void): (() => void) => {
+        listener = handler;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const ch = createIdeChannel({ transport: racyTransport });
+    const received: InboundMessage[] = [];
+    ch.onMessage(async (m) => {
+      received.push(m);
+    });
+    await ch.connect();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(received).toHaveLength(1);
+    expect((received[0]?.content[0] as TextBlock | undefined)?.text).toBe("racing-first");
+    await ch.disconnect();
+  });
+
   test("inbound size cap is enforced on UTF-8 bytes, not UTF-16 code units", async () => {
     // Regression: round-7 used line.length so a frame full of multi-byte
     // chars could exceed the 256 KiB byte cap by 3-4x and still parse,

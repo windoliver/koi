@@ -43,28 +43,29 @@ function downgrade(
   }
 }
 
-export function wrapWithFallback(
-  inner: ChannelAdapter,
+/**
+ * Generic over the inner adapter type so adapter-specific extension
+ * methods (e.g. `MobileChannelAdapter.sendUnsolicited`) are preserved.
+ * Without this, `wrapWithFallback(createMobileChannel(...))` collapsed
+ * to a bare `ChannelAdapter` and stripped the only API for explicit
+ * unsolicited live delivery — silently breaking welcome / resume /
+ * push-to-current-client flows even though the wrapped value still
+ * looked usable.
+ */
+export function wrapWithFallback<T extends ChannelAdapter>(
+  inner: T,
   opts: FallbackOptions = {},
-): ChannelAdapter {
-  const wrapped: ChannelAdapter = {
-    name: inner.name,
-    capabilities: inner.capabilities,
-    connect: () => inner.connect(),
-    disconnect: () => inner.disconnect(),
-    onMessage: (h) => inner.onMessage(h),
-    send: (message: OutboundMessage) => {
-      const next: ContentBlock[] = [];
-      for (const b of message.content) {
-        const d = downgrade(b, inner.capabilities, opts);
-        if (d !== null) next.push(d);
-      }
-      return inner.send({ ...message, content: next });
-    },
+): T {
+  const wrappedSend = (message: OutboundMessage): Promise<void> => {
+    const next: ContentBlock[] = [];
+    for (const b of message.content) {
+      const d = downgrade(b, inner.capabilities, opts);
+      if (d !== null) next.push(d);
+    }
+    return inner.send({ ...message, content: next });
   };
-  if (inner.sendStatus !== undefined) {
-    const fn = inner.sendStatus;
-    return { ...wrapped, sendStatus: (s) => fn(s) };
-  }
-  return wrapped;
+  // Preserve every property of the inner adapter (including extensions
+  // like sendUnsolicited) and only override send() with the
+  // capability-driven downgrade pass.
+  return { ...inner, send: wrappedSend } as T;
 }

@@ -497,6 +497,43 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("startup race: utterance emitted synchronously during transport.connect() is NOT lost", async () => {
+    // Regression: previously the voice adapter only subscribed to
+    // transport.onUtterance after awaiting transport.connect(), so a
+    // caller who spoke during the connect handshake (queued audio that
+    // a transport drains on pipe-open) lost their first turn. The
+    // transport listener is now registered BEFORE connect so racing
+    // utterances buffer into the bounded pre-handler queue.
+    // let requires justification: captured by transport callback
+    let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+    const racyTransport: VoiceTransport = {
+      connect: async () => {
+        listener?.("call-A", new Uint8Array([42]));
+      },
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (handler) => {
+        listener = handler;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = { transcribe: async () => "racing-first" };
+    const tts: Tts = { synthesize: async () => new Uint8Array() };
+    const ch = createVoiceChannel({ transport: racyTransport, stt, tts });
+    const received: InboundMessage[] = [];
+    ch.onMessage(async (msg) => {
+      received.push(msg);
+    });
+    await ch.connect();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(received).toHaveLength(1);
+    const block = received[0]?.content[0] as TextBlock | undefined;
+    expect(block?.text).toBe("racing-first");
+    await ch.disconnect();
+  });
+
   test("hung STT call times out so the per-session chain does not deadlock all later utterances", async () => {
     // Regression: per-session STT chaining (added round 3) made one stuck
     // stt.transcribe() block every later utterance for that sessionId

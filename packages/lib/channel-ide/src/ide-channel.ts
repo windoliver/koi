@@ -116,15 +116,47 @@ function parseFrame(line: string): NotifyFrame | null {
   }
 }
 
+// Bounded backlog of inbound lines that arrived between platformConnect()
+// and onPlatformEvent() handler installation. Without this, an editor
+// plugin that sends its first notify immediately after transport connect
+// would have that frame silently dropped (the listener is not yet wired
+// in createChannelAdapter's startup ordering).
+const MAX_PENDING_LINES = 32;
+
 export function createIdeChannel(config: IdeChannelConfig): ChannelAdapter {
   const defaultSenderId = config.senderId ?? "ide-user";
   const trustClient = config.trustClientIdentity === true;
 
+  // let requires justification: lifecycle state mutated across closures
+  let lineHandler: ((line: string) => void) | undefined;
+  let pendingLines: string[] = [];
+  let unsubTransport: (() => void) | undefined;
+
   return createChannelAdapter<string>({
     name: "ide",
     capabilities: IDE_CAPABILITIES,
-    platformConnect: () => config.transport.connect(),
-    platformDisconnect: () => config.transport.disconnect(),
+    platformConnect: async () => {
+      // Subscribe to the transport BEFORE calling its connect(), so any
+      // line that the transport emits SYNCHRONOUSLY during connect (e.g.
+      // an editor plugin that flushes a queued first notify the moment
+      // the pipe is open) routes into our buffer instead of being lost.
+      // The buffer is then drained when onPlatformEvent installs the real
+      // handler.
+      unsubTransport = config.transport.onLine((line) => {
+        if (lineHandler !== undefined) {
+          lineHandler(line);
+        } else if (pendingLines.length < MAX_PENDING_LINES) {
+          pendingLines.push(line);
+        }
+      });
+      await config.transport.connect();
+    },
+    platformDisconnect: async () => {
+      unsubTransport?.();
+      unsubTransport = undefined;
+      pendingLines = [];
+      await config.transport.disconnect();
+    },
     platformSend: async (message: OutboundMessage) => {
       const frame: NotifyFrame = {
         jsonrpc: "2.0",
@@ -139,7 +171,15 @@ export function createIdeChannel(config: IdeChannelConfig): ChannelAdapter {
       // delimiters itself.
       await config.transport.send(`${JSON.stringify(frame)}\n`);
     },
-    onPlatformEvent: (handler) => config.transport.onLine(handler),
+    onPlatformEvent: (handler) => {
+      lineHandler = handler;
+      const drain = pendingLines;
+      pendingLines = [];
+      for (const line of drain) handler(line);
+      return () => {
+        lineHandler = undefined;
+      };
+    },
     normalize: (line: string): InboundMessage | null => {
       const frame = parseFrame(line);
       if (frame === null) return null;

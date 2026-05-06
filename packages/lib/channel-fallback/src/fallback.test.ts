@@ -122,6 +122,31 @@ describe("wrapWithFallback", () => {
     expect((sent[0]?.content[0] as TextBlock).text).toBe("after");
   });
 
+  test("preserves adapter-specific extension methods (e.g. sendUnsolicited)", async () => {
+    // Regression: round-8 collapsed to a bare ChannelAdapter and silently
+    // stripped MobileChannelAdapter.sendUnsolicited. The wrapper is now
+    // generic so caller-side extension methods survive composition.
+    let unsolicitedCalls = 0;
+    interface ExtendedAdapter extends ChannelAdapter {
+      readonly sendUnsolicited: (m: { content: ContentBlock[] }) => Promise<void>;
+    }
+    const inner: ExtendedAdapter = {
+      name: "extended",
+      capabilities: TEXT_ONLY,
+      connect: async () => {},
+      disconnect: async () => {},
+      send: async () => {},
+      onMessage: () => () => {},
+      sendUnsolicited: async () => {
+        unsolicitedCalls++;
+      },
+    };
+    const wrapped = wrapWithFallback(inner);
+    expect(typeof wrapped.sendUnsolicited).toBe("function");
+    await wrapped.sendUnsolicited({ content: [{ kind: "text", text: "hi" }] });
+    expect(unsolicitedCalls).toBe(1);
+  });
+
   test("connect/disconnect/onMessage delegate to inner", async () => {
     let connects = 0;
     let disconnects = 0;

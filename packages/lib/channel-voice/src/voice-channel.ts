@@ -225,13 +225,44 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     }
   };
 
+  // Bounded backlog of (sessionId, utterance) pairs that arrived between
+  // transport.connect() returning and onPlatformEvent() registering its
+  // handler. createChannelAdapter installs the inbound listener AFTER
+  // platformConnect, so without buffering a caller who speaks immediately
+  // after the transport comes up loses their first utterance — the user
+  // has no retry signal, the conversation desyncs from the start.
+  const MAX_PENDING_UTTERANCES = 32;
+  // let requires justification: lifecycle state mutated across closures
+  let rawUtteranceSink: ((sessionId: string, utterance: Uint8Array) => void) | undefined;
+  let pendingUtterances: Array<{ sessionId: string; utterance: Uint8Array }> = [];
+  let unsubTransport: (() => void) | undefined;
+
   const inner = createChannelAdapter<TransportEvent>({
     name: "voice",
     capabilities: VOICE_CAPABILITIES,
     onNormalizationError: (err: unknown, event: TransportEvent) =>
       (config.onSttError ?? defaultSttErrorLogger)(err, event.utterance),
-    platformConnect: () => config.transport.connect(),
-    platformDisconnect: () => config.transport.disconnect(),
+    platformConnect: async () => {
+      // Subscribe BEFORE calling transport.connect() so any utterance
+      // emitted synchronously during connect is buffered, not lost.
+      // The sink is filled in by onPlatformEvent (which wires the
+      // per-session STT chain).
+      unsubTransport = config.transport.onUtterance((sessionId, utterance) => {
+        if (rawUtteranceSink !== undefined) {
+          rawUtteranceSink(sessionId, utterance);
+        } else if (pendingUtterances.length < MAX_PENDING_UTTERANCES) {
+          pendingUtterances.push({ sessionId, utterance });
+        }
+      });
+      await config.transport.connect();
+    },
+    platformDisconnect: async () => {
+      unsubTransport?.();
+      unsubTransport = undefined;
+      pendingUtterances = [];
+      rawUtteranceSink = undefined;
+      await config.transport.disconnect();
+    },
     // platformSend is intentionally a no-op stub. channel-base serializes
     // all sends through a single global promise chain, which would let
     // one stuck TTS or stalled transport.sendUtterance() head-of-line
@@ -257,7 +288,7 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       // line block other callers' turns.
       const chains = new Map<string, Promise<unknown>>();
       const sttTimeoutMs = config.sttTimeoutMs ?? DEFAULT_STT_TIMEOUT_MS;
-      return config.transport.onUtterance((sessionId, utterance) => {
+      const enqueue = (sessionId: string, utterance: Uint8Array): void => {
         const prev = chains.get(sessionId) ?? Promise.resolve();
         const next = prev
           .catch(() => undefined)
@@ -298,7 +329,18 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
         next.finally(() => {
           if (chains.get(sessionId) === next) chains.delete(sessionId);
         });
-      });
+      };
+      // Wire the live sink so future utterances flow through the chain.
+      rawUtteranceSink = enqueue;
+      // Drain anything that arrived between transport.connect() and now.
+      // Order is preserved: per-session chain serialization in enqueue()
+      // ensures buffered turn N is dispatched before live turn N+1.
+      const drain = pendingUtterances;
+      pendingUtterances = [];
+      for (const item of drain) enqueue(item.sessionId, item.utterance);
+      return () => {
+        rawUtteranceSink = undefined;
+      };
     },
     normalize: (event: TransportEvent): InboundMessage | null => {
       // Fail fast at the trust boundary: a blank sessionId would let the
