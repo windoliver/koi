@@ -145,13 +145,22 @@ export type VerifyTokenFn = (token: string) => Promise<JWTPayload>;
 
 export type CreateTokenVerifierOptions = {
   readonly verifyToken?: VerifyTokenFn;
-  readonly mintAppToken?: () => Promise<string>;
+  /**
+   * REQUIRED for production deployments. Mints a Bot Framework OAuth2 access
+   * token (client credentials flow against
+   * https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token, scope
+   * `https://api.botframework.com/.default`) with caching/expiry handling.
+   * The package does NOT ship a default implementation because there is no
+   * safe default — using `appPassword` directly as a Bearer token is rejected
+   * by Bot Framework and would silently break outbound sends.
+   */
+  readonly mintAppToken: () => Promise<string>;
   readonly clock?: () => number;
 };
 
 export function createTokenVerifier(
   config: TeamsConfig,
-  options: CreateTokenVerifierOptions = {},
+  options: CreateTokenVerifierOptions,
 ): JwtVerifier {
   const { issuer, jwksUri } = resolveIssuer(config);
   const clock = options.clock ?? Date.now;
@@ -195,6 +204,5 @@ export function createTokenVerifier(
     return claims;
   };
 
-  const appToken = options.mintAppToken ?? (async () => config.appPassword);
-  return { verify, appToken };
+  return { verify, appToken: options.mintAppToken };
 }

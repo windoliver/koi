@@ -156,20 +156,27 @@ describe("validateClaims", () => {
 
 describe("createTokenVerifier (DI path)", () => {
   test("rejects missing bearer header", async () => {
-    const v = createTokenVerifier(baseConfig, { verifyToken: async () => ({}) });
+    const v = createTokenVerifier(baseConfig, {
+      verifyToken: async () => ({}),
+      mintAppToken: async () => "tok",
+    });
     const r = await v.verify("", { serviceUrl: "https://smba.trafficmanager.net/" });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe("INVALID_JWT");
   });
 
   test("rejects malformed bearer header", async () => {
-    const v = createTokenVerifier(baseConfig, { verifyToken: async () => ({}) });
+    const v = createTokenVerifier(baseConfig, {
+      verifyToken: async () => ({}),
+      mintAppToken: async () => "tok",
+    });
     const r = await v.verify("Token abc", { serviceUrl: "https://smba.trafficmanager.net/" });
     expect(r.ok).toBe(false);
   });
 
   test("propagates jwtVerify failure as INVALID_JWT", async () => {
     const v = createTokenVerifier(baseConfig, {
+      mintAppToken: async () => "tok",
       verifyToken: async () => {
         throw new Error("bad signature");
       },
@@ -183,6 +190,7 @@ describe("createTokenVerifier (DI path)", () => {
     const now = 1_700_000_000_000;
     const v = createTokenVerifier(baseConfig, {
       clock: () => now,
+      mintAppToken: async () => "tok",
       verifyToken: async () => ({
         aud: "app-1",
         tid: "tenant-1",
@@ -199,6 +207,7 @@ describe("createTokenVerifier (DI path)", () => {
     const now = 1_700_000_000_000;
     const v = createTokenVerifier(baseConfig, {
       clock: () => now,
+      mintAppToken: async () => "tok",
       verifyToken: async () => ({
         aud: "app-1",
         tid: "tenant-1",
@@ -212,8 +221,11 @@ describe("createTokenVerifier (DI path)", () => {
     if (!r.ok) expect(r.code).toBe("SERVICE_URL_NOT_ALLOWED");
   });
 
-  test("appToken returns the configured password by default", async () => {
-    const v = createTokenVerifier(baseConfig, { verifyToken: async () => ({}) });
-    expect(await v.appToken()).toBe("secret");
+  test("appToken delegates to the injected mintAppToken", async () => {
+    const v = createTokenVerifier(baseConfig, {
+      verifyToken: async () => ({}),
+      mintAppToken: async () => "minted-bot-framework-token",
+    });
+    expect(await v.appToken()).toBe("minted-bot-framework-token");
   });
 });

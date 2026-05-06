@@ -42,8 +42,17 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
       }
       const begin = await opts.idempotencyStore.tryBegin(claimed.key, leaseMs);
       if (!begin.ok) {
-        // Already committed or in-flight elsewhere — drop from queue.
-        await opts.queue.ack(opts.workerId, claimed.key);
+        if (begin.reason === "committed") {
+          // True duplicate — handler already ran successfully elsewhere.
+          await opts.queue.ack(opts.workerId, claimed.key);
+        } else {
+          // in-flight or capacity-exhausted — another worker still owns the
+          // idempotency lease, OR the store cannot accept more work right now.
+          // Release the queue claim so the item can be re-attempted; do NOT
+          // ack (acking would drop the item and lose the message if the other
+          // worker fails before commit).
+          await opts.queue.nack(opts.workerId, claimed.key);
+        }
         continue;
       }
       const renewer = setInterval(
