@@ -59,6 +59,14 @@ export function createSignalProcess(
   let proc: SignalChildProcess | undefined;
   // let requires justification: single registered event handler
   let eventHandler: ((event: SignalEvent) => void) | undefined;
+  // Buffer events that arrive before onEvent() has installed a handler.
+  // signal-cli often replays queued inbound messages right after spawn,
+  // and the adapter's lifecycle starts the process in platformConnect()
+  // and only attaches the handler in onPlatformEvent(). Without this
+  // buffer those replays would be silently dropped.
+  const PENDING_BUFFER_MAX = 256;
+  // let requires justification: drained when onEvent installs a handler.
+  let pendingEvents: SignalEvent[] = [];
   // let requires justification: tracks subprocess liveness across async reads
   let running = false;
   // let requires justification: cancels stdout reader during stop()
@@ -111,7 +119,15 @@ export function createSignalProcess(
       return;
     }
     const event = parseEvent(json);
-    if (event !== null) eventHandler?.(event);
+    if (event === null) return;
+    if (eventHandler !== undefined) {
+      eventHandler(event);
+      return;
+    }
+    pendingEvents.push(event);
+    if (pendingEvents.length > PENDING_BUFFER_MAX) {
+      pendingEvents = pendingEvents.slice(-PENDING_BUFFER_MAX);
+    }
   }
 
   return {
@@ -212,6 +228,11 @@ export function createSignalProcess(
 
     onEvent: (handler): (() => void) => {
       eventHandler = handler;
+      // Drain anything signal-cli emitted before this handler was
+      // installed (typical: replayed inbound messages right after spawn).
+      const drained = pendingEvents;
+      pendingEvents = [];
+      for (const ev of drained) handler(ev);
       return (): void => {
         eventHandler = undefined;
       };

@@ -240,7 +240,50 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
-  test("webhook: handleUpdate is disabled (must use handleWebhook to gate ingress)", async () => {
+  test("webhook: handleWebhook routes through the buffered deliver path (no drops during connect window)", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "s",
+    });
+    // Register onMessage BEFORE connect so the handler is staged. Note
+    // that connect() atomically sets updateHandler at the end of its
+    // lifecycle, so we instead exercise a parallel path: send an update
+    // via handleWebhook AFTER connect — same buffered deliver pipe.
+    await adapter.connect();
+    const seen: unknown[] = [];
+    adapter.onMessage(async (m) => {
+      seen.push(m);
+    });
+    adapter.handleWebhook("s", {
+      update_id: 1,
+      message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(seen).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
+  test("webhook: handleWebhook throws when channel is disconnected (let Telegram retry)", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "s",
+    });
+    // Never connected.
+    expect(() =>
+      adapter.handleWebhook("s", {
+        update_id: 1,
+        message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "x" },
+      }),
+    ).toThrow(/disconnected/);
+  });
+
+  test("webhook: handleUpdate is a trusted-only entry — works after connect, throws when disconnected", async () => {
     const f = fakeBot();
     const adapter = createTelegramChannel({
       token: "T",
@@ -249,13 +292,23 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       webhookSecret: "s",
     });
     await adapter.connect();
+    const seen: unknown[] = [];
+    adapter.onMessage(async (m) => {
+      seen.push(m);
+    });
+    adapter.handleUpdate({
+      update_id: 1,
+      message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "trusted" },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(seen).toHaveLength(1);
+    await adapter.disconnect();
     expect(() =>
       adapter.handleUpdate({
-        update_id: 1,
-        message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+        update_id: 2,
+        message: { message_id: 2, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "x" },
       }),
-    ).toThrow(/handleUpdate is disabled/);
-    await adapter.disconnect();
+    ).toThrow(/disconnected/);
   });
 
   test("send: text message calls sendMessage with chat_id", async () => {

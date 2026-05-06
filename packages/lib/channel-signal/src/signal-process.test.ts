@@ -335,6 +335,34 @@ describe("@koi/channel-signal createSignalProcess", () => {
     expect(p.isRunning()).toBe(false);
   });
 
+  test("events emitted before onEvent() handler installs are buffered and drained", async () => {
+    // signal-cli replays queued inbound messages right after spawn —
+    // those events arrive on stdout before the adapter's onPlatformEvent
+    // path has wired its handler. Without buffering they are lost.
+    const f = makeFake();
+    const spawn: SpawnFn = () => f.proc;
+    const p = createSignalProcess("+15551234567", "signal-cli", undefined, spawn);
+    await p.start();
+    // Emit BEFORE registering a handler.
+    f.emit(
+      JSON.stringify({
+        params: {
+          envelope: {
+            source: "+15551234567",
+            dataMessage: { message: "early", timestamp: 1 },
+          },
+        },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    const seen: SignalEvent[] = [];
+    p.onEvent((e) => seen.push(e));
+    expect(seen).toHaveLength(1);
+    if (seen[0]?.kind === "message") expect(seen[0].body).toBe("early");
+    f.finishExit();
+    await p.stop();
+  });
+
   test("isRunning reflects start/stop", async () => {
     const f = makeFake();
     const spawn: SpawnFn = () => f.proc;

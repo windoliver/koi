@@ -104,12 +104,12 @@ export interface TelegramChannelConfig {
 
 export interface TelegramChannelAdapter extends ChannelAdapter {
   /**
-   * Direct dispatch entrypoint for trusted, in-process sources only
-   * (tests, internal queues). In webhook mode this method THROWS to
-   * prevent callers from accidentally exposing it as the public HTTPS
-   * ingress — use `handleWebhook` instead, which verifies the secret
-   * header before dispatching. In polling mode `handleUpdate` is unused
-   * but still throws to preserve the same invariant.
+   * Direct dispatch entrypoint for already-trusted, in-process sources
+   * (tests, an internal queue, an upstream verifier). Performs NO
+   * authenticity check. PRODUCTION webhook integrations MUST use
+   * `handleWebhook`, which verifies the
+   * `X-Telegram-Bot-Api-Secret-Token` header in constant time before
+   * dispatching. Throws when the channel is disconnected.
    */
   readonly handleUpdate: (update: TelegramUpdateLike) => void;
   /**
@@ -150,6 +150,11 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
   let bot: TelegramBotLike | undefined = config.bot;
   // let requires justification: registered listener invoked by handleUpdate
   let updateHandler: ((update: TelegramUpdateLike) => void) | undefined;
+  // let requires justification: tracks the channel's connect/disconnect
+  // edge so handleUpdate / handleWebhook can fail closed when called
+  // before connect() or after disconnect(). Cannot rely on `bot` alone
+  // because callers may inject a long-lived bot via config.bot.
+  let connected = false;
   // Buffer for updates that arrive between b.start() (kicked off in
   // platformConnect) and onPlatformEvent installing updateHandler. Without
   // this, the first updates of a polling session would be silently
@@ -217,6 +222,7 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
       }
       // Connect-time handshake: validate the bot token by calling getMe.
       await bot.api.getMe();
+      connected = true;
       if (deployment.mode === "polling") {
         const b = bot;
         // Register the dispatcher middleware BEFORE start() — grammY drains
@@ -274,6 +280,7 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
     },
 
     platformDisconnect: async (): Promise<void> => {
+      connected = false;
       if (bot === undefined) return;
       if (deployment.mode === "polling") {
         await bot.stop();
@@ -315,14 +322,19 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
 
   adapter = {
     ...base,
-    handleUpdate: (_update: TelegramUpdateLike): void => {
-      // Fail closed. The previous shape allowed callers to wire raw
-      // HTTPS bodies straight into dispatch, which made the webhook
-      // ingress easy to deploy without verification. Production callers
-      // must go through `handleWebhook`, which checks the secret header.
-      throw new Error(
-        "[channel-telegram] handleUpdate is disabled — use handleWebhook(headerValue, update) for webhook mode (with `webhookSecret` configured) or rely on the polling middleware in polling mode",
-      );
+    handleUpdate: (update: TelegramUpdateLike): void => {
+      // Trusted-only entrypoint. The adapter does NO authenticity check
+      // here — production webhook callers MUST use `handleWebhook` so
+      // the secret-token header is verified. handleUpdate exists for
+      // tests and in-process queues that have already authenticated the
+      // sender. Routes through `deliver()` so updates that arrive before
+      // onPlatformEvent installs the handler are buffered, not dropped.
+      if (!connected) {
+        throw new Error(
+          "[channel-telegram] handleUpdate called while disconnected — refusing to swallow update silently",
+        );
+      }
+      deliver(update);
     },
     handleWebhook: (secretHeaderValue, update): void => {
       if (config.webhookSecret === undefined) {
@@ -338,7 +350,18 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
           "[channel-telegram] handleWebhook secret mismatch — dropping update (X-Telegram-Bot-Api-Secret-Token header missing or incorrect)",
         );
       }
-      updateHandler?.(update);
+      // Fail closed when the channel is disconnected: webhook callers
+      // can return a non-200 and let Telegram retry rather than silently
+      // ack-and-drop the update.
+      if (!connected) {
+        throw new Error(
+          "[channel-telegram] handleWebhook called while disconnected — return a non-200 so Telegram retries",
+        );
+      }
+      // Use the same buffered delivery path as polling so updates that
+      // arrive between connect() and onPlatformEvent's handler install
+      // are not silently dropped.
+      deliver(update);
     },
     resolveMediaUrl,
   };
