@@ -757,6 +757,56 @@ describe("linearSearch", () => {
     expect(result.history[2]?.parentId).toBe(result.history[1]?.id ?? "");
   });
 
+  test("descriptor mutations by callbacks do not affect later iterations or history", async () => {
+    let evalCalls = 0;
+    const config = makeConfig({
+      maxIterations: 3,
+      noImprovementLimit: 5,
+      evaluate: async (_code, descriptor) => {
+        evalCalls++;
+        // Hostile mutation attempt — must not propagate.
+        try {
+          (descriptor as { name: string }).name = `pwned-${evalCalls}`;
+        } catch {
+          // frozen — expected
+        }
+        return {
+          successRate: 0.5,
+          sampleCount: 10,
+          failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+        };
+      },
+      random: () => 0.99,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+
+    expect(DESCRIPTOR.name).toBe("harness-test");
+    for (const node of result.history) {
+      expect(node.descriptor.name).toBe("harness-test");
+    }
+  });
+
+  test("oversized refinement yields refine_failed (hard byte cap)", async () => {
+    const huge = "x".repeat(100_000);
+    const config = makeConfig({
+      maxRefinedCodeBytes: 1024,
+      refine: async () => `\`\`\`ts\n${huge}\n\`\`\``,
+      evaluate: async () => ({
+        successRate: 0.5,
+        sampleCount: 10,
+        failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+      }),
+      random: () => 0.99,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("refine_failed");
+  });
+
+  test("invalid maxRefinedCodeBytes throws fast", async () => {
+    const config = makeConfig({ maxRefinedCodeBytes: 0 });
+    expect(linearSearch(INITIAL_CODE, DESCRIPTOR, config)).rejects.toThrow(/maxRefinedCodeBytes/);
+  });
+
   test("never exceeds maxIterations even with infinite-failure evaluator", async () => {
     const config = makeConfig({
       maxIterations: 7,

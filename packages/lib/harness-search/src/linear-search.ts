@@ -69,6 +69,7 @@ export async function linearSearch(
     minEvalSamples = DEFAULT_SEARCH_CONFIG.minEvalSamples,
     noImprovementLimit = DEFAULT_SEARCH_CONFIG.noImprovementLimit,
     attemptTimeoutMs = DEFAULT_SEARCH_CONFIG.attemptTimeoutMs,
+    maxRefinedCodeBytes = DEFAULT_SEARCH_CONFIG.maxRefinedCodeBytes,
     adapterHonorsAbort = false,
     sanitizeFailures = DEFAULT_SEARCH_CONFIG.sanitizeFailures,
     clock = DEFAULT_SEARCH_CONFIG.clock,
@@ -133,6 +134,17 @@ export async function linearSearch(
   if (typeof adapterHonorsAbort !== "boolean") {
     throw new TypeError("linearSearch: adapterHonorsAbort must be a boolean");
   }
+  if (!Number.isInteger(maxRefinedCodeBytes) || maxRefinedCodeBytes < 1) {
+    throw new TypeError("linearSearch: maxRefinedCodeBytes must be a positive integer");
+  }
+  // Snapshot + freeze the descriptor so a hostile or buggy callback
+  // cannot mutate the contract mid-search. Without this, an evaluator
+  // that overwrites descriptor.inputSchema or descriptor.name in-place
+  // would change the contract for later iterations AND retroactively
+  // appear to have used the mutated descriptor in earlier history
+  // entries (every node aliases the same object). Mirrors the freeze
+  // pattern in @koi/harness-synth.
+  const frozenDescriptor: ToolDescriptor = freezeDescriptor(initialDescriptor);
 
   const history: SearchNode[] = [];
   let nodeCounter = 0;
@@ -156,7 +168,7 @@ export async function linearSearch(
     }
 
     const evalOutcome = await withDeadline(
-      (sig) => evaluate(currentCode, initialDescriptor, sig),
+      (sig) => evaluate(currentCode, frozenDescriptor, sig),
       signal,
       attemptTimeoutMs,
     );
@@ -203,7 +215,7 @@ export async function linearSearch(
     const node: SearchNode = {
       id: `node-${nodeCounter++}`,
       code: currentCode,
-      descriptor: initialDescriptor,
+      descriptor: frozenDescriptor,
       iteration,
       successRate: evalResult.successRate,
       evalSamples: evalResult.sampleCount,
@@ -300,6 +312,15 @@ export async function linearSearch(
         stopReason = "refine_failed";
         break;
       }
+      // Hard byte cap. LLM-backed refiners can echo prior code, emit
+      // hallucinated scaffolding, or stream multi-hundred-KB blocks;
+      // without this, every iteration would carry that payload forward
+      // in `history` and into the next prompt, blowing up memory and
+      // cost. Same failure mode harness-synth caps explicitly.
+      if (byteLength(parsed) > maxRefinedCodeBytes) {
+        stopReason = "refine_failed";
+        break;
+      }
       currentCode = parsed;
     }
   }
@@ -307,7 +328,7 @@ export async function linearSearch(
   const finalBest = bestNode ?? {
     id: `node-${nodeCounter}`,
     code: initialCode,
-    descriptor: initialDescriptor,
+    descriptor: frozenDescriptor,
     iteration: 0,
     successRate: null,
     evalSamples: 0,
@@ -329,6 +350,32 @@ export async function linearSearch(
 
 function isAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted ?? false;
+}
+
+/** UTF-8 byte length — the only meaningful "size" for code crossing
+ * to/from a model adapter. JS string `.length` would underweight
+ * non-ASCII and overweight surrogate pairs. */
+function byteLength(s: string): number {
+  return new TextEncoder().encode(s).byteLength;
+}
+
+/**
+ * Deep-clone + Object.freeze the descriptor so callbacks cannot mutate
+ * the contract mid-search. The clone is required because Object.freeze
+ * is shallow — `inputSchema`, `tags`, etc. would still be mutable
+ * references back into the caller's object graph.
+ */
+function freezeDescriptor(desc: ToolDescriptor): ToolDescriptor {
+  const cloned = structuredClone(desc);
+  return deepFreeze(cloned);
+}
+
+function deepFreeze<T>(o: T): T {
+  if (o === null || typeof o !== "object" || Object.isFrozen(o)) return o;
+  for (const key of Object.keys(o)) {
+    deepFreeze((o as Record<string, unknown>)[key]);
+  }
+  return Object.freeze(o);
 }
 
 type DeadlineOutcome<T> =

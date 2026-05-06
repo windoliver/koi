@@ -132,6 +132,16 @@ export interface SearchConfig {
    */
   readonly attemptTimeoutMs?: number;
   /**
+   * Hard byte limit on refined code returned from `parseRefinementOutput`.
+   * Refiners are typically LLM-backed and can echo prior code, emit
+   * large scaffolding, or hallucinate multi-hundred-KB fences; without
+   * a cap, every iteration carries that payload forward in `history`
+   * and into the next prompt, blowing up memory and prompt cost.
+   * Default 64 KiB. A refinement that exceeds the cap yields
+   * `stopReason: "refine_failed"`. Must be a positive integer.
+   */
+  readonly maxRefinedCodeBytes?: number;
+  /**
    * Caller's assertion that BOTH `evaluate` and `refine` honor the
    * `AbortSignal` they receive — i.e. they stop work and release any
    * non-idempotent side effects when aborted. Mirrors the same flag in
@@ -198,6 +208,7 @@ export const DEFAULT_SEARCH_CONFIG: Required<
     | "minEvalSamples"
     | "noImprovementLimit"
     | "attemptTimeoutMs"
+    | "maxRefinedCodeBytes"
     | "sanitizeFailures"
     | "clock"
     | "random"
@@ -208,6 +219,7 @@ export const DEFAULT_SEARCH_CONFIG: Required<
   minEvalSamples: 5,
   noImprovementLimit: 3,
   attemptTimeoutMs: 30_000,
+  maxRefinedCodeBytes: 64 * 1024,
   sanitizeFailures: DEFAULT_SANITIZE_FAILURES,
   clock: Date.now,
   random: Math.random,
