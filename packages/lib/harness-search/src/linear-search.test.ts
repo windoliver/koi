@@ -484,6 +484,24 @@ describe("linearSearch", () => {
     expect(result.best).toBeNull();
   });
 
+  test("non-cloneable descriptor rejected with typed TypeError (no opaque DataCloneError)", async () => {
+    // Regression: structuredClone failed unconditionally on descriptors
+    // carrying functions / accessors / transferables, leaving callers
+    // with an opaque DataCloneError outside the typed SearchResult
+    // contract. Now wrapped in try/catch with a clear message.
+    const hostileDescriptor = {
+      name: "harness-test",
+      description: "Test target",
+      inputSchema: { type: "object", properties: {} },
+      // Function fields are not structured-cloneable.
+      hook: () => {},
+    } as unknown as ToolDescriptor;
+    const config = makeConfig({});
+    expect(linearSearch(INITIAL_CODE, hostileDescriptor, config)).rejects.toThrow(
+      /structured-cloneable/,
+    );
+  });
+
   test("under-threshold rate AND empty failures rejected as eval_failed (no infinite same-code loop)", async () => {
     // Regression: refine is gated on failures.length > 0. An evaluator
     // returning rate < threshold with empty failures would leave

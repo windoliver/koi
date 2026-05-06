@@ -193,7 +193,23 @@ export async function linearSearch(
   // appear to have used the mutated descriptor in earlier history
   // entries (every node aliases the same object). Mirrors the freeze
   // pattern in @koi/harness-synth.
-  const frozenDescriptor: ToolDescriptor = freezeDescriptor(initialDescriptor);
+  // freezeDescriptor uses structuredClone, which throws on
+  // non-cloneable values (functions, getters, weak refs, transferables
+  // not in the transfer list, …). Surface that as a typed
+  // configuration TypeError at entry — callers passing such a
+  // descriptor by accident should see a clear "your descriptor is not
+  // structured-cloneable" message instead of an opaque DataCloneError
+  // bubbling out of the loop's setup phase.
+  let frozenDescriptor: ToolDescriptor;
+  try {
+    frozenDescriptor = freezeDescriptor(initialDescriptor);
+  } catch (err: unknown) {
+    throw new TypeError(
+      "linearSearch: descriptor must be structured-cloneable. " +
+        "Strip non-cloneable values (functions, accessors, transferables) " +
+        `before passing it. Underlying clone error: ${classifyCause(err)}.`,
+    );
+  }
 
   const history: SearchNode[] = [];
   let nodeCounter = 0;

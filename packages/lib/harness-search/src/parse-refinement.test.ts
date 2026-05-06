@@ -95,6 +95,35 @@ describe("parseRefinementOutput", () => {
     expect(parseRefinementOutput(raw)).toBe("fresh");
   });
 
+  test("accepts 4-backtick fence containing inner triple-backticks (variable-length fences)", () => {
+    // Regression: 3-only fences forced refine_failed when the candidate
+    // code itself contained ``` lines. Markdown allows N-backtick
+    // fences (N >= 3) and pairs them by run length — a 4-backtick
+    // wrapper is the canonical way to embed a 3-backtick inner block.
+    const raw = "````ts\nconst md = `\n```\nfoo\n```\n`;\nconst t = 1;\n````";
+    const out = parseRefinementOutput(raw);
+    expect(out).toContain("```");
+    expect(out).toContain("foo");
+    expect(out).toContain("const t = 1;");
+  });
+
+  test("accepts 5-backtick fence wrapping a 4-backtick fence", () => {
+    const raw = "`````ts\n````\ninner\n````\nconst x = 1;\n`````";
+    const out = parseRefinementOutput(raw);
+    expect(out).toContain("````");
+    expect(out).toContain("const x = 1;");
+  });
+
+  test("accepts tilde fences (markdown alternative)", () => {
+    const raw = "~~~ts\nconst y = 2;\n~~~";
+    expect(parseRefinementOutput(raw)).toBe("const y = 2;");
+  });
+
+  test("does not pair a tilde closer with a backtick opener", () => {
+    const raw = "```ts\nconst x = 1;\n~~~";
+    expect(parseRefinementOutput(raw)).toBeNull();
+  });
+
   test("accepts list-indented fence (markdown bullet wrapping)", () => {
     // Regression: opener/closer required column 0. Models answering
     // inside a numbered list or bullet emit indented fences; rejecting
