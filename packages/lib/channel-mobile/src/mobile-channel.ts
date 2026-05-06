@@ -110,6 +110,15 @@ export interface MobilePushContext {
 }
 
 export interface MobileChannelConfig {
+  /**
+   * TCP port to bind. MUST be a fixed, nonzero port the host has chosen.
+   * Ephemeral binding (`port: 0`) is intentionally NOT supported — the
+   * adapter does not expose the bound `Bun.serve` port back to callers,
+   * so any client trying to connect to an OS-assigned port would have
+   * no way to discover it. Hosts that want a free port should pick one
+   * themselves (e.g. probe with `Bun.serve({ port: 0 })` then `stop()`)
+   * before passing it here.
+   */
   readonly port: number;
   readonly senderId?: string;
   /**

@@ -687,12 +687,14 @@ describe("createMobileChannel", () => {
     // client-controlled or shared senderId. A plain WebSocket client could
     // spoof another user's senderId and misroute delayed replies.
     // Construction must fail closed unless authenticate() is wired.
-    expect(() => createMobileChannel({ port: 0, pushNotifier: async () => {} })).toThrow(
+    // Use a real (unused) port literal: validation must throw before any
+    // Bun.serve call, so the port value is never bound.
+    expect(() => createMobileChannel({ port: 1, pushNotifier: async () => {} })).toThrow(
       /pushNotifier requires/,
     );
     expect(() =>
       createMobileChannel({
-        port: 0,
+        port: 1,
         trustClientIdentity: true,
         pushNotifier: async () => {},
       }),
