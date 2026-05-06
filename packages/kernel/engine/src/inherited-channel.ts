@@ -54,7 +54,7 @@ export function createInheritedChannel(
 
   const capabilities: ChannelCapabilities = { ...parentChannel.capabilities };
 
-  return {
+  const child: Record<string, unknown> = {
     name: `inherited:${childPid.name}`,
     capabilities,
 
@@ -88,4 +88,25 @@ export function createInheritedChannel(
       });
     },
   };
+
+  // Round-40 medium: forward adapter-specific extension methods that bypass
+  // send() (e.g. MobileChannelAdapter.sendUnsolicited — the ONLY explicit
+  // "deliver to currently connected socket" path on the mobile adapter).
+  // Without this, child agents spawned onto a mobile parent channel lose
+  // every proactive/live-delivery capability, silently downgrading to push
+  // fallback or rejection. Listed explicitly so plain-looking methods on
+  // the parent (`onMessage`, `connect`) cannot be re-typed and accidentally
+  // forwarded — only documented outbound extensions get the bypass.
+  const PARENT_EXTENSION_METHODS = ["sendUnsolicited"] as const;
+  for (const methodName of PARENT_EXTENSION_METHODS) {
+    const original = (parentChannel as unknown as Record<string, unknown>)[methodName];
+    if (typeof original === "function") {
+      const fn = original as (message: OutboundMessage) => Promise<void>;
+      child[methodName] = (message: OutboundMessage): Promise<void> => {
+        if (resolved.mode === "none") return Promise.resolve();
+        return fn.call(parentChannel, attributeMessage(message));
+      };
+    }
+  }
+  return child as unknown as ChannelAdapter;
 }

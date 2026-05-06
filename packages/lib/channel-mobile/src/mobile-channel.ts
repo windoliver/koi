@@ -25,8 +25,22 @@ import type {
  * host accepts that the message goes to whichever client is currently
  * connected. The trust trade is opted into per call site.
  */
+export interface MobileSendUnsolicitedOptions {
+  /**
+   * Explicit recipient identity for the offline push fallback path. Required
+   * when the adapter has never authenticated a client (no `lastVerifiedIdentity`
+   * to fall back on) and there is no live socket. When supplied, takes
+   * precedence over any implicit derivation so the host can route a push to a
+   * specific user even after a different user authenticated and disconnected.
+   */
+  readonly recipient?: string;
+}
+
 export interface MobileChannelAdapter extends ChannelAdapter {
-  readonly sendUnsolicited: (message: OutboundMessage) => Promise<void>;
+  readonly sendUnsolicited: (
+    message: OutboundMessage,
+    opts?: MobileSendUnsolicitedOptions,
+  ) => Promise<void>;
 }
 
 /**
@@ -293,6 +307,10 @@ export class MobilePartialWriteError extends Error {
 const EPOCH_KEY = "mobileSessionEpoch";
 const MAC_KEY = "mobileSessionMac";
 const UNSOLICITED_MAC_KEY = "mobileUnsolicitedMac";
+// Round-40 high: explicit recipient supplied by `sendUnsolicited(msg, {recipient})`.
+// Travels on metadata so the platformSend offline path can route the push.
+// Internal — host code uses the typed `MobileSendUnsolicitedOptions` API.
+const UNSOLICITED_RECIPIENT_KEY = "mobileUnsolicitedRecipient";
 const ORIGIN_SENDER_KEY = "mobileOriginatingSenderId";
 const ORIGIN_THREAD_KEY = "mobileOriginatingThreadId";
 // Per-session unguessable nonce (16 random bytes hex). Generated on every
@@ -458,6 +476,7 @@ function stripInternalMetadata(message: OutboundMessage): OutboundMessage {
     [EPOCH_KEY]: _e,
     [MAC_KEY]: _m,
     [UNSOLICITED_MAC_KEY]: _u,
+    [UNSOLICITED_RECIPIENT_KEY]: _ur,
     [ORIGIN_SENDER_KEY]: _os,
     [ORIGIN_THREAD_KEY]: _ot,
     [ORIGIN_NONCE_KEY]: _on,
@@ -615,6 +634,15 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   // and is the recipient key passed to pushNotifier.
   // let requires justification: per-socket identity reset on close
   let activeIdentity: string | undefined;
+  // Round-40 high: persisted across disconnect so offline `sendUnsolicited`
+  // (welcome/resume/proactive notifications after the socket dropped) has a
+  // server-verified routing key for `pushNotifier`. Without this, the
+  // documented offline path was unrecoverable — `activeIdentity` was the
+  // only authenticated source and it cleared on close. Updated whenever a
+  // NEW authenticate succeeds (so the most recently verified user is the
+  // implicit recipient); never cleared except by overwrite.
+  // let requires justification: persists last server-verified recipient
+  let lastVerifiedIdentity: string | undefined;
   let lineHandler: ((line: string) => void) | undefined;
   // channel-base calls platformConnect() BEFORE it registers the inbound
   // handler via onPlatformEvent(). Without buffering, a client that
@@ -701,8 +729,19 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
     // global activeIdentity here would let user A's late fallback
     // re-route to user B if B reconnected in between.
     capturedIdentityAtLiveSend?: string,
+    // Round-40 high: explicit caller-supplied recipient for offline
+    // `sendUnsolicited` (overrides every implicit derivation), and the
+    // persisted `lastVerifiedIdentity` (the most recently authenticated
+    // user, retained across disconnect) used as the implicit fallback.
+    // Without these, an offline unsolicited push fell through to
+    // `pushNotifier` with `{}` and the host had no way to route it.
+    explicitRecipient?: string,
+    persistedRecipient?: string,
   ): MobilePushContext => {
     const idPart = deliveryId !== undefined ? { deliveryId } : {};
+    if (explicitRecipient !== undefined && explicitRecipient.length > 0) {
+      return { originatingSenderId: explicitRecipient, ...idPart };
+    }
     if (verifiedReply !== undefined) {
       return {
         originatingSenderId: verifiedReply.senderId,
@@ -724,6 +763,9 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       // the SPECIFIC delivery attempt (captured at live-write time),
       // so this push targets exactly the user the message was sent to.
       return { originatingSenderId: capturedIdentityAtLiveSend, ...idPart };
+    }
+    if (persistedRecipient !== undefined && persistedRecipient.length > 0) {
+      return { originatingSenderId: persistedRecipient, ...idPart };
     }
     return idPart;
   };
@@ -951,6 +993,9 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
             }
             activeSocket = ws;
             activeIdentity = ws.data?.identity;
+            if (activeIdentity !== undefined && activeIdentity.length > 0) {
+              lastVerifiedIdentity = activeIdentity;
+            }
             sessionEpoch++;
             // Fresh per-session nonce — 128 bits of randomness signed into
             // every reply tag for this session. Cross-instance / cross-
@@ -1074,6 +1119,14 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       const unsolicitedMac = message.metadata?.[UNSOLICITED_MAC_KEY];
       const hasUnsolicitedField = unsolicitedMac !== undefined;
       const isUnsolicited = typeof unsolicitedMac === "string" && verifyUnsolicited(unsolicitedMac);
+      // Round-40 high: explicit recipient supplied by sendUnsolicited(msg, {recipient}).
+      // Honored ONLY for verified-unsolicited sends so an unsigned external
+      // outbound cannot smuggle a recipient string into the push fallback.
+      const rawExplicit = message.metadata?.[UNSOLICITED_RECIPIENT_KEY];
+      const explicitRecipient =
+        isUnsolicited && typeof rawExplicit === "string" && rawExplicit.length > 0
+          ? rawExplicit
+          : undefined;
       const hasReplyField =
         message.metadata?.[EPOCH_KEY] !== undefined || message.metadata?.[MAC_KEY] !== undefined;
       const verifiedReply = extractAndVerifyReply(message, verify);
@@ -1186,7 +1239,14 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
               }
               await config.pushNotifier(
                 wireMessage,
-                derivePushContext(verifiedReply, alsCtx, deliveryId, identityAtSend),
+                derivePushContext(
+                  verifiedReply,
+                  alsCtx,
+                  deliveryId,
+                  identityAtSend,
+                  explicitRecipient,
+                  lastVerifiedIdentity,
+                ),
               );
             },
           );
@@ -1210,7 +1270,14 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       }
       await config.pushNotifier(
         wireMessage,
-        derivePushContext(verifiedReply, alsCtx, undefined, liveAttemptIdentity),
+        derivePushContext(
+          verifiedReply,
+          alsCtx,
+          undefined,
+          liveAttemptIdentity,
+          explicitRecipient,
+          lastVerifiedIdentity,
+        ),
       );
     },
     onPlatformEvent: (handler) => {
@@ -1345,11 +1412,20 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         };
         return sessionContext.run(ctx, () => handler(msg));
       }),
-    sendUnsolicited: (message: OutboundMessage): Promise<void> =>
-      inner.send({
-        ...message,
-        metadata: { ...(message.metadata ?? {}), [UNSOLICITED_MAC_KEY]: unsolicitedTag },
-      }),
+    sendUnsolicited: (
+      message: OutboundMessage,
+      opts?: MobileSendUnsolicitedOptions,
+    ): Promise<void> => {
+      const recipient = opts?.recipient;
+      const metadata: Record<string, unknown> = {
+        ...(message.metadata ?? {}),
+        [UNSOLICITED_MAC_KEY]: unsolicitedTag,
+      };
+      if (recipient !== undefined && recipient.length > 0) {
+        metadata[UNSOLICITED_RECIPIENT_KEY] = recipient;
+      }
+      return inner.send({ ...message, metadata });
+    },
   };
   if (inner.sendStatus !== undefined) {
     const fn = inner.sendStatus;

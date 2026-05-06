@@ -10,6 +10,7 @@ export type {
   MobileChannelAdapter,
   MobileChannelConfig,
   MobilePushContext,
+  MobileSendUnsolicitedOptions,
 } from "./mobile-channel.js";
 export {
   createMobileChannel,

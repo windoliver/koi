@@ -1776,4 +1776,32 @@ describe("createVoiceChannel", () => {
     expect(dispatched.length).toBe(2);
     await ch.disconnect();
   });
+
+  test("stampForCurrentCall lets server-initiated outbound survive the post-reconnect epoch fence (round-40 high)", async () => {
+    // Round-40 high: post-reconnect, the wrappedSend epoch fence rejects
+    // any send made outside an inbound's ALS scope unless metadata
+    // carries the current connectGen. Without a public API to mint that
+    // tag, legitimate server-initiated speech (welcome prompt, externally
+    // triggered prompt, queued resume) was indistinguishable from a
+    // stale leak and rejected. `stampForCurrentCall` is the supported
+    // helper — it stamps the live connectGen so the send passes the fence.
+    const h = harness();
+    const ch = createVoiceChannel({ transport: h.transport, stt: h.stt, tts: h.tts });
+    await ch.connect();
+    await ch.disconnect(); // bumps connectGen → 1
+    await ch.connect();
+    expect(ch.currentCallEpoch()).toBe(1);
+    // A bare send without a tag would now reject (epoch fence active).
+    await expect(
+      ch.send({ threadId: "session-1", content: [{ kind: "text", text: "would reject" }] }),
+    ).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+    // Same outbound stamped via the public helper passes the fence.
+    const stamped = ch.stampForCurrentCall({
+      threadId: "session-1",
+      content: [{ kind: "text", text: "welcome back" }],
+    });
+    await ch.send(stamped);
+    expect(h.sentUtterances).toHaveLength(1);
+    await ch.disconnect();
+  });
 });

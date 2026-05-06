@@ -319,7 +319,21 @@ function chunk(text: string, max: number): readonly string[] {
   return out;
 }
 
-export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
+/**
+ * Voice channel adapter — extends `ChannelAdapter` with two epoch-tagging
+ * helpers needed for legitimate post-reconnect outbound. `wrappedSend`
+ * fences any send made outside the inbound ALS scope unless it carries a
+ * matching `voiceCallEpoch` metadata tag; these helpers are the supported
+ * way for hosts to mint such a tag for server-initiated speech.
+ */
+export type VoiceChannelAdapter = ChannelAdapter & {
+  /** Returns a clone of `outbound` stamped with the current call epoch. */
+  readonly stampForCurrentCall: (outbound: OutboundMessage) => OutboundMessage;
+  /** Read-only view of the current call epoch for hosts that prefer to stamp manually. */
+  readonly currentCallEpoch: () => number;
+};
+
+export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdapter {
   const senderId = config.senderId ?? "voice-user";
   const maxTtsChars = config.maxTtsChars ?? DEFAULT_MAX_TTS_CHARS;
   // Reject up front rather than hanging the outbound loop in chunk().
@@ -921,5 +935,20 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
         }
         return result;
       }),
-  };
+    // Round-40 high: legitimate server-initiated outbound (welcome
+    // prompt after reconnect, externally-triggered prompt, queued work
+    // resumed after reconnect) has no inbound to copy the epoch from
+    // and lives outside any ALS scope. Without a public API to mint
+    // the current-generation tag, the wrappedSend post-reconnect fence
+    // would treat every such send as stale. `stampForCurrentCall`
+    // returns a clone of the outbound with the live `connectGen`
+    // stamped into metadata — the only supported way for hosts to
+    // produce a current-call outbound that survives the fence.
+    stampForCurrentCall: (outbound: OutboundMessage): OutboundMessage => ({
+      ...outbound,
+      metadata: { ...(outbound.metadata ?? {}), [VOICE_CALL_EPOCH_KEY]: connectGen },
+    }),
+    /** Read-only view of the current call epoch for hosts that prefer to stamp manually. */
+    currentCallEpoch: (): number => connectGen,
+  } satisfies VoiceChannelAdapter;
 }

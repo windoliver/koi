@@ -494,9 +494,12 @@ describe("createMobileChannel", () => {
     }
     await new Promise((r) => setTimeout(r, 30));
     expect(pushedCtx).toHaveLength(1);
-    // Tampered tag → no recipient context derived (would have been
-    // "device-attacker" if the adapter trusted unsigned origin fields).
-    expect(pushedCtx[0]?.originatingSenderId).toBeUndefined();
+    // Tampered tag → unsigned origin fields are NOT trusted. The recipient
+    // routing falls back to the persisted `lastVerifiedIdentity` (the
+    // server-authenticated identity from the prior connect cycle). The
+    // attacker's smuggled "device-attacker" must NEVER appear.
+    expect(pushedCtx[0]?.originatingSenderId).not.toBe("device-attacker");
+    expect(pushedCtx[0]?.originatingSenderId).toBe("device-real");
     await ch.disconnect();
   });
 
@@ -1908,6 +1911,64 @@ describe("createMobileChannel", () => {
     expect(ws2.readyState).toBe(WebSocket.OPEN);
     ws2.close();
     await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
+  test("offline sendUnsolicited routes via persisted lastVerifiedIdentity (round-40 high)", async () => {
+    // Round-40 high: previously the adapter cleared activeIdentity on
+    // close, so an offline sendUnsolicited call (welcome/resume push
+    // after the socket dropped) reached pushNotifier with `{}` — the
+    // host had no recipient to route to. Persisted lastVerifiedIdentity
+    // (set on every authenticate-success, retained across disconnect)
+    // is now the implicit fallback.
+    const port = await freePort();
+    const pushedCtx: MobilePushContext[] = [];
+    const ch = createMobileChannel({
+      port,
+      authenticate: async () => "device-persistent",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
+      pushNotifier: async (_m: OutboundMessage, ctx: MobilePushContext) => {
+        pushedCtx.push(ctx);
+      },
+    });
+    await ch.connect();
+    const ws = await openWs(port);
+    await new Promise((r) => setTimeout(r, 30));
+    ws.close();
+    await new Promise((r) => setTimeout(r, 30));
+    await ch.sendUnsolicited({ content: [{ kind: "text", text: "welcome back" }] });
+    expect(pushedCtx).toHaveLength(1);
+    expect(pushedCtx[0]?.originatingSenderId).toBe("device-persistent");
+    await ch.disconnect();
+  });
+
+  test("offline sendUnsolicited honors explicit recipient over persisted identity (round-40 high)", async () => {
+    // Round-40 high: explicit `{recipient}` overrides any implicit
+    // derivation so a host can route a push to a specific user even
+    // after a different user authenticated and disconnected.
+    const port = await freePort();
+    const pushedCtx: MobilePushContext[] = [];
+    const ch = createMobileChannel({
+      port,
+      authenticate: async () => "device-other",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
+      pushNotifier: async (_m: OutboundMessage, ctx: MobilePushContext) => {
+        pushedCtx.push(ctx);
+      },
+    });
+    await ch.connect();
+    const ws = await openWs(port);
+    await new Promise((r) => setTimeout(r, 30));
+    ws.close();
+    await new Promise((r) => setTimeout(r, 30));
+    await ch.sendUnsolicited(
+      { content: [{ kind: "text", text: "for-explicit" }] },
+      { recipient: "device-explicit" },
+    );
+    expect(pushedCtx).toHaveLength(1);
+    expect(pushedCtx[0]?.originatingSenderId).toBe("device-explicit");
     await ch.disconnect();
   });
 });

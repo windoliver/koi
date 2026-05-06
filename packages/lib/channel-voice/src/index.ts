@@ -5,7 +5,13 @@
  * Vendor SDKs (LiveKit, OpenAI Realtime, etc.) are injected by the host.
  */
 
-export type { Stt, Tts, VoiceChannelConfig, VoiceTransport } from "./voice-channel.js";
+export type {
+  Stt,
+  Tts,
+  VoiceChannelAdapter,
+  VoiceChannelConfig,
+  VoiceTransport,
+} from "./voice-channel.js";
 export {
   createVoiceChannel,
   replyToVoiceInbound,

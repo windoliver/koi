@@ -215,4 +215,61 @@ describe("createInheritedChannel", () => {
     // Should not throw
     await proxy.sendStatus?.(status);
   });
+
+  test("forwards parent's sendUnsolicited extension method with attribution (round-40 medium)", async () => {
+    // Round-40 medium: prior version returned a plain ChannelAdapter that
+    // forwarded only send/onMessage/sendStatus, silently stripping
+    // adapter-specific extensions like MobileChannelAdapter.sendUnsolicited
+    // — child agents spawned onto a mobile parent lost every proactive
+    // live-delivery path. The proxy now forwards documented outbound
+    // extensions and applies the same attribution as send().
+    const captured: OutboundMessage[] = [];
+    const parent: ChannelAdapter & {
+      sendUnsolicited: (m: OutboundMessage) => Promise<void>;
+    } = {
+      name: "mobile-parent",
+      capabilities: CAPABILITIES,
+      connect: () => Promise.resolve(),
+      disconnect: () => Promise.resolve(),
+      send: () => Promise.resolve(),
+      onMessage: () => () => {},
+      sendUnsolicited: (m: OutboundMessage) => {
+        captured.push(m);
+        return Promise.resolve();
+      },
+    };
+    const childPid: ProcessId = {
+      id: agentId("child-id"),
+      name: "child",
+      type: "worker",
+      depth: 1,
+      parent: agentId("parent-1"),
+    };
+    const proxy = createInheritedChannel(parent, childPid) as ChannelAdapter & {
+      sendUnsolicited?: (m: OutboundMessage) => Promise<void>;
+    };
+    expect(typeof proxy.sendUnsolicited).toBe("function");
+    await proxy.sendUnsolicited?.({ content: [{ kind: "text", text: "welcome" }] });
+    expect(captured).toHaveLength(1);
+    // Default attribution mode is "metadata" — child sender stamped.
+    expect(captured[0]?.metadata?.["sender"]).toBe(childPid.id);
+    expect(captured[0]?.metadata?.["senderName"]).toBe("child");
+  });
+
+  test("does not synthesize sendUnsolicited when parent does not provide it (round-40 medium)", async () => {
+    // Only forward extensions the parent actually provides — never invent
+    // a method that would silently no-op.
+    const parent = createMockParentChannel();
+    const childPid: ProcessId = {
+      id: agentId("child-id"),
+      name: "child",
+      type: "worker",
+      depth: 1,
+      parent: agentId("parent-1"),
+    };
+    const proxy = createInheritedChannel(parent, childPid) as ChannelAdapter & {
+      sendUnsolicited?: unknown;
+    };
+    expect(proxy.sendUnsolicited).toBeUndefined();
+  });
 });
