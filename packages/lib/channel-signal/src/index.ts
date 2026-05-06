@@ -25,4 +25,5 @@ export {
   parseEvent,
   SIGNAL_RPC_TIMEOUT_MS,
   SIGNAL_SHUTDOWN_TIMEOUT_MS,
+  SignalAmbiguousDeliveryError,
 } from "./signal-process.js";

@@ -103,10 +103,14 @@ export function createSignalProcess(
   // onUnexpectedExit) from a crash / external kill (fire onUnexpectedExit).
   let stopping = false;
 
-  function failAllPendingRpc(reason: string): void {
+  function failAllPendingRpc(reason: string, ambiguous: boolean): void {
     if (pendingRpc.size === 0) return;
-    const err = new Error(`[channel-signal] ${reason}`);
-    for (const waiter of pendingRpc.values()) waiter.reject(err);
+    for (const waiter of pendingRpc.values()) {
+      const err = ambiguous
+        ? new SignalAmbiguousDeliveryError(reason)
+        : new Error(`[channel-signal] ${reason}`);
+      waiter.reject(err);
+    }
     pendingRpc.clear();
   }
 
@@ -214,7 +218,11 @@ export function createSignalProcess(
         pendingEvents.length = 0;
         // Fail any in-flight send() so callers see explicit rejection
         // instead of a hung promise after the subprocess died mid-RPC.
-        failAllPendingRpc("signal-cli exited before responding to send");
+        // The frame was already written to stdin and signal-cli may
+        // have forwarded the message before the process died — we
+        // cannot tell, so report it as ambiguous so retry middleware
+        // does not blindly resend and duplicate user-visible messages.
+        failAllPendingRpc("signal-cli exited before responding to send", true);
         onUnexpectedExit?.();
       });
       void readStdout(child.stdout);
@@ -282,7 +290,10 @@ export function createSignalProcess(
       }
       proc = undefined;
       stopping = false;
-      failAllPendingRpc("signal-cli stopped while a send was in flight");
+      // Stop is initiator-driven, but the stdin write already
+      // happened — surface as ambiguous so any in-flight send retry
+      // doesn't blindly duplicate.
+      failAllPendingRpc("signal-cli stopped while a send was in flight", true);
     },
 
     send: async (command: SignalCommand): Promise<void> => {
@@ -310,9 +321,13 @@ export function createSignalProcess(
         const waiter = pendingRpc.get(id);
         if (waiter === undefined) return;
         pendingRpc.delete(id);
+        // The JSON-RPC frame was successfully written to stdin —
+        // signal-cli may have already forwarded the message to Signal
+        // before stalling on stdout. Report as ambiguous so retry
+        // middleware does not duplicate the user-visible message.
         waiter.reject(
-          new Error(
-            `[channel-signal] signal-cli did not respond to send within ${rpcTimeoutMs}ms — subprocess may be wedged`,
+          new SignalAmbiguousDeliveryError(
+            `signal-cli did not respond within ${rpcTimeoutMs}ms — delivery state unknown, subprocess may be wedged`,
           ),
         );
       }, rpcTimeoutMs);
@@ -388,4 +403,23 @@ export function parseEvent(json: unknown): SignalEvent | null {
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Thrown when a signal-cli send() write reached stdin but the response
+ * never arrived (timeout, subprocess crash, intentional stop). The
+ * message MAY have already been forwarded to Signal — there is no way
+ * to tell client-side. Retry middleware MUST detect this class and
+ * NOT blindly resend the same OutboundMessage; doing so duplicates the
+ * user-visible message in the recipient's chat. Surface this to the
+ * caller so they can compose a manual recovery (operator confirms the
+ * delivery state, then resends or accepts the ambiguity).
+ */
+export class SignalAmbiguousDeliveryError extends Error {
+  constructor(reason: string) {
+    super(
+      `[channel-signal] ambiguous delivery: ${reason}. The send may have already reached Signal — DO NOT auto-retry.`,
+    );
+    this.name = "SignalAmbiguousDeliveryError";
+  }
 }

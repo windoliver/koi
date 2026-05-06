@@ -309,7 +309,7 @@ describe("@koi/channel-signal createSignalProcess", () => {
     await p.start();
     await expect(
       p.send({ method: "send", params: { recipient: "+15551234567", message: "hi" } }),
-    ).rejects.toThrow(/did not respond to send within/);
+    ).rejects.toThrow(/ambiguous delivery/);
   });
 
   test("send() rejects when signal-cli replies with a JSON-RPC error frame", async () => {
@@ -378,7 +378,7 @@ describe("@koi/channel-signal createSignalProcess", () => {
     });
     // Subprocess dies after the stdin write but before any response.
     resolveExit();
-    await expect(inflight).rejects.toThrow(/exited before responding/);
+    await expect(inflight).rejects.toThrow(/ambiguous delivery|exited before responding/);
   });
 
   test("subprocess exiting unexpectedly flips running false and fires onUnexpectedExit", async () => {
