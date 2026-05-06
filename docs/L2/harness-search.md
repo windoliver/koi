@@ -35,6 +35,13 @@ const result = await linearSearch(initialCode, descriptor, {
   // overlap with the next iteration. Omit (or pass false) ONLY when
   // also passing maxIterations: 1 — otherwise linearSearch throws.
   adapterHonorsAbort: true,
+  // ALSO REQUIRED whenever maxIterations > 1. The default redactor
+  // strips every field for fail-closed safety, which leaves refine()
+  // with no actionable evidence — the loop would degenerate into
+  // unguided rewrites. Provide a sanitizer that allowlists the
+  // diagnostic fields your evaluator emits, or `(f) => f` for
+  // trusted in-process evaluators. Single-shot configs may omit it.
+  sanitizeFailures: (failures) => failures,
   maxIterations: 20,
   convergenceThreshold: 1.0,
   minEvalSamples: 5,

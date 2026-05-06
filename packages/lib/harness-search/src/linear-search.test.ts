@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ToolDescriptor } from "@koi/core";
 import { linearSearch, shouldContinue } from "./linear-search.js";
-import type { SearchConfig } from "./types.js";
+import { DEFAULT_SEARCH_CONFIG, type SearchConfig } from "./types.js";
 
 const DESCRIPTOR: ToolDescriptor = {
   name: "harness-test",
@@ -40,6 +40,10 @@ function makeConfig(overrides: Partial<SearchConfig> = {}): SearchConfig {
     noImprovementLimit: 3,
     // Tests use cooperative in-memory callbacks — opt into retries.
     adapterHonorsAbort: true,
+    // Tests run trusted in-process evaluators; pass failures through.
+    // Multi-iteration search now requires an explicit sanitizer because
+    // the default redactor strips all evidence; trusted callers opt in.
+    sanitizeFailures: (f) => f,
     clock: () => 1_700_000_000_000,
     random: seededRandom(42),
     ...overrides,
@@ -774,6 +778,11 @@ describe("linearSearch", () => {
     }[] = [];
     const config = makeConfig({
       maxIterations: 2,
+      // Opt into the package's default redactor explicitly. Multi-iter
+      // search now requires an explicit sanitizer to prevent the
+      // fail-closed default from silently blinding refine(), but the
+      // default contract itself is still part of the public surface.
+      sanitizeFailures: DEFAULT_SEARCH_CONFIG.sanitizeFailures,
       evaluate: async () => ({
         successRate: 0.5,
         sampleCount: 10,
@@ -821,16 +830,49 @@ describe("linearSearch", () => {
     expect(receivedMessage).toBe("diagnostic");
   });
 
-  test("config compiles with only required callbacks plus minimal safety flag", async () => {
+  test("config compiles with only required callbacks plus minimal safety flags", async () => {
     // Type-level test: this would be a tsc error if SearchConfig still
     // marked maxIterations / convergenceThreshold / etc. as required.
-    // adapterHonorsAbort is required to enable the default 20-iteration
-    // budget — otherwise linearSearch refuses to run multi-iteration
-    // search with potentially non-cooperative callbacks.
+    // adapterHonorsAbort + sanitizeFailures are required when running
+    // multi-iteration search — otherwise linearSearch refuses (the
+    // first protects against overlapping side effects under abort, the
+    // second prevents the fail-closed default redactor from silently
+    // blinding refine).
     const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, {
       refine: async () => "refined",
       evaluate: async () => ({ successRate: 1.0, sampleCount: 10, failures: [] }),
       adapterHonorsAbort: true,
+      sanitizeFailures: (f) => f,
+    });
+    expect(result.stopReason).toBe("converged");
+  });
+
+  test("multi-iteration without explicit sanitizeFailures throws (no silent refine-blinding)", async () => {
+    // Mirror of the adapterHonorsAbort gate. The package fails closed:
+    // running refinement with the default fully-redacted sanitizer
+    // would feed refine() no usable evidence, degrading the loop into
+    // unguided rewrites. Force an explicit trust decision.
+    expect(
+      linearSearch(INITIAL_CODE, DESCRIPTOR, {
+        refine: async () => "refined",
+        evaluate: async () => ({
+          successRate: 0.4,
+          sampleCount: 10,
+          failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+        }),
+        adapterHonorsAbort: true,
+        maxIterations: 5,
+      }),
+    ).rejects.toThrow(/sanitizeFailures/);
+  });
+
+  test("single-shot config (maxIterations=1) accepts default sanitizer", async () => {
+    // The fail-closed default is fine for single-shot use: refine() is
+    // never called, so the redaction has no behavioral cost.
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, {
+      refine: async () => "refined",
+      evaluate: async () => ({ successRate: 1.0, sampleCount: 10, failures: [] }),
+      maxIterations: 1,
     });
     expect(result.stopReason).toBe("converged");
   });

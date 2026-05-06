@@ -79,6 +79,22 @@ describe("parseRefinementOutput", () => {
     expect(parseRefinementOutput("```md\n# title\n```")).toBeNull();
   });
 
+  test("accepts language tag followed by markdown info string (filename)", () => {
+    // Common LLM output pattern: ```ts title="candidate.ts"
+    const raw = '```ts title="candidate.ts"\nexport const x = 1;\n```';
+    expect(parseRefinementOutput(raw)).toBe("export const x = 1;");
+  });
+
+  test("accepts language tag followed by space-separated extra info", () => {
+    const raw = "```typescript app.ts\nconst y = 2;\n```";
+    expect(parseRefinementOutput(raw)).toBe("const y = 2;");
+  });
+
+  test("multi-block path picks tagged block even when info string has filename", () => {
+    const raw = 'Old:\n```\nstale\n```\nNew:\n```ts title="v2.ts"\nfresh\n```';
+    expect(parseRefinementOutput(raw)).toBe("fresh");
+  });
+
   test("does not truncate at triple-backticks embedded inside string literal", () => {
     // The opening fence is on its own line, the closing fence is on
     // its own line — the inline triple-backticks belong to the body.

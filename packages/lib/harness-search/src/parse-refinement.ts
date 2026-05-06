@@ -17,13 +17,21 @@
  * (forge-verifier), invoked downstream of search.
  */
 
-// Match every fenced block in the output. Capture group 1 is the
-// language tag (may be empty), group 2 the body. The closing fence
-// must appear at the START of a line (preceded by `\n` or matching
-// the very first newline after the body), so triple-backticks
-// embedded inside string / template literals in the body don't
-// truncate a valid candidate at the wrong place.
-const CODE_FENCE_GLOBAL = /```([a-zA-Z]*)\s*\n([\s\S]*?)\n```(?:$|\n|\r)/g;
+// Match every fenced block in the output.
+//
+// Group 1: the language token (leading run of ASCII letters; may be
+//   empty). Standard markdown info strings allow trailing content
+//   after the language tag — e.g. ```ts title="candidate.ts" or
+//   ```typescript app.ts. Anything between the language token and the
+//   first newline is consumed but ignored, so common LLM formatting
+//   drift doesn't reject an otherwise-valid block.
+// Group 2: the body.
+//
+// The closing fence must appear at the START of a line (preceded by
+// `\n` or matching the very first newline after the body), so
+// triple-backticks embedded inside string / template literals in the
+// body don't truncate a valid candidate at the wrong place.
+const CODE_FENCE_GLOBAL = /```([a-zA-Z]*)[^\n]*\n([\s\S]*?)\n```(?:$|\n|\r)/g;
 
 // Tags that count as "the canonical code block" in multi-block output.
 // Both TS and JS are accepted: refiners targeting JS-only tooling

@@ -93,6 +93,25 @@ export async function linearSearch(
         "for single-shot evaluation.",
     );
   }
+  // Default sanitizeFailures redacts every field — including toolName —
+  // to fail closed across the LLM trust boundary. That is the right
+  // default for ad-hoc / single-shot use, but if multi-iteration search
+  // ran with the redacted default, refine() would receive no actionable
+  // evidence about what broke and the loop would degenerate into
+  // unguided rewrites until plateau/deploy/budget exit. Force callers
+  // running refinement to make the trust decision explicit: pass
+  // sanitizeFailures (a partial allowlist matching their evaluator's
+  // vocabulary, or `(f) => f` for trusted in-process evaluators).
+  if (requestedMaxIterations > 1 && config.sanitizeFailures === undefined) {
+    throw new TypeError(
+      "linearSearch: maxIterations > 1 requires an explicit sanitizeFailures. " +
+        "The default redactor strips every failure field for fail-closed safety, " +
+        "which leaves refine() blind. Provide a sanitizer that allowlists the " +
+        "diagnostic fields your evaluator emits (e.g. matching errorCode against " +
+        "a known enum, or `(f) => f` for trusted in-process evaluators), or pass " +
+        "maxIterations: 1 to use the redacted default for single-shot evaluation.",
+    );
+  }
   const maxIterations = requestedMaxIterations;
 
   // Fail-fast on config bugs that would otherwise silently break the
