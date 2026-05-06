@@ -494,12 +494,9 @@ describe("createMobileChannel", () => {
     }
     await new Promise((r) => setTimeout(r, 30));
     expect(pushedCtx).toHaveLength(1);
-    // Tampered tag → unsigned origin fields are NOT trusted. The recipient
-    // routing falls back to the persisted `lastVerifiedIdentity` (the
-    // server-authenticated identity from the prior connect cycle). The
-    // attacker's smuggled "device-attacker" must NEVER appear.
-    expect(pushedCtx[0]?.originatingSenderId).not.toBe("device-attacker");
-    expect(pushedCtx[0]?.originatingSenderId).toBe("device-real");
+    // Tampered tag → no recipient context derived (would have been
+    // "device-attacker" if the adapter trusted unsigned origin fields).
+    expect(pushedCtx[0]?.originatingSenderId).toBeUndefined();
     await ch.disconnect();
   });
 
@@ -1914,13 +1911,12 @@ describe("createMobileChannel", () => {
     await ch.disconnect();
   });
 
-  test("offline sendUnsolicited routes via persisted lastVerifiedIdentity (round-40 high)", async () => {
-    // Round-40 high: previously the adapter cleared activeIdentity on
-    // close, so an offline sendUnsolicited call (welcome/resume push
-    // after the socket dropped) reached pushNotifier with `{}` — the
-    // host had no recipient to route to. Persisted lastVerifiedIdentity
-    // (set on every authenticate-success, retained across disconnect)
-    // is now the implicit fallback.
+  test("offline sendUnsolicited with NO explicit recipient leaves push context empty — host must refuse (round-41 high)", async () => {
+    // Round-41 high: a global "last authenticated user" fallback would
+    // misroute under reconnects (push to whoever connected last, not the
+    // intended recipient). Make wrong-recipient delivery impossible by
+    // construction: when no explicit recipient and no live socket, the
+    // push context surfaces empty so the host's notifier MUST refuse.
     const port = await freePort();
     const pushedCtx: MobilePushContext[] = [];
     const ch = createMobileChannel({
@@ -1939,7 +1935,44 @@ describe("createMobileChannel", () => {
     await new Promise((r) => setTimeout(r, 30));
     await ch.sendUnsolicited({ content: [{ kind: "text", text: "welcome back" }] });
     expect(pushedCtx).toHaveLength(1);
-    expect(pushedCtx[0]?.originatingSenderId).toBe("device-persistent");
+    expect(pushedCtx[0]?.originatingSenderId).toBeUndefined();
+    await ch.disconnect();
+  });
+
+  test("sendUnsolicited with explicit recipient mismatching live socket bypasses live + routes to push (round-41 high)", async () => {
+    // Round-41 high: when caller supplies explicit `{recipient}` and the
+    // currently connected user is someone else, the live socket MUST be
+    // bypassed — otherwise the message would be cross-user-leaked to the
+    // wrong device. Mismatched recipient routes to pushNotifier so the
+    // host can deliver to the intended user.
+    const port = await freePort();
+    const pushedCtx: MobilePushContext[] = [];
+    let liveDeliveries = 0;
+    const ch = createMobileChannel({
+      port,
+      authenticate: async () => "device-bob",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
+      pushNotifier: async (_m: OutboundMessage, ctx: MobilePushContext) => {
+        pushedCtx.push(ctx);
+      },
+    });
+    await ch.connect();
+    const ws = await openWs(port);
+    ws.addEventListener("message", () => {
+      liveDeliveries++;
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    // Bob is on the wire; intended recipient is Alice.
+    await ch.sendUnsolicited(
+      { content: [{ kind: "text", text: "for-alice" }] },
+      { recipient: "device-alice" },
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    expect(liveDeliveries).toBe(0);
+    expect(pushedCtx).toHaveLength(1);
+    expect(pushedCtx[0]?.originatingSenderId).toBe("device-alice");
+    ws.close();
     await ch.disconnect();
   });
 

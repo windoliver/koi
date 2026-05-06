@@ -634,15 +634,6 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   // and is the recipient key passed to pushNotifier.
   // let requires justification: per-socket identity reset on close
   let activeIdentity: string | undefined;
-  // Round-40 high: persisted across disconnect so offline `sendUnsolicited`
-  // (welcome/resume/proactive notifications after the socket dropped) has a
-  // server-verified routing key for `pushNotifier`. Without this, the
-  // documented offline path was unrecoverable — `activeIdentity` was the
-  // only authenticated source and it cleared on close. Updated whenever a
-  // NEW authenticate succeeds (so the most recently verified user is the
-  // implicit recipient); never cleared except by overwrite.
-  // let requires justification: persists last server-verified recipient
-  let lastVerifiedIdentity: string | undefined;
   let lineHandler: ((line: string) => void) | undefined;
   // channel-base calls platformConnect() BEFORE it registers the inbound
   // handler via onPlatformEvent(). Without buffering, a client that
@@ -729,14 +720,15 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
     // global activeIdentity here would let user A's late fallback
     // re-route to user B if B reconnected in between.
     capturedIdentityAtLiveSend?: string,
-    // Round-40 high: explicit caller-supplied recipient for offline
-    // `sendUnsolicited` (overrides every implicit derivation), and the
-    // persisted `lastVerifiedIdentity` (the most recently authenticated
-    // user, retained across disconnect) used as the implicit fallback.
-    // Without these, an offline unsolicited push fell through to
-    // `pushNotifier` with `{}` and the host had no way to route it.
+    // Round-40/41 high: explicit caller-supplied recipient for offline
+    // `sendUnsolicited` overrides every implicit derivation. There is NO
+    // implicit "last user" fallback — round-41 review correctly flagged
+    // a global `lastVerifiedIdentity` as a wrong-user delivery vector
+    // under reconnects (push to whoever connected last, not the intended
+    // recipient). Hosts that need offline targeting MUST pass an
+    // explicit `recipient`; otherwise the empty context surfaces and
+    // `pushNotifier` is responsible for refusing to deliver.
     explicitRecipient?: string,
-    persistedRecipient?: string,
   ): MobilePushContext => {
     const idPart = deliveryId !== undefined ? { deliveryId } : {};
     if (explicitRecipient !== undefined && explicitRecipient.length > 0) {
@@ -763,9 +755,6 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       // the SPECIFIC delivery attempt (captured at live-write time),
       // so this push targets exactly the user the message was sent to.
       return { originatingSenderId: capturedIdentityAtLiveSend, ...idPart };
-    }
-    if (persistedRecipient !== undefined && persistedRecipient.length > 0) {
-      return { originatingSenderId: persistedRecipient, ...idPart };
     }
     return idPart;
   };
@@ -993,9 +982,6 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
             }
             activeSocket = ws;
             activeIdentity = ws.data?.identity;
-            if (activeIdentity !== undefined && activeIdentity.length > 0) {
-              lastVerifiedIdentity = activeIdentity;
-            }
             sessionEpoch++;
             // Fresh per-session nonce — 128 bits of randomness signed into
             // every reply tag for this session. Cross-instance / cross-
@@ -1135,7 +1121,16 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       let liveRecipient: boolean;
       if (hasUnsolicitedField) {
         // Present-but-invalid unsolicited tag → fail closed.
-        liveRecipient = isUnsolicited && activeSocket !== undefined;
+        // Round-41 high: when caller supplied an explicit `recipient` via
+        // sendUnsolicited(msg, {recipient}), the live socket must be the
+        // SAME authenticated user — otherwise the message would deliver
+        // to whoever is connected (e.g., to Bob when Alice was the
+        // intended recipient). Mismatched recipient bypasses live and
+        // routes through pushNotifier so the host can deliver to Alice.
+        const recipientMatchesLive =
+          explicitRecipient === undefined ||
+          (activeIdentity !== undefined && explicitRecipient === activeIdentity);
+        liveRecipient = isUnsolicited && activeSocket !== undefined && recipientMatchesLive;
       } else if (hasReplyField) {
         // Present-but-invalid OR foreign reply tag (incl. mutated recipient
         // fields that no longer match the signed envelope) → fail closed.
@@ -1245,7 +1240,6 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
                   deliveryId,
                   identityAtSend,
                   explicitRecipient,
-                  lastVerifiedIdentity,
                 ),
               );
             },
@@ -1270,14 +1264,7 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       }
       await config.pushNotifier(
         wireMessage,
-        derivePushContext(
-          verifiedReply,
-          alsCtx,
-          undefined,
-          liveAttemptIdentity,
-          explicitRecipient,
-          lastVerifiedIdentity,
-        ),
+        derivePushContext(verifiedReply, alsCtx, undefined, liveAttemptIdentity, explicitRecipient),
       );
     },
     onPlatformEvent: (handler) => {
