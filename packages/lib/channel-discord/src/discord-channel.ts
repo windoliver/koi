@@ -200,10 +200,12 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
   // retry path on the gateway).
   let dispatch: ((event: DiscordEvent) => void) | undefined;
   // let requires justification: drained when dispatch is installed.
-  // Bounded so a stuck/never-installed dispatcher cannot exhaust memory under
-  // sustained traffic; oldest entries are dropped first (typical inbound
-  // queue semantics — old commands are stale by the time we recover anyway).
-  const PENDING_BUFFER_MAX = 256;
+  // The buffer is unbounded: silently truncating oldest entries (the
+  // previous 256-cap) caused user-visible message loss during the
+  // login/READY window on busy guilds. The handler-install window is
+  // bounded by channel-base's connect() — measured in seconds at most —
+  // so unbounded growth is bounded in practice. If onPlatformEvent never
+  // fires, the host has bigger problems and OOM surfaces it visibly.
   let pending: DiscordEvent[] = [];
 
   const deliver = (event: DiscordEvent): void => {
@@ -212,9 +214,6 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
       return;
     }
     pending.push(event);
-    if (pending.length > PENDING_BUFFER_MAX) {
-      pending = pending.slice(-PENDING_BUFFER_MAX);
-    }
   };
 
   const onMessageCreate = (...args: readonly unknown[]): void => {
