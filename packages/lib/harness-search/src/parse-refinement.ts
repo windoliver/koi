@@ -83,11 +83,14 @@ export function parseRefinementOutput(raw: unknown): string | null {
     let j = i + 1;
     while (j < lines.length && !FENCE_CLOSE.test(lines[j] ?? "")) j += 1;
     if (j >= lines.length) {
-      // Unclosed fence at EOF — refuse to guess where the body ends.
-      // A trailing fragment without a closing line is almost always
-      // model truncation; evaluating the partial body would feed
-      // syntactically broken code into the verifier.
-      break;
+      // Unclosed fence ANYWHERE in the output is a hard parse failure.
+      // It is almost always model truncation; if we kept earlier
+      // blocks, an "example block + truncated final block" response
+      // would silently fall through to return the example as the
+      // canonical refinement — driving evaluation of stale code
+      // instead of surfacing refine_failed. Return null for the whole
+      // response so callers see the truncation.
+      return null;
     }
     const body = lines
       .slice(i + 1, j)

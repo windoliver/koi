@@ -156,6 +156,14 @@ export interface SearchConfig {
    * at config validation because the bounded-termination contract
    * cannot be proven against an uncooperative callback paired with a
    * caller-supplied signal that may never fire.
+   *
+   * Caveat: this deadline is enforced via `setTimeout`, which only
+   * fires when the JS event loop is free. A callback that blocks the
+   * event loop synchronously (busy loop, exponential traversal of a
+   * hostile object graph) cannot be preempted in-process. Callers
+   * wiring untrusted adapters that may stall synchronously should
+   * isolate them in a Worker / child process. See `linearSearch`'s
+   * docstring for the full termination contract.
    */
   readonly attemptTimeoutMs?: number;
   /**

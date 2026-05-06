@@ -129,6 +129,16 @@ describe("parseRefinementOutput", () => {
     expect(out).toContain("const t = 1;");
   });
 
+  test("example fence + truncated final fence yields null (no stale-block fallback)", () => {
+    // Regression: an unclosed fence used to terminate the scan but
+    // preserve earlier parsed blocks. A model response with an example
+    // block followed by a truncated final block would silently fall
+    // through to return the example as the canonical refinement.
+    // ANY unclosed fence in the response is now a hard parse failure.
+    const raw = "Example:\n```\nold stale code\n```\nFinal:\n```ts\nconst x = 1;\nconst y =";
+    expect(parseRefinementOutput(raw)).toBeNull();
+  });
+
   test("rejects unclosed fence at EOF (does not return partial body)", () => {
     // Model truncation: opener with no closer. Returning the partial
     // body would feed broken code into the verifier; refuse instead.

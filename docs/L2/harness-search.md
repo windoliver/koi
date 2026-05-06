@@ -70,8 +70,16 @@ const result = await linearSearch(initialCode, descriptor, {
 
 ## Semantics
 
-- **Bounded.** Loop is hard-capped at `maxIterations` (default 20). It
-  cannot run forever even with always-failing evaluators.
+- **Bounded for cooperative callbacks.** Loop is hard-capped at
+  `maxIterations` (default 20) and each attempt is raced against
+  `attemptTimeoutMs` plus the parent `signal`, so async callbacks that
+  ignore their forwarded signal still cannot exceed the per-attempt
+  deadline. **Caveat:** no in-process timeout can preempt a callback
+  that blocks the JS event loop synchronously (busy loop, exponential
+  hostile-object traversal). Callers wiring untrusted adapters that
+  may stall synchronously should isolate them in a Worker or child
+  process whose lifetime they control externally; the package does
+  not promise a preemption guarantee the JS runtime cannot provide.
 - **Greedy best-tracking.** Single best variant is kept across
   iterations; refinement always reads the latest emitted code. Tree
   branching is deferred — see "Out of scope".

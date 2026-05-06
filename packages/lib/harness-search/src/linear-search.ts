@@ -53,8 +53,31 @@ function sampleBetaApprox(alpha: number, beta: number, random: () => number): nu
 }
 
 /**
- * Run the bounded refinement loop. Always terminates within
- * `maxIterations` iterations regardless of callback behavior.
+ * Run the bounded refinement loop.
+ *
+ * Termination contract (the realistic one — see caveat below):
+ *   - For COOPERATIVE callbacks (those that yield to the event loop —
+ *     real `async`, awaiting I/O, no synchronous busy work before the
+ *     first `await`): the loop terminates within `maxIterations`
+ *     iterations regardless of callback behavior. `attemptTimeoutMs`
+ *     and the parent `signal` are first-class race participants in
+ *     `withDeadline`, so a callback that ignores its forwarded signal
+ *     still cannot exceed the per-attempt deadline once it has
+ *     yielded.
+ *   - For NON-COOPERATIVE callbacks (a synchronous busy loop, an
+ *     exponential traversal of a hostile object graph, anything that
+ *     blocks the JS event loop): NO in-process timeout can preempt
+ *     them. `setTimeout` callbacks queue but never fire while the
+ *     event loop is blocked. The search hangs as long as the
+ *     synchronous work runs. This is a fundamental JS limitation, not
+ *     a bug in the loop. Callers wiring untrusted adapters that may
+ *     stall synchronously should isolate them in a Worker / child
+ *     process whose lifetime they control externally.
+ *
+ * In practice this matches what most JS-side adapters look like (LLM
+ * HTTP, sandboxed verifiers, in-memory test runs) — they all yield —
+ * but the contract is documented honestly so callers do not depend on
+ * a preemption guarantee the runtime cannot provide.
  */
 export async function linearSearch(
   initialCode: string,
