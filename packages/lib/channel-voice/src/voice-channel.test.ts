@@ -844,6 +844,73 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("reused threadId recovers cleanly after timeout+reconnect even with abort-ignoring transport", async () => {
+    // Round-19 high finding: previously, a single timeout against a
+    // non-cooperative transport poisoned the session permanently —
+    // disconnect/reconnect could not clear it because the raw op
+    // never settled within the fence. That permanently bricked
+    // commonly reused threadIds (e.g. "default" for single-call
+    // transports). Fix: poison is scoped to the connection generation
+    // (incremented on each connect), so a reconnect admits sends on
+    // the same threadId. Stale ops still run in the dead generation
+    // but cannot block new ones.
+    // let requires justification: harness state captured by closures
+    let resolveStuck: (() => void) | undefined;
+    const sentOrder: string[] = [];
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async (_s, utteranceId) => {
+        // First call hangs forever (ignores abort). Later calls run.
+        if (utteranceId === "stuck") {
+          await new Promise<void>((r) => {
+            resolveStuck = r;
+          });
+        }
+        sentOrder.push(utteranceId);
+      },
+      onUtterance: () => () => {},
+    };
+    const stt: Stt = { transcribe: async () => null };
+    const tts: Tts = { synthesize: async () => new Uint8Array(0) };
+    const ch = createVoiceChannel({
+      transport,
+      stt,
+      tts,
+      transportSendTimeoutMs: 50,
+    });
+    await ch.connect();
+    await expect(
+      ch.send({
+        threadId: "default",
+        content: [{ kind: "text", text: "first" }],
+        metadata: { utteranceId: "stuck" },
+      }),
+    ).rejects.toThrow(/transport.sendUtterance exceeded/);
+    // Same threadId is poisoned within this generation.
+    await expect(
+      ch.send({
+        threadId: "default",
+        content: [{ kind: "text", text: "blocked" }],
+        metadata: { utteranceId: "blocked" },
+      }),
+    ).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+    // Disconnect (raw op still hung; fence times out at 2 s).
+    await ch.disconnect();
+    // Reconnect — a fresh generation that ignores stale poison.
+    await ch.connect();
+    // The same threadId now works.
+    await ch.send({
+      threadId: "default",
+      content: [{ kind: "text", text: "after-reconnect" }],
+      metadata: { utteranceId: "after-reconnect" },
+    });
+    expect(sentOrder).toContain("after-reconnect");
+    // Release the still-hung first call so the test process exits.
+    resolveStuck?.();
+    await ch.disconnect();
+  });
+
   test("disconnect with an abort-ignoring transport completes within the fence (no 30s hang)", async () => {
     // Round-18 high finding: disconnect awaited the timeout-wrapped
     // performSend chain, which doesn't settle until ttsTimeoutMs /

@@ -448,14 +448,22 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
   // are both bounded by timeouts so a wedged provider cannot stall the
   // chain forever — the per-session chain advances via rejection.
   const sessionSendChains = new Map<string, Promise<void>>();
-  // Sessions whose prior outbound exceeded ttsTimeoutMs / transportSendTimeoutMs.
-  // Within a connection, subsequent same-session sends fail-fast so the stale
-  // call (which we cannot force-cancel) cannot reorder with new audio. Cleared
-  // on disconnect after aborting all in-flight controllers and awaiting drain
-  // — cooperative transports honor the AbortSignal and settle promptly, so
-  // recovery is clean. Non-cooperative transports may leak audio across
-  // reconnect; that is documented as the host's responsibility.
-  const poisonedSessions = new Set<string>();
+  // Generation counter incremented on every connect(). Used to scope
+  // poison + send admission to the current connection — stale state
+  // from a prior connection cannot block sends on the new one.
+  // let requires justification: monotonic counter ticked by connect()
+  let connectGen = 0;
+  // Map of sessionId → generation in which that session was poisoned.
+  // A send is rejected only if the poisoned generation matches the
+  // current connectGen. After disconnect()/connect() bumps connectGen,
+  // prior-generation poison entries are naturally invalidated, so
+  // reused threadId values (e.g. a stable "default" sessionId for
+  // single-call transports) remain usable after recovery. Stale
+  // underlying ops still run in the OLD generation — even if their
+  // transport.sendUtterance eventually surfaces audio, the channel
+  // never accepted a same-session send in the new generation that
+  // could have been reordered against it.
+  const poisonedSessions = new Map<string, number>();
   // All AbortControllers for in-flight TTS/transport calls. disconnect()
   // aborts every one to give cooperative impls a chance to fence cleanly
   // before the channel reports recovery.
@@ -540,7 +548,7 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       });
     } catch (e: unknown) {
       if (e instanceof VoiceTtsTimeoutError || e instanceof VoiceTransportSendTimeoutError) {
-        poisonedSessions.add(sessionId);
+        poisonedSessions.set(sessionId, connectGen);
       }
       throw e;
     } finally {
@@ -556,7 +564,12 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     if (message.threadId === undefined || message.threadId.length === 0) {
       return Promise.reject(new VoiceMissingSessionError());
     }
-    if (poisonedSessions.has(message.threadId)) {
+    // Poison only blocks sends in the SAME generation it was set in.
+    // A prior-generation entry left over from a non-cooperative
+    // transport timeout is naturally invalidated by reconnect, so
+    // reused threadIds (e.g. constant `"default"` sessionId for
+    // single-call transports) recover cleanly after disconnect/connect.
+    if (poisonedSessions.get(message.threadId) === connectGen) {
       return Promise.reject(new VoicePoisonedSessionError(message.threadId));
     }
     // Pre-render rich blocks → text so non-text content (image alt, file
@@ -605,6 +618,10 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     capabilities: inner.capabilities,
     connect: async (): Promise<void> => {
       await inner.connect();
+      // Bump generation: every prior poison entry now refers to a
+      // dead generation and is naturally ignored by wrappedSend's
+      // `poisonedSessions.get(...) === connectGen` check.
+      connectGen++;
       voiceConnected = true;
     },
     disconnect: async (): Promise<void> => {
@@ -612,34 +629,24 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       // Drain in-flight per-session sends before tearing down transport
       // so partial frames don't fly into a closing call. Failures are
       // swallowed — they were already surfaced to their callers.
-      // Abort every in-flight TTS / transport call FIRST. Cooperative
-      // impls reject promptly; non-cooperative impls keep running.
+      // Abort every in-flight TTS / transport call. Cooperative impls
+      // reject promptly; non-cooperative impls may keep running, but
+      // their results land in this (now-dead) generation — when the
+      // host reconnects, connectGen ticks and admission decisions
+      // ignore the old-generation poison entries entirely.
       for (const ctl of inflightControllers) ctl.abort();
-      // Drop the per-session chain map without awaiting it — those
-      // promises hold the timeout-WRAPPED performSend, which doesn't
-      // settle until ttsTimeoutMs/transportSendTimeoutMs (30 s default)
-      // if the underlying impl ignores abort. Awaiting them would let
-      // a non-cooperative provider stall disconnect for tens of seconds.
       sessionSendChains.clear();
-      // Bounded recovery fence: race the RAW underlying promises'
-      // settlement against DISCONNECT_FENCE_TIMEOUT_MS. Cooperative
-      // impls finish well within the fence; non-cooperative impls
-      // trip the fence, leaving poison set so a stale resolve cannot
-      // overlap newer audio after reconnect.
+      // Bounded best-effort fence on raw ops so cooperative impls get
+      // a chance to settle before we tear down the transport. We do
+      // NOT touch poisonedSessions here — generation invalidation on
+      // the next connect handles recovery.
       const rawOps = [...inflightRawOps];
       if (rawOps.length > 0) {
-        const fenceSettled = Promise.allSettled(rawOps).then(() => true);
-        const fenceTimedOut = new Promise<boolean>((resolve) => {
-          setTimeout(() => resolve(false), DISCONNECT_FENCE_TIMEOUT_MS);
+        const fenceSettled = Promise.allSettled(rawOps).then(() => undefined);
+        const fenceTimedOut = new Promise<void>((resolve) => {
+          setTimeout(resolve, DISCONNECT_FENCE_TIMEOUT_MS);
         });
-        const settled = await Promise.race([fenceSettled, fenceTimedOut]);
-        if (settled) {
-          poisonedSessions.clear();
-        }
-        // Else: poison persists. Host MUST construct a fresh adapter
-        // for any affected sessionId.
-      } else {
-        poisonedSessions.clear();
+        await Promise.race([fenceSettled, fenceTimedOut]);
       }
       await inner.disconnect();
     },
