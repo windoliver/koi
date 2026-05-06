@@ -1415,6 +1415,62 @@ describe("createMobileChannel", () => {
     await ch.disconnect();
   });
 
+  test("ack-timeout push fallback carries deliveryId for end-to-end dedup", async () => {
+    // Round-11 high finding: when the live frame was written but the ack
+    // is lost (flaky radio, mid-ack disconnect), the adapter pushes the
+    // same logical reply via pushNotifier. Without a stable cross-channel
+    // dedup token the client cannot distinguish "didn't get it, push
+    // delivered it" from "got it live, push is a duplicate", so the user
+    // sees the reply twice. The fix: MobilePushContext.deliveryId carries
+    // the same id that rode on the wire payload; the host's pushNotifier
+    // (and client SDK) must dedupe on it.
+    const port = await freePort();
+    const pushedContexts: MobilePushContext[] = [];
+    const wireDeliveryIds: string[] = [];
+    const ch = createMobileChannel({
+      port,
+      authenticate: async () => "test-device",
+      pushNotifier: async (_m, ctx) => {
+        pushedContexts.push(ctx);
+      },
+      ackTimeoutMs: 50,
+    });
+    let captured: InboundMessage | undefined;
+    ch.onMessage(async (m: InboundMessage) => {
+      captured = m;
+    });
+    await ch.connect();
+    // Non-acking client that records the deliveryId from the live frame
+    // so we can prove the push fallback uses the same id.
+    const ws = await openWs(port);
+    ws.addEventListener("message", (ev) => {
+      try {
+        const f = JSON.parse(typeof ev.data === "string" ? ev.data : "") as {
+          deliveryId?: unknown;
+        };
+        if (typeof f.deliveryId === "string") wireDeliveryIds.push(f.deliveryId);
+      } catch {
+        /* ignore non-JSON */
+      }
+    });
+    ws.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: "hi" }] }));
+    await new Promise((r) => setTimeout(r, 30));
+    await ch.send(
+      replyToInbound(captured as InboundMessage, {
+        content: [{ kind: "text", text: "needs-ack" }],
+      }),
+    );
+    expect(pushedContexts).toHaveLength(1);
+    expect(wireDeliveryIds).toHaveLength(1);
+    // Same id on both paths — that's the host's dedup hook.
+    expect(pushedContexts[0]?.deliveryId).toBe(wireDeliveryIds[0]);
+    expect(typeof pushedContexts[0]?.deliveryId).toBe("string");
+    expect((pushedContexts[0]?.deliveryId ?? "").length).toBeGreaterThanOrEqual(16);
+    ws.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
   test("inbound size cap is enforced on UTF-8 bytes, not UTF-16 code units", async () => {
     // Regression: round-6 used line.length (UTF-16 code units) so a
     // frame full of multi-byte chars (CJK, emoji at 4 bytes/char) could

@@ -565,6 +565,32 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("caller-supplied metadata.utteranceId is preserved across retries for transport dedup", async () => {
+    // Round-11 high finding: a freshly-minted random utteranceId on every
+    // wrappedSend() defeats the dedup contract — a host or middleware retry
+    // would key under a new id and the transport would play the utterance
+    // twice. The contract: callers that retry MUST pass a stable id via
+    // `message.metadata.utteranceId`, and the adapter MUST honor it.
+    const h = harness();
+    const ch = createVoiceChannel({ transport: h.transport, stt: h.stt, tts: h.tts });
+    await ch.connect();
+    const stableId = "stable-utterance-abc123";
+    await ch.send({
+      threadId: "session-1",
+      content: [{ kind: "text", text: "first attempt" }],
+      metadata: { utteranceId: stableId },
+    });
+    await ch.send({
+      threadId: "session-1",
+      content: [{ kind: "text", text: "retry of same logical outbound" }],
+      metadata: { utteranceId: stableId },
+    });
+    expect(h.sentUtterances).toHaveLength(2);
+    expect(h.sentUtterances[0]?.utteranceId).toBe(stableId);
+    expect(h.sentUtterances[1]?.utteranceId).toBe(stableId);
+    await ch.disconnect();
+  });
+
   test("hung STT call times out so the per-session chain does not deadlock all later utterances", async () => {
     // Regression: per-session STT chaining (added round 3) made one stuck
     // stt.transcribe() block every later utterance for that sessionId

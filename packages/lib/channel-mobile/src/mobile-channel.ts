@@ -97,6 +97,16 @@ export interface MobilePushContext {
   readonly originatingSenderId?: string;
   /** Originating thread, if any (only populated when trustClientIdentity is on). */
   readonly originatingThreadId?: string;
+  /**
+   * Set ONLY when this push is the ack-timeout fallback for a frame the
+   * adapter already wrote to the live socket. The same id rode on the
+   * wire payload as `deliveryId`. The host's pushNotifier MUST dedupe
+   * on this id end-to-end (e.g., the client SDK records every received
+   * `deliveryId` and discards a push carrying a duplicate) — otherwise
+   * a client that received the live frame but whose ack was lost will
+   * see the reply twice. Absent for unsolicited / no-live-attempt sends.
+   */
+  readonly deliveryId?: string;
 }
 
 export interface MobileChannelConfig {
@@ -114,6 +124,14 @@ export interface MobileChannelConfig {
    * Failure propagates to the `send()` caller so the host can observe /
    * retry. If `pushNotifier` is undefined and there is nowhere to deliver,
    * `send()` rejects with `MobileNoDeliveryTargetError`.
+   *
+   * Dedup contract (REQUIRED when `ackTimeoutMs > 0`): if `context.deliveryId`
+   * is set, this push is the ack-timeout fallback for a frame the adapter
+   * already wrote to the live socket. The client may have received it
+   * (and just lost the ack on a flaky link) — the host MUST dedupe on
+   * `deliveryId` end-to-end so the user does not see the reply twice.
+   * Typical pattern: the client SDK records every received `deliveryId`
+   * and discards any subsequent push carrying a duplicate.
    */
   readonly pushNotifier?: (message: OutboundMessage, context: MobilePushContext) => Promise<void>;
   /**
@@ -545,22 +563,26 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   const derivePushContext = (
     verifiedReply: VerifiedReplyTag | undefined,
     alsCtx: AlsCtx | undefined,
+    deliveryId?: string,
   ): MobilePushContext => {
+    const idPart = deliveryId !== undefined ? { deliveryId } : {};
     if (verifiedReply !== undefined) {
       return {
         originatingSenderId: verifiedReply.senderId,
         ...(verifiedReply.threadId.length > 0
           ? { originatingThreadId: verifiedReply.threadId }
           : {}),
+        ...idPart,
       };
     }
     if (alsCtx !== undefined) {
       return {
         originatingSenderId: alsCtx.senderId,
         ...(alsCtx.threadId !== undefined ? { originatingThreadId: alsCtx.threadId } : {}),
+        ...idPart,
       };
     }
-    return {};
+    return idPart;
   };
 
   const inner = createChannelAdapter<string>({
@@ -879,7 +901,10 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
               if (config.pushNotifier === undefined) {
                 throw new MobileNoDeliveryTargetError();
               }
-              await config.pushNotifier(wireMessage, derivePushContext(verifiedReply, alsCtx));
+              await config.pushNotifier(
+                wireMessage,
+                derivePushContext(verifiedReply, alsCtx, deliveryId),
+              );
             },
           );
           return;

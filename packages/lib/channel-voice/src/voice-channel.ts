@@ -434,11 +434,16 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       for (const piece of chunk(text, maxTtsChars)) pieces.push(piece);
     }
     const sessionId = message.threadId;
-    // Stable utteranceId (16-byte hex) for transport-level dedup. The
-    // transport contract requires idempotent dedup keyed on this id, so
-    // a retried send (host or upstream middleware) reuses the same id
-    // and the transport can suppress double-playback.
-    const utteranceId = randomBytes(16).toString("hex");
+    // utteranceId is the transport-level dedup key. Callers that retry
+    // a logical outbound MUST pass a stable id via
+    // `message.metadata.utteranceId` so the transport can suppress
+    // double-playback. We only mint a fresh id when the caller did not
+    // supply one (first attempt for that logical outbound).
+    const suppliedId = message.metadata?.["utteranceId"];
+    const utteranceId =
+      typeof suppliedId === "string" && suppliedId.length > 0
+        ? suppliedId
+        : randomBytes(16).toString("hex");
     const prev = sessionSendChains.get(sessionId) ?? Promise.resolve();
     // .catch on prev swallows prior failures so a single bad turn doesn't
     // poison every later turn for the same session — the chain advances
