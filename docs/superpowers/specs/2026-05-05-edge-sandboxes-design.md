@@ -181,7 +181,14 @@ allocating → deploying-unreachable → secrets-uploading → activating → re
 
 The `unreachable` qualifier on intermediate states is a real provider-side property, not a documentation note. Until the `activating` step completes, `https://{name}.{subdomain}.workers.dev` returns a Cloudflare 522/523 (no route configured), regardless of what the worker code does.
 
-For Vercel, the analogous gate is the `target` field on `POST /v13/deployments`: deployments are created with `target: "production"` only at activation. Until activation, the deployment URL is preview-only and gated behind Vercel access controls; no public DNS resolves to it. Same structural guarantee.
+For Vercel, the analogous gate requires **adapter-enforced deployment protection**, not an external account default:
+
+- The adapter's `createVercelAdapter(config)` requires `config.projectId` and verifies via `GET /v9/projects/{projectId}` at construction time that the project has `ssoProtection.deploymentType` (or `passwordProtection.deploymentType`) set to `"all"` or `"prod_deployment_urls_and_all_previews"`. If protection is disabled or scoped narrower, `createVercelAdapter` returns `KoiError { code: "VERCEL_PROTECTION_REQUIRED", reason: "preview-protection-not-enforced" }` and refuses to construct.
+- Each deployment is created with `target: "preview"` until activation, so it lands behind the protection gate. Activation either flips `target: "production"` (after secrets and protection are confirmed) or attaches a custom domain — both are explicit final-step transitions.
+- Pre-activation, the preview URL is reachable only with a valid Vercel SSO/password token bound to that project. The koi adapter never publishes that URL externally; even if leaked, the protection gate stops anonymous invocation.
+- The smoke workflow (`provider-smoke.yml`) includes a `vercel-protection-required` scenario: temporarily disable protection on the test project, attempt `createVercelAdapter`, assert it returns `VERCEL_PROTECTION_REQUIRED` and refuses to construct. Re-enable, assert success.
+
+This makes Vercel's safety story adapter-enforced, not account-default-dependent.
 
 Rules:
 
@@ -220,7 +227,9 @@ In-process delayed re-verify is necessary but not sufficient: a host crash, cont
   ```
   `id` is `cloudflare:${accountId}:${scriptName}` or `vercel:${teamId ?? "_personal"}:${projectId}:${deploymentId}` — deterministic so re-inserting an already-known orphan is an UPSERT, not a duplicate.
 - **Atomic operations:** all writes wrap `BEGIN IMMEDIATE; ... COMMIT;` so concurrent adapter instances cannot interleave. Reconciliation deletes a row in the same transaction that confirms the provider DELETE returned success — no read-then-delete window.
-- **WAL mode + fsync per transaction:** `PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;` provides crash safety across host restarts (the WAL is replayed on reopen). For the create-failure path that requires durable persistence before returning, the adapter additionally calls `db.exec("PRAGMA wal_checkpoint(TRUNCATE)")` to force WAL flush before reporting INDETERMINATE — this guarantees the orphan survives even an immediate `kill -9`.
+- **WAL mode + per-orphan FULL synchronous + explicit fsync:** the database opens with `PRAGMA journal_mode=WAL`. The default `PRAGMA synchronous=NORMAL` is fine for read-heavy paths, but the orphan-insert transaction is wrapped in a session-scoped `PRAGMA synchronous=FULL` so commits force fsync on both the WAL and the database file. The transaction then explicitly calls `db.exec("PRAGMA wal_checkpoint(FULL); PRAGMA synchronous=NORMAL")` after commit to restore the default for subsequent reads. This guarantees an orphan row is durably on disk before the adapter returns INDETERMINATE — `kill -9` immediately after the function returns cannot lose the row, because the kernel has confirmed the disk write completed.
+- **Crash-recovery test (mandatory):** `__tests__/orphan-ledger-crash.test.ts` simulates a hard crash by spawning a subprocess that begins an orphan-record transaction, fsyncs, then is killed with `SIGKILL` from the parent. The parent reopens the database and asserts the orphan row is present. CI runs this test on every PR that touches the ledger code; failure blocks merge.
+- **Downgraded API claim:** the documented guarantee is "an orphan recorded by the adapter survives any single-host crash including SIGKILL after the adapter call returns." Multi-disk failures, filesystem corruption, and storage-layer dataloss are out of scope and acknowledged in `docs/L2/sandbox-cloudflare.md` as residual risks beyond the ledger's coverage.
 - **Write-before-return invariant:** an INDETERMINATE result is only returned to the caller AFTER the orphan has been persisted to the ledger. If the ledger write itself fails, the adapter blocks and retries (bounded) before returning a strictly-stronger error `KoiError { code: "ORPHAN_LEDGER_WRITE_FAILED" }` with the artifact identity in context. Caller knows operator intervention is required immediately.
 - **Reconciliation on adapter init:** at construction time, each adapter reads the ledger and matches entries by its provider-specific ownership key:
   - Cloudflare: `provider === "cloudflare" && accountId === config.accountId`.
@@ -309,7 +318,17 @@ Because `destroy()` and timeout/abort can leave remote work in flight (see `Dest
   - **Known ID, in-flight:** the second request awaits the first's outcome (same Promise) and returns the same response. Two callers using the same `requestId` see the same result; the handler runs exactly once.
   - **Known ID, completed:** return the cached result without re-running the handler.
 - **`requestId` is mandatory at the API boundary — no implicit generation.** The host-side `invoke()` rejects requests without `requestId` with `KoiError { code: "MISSING_REQUEST_ID" }` before any fetch. There is no auto-gen path. Rationale: callers who need to retry after timeout/abort/destroy MUST be able to reuse the same token on the retry; auto-generating the ID inside `invoke()` makes the original token unreachable to the caller (it lives in already-discarded request state), so retries necessarily carry a fresh UUID and the dedupe is useless on the exact failure paths it exists to mitigate.
-- Recommended caller pattern: `const id = crypto.randomUUID(); for (...) { await instance.invoke({ payload, requestId: id }); }`. The same `id` is reused across the retry loop. The SDK does not hide this — it is part of the contract, like idempotency keys in well-designed payment APIs.
+- Required caller pattern: callers MUST supply a stable `requestId` (typically `crypto.randomUUID()`) once per logical operation and reuse it across the entire retry loop for that operation. There is no SDK-side auto-generation under any circumstance — the wire-level requirement and the API-boundary requirement are identical:
+  ```ts
+  const id = crypto.randomUUID();           // generated by the CALLER, retained for the operation's lifetime
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await instance.invoke({ payload, requestId: id });
+    if (r.ok) return r.value;
+    if (r.error.code !== "TIMEOUT") throw r.error;
+    // retry: same id, dedupe takes effect
+  }
+  ```
+  Frameworks built on top of the adapter (e.g., a higher-level retry wrapper) are responsible for retaining the id; they do not delegate generation to `invoke()`. This is documented as the only correct usage in `docs/L2/sandbox-cloudflare.md` and is enforced by tests.
 - Cross-instance retries (after `destroy()` + new `create()`) still produce duplicate side effects unless the caller persists the `requestId` and the next instance happens to land on the same Cloudflare isolate (which the provider does not guarantee). Therefore **shim dedupe is per-instance only**, and idempotency at side-effect targets (downstream APIs, databases) is the caller's responsibility for cross-instance cases. Documented prominently.
 - The shim's per-isolate cache is bounded: max 1000 entries with LRU eviction. Above that, oldest entries are dropped, and a duplicate request for an evicted ID re-runs the handler. Operators tune this via deployed code if higher concurrency requires it.
 - Caller-visible: the standard pattern is "let the SDK auto-generate a UUID per logical operation; reuse the same UUID for retries within the same instance lifetime; treat anything across `destroy()`/`create()` boundaries as a new operation". Documented prominently in `docs/L2/sandbox-cloudflare.md`.
