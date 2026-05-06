@@ -83,23 +83,72 @@ Note the differences vs. `SandboxAdapter`:
 
 A future `sandbox-edge-router` package can offer cross-provider selection between Cloudflare and Vercel; that's out of scope here.
 
+### Existing L3 doc reconciliation
+
+`docs/L3/sandbox-stack.md` (lines ~308-337) currently documents `createCloudflareAdapter` and `createVercelAdapter` as returning `SandboxAdapter` via `createCloudSandbox()`. This is a forward-looking placeholder from a prior planning pass — the v2 packages do not exist yet on `main`. The L3 doc MUST be updated as part of this PR to reflect the actual contract being shipped:
+
+- The packages return `EdgeFunctionAdapter`, not `SandboxAdapter`.
+- They are NOT consumed by `createCloudSandbox()` or by `@koi/sandbox-router`.
+- They are accessed through the new `koi.edge.cloudflare` / `koi.edge.vercel` slots on the runtime (see Runtime Integration below).
+- The L3 doc gets a new "Edge functions" subsection that documents the `invoke()`-only contract distinct from the process-level `SandboxAdapter` contract.
+
+This doc update is a required deliverable of this PR (see Acceptance below) so that no documented contract conflicts with what ships.
+
+### Forbidden workload class — non-idempotent payloads
+
+The duplicate-side-effect hazard introduced by timeout/abort/destroy + per-isolate dedupe is real and cannot be eliminated at the adapter layer with available provider primitives. Rather than ship a generic adapter that documents the hazard, the contract narrows the supported workload class:
+
+- **`createCloudflareAdapter` and `createVercelAdapter` REQUIRE `config.assertIdempotent: true`.** This is a literal-true field, not a default. The adapter refuses to construct otherwise (returns `KoiError { code: "IDEMPOTENCY_NOT_ASSERTED" }`).
+- Setting `assertIdempotent: true` is the operator's affirmation that every `payload` they pass to `invoke()` represents an idempotent operation: a retry with the same `requestId` AND a retry with a fresh `requestId` BOTH must produce the same observable side effect (or no additional side effect after the first). This includes downstream API calls, database writes, payments, and state transitions performed by the deployed JS handler.
+- Mutating workloads (non-idempotent payments, sequence-dependent writes, etc.) are NOT supported by these adapters in this PR. Operators wanting them MUST either implement idempotency at the side-effect target before adopting the adapter OR wait for a future `sandbox-cloudflare-durable` package that backs dedupe with Durable Objects (out of scope here).
+- The `assertIdempotent: true` literal lives in the orphan ledger metadata for the adapter and is also logged on every `create()` so audit trails can confirm operators consented to the workload-class restriction.
+
 ### Kernel / runtime integration path
 
-The CLAUDE.md golden-query rule requires every new L2 package to be wired into `@koi/runtime`. Because `EdgeFunctionAdapter` is not a `SandboxAdapter`, this PR explicitly extends `@koi/core` (types-only, no runtime logic — preserves L0 invariant) and `@koi/runtime` (assembly layer) to add a parallel registration slot for edge adapters:
+The CLAUDE.md golden-query rule requires every new L2 package to be wired into `@koi/runtime`. Because `EdgeFunctionAdapter` is not a `SandboxAdapter`, this PR explicitly extends `@koi/core`, `@koi/engine`, `@koi/runtime`, and the CI scripts. The integration is bounded but NOT trivial — the spec enumerates every API addition concretely so reviewers can audit the actual scope:
 
-**`@koi/core` additions (L0, types-only):**
+**`@koi/core` additions (L0, types-only — preserves L0 invariant):**
 
-- `packages/kernel/core/src/edge-function-adapter.ts` — defines `EdgeFunctionAdapter`, `EdgeFunctionInstance`, `EdgeInvokeRequest`, `EdgeInvokeResult`, `DestroyOutcome`. Pure interfaces, zero logic.
-- Re-exported from `@koi/core/edge` entry point.
+- New file `packages/kernel/core/src/edge-function-adapter.ts` defining: `EdgeFunctionAdapter`, `EdgeFunctionInstance`, `EdgeInvokeRequest`, `EdgeInvokeResult`, `DestroyOutcome`. Pure interfaces, zero runtime logic. ~80 LOC.
+- New entry point `packages/kernel/core/src/index.ts` re-exports the types under the `edge` namespace.
 
-**`@koi/runtime` additions:**
+**`@koi/engine` additions (L1):**
 
-- `createKoi(config)` accepts an optional `edgeAdapters: { cloudflare?: EdgeFunctionAdapter; vercel?: EdgeFunctionAdapter }` field on its config — a parallel slot to the existing `sandbox` field which expects a `SandboxAdapter`.
-- Edge adapters do NOT participate in the `@koi/sandbox-router` selection algorithm. They are accessible to user code by name (`koi.edge.cloudflare.create({...})`) for direct invocation.
-- The runtime treats these adapters as first-class L2 dependencies for layer/orphan checks (they ARE deps of `@koi/runtime`), but they do NOT need to satisfy `SandboxAdapter`-shaped golden queries. A separate golden-query template (`golden-edge-replay.test.ts`) covers them by mocking `fetch` and replaying recorded responses.
-- The CLAUDE.md `check:orphans` and `check:golden-queries` scripts get a small extension: an L2 package whose top-level export type is `EdgeFunctionAdapter` is checked against the edge-replay template instead of the sandbox-replay template. This change ships as part of this PR (small scripts edit, ~30 LOC).
+- `packages/kernel/engine/src/types.ts` — extend `CreateKoiOptions` with new optional fields:
+  ```ts
+  export interface CreateKoiOptions {
+    // ... existing fields ...
+    readonly sandbox?: SandboxAdapter;
+    readonly edgeAdapters?: {
+      readonly cloudflare?: EdgeFunctionAdapter;
+      readonly vercel?: EdgeFunctionAdapter;
+    };
+  }
+  ```
+  Note: `sandbox` field also does not yet exist on `CreateKoiOptions` per current `packages/kernel/engine/src/types.ts`. Adding both `sandbox` and `edgeAdapters` is part of this PR. ~25 LOC.
+- `packages/kernel/engine/src/koi.ts` — extend the runtime constructor to expose the registered adapters under a typed `koi.edge.{cloudflare,vercel}` accessor. ~40 LOC.
+- Engine assembly tests assert the slots are reachable when populated and absent (typed `undefined`) when not. ~50 LOC.
 
-This integration path is explicit and bounded: 3 new types in L0, one new optional field on `createKoi`, one new template in the golden-query script set. No router changes, no `SandboxAdapter` reshaping.
+**`@koi/runtime` additions (L3 meta):**
+
+- `packages/meta/runtime/src/index.ts` — the runtime convenience bundle re-exports the new edge adapter types and provides a no-default-adapters factory. Edge adapters are explicitly opt-in; the runtime does NOT bundle Cloudflare/Vercel by default since they require API tokens. ~20 LOC.
+- New test `packages/meta/runtime/src/__tests__/golden-edge-replay.test.ts` — replays recorded Cloudflare/Vercel API responses (cassettes) against `createCloudflareAdapter` and `createVercelAdapter` with mocked `fetch`. Asserts the full `create → invoke → destroy` happy path produces the expected ATIF trajectory. ~150 LOC.
+- New script `packages/meta/runtime/scripts/record-edge-cassettes.ts` — records cassettes against real (or stubbed) Cloudflare/Vercel APIs for the golden replay. Mirrors `record-cassettes.ts` but produces edge-specific fixtures. ~120 LOC.
+
+**CI script changes:**
+
+- `scripts/check-golden-queries.ts` — currently grep-based on package names (per `scripts/check-golden-queries.ts:52-100`). Extension: parse each L2 package's `package.json` for `koi.adapter-kind` field (`"sandbox"` | `"edge-cloudflare"` | `"edge-vercel"` | `null`). Edge packages are required to land assertions in `golden-edge-replay.test.ts` instead of `golden-replay.test.ts`. The check is symmetric: a package with `adapter-kind: "edge-cloudflare"` is a CI failure if it doesn't appear in the edge replay. ~80 LOC of script changes plus the `package.json` field across all sandbox packages.
+- `scripts/check-orphans.ts` — currently checks every L2 is a static dep of `@koi/runtime`. Extension: edge adapters must also be in `@koi/runtime`'s dependencies but are ALLOWED to be unused by `createKoi()`'s default factory (since they're opt-in). The orphan check inspects `package.json` `koi.adapter-kind` to differentiate. ~40 LOC.
+
+**`docs/L3/sandbox-stack.md` update:**
+
+- Add a new "Edge function adapters" subsection documenting the `EdgeFunctionAdapter` contract.
+- Update the Cloudflare/Vercel rows in the existing tables to point to the new contract.
+- Note that `@koi/sandbox-router` does NOT route to these adapters. ~60 LOC of doc changes.
+
+**Total integration delta:** ~665 LOC of NEW code outside the three sandbox packages themselves, plus the doc update. This is materially larger than "30 LOC of script changes" — the spec budgets accordingly. The figure is included in the overall PR LOC budget below.
+
+The integration path is explicit and bounded but not small. No router changes, no `SandboxAdapter` reshaping.
 
 ## Package layout
 
