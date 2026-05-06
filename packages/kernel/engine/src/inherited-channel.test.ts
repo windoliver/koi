@@ -292,19 +292,18 @@ describe("createInheritedChannel", () => {
     expect(seenOpts).toEqual([{ recipient: "device-alice" }]);
   });
 
-  test("endCall is gated by spawn policy mode:'none' (round-50 high)", async () => {
-    // Round-50 high: endCall mutates parent adapter state (fences all
-    // turns for that session, terminating the parent's voice call). A
-    // child given mode:"none" (no channel access) MUST NOT be able to
-    // mutate the parent — that would let a no-channel child cut off or
-    // poison the parent's live voice session, violating channel
-    // isolation. Read-only helpers (currentCallEpoch) still forward.
+  test("endCall requires mode:'all' — output-only and none cannot terminate parent call (round-50/51 high)", async () => {
+    // Round-50: endCall mutates parent adapter state (fences all turns
+    // for that session, terminating the parent's voice call). A child
+    // given mode:"none" MUST NOT be able to mutate the parent.
+    // Round-51 tightening: endCall is STRONGER than ordinary outbound
+    // (it hangs up / poisons a live call) — so even output-only must
+    // not be able to invoke it. Required: mode === "all".
     let endCallInvocations = 0;
-    let epochInvocations = 0;
-    const parent: ChannelAdapter & {
+    const makeParent = (): ChannelAdapter & {
       endCall: (s: string) => void;
       currentCallEpoch: () => number;
-    } = {
+    } => ({
       name: "voice-parent",
       capabilities: CAPABILITIES,
       connect: () => Promise.resolve(),
@@ -314,11 +313,8 @@ describe("createInheritedChannel", () => {
       endCall: (_s: string) => {
         endCallInvocations++;
       },
-      currentCallEpoch: () => {
-        epochInvocations++;
-        return 0;
-      },
-    };
+      currentCallEpoch: () => 0,
+    });
     const childPid: ProcessId = {
       id: agentId("child-id"),
       name: "child",
@@ -326,20 +322,38 @@ describe("createInheritedChannel", () => {
       depth: 1,
       parent: agentId("parent-1"),
     };
-    const proxy = createInheritedChannel(parent, childPid, {
-      mode: "none",
-      attribution: "metadata",
-      propagateStatus: false,
-    }) as ChannelAdapter & {
+    type ProxyShape = ChannelAdapter & {
       endCall?: (s: string) => void;
       currentCallEpoch?: () => number;
     };
-    proxy.endCall?.("default");
-    proxy.currentCallEpoch?.();
-    // endCall: mutating + mode:"none" → MUST NOT reach parent.
+    const noneParent = makeParent();
+    const noneProxy = createInheritedChannel(noneParent, childPid, {
+      mode: "none",
+      attribution: "metadata",
+      propagateStatus: false,
+    }) as ProxyShape;
+    noneProxy.endCall?.("default");
     expect(endCallInvocations).toBe(0);
-    // currentCallEpoch: read-only → forwards regardless of mode.
-    expect(epochInvocations).toBe(1);
+    const outputOnlyParent = makeParent();
+    const outputOnlyProxy = createInheritedChannel(outputOnlyParent, childPid, {
+      mode: "output-only",
+      attribution: "metadata",
+      propagateStatus: false,
+    }) as ProxyShape;
+    outputOnlyProxy.endCall?.("default");
+    expect(endCallInvocations).toBe(0);
+    // mode:"all" — endCall reaches parent.
+    const allParent = makeParent();
+    const allProxy = createInheritedChannel(allParent, childPid, {
+      mode: "all",
+      attribution: "metadata",
+      propagateStatus: false,
+    }) as ProxyShape;
+    allProxy.endCall?.("default");
+    expect(endCallInvocations).toBe(1);
+    // currentCallEpoch (read-only) still works for all modes.
+    expect(noneProxy.currentCallEpoch?.()).toBe(0);
+    expect(outputOnlyProxy.currentCallEpoch?.()).toBe(0);
   });
 
   test("forwards voice pure helpers stampForCurrentCall + currentCallEpoch (round-44 high)", async () => {

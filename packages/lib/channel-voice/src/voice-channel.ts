@@ -512,6 +512,14 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
   // for this session and `endCall` expires ALL of them — the entire
   // logical call is fenced, not just the most recent turn.
   const sessionToTurnIds = new Map<string, Set<string>>();
+  // Round-51 high: hard call boundary. After endCall(sessionId), any
+  // untagged send to that threadId must reject until a NEW inbound turn
+  // for the session establishes a fresh incarnation. Without this, a
+  // delayed old-call callback could call `ch.send({threadId: reused,
+  // ...})` with no metadata and slip through (the existing untagged
+  // fence only fires post-disconnect/reconnect). Cleared in the inbound
+  // pipeline when the next turn arrives for this session.
+  const sessionsAwaitingNewTurn = new Set<string>();
   // Per-turn fence. Inserted by the dispatch watchdog when a handler
   // exceeds dispatchHandlerTimeoutMs; checked by wrappedSend so a hung
   // handler that eventually wakes up cannot inject late audio into a
@@ -666,6 +674,9 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
               sessionToTurnIds.set(sessionId, activeIds);
             }
             activeIds.add(turnId);
+            // Round-51 high: a fresh inbound establishes a new
+            // incarnation — clear the post-endCall untagged-send fence.
+            sessionsAwaitingNewTurn.delete(sessionId);
             inboundGenContext.run({ gen: capturedGen, turnToken, turnId, collector }, () => {
               handler({ sessionId, utterance, text });
             });
@@ -920,6 +931,20 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
     } else if (inboundCtx === undefined && connectGen > 0) {
       return Promise.reject(new VoicePoisonedSessionError(message.threadId));
     }
+    // Round-51 high: hard call boundary. After endCall(sessionId), any
+    // untagged send to that threadId is rejected until a new inbound
+    // turn establishes a fresh incarnation. Tagged sends are still
+    // governed by the per-turn-id fence below (which endCall already
+    // expired). This blocks delayed old-call callbacks that issue bare
+    // `ch.send({threadId: reused, ...})` with no metadata after the
+    // host declared the prior call ended.
+    if (
+      sessionsAwaitingNewTurn.has(message.threadId) &&
+      messageEpochRaw === undefined &&
+      message.metadata?.[VOICE_TURN_ID_KEY] === undefined
+    ) {
+      return Promise.reject(new VoicePoisonedSessionError(message.threadId));
+    }
     // Round-43 high: per-turn id fence. Rejects detached replies tagged
     // with an EXPIRED turnId regardless of ALS presence — closing both
     // the post-watchdog detached path and the sessionId-reuse hole. The
@@ -1125,6 +1150,11 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
         for (const id of activeIds) expireTurnId(id);
         sessionToTurnIds.delete(sessionId);
       }
+      // Round-51 high: hard call boundary — ALSO block untagged sends to
+      // this threadId until a NEW inbound establishes a fresh incarnation.
+      // Without this an old-call callback's bare `ch.send({threadId:...})`
+      // (no metadata) would still admit.
+      sessionsAwaitingNewTurn.add(sessionId);
     },
   } satisfies VoiceChannelAdapter;
 }

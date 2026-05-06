@@ -1909,6 +1909,47 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("endCall(sessionId) blocks untagged stale sends to the reused threadId until next inbound (round-51 high)", async () => {
+    // Round-51 high: endCall expired turn ids (tagged-reply path), but
+    // a delayed old-call callback could still call bare
+    // `ch.send({threadId: reused, ...})` with no metadata and slip
+    // through the existing untagged fence (which only fires
+    // post-disconnect/reconnect). Hard call boundary: after endCall, an
+    // untagged send to that threadId rejects until a new inbound turn
+    // establishes a fresh incarnation.
+    // let requires justification: harness state captured by callbacks
+    let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (handler: (sessionId: string, frame: Uint8Array) => void) => {
+        listener = handler;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = { transcribe: async () => "u" };
+    const tts: Tts = { synthesize: async () => new Uint8Array([1]) };
+    const ch = createVoiceChannel({ transport, stt, tts });
+    ch.onMessage(async () => {});
+    await ch.connect();
+    listener?.("default", new Uint8Array([1]));
+    await new Promise((r) => setTimeout(r, 30));
+    ch.endCall("default");
+    // Bare untagged send for the ended call — rejected.
+    await expect(
+      ch.send({ threadId: "default", content: [{ kind: "text", text: "stale" }] }),
+    ).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+    // Next inbound for the same threadId establishes a fresh incarnation.
+    listener?.("default", new Uint8Array([2]));
+    await new Promise((r) => setTimeout(r, 30));
+    // Now an untagged send is admitted again (within the fresh call).
+    await ch.send({ threadId: "default", content: [{ kind: "text", text: "fresh" }] });
+    await ch.disconnect();
+  });
+
   test("endCall(sessionId) fences ALL turns from the ended call, not just the latest (round-49 high)", async () => {
     // Round-49 high: round-48 tracked only the most-recent turn id per
     // session, so endCall expired only the latest. A multi-turn call

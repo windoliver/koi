@@ -130,20 +130,20 @@ export function createInheritedChannel(
     }
   }
 
-  // Round-50 high: STATE-MUTATING extensions (e.g. VoiceChannelAdapter.endCall
-  // which fences all turns for that session on the parent — terminates the
-  // parent's active voice call). MUST honor spawn policy: a child given
-  // `mode: "none"` (no channel access) must not be able to mutate the
-  // parent's adapter state. Forwarding these without the gate violates the
-  // channel-isolation contract — a no-channel child could cut off or poison
-  // the parent's live call. Gated behind the same mode check as send().
-  const PARENT_MUTATING_EXTENSIONS = ["endCall"] as const;
-  for (const methodName of PARENT_MUTATING_EXTENSIONS) {
+  // Round-50/51 high: PRIVILEGED state-mutating extensions (e.g.
+  // VoiceChannelAdapter.endCall which fences all turns for that session
+  // on the parent — terminates the parent's active voice call). Stronger
+  // than ordinary outbound: an output-only child must not be able to hang
+  // up or poison the parent's live call (round-51 finding). Required:
+  // full bidirectional channel access (`mode === "all"`). Output-only and
+  // none are both blocked.
+  const PARENT_PRIVILEGED_EXTENSIONS = ["endCall"] as const;
+  for (const methodName of PARENT_PRIVILEGED_EXTENSIONS) {
     const original = (parentChannel as unknown as Record<string, unknown>)[methodName];
     if (typeof original === "function") {
       const fn = original as (...args: unknown[]) => unknown;
       child[methodName] = (...args: unknown[]): unknown => {
-        if (resolved.mode === "none") return undefined;
+        if (resolved.mode !== "all") return undefined;
         return fn.apply(parentChannel, args);
       };
     }
