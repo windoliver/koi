@@ -123,6 +123,24 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
   let bot: TelegramBotLike | undefined = config.bot;
   // let requires justification: registered listener invoked by handleUpdate
   let updateHandler: ((update: TelegramUpdateLike) => void) | undefined;
+  // Buffer for updates that arrive between b.start() (kicked off in
+  // platformConnect) and onPlatformEvent installing updateHandler. Without
+  // this, the first updates of a polling session would be silently
+  // dropped. Bounded — old entries roll off under sustained traffic.
+  const PENDING_BUFFER_MAX = 256;
+  // let requires justification: drained when updateHandler is installed.
+  let pending: TelegramUpdateLike[] = [];
+
+  const deliver = (update: TelegramUpdateLike): void => {
+    if (updateHandler !== undefined) {
+      updateHandler(update);
+      return;
+    }
+    pending.push(update);
+    if (pending.length > PENDING_BUFFER_MAX) {
+      pending = pending.slice(-PENDING_BUFFER_MAX);
+    }
+  };
 
   const requireBot = (): TelegramBotLike => {
     if (bot === undefined) throw new Error("[channel-telegram] not connected");
@@ -162,20 +180,51 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
     capabilities: TELEGRAM_CAPABILITIES,
 
     platformConnect: async (): Promise<void> => {
-      // Only instantiate the bot here. grammY's `start()` is the long-poll
-      // loop and never resolves until `stop()` is called — awaiting it would
-      // hang `connect()` forever and block listener registration.
-      // Polling is kicked off from `onPlatformEvent` after the listener is
-      // attached, so no updates are dropped between registration and first
-      // poll.
       if (bot === undefined) {
         bot = await instantiateBot(config.token);
       }
       // Connect-time handshake: validate the bot token by calling getMe.
-      // This surfaces auth errors and basic connectivity failures during
-      // connect() instead of letting them disappear into the background
-      // polling promise.
       await bot.api.getMe();
+      if (deployment.mode === "polling") {
+        const b = bot;
+        // Register the dispatcher middleware BEFORE start() — grammY drains
+        // the polling loop through registered middleware. `deliver` buffers
+        // updates that arrive before onPlatformEvent installs updateHandler.
+        b.use(async (ctx, next): Promise<void> => {
+          deliver(ctx.update);
+          await next();
+        });
+        // grammY's bot.start() is the long-poll loop and only resolves on
+        // stop(). Race it against a short startup window so connect() fails
+        // fast when polling startup itself rejects (e.g. another instance
+        // holds the getUpdates lock, or the binary cannot reach Telegram).
+        // Without this race, connect() would resolve while polling silently
+        // wedged, leaving the channel in a false-healthy state with no
+        // inbound traffic and no rollback path.
+        const startPromise = b.start();
+        const STARTUP_WINDOW_MS = 250;
+        const result = await Promise.race<"alive" | { rejected: unknown }>([
+          startPromise
+            .then((): "alive" => "alive")
+            .catch((err: unknown): { rejected: unknown } => ({ rejected: err })),
+          new Promise<"alive">((resolve) => setTimeout(() => resolve("alive"), STARTUP_WINDOW_MS)),
+        ]);
+        if (typeof result === "object") {
+          // Polling rejected immediately. Tear back down so we don't leak
+          // a half-initialized bot into the rest of the lifecycle.
+          bot = undefined;
+          throw new Error(
+            `[channel-telegram] bot.start() rejected during connect: ${String(result.rejected)}`,
+            { cause: result.rejected },
+          );
+        }
+        // Polling is alive. Continue draining `start()` in the background;
+        // late rejections (network drops, auth revocation) surface via
+        // onHandlerError so the adapter doesn't crash on uncaught.
+        void startPromise.catch((err: unknown) => {
+          config.onHandlerError?.(err, { phase: "polling" });
+        });
+      }
     },
 
     platformDisconnect: async (): Promise<void> => {
@@ -184,6 +233,7 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
         await bot.stop();
       }
       updateHandler = undefined;
+      pending = [];
       bot = undefined;
     },
 
@@ -202,20 +252,11 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
         if (active) handler(update);
       };
       updateHandler = dispatch;
-      if (deployment.mode === "polling") {
-        const b = requireBot();
-        // Register middleware BEFORE start() so no update reaches the bot
-        // before it has a handler. grammY drains the polling loop through
-        // registered middleware; we observe each Context's raw Update and
-        // forward to the channel's normalize() pipeline.
-        b.use(async (ctx, next): Promise<void> => {
-          dispatch(ctx.update);
-          await next();
-        });
-        void b.start().catch((err: unknown) => {
-          config.onHandlerError?.(err, { phase: "polling" });
-        });
-      }
+      // Drain updates that arrived between b.start() (in platformConnect)
+      // and this handler install.
+      const drained = pending;
+      pending = [];
+      for (const u of drained) dispatch(u);
       return (): void => {
         active = false;
         updateHandler = undefined;

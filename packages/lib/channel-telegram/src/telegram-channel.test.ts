@@ -93,6 +93,18 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     expect(stopped).toBe(1);
   });
 
+  test("connect rejects when bot.start() rejects within the startup window (no false-connected state)", async () => {
+    const f = fakeBot();
+    const failingBot: TelegramBotLike = {
+      ...f.bot,
+      start: async () => {
+        throw new Error("409 Conflict: another instance is polling");
+      },
+    };
+    const adapter = createTelegramChannel({ token: "T", bot: failingBot });
+    await expect(adapter.connect()).rejects.toThrow(/start.*rejected|409/);
+  });
+
   test("connect surfaces a token-validation failure synchronously (getMe handshake)", async () => {
     const f = fakeBot();
     const badBot: TelegramBotLike = {
