@@ -142,12 +142,12 @@ fresh → claimed (claimer holds lease) → completed (terminal: result cached f
 
 Rules:
 
-- `claim`: atomic compareAndSwap from `fresh|claim-expired` to `claimed`. The caller writes its `requestId`, `claimedAt`, and `leaseUntil = claimedAt + 60_000ms` into the DO's transactional storage. Returns one of FOUR terminal/non-terminal statuses to the caller:
+- `claim`: atomic compareAndSwap from `fresh|claim-expired` to `claimed`. The caller writes its `requestId`, `claimedAt`, and `leaseUntil = claimedAt + 15_000ms` (15s — sized so a crashed owner's lease expires within the 30s host invoke timeout, leaving room for a waiter to take over and run the handler within the same invoke window) into the DO's transactional storage. Returns one of FOUR terminal/non-terminal statuses to the caller:
   - `{ status: "fresh" }` — new owner, this isolate runs the handler.
   - `{ status: "in-progress", claimer: <other_requestId>, leaseUntil }` — loser; must poll via the wait protocol.
   - `{ status: "completed", result, statusCode }` — terminal cached success; return immediately to the caller without running the handler.
   - `{ status: "failed-permanent", error }` — terminal cached failure; return the cached error directly to the caller without running the handler. This is the **first-class wire response** for `failed-permanent`; loser/retry paths observe it via `claim` exactly the same way they observe `completed`.
-- **Heartbeat lease while running:** the running isolate calls `extendLease` every 30 seconds — atomic CAS that sets `leaseUntil = now + 60_000ms` IFF the current claimer's `requestId` matches. If the heartbeat fails (isolate crashed, evicted), the lease expires after 60s and another isolate can take over via the `claim-expired` transition.
+- **Heartbeat lease while running:** the running isolate calls `extendLease` every **5 seconds** — atomic CAS that sets `leaseUntil = now + 15_000ms` IFF the current claimer's `requestId` matches. If the heartbeat fails (isolate crashed, evicted), the lease expires within at most 15s and another isolate can take over via the `claim-expired` transition. Sized so reclaim is feasible inside the 30s host invoke timeout: a crashed owner's claim expires within 15s, the waiter's next polling tick (1s after expiry) atomically claims, and the new owner has at least 14s remaining of the invoke budget to run the handler. Handlers requiring longer than 14s end-to-end (including possible takeover overhead) MUST NOT be deployed; the L2 doc states this limit explicitly.
 - **Atomic completion (fail-closed on persistence failure):** `complete` is a single transaction that writes `{ status: "completed", result, statusCode, completedAt, ttlExpiresAt: now + 86400_000ms }` AND clears the claim. If the handler succeeded but `complete` fails (network error, DO transient), the isolate retries `complete` up to 3 times with backoff. **After 3 failures, the isolate returns `503 DEDUPE_PERSISTENCE_FAILED` to the caller WITHOUT serving the handler's result.** The instance is poisoned. The host-side adapter, on receiving this response, transitions the local handle to POISONED and the caller's `invoke()` rejects with `KoiError { code: "DEDUPE_PERSISTENCE_FAILED" }`. The handler's external side effects already happened — but no result is returned to the caller, and the next retry of the same `operationId` will see the still-active claim, wait for it to expire, and then re-run. Because the workload-class restriction (`assertIdempotent: true`) requires handler-level idempotency at side-effect targets, this re-run is safe. **There is no path where the adapter reports success without persisting a terminal record.**
 - **Atomic failure:** `fail` writes `{ status: "failed-permanent", error, failedAt, ttlExpiresAt: now + 86400_000ms }` for handler errors that the operator wants cached (e.g., validation failures with no retry semantics). The handler signals this via a special return shape `{ koi: { failed: true, error } }`. Default behavior is to NOT cache failures — the next retry runs the handler fresh.
 - **`failed-permanent` is a terminal state in BOTH protocols:** the `claim` endpoint returns it directly to retries that arrive after a permanent failure was cached, and the `waitForTerminal` polling protocol returns it to losers that were waiting when the owner committed a permanent failure. `waitForTerminal` polls the DO every 1 second (configurable) and exits as soon as it observes `completed` OR `failed-permanent` — these are the only TWO terminal states that end the wait. Polling timeout still produces a host-side `TIMEOUT` error; nothing about adding `failed-permanent` to the wire protocol changes the timeout behavior.
@@ -261,15 +261,16 @@ const HEARTBEAT_LUA = `
   end
 `;
 let lostLease = false;
+// Heartbeat MUST fire well before the 15s lease expires; 5s gives 3-of-3 standard tolerance.
 const heartbeat = setInterval(async () => {
-  const result = await kvCommand("EVAL", [HEARTBEAT_LUA, "1", claimKey, requestId, "60"]);
+  const result = await kvCommand("EVAL", [HEARTBEAT_LUA, "1", claimKey, requestId, "15"]);
   if (result === 0) {
     // We no longer own the claim. Some other isolate has taken it (lease expired and got reclaimed).
     // Stop the heartbeat and POISON ourselves — the in-flight handler must NOT commit results.
     lostLease = true;
     clearInterval(heartbeat);
   }
-}, 30_000);
+}, 5_000);
 
 try {
   const result = await handler({ payload, operationId, requestId });
@@ -789,8 +790,8 @@ export type DestroyOutcome =
 readonly destroy: () => Promise<Result<DestroyOutcome, KoiError>>;
 ```
 
-- `destroyed-clean`: no `invoke()` was in flight; remote DELETE returned 200/204 (or 404 confirmed by follow-up GET). Local handle gone, no possible residual side effects.
-- `destroyed-local-remote-indeterminate`: at least one `invoke()` was active when destroy fired; remote DELETE confirmed but in-flight remote work may still complete. Inflight count reported.
+- `destroyed-clean`: no `invoke()` was in flight when `destroy()` was called, **AND no prior `invoke()` on this instance ever entered TIMEOUT, ABORT, or POISON state at any point in the instance's lifetime**, AND remote DELETE returned 200/204 (or 404 confirmed by follow-up GET). Local handle gone, no possible residual side effects. Once an instance has any timeout/abort/poison event, `destroyed-clean` is **never** returned for that instance — the instance carries a sticky `remoteWorkPossiblyLive: true` flag that downgrades subsequent `destroy()` results to `destroyed-local-remote-indeterminate` automatically. This closes the dishonest case where a prior timeout's remote work could still be running at destroy time even with no current invoke in flight.
+- `destroyed-local-remote-indeterminate`: at least one `invoke()` was active when destroy fired, OR a prior `invoke()` had timed out/aborted/poisoned (sticky `remoteWorkPossiblyLive` flag); remote DELETE confirmed but in-flight remote work may still complete. The outcome's payload includes both `inflightCount` (current concurrent invokes) and `priorTimeoutOrAbort: boolean` (whether the sticky flag was the trigger).
 - `destroyed-local-remote-leaked`: at least one of the two paired DELETEs (Worker A or Worker B) returned a definitive failure status. The local handle is gone, but at least one provider artifact is **known to still exist**. The list of leaked artifact identifiers is in `providerArtifacts: readonly string[]` (always carries both names if both leaked, the leaked one if only one failed). **Write-before-return invariant:** orphan rows for ALL leaked artifacts are persisted to the SQLite ledger with `synchronous=FULL` and `wal_checkpoint(FULL)` BEFORE this outcome is returned. If the ledger write itself fails, `destroy()` returns `Result.err(KoiError { code: "ORPHAN_LEDGER_WRITE_FAILED" })` instead of a `DestroyOutcome`, mirroring the create-failure path.
 - `destroyed-local-remote-uncertain`: at least one DELETE call timed out or errored before any response. Whether the artifacts exist is unknown. Same write-before-return invariant; `providerArtifacts` lists every artifact whose state is uncertain.
 
@@ -799,7 +800,7 @@ readonly destroy: () => Promise<Result<DestroyOutcome, KoiError>>;
 
 Callers MUST read the result:
 - `Result.err` → unrecoverable instance bug; log + escalate.
-- `destroyed-clean` → fully safe to discard.
+- `destroyed-clean` → fully safe to discard. Only achievable when the instance has had no in-flight invoke at destroy time AND no prior timeout/abort/poison anywhere in its lifetime.
 - `destroyed-local-remote-indeterminate` → safe to discard local handle; downstream side effects may still arrive (idempotency at side-effect targets handles this).
 - `destroyed-local-remote-leaked` / `uncertain` → log every entry in `providerArtifacts` for operator visibility; orphan rows are in the ledger for each. Optionally `await` the next reconciliation pass to confirm cleanup.
 - The threat model is updated accordingly: "destroy reliably terminates locally; remote completion of in-flight work is not preventable on these providers and callers must design `invoke()` payloads to be idempotent or carry a unique request token the caller can deduplicate at side-effect targets".
