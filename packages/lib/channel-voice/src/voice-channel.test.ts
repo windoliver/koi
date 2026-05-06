@@ -1909,13 +1909,14 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
-  test("reused sessionId fences the prior turn's detached reply (round-43 high)", async () => {
-    // Round-43 high: a transport that reuses the same sessionId for a
-    // logically-new call (without an adapter disconnect) had no per-call
-    // incarnation. A delayed reply for call A on threadId "default"
-    // remained valid during call B on the same threadId. Per-turn id
-    // expiry on next-turn admission closes this: B's inbound expires A's
-    // turn id, so a detached reply tagged with A's id is rejected.
+  test("slow legitimate reply for a prior turn still delivers after next utterance arrives (round-47 high)", async () => {
+    // Round-47 high: round-43 added auto-expiry of prior turn id on
+    // next-utterance admission, but that dropped legitimate slow replies
+    // (turn A's tool/model finishes after turn B starts). The fix:
+    // turn invalidation is now driven only by the dispatch watchdog
+    // (handler hung past dispatchHandlerTimeoutMs), not by next-turn
+    // arrival. Hosts wanting strict barge-in semantics or sessionId-
+    // reuse safety should mint a unique sessionId per logical call.
     // let requires justification: harness state captured by callbacks
     let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
     const transport: VoiceTransport = {
@@ -1937,10 +1938,12 @@ describe("createVoiceChannel", () => {
       captured.push(msg);
     });
     await ch.connect();
-    // Turn A on shared sessionId.
+    // Turn A on shared sessionId. Slow tool/model work begins.
     listener?.("default", new Uint8Array([1]));
     await new Promise((r) => setTimeout(r, 30));
-    // Turn B on the SAME sessionId — admitting B expires A's turn id.
+    // Turn B arrives on the same sessionId BEFORE A's reply is built —
+    // common in real voice flows (user speaks again while agent is still
+    // computing). A's reply must NOT be auto-dropped.
     listener?.("default", new Uint8Array([2]));
     await new Promise((r) => setTimeout(r, 30));
     expect(captured.length).toBe(2);
@@ -1949,13 +1952,14 @@ describe("createVoiceChannel", () => {
     expect(inboundA).toBeDefined();
     expect(inboundB).toBeDefined();
     if (inboundA !== undefined && inboundB !== undefined) {
-      // Detached reply carrying turn A's id is fenced.
+      // Slow legitimate reply for turn A — must succeed even though B
+      // already arrived. (Previously rejected with VoicePoisonedSessionError
+      // due to over-eager next-turn auto-expiry.)
       const replyA = replyToVoiceInbound(inboundA, {
         threadId: "default",
         content: [{ kind: "text", text: "from-A" }],
       });
-      await expect(ch.send(replyA)).rejects.toBeInstanceOf(VoicePoisonedSessionError);
-      // Detached reply carrying turn B's id (the current turn) still works.
+      await ch.send(replyA);
       const replyB = replyToVoiceInbound(inboundB, {
         threadId: "default",
         content: [{ kind: "text", text: "from-B" }],

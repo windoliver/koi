@@ -488,10 +488,6 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
       if (evict !== undefined) expiredTurnIds.delete(evict);
     }
   };
-  // Most-recent turnId per sessionId. When the next turn for the same
-  // session is admitted, the prior turn's id is expired so any detached
-  // reply for the prior turn is rejected (closes the sessionId-reuse hole).
-  const sessionToCurrentTurnId = new Map<string, string>();
   // Per-turn fence. Inserted by the dispatch watchdog when a handler
   // exceeds dispatchHandlerTimeoutMs; checked by wrappedSend so a hung
   // handler that eventually wakes up cannot inject late audio into a
@@ -625,14 +621,18 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
             const turnToken: object = {};
             const collector: { readonly promises: Promise<unknown>[] } = { promises: [] };
             const capturedGen = connectGen;
-            // Per-turn nonce. Mint a fresh id and expire any prior turn
-            // for this session so detached replies tagged with the prior
-            // turnId cannot speak into this newer turn (closes the
-            // sessionId-reuse-without-disconnect hole).
+            // Per-turn nonce. Round-47 high: do NOT auto-expire the prior
+            // turn just because a new utterance arrived for the same
+            // sessionId — that drops legitimate slow tool/model replies
+            // (turn A's tool-call finishes after the user starts turn B).
+            // Turn invalidation is now driven only by the dispatch
+            // watchdog (handler hung past dispatchHandlerTimeoutMs) — an
+            // explicit, time-bound signal rather than implicit barge-in.
+            // Hosts wanting strict barge-in semantics or sessionId-reuse
+            // safety should mint a unique sessionId per logical call (the
+            // documented transport contract); the adapter cannot infer
+            // call boundaries from utterance ordering alone.
             const turnId = randomBytes(16).toString("hex");
-            const priorTurnId = sessionToCurrentTurnId.get(sessionId);
-            if (priorTurnId !== undefined) expireTurnId(priorTurnId);
-            sessionToCurrentTurnId.set(sessionId, turnId);
             inboundGenContext.run({ gen: capturedGen, turnToken, turnId, collector }, () => {
               handler({ sessionId, utterance, text });
             });
@@ -1020,10 +1020,6 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
       // this, a queued send could synthesize TTS and call
       // transport.sendUtterance() AFTER disconnect completes.
       connectGen++;
-      // Per-turn tracking is connection-scoped — drop it on disconnect so
-      // a reconnect starts with a clean slate (the connection-epoch fence
-      // and the per-turn nonce both protect post-reconnect anyway).
-      sessionToCurrentTurnId.clear();
       // Abort every in-flight TTS / transport call. Cooperative impls
       // reject promptly; non-cooperative impls may keep running, but
       // their results land in this (now-dead) generation.
