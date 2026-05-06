@@ -137,8 +137,11 @@ Rules:
 
 The shim handler:
 
+All dedupe keys are **fleet-namespaced** to prevent cross-tenant collision when multiple deployments share a DO namespace. The effective key is `${ownerId}:${operationId}`, NOT raw `operationId`. Two fleets reusing the same `operationId` value never contend on the same DO instance because their `ownerId` prefixes differ.
+
 ```js
-const stub = KOI_DEDUPE_DO.get(KOI_DEDUPE_DO.idFromName(operationId));
+const dedupeKey = `${ownerId}:${operationId}`;
+const stub = KOI_DEDUPE_DO.get(KOI_DEDUPE_DO.idFromName(dedupeKey));
 const claimResult = await stub.fetch("https://do/claim", {
   method: "POST",
   body: JSON.stringify({ operationId, requestId }),
@@ -169,30 +172,47 @@ The DO class implements `claim` atomically (single-threaded execution per object
 
 **Dedupe state machine** (parallels the Cloudflare DO design):
 
-The shim manages two keys per `operationId`:
-- `claim:${operationId}` — holds the active claimer's `requestId` with a 60-second TTL (heartbeat lease).
-- `result:${operationId}` — holds the cached result with a 24-hour TTL.
+All Vercel KV keys are **fleet-namespaced** with `ownerId` to prevent cross-tenant collision when multiple deployments share a KV instance. The shim manages three keys per `operationId`, all prefixed by `ownerId`:
 
-Plus a `failed:${operationId}` key for cached terminal failures (24h TTL).
+- `${ownerId}:claim:${operationId}` — holds the active claimer's `requestId` with a 60-second TTL (heartbeat lease).
+- `${ownerId}:result:${operationId}` — holds the cached result with a 24-hour TTL.
+- `${ownerId}:failed:${operationId}` — cached terminal failures (24h TTL).
+
+Two fleets reusing the same `operationId` value never contend because their key prefixes differ. The shim reads `ownerId` from a worker env var (`KOI_OWNER_ID`) injected at deploy time by the koi adapter, NOT from the request — clients cannot spoof a different owner.
 
 Atomic operations via Upstash Redis pipelined commands:
 
 ```js
-const claimKey = `claim:${operationId}`;
-const resultKey = `result:${operationId}`;
-const failedKey = `failed:${operationId}`;
+// All keys fleet-namespaced via ownerId from KOI_OWNER_ID env var (set by adapter at deploy)
+const ns = KOI_OWNER_ID; // injected at deploy time
+const claimKey = `${ns}:claim:${operationId}`;
+const resultKey = `${ns}:result:${operationId}`;
+const failedKey = `${ns}:failed:${operationId}`;
 
-// 1. Check terminal cache first (single MGET, atomic across the two keys)
-const cacheCheck = await kvCommand("MGET", [resultKey, failedKey]);
-if (cacheCheck[0]) return new Response(cacheCheck[0], { status: 200 });
-if (cacheCheck[1]) return new Response(cacheCheck[1], { status: 500 });
-
-// 2. Atomic claim with 60s lease
-const claim = await kvCommand("SET", [claimKey, requestId, "EX", "60", "NX"]);
-if (claim !== "OK") {
-  // Lost race; poll for result/failed keys until timeout
+// 1+2. Atomic check-or-claim via single Lua EVAL (no race window between check and claim).
+// Returns one of: "result:<json>" | "failed:<json>" | "claim:fresh" | "claim:in-progress:<requestId>"
+const CHECK_OR_CLAIM_LUA = `
+  local r = redis.call('GET', KEYS[1])
+  if r then return 'result:'..r end
+  local f = redis.call('GET', KEYS[2])
+  if f then return 'failed:'..f end
+  local c = redis.call('GET', KEYS[3])
+  if c then return 'claim:in-progress:'..c end
+  redis.call('SET', KEYS[3], ARGV[1], 'EX', '60')
+  return 'claim:fresh'
+`;
+const checkResult = await kvCommand("EVAL", [CHECK_OR_CLAIM_LUA, "3", resultKey, failedKey, claimKey, requestId]);
+if (checkResult.startsWith("result:")) {
+  return new Response(checkResult.slice("result:".length), { status: 200 });
+}
+if (checkResult.startsWith("failed:")) {
+  return new Response(checkResult.slice("failed:".length), { status: 500 });
+}
+if (checkResult.startsWith("claim:in-progress:")) {
+  // Another isolate owns it; poll for terminal state
   return await waitForTerminal(resultKey, failedKey, timeoutMs);
 }
+// checkResult === "claim:fresh" — we own the operation
 
 // 3. Spawn heartbeat: every 30s, ownership-checked TTL extension via Lua EVAL
 //    Lua: extend TTL ONLY IF the current value still matches our requestId.
@@ -622,7 +642,11 @@ Because `destroy()` and timeout/abort can leave remote work in flight (see `Dest
 
 - **The dedupe is a best-effort cache, not an exactly-once guarantee.** The shim caches `requestId → { status, result, expiresAt }` in a per-isolate in-memory `Map`. Cloudflare and Vercel do not pin retries to the same isolate; isolates can also be evicted at any time. Therefore a retry can land on a fresh isolate where the dedupe entry does not exist, and the handler runs again.
 - **Contract claim:** the adapter does NOT promise exactly-once execution. The contract is "if the retry lands on the same warm isolate within the cache window, dedupe takes effect; otherwise the handler may run twice." This is documented at the top of `docs/L2/sandbox-cloudflare.md` and `sandbox-vercel.md` so callers cannot mistake the mechanism for a stronger guarantee.
-- **Defense-in-depth idempotency at downstream targets (recommended, not required):** the adapter's durable dedupe store provides cross-instance mechanical enforcement, so handler-level idempotency at downstream side-effect targets is no longer the primary correctness mechanism. However, defense-in-depth is recommended for high-stakes operations: a downstream API that ALSO accepts `operationId` as an idempotency key adds a second layer of protection against unforeseen adapter bugs. **`requestId` MUST NOT be used for any dedupe purpose** — neither the durable store nor the downstream target should key on it.
+- **Downstream idempotency at side-effect targets is REQUIRED (not recommended).** The adapter's durable dedupe store handles the happy path AND most failure paths, but several documented failure paths still allow handler effects to commit before the operation is durably retried:
+  - Cloudflare DO `complete` retry exhaustion (`DEDUPE_PERSISTENCE_FAILED` after 3 attempts).
+  - Vercel KV lease loss mid-handler (`LEASE_LOST`) and ownership loss at commit (`OWNERSHIP_LOST`).
+  - Result exceeds `MAX_DEDUPE_RESULT_BYTES` after handler commit.
+  In every case the handler's external side effects already happened, the next retry will re-run the handler, and the only remaining defense is downstream idempotency keyed on `operationId`. **The contract therefore mandates** that operators implement downstream idempotency at every side-effect target the handler touches — keyed on `operationId`. This is documented as a hard requirement in `docs/L2/sandbox-cloudflare.md` and `sandbox-vercel.md`, and the `assertIdempotent: true` flag's documentation explicitly includes "I have implemented downstream idempotency at every side-effect target keyed on `operationId`" as part of the operator's certification. **`requestId` MUST NOT be used for any dedupe purpose** — neither the durable store nor the downstream target should key on it.
 - The shim caches entries for **300 seconds** after the original invocation completes (or fails). Expiration is wall-clock; entries are pruned lazily on each invoke.
 - On `POST /invoke` arrival:
   - **Unknown ID:** execute the handler, store result, return it.
