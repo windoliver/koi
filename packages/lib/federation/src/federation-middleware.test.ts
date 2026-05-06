@@ -360,6 +360,210 @@ describe("createFederationMiddleware", () => {
     resolveExecute?.({ output: "late" });
   });
 
+  test("forwards session/turn principal when principalPolicy=forward", async () => {
+    // Regression for #1372 review-loop pass-2 rounds 1-3: cross-zone
+    // execution forwards a principal envelope ONLY when the remote is
+    // explicitly opted-in via remoteCapabilities[zone].principalPolicy
+    // = "forward". This guards against principal spoofing on
+    // unauthenticated transports.
+    const recorded: Record<string, unknown>[] = [];
+    const callImpl = async <T>(
+      _method: string,
+      params: Record<string, unknown>,
+    ): Promise<Result<T, KoiError>> => {
+      recorded.push(params);
+      return { ok: true, value: { output: "ok" } as T };
+    };
+    const transport: NexusTransport = { call: callImpl, close: () => {} };
+    const mw = createFederationMiddleware({
+      localZoneId: ZA,
+      remoteTransports: new Map([["zone-b", transport]]),
+      remoteCapabilities: new Map([["zone-b", { understandsPrincipalFields: true }]]),
+      principalForwarding: new Map([["zone-b", "forward"]]),
+      tenantIdResolver: (c) => {
+        const t = (c.session.metadata as { tenant?: string } | undefined)?.tenant;
+        return typeof t === "string" ? t : undefined;
+      },
+    });
+
+    const ctx: TurnContext = {
+      session: {
+        agentId: "agent-x",
+        sessionId: sessionId("s-99"),
+        runId: runId("r-99"),
+        conversationId: "conv-1",
+        userId: "alice",
+        channelId: "@koi/channel-telegram",
+        metadata: { tenant: "acme" },
+      },
+      turnIndex: 3,
+      turnId: `${runId("r-99")}-3` as TurnContext["turnId"],
+      messages: [],
+      metadata: { targetZoneId: ZB, traceId: "trace-1" },
+    };
+
+    await mw.wrapToolCall?.(ctx, { toolId: "bash", input: {} }, localHandler);
+
+    const exec = recorded[0];
+    expect(exec).toBeDefined();
+    expect(exec?.["principalPolicy"]).toBe("forward");
+    const principal = exec?.["principal"] as Record<string, unknown> | undefined;
+    expect(principal).toBeDefined();
+    expect(principal?.["agentId"]).toBe("agent-x");
+    expect(principal?.["sessionId"]).toBe("s-99");
+    expect(principal?.["runId"]).toBe("r-99");
+    expect(principal?.["conversationId"]).toBe("conv-1");
+    expect(principal?.["userId"]).toBe("alice");
+    expect(principal?.["channelId"]).toBe("@koi/channel-telegram");
+    expect(principal?.["turnIndex"]).toBe(3);
+    expect(principal?.["turnId"]).toBe("r-99-3");
+    // Allowlist: session.metadata and ctx.metadata are NOT forwarded
+    // (review-loop pass-2 round 6 — they may carry trace context,
+    // tenant hints, or credentials accidentally stored in metadata).
+    expect(principal?.["sessionMetadata"]).toBeUndefined();
+    expect(principal?.["turnMetadata"]).toBeUndefined();
+    // tenantId claim is required and explicit (review-loop pass-2 round 9).
+    expect(principal?.["tenantId"]).toBe("acme");
+  });
+
+  test("rejects construction when principalForwarding=forward but no tenantIdResolver is provided", () => {
+    // Regression for #1372 review-loop pass-2 round 9: forwarding the
+    // local principal without a tenant claim collapses tenant isolation
+    // — the remote authorizes by agent/session ids that may collide
+    // across tenants. Construction must fail-fast unless an explicit
+    // tenantIdResolver is supplied.
+    const transport: NexusTransport = { call: async () => ({}) as never, close: () => {} };
+    expect(() =>
+      createFederationMiddleware({
+        localZoneId: ZA,
+        remoteTransports: new Map([["zone-b", transport]]),
+        remoteCapabilities: new Map([["zone-b", { understandsPrincipalFields: true }]]),
+        principalForwarding: new Map([["zone-b", "forward"]]),
+        // No tenantIdResolver → must throw.
+      }),
+    ).toThrow(/tenantIdResolver/);
+  });
+
+  test("aborts the call when tenantIdResolver returns no tenant for a forward zone", async () => {
+    // Regression for #1372 review-loop pass-2 round 9: even with a
+    // resolver configured, an empty/undefined tenant for THIS request
+    // means the operator cannot scope the principal — fail closed
+    // rather than forward an unscoped envelope.
+    const callImpl = async <T>(): Promise<Result<T, KoiError>> => {
+      throw new Error("transport must not be invoked");
+    };
+    const transport: NexusTransport = { call: callImpl, close: () => {} };
+    const mw = createFederationMiddleware({
+      localZoneId: ZA,
+      remoteTransports: new Map([["zone-b", transport]]),
+      remoteCapabilities: new Map([["zone-b", { understandsPrincipalFields: true }]]),
+      principalForwarding: new Map([["zone-b", "forward"]]),
+      tenantIdResolver: () => undefined,
+    });
+
+    await expect(
+      mw.wrapToolCall?.(makeCtx({ targetZoneId: ZB }), baseRequest, localHandler),
+    ).rejects.toThrow(/tenantIdResolver returned no tenantId/);
+  });
+
+  test("default zone_execute payload is legacy v1 shape (no principalPolicy, no principal)", async () => {
+    // Regression for #1372 review-loop pass-2 rounds 3 & 5: principal
+    // forwarding is opt-in. With no capability advertised, the wire
+    // payload must be the exact legacy v1 shape so older receivers
+    // that strict-validate request shape can still accept the call.
+    const recorded: Record<string, unknown>[] = [];
+    const callImpl = async <T>(
+      _method: string,
+      params: Record<string, unknown>,
+    ): Promise<Result<T, KoiError>> => {
+      recorded.push(params);
+      return { ok: true, value: { output: "ok" } as T };
+    };
+    const transport: NexusTransport = { call: callImpl, close: () => {} };
+    const mw = createFederationMiddleware({
+      localZoneId: ZA,
+      remoteTransports: new Map([["zone-b", transport]]),
+      // No remoteCapabilities → no new fields on the wire
+    });
+
+    await mw.wrapToolCall?.(makeCtx({ targetZoneId: ZB }), baseRequest, localHandler);
+
+    const exec = recorded[0];
+    expect(exec).toBeDefined();
+    expect(exec?.["principalPolicy"]).toBeUndefined();
+    expect(exec?.["principal"]).toBeUndefined();
+    // Sanity: legacy correlation tuple is still present.
+    expect(exec?.["protocolVersion"]).toBe(1);
+    expect(exec?.["callId"]).toBeDefined();
+    expect(exec?.["originZoneId"]).toBe(ZA);
+  });
+
+  test("when remote advertises understandsPrincipalFields, policy=omit is sent (no principal envelope)", async () => {
+    const recorded: Record<string, unknown>[] = [];
+    const callImpl = async <T>(
+      _method: string,
+      params: Record<string, unknown>,
+    ): Promise<Result<T, KoiError>> => {
+      recorded.push(params);
+      return { ok: true, value: { output: "ok" } as T };
+    };
+    const transport: NexusTransport = { call: callImpl, close: () => {} };
+    const mw = createFederationMiddleware({
+      localZoneId: ZA,
+      remoteTransports: new Map([["zone-b", transport]]),
+      remoteCapabilities: new Map([["zone-b", { understandsPrincipalFields: true }]]),
+      // No principalForwarding entry → defaults to "omit"
+    });
+
+    await mw.wrapToolCall?.(makeCtx({ targetZoneId: ZB }), baseRequest, localHandler);
+
+    expect(recorded[0]?.["principalPolicy"]).toBe("omit");
+    expect(recorded[0]?.["principal"]).toBeUndefined();
+  });
+
+  test("rejects construction when principalForwarding=forward but remote did not advertise support", () => {
+    // Regression for #1372 review-loop pass-2 round 8: enabling
+    // forwarding for a peer that hasn't advertised
+    // understandsPrincipalFields would silently break delegated calls
+    // against legacy strict receivers. Fail-fast at construction.
+    const transport: NexusTransport = { call: async () => ({}) as never, close: () => {} };
+    expect(() =>
+      createFederationMiddleware({
+        localZoneId: ZA,
+        remoteTransports: new Map([["zone-b", transport]]),
+        principalForwarding: new Map([["zone-b", "forward"]]),
+        // No remoteCapabilities → not advertised → must throw.
+      }),
+    ).toThrow(/has not advertised understandsPrincipalFields/);
+  });
+
+  test("remote-advertised capability alone does NOT release principal — local principalForwarding is required", async () => {
+    // Regression for #1372 review-loop pass-2 round 7: a peer that
+    // advertises understandsPrincipalFields must NOT receive identity
+    // unless principalForwarding explicitly trusts it.
+    const recorded: Record<string, unknown>[] = [];
+    const callImpl = async <T>(
+      _method: string,
+      params: Record<string, unknown>,
+    ): Promise<Result<T, KoiError>> => {
+      recorded.push(params);
+      return { ok: true, value: { output: "ok" } as T };
+    };
+    const transport: NexusTransport = { call: callImpl, close: () => {} };
+    const mw = createFederationMiddleware({
+      localZoneId: ZA,
+      remoteTransports: new Map([["zone-b", transport]]),
+      // Peer claims it can handle principal fields...
+      remoteCapabilities: new Map([["zone-b", { understandsPrincipalFields: true }]]),
+      // ...but operator has NOT trusted it for identity release.
+    });
+
+    await mw.wrapToolCall?.(makeCtx({ targetZoneId: ZB }), baseRequest, localHandler);
+
+    expect(recorded[0]?.["principal"]).toBeUndefined();
+    expect(recorded[0]?.["principalPolicy"]).toBe("omit");
+  });
+
   test("when remote does NOT advertise cancel capability, abort still rejects but no cancel RPC is sent", async () => {
     // Regression for #1372 review-loop round 8: dispatching zone_cancel
     // to a peer with no receiver would falsely tell the caller "cancelled"

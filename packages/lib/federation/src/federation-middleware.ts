@@ -8,16 +8,43 @@ import type { NexusTransport } from "@koi/nexus-client";
 import { FEDERATION_PROTOCOL_VERSION } from "./types.js";
 
 /**
- * Capabilities advertised by a remote peer. Used to gate optional v1
- * features (e.g. `federation.zone_cancel`) so unsupported peers do not
- * appear "cancellable" when no receiver exists. If a per-zone entry is
- * absent, defaults are conservative: cancel is OFF, since dispatching a
- * cancel RPC to a peer that does not implement it would still leave the
- * remote work running while telling the caller "indeterminate".
+ * How the local origin's principal (agent/session/turn identity) is
+ * forwarded on `federation.zone_execute`.
+ *
+ * - `"omit"` (default, safest): no principal envelope is sent. The
+ *   remote zone is expected to authorize delegated calls under its
+ *   own service principal. Use whenever the remote-zone transport is
+ *   not mutually authenticated, or until cryptographically signed
+ *   principal envelopes land (#1410).
+ * - `"forward"`: send the unsigned principal envelope. ONLY safe when
+ *   the transport itself authenticates the origin zone (e.g. mTLS or
+ *   a Nexus-signed channel) AND the remote zone explicitly trusts
+ *   forwarded principals from this origin. An unprotected `"forward"`
+ *   lets a compromised or misconfigured origin spoof tenant/user
+ *   identity to the remote.
+ */
+export type FederationPrincipalPolicy = "omit" | "forward";
+
+/**
+ * Capabilities advertised by a remote peer (controls what the wire
+ * protocol *can* do). Discovery of these may be peer-controlled, so
+ * they MUST NOT, on their own, authorize the release of identity data
+ * to that peer. Identity-release decisions live in
+ * `FederationMiddlewareConfig.principalForwarding`, which is a local
+ * trust decision the operator makes per zone.
  */
 export interface FederationRemoteCapabilities {
   /** Remote implements `federation.zone_cancel`. */
   readonly cancel?: boolean;
+  /**
+   * Remote receiver understands the optional `principalPolicy` /
+   * `principal` fields on `federation.zone_execute`. When set, this
+   * package will include the policy field on the wire (so future
+   * receivers can validate; an `"omit"` policy still produces no
+   * principal envelope). When unset, the legacy v1 payload shape
+   * is sent unchanged for wire compatibility.
+   */
+  readonly understandsPrincipalFields?: boolean;
 }
 
 /** Config for createFederationMiddleware. */
@@ -31,12 +58,49 @@ export interface FederationMiddlewareConfig {
    * rejects with `FederationAbortError`. When `cancel` is unset/false,
    * abort still rejects locally but the error message and `kind` make it
    * clear cancellation is best-effort/unsupported, so callers do not
-   * assume the remote stopped.
+   * assume the remote stopped. NOTE: remote capabilities describe what
+   * the wire CAN do — they do NOT authorize identity release. See
+   * `principalForwarding` for that.
    */
   readonly remoteCapabilities?: ReadonlyMap<string, FederationRemoteCapabilities>;
+  /**
+   * **Local** trust decision: per-remote-zone policy for forwarding
+   * the caller's principal envelope. This is operator-controlled, NOT
+   * peer-advertised. A peer cannot opt itself into receiving identity
+   * by advertising capability bits — `principalForwarding` must
+   * explicitly list the zone with `"forward"`.
+   *
+   * Defaults to `"omit"` for any zone not present in the map. Set to
+   * `"forward"` ONLY for zones reached over a transport that
+   * authenticates the origin (mTLS / signed Nexus channel) AND whose
+   * receiver is independently trusted to handle the principal.
+   * Cryptographically signed envelopes are deferred to #1410.
+   */
+  readonly principalForwarding?: ReadonlyMap<string, FederationPrincipalPolicy>;
+  /**
+   * Resolves the tenant identifier for the current call. **Required**
+   * whenever any zone in `principalForwarding` is set to `"forward"`.
+   *
+   * Tenant isolation cannot rely on `agentId`/`sessionId`/`userId`
+   * alone — those identifiers may be tenant-scoped in the local zone
+   * but collide across tenants when re-evaluated by a remote. The
+   * forwarded principal therefore carries an explicit `tenantId`
+   * claim sourced via this resolver. Returning `undefined` or an empty
+   * string for a `"forward"` zone aborts the call with a structured
+   * error so callers do not silently leak across tenant boundaries.
+   *
+   * The resolver receives the same `ctx` shape passed to
+   * `KoiMiddleware.wrapToolCall` so operators can pull tenant from
+   * wherever it actually lives in their deployment (session bag,
+   * channel metadata, gateway-injected ctx field, etc.).
+   */
+  readonly tenantIdResolver?: (ctx: TenantResolverContext) => string | undefined;
   /** Optional callback invoked when a tool call is delegated to a remote zone. */
   readonly onDelegated?: (zoneId: string, request: ToolRequest) => void;
 }
+
+/** Subset of MiddlewareContext exposed to tenantIdResolver. */
+export type TenantResolverContext = Parameters<NonNullable<KoiMiddleware["wrapToolCall"]>>[0];
 
 /**
  * Creates a KoiMiddleware that routes cross-zone tool calls.
@@ -49,7 +113,41 @@ export interface FederationMiddlewareConfig {
  * 5. Otherwise → routes via `transport.call("federation.zone_execute", ...)`
  */
 export function createFederationMiddleware(config: FederationMiddlewareConfig): KoiMiddleware {
-  const { localZoneId, remoteTransports, remoteCapabilities, onDelegated } = config;
+  const {
+    localZoneId,
+    remoteTransports,
+    remoteCapabilities,
+    principalForwarding,
+    tenantIdResolver,
+    onDelegated,
+  } = config;
+
+  // Fail-fast: principalForwarding="forward" requires (a) the remote to
+  // advertise understandsPrincipalFields=true so the wire is compatible
+  // with legacy receivers, AND (b) a tenantIdResolver so the forwarded
+  // principal carries an explicit tenant claim. Without (b), forwarded
+  // identity collapses tenant isolation: the remote authorizes against
+  // agent/session/user IDs that may collide across tenants, and we
+  // deliberately strip session.metadata (which often carries the only
+  // tenant hint) for over-the-wire safety. Phase 3 baseline therefore
+  // requires the operator to source tenant explicitly. Cryptographically
+  // signed envelopes that carry tenant in a verifiable claim land in #1410.
+  if (principalForwarding !== undefined) {
+    for (const [zone, policy] of principalForwarding.entries()) {
+      if (policy !== "forward") continue;
+      const understands = remoteCapabilities?.get(zone)?.understandsPrincipalFields === true;
+      if (!understands) {
+        throw new Error(
+          `createFederationMiddleware: principalForwarding["${zone}"] is "forward" but the remote has not advertised understandsPrincipalFields=true. Both must be set together so the wire payload is compatible with the remote receiver.`,
+        );
+      }
+      if (tenantIdResolver === undefined) {
+        throw new Error(
+          `createFederationMiddleware: principalForwarding["${zone}"] is "forward" but no tenantIdResolver is configured. Forwarded principals must carry an explicit tenantId claim — without one, multi-tenant deployments lose tenant isolation across the federation boundary. Provide tenantIdResolver, or use principalForwarding="omit" until signed envelopes (#1410) land.`,
+        );
+      }
+    }
+  }
 
   return {
     name: "koi:federation",
@@ -152,12 +250,65 @@ export function createFederationMiddleware(config: FederationMiddlewareConfig): 
         signal.addEventListener("abort", onAbort, { once: true });
       });
 
-      // Forward the full invocation envelope so the remote zone can enforce
-      // the same policy/approval semantics and lifecycle guarantees as the
-      // local path. AbortSignal cannot serialize over JSON-RPC; bridge it
-      // via a best-effort federation.zone_cancel and race the remote
-      // execute against a local abort promise so cancellation actually
-      // unblocks the caller even if the remote ignores the cancel RPC.
+      // Identity-release is a LOCAL trust decision (not peer-advertised).
+      // The principalForwarding map is operator-controlled — a peer
+      // cannot opt itself into receiving identity by advertising
+      // capability bits. The remote-advertised
+      // `understandsPrincipalFields` capability only controls whether
+      // the policy field appears on the wire (for legacy receivers).
+      const principalPolicy: FederationPrincipalPolicy =
+        principalForwarding?.get(targetZoneId) ?? "omit";
+      const sendPrincipalFields =
+        remoteCapabilities?.get(targetZoneId)?.understandsPrincipalFields === true ||
+        principalPolicy === "forward";
+      // Strict allowlist: forward ONLY the identity claims the remote
+      // needs to re-evaluate authorization + audit. Do NOT forward
+      // session.metadata or ctx.metadata wholesale — those are generic
+      // JsonObjects and may carry trace context, tenant hints,
+      // approval state, or credentials accidentally stashed in metadata.
+      // Sending them across the federation boundary widens the trust
+      // surface beyond what authorization actually requires.
+      // tenantIdResolver presence is checked at construction time when
+      // any zone is "forward"; here we additionally require the resolved
+      // value to be a non-empty string per call. A missing/empty tenant
+      // at call time means the operator's resolver cannot identify the
+      // tenant for THIS request — fail closed rather than forward an
+      // unscoped principal, which would let the remote authorize the
+      // call under whichever tenant happens to own the agent/session id
+      // on its side.
+      let principal:
+        | {
+            agentId: string;
+            sessionId: string;
+            runId: string | undefined;
+            conversationId: string | undefined;
+            userId: string | undefined;
+            channelId: string | undefined;
+            turnId: string;
+            turnIndex: number;
+            tenantId: string;
+          }
+        | undefined;
+      if (principalPolicy === "forward") {
+        const tenantId = tenantIdResolver?.(ctx);
+        if (typeof tenantId !== "string" || tenantId.length === 0) {
+          throw new Error(
+            `Federation principal forwarding aborted: tenantIdResolver returned no tenantId for tool=${request.toolId} → zone="${targetZoneId}". A forwarded principal must carry an explicit tenant claim; refusing to send an unscoped principal across the federation boundary.`,
+          );
+        }
+        principal = {
+          agentId: ctx.session.agentId,
+          sessionId: ctx.session.sessionId,
+          runId: ctx.session.runId,
+          conversationId: ctx.session.conversationId,
+          userId: ctx.session.userId,
+          channelId: ctx.session.channelId,
+          turnId: ctx.turnId,
+          turnIndex: ctx.turnIndex,
+          tenantId,
+        };
+      }
+
       const callPromise = remoteTransport.call<ToolResponse>("federation.zone_execute", {
         protocolVersion: FEDERATION_PROTOCOL_VERSION,
         toolId: request.toolId,
@@ -166,6 +317,8 @@ export function createFederationMiddleware(config: FederationMiddlewareConfig): 
         callId: federationCallId,
         targetZoneId,
         originZoneId: localZoneId,
+        ...(sendPrincipalFields ? { principalPolicy } : {}),
+        ...(principal !== undefined ? { principal } : {}),
       });
 
       // Re-check after listener+dispatch in case the signal flipped during

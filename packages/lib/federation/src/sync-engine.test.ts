@@ -257,6 +257,278 @@ describe("createSyncEngine", () => {
     expect(engine.getHealth("zone-b")?.consecutiveFailures).toBe(0);
   });
 
+  test("hung remote does not block syncs on healthy peers; eventually counts toward offline", async () => {
+    // Regression for #1372 review-loop pass-2 round 1: a remote whose
+    // fetchDelta never resolves must NOT freeze replication for other
+    // zones. Per-zone fetch timeout converts the hang into a counted
+    // failure for the hung zone alone.
+    const hungClient: SyncClient = {
+      fetchDelta: () => new Promise(() => {}), // never resolves
+      publishEvents: async () => ({ ok: true, value: undefined }),
+    };
+    const okEvent: FederationSyncEvent = {
+      kind: "test",
+      originZoneId: zoneId("zone-ok"),
+      sequence: 1,
+      data: {},
+      emittedAt: 1,
+    };
+    const okClient: SyncClient = {
+      fetchDelta: async () => ({ ok: true, value: [okEvent] }),
+      publishEvents: async () => ({ ok: true, value: undefined }),
+    };
+    const engine = createSyncEngine({
+      localZoneId: ZA,
+      remoteClients: new Map([
+        ["zone-hung", hungClient],
+        ["zone-ok", okClient],
+      ]),
+      pollIntervalMs: 60_000,
+      offlineAfterFailures: 1,
+      fetchTimeoutMs: 30, // tight timeout so the test is fast
+    });
+    engines.push(engine);
+
+    const received: FederationSyncEvent[] = [];
+    engine.onEvent((e) => received.push(e));
+
+    await engine.sync();
+    expect(received).toHaveLength(1);
+    // Healthy peer made progress.
+    expect(engine.getCursor("zone-ok")?.lastSequence).toBe(1);
+    // Hung peer was timed out and counted toward offline.
+    expect(engine.getHealth("zone-hung")?.status).toBe("offline");
+  });
+
+  test("event log is bounded when cap configured; truncated count is exposed", async () => {
+    // Regression for #1372 review-loop pass-2 rounds 1-2: replicated
+    // event logs grow unbounded by default. Opting in to a finite
+    // eventLogMaxPerZone drops oldest events AND records the dropped
+    // count via getTruncatedCount() so callers can detect the gap.
+    let next = 1;
+    const client: SyncClient = {
+      fetchDelta: async () => ({ ok: true, value: [evt(next++)] }),
+      publishEvents: async () => ({ ok: true, value: undefined }),
+    };
+    const engine = createSyncEngine({
+      localZoneId: ZA,
+      remoteClients: new Map([["zone-b", client]]),
+      pollIntervalMs: 60_000,
+      offlineAfterFailures: 5,
+      eventLogMaxPerZone: 2,
+    });
+    engines.push(engine);
+
+    await engine.sync(); // seq 1
+    await engine.sync(); // seq 2
+    await engine.sync(); // seq 3 — evicts 1
+    await engine.sync(); // seq 4 — evicts 2
+
+    const log = engine.getEventLog("zone-b");
+    expect(log.map((e) => e.sequence)).toEqual([3, 4]);
+    expect(engine.getTruncatedCount("zone-b")).toBe(2);
+  });
+
+  test("default event log is unbounded; truncated count stays at 0", async () => {
+    // Regression for #1372 review-loop pass-2 round 2: default behavior
+    // must NOT silently destroy history. Opt-in only.
+    let next = 1;
+    const client: SyncClient = {
+      fetchDelta: async () => ({ ok: true, value: [evt(next++)] }),
+      publishEvents: async () => ({ ok: true, value: undefined }),
+    };
+    const engine = createSyncEngine({
+      localZoneId: ZA,
+      remoteClients: new Map([["zone-b", client]]),
+      pollIntervalMs: 60_000,
+      offlineAfterFailures: 5,
+      // eventLogMaxPerZone NOT set → unbounded
+    });
+    engines.push(engine);
+
+    for (let i = 0; i < 10; i++) await engine.sync();
+
+    expect(engine.getEventLog("zone-b")).toHaveLength(10);
+    expect(engine.getTruncatedCount("zone-b")).toBe(0);
+  });
+
+  test("rejects config where outstandingFetchMaxAgeMs < fetchTimeoutMs (would reintroduce overlap)", () => {
+    // Regression for #1372 review-loop pass-2 round 6: a misconfig
+    // where outstandingFetchMaxAgeMs is shorter than fetchTimeoutMs
+    // would evict outstanding entries before the original times out,
+    // reintroducing overlapping RPCs. Must fail-fast at construction.
+    expect(() =>
+      createSyncEngine({
+        localZoneId: ZA,
+        remoteClients: new Map(),
+        pollIntervalMs: 60_000,
+        offlineAfterFailures: 3,
+        fetchTimeoutMs: 1000,
+        outstandingFetchMaxAgeMs: 500, // < fetchTimeoutMs
+      }),
+    ).toThrow(/outstandingFetchMaxAgeMs.*must be >= fetchTimeoutMs/);
+  });
+
+  test("rejects non-positive fetchTimeoutMs", () => {
+    expect(() =>
+      createSyncEngine({
+        localZoneId: ZA,
+        remoteClients: new Map(),
+        pollIntervalMs: 60_000,
+        offlineAfterFailures: 3,
+        fetchTimeoutMs: 0,
+      }),
+    ).toThrow(/fetchTimeoutMs/);
+    expect(() =>
+      createSyncEngine({
+        localZoneId: ZA,
+        remoteClients: new Map(),
+        pollIntervalMs: 60_000,
+        offlineAfterFailures: 3,
+        fetchTimeoutMs: Number.POSITIVE_INFINITY,
+      }),
+    ).toThrow(/fetchTimeoutMs/);
+  });
+
+  test("stale outstanding fetch beyond outstandingFetchMaxAgeMs marks zone offline (no replacement RPC)", async () => {
+    // Regression for #1372 review-loop pass-2 rounds 3+5+7: a leaked
+    // never-settling fetch must NOT trigger a replacement RPC (would
+    // overlap with the original on the remote since SyncClient has no
+    // cancel hook in v1). Instead, the zone is marked offline so no
+    // further fetches dispatch until something else clears state
+    // (process restart, future sync_fetch_delta capability with
+    // server-side fetchId dedup — #1410).
+    let fetchCalls = 0;
+    const client: SyncClient = {
+      fetchDelta: async () => {
+        fetchCalls++;
+        await new Promise<void>(() => {}); // never settles
+        return { ok: true, value: [] };
+      },
+      publishEvents: async () => ({ ok: true, value: undefined }),
+    };
+    const engine = createSyncEngine({
+      localZoneId: ZA,
+      remoteClients: new Map([["zone-b", client]]),
+      pollIntervalMs: 60_000,
+      offlineAfterFailures: 5,
+      fetchTimeoutMs: 10,
+      outstandingFetchMaxAgeMs: 30,
+    });
+    engines.push(engine);
+
+    await engine.sync(); // first call hangs
+    expect(fetchCalls).toBe(1);
+
+    await engine.sync(); // young outstanding — skip
+    expect(fetchCalls).toBe(1);
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    await engine.sync(); // stale outstanding → mark offline, do NOT dispatch
+    expect(fetchCalls).toBe(1);
+    expect(engine.getHealth("zone-b")?.status).toBe("offline");
+
+    // Subsequent syncs against an offline zone are still no-ops.
+    await engine.sync();
+    expect(fetchCalls).toBe(1);
+  });
+
+  test("eventual settlement of leaked fetch clears slot, allowing recovery on next sync", async () => {
+    // Regression for #1372 review-loop pass-2 round 7: a leaked fetch
+    // marks the zone offline, but if it eventually does settle, the
+    // tokenized .finally must release the slot so a fresh fetch can
+    // run on the next sync (recovery path without overlap risk).
+    let fetchCalls = 0;
+    let resolveA: (() => void) | undefined;
+    let resolveB: (() => void) | undefined;
+    const client: SyncClient = {
+      fetchDelta: async () => {
+        fetchCalls++;
+        if (fetchCalls === 1) {
+          await new Promise<void>((res) => {
+            resolveA = res;
+          });
+          return { ok: true, value: [] };
+        }
+        await new Promise<void>((res) => {
+          resolveB = res;
+        });
+        return { ok: true, value: [] };
+      },
+      publishEvents: async () => ({ ok: true, value: undefined }),
+    };
+    const engine = createSyncEngine({
+      localZoneId: ZA,
+      remoteClients: new Map([["zone-b", client]]),
+      pollIntervalMs: 60_000,
+      offlineAfterFailures: 5,
+      fetchTimeoutMs: 10,
+      outstandingFetchMaxAgeMs: 30,
+    });
+    engines.push(engine);
+
+    await engine.sync(); // A times out, slot held
+    expect(fetchCalls).toBe(1);
+
+    await new Promise((r) => setTimeout(r, 50));
+    await engine.sync(); // stale → offline, slot kept, no replacement
+    expect(fetchCalls).toBe(1);
+    expect(engine.getHealth("zone-b")?.status).toBe("offline");
+
+    // A eventually settles — its tokenized .finally clears the slot.
+    resolveA?.();
+    await new Promise((r) => setTimeout(r, 5));
+
+    await engine.sync(); // slot cleared → fresh fetch B dispatched
+    expect(fetchCalls).toBe(2);
+
+    resolveB?.();
+  });
+
+  test("hung remote does not stack overlapping fetchDelta calls across sync cycles", async () => {
+    // Regression for #1372 review-loop pass-2 round 2: a timed-out
+    // fetchDelta is abandoned locally but still runs remotely. The
+    // engine must NOT launch another fetchDelta on the next sync cycle
+    // until the prior one settles, otherwise concurrent RPCs accumulate
+    // unboundedly against a degraded peer.
+    let fetchCalls = 0;
+    let releaseFirst: (() => void) | undefined;
+    const client: SyncClient = {
+      fetchDelta: async () => {
+        fetchCalls++;
+        // Hold the first call open until we explicitly release it.
+        await new Promise<void>((res) => {
+          releaseFirst = res;
+        });
+        return { ok: true, value: [] };
+      },
+      publishEvents: async () => ({ ok: true, value: undefined }),
+    };
+    const engine = createSyncEngine({
+      localZoneId: ZA,
+      remoteClients: new Map([["zone-b", client]]),
+      pollIntervalMs: 60_000,
+      offlineAfterFailures: 999,
+      fetchTimeoutMs: 20,
+    });
+    engines.push(engine);
+
+    await engine.sync(); // first call: hangs, times out
+    expect(fetchCalls).toBe(1);
+
+    await engine.sync(); // would-be second call: must SKIP because outstanding
+    expect(fetchCalls).toBe(1);
+
+    // Release and let it settle so the engine can sync again.
+    releaseFirst?.();
+    // Wait one microtask tick for the cleanup to run.
+    await new Promise((r) => setTimeout(r, 5));
+
+    await engine.sync();
+    expect(fetchCalls).toBe(2);
+  });
+
   test("permissive mode (strictV1=false) tolerates gapped batch by delivering safe prefix", async () => {
     // Regression for #1372 review-loop round 8: permissive mode exists
     // for rolling upgrades against pre-v1 peers. Same gapped batch [1,2,4]

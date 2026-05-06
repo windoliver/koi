@@ -47,6 +47,41 @@ export interface SyncEngineConfig {
    */
   readonly strictV1?: boolean;
   /**
+   * Per-zone fetchDelta timeout in milliseconds. Default 30_000 (30s).
+   * A timeout is treated as a fetch failure for that zone — bumps the
+   * consecutive-failure counter. Prevents one hung remote from stalling
+   * replication for healthy peers.
+   */
+  readonly fetchTimeoutMs?: number;
+  /**
+   * Maximum age (ms) before an outstanding fetchDelta is treated as
+   * leaked. Defaults to 5x `fetchTimeoutMs`.
+   *
+   * **This does NOT auto-recover replication.** When the threshold is
+   * crossed, the engine marks the zone offline (so health surfaces the
+   * stall) but **keeps the slot reserved** until the original promise
+   * eventually settles. A new fetch can only run after that settlement
+   * — without remote-side dedup/cancel, issuing a replacement fetch
+   * would risk double-publish/double-consume on the peer. Phase 3
+   * baseline accepts this stall trade-off; structural recovery (signed
+   * cancel + remote idempotency tokens) is tracked in #1410.
+   *
+   * Operators monitoring `getHealth(zone) === "offline"` together with
+   * a stuck cursor can detect the condition; full recovery currently
+   * requires process restart if the leaked promise never settles.
+   */
+  readonly outstandingFetchMaxAgeMs?: number;
+  /**
+   * Maximum number of replicated events retained per remote zone in
+   * memory. **Default `Infinity` (unbounded)** — opt in to a bounded
+   * ring-buffer cap for long-lived deployments where unbounded memory
+   * growth is a concern. When set to a finite N, the engine drops
+   * oldest entries when the log exceeds N. The truncated count is
+   * exposed via `getTruncatedCount(remoteZoneId)` so callers can
+   * detect that `getEventLog()` is no longer a complete history.
+   */
+  readonly eventLogMaxPerZone?: number;
+  /**
    * Optional transport bound to the federation hub. Used on dispose() to send
    * `federation.zone_disconnect` so the hub can mark this local zone draining
    * immediately rather than waiting for the heartbeat timeout.
@@ -60,8 +95,15 @@ export interface SyncEngineHandle extends AsyncDisposable {
   readonly sync: () => Promise<void>;
   /** Get the current cursor for a remote zone. */
   readonly getCursor: (remoteZoneId: string) => SyncCursor | undefined;
-  /** Get the event log for a remote zone. */
+  /**
+   * Get the in-memory event log for a remote zone. When
+   * `eventLogMaxPerZone` is finite, this is a bounded ring buffer of
+   * the most-recent events — use `getTruncatedCount()` to detect when
+   * older events have been dropped.
+   */
   readonly getEventLog: (remoteZoneId: string) => readonly FederationSyncEvent[];
+  /** Number of events evicted from `getEventLog()` due to ring-buffer cap. */
+  readonly getTruncatedCount: (remoteZoneId: string) => number;
   /** Get health snapshot for a remote zone. */
   readonly getHealth: (remoteZoneId: string) => RemoteHealth | undefined;
   /** Subscribe to incoming sync events. Returns unsubscribe function. */
@@ -78,12 +120,67 @@ export interface SyncEngineHandle extends AsyncDisposable {
 export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
   const { localZoneId, remoteClients, pollIntervalMs, offlineAfterFailures, hubTransport } = config;
   const strictV1 = config.strictV1 ?? true;
+  const fetchTimeoutMs = config.fetchTimeoutMs ?? 30_000;
+  const eventLogMaxPerZone = config.eventLogMaxPerZone ?? Number.POSITIVE_INFINITY;
+  const outstandingFetchMaxAgeMs = config.outstandingFetchMaxAgeMs ?? fetchTimeoutMs * 5;
+
+  // Validate the new tunables — silent misconfiguration here can
+  // recreate the overlap/stall hazards the timeout machinery is
+  // designed to prevent.
+  if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
+    throw new Error(
+      `createSyncEngine: pollIntervalMs must be a positive finite number (got ${pollIntervalMs})`,
+    );
+  }
+  if (!Number.isFinite(fetchTimeoutMs) || fetchTimeoutMs <= 0) {
+    throw new Error(
+      `createSyncEngine: fetchTimeoutMs must be a positive finite number (got ${fetchTimeoutMs})`,
+    );
+  }
+  if (!Number.isFinite(outstandingFetchMaxAgeMs) || outstandingFetchMaxAgeMs <= 0) {
+    throw new Error(
+      `createSyncEngine: outstandingFetchMaxAgeMs must be a positive finite number (got ${outstandingFetchMaxAgeMs})`,
+    );
+  }
+  if (outstandingFetchMaxAgeMs < fetchTimeoutMs) {
+    throw new Error(
+      `createSyncEngine: outstandingFetchMaxAgeMs (${outstandingFetchMaxAgeMs}) must be >= fetchTimeoutMs (${fetchTimeoutMs}); a smaller value evicts outstanding fetches before they time out and reintroduces overlapping RPCs against degraded peers`,
+    );
+  }
+  // eventLogMaxPerZone may be Infinity (unbounded, the default) but
+  // not NaN, negative, or zero.
+  if (
+    !(eventLogMaxPerZone === Number.POSITIVE_INFINITY) &&
+    (!Number.isFinite(eventLogMaxPerZone) || eventLogMaxPerZone <= 0)
+  ) {
+    throw new Error(
+      `createSyncEngine: eventLogMaxPerZone must be a positive finite number or Infinity (got ${eventLogMaxPerZone})`,
+    );
+  }
+  if (!Number.isInteger(offlineAfterFailures) || offlineAfterFailures <= 0) {
+    throw new Error(
+      `createSyncEngine: offlineAfterFailures must be a positive integer (got ${offlineAfterFailures})`,
+    );
+  }
 
   // Per-zone state
   const cursors = new Map<string, SyncCursor>();
   const eventLogs = new Map<string, readonly FederationSyncEvent[]>();
+  const truncatedCounts = new Map<string, number>();
   const failures = new Map<string, number>();
   const statuses = new Map<string, ZoneStatus>();
+  /**
+   * Outstanding fetchDelta token per zone. The token is a per-fetch
+   * unique symbol so a settling promise can only clear the map entry
+   * if it still owns the current slot. Without that check, an old
+   * promise that finally settles AFTER a replacement was already
+   * started would delete the replacement's entry, allowing a third
+   * RPC to overlap. Cleared when the original promise settles OR when
+   * the entry has been outstanding longer than
+   * `outstandingFetchMaxAgeMs` (recovery path for transports that
+   * leak never-settling promises).
+   */
+  const outstandingFetches = new Map<string, { startedAt: number; token: symbol }>();
 
   for (const remoteId of remoteClients.keys()) {
     cursors.set(remoteId, {
@@ -92,6 +189,7 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
       lastSyncAt: 0,
     });
     eventLogs.set(remoteId, []);
+    truncatedCounts.set(remoteId, 0);
     failures.set(remoteId, 0);
     statuses.set(remoteId, "active");
   }
@@ -113,21 +211,91 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
   let timerId: ReturnType<typeof setTimeout> | undefined;
   // let: set to true on dispose to stop polling
   let disposed = false;
-  // let: in-flight guard — prevents overlapping syncAll() calls
-  let syncing = false;
+  // Per-zone in-flight set: each zone syncs independently so one hung
+  // remote cannot block syncs on healthy peers. The previous global
+  // `syncing` latch was removed for this reason.
+  const inflight = new Set<string>();
+
+  function bumpFailure(remoteId: string): void {
+    const next = (failures.get(remoteId) ?? 0) + 1;
+    failures.set(remoteId, next);
+    if (next >= offlineAfterFailures) {
+      statuses.set(remoteId, "offline");
+    }
+  }
 
   /** Sync a single remote zone. */
   async function syncZone(remoteId: string, client: SyncClient): Promise<void> {
     const cursor = cursors.get(remoteId);
     if (cursor === undefined) return;
 
-    const result = await client.fetchDelta(cursor);
-    if (!result.ok) {
-      const next = (failures.get(remoteId) ?? 0) + 1;
-      failures.set(remoteId, next);
-      if (next >= offlineAfterFailures) {
-        statuses.set(remoteId, "offline");
+    // Skip if a recent fetch for this zone is still outstanding
+    // (timed-out earlier but still hung remotely). Prevents unbounded
+    // stacking of concurrent RPCs.
+    //
+    // After outstandingFetchMaxAgeMs without settlement, evict the
+    // stale entry AND mark the zone offline immediately — without
+    // server-side cancellation/dedup, dispatching a replacement is the
+    // only thing that creates real overlap against the remote, so
+    // we refuse to do so. The zone stays offline (no further fetches)
+    // until callers explicitly recover (e.g. via a future
+    // sync_fetch_delta capability that includes a fetchId for server
+    // dedup, deferred to #1410).
+    const existing = outstandingFetches.get(remoteId);
+    if (existing !== undefined) {
+      if (Date.now() - existing.startedAt < outstandingFetchMaxAgeMs) {
+        return;
       }
+      // Stale (likely leaked) outstanding fetch. Mark the zone offline
+      // and do NOT dispatch a replacement — without a server-side
+      // cancel/dedup contract (#1410), starting a new fetch would
+      // overlap with the original on the remote. Keep the outstanding
+      // entry in place: when the original promise eventually settles,
+      // its tokenized .finally will clear the slot, allowing recovery
+      // on a later sync. If it never settles, the zone stays offline
+      // until process restart — the safer of the two failure modes.
+      statuses.set(remoteId, "offline");
+      failures.set(remoteId, offlineAfterFailures);
+      return;
+    }
+
+    // Per-zone fetchDelta timeout: a hung remote becomes a counted
+    // failure for that zone instead of a stuck promise that blocks
+    // replication for everyone.
+    const fetchPromise = client.fetchDelta(cursor);
+    const fetchToken = Symbol("fetch");
+    outstandingFetches.set(remoteId, { startedAt: Date.now(), token: fetchToken });
+    // Clear the entry only if THIS fetch still owns it. A stale
+    // completion (older fetch settling after eviction + replacement)
+    // must not delete a newer in-flight marker.
+    fetchPromise
+      .catch(() => {
+        // suppress unhandled rejection
+      })
+      .finally(() => {
+        const current = outstandingFetches.get(remoteId);
+        if (current?.token === fetchToken) {
+          outstandingFetches.delete(remoteId);
+        }
+      });
+
+    const timeoutSentinel = Symbol("fetch-timeout");
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<typeof timeoutSentinel>((resolve) => {
+      timeoutId = setTimeout(() => resolve(timeoutSentinel), fetchTimeoutMs);
+    });
+    const raced = await Promise.race([fetchPromise, timeoutPromise]);
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+    if (raced === timeoutSentinel) {
+      // Timeout: count failure NOW. The original fetchPromise stays in
+      // outstandingFetches and will only be cleared when it eventually
+      // settles — guaranteeing no overlapping RPC is launched.
+      bumpFailure(remoteId);
+      return;
+    }
+    const result = raced;
+    if (!result.ok) {
+      bumpFailure(remoteId);
       return;
     }
 
@@ -192,32 +360,51 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
 
     cursors.set(remoteId, advanceCursor(cursor, deliverable));
     const log = eventLogs.get(remoteId) ?? [];
-    eventLogs.set(remoteId, [...log, ...deliverable]);
+    const merged = [...log, ...deliverable];
+    // Optional ring-buffer cap. Default is unbounded — opt in by setting
+    // a finite eventLogMaxPerZone. When the cap fires, track the number
+    // of evicted events so callers can detect the gap via
+    // getTruncatedCount() instead of silently mistaking the bounded
+    // log for a complete history.
+    if (merged.length > eventLogMaxPerZone) {
+      const evicted = merged.length - eventLogMaxPerZone;
+      truncatedCounts.set(remoteId, (truncatedCounts.get(remoteId) ?? 0) + evicted);
+      eventLogs.set(remoteId, merged.slice(evicted));
+    } else {
+      eventLogs.set(remoteId, merged);
+    }
   }
 
   async function syncAll(): Promise<void> {
-    if (syncing || disposed) return;
-    syncing = true;
-    try {
-      await Promise.allSettled(
-        [...remoteClients.entries()].map(([remoteId, client]) => syncZone(remoteId, client)),
-      );
-    } finally {
-      syncing = false;
+    if (disposed) return;
+    // Each zone has its own in-flight guard; one hung remote does NOT
+    // prevent healthy peers from making progress on subsequent ticks.
+    const tasks: Promise<void>[] = [];
+    for (const [remoteId, client] of remoteClients.entries()) {
+      if (inflight.has(remoteId)) continue;
+      inflight.add(remoteId);
+      const task = syncZone(remoteId, client).finally(() => {
+        inflight.delete(remoteId);
+      });
+      tasks.push(task);
     }
+    if (tasks.length === 0) return;
+    await Promise.allSettled(tasks);
   }
 
   function scheduleNext(): void {
     if (disposed) return;
     timerId = setTimeout(() => {
       if (disposed) return;
-      syncAll()
-        .catch(() => {
-          // Sync failures handled per-zone; promise itself swallows residual errors.
-        })
-        .finally(() => {
-          scheduleNext();
-        });
+      // Arm the NEXT tick from cycle start, not from cycle end. If a
+      // hung peer takes the full fetchTimeoutMs, healthy peers will
+      // still be polled at their configured cadence. Per-zone in-flight
+      // guards (outstandingFetches, inflight) prevent overlap when a
+      // tick fires while the prior cycle is still draining.
+      scheduleNext();
+      syncAll().catch(() => {
+        // Sync failures handled per-zone; promise itself swallows residual errors.
+      });
     }, pollIntervalMs);
   }
 
@@ -234,6 +421,8 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
       const log = eventLogs.get(remoteZoneId);
       return log !== undefined ? [...log] : [];
     },
+
+    getTruncatedCount: (remoteZoneId) => truncatedCounts.get(remoteZoneId) ?? 0,
 
     getHealth: (remoteZoneId) => {
       const cursor = cursors.get(remoteZoneId);
