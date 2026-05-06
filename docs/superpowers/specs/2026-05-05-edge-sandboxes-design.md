@@ -235,7 +235,7 @@ if (claim.status === "failed-permanent") {
 }
 if (claim.status === "in-progress") {
   // poll the DO until it transitions to a TERMINAL status (completed or failed-permanent) or timeout fires
-  return await waitForTerminal(stub, operationId, requestId, timeoutMs);
+  return await waitForTerminal(stub, operationId, requestId, dedupeExpiresAtMs, timeoutMs);
 }
 // claim.status === "fresh" — this isolate owns the operation
 const result = await handler({ payload, operationId, requestId });
@@ -248,7 +248,7 @@ return new Response(JSON.stringify(result), { status: 200, headers: { "X-Koi-Res
 
 Every shim response — fresh-owner success, terminal-cache hit, waiter-completed, waiter-failed, timeout, conflict, expired — sets `X-Koi-Result-Kind` per the host-mapping table. Absent header = `MALFORMED_SHIM_RESPONSE`. There is no compat fallback.
 
-The DO class implements `claim` atomically (single-threaded execution per object id), guarantees only one isolate transitions a key to `in-progress`, and persists results to its built-in transactional storage until `dedupeExpiresAtMs + 1h`. Cross-instance retries (after `destroy()` + new `create()`) hit the same DO id (because `operationId` keys the lookup) and observe the prior outcome. **This is the only provider primitive that makes cross-retry dedupe a real guarantee for Cloudflare.**
+The DO class implements `claim` atomically (single-threaded execution per object id), guarantees only one isolate transitions a key to `in-progress`, and persists results to its built-in transactional storage until `dedupeExpiresAtMs + 1h`. **`waitForTerminal(stub, operationId, requestId, dedupeExpiresAtMs, timeoutMs)` checks `Date.now() > dedupeExpiresAtMs` on every poll iteration**: if the wait spans the retry horizon AND no terminal record has been observed, the function returns `{ kind: "operation-expired" }` instead of continuing to poll or attempting takeover. The shim maps to 410 + `X-Koi-Result-Kind: operation-expired`. Adversarial test: `__tests__/cf-waiter-expiry-fail-closed.test.ts` starts a waiter with `dedupeExpiresAtMs` in the near future, kills the owning isolate, and asserts the waiter returns `operation-expired` past the horizon rather than attempting takeover. Cross-instance retries (after `destroy()` + new `create()`) hit the same DO id (because `operationId` keys the lookup) and observe the prior outcome. **This is the only provider primitive that makes cross-retry dedupe a real guarantee for Cloudflare.**
 
 #### Vercel: Vercel KV (Upstash Redis) with `SET NX EX`
 
@@ -557,7 +557,10 @@ The CLAUDE.md golden-query rule requires every new L2 package to be wired into `
     readonly sandbox?: SandboxAdapter;
     readonly edgeAdapters?: {
       readonly cloudflare?: EdgeFunctionAdapter;
-      readonly vercel?: EdgeFunctionAdapter;
+      // vercel?: deliberately omitted — Vercel adapter is design-only in this release.
+      // Adding the slot here would create a stable public API surface that has to
+      // be supported even if PR 5's promotion criteria are never met. The slot
+      // is added only when Vercel is promoted to a published runtime-integrated package.
     };
   }
   ```
@@ -567,9 +570,9 @@ The CLAUDE.md golden-query rule requires every new L2 package to be wired into `
 
 **`@koi/runtime` additions (L3 meta):**
 
-- `packages/meta/runtime/src/index.ts` — the runtime convenience bundle re-exports the new edge adapter types and provides a no-default-adapters factory. Edge adapters are explicitly opt-in; the runtime does NOT bundle Cloudflare/Vercel by default since they require API tokens. ~20 LOC.
-- New test `packages/meta/runtime/src/__tests__/golden-edge-replay.test.ts` — replays recorded Cloudflare/Vercel API responses (cassettes) against `createCloudflareAdapter` and `createVercelAdapter` with mocked `fetch`. Asserts the full `create → invoke → destroy` happy path produces the expected ATIF trajectory. ~150 LOC.
-- New script `packages/meta/runtime/scripts/record-edge-cassettes.ts` — records cassettes against real (or stubbed) Cloudflare/Vercel APIs for the golden replay. Mirrors `record-cassettes.ts` but produces edge-specific fixtures. ~120 LOC.
+- `packages/meta/runtime/src/index.ts` — the runtime convenience bundle re-exports the new edge adapter types and provides a no-default-adapters factory. The Cloudflare adapter is opt-in; the runtime does NOT bundle it by default since it requires API tokens. **No Vercel re-export — Vercel is design-only in this release and stays out of the runtime convenience bundle entirely.** ~20 LOC.
+- New test `packages/meta/runtime/src/__tests__/golden-edge-replay.test.ts` — replays recorded Cloudflare API responses (cassettes) against `createCloudflareAdapter` with mocked `fetch`. Asserts the full `create → invoke → destroy` happy path produces the expected ATIF trajectory. **No Vercel cassette in this PR.** ~150 LOC.
+- New script `packages/meta/runtime/scripts/record-edge-cassettes.ts` — records cassettes against the real (or stubbed) Cloudflare API for the golden replay. **Vercel recording deferred to PR 5.** ~120 LOC.
 
 **CI script changes:**
 
@@ -1040,14 +1043,15 @@ Because `destroy()` and timeout/abort can leave remote work in flight (see `Dest
 
 - **The dedupe is a best-effort cache, not an exactly-once guarantee.** The shim caches `(operationId, requestId) → { status, result, expiresAt }` in a per-isolate in-memory `Map` keyed on the **composite** of both fields. Cloudflare and Vercel do not pin retries to the same isolate; isolates can also be evicted at any time. Therefore a retry can land on a fresh isolate where the dedupe entry does not exist, and the handler runs again.
 - **Contract claim:** the adapter does NOT promise exactly-once execution. The contract is "if the retry lands on the same warm isolate within the cache window, dedupe takes effect; otherwise the handler may run twice." This is documented at the top of `docs/L2/sandbox-cloudflare.md` and `sandbox-vercel.md` so callers cannot mistake the mechanism for a stronger guarantee.
-- **Supported workload class is narrowed: side-effect-free OR koi-mediated outbound only.** The adapter's durable dedupe store handles the happy path AND most failure paths, but several documented failure paths still allow handler effects to commit before the operation is durably retried. Rather than relying on operator attestation alone for those paths, the contract narrows what handlers are allowed to do AND adds a runtime fence:
-  - **Workload class A (no side effects):** handler is purely a function of `payload` and returns a value. No outbound `fetch`, no DB writes, no message-queue publishes. The AST lint flags any side-effect-shaped call as a deploy-blocking error. This is the recommended class.
-  - **Workload class B (mediated outbound only):** handler MAY perform outbound side effects, but ONLY through the koi runtime's mediated wrappers (`koi.fetchWithIdempotencyKey`, `koi.sqlInsertWithOnConflict`, `koi.kafkaPublish`) which automatically add `operationId` as the at-target idempotency key. The shim **replaces `globalThis.fetch` at module load** with a koi-controlled function that REJECTS calls lacking an operator-provided `Idempotency-Key` header (or rather, automatically injects `operationId` if absent). This is a runtime fence on the most common side-effect path (HTTP POST). Database and queue clients are similarly required to flow through the koi wrappers; the AST lint blocks raw `new Pool(...)` / `producer.send(...)` calls that do not route through the wrappers.
-  - **Workload class C (anything else) is REJECTED.** Construction-time config rejects handlers that do not declare workloadClass: "A" | "B" — `workloadClass: "B"` requires an enumerated list of side-effect targets that all support at-target idempotency.
-  - **Runtime fence on `globalThis.fetch`:** at Worker B init the shim does `const originalFetch = globalThis.fetch; globalThis.fetch = koiMediatedFetch` BEFORE the operator handler module is imported (which only happens after signature verification + arming). `koiMediatedFetch` automatically injects `Idempotency-Key: ${operationId}` if absent, logs `KOI_FETCH_INTERCEPTED`, and forwards. **This is a real mechanical barrier for HTTP outbound** — operator code that calls `fetch()` cannot bypass the idempotency-key injection without explicitly resolving `globalThis.fetch` BEFORE shim init or shadowing it after, both of which the AST lint rule set deploy-blocks. Combined with the lint, the supported-class restriction, and the deploy-time enumeration of side-effect targets, this is meaningfully stronger than "attestation + lint" alone.
-  - **Honest residual:** dynamic-`import()`-loaded code that captures and reuses a pre-shim-init `fetch` reference, or a third-party library that does so internally, can in principle bypass the fence. The third-party library allowlist mitigates this; new libraries require AST audit before they can be added. For workload class B, operators are still attesting "every side-effect target the audited handler bundle reaches has at-target idempotency," but the surface for that attestation is dramatically reduced relative to the earlier draft.
+- **Supported workload class for v1 is RESTRICTED to side-effect-free handlers (workloadClass: "A").** The earlier draft offered a Workload Class B (operator-allowed outbound side effects mediated by koi wrappers + a `globalThis.fetch` fence + AST lint allowlist). That class is **DEFERRED to a future PR** because the residual bypass surface (dynamic-`import()`, pre-init `fetch` capture, third-party libraries that resolve their own globals) cannot be mechanically closed on Cloudflare Workers / Vercel Functions today. Rather than ship "best-effort under partial-failure" as a default, v1 admits only handlers whose duplicate execution is intrinsically harmless:
+  - **Workload class A (the only supported class for v1):** handler is purely a function of `payload`. No outbound `fetch`, no DB writes, no message-queue publishes, no filesystem writes. Pure compute or read-only data shaping. **Construction rejects** handlers that do not declare `workloadClass: "A"` with `KoiError { code: "WORKLOAD_CLASS_NOT_SUPPORTED", message: "Only workloadClass:\"A\" (side-effect-free) is supported in this release. Class B (mediated outbound) is deferred." }`.
+  - **AST lint is deploy-blocking and conservative:** the gate flags ANY of `fetch(`, `XMLHttpRequest`, `WebSocket`, common DB-client constructors (`new Pool`, `new Client`, `mongoose.connect`, etc.), known queue producers (`kafka.producer().send`), `globalThis[*]` dynamic property access, `new Function(`, dynamic `import(${nonStaticString})`, and any third-party dependency not on a small audited allowlist (only typed-utility libs like `zod`, `valibot`, `date-fns`). Any finding is a deploy-blocking error. Operators cannot suppress findings — there is no `failOnRawSideEffect: false` mode.
+  - **Workload class B (mediated outbound) is documented as future work** with the runtime-fetch fence + AST allowlist design preserved in this spec for the future PR. It does not ship in v1. Any caller that needs outbound side effects from the handler MUST move that side effect outside the handler — e.g., the handler returns a description of what to do, and the caller (a trusted host-side process) actually performs the outbound write with proper idempotency. This pushes the duplicate-execution risk to a code path the host owns, where it can be properly fenced.
+  - **Workload class C (anything else) is REJECTED** at construction.
 
-  Several documented failure paths still allow handler effects to commit before the operation is durably retried:
+  With class A as the only supported class, the documented re-execution paths (`DEDUPE_PERSISTENCE_FAILED`, `LEASE_LOST`, `OWNERSHIP_LOST`, oversized-result) cannot cause duplicate external side effects — there ARE no external side effects in the handler. Re-execution is safe by construction. The dedupe store still mechanically handles the happy path; the partial-failure paths still re-run, but re-running a pure function is harmless. **This is what makes the v1 contract honest:** the durable dedupe is mechanical for caching success/failure outcomes, AND duplicate execution risk is eliminated by restricting the workload class rather than by trusting operator discipline.
+
+  Several documented failure paths still allow the handler to be re-run before the operation is durably retried (now harmless under class A):
   - Cloudflare DO `complete` retry exhaustion (`DEDUPE_PERSISTENCE_FAILED` after 3 attempts).
   - Vercel KV lease loss mid-handler (`LEASE_LOST`) and ownership loss at commit (`OWNERSHIP_LOST`).
   - Result exceeds `MAX_DEDUPE_RESULT_BYTES` after handler commit.
