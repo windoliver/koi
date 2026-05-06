@@ -185,7 +185,7 @@ describe("createEmailChannel", () => {
     await adapter.connect();
     // Allow worker first poll.
     await tick(20);
-    expect(subscribedAtWorkerState).toBe(true);
+    expect<boolean | null>(subscribedAtWorkerState).toBe(true);
   });
 
   test("inbound flows from IMAP → handler", async () => {
