@@ -115,7 +115,20 @@ The deployed shim is a **two-worker** (or two-function) pattern, not one. Operat
 
 #### Cloudflare: Durable Objects with `compareAndSwap`
 
-`createCloudflareAdapter` REQUIRES `config.dedupeDurableObjectId: string` (a DO namespace ID with a class declared by the operator that exposes `idempotencyCheck(operationId)`). The deploy step wires the namespace as a binding (`KOI_DEDUPE_DO`). Adapter construction fails with `KoiError { code: "DEDUPE_STORE_REQUIRED" }` if missing.
+`createCloudflareAdapter` REQUIRES:
+- `config.accountId: string`
+- `config.apiToken: string`
+- `config.ownerId: string` (non-empty; rejected as empty or `"default"`)
+- `config.dedupeDurableObjectNamespaceId: string` (the DO namespace ID; the DO class definition itself is **koi-owned and shipped in this package**, not operator-authored)
+
+Adapter construction fails with `KoiError { code: "DEDUPE_STORE_REQUIRED" | "OWNER_ID_REQUIRED" | ... }` if any field is missing or invalid.
+
+**The DO class is koi-owned, not operator-authored.** The DO namespace points to a class defined inside `koi-dedupe-gateway` (Worker A), which the koi adapter deploys from a fixed source template colocated in this package. Operators do not write the `claim`/`complete`/`fail` methods — those are part of the koi shim source and are deployed atomically with Worker A. The operator's responsibility is reduced to:
+
+1. Creating an empty DO namespace via Cloudflare dashboard or `wrangler` (one-time per fleet) and providing its ID.
+2. Granting the API token DO migration permissions.
+
+The adapter then binds the koi-shipped DO class to that namespace as part of the create flow. To prevent operator override or stale class versions, the adapter calls `GET /workers/scripts/{koi-dedupe-gateway-name}` after deploy and verifies the script's source hash matches the expected `koi-dedupe-gateway-source-sha256` constant baked into the package. A mismatch returns `KoiError { code: "DEDUPE_GATEWAY_TAMPERED" }` and the adapter refuses to construct. This makes the DO trust boundary structural: the operator cannot ship a buggy or backdoored DO class through the adapter even if they wanted to.
 
 DO is the only Cloudflare primitive with linearizable single-key consistency.
 
@@ -518,7 +531,12 @@ In-process delayed re-verify is necessary but not sufficient: a host crash, cont
   - **Cloudflare:** Workers `tags` field on the script: `["koi-managed:v1", "koi-owner:${ownerId}", "koi-stale-after:${ISO_TIMESTAMP}"]`.
   - **Vercel:** `meta` object on deployments: `{ "koi-managed": "v1", "koi-owner": "${ownerId}", "koi-stale-after": "${ISO_TIMESTAMP}" }`.
   At create time `koi-stale-after = now + 5 minutes`. While the instance is alive, the host-side adapter renews this tag every **2 minutes** via `PATCH /workers/scripts/{name}/tags` (CF) or `PATCH /v13/deployments/{id}/meta` (Vercel) — set to `now + 5 minutes`. The renewal cadence is short enough that a host crash leaves the artifact reclaimable within ~5 minutes (vs. 24 hours), bounding cross-host leak exposure to a small window. On `destroy()` the entire artifact is deleted. On host crash, the tag stops renewing and naturally expires; any sweeper picks it up once `koi-stale-after` is in the past.
-- **Continuous sweep, not nightly:** the sweep is NOT a once-a-day cron. A continuous-mode sweeper runs every minute (configurable) and immediately deletes any artifact whose `koi-stale-after` has passed. Operators run this as a long-running maintenance daemon (`koi-sandbox-sweep --watch`) or as a per-minute cron job. This combined with the 5-minute lease bounds cross-host leakage to ~5-6 minutes from host loss.
+- **Continuous sweep, not nightly:** the sweep is NOT a once-a-day cron. A continuous-mode sweeper runs every minute (configurable) and immediately deletes any artifact whose `koi-stale-after` has passed.
+- **Cloudflare uses a provider-native cron trigger (no external sweeper required):** Worker A (`koi-dedupe-gateway`) ships with a Cloudflare Cron Trigger configured to fire every minute. The trigger handler iterates worker scripts in the same account matching `koi-managed=v1` + `koi-owner=${ownerId}`, deletes those whose `koi-stale-after` has passed, and self-deletes the dedupe gateway if its own lease has expired and no leases remain. This makes Cloudflare cleanup **provider-native** — no separately-managed daemon required, and the adapter cannot construct without deploying Worker A which carries the cron trigger. Cross-host leak window is bounded by the 5-minute lease + 1-minute cron cadence ≈ 6 minutes maximum.
+- **Vercel does not have a self-cleanup primitive equivalent to Cloudflare Cron Triggers:** Vercel cleanup requires a separate process. To prevent silently-leaky multi-host deployments, `createVercelAdapter` requires `config.multiHostMode: "single-host" | "multi-host-with-sweeper"` (no default — operators must choose):
+  - `"single-host"`: adapter writes a single-host marker to the SQLite ledger (`PRAGMA application_id` + an exclusive lock file). If another adapter in the same ledger tries to construct in `single-host` mode, it fails with `KoiError { code: "MULTI_HOST_DETECTED_BUT_SINGLE_HOST_DECLARED" }`. Suitable for dev/single-server deploys.
+  - `"multi-host-with-sweeper"`: adapter checks for a recent (`< 5 minutes`) sweeper heartbeat in the ledger (`sweeper_heartbeats` table — sweeper writes its own row every 60s). If no heartbeat is found, adapter fails with `KoiError { code: "SWEEPER_NOT_RUNNING" }` and refuses to deploy any artifact. The sweeper writes its heartbeat as one of its own startup actions, so once running it satisfies this check. Operators MUST run `@koi/sandbox-sweep --watch --vercel` before any Vercel adapter can construct in this mode.
+- Operators that try to use Vercel multi-host without a sweeper get a hard failure at adapter construction, not a silent leak.
   Artifacts created outside this adapter (or by other tools) lack these tags and are NEVER touched by sweep.
 - **External reconciliation (only sweeps stale artifacts):** the cron job lists scripts/deployments where:
   - `koi-managed=v1` AND
