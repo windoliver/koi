@@ -1134,4 +1134,42 @@ describe("createMobileChannel", () => {
     await new Promise((r) => setTimeout(r, 10));
     await ch.disconnect();
   });
+
+  test("trustClientIdentity:true: replyToInbound delivers live to the trusted client (not push)", async () => {
+    // Regression: before binding activeIdentity from the first inbound's
+    // trusted senderId, the strict identity check compared verifiedReply
+    // against defaultSenderId, so a reply to "device-1" mismatched
+    // "mobile-user" and routed to push (or rejected if no notifier),
+    // making trustClientIdentity-only mode unable to live-reply at all.
+    const port = await freePort();
+    const ch = createMobileChannel({ port, trustClientIdentity: true });
+    // let requires justification: captured reply for assertion
+    let captured: InboundMessage | undefined;
+    ch.onMessage(async (m: InboundMessage) => {
+      captured = m;
+    });
+    await ch.connect();
+    const ws = await openWs(port);
+    const recvP = nextFrame(ws);
+    ws.send(
+      JSON.stringify({
+        kind: "msg",
+        content: [{ kind: "text", text: "hi" }],
+        senderId: "device-1",
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    expect(captured?.senderId).toBe("device-1");
+    await ch.send(
+      replyToInbound(captured as InboundMessage, {
+        content: [{ kind: "text", text: "hello back" } as TextBlock],
+      }),
+    );
+    const frame = (await recvP) as { kind: string; content: readonly TextBlock[] };
+    expect(frame.kind).toBe("msg");
+    expect(frame.content[0]?.text).toBe("hello back");
+    ws.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
 });

@@ -437,4 +437,95 @@ describe("createVoiceChannel", () => {
     expect(received[0]?.senderId).toBe("caller-42");
     await ch.disconnect();
   });
+
+  test("serializes STT per sessionId so a slow turn cannot be overtaken by a faster later turn", async () => {
+    // Regression: without per-session STT chaining, utterance B (fast STT)
+    // resolves before utterance A (slow STT) and dispatches first, scrambling
+    // the dialogue order. Chaining ensures A is dispatched before B's STT
+    // even starts on the same sessionId. Distinct sessionIds remain parallel.
+    // let requires justification: harness state captured by callbacks
+    let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+    const sttOrder: string[] = [];
+    const dispatchOrder: string[] = [];
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (handler) => {
+        listener = handler;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = {
+      transcribe: async (audio) => {
+        const tag = String(audio[0]);
+        sttOrder.push(`start-${tag}`);
+        // Frame [1]: slow (50 ms). Frame [2]: fast (5 ms). Without chaining,
+        // [2] finishes first and dispatches before [1].
+        const delay = audio[0] === 1 ? 50 : 5;
+        await new Promise((r) => setTimeout(r, delay));
+        sttOrder.push(`done-${tag}`);
+        return `t${tag}`;
+      },
+    };
+    const tts: Tts = { synthesize: async () => new Uint8Array() };
+    const ch = createVoiceChannel({ transport, stt, tts });
+    ch.onMessage(async (msg) => {
+      const block = msg.content[0];
+      if (block && block.kind === "text") dispatchOrder.push(block.text);
+    });
+    await ch.connect();
+    // Two utterances back-to-back on the SAME session.
+    listener?.("call-A", new Uint8Array([1]));
+    listener?.("call-A", new Uint8Array([2]));
+    await new Promise((r) => setTimeout(r, 120));
+    // In-order dispatch despite [2] finishing STT 10x faster than [1].
+    expect(dispatchOrder).toEqual(["t1", "t2"]);
+    // Per-session chain enforced: [2]'s STT does not start until [1] is done.
+    const doneA1 = sttOrder.indexOf("done-1");
+    const startA2 = sttOrder.indexOf("start-2");
+    expect(doneA1).toBeGreaterThanOrEqual(0);
+    expect(startA2).toBeGreaterThan(doneA1);
+    await ch.disconnect();
+  });
+
+  test("does not serialize across distinct sessionIds (per-session chain only)", async () => {
+    // Independent calls must not head-of-line block each other's STT.
+    // let requires justification: harness state captured by callbacks
+    let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+    let sttInFlight = 0;
+    let sttMaxConcurrent = 0;
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (handler) => {
+        listener = handler;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = {
+      transcribe: async () => {
+        sttInFlight++;
+        if (sttInFlight > sttMaxConcurrent) sttMaxConcurrent = sttInFlight;
+        await new Promise((r) => setTimeout(r, 30));
+        sttInFlight--;
+        return "ok";
+      },
+    };
+    const tts: Tts = { synthesize: async () => new Uint8Array() };
+    const ch = createVoiceChannel({ transport, stt, tts });
+    ch.onMessage(async () => {});
+    await ch.connect();
+    listener?.("call-A", new Uint8Array([1]));
+    listener?.("call-B", new Uint8Array([1]));
+    listener?.("call-C", new Uint8Array([1]));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(sttMaxConcurrent).toBe(3);
+    await ch.disconnect();
+  });
 });

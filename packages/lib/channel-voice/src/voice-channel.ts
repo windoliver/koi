@@ -1,5 +1,11 @@
 import { createChannelAdapter } from "@koi/channel-base";
-import type { ChannelAdapter, ChannelCapabilities, ContentBlock, OutboundMessage } from "@koi/core";
+import type {
+  ChannelAdapter,
+  ChannelCapabilities,
+  ContentBlock,
+  InboundMessage,
+  OutboundMessage,
+} from "@koi/core";
 
 /**
  * Audio I/O transport for the voice channel. Vendor wiring (LiveKit, Twilio,
@@ -116,9 +122,15 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
   // Bridge transport's (sessionId, utterance) callback through the
   // single-arg `onPlatformEvent` adapter contract by tunneling sessionId
   // alongside the audio in a per-event tuple, then unpacking in normalize().
+  // STT runs in onPlatformEvent (not normalize) so we can serialize STT
+  // calls per sessionId — see the chain in onPlatformEvent below — and
+  // guarantee that turn N's transcript is dispatched before turn N+1's
+  // STT is even started, eliminating cross-turn reordering when STT
+  // latency varies.
   interface TransportEvent {
     readonly sessionId: string;
     readonly utterance: Uint8Array;
+    readonly text: string | null;
   }
 
   // Pre-render rich blocks to text BEFORE channel-base's renderBlocks
@@ -185,9 +197,41 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       }
       await config.transport.sendUtterance(message.threadId, frames);
     },
-    onPlatformEvent: (handler) =>
-      config.transport.onUtterance((sessionId, utterance) => handler({ sessionId, utterance })),
-    normalize: async (event: TransportEvent) => {
+    onPlatformEvent: (handler) => {
+      // Per-session STT serialization. Without this chain, two utterances
+      // arriving back-to-back on the same call leg both start STT in
+      // parallel; if turn 2's transcribe resolves first (faster speech /
+      // smaller buffer / different STT shard), the runtime sees
+      // "B then A" and the dialogue scrambles. Chaining each utterance's
+      // STT after the prior one for that sessionId guarantees in-order
+      // dispatch per call. Cross-session traffic stays parallel — distinct
+      // sessionIds get distinct chains, so a slow caller can't head-of-
+      // line block other callers' turns.
+      const chains = new Map<string, Promise<unknown>>();
+      return config.transport.onUtterance((sessionId, utterance) => {
+        const prev = chains.get(sessionId) ?? Promise.resolve();
+        const next = prev
+          .catch(() => undefined)
+          .then(async () => {
+            // let requires justification: STT may throw or return null
+            let text: string | null;
+            try {
+              text = await config.stt.transcribe(utterance);
+            } catch (err) {
+              (config.onSttError ?? defaultSttErrorLogger)(err, utterance);
+              return;
+            }
+            handler({ sessionId, utterance, text });
+          });
+        chains.set(sessionId, next);
+        // Drop the chain entry once the tail settles so long-lived
+        // adapters don't accumulate a Map entry per call leg forever.
+        next.finally(() => {
+          if (chains.get(sessionId) === next) chains.delete(sessionId);
+        });
+      });
+    },
+    normalize: (event: TransportEvent): InboundMessage | null => {
       // Fail fast at the trust boundary: a blank sessionId would let the
       // runtime process a turn it can never reply to (outbound throws
       // VoiceMissingSessionError), producing one-way conversations.
@@ -198,9 +242,8 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
           "@koi/channel-voice: transport delivered an utterance with empty sessionId; per-session routing is required",
         );
       }
-      const text = await config.stt.transcribe(event.utterance);
-      if (text === null) return null;
-      const trimmed = text.trim();
+      if (event.text === null) return null;
+      const trimmed = event.text.trim();
       if (trimmed.length === 0) return null;
       return {
         content: [{ kind: "text", text: trimmed }],

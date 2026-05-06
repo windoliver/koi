@@ -674,6 +674,18 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         // The authenticate() identity is the strongest server-side signal.
         const senderId =
           activeIdentity ?? (trustClient ? (frame.senderId ?? defaultSenderId) : defaultSenderId);
+        // When trustClientIdentity is on but no authenticate() handshake
+        // bound an identity at upgrade time, promote the first inbound's
+        // trusted senderId into activeIdentity so the strict-reply identity
+        // match in platformSend compares against the real client identity
+        // (e.g., "device-1") rather than the host placeholder. Without
+        // this, every reply for a trusted-client session would mismatch
+        // and route to push (or fail) even though the right client is
+        // still on the wire. Locked for the duration of the session — a
+        // mid-session senderId change in subsequent frames is ignored.
+        if (trustClient && activeIdentity === undefined && activeSocket !== undefined) {
+          activeIdentity = senderId;
+        }
         const inbound: InboundMessage = {
           content,
           senderId,
