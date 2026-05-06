@@ -113,20 +113,39 @@ export function createInheritedChannel(
     }
   }
 
-  // Round-44 high: forward adapter-specific PURE HELPERS that do not go
-  // through send() and need no attribution — `VoiceChannelAdapter`'s
+  // Round-44 high: forward adapter-specific READ-ONLY helpers that do not
+  // go through send() and need no attribution — `VoiceChannelAdapter`'s
   // `stampForCurrentCall(outbound)` and `currentCallEpoch()`. Without these,
   // child agents inheriting a voice parent lose the ONLY supported way to
   // mint a current-epoch tag for server-initiated outbound after reconnect,
   // and every such send rejects with VoicePoisonedSessionError. Pure
-  // delegation — no attribution, no message rewrite — these helpers don't
-  // produce wire traffic; they return data the caller passes back into send().
-  const PARENT_PURE_EXTENSIONS = ["stampForCurrentCall", "currentCallEpoch", "endCall"] as const;
-  for (const methodName of PARENT_PURE_EXTENSIONS) {
+  // read-only delegation — no attribution, no message rewrite — these
+  // helpers don't produce wire traffic and don't mutate adapter state.
+  const PARENT_READONLY_EXTENSIONS = ["stampForCurrentCall", "currentCallEpoch"] as const;
+  for (const methodName of PARENT_READONLY_EXTENSIONS) {
     const original = (parentChannel as unknown as Record<string, unknown>)[methodName];
     if (typeof original === "function") {
       const fn = original as (...args: unknown[]) => unknown;
       child[methodName] = (...args: unknown[]): unknown => fn.apply(parentChannel, args);
+    }
+  }
+
+  // Round-50 high: STATE-MUTATING extensions (e.g. VoiceChannelAdapter.endCall
+  // which fences all turns for that session on the parent — terminates the
+  // parent's active voice call). MUST honor spawn policy: a child given
+  // `mode: "none"` (no channel access) must not be able to mutate the
+  // parent's adapter state. Forwarding these without the gate violates the
+  // channel-isolation contract — a no-channel child could cut off or poison
+  // the parent's live call. Gated behind the same mode check as send().
+  const PARENT_MUTATING_EXTENSIONS = ["endCall"] as const;
+  for (const methodName of PARENT_MUTATING_EXTENSIONS) {
+    const original = (parentChannel as unknown as Record<string, unknown>)[methodName];
+    if (typeof original === "function") {
+      const fn = original as (...args: unknown[]) => unknown;
+      child[methodName] = (...args: unknown[]): unknown => {
+        if (resolved.mode === "none") return undefined;
+        return fn.apply(parentChannel, args);
+      };
     }
   }
   return child as unknown as ChannelAdapter;

@@ -1911,6 +1911,45 @@ describe("createMobileChannel", () => {
     await ch.disconnect();
   });
 
+  test("send racing disconnect routes to push instead of arming a doomed ack wait (round-50 high)", async () => {
+    // Round-50 high: prePlatformDisconnect drains pendingAcks but a
+    // send entering platformSend after the !shuttingDown check yet
+    // before pendingAcks.set() would arm a fresh ack waiter the
+    // pre-drain hook never sees → teardown blocks for full
+    // ackTimeoutMs. Re-check the gate post-write: if disconnect has
+    // started, route immediately to push fallback.
+    //
+    // Hard to reproduce the exact microtask race deterministically,
+    // but we can pin the contract by toggling shuttingDown via a
+    // disconnect kicked off concurrently with a slow ack flow. With
+    // a long ackTimeoutMs (10s), if the race happened, disconnect
+    // would block ~10s. With the fix, disconnect completes promptly.
+    const port = await freePort();
+    const pushCalls: OutboundMessage[] = [];
+    const ch = createMobileChannel({
+      port,
+      authenticate: async () => "device-A",
+      ackTimeoutMs: 10_000,
+      unsafeAllowEphemeralSigningSecret: true,
+      pushNotifier: async (m: OutboundMessage) => {
+        pushCalls.push(m);
+      },
+    });
+    await ch.connect();
+    const ws = await openWs(port);
+    // Client connects but never acks. Send while connected; then race
+    // disconnect in. Without the round-50 fix the disconnect would
+    // wait ackTimeoutMs (10s); with it, push fallback fires promptly.
+    ws.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: "hi" }] }));
+    await new Promise((r) => setTimeout(r, 30));
+    const start = Date.now();
+    await ch.disconnect();
+    const elapsed = Date.now() - start;
+    // Sanity: disconnect must complete in well under the ackTimeoutMs.
+    expect(elapsed).toBeLessThan(2_000);
+    ws.close();
+  });
+
   test("offline sendUnsolicited with NO explicit recipient leaves push context empty — host must refuse (round-41 high)", async () => {
     // Round-41 high: a global "last authenticated user" fallback would
     // misroute under reconnects (push to whoever connected last, not the

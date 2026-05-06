@@ -1215,6 +1215,30 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         }
         if (written >= expectedBytes) {
           if (ackTimeoutMs <= 0) return;
+          // Round-50 high: shutdown race. Disconnect can flip
+          // `shuttingDown = true` and drain pendingAcks AFTER our
+          // entry-point !shuttingDown check but BEFORE we register the
+          // ack waiter below. The pre-drain hook would never see this
+          // entry, and teardown would block for the full ackTimeoutMs.
+          // Re-check the gate post-write — if disconnect already started,
+          // route immediately to push fallback (or reject) instead of
+          // arming a doomed ack wait.
+          if (shuttingDown) {
+            if (config.pushNotifier === undefined) {
+              throw new MobileNoDeliveryTargetError();
+            }
+            await config.pushNotifier(
+              wireMessage,
+              derivePushContext(
+                verifiedReply,
+                alsCtx,
+                deliveryId,
+                identityAtSend,
+                explicitRecipient,
+              ),
+            );
+            return;
+          }
           // Wait for the client ack OR timeout, whichever fires first.
           await new Promise<void>((resolve, reject) => {
             const timer = setTimeout(() => {

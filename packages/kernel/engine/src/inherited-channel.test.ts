@@ -292,6 +292,56 @@ describe("createInheritedChannel", () => {
     expect(seenOpts).toEqual([{ recipient: "device-alice" }]);
   });
 
+  test("endCall is gated by spawn policy mode:'none' (round-50 high)", async () => {
+    // Round-50 high: endCall mutates parent adapter state (fences all
+    // turns for that session, terminating the parent's voice call). A
+    // child given mode:"none" (no channel access) MUST NOT be able to
+    // mutate the parent — that would let a no-channel child cut off or
+    // poison the parent's live voice session, violating channel
+    // isolation. Read-only helpers (currentCallEpoch) still forward.
+    let endCallInvocations = 0;
+    let epochInvocations = 0;
+    const parent: ChannelAdapter & {
+      endCall: (s: string) => void;
+      currentCallEpoch: () => number;
+    } = {
+      name: "voice-parent",
+      capabilities: CAPABILITIES,
+      connect: () => Promise.resolve(),
+      disconnect: () => Promise.resolve(),
+      send: () => Promise.resolve(),
+      onMessage: () => () => {},
+      endCall: (_s: string) => {
+        endCallInvocations++;
+      },
+      currentCallEpoch: () => {
+        epochInvocations++;
+        return 0;
+      },
+    };
+    const childPid: ProcessId = {
+      id: agentId("child-id"),
+      name: "child",
+      type: "worker",
+      depth: 1,
+      parent: agentId("parent-1"),
+    };
+    const proxy = createInheritedChannel(parent, childPid, {
+      mode: "none",
+      attribution: "metadata",
+      propagateStatus: false,
+    }) as ChannelAdapter & {
+      endCall?: (s: string) => void;
+      currentCallEpoch?: () => number;
+    };
+    proxy.endCall?.("default");
+    proxy.currentCallEpoch?.();
+    // endCall: mutating + mode:"none" → MUST NOT reach parent.
+    expect(endCallInvocations).toBe(0);
+    // currentCallEpoch: read-only → forwards regardless of mode.
+    expect(epochInvocations).toBe(1);
+  });
+
   test("forwards voice pure helpers stampForCurrentCall + currentCallEpoch (round-44 high)", async () => {
     // Round-44 high: a child agent inheriting a VoiceChannelAdapter must be
     // able to mint a current-epoch tag for server-initiated outbound after
