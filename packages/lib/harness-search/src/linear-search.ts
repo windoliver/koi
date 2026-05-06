@@ -12,6 +12,7 @@ import { parseRefinementOutput } from "./parse-refinement.js";
 import { createThompsonState, type ThompsonState, updateThompson } from "./thompson.js";
 import {
   DEFAULT_SEARCH_CONFIG,
+  type EvalFailure,
   type EvalResult,
   type SearchConfig,
   type SearchNode,
@@ -175,7 +176,29 @@ export async function linearSearch(
       stopReason = "eval_failed";
       break;
     }
-    const evalResult: EvalResult = evalOutcome.value;
+    // Coerce to plain data so every later dereference goes through
+    // native objects, not the original (potentially trapping) Proxy /
+    // accessor-backed object. Wrap in try/catch because a stateful
+    // Proxy could pass the first validation read and throw on a later
+    // access — that throw must still degrade to eval_failed, not
+    // reject linearSearch().
+    let evalResult: EvalResult;
+    try {
+      const validated: EvalResult = evalOutcome.value;
+      evalResult = {
+        successRate: validated.successRate,
+        sampleCount: validated.sampleCount,
+        failures: validated.failures.map((f) => ({
+          toolName: f.toolName,
+          errorCode: f.errorCode,
+          errorMessage: f.errorMessage,
+          parameters: { ...f.parameters },
+        })),
+      };
+    } catch (_err: unknown) {
+      stopReason = "eval_failed";
+      break;
+    }
 
     const node: SearchNode = {
       id: `node-${nodeCounter++}`,
@@ -386,34 +409,47 @@ async function withDeadline<T>(
  * rates, non-integer/negative sample counts, and non-array failures as
  * a typed eval failure instead of letting them drive convergence.
  */
-function isValidEvalResult(r: EvalResult): boolean {
-  if (
-    typeof r.successRate !== "number" ||
-    !Number.isFinite(r.successRate) ||
-    r.successRate < 0 ||
-    r.successRate > 1 ||
-    !Number.isInteger(r.sampleCount) ||
-    r.sampleCount < 0 ||
-    !Array.isArray(r.failures)
-  ) {
-    return false;
-  }
-  // Element-level shape check — Array.isArray alone admits [null] /
-  // [123] / objects missing required string fields, all of which would
-  // crash in sanitizeFailures when it dereferences toolName/errorCode/
-  // errorMessage and bypass the typed eval_failed stop.
-  for (const f of r.failures) {
+/**
+ * Validate evaluator output as a trust-boundary input. Wrapped in
+ * try/catch because a hostile evaluator may return a Proxy or
+ * accessor-backed object whose getters throw — escaped throws would
+ * reject linearSearch() instead of producing the typed eval_failed
+ * stop. Anything that throws or fails the shape check returns false.
+ */
+function isValidEvalResult(r: unknown): r is EvalResult {
+  try {
+    if (r === null || typeof r !== "object") return false;
+    const cand = r as EvalResult;
     if (
-      f === null ||
-      typeof f !== "object" ||
-      typeof (f as EvalFailure).toolName !== "string" ||
-      typeof (f as EvalFailure).errorCode !== "string" ||
-      typeof (f as EvalFailure).errorMessage !== "string" ||
-      (f as EvalFailure).parameters === null ||
-      typeof (f as EvalFailure).parameters !== "object"
+      typeof cand.successRate !== "number" ||
+      !Number.isFinite(cand.successRate) ||
+      cand.successRate < 0 ||
+      cand.successRate > 1 ||
+      !Number.isInteger(cand.sampleCount) ||
+      cand.sampleCount < 0 ||
+      !Array.isArray(cand.failures)
     ) {
       return false;
     }
+    // Element-level shape check — Array.isArray alone admits [null] /
+    // [123] / objects missing required string fields, all of which would
+    // crash in sanitizeFailures when it dereferences toolName/errorCode/
+    // errorMessage and bypass the typed eval_failed stop.
+    for (const f of cand.failures) {
+      if (
+        f === null ||
+        typeof f !== "object" ||
+        typeof (f as EvalFailure).toolName !== "string" ||
+        typeof (f as EvalFailure).errorCode !== "string" ||
+        typeof (f as EvalFailure).errorMessage !== "string" ||
+        (f as EvalFailure).parameters === null ||
+        typeof (f as EvalFailure).parameters !== "object"
+      ) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
   }
-  return true;
 }

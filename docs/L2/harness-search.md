@@ -23,6 +23,11 @@ harness.
 const result = await linearSearch(initialCode, descriptor, {
   refine,                  // (code, failures, iter, max, signal) => Promise<string>
   evaluate,                // (code, descriptor, signal) => Promise<EvalResult>
+  // REQUIRED whenever maxIterations > 1. Asserts both callbacks honor
+  // their AbortSignal so a timed-out attempt's side effects cannot
+  // overlap with the next iteration. Omit (or pass false) ONLY when
+  // also passing maxIterations: 1 — otherwise linearSearch throws.
+  adapterHonorsAbort: true,
   maxIterations: 20,
   convergenceThreshold: 1.0,
   minEvalSamples: 5,

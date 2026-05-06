@@ -134,13 +134,18 @@ export interface SearchConfig {
   /**
    * Caller's assertion that BOTH `evaluate` and `refine` honor the
    * `AbortSignal` they receive — i.e. they stop work and release any
-   * non-idempotent side effects when aborted. When `false` (the
-   * conservative default), the loop forces `maxIterations = 1` so a
-   * timed-out or aborted attempt cannot be followed by another one
-   * while the prior callback may still be in flight, mutating external
-   * state outside the caller's view. Set to `true` only after wrapping
-   * adapters in code that proves abort-safety. Mirrors the same flag
-   * in `@koi/harness-synth`.
+   * non-idempotent side effects when aborted. Mirrors the same flag in
+   * `@koi/harness-synth`.
+   *
+   * Default `false`. With the default, `linearSearch` accepts only
+   * `maxIterations: 1` (single-shot evaluation): a timed-out or
+   * aborted attempt may keep mutating external state in the background,
+   * so starting another iteration would overlap side effects.
+   * Multi-iteration search REQUIRES `adapterHonorsAbort: true` —
+   * passing `maxIterations > 1` without it throws a `TypeError` at
+   * config validation. The throw is deliberate: silently downgrading
+   * to single-shot when the caller asked for refinement is the worst
+   * kind of quiet quality loss.
    *
    * Note: even when `true`, JavaScript cannot truly kill an async
    * callback that ignores its signal — the loop releases its hold on

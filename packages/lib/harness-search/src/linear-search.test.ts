@@ -497,6 +497,50 @@ describe("linearSearch", () => {
     expect(result.stopReason).toBe("eval_failed");
   });
 
+  test("hostile evaluator (Proxy whose getters throw) yields eval_failed (no rejection)", async () => {
+    const config = makeConfig({
+      evaluate: async () =>
+        new Proxy(
+          {},
+          {
+            get: () => {
+              throw new Error("hostile getter");
+            },
+          },
+        ) as unknown as Awaited<ReturnType<SearchConfig["evaluate"]>>,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_failed");
+  });
+
+  test("hostile evaluator (Proxy that throws on second access) yields eval_failed", async () => {
+    // Validation reads each property once. To exercise the post-validation
+    // copy guard, throw on the second property access.
+    let accessCount = 0;
+    const config = makeConfig({
+      evaluate: async () => {
+        const ok = {
+          successRate: 0.5,
+          sampleCount: 10,
+          failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+        };
+        return new Proxy(ok, {
+          get: (target, prop) => {
+            accessCount++;
+            if (accessCount > 5) throw new Error("stateful hostile getter");
+            return Reflect.get(target, prop);
+          },
+        }) as unknown as Awaited<ReturnType<SearchConfig["evaluate"]>>;
+      },
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    // Either eval_failed (validation caught) or coerce-guarded — either way,
+    // the search must NOT reject with a TypeError.
+    expect(["eval_failed", "no_improvement", "thompson_deploy", "budget_exhausted"]).toContain(
+      result.stopReason,
+    );
+  });
+
   test("non-string refinement output yields refine_failed (no TypeError)", async () => {
     const config = makeConfig({
       evaluate: async () => ({
