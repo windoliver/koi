@@ -229,6 +229,15 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
       "[channel-telegram] webhook mode requires `webhookSecret` in TelegramChannelConfig (the value also passed to setWebhook). Without it any caller hitting the webhook URL can spoof updates.",
     );
   }
+  // claimWebhookUpdate without a release path turns any transient
+  // handler failure into permanent message loss: the durable claim
+  // row outlives the failed attempt and every Telegram retry hits
+  // "duplicate". Refuse the unsafe configuration at construction.
+  if (config.claimWebhookUpdate !== undefined && config.releaseWebhookClaim === undefined) {
+    throw new Error(
+      "[channel-telegram] claimWebhookUpdate requires releaseWebhookClaim in TelegramChannelConfig — without a release path, any handler failure permanently suppresses Telegram retries for that update_id and the message is lost.",
+    );
+  }
   // let requires justification: bot is created lazily inside platformConnect
   let bot: TelegramBotLike | undefined = config.bot;
   // let requires justification: registered listener invoked by handleUpdate
@@ -564,18 +573,19 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
         const seen = await config.seenWebhookUpdate(update.update_id);
         if (seen) return;
       }
+      // Handler-stage failures release the claim so Telegram retries
+      // can re-enter (handlers had not yet produced side effects, or
+      // the partial-delivery error class flagged the call as
+      // non-retryable). Post-handler failures (markWebhookProcessed
+      // throws AFTER handlers succeeded) MUST NOT release the claim —
+      // handlers already produced user-visible side effects (replies,
+      // tool calls, external writes) and re-entering on Telegram
+      // retry would duplicate them. The claim stays reserved and the
+      // operator advances it from "claimed" → "processed" out of
+      // band.
       try {
         await dispatchWebhook(update);
-        if (config.markWebhookProcessed !== undefined) {
-          await config.markWebhookProcessed(update.update_id);
-        }
       } catch (err: unknown) {
-        // Release the claim so the next Telegram retry can re-enter.
-        // Without this, a transient handler failure leaves the claim
-        // row permanently in place and every retry returns "duplicate"
-        // → permanent message loss. We log but don't rethrow release
-        // failures because the original processing error is what the
-        // HTTPS layer needs to see (it drives the non-200 → retry).
         if (usedClaim && config.releaseWebhookClaim !== undefined) {
           try {
             await config.releaseWebhookClaim(update.update_id);
@@ -587,6 +597,16 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
           }
         }
         throw err;
+      }
+      if (config.markWebhookProcessed !== undefined) {
+        // Errors here surface to the HTTPS layer (non-200 → Telegram
+        // retry) but the claim STAYS reserved: handlers already ran.
+        // The retry, when it arrives, will be caught by the operator's
+        // claim store as duplicate and silently 200'd, breaking the
+        // retry chain without re-running side effects. Operators
+        // recover the unmarked update_id out of band (audit log,
+        // claim-row TTL → processed sweep).
+        await config.markWebhookProcessed(update.update_id);
       }
     },
     resolveMediaUrl,

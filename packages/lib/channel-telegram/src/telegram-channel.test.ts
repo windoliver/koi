@@ -473,6 +473,61 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
+  test("webhook: claimWebhookUpdate without releaseWebhookClaim refuses to construct (fails closed)", () => {
+    const f = fakeBot();
+    expect(() =>
+      createTelegramChannel({
+        token: "T",
+        bot: f.bot,
+        deployment: { mode: "webhook" },
+        webhookSecret: "s",
+        claimWebhookUpdate: () => "claimed",
+        // releaseWebhookClaim intentionally omitted
+      }),
+    ).toThrow(/releaseWebhookClaim/);
+  });
+
+  test("webhook: markWebhookProcessed failure does NOT release the claim (handlers already produced side effects)", async () => {
+    const f = fakeBot();
+    const claims = new Set<number>();
+    const releases: number[] = [];
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "s",
+      claimWebhookUpdate: (id: number) => {
+        if (claims.has(id)) return "duplicate";
+        claims.add(id);
+        return "claimed";
+      },
+      releaseWebhookClaim: (id: number) => {
+        releases.push(id);
+        claims.delete(id);
+      },
+      markWebhookProcessed: async (): Promise<void> => {
+        throw new Error("commit-failed");
+      },
+    });
+    await adapter.connect();
+    let executions = 0;
+    adapter.onMessage(async () => {
+      executions++;
+    });
+    const update = {
+      update_id: 55,
+      message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+    };
+    await expect(adapter.handleWebhook("s", update)).rejects.toThrow(/commit-failed/);
+    // Claim stayed reserved — release was NOT called for the
+    // post-success bookkeeping failure, so a Telegram retry will be
+    // detected as a duplicate and not re-run the handler.
+    expect(releases).toHaveLength(0);
+    expect(claims.has(55)).toBe(true);
+    expect(executions).toBe(1);
+    await adapter.disconnect();
+  });
+
   test("webhook: handler failure releases the claim so Telegram retries can re-enter (no permanent loss)", async () => {
     const f = fakeBot();
     const claims = new Set<number>();
@@ -562,6 +617,9 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
         if (claimed.has(id)) return "duplicate";
         claimed.add(id);
         return "claimed";
+      },
+      releaseWebhookClaim: (id: number) => {
+        claimed.delete(id);
       },
     });
     await adapter.connect();
