@@ -213,11 +213,12 @@ const claimResult = await stub.fetch("https://do/claim", {
 const claim = await claimResult.json();
 // claim.status: "fresh" | "in-progress" | "completed" | "failed-permanent"
 if (claim.status === "completed") {
-  return new Response(JSON.stringify(claim.result), { status: claim.statusCode });
+  // Always 200; outcome encoded in X-Koi-Result-Kind. claim.statusCode is application-layer only — the handler chose to put it in the body if it cared.
+  return new Response(JSON.stringify(claim.result), { status: 200, headers: { "X-Koi-Result-Kind": "success" } });
 }
 if (claim.status === "failed-permanent") {
-  // Cached terminal failure — surface the same error every retry observes.
-  return new Response(JSON.stringify({ error: claim.error }), { status: 422, headers: { "X-Koi-Result-Kind": "failed-permanent" } });
+  // Cached terminal failure — surface the same error every retry observes. Always 200; outcome via header.
+  return new Response(JSON.stringify({ error: claim.error }), { status: 200, headers: { "X-Koi-Result-Kind": "failed-permanent" } });
 }
 if (claim.status === "in-progress") {
   // poll the DO until it transitions to a TERMINAL status (completed or failed-permanent) or timeout fires
@@ -284,23 +285,23 @@ const CHECK_OR_CLAIM_LUA = `
   local c = redis.call('GET', KEYS[3])
   if c then return 'claim:in-progress:'..c end
   redis.call('SET', KEYS[3], ARGV[1], 'EX', '15')
-  if not fp then redis.call('SET', KEYS[4], ARGV[2], 'EX', '86400') end
+  if not fp then redis.call('SET', KEYS[4], ARGV[2], 'EX', ARGV[3]) end -- ARGV[3] = retentionSec = (dedupeExpiresAtMs + 3_600_000 - now) / 1000
   return 'claim:fresh'
 `;
-const checkResult = await kvCommand("EVAL", [CHECK_OR_CLAIM_LUA, "4", resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint]);
+const initialRetentionSec = Math.floor((dedupeExpiresAtMs + 3_600_000 - Date.now()) / 1000);
+const checkResult = await kvCommand("EVAL", [CHECK_OR_CLAIM_LUA, "4", resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, String(initialRetentionSec)]);
 if (checkResult.startsWith("fingerprint-conflict:")) {
   // operationId was reused with a different payload OR handler version. Reject loudly — never
   // serve a stale-aliased result. Host-side adapter maps this to KoiError { code: "OPERATION_ID_CONFLICT" }.
   return new Response(JSON.stringify({ error: "OPERATION_ID_CONFLICT", storedFingerprint: checkResult.slice("fingerprint-conflict:".length) }), { status: 409, headers: { "X-Koi-Result-Kind": "operation-id-conflict" } });
 }
 if (checkResult.startsWith("result:")) {
-  return new Response(checkResult.slice("result:".length), { status: 200 });
+  return new Response(checkResult.slice("result:".length), { status: 200, headers: { "X-Koi-Result-Kind": "success" } });
 }
 if (checkResult.startsWith("failed:")) {
-  // Wire-shape parity with the Cloudflare failed-permanent path: 422 + { koi: { failed: true, error } }.
-  // Host-side mapping is identical for both providers — callers cannot distinguish.
+  // Always 200 — outcome carried in X-Koi-Result-Kind. Mapping is identical for both providers.
   const error = JSON.parse(checkResult.slice("failed:".length));
-  return new Response(JSON.stringify({ error }), { status: 422, headers: { "X-Koi-Result-Kind": "failed-permanent" } });
+  return new Response(JSON.stringify({ error }), { status: 200, headers: { "X-Koi-Result-Kind": "failed-permanent" } });
 }
 let claimGranted = checkResult === "claim:fresh";
 if (checkResult.startsWith("claim:in-progress:")) {
@@ -311,7 +312,7 @@ if (checkResult.startsWith("claim:in-progress:")) {
   //   { kind: "timeout" }                 → return 504 to caller
   const wait = await waitForTerminal(resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, timeoutMs);
   if (wait.kind === "completed") return new Response(wait.body, { status: 200, headers: { "X-Koi-Result-Kind": "success" } });
-  if (wait.kind === "failed") return new Response(wait.body, { status: 422, headers: { "X-Koi-Result-Kind": "failed-permanent" } });
+  if (wait.kind === "failed") return new Response(wait.body, { status: 200, headers: { "X-Koi-Result-Kind": "failed-permanent" } });
   if (wait.kind === "timeout") return new Response(JSON.stringify({ error: "TIMEOUT" }), { status: 504, headers: { "X-Koi-Result-Kind": "timeout" } });
   // wait.kind === "takeover" — proceed to the handler path below as if claim:fresh.
   claimGranted = true;
@@ -359,10 +360,13 @@ try {
   // FAILED-PERMANENT path: ownership-checked terminal write to failedKey + claim release.
   // Symmetric with COMMIT_LUA below; produces the same fleet-wide cached terminal that future
   // claim/wait paths return as { kind: "failed", body }.
+  // retentionSec = (dedupeExpiresAtMs + 3_600_000 - now) / 1000 — the caller-supplied retry horizon plus 1h grace.
+  const retentionSec = Math.floor((dedupeExpiresAtMs + 3_600_000 - Date.now()) / 1000);
+
   if (outcome === "failed-permanent") {
     const FAIL_LUA = `
       if redis.call('GET', KEYS[1]) == ARGV[1] then
-        redis.call('SET', KEYS[2], ARGV[2], 'EX', 86400)
+        redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
         redis.call('DEL', KEYS[1])
         return 1
       else
@@ -370,18 +374,18 @@ try {
       end
     `;
     const failedJson = body; // body = JSON-encoded error envelope from Worker B
-    const failCommitted = await kvCommand("EVAL", [FAIL_LUA, "2", claimKey, failedKey, requestId, failedJson]);
+    const failCommitted = await kvCommand("EVAL", [FAIL_LUA, "2", claimKey, failedKey, requestId, failedJson, String(retentionSec)]);
     if (failCommitted === 0) {
       console.warn("DEDUPE_OWNERSHIP_LOST_AT_FAIL_COMMIT", { operationId, requestId });
       return new Response(JSON.stringify({ koi: { error: "OWNERSHIP_LOST" } }), { status: 503 });
     }
-    return new Response(failedJson, { status: 422, headers: { "X-Koi-Result-Kind": "failed-permanent" } });
+    return new Response(failedJson, { status: 200, headers: { "X-Koi-Result-Kind": "failed-permanent" } });
   }
 
   // 4. Atomic ownership-checked commit via Lua EVAL: write result + delete claim ONLY IF still owned.
   const COMMIT_LUA = `
     if redis.call('GET', KEYS[1]) == ARGV[1] then
-      redis.call('SET', KEYS[2], ARGV[2], 'EX', 86400)
+      redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
       redis.call('DEL', KEYS[1])
       return 1
     else
@@ -396,14 +400,14 @@ try {
     console.error("DEDUPE_RESULT_TOO_LARGE", { operationId, size: resultJson.length });
     return new Response(JSON.stringify({ koi: { error: "RESULT_TOO_LARGE", maxBytes: MAX_DEDUPE_RESULT_BYTES } }), { status: 503 });
   }
-  const committed = await kvCommand("EVAL", [COMMIT_LUA, "2", claimKey, resultKey, requestId, resultJson]);
+  const committed = await kvCommand("EVAL", [COMMIT_LUA, "2", claimKey, resultKey, requestId, resultJson, String(retentionSec)]);
   if (committed === 0) {
     // Lost ownership between handler completion and commit attempt. Don't write result; another
     // isolate will produce its own result. Side effects may have leaked (workload-class accepts).
     console.warn("DEDUPE_OWNERSHIP_LOST_AT_COMMIT", { operationId, requestId });
     return new Response(JSON.stringify({ koi: { error: "OWNERSHIP_LOST" } }), { status: 503 });
   }
-  return new Response(resultJson, { status: 200 });
+  return new Response(resultJson, { status: 200, headers: { "X-Koi-Result-Kind": "success" } });
 } catch (err) {
   clearInterval(heartbeat);
   // Don't cache transient handler errors. Ownership-checked DEL only.
@@ -433,7 +437,8 @@ async function waitForTerminal(resultKey, failedKey, claimKey, fingerprintKey, r
     // No terminal state observed via standalone GETs. Atomically check claim AND terminal keys
     // in one Lua script — terminal results that appeared in the gap between the GETs and the EVAL
     // are returned by CHECK_OR_CLAIM_LUA and MUST be honored, not ignored.
-    const reclaim = await kvCommand("EVAL", [CHECK_OR_CLAIM_LUA, "4", resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint]);
+    const reclaimRetentionSec = Math.floor((dedupeExpiresAtMs + 3_600_000 - Date.now()) / 1000);
+    const reclaim = await kvCommand("EVAL", [CHECK_OR_CLAIM_LUA, "4", resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, String(reclaimRetentionSec)]);
     if (reclaim.startsWith("fingerprint-conflict:")) {
       // Cannot happen for a legitimate waiter — would mean operationId aliased mid-wait. Surface loudly.
       return { kind: "operation-id-conflict", storedFingerprint: reclaim.slice("fingerprint-conflict:".length) };
