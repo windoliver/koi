@@ -205,6 +205,49 @@ describe("createWhatsAppChannel", () => {
     expect(issues).toEqual([{ kind: "malformed-entry", count: 1 }]);
   });
 
+  test("messages[] present but metadata.phone_number_id missing → 400 + malformed-entry issue", async () => {
+    // Regression: when a message-bearing webhook arrived with a valid
+    // entry but no `metadata.phone_number_id`, the previous code
+    // silently 200-acked and dropped every contained message. Now the
+    // missing pid counts each message as malformed; with no valid
+    // siblings the response is 400 + onIngressIssue so the Meta-side
+    // schema regression is visible to operators.
+    const issues: unknown[] = [];
+    const deps: WhatsAppDependencies = {
+      ...buildDeps(),
+      onIngressIssue: (i) => issues.push(i),
+    };
+    const ch = createWhatsAppChannel(config, deps);
+    const body = JSON.stringify({
+      object: "whatsapp_business_account",
+      entry: [
+        {
+          id: "biz-1",
+          changes: [
+            {
+              value: {
+                metadata: {},
+                messages: [
+                  {
+                    id: "wamid.NOPID",
+                    from: "15551234567",
+                    timestamp: "1700000000",
+                    type: "text",
+                    text: { body: "hello" },
+                  },
+                ],
+              },
+              field: "messages",
+            },
+          ],
+        },
+      ],
+    });
+    const res = await ch.handleHttpRequest(makePostRequest(body));
+    expect(res.status).toBe(400);
+    expect(issues).toEqual([{ kind: "malformed-entry", count: 1 }]);
+  });
+
   test("envelope-shape drift: 400 + onIngressIssue, not silent 200", async () => {
     // Regression: a missing `entry` array (Meta schema regression,
     // proxy truncation) used to silently 200-ack with no operator

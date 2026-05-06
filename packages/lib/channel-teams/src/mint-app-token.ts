@@ -17,7 +17,30 @@
  * production blocker.
  */
 
-import type { TeamsConfig } from "./config.js";
+import type { CloudProfile, TeamsConfig } from "./config.js";
+
+function resolveCloudEndpoints(cloud: CloudProfile): { tenant: string; scope: string } {
+  if (cloud === "public") {
+    return {
+      tenant: "botframework.com",
+      scope: "https://api.botframework.com/.default",
+    };
+  }
+  if (cloud === "gov") {
+    return {
+      tenant: "botframework.azure.us",
+      scope: "https://api.botframework.us/.default",
+    };
+  }
+  // Inline cloud profile: callers supply explicit issuer/jwksUri for
+  // verification, but the mint endpoints come from options or fall
+  // through to the public defaults if neither is supplied. Inline
+  // profiles SHOULD pass options.tenant/options.scope explicitly.
+  return {
+    tenant: "botframework.com",
+    scope: "https://api.botframework.com/.default",
+  };
+}
 
 export type MintAppTokenOptions = {
   readonly tenant?: string;
@@ -31,11 +54,22 @@ export type MintAppTokenOptions = {
 type CachedToken = { readonly token: string; readonly expiresAt: number };
 
 export function createBotFrameworkAppTokenMinter(
-  config: Pick<TeamsConfig, "appId" | "appPassword">,
+  config: Pick<TeamsConfig, "appId" | "appPassword" | "cloud">,
   options: MintAppTokenOptions = {},
 ): () => Promise<string> {
-  const tenant = options.tenant ?? "botframework.com";
-  const scope = options.scope ?? "https://api.botframework.com/.default";
+  // Derive tenant + scope from the configured cloud profile.
+  // Public cloud authenticates via `botframework.com` against the
+  // `https://api.botframework.com/.default` resource. US Gov cloud
+  // authenticates via `botframework.azure.us` against
+  // `https://api.botframework.us/.default`. Hardcoding public-cloud
+  // values would let a gov-cloud webhook authenticate (issuer
+  // accepted by the verifier) but every outbound send fail at the
+  // wrong authority — a silent gov-deployment outage. Inline
+  // overrides remain available via options.tenant/options.scope for
+  // private-cloud or test scenarios.
+  const cloudDefaults = resolveCloudEndpoints(config.cloud);
+  const tenant = options.tenant ?? cloudDefaults.tenant;
+  const scope = options.scope ?? cloudDefaults.scope;
   const fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
   const clock = options.clock ?? Date.now;
   const refreshSkewMs = options.refreshSkewMs ?? 60_000;

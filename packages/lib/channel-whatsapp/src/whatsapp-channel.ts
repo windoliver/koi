@@ -178,10 +178,24 @@ function extractMessages(parsed: unknown): ExtractResult {
           : null;
       const phoneNumberId =
         meta && typeof meta.phone_number_id === "string" ? meta.phone_number_id : null;
-      if (phoneNumberId === null) continue;
-      if (!("messages" in value)) continue;
+      if (!("messages" in value)) {
+        // No messages on this change — status callback or other
+        // notification. metadata.phone_number_id absence is expected
+        // here and not a malformed condition.
+        continue;
+      }
       const msgs: unknown = value.messages;
       if (!Array.isArray(msgs)) continue;
+      if (phoneNumberId === null) {
+        // messages[] present but metadata.phone_number_id missing:
+        // this is schema drift / partial corruption on a message-
+        // bearing webhook. Counting each message as malformed
+        // surfaces the failure via onIngressIssue and triggers a
+        // 4xx response upstream — silently 200-acking would lose
+        // every contained user message with no operator signal.
+        malformed += msgs.length;
+        continue;
+      }
       for (const m of msgs) {
         if (isWhatsAppMessage(m)) {
           out.push({ message: m, phoneNumberId });
@@ -313,9 +327,18 @@ export function createWhatsAppChannel(
       items.push({ msg, key: dedupeKey(phoneNumberId, msg), normalized: norm.value });
     }
     if (items.length === 0) {
-      // Nothing valid to enqueue (status callback, all entries
-      // malformed/mismatched, or empty messages[]). 200-ack so Meta
-      // stops retrying — issues already surfaced via onIngressIssue.
+      // Nothing valid to enqueue. Distinguish two sub-cases:
+      //   (a) all-malformed batch (malformedCount > 0 and zero valid
+      //       siblings): return 400 so the producer regression is
+      //       visible. Meta does not retry 4xx but 200-acking would
+      //       drop every contained user message with no operator
+      //       signal at all.
+      //   (b) empty batch / status callback / phone_number_id
+      //       mismatch: 200-ack so Meta stops retrying. Issues
+      //       already surfaced via onIngressIssue.
+      if (extracted.malformedCount > 0) {
+        return new Response("INVALID_PAYLOAD: all entries malformed", { status: 400 });
+      }
       return new Response(null, { status: 200 });
     }
 

@@ -42,6 +42,7 @@ export type TeamsErrorCode =
   | "SERVICE_URL_NOT_ALLOWED"
   | "INVALID_ACTIVITY"
   | "SEND_FAILED"
+  | "UNSUPPORTED_BLOCK"
   | "CONVERSATION_ADDRESS_UNKNOWN";
 
 export type TeamsDependencies = {
@@ -332,10 +333,15 @@ export function createTeamsChannel(
           `CONVERSATION_ADDRESS_UNKNOWN: no stored address for routing key ${addressKey}`,
         );
       }
+      const formatted = formatOutbound(message);
+      if (!formatted.ok) {
+        throw new Error(`${formatted.error.code}: ${formatted.error.message}`, {
+          cause: formatted.error,
+        });
+      }
       const bearer = await deps.tokenVerifier.appToken();
-      const payload = formatOutbound(message);
       const r = await sendActivity(deps.fetch, address, address.conversationId, bearer, {
-        ...payload,
+        ...formatted.value,
       });
       if (!r.ok) {
         throw new Error(`${r.error.code}: ${r.error.message}`, { cause: r.error });
