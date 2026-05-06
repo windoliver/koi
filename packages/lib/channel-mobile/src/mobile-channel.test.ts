@@ -1239,6 +1239,74 @@ describe("createMobileChannel", () => {
     await chB.disconnect();
   });
 
+  test("trustClientIdentity: malformed frame.senderId values drop the frame", async () => {
+    // Regression: round-6 trust-mode promoted frame.senderId into
+    // activeIdentity / signed metadata with no runtime validation, so a
+    // hostile client could inject a number / null / "" identity via
+    // JSON.parse and corrupt every downstream HMAC + push routing
+    // decision. Trust-mode now requires a non-empty string; malformed
+    // shapes drop the frame entirely.
+    const port = await freePort();
+    const ch = createMobileChannel({ port, trustClientIdentity: true });
+    const received: InboundMessage[] = [];
+    ch.onMessage(async (m: InboundMessage) => {
+      received.push(m);
+    });
+    await ch.connect();
+    const ws = await openWs(port);
+    const malformed: ReadonlyArray<unknown> = [42, null, "", { evil: true }, []];
+    for (const senderId of malformed) {
+      ws.send(
+        JSON.stringify({
+          kind: "msg",
+          content: [{ kind: "text", text: "x" }],
+          senderId,
+        }),
+      );
+    }
+    ws.send(
+      JSON.stringify({
+        kind: "msg",
+        content: [{ kind: "text", text: "ok" }],
+        senderId: "device-good",
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    expect(received).toHaveLength(1);
+    expect(received[0]?.senderId).toBe("device-good");
+    ws.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
+  test("inbound size cap is enforced on UTF-8 bytes, not UTF-16 code units", async () => {
+    // Regression: round-6 used line.length (UTF-16 code units) so a
+    // frame full of multi-byte chars (CJK, emoji at 4 bytes/char) could
+    // exceed the documented 64 KiB cap by 3-4x and still parse,
+    // bypassing the only memory guard at this trust boundary.
+    const port = await freePort();
+    const ch = createMobileChannel({ port });
+    const received: InboundMessage[] = [];
+    ch.onMessage(async (m: InboundMessage) => {
+      received.push(m);
+    });
+    await ch.connect();
+    const ws = await openWs(port);
+    // 4-byte emoji repeated until the frame is well over 64 KiB in
+    // bytes but ~half that in code units (each emoji is 2 code units).
+    // A length-only check would let this through.
+    const fatEmojiText = "\u{1F600}".repeat(20_000); // ~80 KB UTF-8, ~40k code units
+    ws.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: fatEmojiText }] }));
+    // A small well-formed frame still passes.
+    ws.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: "ok" }] }));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(received).toHaveLength(1);
+    expect((received[0]?.content[0] as TextBlock | undefined)?.text).toBe("ok");
+    ws.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
   test("hung authenticate() releases the reservation slot via timeout", async () => {
     // Regression: a hung IdP would hold pendingUpgrades=1 forever and
     // wedge the channel until process restart. authenticateTimeoutMs

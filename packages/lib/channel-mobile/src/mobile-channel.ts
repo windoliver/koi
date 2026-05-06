@@ -820,7 +820,10 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
     },
     normalize: (line: string): InboundMessage | null => {
       // Bound memory pressure from oversized client frames before parsing.
-      if (line.length > MAX_INBOUND_FRAME_BYTES) return null;
+      // Use UTF-8 byte length, NOT string.length (UTF-16 code units), so
+      // multi-byte payloads (CJK, emoji) cannot exceed the documented cap
+      // by 3-4x and bypass the only memory guard at this trust boundary.
+      if (Buffer.byteLength(line, "utf8") > MAX_INBOUND_FRAME_BYTES) return null;
       try {
         const frame = JSON.parse(line) as InboundFrame;
         if (frame.kind !== "msg") return null;
@@ -831,6 +834,20 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         // ContentBlock[].
         const content = validateContentBlocks(rawContent);
         if (content === null) return null;
+        // Trust-mode senderId validation: a buggy or hostile client could
+        // emit a non-string / empty / null senderId via JSON.parse. The
+        // InboundMessage contract requires a string and HMAC signing /
+        // push routing assume a real identity. Drop the frame if trust
+        // mode is on AND a present-but-malformed senderId is supplied;
+        // an absent field is fine (falls back to defaults). When trust
+        // mode is off the client field is ignored entirely, so no check.
+        if (
+          trustClient &&
+          frame.senderId !== undefined &&
+          (typeof frame.senderId !== "string" || frame.senderId.length === 0)
+        ) {
+          return null;
+        }
         // Identity precedence: server-authenticated handshake wins over
         // client-supplied (even when trusted) wins over host placeholder.
         // The authenticate() identity is the strongest server-side signal.
