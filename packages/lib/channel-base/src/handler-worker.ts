@@ -15,10 +15,20 @@ export type HandlerInput<P, N> = {
   readonly normalized: N;
 };
 
+/**
+ * `signal` aborts when the worker loses ownership (lease/queue-claim
+ * renewal failure) or hits `handlerTimeoutMs`. Handlers that perform
+ * non-idempotent side effects (outbound sends, durable writes) MUST
+ * honour the signal — otherwise a successor claim may execute the
+ * handler concurrently, violating dedupe guarantees. Pure or naturally
+ * idempotent handlers can ignore it.
+ */
+export type Handler<P, N> = (input: HandlerInput<P, N>, signal: AbortSignal) => Promise<void>;
+
 export type HandlerWorkerOptions<P, N> = {
   readonly queue: IngressQueue<P, N>;
   readonly idempotencyStore: IdempotencyStore;
-  readonly handler: (item: HandlerInput<P, N>) => Promise<void>;
+  readonly handler: Handler<P, N>;
   readonly commitTtlMs: number;
   readonly handlerTimeoutMs: number;
   readonly leaseMs?: number;
@@ -84,11 +94,14 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
       }, renewerInterval);
       try {
         const handlerResult = await runWithOwnership(
-          opts.handler({
-            key: claimed.key,
-            payload: claimed.payload,
-            normalized: claimed.normalized,
-          }),
+          opts.handler(
+            {
+              key: claimed.key,
+              payload: claimed.payload,
+              normalized: claimed.normalized,
+            },
+            ownership.signal,
+          ),
           opts.handlerTimeoutMs,
           ownership.signal,
         );

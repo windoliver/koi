@@ -9,10 +9,9 @@
 import {
   type ConversationAddress,
   type ConversationAddressStore,
-  handleWebhookIngress,
   type IdempotencyStore,
   type IngressQueue,
-  type VerifyResult as IngressVerifyResult,
+  type Lease,
   startHandlerWorker,
 } from "@koi/channel-base";
 import type {
@@ -63,89 +62,27 @@ const TEAMS_CAPABILITIES: ChannelCapabilities = {
   supportsA2ui: false,
 };
 
-const DEFAULT_LEASE_MS = 30_000;
-const DEFAULT_INFLIGHT_WAIT_MS = 2_000;
+const WEBHOOK_LEASE_MS = 30_000;
+const INFLIGHT_WAIT_MS = 2_000;
 
-function dedupeKey(activity: Activity, fallbackTenant: string): string {
-  const tid = activity.conversation.tenantId ?? fallbackTenant;
-  return `${activity.channelId}|${tid}|${activity.conversation.id}|${activity.id}`;
+function dedupeKey(channelId: string, tenantId: string, activity: Activity): string {
+  return `${channelId}|${tenantId}|${activity.conversation.id}|${activity.id}`;
 }
 
 type HandlerRef = { current: MessageHandler | null };
 
 function dispatchInbound(
   ref: HandlerRef,
-): (item: { readonly normalized: InboundMessage }) => Promise<void> {
-  return async ({ normalized }) => {
+): (item: { readonly normalized: InboundMessage }, signal: AbortSignal) => Promise<void> {
+  return async ({ normalized }, signal) => {
+    if (signal.aborted) return;
     const handler = ref.current;
     if (handler) await handler(normalized);
   };
 }
 
-function buildVerify(deps: TeamsDependencies): (request: Request) => Promise<IngressVerifyResult> {
-  return async (request) => {
-    // `let` justified: body capture inside try/catch.
-    let raw: string;
-    try {
-      raw = await request.clone().text();
-    } catch {
-      return { ok: false, status: 401, message: "unreadable body" };
-    }
-    // `let` justified: parse may throw.
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return { ok: false, status: 401, message: "invalid json" };
-    }
-    const serviceUrl =
-      typeof parsed === "object" &&
-      parsed !== null &&
-      "serviceUrl" in parsed &&
-      typeof parsed.serviceUrl === "string"
-        ? parsed.serviceUrl
-        : "";
-    const auth = request.headers.get("authorization") ?? "";
-    const r = await deps.tokenVerifier.verify(auth, { serviceUrl });
-    if (!r.ok) return { ok: false, status: 401, message: r.code };
-    return { ok: true };
-  };
-}
-
-function buildParsePayload(
-  config: TeamsConfig,
-  deps: TeamsDependencies,
-  clock: () => number,
-): (
-  request: Request,
-) => Promise<{ readonly payload: Activity; readonly normalized: InboundMessage }> {
-  return async (request) => {
-    const body = await request.text();
-    const parsed = JSON.parse(body) as Activity;
-    const fallbackTenant = config.tenantAllowlist[0] ?? "";
-    const norm = normalizeActivity(parsed, clock, fallbackTenant);
-    if (!norm.ok) {
-      throw new Error(`INVALID_ACTIVITY: ${norm.error.message}`);
-    }
-    const tenantId = parsed.conversation.tenantId ?? fallbackTenant;
-    const address: ConversationAddress = {
-      serviceUrl: parsed.serviceUrl,
-      tenantId,
-      channelId: parsed.channelId,
-      conversationId: parsed.conversation.id,
-      recipient: {
-        id: parsed.from.id,
-        ...(parsed.from.name !== undefined ? { name: parsed.from.name } : {}),
-      },
-      lastSeenAt: clock(),
-    };
-    // Store under the composite routing key so a later send() can resolve
-    // the correct serviceUrl/tenant pair. Bot Framework's conversation.id
-    // is not globally unique across tenants/channels.
-    const addressKey = composeConversationKey(parsed.channelId, tenantId, parsed.conversation.id);
-    await deps.conversationAddressStore.put(addressKey, address);
-    return { payload: parsed, normalized: norm.value };
-  };
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 export function createTeamsChannel(
@@ -160,20 +97,100 @@ export function createTeamsChannel(
   let stopWorker: (() => Promise<void>) | null = null;
   let connected = false;
 
-  const verify = buildVerify(deps);
-  const parsePayload = buildParsePayload(config, deps, clock);
-
   const handleHttpRequest = async (request: Request): Promise<Response> => {
-    return handleWebhookIngress<Activity, InboundMessage>({
-      request,
-      verify,
-      extractKey: (activity) => dedupeKey(activity, fallbackTenant),
-      parsePayload,
-      idempotencyStore: deps.idempotencyStore,
-      ingressQueue: deps.ingressQueue,
-      leaseMs: DEFAULT_LEASE_MS,
-      inFlightWaitMs: DEFAULT_INFLIGHT_WAIT_MS,
+    // Read body once; verify JWT against header + serviceUrl; if any
+    // verified-claim disagreement with body fields, reject. Routing keys
+    // are derived from VERIFIED claims (not body), so a tampered body
+    // cannot point a reply at the wrong tenant.
+    let raw: string;
+    try {
+      raw = await request.text();
+    } catch {
+      return new Response("unreadable body", { status: 400 });
+    }
+    let parsed: Activity;
+    try {
+      parsed = JSON.parse(raw) as Activity;
+    } catch {
+      return new Response("invalid json", { status: 400 });
+    }
+    const auth = request.headers.get("authorization") ?? "";
+    const verifyResult = await deps.tokenVerifier.verify(auth, {
+      serviceUrl: parsed.serviceUrl ?? "",
     });
+    if (!verifyResult.ok) {
+      return new Response(verifyResult.code, { status: 401 });
+    }
+    // Bind routing identity to the verified `tid` claim. If the body's
+    // tenantId is present and disagrees with the claim, reject — that is
+    // a tenant-isolation guarantee, not a parser nicety.
+    const verifiedTid = verifyResult.claims.tid;
+    const bodyTid = parsed.conversation.tenantId;
+    if (typeof bodyTid === "string" && bodyTid !== verifiedTid) {
+      return new Response("tenant-claim-mismatch", { status: 401 });
+    }
+    const tenantId = verifiedTid;
+    const norm = normalizeActivity(parsed, clock, fallbackTenant);
+    if (!norm.ok) {
+      return new Response(`INVALID_ACTIVITY: ${norm.error.message}`, { status: 400 });
+    }
+    // Re-derive the threadId from VERIFIED claims so it matches the
+    // address-store key written below.
+    const addressKey = composeConversationKey(parsed.channelId, tenantId, parsed.conversation.id);
+    const normalized: InboundMessage = { ...norm.value, threadId: addressKey };
+
+    const key = dedupeKey(parsed.channelId, tenantId, parsed);
+
+    // Claim BEFORE side-effectful persistence: a duplicate/replay must
+    // not be allowed to overwrite the stored conversation address.
+    const begin = await deps.idempotencyStore.tryBegin(key, WEBHOOK_LEASE_MS);
+    if (!begin.ok && begin.reason === "committed") {
+      return new Response(null, { status: 200 });
+    }
+    if (!begin.ok && begin.reason === "in-flight") {
+      const t0 = Date.now();
+      while (Date.now() - t0 < INFLIGHT_WAIT_MS) {
+        await sleep(5);
+        const r2 = await deps.idempotencyStore.tryBegin(key, WEBHOOK_LEASE_MS);
+        if (!r2.ok && r2.reason === "committed") {
+          return new Response(null, { status: 200 });
+        }
+        if (r2.ok) {
+          // We won the race; promote and proceed via the same path below
+          // by reassigning `begin` semantics.
+          // (keep loop body minimal — fall through after break)
+          await persistAndEnqueue(r2.lease);
+          return new Response(null, { status: 200 });
+        }
+      }
+      return new Response("in-flight", { status: 503 });
+    }
+    if (!begin.ok && begin.reason === "capacity-exhausted") {
+      return new Response("capacity", { status: 503 });
+    }
+    if (!begin.ok) return new Response("unknown", { status: 500 });
+
+    await persistAndEnqueue(begin.lease);
+    return new Response(null, { status: 200 });
+
+    async function persistAndEnqueue(lease: Lease): Promise<void> {
+      // Address persistence is part of the post-claim path so a replayed
+      // webhook cannot overwrite the latest stored address with stale data.
+      const address: ConversationAddress = {
+        serviceUrl: parsed.serviceUrl,
+        tenantId,
+        channelId: parsed.channelId,
+        conversationId: parsed.conversation.id,
+        recipient: {
+          id: parsed.from.id,
+          ...(parsed.from.name !== undefined ? { name: parsed.from.name } : {}),
+        },
+        lastSeenAt: clock(),
+      };
+      await deps.conversationAddressStore.put(addressKey, address);
+      await deps.ingressQueue.enqueue(key, { key, payload: parsed, normalized });
+      await deps.idempotencyStore.abort(lease).catch(() => {});
+    }
   };
 
   const adapter: TeamsChannelAdapter = {

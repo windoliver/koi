@@ -101,14 +101,16 @@ function deriveDomain(from: string): string {
 
 type HandlerRef = { current: MessageHandler | null };
 
-function dispatchInbound(
-  handlerRef: HandlerRef,
-): (item: {
-  readonly key: string;
-  readonly payload: InboundEnvelope;
-  readonly normalized: InboundMessage;
-}) => Promise<void> {
-  return async ({ normalized }) => {
+function dispatchInbound(handlerRef: HandlerRef): (
+  item: {
+    readonly key: string;
+    readonly payload: InboundEnvelope;
+    readonly normalized: InboundMessage;
+  },
+  signal: AbortSignal,
+) => Promise<void> {
+  return async ({ normalized }, signal) => {
+    if (signal.aborted) return;
     const handler = handlerRef.current;
     if (!handler) return;
     await handler(normalized);

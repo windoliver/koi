@@ -69,8 +69,9 @@ type HandlerRef = { current: MessageHandler | null };
 
 function dispatchInbound(
   ref: HandlerRef,
-): (item: { readonly normalized: InboundMessage }) => Promise<void> {
-  return async ({ normalized }) => {
+): (item: { readonly normalized: InboundMessage }, signal: AbortSignal) => Promise<void> {
+  return async ({ normalized }, signal) => {
+    if (signal.aborted) return;
     const handler = ref.current;
     if (handler) await handler(normalized);
   };
