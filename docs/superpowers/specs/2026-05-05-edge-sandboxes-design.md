@@ -124,7 +124,7 @@ A future `sandbox-edge-router` package can offer cross-provider selection betwee
 
 ### Existing L3 doc reconciliation
 
-`docs/L3/sandbox-stack.md` (lines ~308-337) currently documents `createCloudflareAdapter` and `createVercelAdapter` as returning `SandboxAdapter` via `createCloudSandbox()`. This is a forward-looking placeholder from a prior planning pass — the v2 packages do not exist yet on `main`. The L3 doc MUST be updated as part of this PR to reflect the actual contract being shipped:
+`docs/L3/sandbox-stack.md` (lines ~308-337) currently documents `createCloudflareAdapter` and `createVercelAdapter` as returning `SandboxAdapter` via `createCloudSandbox()`. This is a forward-looking placeholder from a prior planning pass — the v2 packages do not exist yet on `main`. The L3 doc MUST be updated as part of **PR 2** (kernel + runtime extension), NOT PR 1 (this spec). PR 1 ships the design doc only and does not modify any existing repo contract docs; PR 2 reconciles `docs/L3/sandbox-stack.md` atomically with the introduction of `EdgeFunctionAdapter` types in `@koi/core`. The intermediate state on `main` after PR 1 merge is: this design doc explicitly notes that `docs/L3/sandbox-stack.md` is stale pending PR 2, and PR 2's CI gate refuses to merge unless the L3 doc reconciliation is included in the same PR. This is the single authoritative scoping rule; if PR 1 ever needs to ship the L3 reconciliation, the PR-1 row in the delivery table below is updated explicitly. Until PR 2 lands, `main` carries this design doc + the stale L3 doc with a marker pointing at this spec — not two competing authoritative contracts:
 
 - The packages return `EdgeFunctionAdapter`, not `SandboxAdapter`.
 - They are NOT consumed by `createCloudSandbox()` or by `@koi/sandbox-router`.
@@ -274,20 +274,29 @@ const stub = KOI_DEDUPE_DO.get(KOI_DEDUPE_DO.idFromName(dedupeKey));
 // payload returns OPERATION_ID_CONFLICT. handlerCodeHash and pairUUID are intentionally excluded.
 //
 // CANONICALIZATION (mandatory; same algorithm at every call site, host AND shim):
-// payloadCanonical = jcs(payload) — RFC 8785 JSON Canonicalization Scheme (JCS).
-// Specifically: object keys sorted lexicographically by code-point order; numbers normalized
-// per ES6 Number.prototype.toString (no trailing zeros, no +0/-0 distinction); UTF-8 encoding;
-// no whitespace; strings UTF-16-encoded then UTF-8-output. The result is BYTES, hashed directly:
-//   payloadCanonical = textEncoderUtf8(jcs(payload))
-//   dedupeFingerprint = sha256(textEncoderUtf8(`${ownerId}:`) || sha256(payloadCanonical))
-// JCS is normative because two semantically-identical JSON values (e.g., {a:1,b:2} vs {b:2,a:1})
-// MUST produce the same fingerprint — without canonicalization, legitimate retries from different
-// JS runtimes or library versions could false-conflict as OPERATION_ID_CONFLICT.
+// payloadCanonical = utf8Bytes(jcs(payload)) — RFC 8785 JSON Canonicalization Scheme (JCS),
+// then UTF-8 encoded to BYTES. Object keys sorted lexicographically by code-point order;
+// numbers normalized per ES6 Number.prototype.toString (no trailing zeros, no +0/-0 distinction);
+// no whitespace; strings UTF-16-encoded then UTF-8-output.
+//
+// FINGERPRINT (normative byte-level algorithm — single authoritative construction):
+//   ownerIdBytes = utf8Bytes(ownerId + ":")
+//   payloadHash = sha256_raw(payloadCanonical)        // 32 RAW bytes, NOT hex
+//   dedupeFingerprint_bytes = sha256_raw(concat(ownerIdBytes, payloadHash))  // 32 RAW bytes
+//   dedupeFingerprint = base16Lower(dedupeFingerprint_bytes)  // wire/storage form: lowercase hex
+// "Concat" here is byte concatenation, not string interpolation. The inner SHA-256 is consumed as
+// RAW digest bytes, not as a hex-text representation. Earlier prose that read like
+// `sha256(\`${ownerId}:${sha256(payloadCanonical)}\`)` is non-normative shorthand and is REMOVED;
+// the byte-level construction above is the single source of truth, used identically by host,
+// Cloudflare shim, and Vercel shim. JCS is normative because two semantically-identical JSON
+// values (e.g., {a:1,b:2} vs {b:2,a:1}) MUST produce the same fingerprint.
 // Adversarial test (mandatory): __tests__/dedupe-fingerprint-jcs.test.ts asserts (a) {a:1,b:2}
 // and {b:2,a:1} produce identical fingerprints, (b) numeric edge cases (0 vs -0, 1.0 vs 1)
 // canonicalize identically, (c) the host's bun:test JCS implementation and the shim's bundled
-// JCS produce byte-identical output for a 100-vector corpus.
-const dedupeFingerprint = sha256(`${ownerId}:${sha256(payloadCanonical)}`);
+// JCS produce byte-identical fingerprints for a 100-vector corpus, (d) cross-checks the
+// host-computed fingerprint against shim-computed fingerprint over the same corpus to prove
+// the byte-level construction is consistent.
+const dedupeFingerprint = computeDedupeFingerprint(ownerId, payload); // single helper, normative
 const claimResult = await stub.fetch("https://do/claim", {
   method: "POST",
   body: JSON.stringify({ operationId, requestId, dedupeFingerprint, dedupeExpiresAtMs }),
@@ -314,11 +323,15 @@ if (claim.status === "in-progress") {
   // The caller's waiterTimeoutMs is host-local-only and is NEVER forwarded to Worker A.
   // Worker A bounds its own in-isolate poll at 25s so the host has 5s of remaining waiterTimeoutMs slack
   // for network RTT before the host's 30s default waiter cap fires.
-  // waitForTerminal does NOT take dedupeExpiresAtMs — the DO RPC reads expiry from the ledger row.
-  // The request's dedupeExpiresAtMs (if any) is sent in the body of each poll RPC so the DO can
-  // detect EXPIRY_HORIZON_MISMATCH against the ledger and short-circuit; that is the only place
-  // request expiry is observed, and it is observed only to detect mismatch — never to authorize.
-  return await waitForTerminal(stub, operationId, requestId, SHIM_POLL_DEADLINE_MS);
+  // waitForTerminal does NOT take expiry as an authorization input. It optionally accepts a
+  // requestExpiryClaim used SOLELY for mismatch detection (compared against the ledger's stored
+  // originalDedupeExpiresAtMs inside the DO RPC). If the caller passes the request's
+  // dedupeExpiresAtMs as requestExpiryClaim, the DO returns operation-id-conflict on mismatch;
+  // if the caller omits it, the waiter still enforces hard-cutoff against the ledger but skips
+  // the mismatch-detection short-circuit. The waiter NEVER authorizes a wait on the basis of a
+  // caller-supplied expiry. Single-contract signature:
+  //   waitForTerminal(stub, operationId, requestId, requestExpiryClaim, timeoutMs)
+  return await waitForTerminal(stub, operationId, requestId, dedupeExpiresAtMs, SHIM_POLL_DEADLINE_MS);
 }
 // claim.status === "fresh" — this isolate owns the operation
 const result = await handler({ payload, operationId, requestId });
@@ -334,7 +347,7 @@ return new Response(JSON.stringify(result), { status: 200, headers: { "X-Koi-Res
 
 Every shim response — fresh-owner success, terminal-cache hit, waiter-completed, waiter-failed, timeout, conflict, expired — sets `X-Koi-Result-Kind` per the host-mapping table. Absent header = `MALFORMED_SHIM_RESPONSE`. There is no compat fallback.
 
-The DO class implements `claim` atomically (single-threaded execution per object id), guarantees only one isolate transitions a key to `in-progress`, and persists results to its built-in transactional storage until `dedupeExpiresAtMs + 1h`. **`waitForTerminal(stub, operationId, requestId, timeoutMs)` reads expiry from the LEDGER ROW on every poll iteration — it does NOT trust any caller-supplied `dedupeExpiresAtMs` field.** Each poll RPC to the DO reads `(ledger.originalDedupeExpiresAtMs, terminalRecord?)` together in a single transaction; if `Date.now() > ledger.originalDedupeExpiresAtMs`, the function returns `{ kind: "operation-expired" }` immediately, regardless of whether a terminal record exists (consistent with the hard-cutoff rule above). If the request that entered the waiter carried a `dedupeExpiresAtMs` that differs from `ledger.originalDedupeExpiresAtMs` by more than the small skew tolerance, the DO RPC returns `{ kind: "operation-id-conflict", reason: "EXPIRY_HORIZON_MISMATCH" }` BEFORE any further polling — the waiter cannot extend or bypass the stored horizon. The shim maps to 410 + `X-Koi-Result-Kind: operation-expired` (or 409 + `operation-id-conflict` for mismatch). The previous signature `waitForTerminal(..., dedupeExpiresAtMs, timeoutMs)` is REMOVED; passing `dedupeExpiresAtMs` from the request into the waiter was the gap that allowed forward-shifted expiry to extend the wait. **Adversarial tests (mandatory):** `__tests__/cf-waiter-expiry-fail-closed.test.ts` starts a waiter against an existing ledger row whose `originalDedupeExpiresAtMs` is in the near future, kills the owning isolate, and asserts the waiter returns `operation-expired` past the LEDGER's horizon rather than attempting takeover. `__tests__/cf-waiter-rejects-shifted-expiry.test.ts` issues a retry that lands in the waiter path with a forward-shifted `dedupeExpiresAtMs` and asserts the waiter rejects with `OPERATION_ID_CONFLICT/EXPIRY_HORIZON_MISMATCH`, not a successful late completion. Cross-instance retries (after `destroy()` + new `create()`) hit the same DO id (because `operationId` keys the lookup) and observe the prior outcome subject to the same ledger-anchored expiry rule.
+The DO class implements `claim` atomically (single-threaded execution per object id), guarantees only one isolate transitions a key to `in-progress`, and persists results to its built-in transactional storage until `dedupeExpiresAtMs + 1h`. **`waitForTerminal(stub, operationId, requestId, requestExpiryClaim, timeoutMs)` reads expiry from the LEDGER ROW on every poll iteration — it does NOT trust the `requestExpiryClaim` argument as an authorization input.** The `requestExpiryClaim` parameter exists ONLY so the DO RPC can compare it against the ledger's stored `originalDedupeExpiresAtMs` and short-circuit with `operation-id-conflict` on mismatch. The waiter NEVER extends or accepts a wait on the basis of `requestExpiryClaim`; hard-cutoff and timing decisions come from the ledger only. Each poll RPC to the DO reads `(ledger.originalDedupeExpiresAtMs, terminalRecord?)` together in a single transaction; if `Date.now() > ledger.originalDedupeExpiresAtMs`, the function returns `{ kind: "operation-expired" }` immediately, regardless of whether a terminal record exists (consistent with the hard-cutoff rule above). If the request that entered the waiter carried a `dedupeExpiresAtMs` that differs from `ledger.originalDedupeExpiresAtMs` by more than the small skew tolerance, the DO RPC returns `{ kind: "operation-id-conflict", reason: "EXPIRY_HORIZON_MISMATCH" }` BEFORE any further polling — the waiter cannot extend or bypass the stored horizon. The shim maps to 410 + `X-Koi-Result-Kind: operation-expired` (or 409 + `operation-id-conflict` for mismatch). The earlier draft's signature treated `dedupeExpiresAtMs` as authoritative for the wait deadline; that was the gap that allowed forward-shifted expiry to extend the wait. The corrected signature carries it as `requestExpiryClaim` (a non-authoritative mismatch-detection input only) and the wait deadline comes from the ledger. **Adversarial tests (mandatory):** `__tests__/cf-waiter-expiry-fail-closed.test.ts` starts a waiter against an existing ledger row whose `originalDedupeExpiresAtMs` is in the near future, kills the owning isolate, and asserts the waiter returns `operation-expired` past the LEDGER's horizon rather than attempting takeover. `__tests__/cf-waiter-rejects-shifted-expiry.test.ts` issues a retry that lands in the waiter path with a forward-shifted `dedupeExpiresAtMs` and asserts the waiter rejects with `OPERATION_ID_CONFLICT/EXPIRY_HORIZON_MISMATCH`, not a successful late completion. Cross-instance retries (after `destroy()` + new `create()`) hit the same DO id (because `operationId` keys the lookup) and observe the prior outcome subject to the same ledger-anchored expiry rule.
 
 #### Vercel: Vercel KV (Upstash Redis) with `SET NX EX`
 
@@ -365,9 +378,10 @@ const ledgerKey = `${ns}:ledger:${operationId}`;
 
 // dedupeFingerprint: identical definition to Cloudflare DO.
 // pairUUID and handlerCodeHash are INTENTIONALLY EXCLUDED — see CF DO section for rationale.
-// payloadCanonical: see CF DO section above for the normative JCS (RFC 8785) algorithm.
-// Vercel uses the IDENTICAL canonicalization — host and Vercel shim share the same bundled JCS.
-const dedupeFingerprint = sha256(`${ns}:${sha256(payloadCanonical)}`);
+// Identical normative algorithm as the CF DO section above:
+//   sha256_raw(utf8Bytes(ns + ":") || sha256_raw(utf8Bytes(jcs(payload)))) → base16Lower
+// Same shared `computeDedupeFingerprint(ownerId, payload)` helper is used by host AND shim.
+const dedupeFingerprint = computeDedupeFingerprint(ns, payload);
 
 // 1+2. Atomic check-or-claim via single Lua EVAL (no race window between check and claim).
 // Fingerprint is checked FIRST and atomically: if a record exists for this operationId with a
@@ -1446,7 +1460,7 @@ The implementation does not fit a single PR. The work is split into four sequent
 
 | PR | Title | Scope | LOC budget |
 |----|-------|-------|-----------|
-| 1 | This spec | Design doc (`docs/superpowers/specs/2026-05-05-edge-sandboxes-design.md`). No code, no doc reconciliation. | ~600 lines markdown |
+| 1 | This spec | Design doc (`docs/superpowers/specs/2026-05-05-edge-sandboxes-design.md`) + a **stub marker prepended to `docs/L3/sandbox-stack.md`** noting "the lines below are pending reconciliation in PR 2 — see `docs/superpowers/specs/2026-05-05-edge-sandboxes-design.md` for the authoritative contract." This is the only mutation to the repo's contract docs in PR 1 and exists solely to prevent `main` from carrying two competing authoritative documents. No code, no L3 substantive rewrite. | ~600 lines markdown + 4-line marker |
 | 2 | Kernel + runtime extension for edge adapters | New `@koi/core` types (`EdgeFunctionAdapter` etc.), `CreateKoiOptions` extension on `@koi/engine`, `koi.edge.*` accessor, CI script extensions for `koi.adapter-kind`, `docs/L3/sandbox-stack.md` rewrite, `golden-edge-replay.test.ts` skeleton. **Reconciles existing L3 doc with the new contract.** | ~700 LOC |
 | 3 | `@koi/sandbox-wasm` | Full wasm executor package + binary scanner + tests + `docs/L2/sandbox-wasm.md` + golden replay assertion (uses the SandboxExecutor-style cassette path or the new edge replay; finalized in PR 2). | ~700 LOC |
 | 4 | `@koi/sandbox-cloudflare` + `@koi/sandbox-sweep` (Cloudflare-only ship bundle) | Cloudflare adapter PLUS the fleet sweeper template auto-deployed by the adapter. Includes shim template with mandatory DO dedupe enforcement, SQLite ledger, provider-smoke workflow (CF-only adversarial scenarios), L2 docs (`sandbox-cloudflare.md`, `sandbox-sweep.md`), and CF edge cassette. **Vercel is explicitly NOT in the runtime-integrated shipping bundle** for the reasons documented in the Vercel section: cleanup is unbounded, reconciler isolation is operator-attested rather than mechanically enforced, and shipping such a public-orphan path as a default-available runtime adapter extends the blast radius of any auth bug. Cloudflare's multi-host story IS protected by the fleet sweeper from day one. | ~900 LOC |
