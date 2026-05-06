@@ -703,6 +703,27 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
           req: Request,
           srv: { upgrade: (r: Request, opts?: { data?: unknown }) => boolean },
         ) => {
+          // Reject non-WebSocket traffic BEFORE touching the upgrade slot
+          // or invoking authenticate(). A plain HTTP request (health check,
+          // browser probe, attacker spam) must not consume the single-
+          // client reservation or trigger the host's potentially expensive
+          // auth path — otherwise routine HTTP noise becomes a denial-of-
+          // service vector against the only connection slot. Per RFC 6455
+          // §4.1, a valid client upgrade carries `Upgrade: websocket` (case-
+          // insensitive) AND `Connection` containing "Upgrade".
+          const upgradeHdr = req.headers.get("upgrade");
+          const connectionHdr = req.headers.get("connection");
+          const looksLikeUpgrade =
+            upgradeHdr !== null &&
+            upgradeHdr.toLowerCase() === "websocket" &&
+            connectionHdr !== null &&
+            connectionHdr
+              .toLowerCase()
+              .split(",")
+              .some((p) => p.trim() === "upgrade");
+          if (!looksLikeUpgrade) {
+            return new Response("expected websocket upgrade", { status: 426 });
+          }
           // Single-client short-circuit: reserve the slot BEFORE running
           // authenticate() — and BEFORE awaiting any other in-flight
           // handshake. Without the pendingUpgrades counter, concurrent

@@ -699,6 +699,42 @@ describe("createMobileChannel", () => {
     }
   });
 
+  test("plain HTTP (no upgrade headers) is rejected with 426 without invoking authenticate() or holding the slot", async () => {
+    // Regression (round 30 high): prior version reserved pendingUpgrades
+    // and ran authenticate() for ANY incoming request. A burst of plain
+    // HTTP traffic (health probe, attacker spam, misrouted client) could
+    // trip 401/504/409 cycles and starve real WebSocket clients of the
+    // single connection slot. The adapter must reject non-upgrade traffic
+    // with 426 BEFORE touching the reservation or auth path.
+    const port = await freePort();
+    let authCalls = 0;
+    const ch = createMobileChannel({
+      port,
+      authenticate: async () => {
+        authCalls++;
+        return "id";
+      },
+    });
+    await ch.connect();
+    // Plain HTTP, no headers
+    const noHeaders = await fetch(`http://127.0.0.1:${port}/`);
+    expect(noHeaders.status).toBe(426);
+    // Upgrade header without Connection: upgrade
+    const partialHeaders = await fetch(`http://127.0.0.1:${port}/`, {
+      headers: { Upgrade: "websocket" },
+    });
+    expect(partialHeaders.status).toBe(426);
+    // Connection: upgrade without Upgrade: websocket
+    const wrongUpgrade = await fetch(`http://127.0.0.1:${port}/`, {
+      headers: { Upgrade: "h2c", Connection: "Upgrade" },
+    });
+    expect(wrongUpgrade.status).toBe(426);
+    // authenticate() never invoked, so a stuck/long IdP cannot be
+    // amplified by HTTP noise; the single slot is also still free.
+    expect(authCalls).toBe(0);
+    await ch.disconnect();
+  });
+
   test("createMobileChannel throws when pushNotifier wired without authenticate()", () => {
     // Regression: prior version accepted pushNotifier with no auth handshake
     // (or with only trustClientIdentity:true) and then handed pushNotifier a
