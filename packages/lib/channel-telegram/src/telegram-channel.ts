@@ -101,24 +101,13 @@ export interface TelegramChannelConfig {
   readonly bot?: TelegramBotLike;
   readonly onHandlerError?: (err: unknown, ctx: unknown) => void;
   /**
-   * Optional replay barrier for webhook mode. Telegram retries the same
-   * `update_id` after timeouts/5xx/network blips, so without dedupe a
-   * single user message can fire the agent loop multiple times. Return
-   * `true` to indicate the `update_id` has already been processed and
-   * should be skipped; the adapter will swallow it and the HTTPS handler
-   * can return 200 to stop further retries.
-   *
-   * The callback MUST be backed by durable storage (DB, Redis, queue
-   * dedupe table) and the seen-marker MUST be written only after
-   * downstream processing has succeeded. An in-memory mark-on-receive
-   * Set will silently suppress legitimate retries after a crash and
-   * cause permanent message loss.
-   */
-  readonly seenWebhookUpdate?: (updateId: number) => boolean | Promise<boolean>;
-  /**
-   * Atomic-claim alternative to `seenWebhookUpdate`. When set, this is
-   * called instead of `seenWebhookUpdate` and MUST atomically reserve
-   * the `update_id` in a way that two concurrent calls — whether from
+   * Atomic dedupe + reserve for webhook mode. REQUIRED when
+   * `deployment.mode === "webhook"`: without it, Telegram retries
+   * after timeouts/5xx and concurrent multi-instance delivery will
+   * replay the same `update_id` and re-execute every onMessage
+   * handler (duplicate replies, duplicate tool calls, duplicate
+   * external writes). MUST atomically reserve the `update_id` in a
+   * way that two concurrent calls — whether from
    * Telegram retries, multi-instance webhook delivery, or load-balanced
    * workers — return `"claimed"` for exactly one of them and
    * `"duplicate"` for the rest. Implementations typically wrap an
@@ -134,10 +123,10 @@ export interface TelegramChannelConfig {
    * the row from `claimed` → `processed` under their own
    * transaction.
    *
-   * Prefer this over `seenWebhookUpdate`: the older check-then-act
-   * shape lets two concurrent retries both observe `seen=false` and
-   * fan out duplicate agent turns. When both are set,
-   * `claimWebhookUpdate` wins.
+   * The earlier check-then-act `seenWebhookUpdate` shape was
+   * deliberately removed: two concurrent retries could both observe
+   * `seen=false` and fan out duplicate agent turns. Atomic claim is
+   * the only supported webhook dedupe primitive.
    *
    * Result `"reclaimed"` is treated identically to `"claimed"` and
    * exists so operators can implement lease/TTL semantics: when a
@@ -172,8 +161,8 @@ export interface TelegramChannelConfig {
    * handler to completion, this callback fires so the operator can
    * durably mark `update_id` as processed under the same transaction
    * boundary that produced the user-visible side effects. Pairs with
-   * `seenWebhookUpdate` to give callers a real two-phase
-   * reserve/commit boundary: pre-check skips already-committed
+   * `claimWebhookUpdate` to give callers a real two-phase
+   * reserve/commit boundary: atomic claim skips already-committed
    * retries, post-success commit marks the new update.
    *
    * `handleWebhook` only invokes this callback when every handler
@@ -263,6 +252,16 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
   if (deployment.mode === "webhook" && config.webhookSecret === undefined) {
     throw new Error(
       "[channel-telegram] webhook mode requires `webhookSecret` in TelegramChannelConfig (the value also passed to setWebhook). Without it any caller hitting the webhook URL can spoof updates.",
+    );
+  }
+  // Webhook dedupe is mandatory: Telegram retries the same update_id
+  // on timeouts/5xx and concurrent multi-instance delivery can both
+  // observe a non-atomic dedupe and replay every onMessage handler
+  // (duplicate replies, duplicate tool calls, duplicate external
+  // writes). Refuse to construct without an atomic claim primitive.
+  if (deployment.mode === "webhook" && config.claimWebhookUpdate === undefined) {
+    throw new Error(
+      '[channel-telegram] webhook mode requires `claimWebhookUpdate` in TelegramChannelConfig. Without an atomic claim, Telegram retries and concurrent worker delivery can replay every onMessage handler. Pass a no-op `() => "claimed"` only for local dev where dedupe is genuinely irrelevant.',
     );
   }
   // claimWebhookUpdate without a release path turns any transient
@@ -600,9 +599,10 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
           "[channel-telegram] handleWebhook called while disconnected — return a non-200 so Telegram retries",
         );
       }
-      // Two-phase reserve/commit:
-      //   1. seenWebhookUpdate (pre-check) skips updates that are
-      //      already committed in the operator's durable store.
+      // Two-phase reserve/commit (atomic claim is required in webhook
+      // mode — see TelegramChannelConfig.claimWebhookUpdate):
+      //   1. claimWebhookUpdate (atomic) — "duplicate" returns ACK
+      //      immediately; "claimed"/"reclaimed" reserves the update.
       //   2. dispatchWebhook awaits every onMessage handler so this
       //      function only resolves after end-to-end processing
       //      succeeds — handler rejection becomes a thrown error so
@@ -611,16 +611,10 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
       //      success so the operator can durably mark the update_id
       //      under the same transaction that produced the side
       //      effects.
-      // Atomic claim wins when both are configured — see the
-      // claimWebhookUpdate doc for why check-then-act seenWebhookUpdate
-      // is unsafe under concurrent retries.
       const usedClaim = config.claimWebhookUpdate !== undefined;
       if (usedClaim && config.claimWebhookUpdate !== undefined) {
         const result = await config.claimWebhookUpdate(update.update_id);
         if (result === "duplicate") return;
-      } else if (config.seenWebhookUpdate !== undefined) {
-        const seen = await config.seenWebhookUpdate(update.update_id);
-        if (seen) return;
       }
       // Handler-stage failures fall into two categories:
       //   - ALL handlers rejected (or no handlers ran): release the

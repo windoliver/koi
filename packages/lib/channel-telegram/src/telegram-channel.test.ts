@@ -213,6 +213,8 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       bot: failingBot,
       deployment: { mode: "webhook" },
       webhookSecret: "s",
+      claimWebhookUpdate: () => "claimed",
+      releaseWebhookClaim: () => undefined,
     });
     // Webhook mode still calls platformConnect (which validates getMe);
     // simulate the polling failure path with a polling-mode adapter
@@ -303,6 +305,19 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
+  test("webhook mode without claimWebhookUpdate refuses to construct (atomic dedupe is mandatory)", async () => {
+    const f = fakeBot();
+    expect(() =>
+      createTelegramChannel({
+        token: "T",
+        bot: f.bot,
+        deployment: { mode: "webhook" },
+        webhookSecret: "s",
+        // claimWebhookUpdate intentionally omitted
+      }),
+    ).toThrow(/claimWebhookUpdate/);
+  });
+
   test("webhook mode without webhookSecret refuses to construct (fails closed at boundary)", async () => {
     const f = fakeBot();
     expect(() =>
@@ -310,6 +325,8 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
         token: "T",
         bot: f.bot,
         deployment: { mode: "webhook" },
+        claimWebhookUpdate: () => "claimed",
+        releaseWebhookClaim: () => undefined,
       }),
     ).toThrow(/webhookSecret/);
   });
@@ -321,6 +338,8 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       bot: f.bot,
       deployment: { mode: "webhook" },
       webhookSecret: "expected",
+      claimWebhookUpdate: () => "claimed",
+      releaseWebhookClaim: () => undefined,
     });
     await adapter.connect();
     const seen: unknown[] = [];
@@ -351,6 +370,8 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       bot: f.bot,
       deployment: { mode: "webhook" },
       webhookSecret: "expected",
+      claimWebhookUpdate: () => "claimed",
+      releaseWebhookClaim: () => undefined,
     });
     await adapter.connect();
     const seen: unknown[] = [];
@@ -373,6 +394,8 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       bot: f.bot,
       deployment: { mode: "webhook" },
       webhookSecret: "s",
+      claimWebhookUpdate: () => "claimed",
+      releaseWebhookClaim: () => undefined,
     });
     await adapter.connect();
     let releaseHandler: () => void = () => undefined;
@@ -411,6 +434,8 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       bot: f.bot,
       deployment: { mode: "webhook" },
       webhookSecret: "s",
+      claimWebhookUpdate: () => "claimed",
+      releaseWebhookClaim: () => undefined,
     });
     await adapter.connect();
     adapter.onMessage(async () => {
@@ -433,6 +458,8 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       bot: f.bot,
       deployment: { mode: "webhook" },
       webhookSecret: "s",
+      claimWebhookUpdate: () => "claimed",
+      releaseWebhookClaim: () => undefined,
       markWebhookProcessed: async (id: number): Promise<void> => {
         marks.push(id);
       },
@@ -455,6 +482,8 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       bot: f.bot,
       deployment: { mode: "webhook" },
       webhookSecret: "s",
+      claimWebhookUpdate: () => "claimed",
+      releaseWebhookClaim: () => undefined,
       markWebhookProcessed: async (id: number): Promise<void> => {
         marks.push(id);
       },
@@ -840,18 +869,21 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
-  test("webhook: seenWebhookUpdate callback skips duplicate update_ids without invoking onMessage", async () => {
+  test('webhook: claimWebhookUpdate "duplicate" skips re-dispatch (no onMessage on retried update_id)', async () => {
     const f = fakeBot();
-    const seenIds = new Set<number>();
+    const claimed = new Set<number>();
     const adapter = createTelegramChannel({
       token: "T",
       bot: f.bot,
       deployment: { mode: "webhook" },
       webhookSecret: "s",
-      seenWebhookUpdate: async (id: number): Promise<boolean> => {
-        if (seenIds.has(id)) return true;
-        seenIds.add(id);
-        return false;
+      claimWebhookUpdate: (id: number) => {
+        if (claimed.has(id)) return "duplicate";
+        claimed.add(id);
+        return "claimed";
+      },
+      releaseWebhookClaim: (id: number) => {
+        claimed.delete(id);
       },
     });
     await adapter.connect();
@@ -866,7 +898,7 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.handleWebhook("s", update);
     await adapter.handleWebhook("s", update);
     await new Promise((r) => setTimeout(r, 10));
-    // Second call sees update_id 42 already marked → skipped silently.
+    // Second call's atomic claim returns "duplicate" → skipped silently.
     expect(seen).toHaveLength(1);
     await adapter.disconnect();
   });
@@ -882,6 +914,8 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       bot: f.bot,
       deployment: { mode: "webhook" },
       webhookSecret: "s",
+      claimWebhookUpdate: () => "claimed",
+      releaseWebhookClaim: () => undefined,
     });
     await adapter.connect();
     const seen: unknown[] = [];
@@ -906,6 +940,8 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       bot: f.bot,
       deployment: { mode: "webhook" },
       webhookSecret: "s",
+      claimWebhookUpdate: () => "claimed",
+      releaseWebhookClaim: () => undefined,
     });
     // Register onMessage BEFORE connect so the handler is staged. Note
     // that connect() atomically sets updateHandler at the end of its
@@ -932,6 +968,8 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       bot: f.bot,
       deployment: { mode: "webhook" },
       webhookSecret: "s",
+      claimWebhookUpdate: () => "claimed",
+      releaseWebhookClaim: () => undefined,
     });
     // Never connected.
     expect(() =>
@@ -949,6 +987,8 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       bot: f.bot,
       deployment: { mode: "webhook" },
       webhookSecret: "s",
+      claimWebhookUpdate: () => "claimed",
+      releaseWebhookClaim: () => undefined,
     });
     await adapter.connect();
     expect(() =>
