@@ -138,10 +138,19 @@ export interface TelegramChannelConfig {
    * shape lets two concurrent retries both observe `seen=false` and
    * fan out duplicate agent turns. When both are set,
    * `claimWebhookUpdate` wins.
+   *
+   * Result `"reclaimed"` is treated identically to `"claimed"` and
+   * exists so operators can implement lease/TTL semantics: when a
+   * worker crashes after writing the claim row but before commit or
+   * release, the row is left as a stale lease. A later retry whose
+   * lease is older than the operator's TTL can be returned as
+   * `"reclaimed"` so processing resumes instead of being silently
+   * ACKed as a duplicate forever. Operators that do not implement
+   * lease/TTL recovery may simply never return `"reclaimed"`.
    */
   readonly claimWebhookUpdate?: (
     updateId: number,
-  ) => "claimed" | "duplicate" | Promise<"claimed" | "duplicate">;
+  ) => "claimed" | "duplicate" | "reclaimed" | Promise<"claimed" | "duplicate" | "reclaimed">;
   /**
    * Release a previously-claimed `update_id` so a Telegram retry can
    * re-enter. Required when `claimWebhookUpdate` is set: if a handler
@@ -510,16 +519,28 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
     };
   };
 
-  const dispatchWebhook = async (update: TelegramUpdateLike): Promise<void> => {
+  type DispatchResult =
+    | { readonly kind: "skipped" }
+    | { readonly kind: "ok" }
+    | { readonly kind: "rejected"; readonly fulfilled: number; readonly error: Error };
+  const dispatchWebhook = async (update: TelegramUpdateLike): Promise<DispatchResult> => {
     const msg = await normalize(update);
-    if (msg === null) return;
+    if (msg === null) return { kind: "skipped" };
     const handlers = webhookHandlers;
-    if (handlers.length === 0) return;
+    if (handlers.length === 0) return { kind: "skipped" };
     const results = await Promise.allSettled(handlers.map((h) => h.fn(msg)));
-    const rejected = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
-    if (rejected !== undefined) {
-      throw rejected.reason instanceof Error ? rejected.reason : new Error(String(rejected.reason));
+    let fulfilled = 0;
+    let rejected: PromiseRejectedResult | undefined;
+    for (const r of results) {
+      if (r.status === "fulfilled") fulfilled++;
+      else if (rejected === undefined) rejected = r;
     }
+    if (rejected !== undefined) {
+      const error =
+        rejected.reason instanceof Error ? rejected.reason : new Error(String(rejected.reason));
+      return { kind: "rejected", fulfilled, error };
+    }
+    return { kind: "ok" };
   };
 
   adapter = {
@@ -589,30 +610,44 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
         const seen = await config.seenWebhookUpdate(update.update_id);
         if (seen) return;
       }
-      // Handler-stage failures release the claim so Telegram retries
-      // can re-enter (handlers had not yet produced side effects, or
-      // the partial-delivery error class flagged the call as
-      // non-retryable). Post-handler failures (markWebhookProcessed
-      // throws AFTER handlers succeeded) MUST NOT release the claim —
-      // handlers already produced user-visible side effects (replies,
-      // tool calls, external writes) and re-entering on Telegram
-      // retry would duplicate them. The claim stays reserved and the
-      // operator advances it from "claimed" → "processed" out of
-      // band.
-      try {
-        await dispatchWebhook(update);
-      } catch (err: unknown) {
-        if (usedClaim && config.releaseWebhookClaim !== undefined) {
+      // Handler-stage failures fall into two categories:
+      //   - ALL handlers rejected (or no handlers ran): release the
+      //     claim so Telegram retries can re-enter — no side effects
+      //     were produced.
+      //   - At least one handler succeeded but another rejected
+      //     (partial side effects): MUST NOT release. Releasing would
+      //     let Telegram's retry re-run the successful handler and
+      //     duplicate replies/tool-calls/external writes. Surface as
+      //     a commit failure to onWebhookCommitFailure so the
+      //     operator can recover (sweep, page) and rethrow so the
+      //     HTTPS layer returns non-200.
+      // Post-handler failures (markWebhookProcessed throws AFTER all
+      // handlers succeeded) follow the same "claim stays reserved"
+      // rule for the same reason.
+      const dispatchResult = await dispatchWebhook(update);
+      if (dispatchResult.kind === "rejected") {
+        if (dispatchResult.fulfilled === 0) {
+          if (usedClaim && config.releaseWebhookClaim !== undefined) {
+            try {
+              await config.releaseWebhookClaim(update.update_id);
+            } catch (releaseErr: unknown) {
+              console.error(
+                `[channel-telegram] releaseWebhookClaim(${update.update_id}) failed after handler error:`,
+                releaseErr,
+              );
+            }
+          }
+        } else if (config.onWebhookCommitFailure !== undefined) {
           try {
-            await config.releaseWebhookClaim(update.update_id);
-          } catch (releaseErr: unknown) {
+            await config.onWebhookCommitFailure(update.update_id, dispatchResult.error);
+          } catch (hookErr: unknown) {
             console.error(
-              `[channel-telegram] releaseWebhookClaim(${update.update_id}) failed after handler error:`,
-              releaseErr,
+              `[channel-telegram] onWebhookCommitFailure(${update.update_id}) threw; original handler error rethrown:`,
+              hookErr,
             );
           }
         }
-        throw err;
+        throw dispatchResult.error;
       }
       if (config.markWebhookProcessed !== undefined) {
         // Errors here surface to the HTTPS layer (non-200 → Telegram

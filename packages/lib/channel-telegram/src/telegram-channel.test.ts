@@ -609,6 +609,80 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
+  test("webhook: partial multi-handler success does NOT release the claim (one handler succeeded → side effects already produced)", async () => {
+    const f = fakeBot();
+    const claims = new Set<number>();
+    const releases: number[] = [];
+    const commitFailures: Array<{ id: number; err: unknown }> = [];
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "s",
+      claimWebhookUpdate: (id: number) => {
+        if (claims.has(id)) return "duplicate";
+        claims.add(id);
+        return "claimed";
+      },
+      releaseWebhookClaim: (id: number) => {
+        releases.push(id);
+        claims.delete(id);
+      },
+      onWebhookCommitFailure: (id, err) => {
+        commitFailures.push({ id, err });
+      },
+    });
+    await adapter.connect();
+    adapter.onMessage(async () => {
+      // A: succeeds (produces side effects)
+    });
+    adapter.onMessage(async () => {
+      throw new Error("B-rejected");
+    });
+    const update = {
+      update_id: 88,
+      message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+    };
+    await expect(adapter.handleWebhook("s", update)).rejects.toThrow(/B-rejected/);
+    // Claim must NOT be released — handler A already produced side effects.
+    expect(releases).toHaveLength(0);
+    expect(claims.has(88)).toBe(true);
+    // Operator notified via the recovery hook.
+    expect(commitFailures).toHaveLength(1);
+    expect(commitFailures[0]?.id).toBe(88);
+    expect((commitFailures[0]?.err as Error).message).toBe("B-rejected");
+    await adapter.disconnect();
+  });
+
+  test('webhook: claimWebhookUpdate result "reclaimed" is treated as a fresh claim (stale-lease takeover path)', async () => {
+    const f = fakeBot();
+    let executions = 0;
+    let processed: number | undefined;
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "s",
+      claimWebhookUpdate: (_id: number) => "reclaimed",
+      releaseWebhookClaim: () => undefined,
+      markWebhookProcessed: (id) => {
+        processed = id;
+      },
+    });
+    await adapter.connect();
+    adapter.onMessage(async () => {
+      executions++;
+    });
+    const update = {
+      update_id: 200,
+      message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+    };
+    await adapter.handleWebhook("s", update);
+    expect(executions).toBe(1);
+    expect(processed).toBe(200);
+    await adapter.disconnect();
+  });
+
   test("polling: updates received during the 250ms startup probe are buffered, not dropped", async () => {
     const f = fakeBot();
     // fakeBot.start() resolves immediately; we synthesize the
