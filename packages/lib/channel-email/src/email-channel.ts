@@ -1,0 +1,245 @@
+/**
+ * @koi/channel-email — `createEmailChannel` factory.
+ *
+ * Composes IMAP inbound + SMTP outbound into a `ChannelAdapter`. The factory
+ * is a small wiring layer: state-machine logic lives in
+ * `outbound-state-machine.ts`, operator API in `resolve-pending.ts`. This
+ * module only handles lifecycle (connect/disconnect), inbound dedupe via
+ * IngressQueue + IdempotencyStore, and the `send()` adapter shim.
+ */
+
+import {
+  type IdempotencyStore,
+  type IngressQueue,
+  type OutboxRecord,
+  type OutboxStore,
+  startHandlerWorker,
+  type ThreadStore,
+} from "@koi/channel-base";
+import type {
+  ChannelAdapter,
+  ChannelCapabilities,
+  InboundMessage,
+  MessageHandler,
+  OutboundMessage,
+} from "@koi/core";
+import type { EmailConfig } from "./config.js";
+import { type MimeParser, normalizeEmail } from "./normalize-bridge.js";
+import { executeOutbound } from "./outbound-state-machine.js";
+import type { SmtpTransport } from "./platform-send.js";
+import {
+  getPendingSends,
+  type ResolveOutcome,
+  type ResolveResult,
+  resolvePending,
+} from "./resolve-pending.js";
+
+export type InboundEnvelope = {
+  readonly raw: Uint8Array;
+  readonly uidValidity: number;
+  readonly uid: number;
+};
+
+export interface ImapClient {
+  open(): Promise<void>;
+  close(): Promise<void>;
+  onNewMessage(cb: (env: InboundEnvelope) => void): () => void;
+}
+
+export type { MimeParser } from "./normalize-bridge.js";
+
+export type EmailDependencies = {
+  readonly imap: ImapClient;
+  readonly smtp: SmtpTransport;
+  readonly parser: MimeParser;
+  readonly threadStore: ThreadStore;
+  readonly outboxStore: OutboxStore;
+  readonly idempotencyStore: IdempotencyStore;
+  readonly ingressQueue: IngressQueue<InboundEnvelope, InboundMessage>;
+  readonly idGenerator?: () => string;
+  readonly clock?: () => number;
+};
+
+export type EmailChannelAdapter = ChannelAdapter & {
+  readonly getPendingSends: () => Promise<readonly OutboxRecord[]>;
+  readonly resolvePending: (messageId: string, outcome: ResolveOutcome) => Promise<ResolveResult>;
+};
+
+const EMAIL_CAPABILITIES: ChannelCapabilities = {
+  text: true,
+  images: false,
+  files: false,
+  buttons: false,
+  audio: false,
+  video: false,
+  threads: true,
+  supportsA2ui: false,
+};
+
+function defaultIdGenerator(domain: string): () => string {
+  return () => `<${crypto.randomUUID()}@${domain}>`;
+}
+
+function envelopeKey(env: InboundEnvelope): string {
+  return `${env.uidValidity}|${env.uid}`;
+}
+
+function deriveDomain(from: string): string {
+  const at = from.indexOf("@");
+  return at >= 0 ? from.slice(at + 1) : "agent.local";
+}
+
+type HandlerRef = { current: MessageHandler | null };
+
+function dispatchInbound(
+  handlerRef: HandlerRef,
+): (item: {
+  readonly key: string;
+  readonly payload: InboundEnvelope;
+  readonly normalized: InboundMessage;
+}) => Promise<void> {
+  return async ({ normalized }) => {
+    const handler = handlerRef.current;
+    if (!handler) return;
+    await handler(normalized);
+  };
+}
+
+async function enqueueInbound(
+  deps: EmailDependencies,
+  env: InboundEnvelope,
+  clock: () => number,
+): Promise<void> {
+  const parsed = await deps.parser.parse(env.raw);
+  const normalized = normalizeEmail(
+    { parsed, imap: { uidValidity: env.uidValidity, uid: env.uid } },
+    clock,
+  );
+  if (!normalized.ok) return; // drop unparseable
+  await deps.ingressQueue.enqueue(envelopeKey(env), {
+    key: envelopeKey(env),
+    payload: env,
+    normalized: normalized.value,
+  });
+}
+
+export function createEmailChannel(
+  config: EmailConfig,
+  deps: EmailDependencies,
+): EmailChannelAdapter {
+  const clock = deps.clock ?? Date.now;
+  const idGenerator = deps.idGenerator ?? defaultIdGenerator(deviceDomain(config));
+  const handlerRef: HandlerRef = { current: null };
+
+  // Lifecycle handles, captured by connect()/disconnect().
+  let unsubscribeImap: (() => void) | null = null;
+  let stopWorker: (() => Promise<void>) | null = null;
+  let connected = false;
+
+  const adapter: EmailChannelAdapter = {
+    name: "email",
+    capabilities: EMAIL_CAPABILITIES,
+
+    connect: async () => {
+      if (connected) return;
+      await deps.imap.open();
+      unsubscribeImap = deps.imap.onNewMessage((env) => {
+        enqueueInbound(deps, env, clock).catch(() => {
+          // Ingress failures are silently dropped at this layer; durable
+          // queue persistence + retries are the queue's responsibility.
+        });
+      });
+      stopWorker = startHandlerWorker({
+        queue: deps.ingressQueue,
+        idempotencyStore: deps.idempotencyStore,
+        handler: dispatchInbound(handlerRef),
+        commitTtlMs: config.commitTtlMs,
+        handlerTimeoutMs: config.handlerTimeoutMs,
+        workerId: `email-${crypto.randomUUID()}`,
+      });
+      connected = true;
+    },
+
+    disconnect: async () => {
+      if (!connected) return;
+      unsubscribeImap?.();
+      unsubscribeImap = null;
+      const stop = stopWorker;
+      stopWorker = null;
+      if (stop) await stop();
+      await deps.imap.close();
+      connected = false;
+    },
+
+    send: async (message: OutboundMessage) => {
+      const result = await executeOutbound(
+        {
+          threadStore: deps.threadStore,
+          outboxStore: deps.outboxStore,
+          smtp: deps.smtp,
+          idGenerator,
+          clock,
+          from: config.smtp.from,
+        },
+        deriveSendInput(message, config.smtp.from),
+      );
+      if (!result.ok) {
+        throw new Error(`${result.error.code}: ${result.error.message}`, {
+          cause: result.error,
+        });
+      }
+    },
+
+    onMessage: (handler: MessageHandler) => {
+      handlerRef.current = handler;
+      return () => {
+        if (handlerRef.current === handler) handlerRef.current = null;
+      };
+    },
+
+    getPendingSends: () =>
+      getPendingSends({
+        outboxStore: deps.outboxStore,
+        threadStore: deps.threadStore,
+      }),
+
+    resolvePending: (messageId, outcome) =>
+      resolvePending(
+        { outboxStore: deps.outboxStore, threadStore: deps.threadStore },
+        messageId,
+        outcome,
+      ),
+  };
+
+  return adapter;
+}
+
+function deviceDomain(config: EmailConfig): string {
+  return deriveDomain(config.smtp.from);
+}
+
+function deriveSendInput(
+  message: OutboundMessage,
+  fromAddress: string,
+): {
+  readonly message: OutboundMessage;
+  readonly threadKey: string;
+  readonly to: readonly string[];
+  readonly subject: string;
+} {
+  const meta = message.metadata ?? {};
+  const threadKey =
+    typeof message.threadId === "string" && message.threadId.length > 0
+      ? message.threadId
+      : typeof meta.threadKey === "string"
+        ? meta.threadKey
+        : `<orphan-${crypto.randomUUID()}@${deriveDomain(fromAddress)}>`;
+  const toRaw = meta.to;
+  const to: readonly string[] = Array.isArray(toRaw)
+    ? toRaw.filter((x): x is string => typeof x === "string")
+    : typeof toRaw === "string"
+      ? [toRaw]
+      : [];
+  const subject = typeof meta.subject === "string" ? meta.subject : "";
+  return { message, threadKey, to, subject };
+}
