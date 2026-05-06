@@ -409,6 +409,57 @@ describe("createDiscordChannel — interaction reply path", () => {
     expect(f.sent).toHaveLength(0);
   });
 
+  test("concurrent sends on the same interaction threadId issue editReply at most once (atomic claim)", async () => {
+    const f = fakeClient();
+    let editReplyCalls = 0;
+    let firstResolve: () => void = () => undefined;
+    const blockEdit = new Promise<void>((r) => {
+      firstResolve = r;
+    });
+    const adapter = createDiscordChannel({
+      token: "T",
+      client: f.client,
+      slashCommandFallbackToChannel: true,
+    });
+    await adapter.connect();
+    f.emit("interactionCreate", {
+      id: "iRACE",
+      isChatInputCommand: () => true,
+      isButton: () => false,
+      commandName: "say",
+      options: { data: [] },
+      user: { id: "U1" },
+      channelId: "C1",
+      guildId: "G1",
+      createdTimestamp: 1,
+      deferReply: async () => undefined,
+      editReply: async (): Promise<undefined> => {
+        editReplyCalls++;
+        // Hold the first call so the second send overlaps it.
+        if (editReplyCalls === 1) await blockEdit;
+        return undefined;
+      },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    const send1 = adapter.send({
+      content: [{ kind: "text", text: "first" }],
+      threadId: "interaction:cmd:iRACE:C1",
+    });
+    // Tick so send1 reads + claims the interaction before send2 runs.
+    await new Promise((r) => setTimeout(r, 0));
+    const send2 = adapter.send({
+      content: [{ kind: "text", text: "second" }],
+      threadId: "interaction:cmd:iRACE:C1",
+    });
+    firstResolve();
+    await Promise.all([send1, send2]);
+    // Only one editReply ever fired; send2 fell through to channel.send
+    // because the interaction was already claimed.
+    expect(editReplyCalls).toBe(1);
+    expect(f.sent).toHaveLength(1);
+    expect(f.sent[0]?.payload.content).toBe("second");
+  });
+
   test("slashCommandFallbackToChannel: true opts in to channel.send for expired slash threads", async () => {
     const f = fakeClient();
     const adapter = createDiscordChannel({

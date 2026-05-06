@@ -414,6 +414,18 @@ async function sendOutbound(
   if (parsed !== undefined) {
     const entry = pendingInteractions.get(parsed.interactionId);
     if (entry !== undefined && entry.expiresAt > Date.now() && payloads.length > 0) {
+      // Atomically claim the interaction handle BEFORE any await. Two
+      // concurrent send() calls on the same `interaction:*` threadId
+      // would otherwise both read the same entry, both call
+      // editReply()/followUp(), and produce duplicate / last-write-wins
+      // replies on the same interaction token. Claiming up-front means
+      // the second concurrent send observes "expired" and routes through
+      // the fallback path (channel.send for slash, fail-closed for
+      // button). On transient failure of the FIRST call we restore the
+      // entry so a retry on the same threadId can still use the
+      // interaction handle (preserves the retry-after-network-blip
+      // behavior the comments below describe).
+      pendingInteractions.delete(parsed.interactionId);
       const first = payloads[0];
       const followUp = entry.interaction.followUp;
       if (entry.kind === "button") {
@@ -422,22 +434,36 @@ async function sendOutbound(
             `[channel-discord] button interaction "${parsed.interactionId}" missing followUp() — cannot reply without leaking out of ephemeral scope`,
           );
         }
-        // Keep the entry until the first followUp() succeeds so a transient
-        // failure can be retried on the same threadId without losing the
-        // interaction handle (which would otherwise force the retry to
-        // hard-fail per the button-fail-closed rule above).
-        if (first !== undefined) await tryStep(() => followUp.call(entry.interaction, first));
-        pendingInteractions.delete(parsed.interactionId);
+        if (first !== undefined) {
+          try {
+            await tryStep(() => followUp.call(entry.interaction, first));
+          } catch (err: unknown) {
+            // First payload never reached Discord — restore the claim
+            // so a retry on the same threadId can use the interaction.
+            if (delivered === 0 && entry.expiresAt > Date.now()) {
+              pendingInteractions.set(parsed.interactionId, entry);
+            }
+            throw err;
+          }
+        }
         for (let i = 1; i < payloads.length; i++) {
           const p = payloads[i];
           if (p !== undefined) await tryStep(() => followUp.call(entry.interaction, p));
         }
         return;
       }
-      // slash — keep the entry until editReply() succeeds so transient
-      // failures (network, 5xx) can be retried on the same threadId.
-      if (first !== undefined) await tryStep(() => entry.interaction.editReply(first));
-      pendingInteractions.delete(parsed.interactionId);
+      // slash — same single-claim semantics; restore on first-payload
+      // failure so transient retries can recover.
+      if (first !== undefined) {
+        try {
+          await tryStep(() => entry.interaction.editReply(first));
+        } catch (err: unknown) {
+          if (delivered === 0 && entry.expiresAt > Date.now()) {
+            pendingInteractions.set(parsed.interactionId, entry);
+          }
+          throw err;
+        }
+      }
       if (payloads.length > 1) {
         if (typeof followUp === "function") {
           for (let i = 1; i < payloads.length; i++) {
