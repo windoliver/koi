@@ -169,6 +169,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -205,6 +207,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -243,6 +247,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -284,6 +290,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -339,6 +347,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -391,6 +401,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "device-abc",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (_m, ctx) => {
         pushedCtx.push(ctx);
       },
@@ -435,6 +447,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "device-real",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (_m, ctx) => {
         pushedCtx.push(ctx);
       },
@@ -498,6 +512,8 @@ describe("createMobileChannel", () => {
       port: port2,
       signingSecret: secret,
       authenticate: async () => "device-real",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (_m, ctx) => {
         pushedCtx.push(ctx);
       },
@@ -577,6 +593,8 @@ describe("createMobileChannel", () => {
       port: portB,
       signingSecret: secret,
       authenticate: async () => "bob",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushedB.push(m);
       },
@@ -696,9 +714,73 @@ describe("createMobileChannel", () => {
       createMobileChannel({
         port: 1,
         trustClientIdentity: true,
+        unsafeAllowEphemeralSigningSecret: true,
+        unsafeAllowQueuedWriteAsDelivered: true,
         pushNotifier: async () => {},
       }),
     ).toThrow(/pushNotifier requires/);
+  });
+
+  test("createMobileChannel throws when pushNotifier wired without ack guarantee", () => {
+    // Regression (round 28 high): pushNotifier with ackTimeoutMs:0 and no
+    // unsafe opt-in lets the adapter treat queued WebSocket writes as
+    // delivered, silently losing replies whenever the radio drops a frame
+    // after socket.send() reports it queued. Construction must fail closed
+    // unless the host either turns on app-level acks or explicitly accepts
+    // the lossy default.
+    expect(() =>
+      createMobileChannel({
+        port: 1,
+        authenticate: async () => "id",
+        unsafeAllowEphemeralSigningSecret: true,
+        pushNotifier: async () => {},
+      }),
+    ).toThrow(/positive ackTimeoutMs.*unsafeAllowQueuedWriteAsDelivered/);
+    // Either escape hatch satisfies the guard.
+    expect(() =>
+      createMobileChannel({
+        port: 1,
+        authenticate: async () => "id",
+        unsafeAllowEphemeralSigningSecret: true,
+        ackTimeoutMs: 100,
+        pushNotifier: async () => {},
+      }),
+    ).not.toThrow();
+    expect(() =>
+      createMobileChannel({
+        port: 1,
+        authenticate: async () => "id",
+        unsafeAllowEphemeralSigningSecret: true,
+        unsafeAllowQueuedWriteAsDelivered: true,
+        pushNotifier: async () => {},
+      }),
+    ).not.toThrow();
+  });
+
+  test("createMobileChannel throws when pushNotifier wired without stable signingSecret", () => {
+    // Regression (round 28 high): a per-process random HMAC secret means
+    // any reply tag that outlives this process (queued, retried, failed
+    // over) cannot be verified on the new instance and loses recipient
+    // context. Construction must fail closed unless the host supplies a
+    // stable secret or explicitly accepts the single-instance limitation.
+    expect(() =>
+      createMobileChannel({
+        port: 1,
+        authenticate: async () => "id",
+        ackTimeoutMs: 100,
+        pushNotifier: async () => {},
+      }),
+    ).toThrow(/stable signingSecret.*unsafeAllowEphemeralSigningSecret/);
+    // Either escape hatch satisfies the guard.
+    expect(() =>
+      createMobileChannel({
+        port: 1,
+        authenticate: async () => "id",
+        ackTimeoutMs: 100,
+        signingSecret: new Uint8Array(32),
+        pushNotifier: async () => {},
+      }),
+    ).not.toThrow();
   });
 
   test("live socket write failure (close-after-check race) falls through to pushNotifier", async () => {
@@ -710,6 +792,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -794,6 +878,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: () => null,
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async () => {},
     });
     await ch.connect();
@@ -814,6 +900,8 @@ describe("createMobileChannel", () => {
     const chA = createMobileChannel({
       port: portA,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushedA.push(m);
       },
@@ -821,6 +909,8 @@ describe("createMobileChannel", () => {
     const chB = createMobileChannel({
       port: portB,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushedB.push(m);
       },
@@ -876,6 +966,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -921,6 +1013,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -999,6 +1093,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async () => {
         throw new Error("APNs down");
       },
@@ -1061,6 +1157,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -1102,6 +1200,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -1223,6 +1323,8 @@ describe("createMobileChannel", () => {
       port: portA,
       authenticate: async () => "shared-user",
       signingSecret: sharedSecret,
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushedA.push(m);
       },
@@ -1248,6 +1350,8 @@ describe("createMobileChannel", () => {
       port: portB,
       authenticate: async () => "shared-user",
       signingSecret: sharedSecret,
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushedB.push(m);
       },
@@ -1326,6 +1430,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -1359,6 +1465,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -1392,6 +1500,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -1435,6 +1545,8 @@ describe("createMobileChannel", () => {
         nextIdentity = "user-B"; // next connection becomes B
         return id;
       },
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (_m, ctx) => {
         pushedContexts.push(ctx);
       },
@@ -1476,6 +1588,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "authed-device-42",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (_m, ctx) => {
         pushedContexts.push(ctx);
       },
@@ -1506,6 +1620,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         pushed.push(m);
       },
@@ -1559,6 +1675,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "test-device",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (_m, ctx) => {
         pushedContexts.push(ctx);
       },
@@ -1638,6 +1756,8 @@ describe("createMobileChannel", () => {
       port,
       authenticate: () => new Promise(() => {}),
       authenticateTimeoutMs: 50,
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async () => {},
     });
     ch.onMessage(async () => {});
@@ -1674,6 +1794,8 @@ describe("createMobileChannel", () => {
     const ch = createMobileChannel({
       port,
       authenticate: async () => "user-1",
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async () => {},
     });
     ch.onMessage(async () => {});

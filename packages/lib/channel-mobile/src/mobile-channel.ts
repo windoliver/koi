@@ -180,8 +180,25 @@ export interface MobileChannelConfig {
    * a KMS/secret manager) shared by all adapter instances that should
    * accept each other's reply tags. Rotating the secret invalidates all
    * outstanding tags — by design.
+   *
+   * Required-with-pushNotifier: when `pushNotifier` is set, this MUST be
+   * provided OR `unsafeAllowEphemeralSigningSecret` MUST be `true`. A
+   * fresh per-process secret means any reply that survives this process
+   * (queued, retried after restart, failed-over to a peer) cannot have
+   * its tag verified on the new instance and loses the authenticated
+   * recipient context push routing depends on. `createMobileChannel()`
+   * throws at construction time if the invariant is violated.
    */
   readonly signingSecret?: Uint8Array;
+  /**
+   * Explicit acknowledgement that this deployment uses a per-process
+   * random HMAC secret. Set `true` ONLY for single-instance deployments
+   * with no restart/failover requirement, accepting that any reply tag
+   * outliving the current process becomes unverifiable. Required when
+   * `pushNotifier` is set AND `signingSecret` is unset — the explicit
+   * opt-in keeps an unsafe default off the happy path.
+   */
+  readonly unsafeAllowEphemeralSigningSecret?: boolean;
   /**
    * Maximum milliseconds to wait for `authenticate()` before treating the
    * upgrade as failed. Without a bound, a hung IdP request would hold the
@@ -207,8 +224,27 @@ export interface MobileChannelConfig {
    * `MobileNoDeliveryTargetError`. Hosts MUST opt in by setting a
    * positive value, and SHOULD only do so after confirming all
    * connected client versions implement the ack frame.
+   *
+   * Required-with-pushNotifier: when `pushNotifier` is set, this MUST be
+   * a positive number OR `unsafeAllowQueuedWriteAsDelivered` MUST be `true`.
+   * Otherwise the adapter would treat a queued WebSocket write as
+   * delivered and never fall back to push when the radio drops the frame
+   * after `send()` reported it queued — a silent lost-reply path.
+   * `createMobileChannel()` throws at construction time if the invariant
+   * is violated.
    */
   readonly ackTimeoutMs?: number;
+  /**
+   * Explicit acknowledgement that this deployment treats a queued WebSocket
+   * write as delivered (no application-level ack). Set `true` ONLY for
+   * legacy clients that cannot emit `{kind:"ack",deliveryId}`, accepting
+   * the risk that the radio could drop a frame after `socket.send()`
+   * reported it queued and the user would never receive the reply.
+   *
+   * Required when `pushNotifier` is set AND `ackTimeoutMs` is 0/unset —
+   * the explicit opt-in keeps an unsafe default off the happy path.
+   */
+  readonly unsafeAllowQueuedWriteAsDelivered?: boolean;
 }
 
 export class MobileNoDeliveryTargetError extends Error {
@@ -443,6 +479,27 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   if (config.pushNotifier !== undefined && config.authenticate === undefined) {
     throw new Error(
       "@koi/channel-mobile: pushNotifier requires an authenticate() handshake to bind a server-verified recipient identity. trustClientIdentity is not sufficient — a client could spoof another user's senderId and misroute delayed replies. Provide authenticate(req) to derive the identity from a verified handshake (mTLS, JWT, signed bearer token, etc.).",
+    );
+  }
+  // pushNotifier-coupled safety guards. Both reject silent default-path
+  // delivery loss / unverifiable late replies — the host must either
+  // configure the safe option or explicitly opt into the lossy mode.
+  if (
+    config.pushNotifier !== undefined &&
+    !(typeof config.ackTimeoutMs === "number" && config.ackTimeoutMs > 0) &&
+    config.unsafeAllowQueuedWriteAsDelivered !== true
+  ) {
+    throw new Error(
+      "@koi/channel-mobile: pushNotifier requires either a positive ackTimeoutMs (so live sends only succeed after the client acks the deliveryId) or an explicit unsafeAllowQueuedWriteAsDelivered:true opt-in. Without one of these, the adapter would treat a queued WebSocket write as delivered and never fall back to push when the radio drops the frame.",
+    );
+  }
+  if (
+    config.pushNotifier !== undefined &&
+    config.signingSecret === undefined &&
+    config.unsafeAllowEphemeralSigningSecret !== true
+  ) {
+    throw new Error(
+      "@koi/channel-mobile: pushNotifier requires either a stable signingSecret (so reply tags survive restart/failover/cross-instance replay) or an explicit unsafeAllowEphemeralSigningSecret:true opt-in for single-instance deployments. Without one of these, any delayed reply that outlives the current process loses its authenticated recipient context.",
     );
   }
   // Per-instance HMAC secret: tags from this adapter cannot be forged or
