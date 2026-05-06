@@ -474,6 +474,65 @@ describe("linearSearch", () => {
     expect(result.stopReason).toBe("eval_failed");
   });
 
+  test("default sanitizer redacts errorMessage and parameters before refine sees failures", async () => {
+    let receivedFailures: readonly { errorMessage: string; parameters: object }[] = [];
+    const config = makeConfig({
+      maxIterations: 2,
+      evaluate: async () => ({
+        successRate: 0.5,
+        sampleCount: 10,
+        failures: [
+          {
+            toolName: "tool",
+            errorCode: "E1",
+            errorMessage: "secret token=abc123",
+            parameters: { tenantId: "private", userInput: "ssn=42" },
+          },
+        ],
+      }),
+      refine: async (_code, failures) => {
+        receivedFailures = failures;
+        return "```ts\nrefined\n```";
+      },
+      random: () => 0.99,
+    });
+    await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+
+    expect(receivedFailures.length).toBe(1);
+    expect(receivedFailures[0]?.errorMessage).toBe("redacted");
+    expect(receivedFailures[0]?.parameters).toEqual({});
+  });
+
+  test("custom sanitizer can pass failures through (opt-in for trusted evaluators)", async () => {
+    let receivedMessage = "";
+    const config = makeConfig({
+      maxIterations: 2,
+      evaluate: async () => ({
+        successRate: 0.5,
+        sampleCount: 10,
+        failures: [{ toolName: "t", errorCode: "E", errorMessage: "diagnostic", parameters: {} }],
+      }),
+      refine: async (_code, failures) => {
+        receivedMessage = failures[0]?.errorMessage ?? "";
+        return "```ts\nrefined\n```";
+      },
+      sanitizeFailures: (f) => f,
+      random: () => 0.99,
+    });
+    await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(receivedMessage).toBe("diagnostic");
+  });
+
+  test("config compiles with only required callbacks (defaulted fields are optional)", async () => {
+    // Type-level test: this would be a tsc error if SearchConfig still
+    // marked maxIterations / convergenceThreshold / etc. as required.
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, {
+      refine: async () => "```ts\nrefined\n```",
+      evaluate: async () => ({ successRate: 1.0, sampleCount: 10, failures: [] }),
+    });
+    expect(result.stopReason).toBe("converged");
+  });
+
   test("never exceeds maxIterations even with infinite-failure evaluator", async () => {
     const config = makeConfig({
       maxIterations: 7,

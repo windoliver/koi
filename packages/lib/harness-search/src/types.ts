@@ -94,17 +94,32 @@ export type EvaluateCallback = (
 // Search config
 // ---------------------------------------------------------------------------
 
+/**
+ * Sanitizer applied to `EvalFailure[]` before they are forwarded into
+ * `refine()`. Failures cross a trust boundary back into the LLM
+ * provider — `errorMessage`, `parameters`, and even `errorCode` may
+ * contain sandbox stderr, stack traces, user payloads, or tenant data
+ * that callers do not want exfiltrated to the model. Mirrors the
+ * `sanitizeVerifierReason` pattern in `@koi/harness-synth`.
+ *
+ * Default ({@link DEFAULT_SEARCH_CONFIG}) drops free-text fields and
+ * keeps only `toolName` + `errorCode` for steering the next refinement;
+ * callers wrapping trusted in-process evaluators may pass through with
+ * `(f) => f`, or supply their own redactor.
+ */
+export type SanitizeFailures = (failures: readonly EvalFailure[]) => readonly EvalFailure[];
+
 export interface SearchConfig {
   readonly refine: RefineCallback;
   readonly evaluate: EvaluateCallback;
   /** Hard cap on iterations. Default 20. Must be >= 1. */
-  readonly maxIterations: number;
+  readonly maxIterations?: number;
   /** Success rate at/above which a node counts as converged. Default 1.0. */
-  readonly convergenceThreshold: number;
+  readonly convergenceThreshold?: number;
   /** Minimum samples required before convergence is trusted. Default 5. */
-  readonly minEvalSamples: number;
+  readonly minEvalSamples?: number;
   /** Stop after N consecutive iterations without strict improvement. Default 3. */
-  readonly noImprovementLimit: number;
+  readonly noImprovementLimit?: number;
   /**
    * Per-callback deadline in ms. The loop races each `evaluate` /
    * `refine` invocation against this timeout AND the external `signal`,
@@ -115,31 +130,56 @@ export interface SearchConfig {
    * for callbacks proven to be cooperative). Must be a positive number
    * or `Infinity`.
    */
-  readonly attemptTimeoutMs: number;
+  readonly attemptTimeoutMs?: number;
+  /**
+   * Sanitizer applied to evaluator failures before they are passed into
+   * `refine()`. Default redacts `errorMessage` and `parameters` to
+   * prevent caller-controlled data from leaking into the LLM prompt.
+   */
+  readonly sanitizeFailures?: SanitizeFailures;
   /** Wall-clock source. Default Date.now. */
-  readonly clock: () => number;
+  readonly clock?: () => number;
   /** PRNG. Default Math.random. */
-  readonly random: () => number;
+  readonly random?: () => number;
   /** Optional caller cancellation; aborts between iterations. */
   readonly signal?: AbortSignal | undefined;
 }
 
+/**
+ * Default redactor — keeps `toolName` + `errorCode` for steering
+ * refinement, drops `errorMessage` and `parameters`. Both can carry
+ * caller-controlled / sandbox-emitted free text or tenant data; the
+ * package fails closed on this trust boundary so callers must opt in
+ * to passing diagnostic detail through to the model.
+ */
+const DEFAULT_SANITIZE_FAILURES: SanitizeFailures = (failures) =>
+  failures.map((f) => ({
+    toolName: f.toolName,
+    errorCode: f.errorCode,
+    errorMessage: "redacted",
+    parameters: {},
+  }));
+
 /** Defaults applied when fields are omitted from a partial config. */
-export const DEFAULT_SEARCH_CONFIG: Pick<
-  SearchConfig,
-  | "maxIterations"
-  | "convergenceThreshold"
-  | "minEvalSamples"
-  | "noImprovementLimit"
-  | "attemptTimeoutMs"
-  | "clock"
-  | "random"
+export const DEFAULT_SEARCH_CONFIG: Required<
+  Pick<
+    SearchConfig,
+    | "maxIterations"
+    | "convergenceThreshold"
+    | "minEvalSamples"
+    | "noImprovementLimit"
+    | "attemptTimeoutMs"
+    | "sanitizeFailures"
+    | "clock"
+    | "random"
+  >
 > = Object.freeze({
   maxIterations: 20,
   convergenceThreshold: 1.0,
   minEvalSamples: 5,
   noImprovementLimit: 3,
   attemptTimeoutMs: 30_000,
+  sanitizeFailures: DEFAULT_SANITIZE_FAILURES,
   clock: Date.now,
   random: Math.random,
 });

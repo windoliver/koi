@@ -14,6 +14,7 @@ export {
   type EvalResult,
   type EvaluateCallback,
   type RefineCallback,
+  type SanitizeFailures,
   type SearchConfig,
   type SearchNode,
   type SearchResult,

@@ -68,6 +68,7 @@ export async function linearSearch(
     minEvalSamples = DEFAULT_SEARCH_CONFIG.minEvalSamples,
     noImprovementLimit = DEFAULT_SEARCH_CONFIG.noImprovementLimit,
     attemptTimeoutMs = DEFAULT_SEARCH_CONFIG.attemptTimeoutMs,
+    sanitizeFailures = DEFAULT_SEARCH_CONFIG.sanitizeFailures,
     clock = DEFAULT_SEARCH_CONFIG.clock,
     random = DEFAULT_SEARCH_CONFIG.random,
     signal,
@@ -201,8 +202,12 @@ export async function linearSearch(
     }
 
     if (iteration < maxIterations - 1 && evalResult.failures.length > 0) {
+      // Sanitize failures across the LLM trust boundary — see
+      // SanitizeFailures docstring. Default redacts free-text fields;
+      // callers must opt in to forwarding diagnostic detail.
+      const sanitized = sanitizeFailures(evalResult.failures);
       const refineOutcome = await withDeadline(
-        (sig) => refine(currentCode, evalResult.failures, iteration + 1, maxIterations, sig),
+        (sig) => refine(currentCode, sanitized, iteration + 1, maxIterations, sig),
         signal,
         attemptTimeoutMs,
       );

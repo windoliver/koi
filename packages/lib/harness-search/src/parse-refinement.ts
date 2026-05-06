@@ -1,19 +1,48 @@
 /**
- * Lightweight code-block extraction for refinement outputs.
+ * Code-block extraction for refinement outputs.
  *
- * Simpler than @koi/harness-synth's parser — extracts the first fenced
- * block without full structural validation. Structural / schema checks
- * are the verifier's job (forge-verifier), invoked downstream of search.
+ * Refiners that emit explanation + example + final code, or stream a
+ * diff next to a snippet, can produce multiple fenced blocks. Picking
+ * the first fence blindly evaluates the wrong artifact and burns
+ * search budget on stale/example code; picking the last fence is also
+ * fragile because a trailing example would silently win.
+ *
+ * Strategy: accept exactly ONE fence, OR accept multi-block output
+ * only when exactly one fence carries an explicit `typescript`/`ts`
+ * tag (the convention adapters should emit). Anything else returns
+ * `null` so the caller surfaces `refine_failed` rather than evaluating
+ * an arbitrary block.
+ *
+ * Structural / schema checks remain the verifier's job
+ * (forge-verifier), invoked downstream of search.
  */
 
-const CODE_FENCE = /```(?:typescript|ts|javascript|js)?\s*\n([\s\S]*?)```/;
+// Match every fenced block in the output. Capture group 1 is the
+// language tag (may be empty), group 2 the body.
+const CODE_FENCE_GLOBAL = /```([a-zA-Z]*)\s*\n([\s\S]*?)```/g;
+
+const TS_TAGS: ReadonlySet<string> = new Set(["typescript", "ts"]);
 
 /**
- * Extract the first fenced code block from refinement output.
- * Returns null when no block is present — callers retain prior code.
+ * Extract the canonical fenced code block from refinement output.
+ * Returns null when there is no block, when the only block is empty,
+ * or when the output is ambiguous (multiple fences without a single
+ * unambiguous typescript-tagged block).
  */
 export function parseRefinementOutput(raw: string): string | null {
-  const match = CODE_FENCE.exec(raw);
-  const code = match?.[1]?.trim();
-  return code !== undefined && code.length > 0 ? code : null;
+  const blocks: { readonly tag: string; readonly body: string }[] = [];
+  for (const match of raw.matchAll(CODE_FENCE_GLOBAL)) {
+    const tag = (match[1] ?? "").toLowerCase();
+    const body = match[2]?.trim() ?? "";
+    if (body.length > 0) blocks.push({ tag, body });
+  }
+
+  if (blocks.length === 0) return null;
+  if (blocks.length === 1) return blocks[0]?.body ?? null;
+
+  // Multi-block output: accept only when exactly one block is tagged
+  // typescript/ts. Otherwise refuse to guess which one is the answer.
+  const tsBlocks = blocks.filter((b) => TS_TAGS.has(b.tag));
+  if (tsBlocks.length === 1) return tsBlocks[0]?.body ?? null;
+  return null;
 }

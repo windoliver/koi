@@ -22,9 +22,24 @@ describe("parseRefinementOutput", () => {
     expect(parseRefinementOutput(raw)).toBe("plain code");
   });
 
-  test("returns first block when multiple present", () => {
+  test("rejects multi-block output with no unique ts tag (ambiguous — first is example or stale)", () => {
     const raw = "```ts\nfirst\n```\nthen\n```ts\nsecond\n```";
-    expect(parseRefinementOutput(raw)).toBe("first");
+    expect(parseRefinementOutput(raw)).toBeNull();
+  });
+
+  test("accepts multi-block output when exactly one block is ts-tagged", () => {
+    const raw = "Example:\n```\nold\n```\nFinal:\n```ts\nnew code\n```";
+    expect(parseRefinementOutput(raw)).toBe("new code");
+  });
+
+  test("rejects multi-block output when no block carries a ts tag", () => {
+    const raw = "```\none\n```\nand\n```\ntwo\n```";
+    expect(parseRefinementOutput(raw)).toBeNull();
+  });
+
+  test("rejects multi-block output even when one block is js-tagged (only ts/typescript counts)", () => {
+    const raw = "```js\nold\n```\n```\nplain\n```";
+    expect(parseRefinementOutput(raw)).toBeNull();
   });
 
   test("returns null when no fence", () => {
