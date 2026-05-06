@@ -172,6 +172,78 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
+  test("polling: photo with caption emits image AND a sibling text block (caption is user prompt)", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({ token: "T", bot: f.bot });
+    await adapter.connect();
+    const seen: { content: readonly { kind: string }[] }[] = [];
+    adapter.onMessage(async (m) => {
+      seen.push(m as { content: readonly { kind: string }[] });
+    });
+    f.emit({
+      update_id: 1,
+      message: {
+        message_id: 1,
+        from: { id: 9 },
+        chat: { id: 200 },
+        date: 1700000000,
+        caption: "summarize this please",
+        photo: [{ file_id: "AgACA", width: 90, height: 90 }],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(seen).toHaveLength(1);
+    const blocks = seen[0]?.content ?? [];
+    expect(blocks.map((b) => b.kind)).toEqual(["image", "text"]);
+    await adapter.disconnect();
+  });
+
+  test("polling: audio/video/voice uploads surface as file blocks (no silent drop)", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({ token: "T", bot: f.bot });
+    await adapter.connect();
+    const seen: { content: readonly { kind: string }[] }[] = [];
+    adapter.onMessage(async (m) => {
+      seen.push(m as { content: readonly { kind: string }[] });
+    });
+    f.emit({
+      update_id: 1,
+      message: {
+        message_id: 1,
+        from: { id: 9 },
+        chat: { id: 200 },
+        date: 1700000000,
+        audio: { file_id: "Aud1", mime_type: "audio/mpeg", file_name: "song.mp3" },
+      },
+    });
+    f.emit({
+      update_id: 2,
+      message: {
+        message_id: 2,
+        from: { id: 9 },
+        chat: { id: 200 },
+        date: 1700000001,
+        video: { file_id: "Vid1", mime_type: "video/mp4" },
+      },
+    });
+    f.emit({
+      update_id: 3,
+      message: {
+        message_id: 3,
+        from: { id: 9 },
+        chat: { id: 200 },
+        date: 1700000002,
+        voice: { file_id: "Voi1", mime_type: "audio/ogg" },
+      },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(seen).toHaveLength(3);
+    expect(seen[0]?.content[0]?.kind).toBe("file");
+    expect(seen[1]?.content[0]?.kind).toBe("file");
+    expect(seen[2]?.content[0]?.kind).toBe("file");
+    await adapter.disconnect();
+  });
+
   test("webhook mode without webhookSecret refuses to construct (fails closed at boundary)", async () => {
     const f = fakeBot();
     expect(() =>

@@ -166,10 +166,14 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
   // because callers may inject a long-lived bot via config.bot.
   let connected = false;
   // Buffer for updates that arrive between b.start() (kicked off in
-  // platformConnect) and onPlatformEvent installing updateHandler. Without
-  // this, the first updates of a polling session would be silently
-  // dropped. Bounded — old entries roll off under sustained traffic.
-  const PENDING_BUFFER_MAX = 256;
+  // platformConnect) and onPlatformEvent installing updateHandler. The
+  // window is the brief gap inside @koi/channel-base's connect() between
+  // platformConnect resolving and onPlatformEvent being called — measured
+  // in milliseconds. We do NOT cap the buffer: silently truncating older
+  // updates during a reconnect burst causes user-visible message loss
+  // with no signal. If the buffer grows unboundedly that means
+  // onPlatformEvent never fires (a bug in the host) — surface it via OOM
+  // rather than mask it by dropping inbound traffic.
   // let requires justification: drained when updateHandler is installed.
   let pending: TelegramUpdateLike[] = [];
 
@@ -179,9 +183,6 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
       return;
     }
     pending.push(update);
-    if (pending.length > PENDING_BUFFER_MAX) {
-      pending = pending.slice(-PENDING_BUFFER_MAX);
-    }
   };
 
   const requireBot = (): TelegramBotLike => {

@@ -29,6 +29,26 @@ export interface TelegramDocumentLike {
   readonly mime_type?: string;
 }
 
+export interface TelegramAudioLike {
+  readonly file_id: string;
+  readonly file_name?: string;
+  readonly mime_type?: string;
+  readonly duration?: number;
+}
+
+export interface TelegramVideoLike {
+  readonly file_id: string;
+  readonly file_name?: string;
+  readonly mime_type?: string;
+  readonly duration?: number;
+}
+
+export interface TelegramVoiceLike {
+  readonly file_id: string;
+  readonly mime_type?: string;
+  readonly duration?: number;
+}
+
 export interface TelegramMessageLike {
   readonly message_id: number;
   readonly from?: TelegramUserLike;
@@ -38,6 +58,9 @@ export interface TelegramMessageLike {
   readonly caption?: string;
   readonly photo?: readonly TelegramPhotoSizeLike[];
   readonly document?: TelegramDocumentLike;
+  readonly audio?: TelegramAudioLike;
+  readonly video?: TelegramVideoLike;
+  readonly voice?: TelegramVoiceLike;
   readonly message_thread_id?: number;
 }
 
@@ -160,30 +183,63 @@ async function normalizeMessage(
     };
   }
 
+  // Media messages: emit a media block, and — when the user attached a
+  // caption — emit a sibling text block so the caption (often the actual
+  // user prompt: "summarize this", "translate") reaches the agent
+  // alongside the attachment instead of being lost or buried in `alt`.
+  // let requires justification: blocks accumulated across media branches
+  const blocks: ContentBlock[] = [];
+
   if (msg.photo !== undefined && msg.photo.length > 0) {
     const highest = msg.photo[msg.photo.length - 1];
     if (highest === undefined) return null;
     const url = await deps.getFileUrl(highest.file_id);
-    const block: ContentBlock = {
+    const image: ContentBlock = {
       kind: "image",
       url,
       ...(msg.caption !== undefined ? { alt: msg.caption } : {}),
     };
-    return { content: [block], senderId, threadId, timestamp };
-  }
-
-  if (msg.document !== undefined) {
+    blocks.push(image);
+  } else if (msg.document !== undefined) {
     const url = await deps.getFileUrl(msg.document.file_id);
-    const block: ContentBlock = {
+    blocks.push({
       kind: "file",
       url,
       mimeType: msg.document.mime_type ?? "application/octet-stream",
       ...(msg.document.file_name !== undefined ? { name: msg.document.file_name } : {}),
-    };
-    return { content: [block], senderId, threadId, timestamp };
+    });
+  } else if (msg.audio !== undefined) {
+    const url = await deps.getFileUrl(msg.audio.file_id);
+    blocks.push({
+      kind: "file",
+      url,
+      mimeType: msg.audio.mime_type ?? "audio/mpeg",
+      ...(msg.audio.file_name !== undefined ? { name: msg.audio.file_name } : {}),
+    });
+  } else if (msg.video !== undefined) {
+    const url = await deps.getFileUrl(msg.video.file_id);
+    blocks.push({
+      kind: "file",
+      url,
+      mimeType: msg.video.mime_type ?? "video/mp4",
+      ...(msg.video.file_name !== undefined ? { name: msg.video.file_name } : {}),
+    });
+  } else if (msg.voice !== undefined) {
+    const url = await deps.getFileUrl(msg.voice.file_id);
+    blocks.push({
+      kind: "file",
+      url,
+      mimeType: msg.voice.mime_type ?? "audio/ogg",
+    });
   }
 
-  return null;
+  if (blocks.length === 0) return null;
+
+  if (msg.caption !== undefined) {
+    blocks.push({ kind: "text", text: msg.caption });
+  }
+
+  return { content: blocks, senderId, threadId, timestamp };
 }
 
 function safeParse(s: string): unknown {
