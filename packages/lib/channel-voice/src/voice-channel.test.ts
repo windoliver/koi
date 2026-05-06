@@ -4,6 +4,7 @@ import {
   createVoiceChannel,
   type Stt,
   type Tts,
+  VoicePoisonedSessionError,
   VoiceSttTimeoutError,
   type VoiceTransport,
 } from "./voice-channel.js";
@@ -706,6 +707,74 @@ describe("createVoiceChannel", () => {
     await expect(
       ch.send({ threadId: "session-1", content: [{ kind: "text", text: "x" }] }),
     ).rejects.toThrow(/TTS synthesize exceeded/);
+    await ch.disconnect();
+  });
+
+  test("transport timeout poisons session — stale send cannot reorder with later sends", async () => {
+    // Round-12 high finding: transport.sendUtterance() timing out only
+    // races the timer; the underlying call keeps running. If we accepted
+    // a newer send on the same session, the stale resolve would fire
+    // AFTER the new audio (broken ordering) or alongside a retry
+    // (overlap). Fix: poison the session on timeout so subsequent sends
+    // fail-fast with VoicePoisonedSessionError until disconnect.
+    // let requires justification: harness state captured by transport closure
+    let resolveStuck: (() => void) | undefined;
+    const sentOrder: string[] = [];
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async (sessionId, utteranceId) => {
+        if (utteranceId === "stuck") {
+          await new Promise<void>((r) => {
+            resolveStuck = r;
+          });
+        }
+        sentOrder.push(utteranceId);
+      },
+      onUtterance: () => () => {},
+    };
+    const stt: Stt = { transcribe: async () => null };
+    const tts: Tts = { synthesize: async () => new Uint8Array(0) };
+    const ch = createVoiceChannel({ transport, stt, tts, transportSendTimeoutMs: 30 });
+    await ch.connect();
+    // First send hits the stuck path → times out → poisons session.
+    await expect(
+      ch.send({
+        threadId: "session-1",
+        content: [{ kind: "text", text: "first" }],
+        metadata: { utteranceId: "stuck" },
+      }),
+    ).rejects.toThrow(/transport.sendUtterance exceeded/);
+    // Newer send on the same session must reject immediately, not queue
+    // behind / interleave with the still-in-flight stale call.
+    await expect(
+      ch.send({
+        threadId: "session-1",
+        content: [{ kind: "text", text: "second" }],
+        metadata: { utteranceId: "newer" },
+      }),
+    ).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+    // Distinct session is unaffected by another session's poison.
+    await ch.send({
+      threadId: "session-2",
+      content: [{ kind: "text", text: "other" }],
+      metadata: { utteranceId: "other" },
+    });
+    expect(sentOrder).toEqual(["other"]);
+    // Now release the stale call; it must NOT have produced any audio
+    // for "newer", and the only completion on session-1 is the stale one.
+    resolveStuck?.();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(sentOrder).toEqual(["other", "stuck"]);
+    // Disconnect clears poison so a fresh connect admits new sends.
+    await ch.disconnect();
+    await ch.connect();
+    await ch.send({
+      threadId: "session-1",
+      content: [{ kind: "text", text: "after-recovery" }],
+      metadata: { utteranceId: "after-recovery" },
+    });
+    expect(sentOrder).toContain("after-recovery");
     await ch.disconnect();
   });
 

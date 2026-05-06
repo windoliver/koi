@@ -132,6 +132,25 @@ export class VoiceTransportSendTimeoutError extends Error {
   }
 }
 
+/**
+ * Thrown when `send()` is called on a session whose previous outbound
+ * timed out (TTS or transport). The original underlying call could not
+ * be aborted and may still resolve later, so accepting newer sends would
+ * risk overlapping/reordered playback. The session stays poisoned until
+ * the adapter is disconnected (host recovery: `disconnect()` →
+ * `connect()`, or use a different `threadId`).
+ */
+export class VoicePoisonedSessionError extends Error {
+  readonly sessionId: string;
+  constructor(sessionId: string) {
+    super(
+      `@koi/channel-voice: session ${sessionId} is poisoned by a prior TTS/transport timeout; the stale operation may still complete and would reorder with new audio. Disconnect/reconnect to recover.`,
+    );
+    this.name = "VoicePoisonedSessionError";
+    this.sessionId = sessionId;
+  }
+}
+
 const DEFAULT_STT_TIMEOUT_MS = 30_000;
 const DEFAULT_TTS_TIMEOUT_MS = 30_000;
 const DEFAULT_TRANSPORT_SEND_TIMEOUT_MS = 30_000;
@@ -387,6 +406,11 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
   // are both bounded by timeouts so a wedged provider cannot stall the
   // chain forever — the per-session chain advances via rejection.
   const sessionSendChains = new Map<string, Promise<void>>();
+  // Sessions whose prior outbound exceeded ttsTimeoutMs / transportSendTimeoutMs.
+  // The underlying TTS/transport call cannot be aborted and may still resolve
+  // later, so admitting newer sends on the same session would risk overlapping
+  // or out-of-order playback. Stays set until disconnect() clears it.
+  const poisonedSessions = new Set<string>();
   const ttsTimeoutMs = config.ttsTimeoutMs ?? DEFAULT_TTS_TIMEOUT_MS;
   const transportSendTimeoutMs = config.transportSendTimeoutMs ?? DEFAULT_TRANSPORT_SEND_TIMEOUT_MS;
 
@@ -401,20 +425,35 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     // Two-phase atomic delivery: synthesize ALL pieces first, then hand
     // the complete ordered frame sequence to the transport. A TTS failure
     // mid-sequence plays nothing rather than half a sentence.
-    const frames: Uint8Array[] = [];
-    for (const piece of pieces) {
-      const audio = await withTimeout(
-        Promise.resolve(config.tts.synthesize(piece)),
-        ttsTimeoutMs,
-        () => new VoiceTtsTimeoutError(ttsTimeoutMs),
+    //
+    // Timeout poisoning: if either TTS or the transport send times out,
+    // the outer promise rejects but the underlying tts.synthesize() /
+    // transport.sendUtterance() call cannot be cancelled and may still
+    // complete later. To prevent that stale audio from playing AFTER
+    // newer audio (broken ordering) or alongside a retry (overlapping
+    // playback), we mark the session poisoned so subsequent sends on
+    // the same threadId fail-fast until the host disconnects.
+    try {
+      const frames: Uint8Array[] = [];
+      for (const piece of pieces) {
+        const audio = await withTimeout(
+          Promise.resolve(config.tts.synthesize(piece)),
+          ttsTimeoutMs,
+          () => new VoiceTtsTimeoutError(ttsTimeoutMs),
+        );
+        frames.push(audio);
+      }
+      await withTimeout(
+        Promise.resolve(config.transport.sendUtterance(sessionId, utteranceId, frames)),
+        transportSendTimeoutMs,
+        () => new VoiceTransportSendTimeoutError(transportSendTimeoutMs),
       );
-      frames.push(audio);
+    } catch (e: unknown) {
+      if (e instanceof VoiceTtsTimeoutError || e instanceof VoiceTransportSendTimeoutError) {
+        poisonedSessions.add(sessionId);
+      }
+      throw e;
     }
-    await withTimeout(
-      Promise.resolve(config.transport.sendUtterance(sessionId, utteranceId, frames)),
-      transportSendTimeoutMs,
-      () => new VoiceTransportSendTimeoutError(transportSendTimeoutMs),
-    );
   };
 
   const wrappedSend = (message: OutboundMessage): Promise<void> => {
@@ -423,6 +462,9 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     }
     if (message.threadId === undefined || message.threadId.length === 0) {
       return Promise.reject(new VoiceMissingSessionError());
+    }
+    if (poisonedSessions.has(message.threadId)) {
+      return Promise.reject(new VoicePoisonedSessionError(message.threadId));
     }
     // Pre-render rich blocks → text so non-text content (image alt, file
     // names, button labels) survives the wire as spoken text. channel-
@@ -479,6 +521,11 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       // swallowed — they were already surfaced to their callers.
       const inflight = [...sessionSendChains.values()];
       sessionSendChains.clear();
+      // Disconnect is the host's recovery path; clear poison so a fresh
+      // connect() admits new sends. Stale operations from the prior
+      // connection remain abandoned (they cannot reach the new transport
+      // session because the transport has been torn down).
+      poisonedSessions.clear();
       await Promise.allSettled(inflight);
       await inner.disconnect();
     },
