@@ -303,26 +303,27 @@ interface ServerLike {
 }
 
 interface SocketLike {
-  readonly send: (data: string) => unknown;
+  // Bun's WebSocket.send returns number bytes written (>= 0), -1 if closed,
+  // or a partial-write count under backpressure. Anything <= 0 must be
+  // treated as a delivery failure so the message can fall through to push.
+  readonly send: (data: string) => number;
   readonly close: () => unknown;
 }
 
 export function createMobileChannel(config: MobileChannelConfig): MobileChannelAdapter {
   const defaultSenderId = config.senderId ?? "mobile-user";
   const trustClient = config.trustClientIdentity === true;
-  // Construction-time guard against ambiguous push routing. If a push
-  // notifier is wired but the adapter has no way to derive a unique
-  // per-recipient identity (no client-trust, no server auth hook), every
-  // pushed reply would carry the same shared placeholder senderId and
-  // could be misrouted across users. Refuse to construct rather than
-  // ship a silent footgun.
-  if (
-    config.pushNotifier !== undefined &&
-    config.trustClientIdentity !== true &&
-    config.authenticate === undefined
-  ) {
+  // Construction-time guard: pushNotifier ALWAYS requires the server-side
+  // authenticate() handshake. trustClientIdentity alone is not sufficient
+  // because a plain WebSocket client could spoof another user's senderId
+  // in the inbound frame and cause delayed replies to be routed to that
+  // victim. authenticate() is the only source of an identity verified
+  // BEFORE the socket is granted the active session and BEFORE inbound
+  // frames are dispatched, so it is also the only source the adapter
+  // promotes into `MobilePushContext.originatingSenderId`.
+  if (config.pushNotifier !== undefined && config.authenticate === undefined) {
     throw new Error(
-      "@koi/channel-mobile: pushNotifier requires either trustClientIdentity:true (transport-authenticated client identity) or an authenticate() handshake (server-authenticated identity). Without one, the adapter cannot supply a unique recipient key and could misroute delayed replies across users.",
+      "@koi/channel-mobile: pushNotifier requires an authenticate() handshake to bind a server-verified recipient identity. trustClientIdentity is not sufficient — a client could spoof another user's senderId and misroute delayed replies. Provide authenticate(req) to derive the identity from a verified handshake (mTLS, JWT, signed bearer token, etc.).",
     );
   }
   // Per-instance HMAC secret: tags from this adapter cannot be forged or
@@ -503,8 +504,19 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       // remote client has no use for them.
       const wireMessage = stripInternalMetadata(message);
       if (liveRecipient && activeSocket !== undefined) {
-        activeSocket.send(JSON.stringify({ kind: "msg", ...wireMessage, timestamp: Date.now() }));
-        return;
+        const payload = JSON.stringify({ kind: "msg", ...wireMessage, timestamp: Date.now() });
+        // Treat write failure (closed socket race, backpressure overflow,
+        // throw) as not-delivered so the message falls through to push
+        // instead of being silently swallowed by an instant-after-check
+        // disconnect.
+        // let requires justification: capture write outcome
+        let written = 0;
+        try {
+          written = activeSocket.send(payload);
+        } catch {
+          written = -1;
+        }
+        if (written > 0) return;
       }
       if (config.pushNotifier === undefined) {
         throw new MobileNoDeliveryTargetError();
