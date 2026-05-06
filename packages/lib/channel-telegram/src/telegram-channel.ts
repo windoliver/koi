@@ -116,6 +116,33 @@ export interface TelegramChannelConfig {
    */
   readonly seenWebhookUpdate?: (updateId: number) => boolean | Promise<boolean>;
   /**
+   * Atomic-claim alternative to `seenWebhookUpdate`. When set, this is
+   * called instead of `seenWebhookUpdate` and MUST atomically reserve
+   * the `update_id` in a way that two concurrent calls — whether from
+   * Telegram retries, multi-instance webhook delivery, or load-balanced
+   * workers — return `"claimed"` for exactly one of them and
+   * `"duplicate"` for the rest. Implementations typically wrap an
+   * `INSERT ... ON CONFLICT DO NOTHING` (Postgres), `SET NX`
+   * (Redis), or a queue dedupe table; a non-atomic in-memory Set is
+   * UNSAFE and defeats the contract.
+   *
+   * On `"duplicate"` the adapter swallows the update silently so the
+   * HTTPS handler can return 200 and stop the retry chain. On
+   * `"claimed"` the adapter dispatches the update through every
+   * onMessage handler, awaits completion, and only then calls
+   * `markWebhookProcessed` (if configured) so callers can advance
+   * the row from `claimed` → `processed` under their own
+   * transaction.
+   *
+   * Prefer this over `seenWebhookUpdate`: the older check-then-act
+   * shape lets two concurrent retries both observe `seen=false` and
+   * fan out duplicate agent turns. When both are set,
+   * `claimWebhookUpdate` wins.
+   */
+  readonly claimWebhookUpdate?: (
+    updateId: number,
+  ) => "claimed" | "duplicate" | Promise<"claimed" | "duplicate">;
+  /**
    * Optional post-success commit hook for webhook mode. After
    * `handleWebhook(...)` has awaited every registered onMessage
    * handler to completion, this callback fires so the operator can
@@ -492,7 +519,13 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
       //      success so the operator can durably mark the update_id
       //      under the same transaction that produced the side
       //      effects.
-      if (config.seenWebhookUpdate !== undefined) {
+      // Atomic claim wins when both are configured — see the
+      // claimWebhookUpdate doc for why check-then-act seenWebhookUpdate
+      // is unsafe under concurrent retries.
+      if (config.claimWebhookUpdate !== undefined) {
+        const result = await config.claimWebhookUpdate(update.update_id);
+        if (result === "duplicate") return;
+      } else if (config.seenWebhookUpdate !== undefined) {
         const seen = await config.seenWebhookUpdate(update.update_id);
         if (seen) return;
       }

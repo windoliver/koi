@@ -473,6 +473,41 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
+  test("webhook: claimWebhookUpdate provides atomic single-execution under concurrent retries", async () => {
+    const f = fakeBot();
+    // Atomic claim implementation: only the first call sees "claimed",
+    // every subsequent call (from a concurrent retry / second worker)
+    // sees "duplicate". This mirrors a real Postgres INSERT ON CONFLICT
+    // DO NOTHING or Redis SETNX.
+    const claimed = new Set<number>();
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "s",
+      claimWebhookUpdate: (id: number) => {
+        if (claimed.has(id)) return "duplicate";
+        claimed.add(id);
+        return "claimed";
+      },
+    });
+    await adapter.connect();
+    let executions = 0;
+    adapter.onMessage(async () => {
+      executions++;
+    });
+    const update = {
+      update_id: 7,
+      message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+    };
+    // Fire two concurrent webhook calls for the same update_id, just
+    // like Telegram retrying after an earlier 5xx while the first
+    // request is still mid-flight.
+    await Promise.all([adapter.handleWebhook("s", update), adapter.handleWebhook("s", update)]);
+    expect(executions).toBe(1);
+    await adapter.disconnect();
+  });
+
   test("webhook: seenWebhookUpdate callback skips duplicate update_ids without invoking onMessage", async () => {
     const f = fakeBot();
     const seenIds = new Set<number>();
