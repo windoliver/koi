@@ -75,6 +75,15 @@ export interface DiscordChannelConfig {
   /** Test-only client double. When set, login() is still called on it. */
   readonly client?: DiscordClientLike;
   readonly onHandlerError?: (err: unknown, ctx: unknown) => void;
+  /**
+   * When true, accept inbound messages from other bots and webhooks. By
+   * default the adapter drops every bot-authored message (not just our
+   * own) so a third-party bot in a shared Discord server cannot prompt
+   * this agent or trigger tools through cross-bot loops. Slash commands
+   * and button interactions are unaffected — those originate from human
+   * users by Discord's API contract.
+   */
+  readonly allowBots?: boolean;
 }
 
 export interface DiscordChannelAdapter extends ChannelAdapter {
@@ -142,7 +151,10 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
     return client;
   };
 
-  const normalize = createNormalizer(() => botUserId);
+  const normalize = createNormalizer(
+    () => botUserId,
+    config.allowBots === true ? { allowBots: true } : {},
+  );
 
   // let requires justification: the dispatch handler is set by onPlatformEvent
   // after platformConnect has already attached gateway listeners. We register

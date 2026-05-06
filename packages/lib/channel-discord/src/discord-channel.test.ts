@@ -136,6 +136,50 @@ describe("@koi/channel-discord createDiscordChannel", () => {
     await adapter.disconnect();
   });
 
+  test("messages from OTHER bots/webhooks are dropped by default (no cross-bot ingress)", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    await adapter.connect();
+    const received: unknown[] = [];
+    adapter.onMessage(async (m) => {
+      received.push(m);
+    });
+    f.emit("messageCreate", {
+      id: "m1",
+      content: "from-stranger-bot",
+      author: { id: "OTHER_BOT", bot: true },
+      channelId: "C1",
+      guildId: "G1",
+      createdTimestamp: 100,
+      attachments: new Map(),
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toHaveLength(0);
+    await adapter.disconnect();
+  });
+
+  test("allowBots: true opts in to cross-bot ingress", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({ token: "T", client: f.client, allowBots: true });
+    await adapter.connect();
+    const received: unknown[] = [];
+    adapter.onMessage(async (m) => {
+      received.push(m);
+    });
+    f.emit("messageCreate", {
+      id: "m1",
+      content: "from-friendly-bot",
+      author: { id: "OTHER_BOT", bot: true },
+      channelId: "C1",
+      guildId: "G1",
+      createdTimestamp: 100,
+      attachments: new Map(),
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
   test("inbound messages from the bot user are dropped", async () => {
     const f = fakeClient();
     const adapter = createDiscordChannel({ token: "T", client: f.client });

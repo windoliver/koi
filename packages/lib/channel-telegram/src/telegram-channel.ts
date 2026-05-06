@@ -104,13 +104,12 @@ export interface TelegramChannelConfig {
 
 export interface TelegramChannelAdapter extends ChannelAdapter {
   /**
-   * Webhook mode only — caller forwards an HTTPS-delivered update.
-   *
-   * Does NO authenticity check. Use `handleWebhook` (which verifies the
-   * Telegram secret-token header) for any path that takes input from the
-   * network. `handleUpdate` is reserved for already-trusted sources
-   * (tests, an in-process queue, a verified handler) — passing forged
-   * updates here drives agent execution as arbitrary chats.
+   * Direct dispatch entrypoint for trusted, in-process sources only
+   * (tests, internal queues). In webhook mode this method THROWS to
+   * prevent callers from accidentally exposing it as the public HTTPS
+   * ingress — use `handleWebhook` instead, which verifies the secret
+   * header before dispatching. In polling mode `handleUpdate` is unused
+   * but still throws to preserve the same invariant.
    */
   readonly handleUpdate: (update: TelegramUpdateLike) => void;
   /**
@@ -316,8 +315,14 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
 
   adapter = {
     ...base,
-    handleUpdate: (update: TelegramUpdateLike): void => {
-      updateHandler?.(update);
+    handleUpdate: (_update: TelegramUpdateLike): void => {
+      // Fail closed. The previous shape allowed callers to wire raw
+      // HTTPS bodies straight into dispatch, which made the webhook
+      // ingress easy to deploy without verification. Production callers
+      // must go through `handleWebhook`, which checks the secret header.
+      throw new Error(
+        "[channel-telegram] handleUpdate is disabled — use handleWebhook(headerValue, update) for webhook mode (with `webhookSecret` configured) or rely on the polling middleware in polling mode",
+      );
     },
     handleWebhook: (secretHeaderValue, update): void => {
       if (config.webhookSecret === undefined) {

@@ -60,14 +60,23 @@ export type DiscordEvent =
   | { readonly kind: "slash_command"; readonly command: DiscordSlashCommandLike }
   | { readonly kind: "button"; readonly button: DiscordButtonInteractionLike };
 
-/** Builds a normalizer that filters out the bot's own messages by user id. */
+/**
+ * Builds a normalizer that filters out the bot's own messages by user id
+ * AND, by default, every other bot-authored message. Without the
+ * cross-bot filter a third-party bot or webhook in a shared server can
+ * prompt this agent and trigger tool execution; that is almost never
+ * what callers want. Set `allowBots: true` to opt in to bot-to-bot
+ * traffic.
+ */
 export function createNormalizer(
   getBotUserId: () => string | undefined,
+  options: { readonly allowBots?: boolean } = {},
 ): (event: DiscordEvent) => InboundMessage | null {
+  const allowBots = options.allowBots === true;
   return (event: DiscordEvent): InboundMessage | null => {
     switch (event.kind) {
       case "message":
-        return normalizeMessage(event.message, getBotUserId());
+        return normalizeMessage(event.message, getBotUserId(), allowBots);
       case "slash_command":
         return normalizeSlashCommand(event.command);
       case "button":
@@ -79,8 +88,13 @@ export function createNormalizer(
 function normalizeMessage(
   message: DiscordMessageLike,
   botUserId: string | undefined,
+  allowBots: boolean,
 ): InboundMessage | null {
+  // Always drop our own loopback messages.
   if (message.author.bot && message.author.id === botUserId) return null;
+  // Drop messages from any other bot/webhook unless the caller has
+  // opted into bot-to-bot traffic.
+  if (message.author.bot && !allowBots) return null;
 
   const blocks: ContentBlock[] = [];
   if (message.content.length > 0) {

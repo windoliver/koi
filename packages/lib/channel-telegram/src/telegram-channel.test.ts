@@ -240,24 +240,21 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
-  test("webhook: handleUpdate forwards updates to the registered listener", async () => {
+  test("webhook: handleUpdate is disabled (must use handleWebhook to gate ingress)", async () => {
     const f = fakeBot();
     const adapter = createTelegramChannel({
       token: "T",
       bot: f.bot,
       deployment: { mode: "webhook" },
+      webhookSecret: "s",
     });
     await adapter.connect();
-    const seen: unknown[] = [];
-    adapter.onMessage(async (m) => {
-      seen.push(m);
-    });
-    adapter.handleUpdate({
-      update_id: 1,
-      message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
-    });
-    await new Promise((r) => setTimeout(r, 10));
-    expect(seen).toHaveLength(1);
+    expect(() =>
+      adapter.handleUpdate({
+        update_id: 1,
+        message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+      }),
+    ).toThrow(/handleUpdate is disabled/);
     await adapter.disconnect();
   });
 
