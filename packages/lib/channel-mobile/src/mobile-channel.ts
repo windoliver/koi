@@ -466,6 +466,16 @@ interface SocketLike {
 }
 
 export function createMobileChannel(config: MobileChannelConfig): MobileChannelAdapter {
+  // Reject ephemeral port binding at construction. The adapter never
+  // exposes the OS-assigned port back to callers, so a typo (or a
+  // copy-pasted `port: 0` from a snippet) would silently bind an
+  // unreachable random port while the service appeared to start
+  // successfully. Fail closed so the misconfiguration is loud.
+  if (!Number.isInteger(config.port) || config.port <= 0 || config.port > 65535) {
+    throw new Error(
+      "@koi/channel-mobile: port must be a fixed integer in (0, 65535]. Ephemeral binding (port:0) is not supported because the adapter does not expose the bound port; pick a free port yourself before passing it here.",
+    );
+  }
   const defaultSenderId = config.senderId ?? "mobile-user";
   const trustClient = config.trustClientIdentity === true;
   // Construction-time guard: pushNotifier ALWAYS requires the server-side

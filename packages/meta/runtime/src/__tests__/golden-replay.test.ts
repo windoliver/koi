@@ -17119,7 +17119,9 @@ describe("Golden: @koi/channel-ide", () => {
 describe("Golden: @koi/channel-mobile", () => {
   test("createMobileChannel exposes mobile capabilities", async () => {
     const { createMobileChannel } = await import("@koi/channel-mobile");
-    const ch = createMobileChannel({ port: 0 });
+    // Construction-only test (no connect): any positive port satisfies the
+    // adapter's `port > 0` invariant without binding a socket.
+    const ch = createMobileChannel({ port: 1 });
     expect(ch.name).toBe("mobile");
     expect(ch.capabilities.text).toBe(true);
     expect(ch.capabilities.images).toBe(true);
@@ -17130,10 +17132,21 @@ describe("Golden: @koi/channel-mobile", () => {
 
   test("no in-process buffer: outbound while disconnected goes to pushNotifier", async () => {
     const { createMobileChannel } = await import("@koi/channel-mobile");
+    // Probe an OS-assigned port via Bun.serve({port:0}) then close it,
+    // because the mobile adapter intentionally does not accept port:0
+    // (it never exposes the bound port back to callers).
+    const probe = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+    const port = probe.port;
+    probe.stop(true);
+    if (port === undefined) throw new Error("probe failed to bind");
     const seen: number[] = [];
     const ch = createMobileChannel({
-      port: 0,
+      port,
       authenticate: async () => "test-device",
+      // Single-instance test fixture; explicitly opt into the unsafe
+      // defaults the adapter now requires alongside pushNotifier.
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
       pushNotifier: async (m) => {
         seen.push(m.content.length);
       },
