@@ -11,16 +11,10 @@
 
 import type { ThreadState } from "@koi/channel-base";
 import type { OutboundMessage } from "@koi/core";
+import type { SmtpEnvelope } from "./platform-send.js";
 import { deriveReplyHeaders } from "./threading.js";
 
-export type SmtpEnvelope = {
-  readonly from: string;
-  readonly to: readonly string[];
-  readonly subject: string;
-  readonly text: string;
-  readonly html?: string;
-  readonly headers: Readonly<Record<string, string>>;
-};
+export type { SmtpEnvelope } from "./platform-send.js";
 
 export function formatOutbound(input: {
   readonly message: OutboundMessage;
