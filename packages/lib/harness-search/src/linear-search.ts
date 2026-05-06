@@ -427,15 +427,17 @@ async function withDeadline<T>(
   parentSignal: AbortSignal | undefined,
   timeoutMs: number,
 ): Promise<DeadlineOutcome<T>> {
+  // Pre-aborted parent: short-circuit before constructing controller or
+  // invoking `fn`. Otherwise an already-cancelled search would still
+  // launch one final callback (LLM request, verifier job, temp resource)
+  // before observing the abort outcome, breaking the abort-safety
+  // contract callers rely on when racing cancellation against retries.
+  if (isAborted(parentSignal)) return { ok: false, kind: "aborted" };
+
   const controller = new AbortController();
   let onParentAbort: (() => void) | undefined;
   const abortPromise: Promise<DeadlineOutcome<T>> = new Promise((resolve) => {
     if (parentSignal === undefined) return;
-    if (parentSignal.aborted) {
-      controller.abort();
-      resolve({ ok: false, kind: "aborted" });
-      return;
-    }
     onParentAbort = (): void => {
       controller.abort();
       resolve({ ok: false, kind: "aborted" });
@@ -461,7 +463,17 @@ async function withDeadline<T>(
     // escaping withDeadline and rejecting the whole search. Adapters
     // that validate inputs at call entry routinely throw synchronously.
     const callbackPromise = Promise.resolve()
-      .then(() => fn(controller.signal))
+      .then(() => {
+        // Re-check at microtask boundary: parent may have aborted
+        // synchronously between withDeadline entry and this .then
+        // running. Without this guard, fn() still executes once after
+        // cancellation — leaking exactly the side effects the abort
+        // contract promises to suppress.
+        if (controller.signal.aborted) {
+          throw new Error("aborted before invocation");
+        }
+        return fn(controller.signal);
+      })
       .then(
         (value): DeadlineOutcome<T> => ({ ok: true, value }),
         (): DeadlineOutcome<T> => {

@@ -411,6 +411,49 @@ describe("linearSearch", () => {
     expect(result.stopReason).toBe("aborted");
   });
 
+  test("pre-aborted parent signal never invokes evaluate or refine", async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    let evaluateCalls = 0;
+    let refineCalls = 0;
+    const config = makeConfig({
+      evaluate: async () => {
+        evaluateCalls += 1;
+        return { successRate: 1, sampleCount: 10, failures: [] };
+      },
+      refine: async () => {
+        refineCalls += 1;
+        return "```ts\nconst x = 1;\n```";
+      },
+      signal: ctrl.signal,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("aborted");
+    expect(evaluateCalls).toBe(0);
+    expect(refineCalls).toBe(0);
+  });
+
+  test("synchronous parent abort during withDeadline does not start callback", async () => {
+    // Abort fires synchronously while the loop is between checks — the
+    // microtask-boundary guard in withDeadline must prevent fn() from
+    // running even though the listener registers before the .then fires.
+    const ctrl = new AbortController();
+    let evaluateCalls = 0;
+    const config = makeConfig({
+      evaluate: async () => {
+        evaluateCalls += 1;
+        return { successRate: 1, sampleCount: 10, failures: [] };
+      },
+      signal: ctrl.signal,
+    });
+    // Schedule abort to fire on the same microtask turn as withDeadline
+    // setup — listener will resolve abortPromise before the .then runs.
+    queueMicrotask(() => ctrl.abort());
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("aborted");
+    expect(evaluateCalls).toBe(0);
+  });
+
   test("invalid attemptTimeoutMs throws fast (NaN)", async () => {
     const config = makeConfig({ attemptTimeoutMs: Number.NaN });
     expect(linearSearch(INITIAL_CODE, DESCRIPTOR, config)).rejects.toThrow(/attemptTimeoutMs/);
