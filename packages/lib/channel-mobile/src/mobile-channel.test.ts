@@ -1415,6 +1415,36 @@ describe("createMobileChannel", () => {
     await ch.disconnect();
   });
 
+  test("sendUnsolicited ack-timeout fallback carries authenticated identity to push", async () => {
+    // Round-17 medium finding: unsolicited live sends have no
+    // verifiedReply / alsCtx, so derivePushContext used to return an
+    // empty MobilePushContext on ack-timeout fallback — the host could
+    // not target the recovery push and the message was effectively
+    // dropped. Fix: fall back to activeIdentity (server-authenticated)
+    // when no reply context is available.
+    const port = await freePort();
+    const pushedContexts: MobilePushContext[] = [];
+    const ch = createMobileChannel({
+      port,
+      authenticate: async () => "authed-device-42",
+      pushNotifier: async (_m, ctx) => {
+        pushedContexts.push(ctx);
+      },
+      ackTimeoutMs: 50,
+    });
+    await ch.connect();
+    // Non-acking client.
+    const ws = await openWs(port);
+    await new Promise((r) => setTimeout(r, 30));
+    await ch.sendUnsolicited({ content: [{ kind: "text", text: "broadcast" }] });
+    expect(pushedContexts).toHaveLength(1);
+    expect(pushedContexts[0]?.originatingSenderId).toBe("authed-device-42");
+    expect(typeof pushedContexts[0]?.deliveryId).toBe("string");
+    ws.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
   test("disconnect during unacked send unblocks promptly (no ackTimeoutMs wait)", async () => {
     // Round-15 high finding: channel-base drained sendChain BEFORE
     // platformDisconnect, but mobile only rejected pendingAcks inside

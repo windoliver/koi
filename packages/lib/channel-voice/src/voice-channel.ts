@@ -460,6 +460,19 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
   // aborts every one to give cooperative impls a chance to fence cleanly
   // before the channel reports recovery.
   const inflightControllers = new Set<AbortController>();
+  // Raw, un-timeout-wrapped underlying TTS/transport promises. The
+  // sessionSendChains map holds timeout-wrapped promises that already
+  // settle on timer expiry — those don't tell us when the underlying
+  // call actually finishes. To safely clear poison on disconnect we
+  // must wait for the REAL promises to settle (cooperative impls
+  // honor abort and reject promptly; non-cooperative impls hold the
+  // disconnect open until the bounded fence below trips).
+  const inflightRawOps = new Set<Promise<unknown>>();
+  // Hard fence on how long disconnect waits for un-aborted underlying
+  // ops to settle. After this expires, poison stays set for any
+  // sessions that haven't been cleared by their controllers landing —
+  // honest about non-cooperative transport risk. Default 2 s.
+  const DISCONNECT_FENCE_TIMEOUT_MS = 2_000;
   const ttsTimeoutMs = config.ttsTimeoutMs ?? DEFAULT_TTS_TIMEOUT_MS;
   const transportSendTimeoutMs = config.transportSendTimeoutMs ?? DEFAULT_TRANSPORT_SEND_TIMEOUT_MS;
 
@@ -503,26 +516,28 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       // which is irrelevant for cleanup but critical for the caller's
       // ability to discriminate timeout from arbitrary failure.
       for (const piece of pieces) {
-        const audio = await withTimeout(
-          Promise.resolve(config.tts.synthesize(piece, ttsCtl.signal)),
-          ttsTimeoutMs,
-          () => {
-            queueMicrotask(() => ttsCtl.abort());
-            return new VoiceTtsTimeoutError(ttsTimeoutMs);
-          },
-        );
+        const rawTts = Promise.resolve(config.tts.synthesize(piece, ttsCtl.signal));
+        // Track the RAW underlying promise so disconnect() can fence
+        // on actual settlement, not the timeout wrapper's settlement.
+        const tracked = rawTts.catch(() => undefined);
+        inflightRawOps.add(tracked);
+        tracked.finally(() => inflightRawOps.delete(tracked));
+        const audio = await withTimeout(rawTts, ttsTimeoutMs, () => {
+          queueMicrotask(() => ttsCtl.abort());
+          return new VoiceTtsTimeoutError(ttsTimeoutMs);
+        });
         frames.push(audio);
       }
-      await withTimeout(
-        Promise.resolve(
-          config.transport.sendUtterance(sessionId, utteranceId, frames, sendCtl.signal),
-        ),
-        transportSendTimeoutMs,
-        () => {
-          queueMicrotask(() => sendCtl.abort());
-          return new VoiceTransportSendTimeoutError(transportSendTimeoutMs);
-        },
+      const rawSend = Promise.resolve(
+        config.transport.sendUtterance(sessionId, utteranceId, frames, sendCtl.signal),
       );
+      const trackedSend = rawSend.catch(() => undefined);
+      inflightRawOps.add(trackedSend);
+      trackedSend.finally(() => inflightRawOps.delete(trackedSend));
+      await withTimeout(rawSend, transportSendTimeoutMs, () => {
+        queueMicrotask(() => sendCtl.abort());
+        return new VoiceTransportSendTimeoutError(transportSendTimeoutMs);
+      });
     } catch (e: unknown) {
       if (e instanceof VoiceTtsTimeoutError || e instanceof VoiceTransportSendTimeoutError) {
         poisonedSessions.add(sessionId);
@@ -599,20 +614,35 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       // swallowed — they were already surfaced to their callers.
       const inflight = [...sessionSendChains.values()];
       sessionSendChains.clear();
-      // Abort every in-flight TTS / transport call BEFORE awaiting the
-      // chain so cooperative impls reject promptly instead of running
-      // to their per-call timeout. This is the recovery fence: once
-      // every controller has been signalled and the chain has drained,
-      // any cooperative transport has had its chance to release the
-      // sessionId, so the poison set is safe to clear.
+      // Abort every in-flight TTS / transport call so cooperative impls
+      // reject promptly instead of running to their per-call timeout.
       for (const ctl of inflightControllers) ctl.abort();
       await Promise.allSettled(inflight);
-      // Non-cooperative transports that ignore the abort signal MAY
-      // still surface audio after this point — the channel cannot
-      // guarantee otherwise. Hosts whose transport does not honor
-      // AbortSignal SHOULD construct a fresh adapter on reconnect for
-      // strict ordering guarantees.
-      poisonedSessions.clear();
+      // Recovery fence: wait for the RAW underlying promises to settle
+      // (not the timeout-wrapped ones in sessionSendChains, which
+      // already settled when their timer fired). Cooperative impls
+      // honor the abort and settle promptly; non-cooperative impls
+      // that ignore the signal are bounded by DISCONNECT_FENCE_TIMEOUT_MS
+      // — after that, poison stays set for safety because we cannot
+      // prove the underlying call won't surface audio later.
+      const rawOps = [...inflightRawOps];
+      if (rawOps.length > 0) {
+        const fenceSettled = Promise.allSettled(rawOps).then(() => true);
+        const fenceTimedOut = new Promise<boolean>((resolve) => {
+          setTimeout(() => resolve(false), DISCONNECT_FENCE_TIMEOUT_MS);
+        });
+        const settled = await Promise.race([fenceSettled, fenceTimedOut]);
+        if (settled) {
+          // Every underlying call confirmed settlement → safe to clear.
+          poisonedSessions.clear();
+        }
+        // Else: poison persists. Hosts MUST construct a fresh adapter
+        // for any sessionId that timed out, since a stale call could
+        // still surface audio against a reconnected transport.
+      } else {
+        // No in-flight ops — nothing to leak.
+        poisonedSessions.clear();
+      }
       await inner.disconnect();
     },
     send: wrappedSend,

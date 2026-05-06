@@ -596,6 +596,15 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         ...idPart,
       };
     }
+    // Unsolicited ack-timeout fallback: no reply tag, no ALS context, but
+    // the live frame DID write to a server-authenticated socket. Promote
+    // that authenticated identity into the push context so the host's
+    // notifier can still target the right device. Without this, an
+    // unsolicited send whose ack was lost on a flaky link becomes a
+    // push with no recipient — the message is dropped.
+    if (activeIdentity !== undefined && activeIdentity.length > 0) {
+      return { originatingSenderId: activeIdentity, ...idPart };
+    }
     return idPart;
   };
 
