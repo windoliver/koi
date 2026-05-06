@@ -385,6 +385,47 @@ describe("createDiscordChannel — interaction reply path", () => {
     await adapter.disconnect();
   });
 
+  test("button block: outbound encodes payload into custom_id; inbound click parses it back", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    await adapter.connect();
+    await adapter.send({
+      threadId: "C1",
+      content: [
+        { kind: "text", text: "approve?" },
+        { kind: "button", label: "Yes", action: "approve", payload: { id: 42 } },
+      ],
+    });
+    expect(f.sent).toHaveLength(1);
+    const components = (
+      f.sent[0]?.payload as { components?: { components: { custom_id: string }[] }[] }
+    ).components;
+    const customId = components?.[0]?.components[0]?.custom_id ?? "";
+    expect(customId).toBe('approve:{"id":42}');
+    // Round-trip: inbound click with this customId should normalize
+    // back to the same action + payload.
+    const seen: { content: readonly { kind: string }[] }[] = [];
+    adapter.onMessage(async (m) => {
+      seen.push(m as { content: readonly { kind: string }[] });
+    });
+    f.emit("interactionCreate", {
+      id: "iBtn",
+      isChatInputCommand: () => false,
+      isButton: () => true,
+      customId,
+      user: { id: "U1" },
+      channelId: "C1",
+      message: { id: "m1" },
+      deferUpdate: async () => undefined,
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(seen).toHaveLength(1);
+    const block = seen[0]?.content[0] as { kind: string; action: string; payload?: unknown };
+    expect(block.kind).toBe("button");
+    expect(block.action).toBe("approve");
+    expect(block.payload).toEqual({ id: 42 });
+  });
+
   test("ephemeral slash interaction stamps every editReply/followUp with ephemeral so multi-payload sends stay private", async () => {
     const f = fakeClient();
     const editReplyArgs: unknown[] = [];

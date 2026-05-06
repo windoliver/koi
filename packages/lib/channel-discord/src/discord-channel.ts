@@ -713,13 +713,30 @@ function buildPayloads(
         // multiple deliveries instead of failing as a single rejected send.
         if (files.length >= MAX_ATTACHMENTS) flush();
         break;
-      case "button":
+      case "button": {
+        // Encode payload alongside action so inbound click normalization
+        // (which already parses `<action>:<json>` out of customId) can
+        // recover it. Without this, every button click would arrive
+        // with only the bare action and downstream handlers could not
+        // distinguish per-item / per-tenant clicks. Discord limits
+        // custom_id to 100 chars — fail loudly rather than silently
+        // truncating when the operator's payload is too large.
+        const customId =
+          block.payload === undefined
+            ? block.action
+            : `${block.action}:${JSON.stringify(block.payload)}`;
+        if (customId.length > 100) {
+          throw new Error(
+            `[channel-discord] button custom_id "${block.action}" exceeds 100-char Discord limit (${customId.length}); shrink the payload or persist it behind an opaque token`,
+          );
+        }
         components.push({
           type: 1,
-          components: [{ type: 2, style: 1, label: block.label, custom_id: block.action }],
+          components: [{ type: 2, style: 1, label: block.label, custom_id: customId }],
         });
         if (components.length >= MAX_ACTION_ROWS) flush();
         break;
+      }
       case "custom":
         if (block.type === "discord:embed" && isPlainObject(block.data)) {
           embeds.push(block.data);
