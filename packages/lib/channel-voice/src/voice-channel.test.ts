@@ -1076,6 +1076,98 @@ describe("createVoiceChannel", () => {
     expect(elapsed).toBeLessThan(3_000);
   });
 
+  test("TTS-only timeout does not poison the threadId (audio never reached transport)", async () => {
+    // Round-22 high finding refinement: TTS timeout fires BEFORE
+    // transport.sendUtterance is called, so no audio is on the wire.
+    // Persistently poisoning the threadId for what amounts to a
+    // transient TTS provider hang permanently bricked stable
+    // threadIds (`"default"` pattern). Now only transport timeouts
+    // poison; TTS-only timeouts leave the threadId usable on retry.
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: () => () => {},
+    };
+    // First call hangs forever; subsequent calls succeed.
+    let ttsCallCount = 0;
+    const tts: Tts = {
+      synthesize: async (_text, _signal) => {
+        ttsCallCount++;
+        if (ttsCallCount === 1) {
+          await new Promise(() => {}); // hang
+        }
+        return new Uint8Array(0);
+      },
+    };
+    const stt: Stt = { transcribe: async () => null };
+    const ch = createVoiceChannel({ transport, stt, tts, ttsTimeoutMs: 30 });
+    await ch.connect();
+    await expect(
+      ch.send({
+        threadId: "stable",
+        content: [{ kind: "text", text: "first" }],
+        metadata: { utteranceId: "first" },
+      }),
+    ).rejects.toThrow(/TTS synthesize exceeded/);
+    // Same threadId is NOT poisoned — TTS produced no audio, so the
+    // channel can safely accept a retry. (Contrast with transport
+    // timeouts, which DO persistently poison since bytes may already
+    // be on the wire.)
+    await ch.send({
+      threadId: "stable",
+      content: [{ kind: "text", text: "retry" }],
+      metadata: { utteranceId: "retry" },
+    });
+    await ch.disconnect();
+  });
+
+  test("STT timeout aborts the underlying transcribe so abandoned work does not accumulate", async () => {
+    // Round-22 medium finding: STT timeout used Promise.race only,
+    // so a hung provider kept running per utterance — burning
+    // quota/CPU and hiding the outage. Fix: pass AbortSignal to
+    // stt.transcribe; abort on timeout.
+    let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+    let aborted = false;
+    let signalSeen = false;
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (handler) => {
+        listener = handler;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = {
+      transcribe: (_audio, signal) => {
+        signalSeen = signal !== undefined;
+        return new Promise<null>((_, reject) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            reject(new Error("aborted"));
+          });
+        });
+      },
+    };
+    const tts: Tts = { synthesize: async () => new Uint8Array(0) };
+    const ch = createVoiceChannel({
+      transport,
+      stt,
+      tts,
+      sttTimeoutMs: 30,
+      onSttError: () => {},
+    });
+    await ch.connect();
+    listener!("session-stt-abort", new Uint8Array([1]));
+    await new Promise((r) => setTimeout(r, 80));
+    expect(signalSeen).toBe(true);
+    expect(aborted).toBe(true);
+    await ch.disconnect();
+  });
+
   test("AbortSignal is forwarded to TTS and transport on timeout (cooperative cancellation)", async () => {
     // Round-14 high finding: withTimeout only races; underlying calls
     // could leak after the channel reports failure. Cooperative impls

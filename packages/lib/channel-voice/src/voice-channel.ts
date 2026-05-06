@@ -69,9 +69,16 @@ export interface VoiceTransport {
   readonly onUtterance: (handler: (sessionId: string, utterance: Uint8Array) => void) => () => void;
 }
 
-/** Speech-to-text. Returning `null` skips dispatch (e.g., silence/no speech detected). */
+/**
+ * Speech-to-text. Returning `null` skips dispatch (e.g., silence /
+ * no speech detected). `signal` aborts when the channel has timed
+ * out the transcription attempt; implementations MUST honor it to
+ * free provider resources / quota and reject promptly. Without
+ * cancellation, a black-holed network can accumulate unbounded
+ * abandoned STT calls behind dropped turns.
+ */
 export interface Stt {
-  readonly transcribe: (audio: Uint8Array) => Promise<string | null>;
+  readonly transcribe: (audio: Uint8Array, signal?: AbortSignal) => Promise<string | null>;
 }
 
 /**
@@ -373,15 +380,24 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
             // host can retry / page / reroute.
             // let requires justification: STT may throw, time out, or return null
             let text: string | null;
+            // AbortController gives cooperative STT impls a way to
+            // free provider resources / quota when our timeout fires.
+            // Without this, a hung provider would accumulate one
+            // abandoned transcription per utterance behind dropped
+            // turns — wasting compute and hiding the real outage.
+            const sttCtl = new AbortController();
             try {
-              const transcribePromise = config.stt.transcribe(utterance);
+              const transcribePromise = config.stt.transcribe(utterance, sttCtl.signal);
               // let requires justification: handle assigned conditionally for cleanup
               let timer: ReturnType<typeof setTimeout> | undefined;
               const timeoutPromise = new Promise<never>((_, reject) => {
-                timer = setTimeout(
-                  () => reject(new VoiceSttTimeoutError(sttTimeoutMs)),
-                  sttTimeoutMs,
-                );
+                timer = setTimeout(() => {
+                  // Defer abort so Promise.race surfaces the typed
+                  // VoiceSttTimeoutError, not the cooperative impl's
+                  // downstream "aborted" rejection.
+                  queueMicrotask(() => sttCtl.abort());
+                  reject(new VoiceSttTimeoutError(sttTimeoutMs));
+                }, sttTimeoutMs);
               });
               try {
                 text = await Promise.race([transcribePromise, timeoutPromise]);
@@ -552,7 +568,16 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
         return new VoiceTransportSendTimeoutError(transportSendTimeoutMs);
       });
     } catch (e: unknown) {
-      if (e instanceof VoiceTtsTimeoutError || e instanceof VoiceTransportSendTimeoutError) {
+      // Only TRANSPORT timeouts get persistent poison: by the time we
+      // call transport.sendUtterance(), some bytes may have already
+      // been emitted and a stale resume could overlap newer audio on
+      // the same threadId. TTS timeouts happen BEFORE transport ever
+      // sees the frames, so no audio is on the wire — the failed
+      // utterance leaves no trace. Don't brick the threadId for what
+      // was effectively a no-op. (The session-poisoned-by-TTS-timeout
+      // case used to brick stable `"default"` threadIds permanently
+      // for what amounted to a transient provider hang.)
+      if (e instanceof VoiceTransportSendTimeoutError) {
         poisonedSessions.add(sessionId);
       }
       throw e;
