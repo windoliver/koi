@@ -3,7 +3,13 @@
  */
 
 import { createChannelAdapter } from "@koi/channel-base";
-import type { ChannelAdapter, ChannelCapabilities, ContentBlock, OutboundMessage } from "@koi/core";
+import type {
+  ChannelAdapter,
+  ChannelCapabilities,
+  ContentBlock,
+  InboundMessage,
+  OutboundMessage,
+} from "@koi/core";
 import { isE164 } from "./e164.js";
 import { createNormalizer, GROUP_THREAD_PREFIX } from "./normalize.js";
 import type { SignalEvent, SignalProcess, SpawnFn } from "./signal-process.js";
@@ -25,6 +31,13 @@ export interface SignalChannelConfig {
    * reconnect, surface a user-visible error, or alert.
    */
   readonly onUnexpectedExit?: () => void;
+  /**
+   * Invoked when an inbound `MessageHandler` registered via `onMessage()`
+   * throws or rejects. Without this, dispatch failures are swallowed by
+   * the adapter's `Promise.allSettled` ingress loop and the inbound
+   * message disappears silently. Wire to your logger / DLQ / pager.
+   */
+  readonly onHandlerError?: (err: unknown, message: InboundMessage) => void;
 }
 
 /**
@@ -130,6 +143,8 @@ export function createSignalChannel(config: SignalChannelConfig): ChannelAdapter
     onPlatformEvent: (handler): (() => void) => proc.onEvent(handler),
 
     normalize,
+
+    ...(config.onHandlerError !== undefined && { onHandlerError: config.onHandlerError }),
   });
 
   return adapter;

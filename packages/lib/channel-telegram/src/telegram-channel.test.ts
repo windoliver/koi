@@ -528,6 +528,48 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
+  test("webhook: markWebhookProcessed failure invokes onWebhookCommitFailure with updateId + error", async () => {
+    const f = fakeBot();
+    const claims = new Set<number>();
+    const commitFailures: Array<{ id: number; err: unknown }> = [];
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "s",
+      claimWebhookUpdate: (id: number) => {
+        if (claims.has(id)) return "duplicate";
+        claims.add(id);
+        return "claimed";
+      },
+      releaseWebhookClaim: (id: number) => {
+        claims.delete(id);
+      },
+      markWebhookProcessed: async (): Promise<void> => {
+        throw new Error("commit-failed");
+      },
+      onWebhookCommitFailure: (id, err) => {
+        commitFailures.push({ id, err });
+      },
+    });
+    await adapter.connect();
+    adapter.onMessage(async () => {
+      // success
+    });
+    const update = {
+      update_id: 77,
+      message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+    };
+    await expect(adapter.handleWebhook("s", update)).rejects.toThrow(/commit-failed/);
+    expect(commitFailures).toHaveLength(1);
+    expect(commitFailures[0]?.id).toBe(77);
+    expect((commitFailures[0]?.err as Error).message).toBe("commit-failed");
+    // Claim still reserved — operator's recovery callback is the
+    // documented path forward (sweep/page).
+    expect(claims.has(77)).toBe(true);
+    await adapter.disconnect();
+  });
+
   test("webhook: handler failure releases the claim so Telegram retries can re-enter (no permanent loss)", async () => {
     const f = fakeBot();
     const claims = new Set<number>();

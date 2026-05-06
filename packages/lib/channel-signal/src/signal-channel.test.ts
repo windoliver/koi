@@ -255,6 +255,39 @@ describe("createSignalChannel — transport death revokes connectivity", () => {
   });
 });
 
+describe("createSignalChannel — onHandlerError surfaces dispatch failures", () => {
+  test("thrown handler is observable via onHandlerError (not silently swallowed)", async () => {
+    const captured: Captured[] = [];
+    const errors: unknown[] = [];
+    const adapter = createSignalChannel({
+      account: "+15551234567",
+      spawn: makeSpawn(captured),
+      onHandlerError: (err) => {
+        errors.push(err);
+      },
+    });
+    adapter.onMessage(async () => {
+      throw new Error("boom");
+    });
+    await adapter.connect();
+    captured[0]?.emit(
+      JSON.stringify({
+        params: {
+          envelope: {
+            source: "+15559998888",
+            dataMessage: { message: "hello", timestamp: 1 },
+          },
+        },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe("boom");
+    captured[0]?.finish();
+    await adapter.disconnect();
+  });
+});
+
 describe("blocksToText", () => {
   test("text blocks join with newlines", () => {
     expect(

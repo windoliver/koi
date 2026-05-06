@@ -173,6 +173,22 @@ export interface TelegramChannelConfig {
    * return non-200 and let Telegram retry.
    */
   readonly markWebhookProcessed?: (updateId: number) => void | Promise<void>;
+  /**
+   * Fires when `markWebhookProcessed` itself throws AFTER every handler
+   * has succeeded. The handlers already produced user-visible side
+   * effects, so the claim cannot simply be released (Telegram retries
+   * would re-run them and duplicate). But leaving the update silently
+   * "claimed but never processed" hides the inconsistency from
+   * operators. This callback is the recovery hook: enqueue a sweep,
+   * page oncall, or write a "needs-reconciliation" row keyed on
+   * `updateId`. The original commit error is rethrown after the
+   * callback returns so the HTTPS layer still returns non-200.
+   *
+   * Errors raised by this callback are logged to stderr and
+   * swallowed — surfacing them would mask the underlying commit
+   * failure (which is the actionable signal).
+   */
+  readonly onWebhookCommitFailure?: (updateId: number, err: unknown) => void | Promise<void>;
 }
 
 export interface TelegramChannelAdapter extends ChannelAdapter {
@@ -603,10 +619,25 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
         // retry) but the claim STAYS reserved: handlers already ran.
         // The retry, when it arrives, will be caught by the operator's
         // claim store as duplicate and silently 200'd, breaking the
-        // retry chain without re-running side effects. Operators
-        // recover the unmarked update_id out of band (audit log,
-        // claim-row TTL → processed sweep).
-        await config.markWebhookProcessed(update.update_id);
+        // retry chain without re-running side effects. The
+        // onWebhookCommitFailure hook gives operators a synchronous
+        // recovery path (enqueue sweep, page oncall) so the half-
+        // committed update_id is not invisible.
+        try {
+          await config.markWebhookProcessed(update.update_id);
+        } catch (commitErr: unknown) {
+          if (config.onWebhookCommitFailure !== undefined) {
+            try {
+              await config.onWebhookCommitFailure(update.update_id, commitErr);
+            } catch (hookErr: unknown) {
+              console.error(
+                `[channel-telegram] onWebhookCommitFailure(${update.update_id}) threw; original commit error rethrown:`,
+                hookErr,
+              );
+            }
+          }
+          throw commitErr;
+        }
       }
     },
     resolveMediaUrl,
