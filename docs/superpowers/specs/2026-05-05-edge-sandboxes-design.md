@@ -56,7 +56,8 @@ Same reasoning as wasm: rather than overload `SandboxAdapter` and break router s
 // in @koi/sandbox-cloudflare/src/types.ts (also @koi/sandbox-vercel)
 export interface EdgeInvokeRequest {
   readonly payload: unknown;          // arbitrary JSON-serializable input
-  readonly requestId: string;         // REQUIRED — UUIDv4. Used for shim-side dedupe across retries.
+  readonly operationId: string;       // REQUIRED — caller-owned, stable for the full logical operation, persists across destroy/recreate.
+  readonly requestId: string;         // REQUIRED — UUIDv4 per network attempt. Used ONLY for shim-side per-isolate dedupe.
   readonly timeoutMs?: number;        // capped by profile.resources.timeoutMs
   readonly signal?: AbortSignal;
 }
@@ -67,7 +68,7 @@ export interface EdgeInvokeResult {
 }
 export interface EdgeFunctionInstance {
   readonly invoke: (req: EdgeInvokeRequest) => Promise<Result<EdgeInvokeResult, KoiError>>;
-  readonly destroy: () => Promise<DestroyOutcome>;  // see Cancellation honesty below
+  readonly destroy: () => Promise<Result<DestroyOutcome, KoiError>>;  // see Cancellation honesty below
 }
 export interface EdgeFunctionAdapter {
   readonly name: string;
@@ -357,13 +358,26 @@ Cloudflare and Vercel offer no authoritative provider-side per-invocation kill c
 
 ```ts
 export type DestroyOutcome =
-  | { readonly kind: "destroyed-clean" }                          // never had an in-flight invoke
-  | { readonly kind: "destroyed-local-remote-indeterminate"; readonly inflightAtDestroy: number };
+  | { readonly kind: "destroyed-clean" }                          // local + remote DELETE confirmed; no in-flight invoke at start
+  | { readonly kind: "destroyed-local-remote-indeterminate"; readonly inflightAtDestroy: number }
+  | { readonly kind: "destroyed-local-remote-leaked"; readonly providerArtifact: string; readonly cause: KoiError }
+  | { readonly kind: "destroyed-local-remote-uncertain"; readonly providerArtifact: string; readonly cause: KoiError };
+
+// EdgeFunctionInstance.destroy returns Result so the contract surfaces failures explicitly:
+readonly destroy: () => Promise<Result<DestroyOutcome, KoiError>>;
 ```
 
-- `destroyed-clean`: no `invoke()` was in flight when `destroy()` was called. Local handle gone, no possible residual side effects.
-- `destroyed-local-remote-indeterminate`: at least one `invoke()` was active. Local handle is gone, no future invokes possible, BUT in-flight remote work may still complete and produce side effects after `destroy()` returns. The number of affected invokes is reported.
-- `EdgeFunctionInstance.destroy()` is typed `Promise<DestroyOutcome>` — not `Promise<void>`. Callers must read it. This forces the contract to be honest at the type level; idempotency considerations propagate to the caller's design.
+- `destroyed-clean`: no `invoke()` was in flight; remote DELETE returned 200/204 (or 404 confirmed by follow-up GET). Local handle gone, no possible residual side effects.
+- `destroyed-local-remote-indeterminate`: at least one `invoke()` was active when destroy fired; remote DELETE confirmed but in-flight remote work may still complete. Inflight count reported.
+- `destroyed-local-remote-leaked`: remote DELETE returned a definitive failure status (e.g., 4xx for permission, 5xx persistent). The local handle is gone, but the provider artifact is **known to still exist**. The artifact identifier is in `providerArtifact` so the caller can trigger an out-of-band cleanup or alert. The orphan is also persisted to the SQLite ledger and surfaces in the next reconciliation pass.
+- `destroyed-local-remote-uncertain`: the DELETE call timed out or errored before any response was received. Whether the artifact exists is unknown. Same orphan-ledger persistence as `leaked`. The follow-up reconciliation will determine state via `GET`.
+- `Result.err`: the destroy attempt itself failed before any cleanup could be attempted (e.g., the local mutex was poisoned by a prior bug). This is the only path where the local handle MIGHT still be holding state. Documented as "should not happen in normal operation"; if observed, the instance is in an inconsistent state and the caller should log and exit.
+
+Callers MUST read the result:
+- `Result.err` → unrecoverable instance bug; log + escalate.
+- `destroyed-clean` → fully safe to discard.
+- `destroyed-local-remote-indeterminate` → safe to discard local handle; downstream side effects may still arrive (idempotency at side-effect targets handles this).
+- `destroyed-local-remote-leaked` / `uncertain` → log the `providerArtifact` for operator visibility; the orphan is in the ledger. Optionally `await` the next reconciliation pass to confirm cleanup.
 - The threat model is updated accordingly: "destroy reliably terminates locally; remote completion of in-flight work is not preventable on these providers and callers must design `invoke()` payloads to be idempotent or carry a unique request token the caller can deduplicate at side-effect targets".
 
 Caller-visible: `invoke()` is awaited as usual; the only behavioral change vs. an OS sandbox is that calls are not parallel within an instance. Callers that need parallelism create multiple instances. Calling `destroy()` while an `invoke()` is in flight rejects that invoke promptly — destroy is never blocked behind hung remote work — and the returned `DestroyOutcome` documents whether residual remote effects are possible.
@@ -382,7 +396,22 @@ This is documented prominently in `docs/L2/sandbox-cloudflare.md` and tested in 
 
 There is no `onStdout`/`onStderr` on `EdgeInvokeRequest` — streaming is not part of the contract, by design. Callers who need streaming use a different adapter.
 
-#### Request-ID idempotency (best-effort dedupe — NOT exactly-once)
+#### Two-tier idempotency (`operationId` for downstream, `requestId` for shim cache)
+
+The contract distinguishes two distinct idempotency scopes — they are NOT the same key:
+
+| Field | Lifetime | Owner | Purpose |
+|-------|----------|-------|---------|
+| `operationId` | Full logical operation, **persists across `destroy()` + new `create()` + multiple instances** | Caller (NEVER auto-generated) | Passed to deployed handler; the handler uses it as the dedupe/idempotency key against external side-effect targets (downstream APIs, databases). The handler MUST treat two requests with the same `operationId` as the same logical operation regardless of their `requestId`. |
+| `requestId` | Single network attempt only — generate fresh on every retry | Caller (per-attempt; e.g., `crypto.randomUUID()` per `invoke()` call) | Per-isolate shim cache key. NOT a downstream-correctness mechanism; only a performance/duplicate-effect-reduction optimization for the case where the same isolate handles a retry within 300s. |
+
+The previous spec passes used `requestId` for both purposes, which collapsed them and contradicted itself across the destroy/recreate boundary. The two-field model resolves this:
+
+- A retry within the SAME instance with the SAME `operationId` and a FRESH `requestId` allows the shim cache to miss (different `requestId`) but downstream dedupe still works (same `operationId`). Caller saves nothing on the shim path but doesn't double-execute external side effects.
+- A retry across `destroy()` + new `create()` carries the SAME `operationId` and a FRESH `requestId`. The shim cache is empty in the new instance but downstream dedupe still works. This is the recovery path the previous spec broke.
+- A caller running multiple parallel attempts of the same operation (e.g., racing two instances) uses the same `operationId` for both — only one of their downstream effects commits.
+
+#### Request-ID shim cache (best-effort dedupe — NOT exactly-once)
 
 Because `destroy()` and timeout/abort can leave remote work in flight (see `DestroyOutcome`), **`requestId` is required, not optional, on every `invoke()`**. The shim deduplicates by ID — but with explicit honest limits:
 
@@ -395,20 +424,26 @@ Because `destroy()` and timeout/abort can leave remote work in flight (see `Dest
   - **Known ID, in-flight:** the second request awaits the first's outcome (same Promise) and returns the same response. Two callers using the same `requestId` see the same result; the handler runs exactly once.
   - **Known ID, completed:** return the cached result without re-running the handler.
 - **`requestId` is mandatory at the API boundary — no implicit generation.** The host-side `invoke()` rejects requests without `requestId` with `KoiError { code: "MISSING_REQUEST_ID" }` before any fetch. There is no auto-gen path. Rationale: callers who need to retry after timeout/abort/destroy MUST be able to reuse the same token on the retry; auto-generating the ID inside `invoke()` makes the original token unreachable to the caller (it lives in already-discarded request state), so retries necessarily carry a fresh UUID and the dedupe is useless on the exact failure paths it exists to mitigate.
-- Required caller pattern: callers MUST supply a stable `requestId` (typically `crypto.randomUUID()`) once per logical operation and reuse it across the entire retry loop for that operation. There is no SDK-side auto-generation under any circumstance — the wire-level requirement and the API-boundary requirement are identical:
+- Required caller pattern: callers supply a stable `operationId` ONCE per logical operation (and pass it through any subsequent recovery boundaries), and a FRESH `requestId` per network attempt:
   ```ts
-  const id = crypto.randomUUID();           // generated by the CALLER, retained for the operation's lifetime
+  const operationId = crypto.randomUUID();   // owned by the caller; persists across destroy/recreate
   for (let attempt = 0; attempt < 3; attempt++) {
-    const r = await instance.invoke({ payload, requestId: id });
+    const requestId = crypto.randomUUID();   // fresh per attempt; identifies this network call
+    const r = await instance.invoke({ payload, operationId, requestId });
     if (r.ok) return r.value;
-    if (r.error.code !== "TIMEOUT") throw r.error;
-    // retry: same id, dedupe takes effect
+    if (r.error.code !== "TIMEOUT" && r.error.code !== "POISONED") throw r.error;
+    // POISONED → caller may destroy + recreate, then retry with the SAME operationId
+    if (r.error.code === "POISONED") {
+      await instance.destroy();
+      instance = await adapter.create(...).then(unwrap);
+    }
   }
   ```
-  Frameworks built on top of the adapter (e.g., a higher-level retry wrapper) are responsible for retaining the id; they do not delegate generation to `invoke()`. This is documented as the only correct usage in `docs/L2/sandbox-cloudflare.md` and is enforced by tests.
-- Cross-instance retries (after `destroy()` + new `create()`) still produce duplicate side effects unless the caller persists the `requestId` and the next instance happens to land on the same Cloudflare isolate (which the provider does not guarantee). Therefore **shim dedupe is per-instance only**, and idempotency at side-effect targets (downstream APIs, databases) is the caller's responsibility for cross-instance cases. Documented prominently.
+  The deployed handler reads `operationId` from the wire payload and uses it as the idempotency key for any downstream side effect — e.g., as `Idempotency-Key` header on Stripe calls, or as a primary key on an event-log table. The shim's `requestId` cache is invisible to the handler.
+  Frameworks built on top of the adapter (retry wrappers, higher-level helpers) are responsible for retaining `operationId` for the operation's lifetime — they MUST NOT regenerate it on retry. The two-field model means there is exactly one canonical answer to "which key does what": `operationId` for correctness, `requestId` for performance.
+- Cross-instance retries (after `destroy()` + new `create()`) cannot benefit from shim dedupe — the shim cache is per-isolate and a new instance is on a fresh script entirely. The recovery is `operationId`-driven at the side-effect target, not `requestId`-driven at the shim. This is the correct boundary: provider-side dedupe across instance recreation is impossible without durable cross-instance state (out of scope), so we push the cross-instance case to where it can actually be solved — the side-effect target where `operationId` is the dedupe key.
 - The shim's per-isolate cache is bounded: max 1000 entries with LRU eviction. Above that, oldest entries are dropped, and a duplicate request for an evicted ID re-runs the handler. Operators tune this via deployed code if higher concurrency requires it.
-- Caller-visible (single source of truth, repeated for emphasis): **the caller generates and retains `requestId` once per logical operation and supplies the same value on every retry of that operation.** The SDK does NOT auto-generate. Treat anything across `destroy()`/`create()` boundaries as a new operation requiring a new caller-generated id. Wrappers that hide id generation MUST persist the id in their own state for the operation's lifetime; otherwise they break the dedupe contract. Documented prominently in `docs/L2/sandbox-cloudflare.md`.
+- Caller-visible (single source of truth): **`operationId` is the logical-operation key, owned and retained by the caller for the full lifetime of the operation including across `destroy()`/`create()` boundaries; `requestId` is per-attempt and ephemeral.** The SDK does NOT auto-generate either field. Wrappers that hide id generation MUST persist `operationId` in their own state for the operation's lifetime. Documented prominently in `docs/L2/sandbox-cloudflare.md`.
 
 #### Cancellation honesty (always-poison on timeout)
 
@@ -528,7 +563,7 @@ Mocked fetch is insufficient evidence for auth, header shape, endpoint correctne
 
 - Tokens stored in repo secrets (`CF_CI_API_TOKEN`, `VERCEL_CI_TOKEN`), scoped to a dedicated sandbox account with a billing alarm.
 - The workflow blocks merge if any scenario fails — especially the leak sweep and the poison-after-timeout assertion, which are the regressions the design relies on for safety.
-- Forks without secret access skip the gate; CODEOWNERS approval required for fork PRs that touch these paths.
+- **Fork PRs do NOT skip the gate.** The default GitHub workflow trigger for forks lacks secret access; this is acceptable for the initial CI run but **NOT acceptable as a merge condition**. A separate `provider-smoke-trusted.yml` workflow runs on a maintainer-triggered `workflow_dispatch` event with the same scenarios and full secret access. A maintainer MUST run `provider-smoke-trusted` against the fork's HEAD SHA and the merge is blocked until that workflow has reported success on that exact SHA. The branch protection rule for paths under `packages/sandbox/sandbox-cloudflare/**` and `packages/sandbox/sandbox-vercel/**` requires `provider-smoke-trusted/passed` as a status check. CODEOWNERS approval is necessary but not sufficient.
 - A nightly cron runs the same workflow against `main` to catch provider-side drift between merges.
 
 ### Golden queries (CI gate per CLAUDE.md)
