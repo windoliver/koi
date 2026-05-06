@@ -229,6 +229,7 @@ In-process delayed re-verify is necessary but not sufficient: a host crash, cont
     account_id TEXT,                    -- Cloudflare: required; Vercel: NULL
     team_id TEXT,                       -- Vercel: nullable; Cloudflare: NULL
     project_id TEXT,                    -- Vercel: required; Cloudflare: NULL
+    owner_id TEXT NOT NULL,              -- adapter config.ownerId — used to namespace fleet for cross-tenant safety
     script_name TEXT,                   -- Cloudflare: required
     deployment_id TEXT,                 -- Vercel: NULL until discovered; recovery via attempt_id
     deployment_url TEXT,                 -- Vercel: NULL until discovered
@@ -237,7 +238,7 @@ In-process delayed re-verify is necessary but not sufficient: a host crash, cont
     last_tried_at TEXT NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0
   );
-  CREATE INDEX idx_orphans_provider_scope ON orphans (provider, account_id, team_id, project_id);
+  CREATE INDEX idx_orphans_provider_scope ON orphans (provider, account_id, team_id, project_id, owner_id);
   ```
   `id` is `cloudflare:${accountId}:${scriptName}` or `vercel:${teamId ?? "_personal"}:${projectId}:${attemptId}` — deterministic and known **before** the deploy POST is issued, so the orphan can be persisted on any failure path including create timeouts where `deploymentId` was never returned. `deploymentId`/`deploymentUrl` are stored as updatable attributes that get filled in once the post-timeout `GET /v6/deployments?meta-koi-attempt-id=...` lookup discovers them. Cloudflare uses `scriptName` (deterministic by construction); Vercel uses `attemptId` (deterministic by construction). Both keying schemes are independent of any server-assigned identifier.
 - **Atomic operations:** all writes wrap `BEGIN IMMEDIATE; ... COMMIT;` so concurrent adapter instances cannot interleave. Reconciliation deletes a row in the same transaction that confirms the provider DELETE returned success — no read-then-delete window.
@@ -245,10 +246,16 @@ In-process delayed re-verify is necessary but not sufficient: a host crash, cont
 - **Crash-recovery test (mandatory):** `__tests__/orphan-ledger-crash.test.ts` simulates a hard crash by spawning a subprocess that begins an orphan-record transaction, fsyncs, then is killed with `SIGKILL` from the parent. The parent reopens the database and asserts the orphan row is present. CI runs this test on every PR that touches the ledger code; failure blocks merge.
 - **Downgraded API claim:** the documented guarantee is "an orphan recorded by the adapter survives any single-host crash including SIGKILL after the adapter call returns." Multi-disk failures, filesystem corruption, and storage-layer dataloss are out of scope and acknowledged in `docs/L2/sandbox-cloudflare.md` as residual risks beyond the ledger's coverage.
 - **Write-before-return invariant:** an INDETERMINATE result is only returned to the caller AFTER the orphan has been persisted to the ledger. If the ledger write itself fails, the adapter blocks and retries (bounded) before returning a strictly-stronger error `KoiError { code: "ORPHAN_LEDGER_WRITE_FAILED" }` with the artifact identity in context. Caller knows operator intervention is required immediately.
-- **Reconciliation on adapter init:** at construction time, each adapter reads the ledger and matches entries by its provider-specific ownership key:
-  - Cloudflare: `provider === "cloudflare" && accountId === config.accountId`.
-  - Vercel: `provider === "vercel" && (teamId ?? null) === (config.teamId ?? null) && projectId === config.projectId`.
-  Each matched orphan triggers a provider-specific DELETE (`/workers/scripts/{scriptName}` for CF, `/v13/deployments/{deploymentId}` for Vercel). Successful deletions (or 404 confirmed by a follow-up GET) remove the entry; failures bump `lastTriedAt` and stay queued. The Vercel adapter requires `projectId` in its config so reconciliation has a deterministic key — it is not optional.
+- **Reconciliation on adapter init:** at construction time, each adapter reads the ledger and matches entries by its provider-specific ownership key, **including `ownerId` to prevent cross-tenant interference**:
+  - Cloudflare: `provider === "cloudflare" && accountId === config.accountId && owner_id === config.ownerId`.
+  - Vercel: `provider === "vercel" && (teamId ?? null) === (config.teamId ?? null) && projectId === config.projectId && owner_id === config.ownerId`.
+  An adapter NEVER deletes a row whose `owner_id` does not match its own configured `ownerId`, even if `accountId`/`projectId` match — different fleets sharing one provider account or one filesystem retain isolation through the local ledger.
+  - Each matched orphan triggers a provider-specific DELETE:
+    - **Cloudflare:** `DELETE /workers/scripts/{scriptName}` (deterministic key already present).
+    - **Vercel — `deployment_id` present:** `DELETE /v13/deployments/{deploymentId}` directly.
+    - **Vercel — `deployment_id` NULL (timeout/crash before discovery):** the reconciliation path FIRST issues `GET /v6/deployments?meta-koi-attempt-id=${attempt_id}&teamId=${teamId}` to discover `deploymentId`. If discovered, persist it back to the row, then DELETE. If the lookup returns no deployments (deploy never materialized), remove the row — there is nothing to clean. If the lookup itself fails (network error, rate limit), bump `lastTriedAt`, increment `attempts`, and retain the row with backoff (`2^min(attempts,6) * 1000ms` until the next reconcile pass). After 24 hours of repeated failure, the row is annotated `stuck=true` and surfaced in operator logs but still retained.
+  - Successful deletions (or 404 confirmed by a follow-up GET) remove the entry; failures bump `lastTriedAt` and stay queued.
+  - The Vercel adapter requires `projectId` AND `ownerId` in its config so reconciliation has both a deterministic key and a namespace — neither is optional.
 - **Ownership-tagged artifacts (cleanup is provider-metadata gated):** every create attempt tags the deployed artifact with provider-side metadata that uniquely identifies it as koi-managed:
   - **Cloudflare:** uses Workers `tags` field on the script: `["koi-managed:v1", "koi-owner:${ownerId}"]` where `ownerId` is a stable opaque identifier from `config.ownerId` (required, no default — operators must set it per deployment to namespace their fleet).
   - **Vercel:** uses the `meta` object on deployments: `{ "koi-managed": "v1", "koi-owner": "${ownerId}" }`.
@@ -348,7 +355,7 @@ Because `destroy()` and timeout/abort can leave remote work in flight (see `Dest
   Frameworks built on top of the adapter (e.g., a higher-level retry wrapper) are responsible for retaining the id; they do not delegate generation to `invoke()`. This is documented as the only correct usage in `docs/L2/sandbox-cloudflare.md` and is enforced by tests.
 - Cross-instance retries (after `destroy()` + new `create()`) still produce duplicate side effects unless the caller persists the `requestId` and the next instance happens to land on the same Cloudflare isolate (which the provider does not guarantee). Therefore **shim dedupe is per-instance only**, and idempotency at side-effect targets (downstream APIs, databases) is the caller's responsibility for cross-instance cases. Documented prominently.
 - The shim's per-isolate cache is bounded: max 1000 entries with LRU eviction. Above that, oldest entries are dropped, and a duplicate request for an evicted ID re-runs the handler. Operators tune this via deployed code if higher concurrency requires it.
-- Caller-visible: the standard pattern is "let the SDK auto-generate a UUID per logical operation; reuse the same UUID for retries within the same instance lifetime; treat anything across `destroy()`/`create()` boundaries as a new operation". Documented prominently in `docs/L2/sandbox-cloudflare.md`.
+- Caller-visible (single source of truth, repeated for emphasis): **the caller generates and retains `requestId` once per logical operation and supplies the same value on every retry of that operation.** The SDK does NOT auto-generate. Treat anything across `destroy()`/`create()` boundaries as a new operation requiring a new caller-generated id. Wrappers that hide id generation MUST persist the id in their own state for the operation's lifetime; otherwise they break the dedupe contract. Documented prominently in `docs/L2/sandbox-cloudflare.md`.
 
 #### Cancellation honesty (always-poison on timeout)
 
