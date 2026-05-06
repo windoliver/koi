@@ -291,7 +291,7 @@ if (checkResult.startsWith("claim:in-progress:")) {
   //   { kind: "failed", body }            → return body with 422 + X-Koi-Result-Kind: failed-permanent header
   //   { kind: "takeover" }                → fall through; this isolate now holds the claim, run handler
   //   { kind: "timeout" }                 → return 504 to caller
-  const wait = await waitForTerminal(resultKey, failedKey, claimKey, requestId, timeoutMs);
+  const wait = await waitForTerminal(resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, timeoutMs);
   if (wait.kind === "completed") return new Response(wait.body, { status: 200, headers: { "X-Koi-Result-Kind": "success" } });
   if (wait.kind === "failed") return new Response(wait.body, { status: 422, headers: { "X-Koi-Result-Kind": "failed-permanent" } });
   if (wait.kind === "timeout") return new Response(JSON.stringify({ error: "TIMEOUT" }), { status: 504, headers: { "X-Koi-Result-Kind": "timeout" } });
@@ -322,13 +322,42 @@ const heartbeat = setInterval(async () => {
 }, 5_000);
 
 try {
-  const result = await handler({ payload, operationId, requestId });
+  // handler() invokes Worker B and returns { outcome, body } where:
+  //   outcome === "success"           — commit success path (COMMIT_LUA)
+  //   outcome === "failed-permanent"  — commit fail path (FAIL_LUA), parity with Cloudflare DO
+  //   outcome === "transient"         — release claim (RELEASE_LUA), do NOT cache; retries rerun
+  // outcome is read from the `X-Koi-Handler-Outcome` response header set by Worker B's koi runtime
+  // (`koi.failPermanent(error)` returns a Response with `X-Koi-Handler-Outcome: failed-permanent`).
+  // Worker A NEVER reads the body to discriminate outcomes — header-only, parity with the CF design.
+  const { outcome, body } = await handler({ payload, operationId, requestId });
   clearInterval(heartbeat);
   if (lostLease) {
     // We ran handler but our lease was stolen mid-flight. We must not commit — another isolate
     // is now authoritative. Log that side effects MAY have leaked (workload-class accepts this) and return.
     console.warn("DEDUPE_LEASE_LOST_DURING_HANDLER", { operationId, requestId });
     return new Response(JSON.stringify({ koi: { error: "LEASE_LOST" } }), { status: 503 });
+  }
+
+  // FAILED-PERMANENT path: ownership-checked terminal write to failedKey + claim release.
+  // Symmetric with COMMIT_LUA below; produces the same fleet-wide cached terminal that future
+  // claim/wait paths return as { kind: "failed", body }.
+  if (outcome === "failed-permanent") {
+    const FAIL_LUA = `
+      if redis.call('GET', KEYS[1]) == ARGV[1] then
+        redis.call('SET', KEYS[2], ARGV[2], 'EX', 86400)
+        redis.call('DEL', KEYS[1])
+        return 1
+      else
+        return 0
+      end
+    `;
+    const failedJson = body; // body = JSON-encoded error envelope from Worker B
+    const failCommitted = await kvCommand("EVAL", [FAIL_LUA, "2", claimKey, failedKey, requestId, failedJson]);
+    if (failCommitted === 0) {
+      console.warn("DEDUPE_OWNERSHIP_LOST_AT_FAIL_COMMIT", { operationId, requestId });
+      return new Response(JSON.stringify({ koi: { error: "OWNERSHIP_LOST" } }), { status: 503 });
+    }
+    return new Response(failedJson, { status: 422, headers: { "X-Koi-Result-Kind": "failed-permanent" } });
   }
 
   // 4. Atomic ownership-checked commit via Lua EVAL: write result + delete claim ONLY IF still owned.
@@ -341,7 +370,7 @@ try {
       return 0
     end
   `;
-  const resultJson = JSON.stringify(result);
+  const resultJson = body; // outcome === "success"; body is JSON-encoded handler output
   if (resultJson.length > MAX_DEDUPE_RESULT_BYTES /* = 8 MB, configurable */) {
     // Result too large to cache durably. FAIL CLOSED: do not return success, do not release claim.
     // The handler's side effects already happened, but the caller does not get a success result.
@@ -370,7 +399,7 @@ try {
 
 ```js
 // Tagged result discriminated on `kind`. Caller branches explicitly.
-async function waitForTerminal(resultKey, failedKey, claimKey, requestId, timeoutMs) {
+async function waitForTerminal(resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, timeoutMs) {
   const start = Date.now();
   const POLL_MS = 1000;
   while (Date.now() - start < timeoutMs) {
@@ -386,7 +415,11 @@ async function waitForTerminal(resultKey, failedKey, claimKey, requestId, timeou
     // No terminal state observed via standalone GETs. Atomically check claim AND terminal keys
     // in one Lua script — terminal results that appeared in the gap between the GETs and the EVAL
     // are returned by CHECK_OR_CLAIM_LUA and MUST be honored, not ignored.
-    const reclaim = await kvCommand("EVAL", [CHECK_OR_CLAIM_LUA, "3", resultKey, failedKey, claimKey, requestId]);
+    const reclaim = await kvCommand("EVAL", [CHECK_OR_CLAIM_LUA, "4", resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint]);
+    if (reclaim.startsWith("fingerprint-conflict:")) {
+      // Cannot happen for a legitimate waiter — would mean operationId aliased mid-wait. Surface loudly.
+      return { kind: "operation-id-conflict", storedFingerprint: reclaim.slice("fingerprint-conflict:".length) };
+    }
     if (reclaim.startsWith("result:")) {
       return { kind: "completed", body: reclaim.slice("result:".length) };
     }
@@ -739,12 +772,13 @@ In-process delayed re-verify is necessary but not sufficient: a host crash, cont
   - Successful deletions (or 404 confirmed by a follow-up GET) remove the entry; failures bump `lastTriedAt` and stay queued.
   - The Vercel adapter requires `projectId` AND `ownerId` in its config so reconciliation has both a deterministic key and a namespace — neither is optional.
 - **Ownership-tagged artifacts + heartbeat lease (cleanup gated on staleness, not just tags):** every create attempt tags the deployed artifact with provider-side metadata identifying it as koi-managed AND a heartbeat lease tag that says "this artifact is in active use until time X". **Canonical metadata schema (single source of truth — every cleanup invariant in this doc references these field names):**
-  - **Cloudflare:** Workers `tags` field on the script: `["koi-managed:v1", "koi-owner:${ownerId}", "koi-host-uuid:${hostUUID}", "koi-pair-uuid:${pairUUID}", "koi-artifact-kind:worker-a"|"worker-b", "koi-stale-after:${ISO_TIMESTAMP}"]`.
-  - **Vercel:** `meta` object on deployments: `{ "koi-managed": "v1", "koi-owner": "${ownerId}", "koi-host-uuid": "${hostUUID}", "koi-pair-uuid": "${pairUUID}", "koi-artifact-kind": "worker-a"|"worker-b", "koi-stale-after": "${ISO_TIMESTAMP}" }`.
+  - **Cloudflare:** Workers `tags` field on the script: `["koi-managed:v1", "koi-owner:${ownerId}", "koi-host-uuid:${hostUUID}", "koi-process-instance:${processInstanceId}", "koi-pair-uuid:${pairUUID}", "koi-artifact-kind:worker-a"|"worker-b", "koi-stale-after:${ISO_TIMESTAMP}"]`.
+  - **Vercel:** `meta` object on deployments: `{ "koi-managed": "v1", "koi-owner": "${ownerId}", "koi-host-uuid": "${hostUUID}", "koi-process-instance": "${processInstanceId}", "koi-pair-uuid": "${pairUUID}", "koi-artifact-kind": "worker-a"|"worker-b", "koi-stale-after": "${ISO_TIMESTAMP}" }`.
   - **Field semantics:**
     - `koi-managed:v1` — adapter-managed marker; sweep ignores any artifact lacking it.
     - `koi-owner:${ownerId}` — fleet namespace; sweep only deletes artifacts whose owner matches the configured one.
-    - `koi-host-uuid:${hostUUID}` — REQUIRED. Identifies the host that originally created the artifact. The Vercel reconciler's false-delete guard reads this and refuses to delete unless the host UUID has lost the fleet-exclusivity lease (i.e., that host is provably gone). Cloudflare's fleet sweeper uses it for telemetry only (CF's safety gate is the bounded DO-alarm liveness, not host identity).
+    - `koi-host-uuid:${hostUUID}` — REQUIRED. Identifies the host (machine/VM) that originally created the artifact. **Telemetry only — NOT used as a cleanup gate.** A same-host restart reuses `hostUUID`, so it cannot distinguish the dead process's orphans from the live process's artifacts. `koi-process-instance` is the authoritative cleanup-gate field; `koi-host-uuid` is retained purely for fleet observability (which physical host produced an artifact).
+    - `koi-process-instance:${processInstanceId}` — REQUIRED. **Fresh UUID generated at every adapter construction** — distinct from `hostUUID`. The Vercel reconciler's false-delete guard checks this against the current holder of `koi:vercel:exclusive:${ownerId}` (whose value is also `processInstanceId`, NOT `hostUUID`). On same-host restart, the new process generates a new `processInstanceId` and acquires the lease; the dead process's artifacts carry the old `processInstanceId`, which no longer matches the lease holder, so the reconciler can delete them once the confirmation window elapses. Cloudflare's fleet sweeper uses it for telemetry only (CF's safety gate is the bounded DO-alarm liveness, not process identity).
     - `koi-pair-uuid:${pairUUID}` — REQUIRED. Shared by both Worker A and Worker B in the same pair so the sweeper, given one half, can locate the other (`GET /workers/scripts?tag=koi-pair-uuid:${pairUUID}` on CF; `GET /v6/deployments?meta-koi-pair-uuid=${pairUUID}` on Vercel). The orphan-ledger `pair_uuid` index is the in-host equivalent.
     - `koi-artifact-kind` — `"worker-a"` or `"worker-b"`. Lets DELETE-ordering logic identify which side is which without parsing names.
     - `koi-stale-after:${ISO_TIMESTAMP}` — heartbeat lease deadline.
@@ -776,7 +810,7 @@ In-process delayed re-verify is necessary but not sufficient: a host crash, cont
   - `createVercelAdapter(config)` requires `config.multiHostMode: "single-host"` and rejects every other value with `KoiError { code: "VERCEL_MULTI_HOST_UNSUPPORTED" }` at construction. There is no `"multi-host-with-sweeper"` runtime mode.
   - `"single-host"` mode enforces exclusivity through **TWO gates that must BOTH succeed**, neither alone is sufficient:
     1. **Local OS file lock** (`flock` on `/var/lock/koi-sandbox-vercel.lock` or equivalent): prevents two adapter processes on the same host. This is necessary but not sufficient — a local lock on machine A says nothing about machine B.
-    2. **Fleet-wide exclusivity lease in Vercel KV** (the same KV used for dedupe): the adapter performs an ownership-checked `SET koi:vercel:exclusive:${ownerId} ${hostUUID} NX EX 90` via Lua at construction, then renews via ownership-checked Lua (`if GET == ARGV[1] then PEXPIRE ... else return 0`) every 30 seconds. If `SET NX` fails (someone else holds the lease) the adapter refuses to start with `KoiError { code: "VERCEL_FLEET_EXCLUSIVITY_HELD", currentHolder: <opaque> }`. If a renewal Lua returns 0 mid-operation (lease taken over because this host's heartbeat lapsed), every active `EdgeFunctionInstance` transitions to **POISONED** with `KoiError { code: "VERCEL_FLEET_EXCLUSIVITY_LOST" }` — only `destroy()` is permitted thereafter. Both gates fail-closed: if Vercel KV is unreachable at construction, the adapter rejects with `KoiError { code: "VERCEL_KV_UNREACHABLE" }` rather than running unsafely.
+    2. **Fleet-wide exclusivity lease in Vercel KV** (the same KV used for dedupe): the adapter performs an ownership-checked `SET koi:vercel:exclusive:${ownerId} ${processInstanceId} NX EX 90` via Lua at construction, then renews via ownership-checked Lua (`if GET == ARGV[1] then PEXPIRE ... else return 0`) every 30 seconds. **Lease value is `processInstanceId` (fresh per adapter construction), NOT `hostUUID`** — a same-host restart writes a different value, which is what allows the reconciler to identify the dead process's orphans (per the per-process-instance cleanup gate above). If `SET NX` fails (someone else holds the lease) the adapter refuses to start with `KoiError { code: "VERCEL_FLEET_EXCLUSIVITY_HELD", currentHolder: <opaque> }`. If a renewal Lua returns 0 mid-operation (lease taken over because this process's heartbeat lapsed), every active `EdgeFunctionInstance` transitions to **POISONED** with `KoiError { code: "VERCEL_FLEET_EXCLUSIVITY_LOST" }` — only `destroy()` is permitted thereafter. Both gates fail-closed: if Vercel KV is unreachable at construction, the adapter rejects with `KoiError { code: "VERCEL_KV_UNREACHABLE" }` rather than running unsafely.
     - The **fleet-wide exclusivity lease IS the cross-host coordination primitive**. The earlier draft incorrectly claimed `flock` alone enforced cross-host exclusivity — a local lock on host-local disk does not. With both gates required, two machines pointed at the same `ownerId` cannot both run: machine B's `SET NX` returns null because machine A holds the lease.
     - **Fail-closed on KV partition (timing math, single source of truth):** the exclusivity-lease renewal cadence is **30 seconds**; the lease TTL is **90 seconds** (3× cadence — standard 1-of-3 tolerance). Up to **2 consecutive renewal failures (~60 seconds)** are tolerated; on the 3rd consecutive failure the adapter POISONs every active instance with `VERCEL_FLEET_EXCLUSIVITY_LOST`, because by definition the lease has expired or is about to expire and we cannot prove no other host has acquired it. The earlier draft said "5 consecutive renewal failures (~25 minutes)" — that math was wrong (5 × 30 sec = 2.5 min, not 25 min) AND would have left a multi-minute split-brain window after the 90-second TTL elapsed. The corrected derived numbers: **renewal every 30s, TTL 90s, poison after 3 consecutive failures (~90s wall clock)**. These three constants are the SOLE source of truth for exclusivity-lease timing; every restating site uses them.
     - **Adversarial test (mandatory):** `__tests__/vercel-fleet-exclusivity.test.ts` (1) starts adapter A, asserts the Vercel KV exclusivity key is set; (2) starts adapter B against the same `ownerId` and asserts it rejects with `VERCEL_FLEET_EXCLUSIVITY_HELD`; (3) kills adapter A's process abruptly; (4) waits past the 90-second lease TTL; (5) starts adapter C and asserts it succeeds. Test must pass for every PR touching Vercel exclusivity code.
@@ -818,9 +852,9 @@ In-process delayed re-verify is necessary but not sufficient: a host crash, cont
   - **Reconciler false-delete protection (compensates for no per-instance liveness signal):** the reconciler does NOT delete on `koi-stale-after` alone. It deletes ONLY when ALL of the following are true:
     1. Artifact's `koi-stale-after` has passed.
     2. AND artifact's `koi-stale-after` has been past for at least **30 minutes** (the confirmation window — a control-plane outage shorter than this NEVER triggers deletion).
-    3. AND the host UUID stamped on the artifact's `koi-host-uuid` metadata is NOT the current holder of `koi:vercel:exclusive:${ownerId}` (i.e., the host that originally created the artifact has lost or released its exclusivity lease, which is the authoritative "this host is gone" signal).
-    Combined: a host hard-crash releases the exclusivity lease (within the lease's natural 90-second TTL); 30 minutes after `koi-stale-after`, the reconciler observes both gates and DELETEs. A control-plane outage that prevents PATCH renewals does NOT release the exclusivity lease (the host is still running its exclusivity-renewal Lua), so the reconciler skips. Net: the false-delete window the earlier multi-host design admitted is closed by the per-host-UUID gate.
-  - **Adversarial test (mandatory):** `__tests__/vercel-reconciler-required.test.ts` asserts (a) adapter rejects with `VERCEL_RECONCILER_NOT_RUNNING` if no heartbeat present at construction; (b) adapter poisons all live instances after 5 missed reconciler heartbeats with `VERCEL_RECONCILER_LOST`; (c) reconciler sweep does NOT delete artifacts whose host still holds the exclusivity lease, even after `koi-stale-after` + 30-minute confirmation window expires; (d) reconciler DOES delete artifacts whose host UUID has lost the exclusivity lease AND `koi-stale-after` + 30-min has expired. CI runs all four scenarios on every PR that touches Vercel sweep code.
+    3. AND the **process-instance ID** stamped on the artifact's `koi-process-instance` metadata is NOT the current holder of `koi:vercel:exclusive:${ownerId}`. **`processInstanceId` is a fresh UUID generated at every adapter construction** — NOT `hostUUID`. A same-host restart (process crash + supervisor restart on the same VM) generates a NEW `processInstanceId`; the new adapter writes the new id into the exclusivity lease via `SET NX EX 90`, but only after the old process's lease has expired (90s natural TTL after the crash). Artifacts created by the dead process carry the OLD `processInstanceId`, which no longer matches the lease holder → reconciler is permitted to delete them. The earlier draft used `hostUUID` for this gate, which made post-restart cleanup impossible because the new process reused the same `hostUUID` and old artifacts looked owned forever. `hostUUID` remains a separate metadata field for telemetry only — `koi-process-instance` is the authoritative cleanup gate.
+    Combined: a process hard-crash releases the exclusivity lease (within the lease's natural 90-second TTL); the supervisor restarts a new adapter process, which generates a fresh `processInstanceId` and acquires the lease; 30 minutes after `koi-stale-after`, the reconciler observes both gates (the dead process's `processInstanceId` is no longer the lease holder, and `koi-stale-after` is past+30min) and DELETEs the orphaned artifacts. A control-plane outage that prevents PATCH renewals does NOT release the exclusivity lease (the host is still running its exclusivity-renewal Lua), so the reconciler skips. Net: the false-delete window the earlier multi-host design admitted is closed by the per-host-UUID gate.
+  - **Adversarial test (mandatory):** `__tests__/vercel-reconciler-required.test.ts` asserts (a) adapter rejects with `VERCEL_RECONCILER_NOT_RUNNING` if no heartbeat present at construction; (b) adapter poisons all live instances after 5 missed reconciler heartbeats with `VERCEL_RECONCILER_LOST`; (c) reconciler sweep does NOT delete artifacts whose `processInstanceId` still holds the exclusivity lease, even after `koi-stale-after` + 30-minute confirmation window expires; (d) reconciler DOES delete artifacts whose `processInstanceId` has lost the exclusivity lease AND `koi-stale-after` + 30-min has expired; (e) **same-host restart cleanup**: kill the adapter process, wait 90s for exclusivity-lease TTL, restart adapter on the same host (same `hostUUID`, fresh `processInstanceId`), wait `koi-stale-after` + 30 min, assert the dead process's artifacts ARE deleted by the reconciler. CI runs all five scenarios on every PR that touches Vercel sweep code.
   - `docs/L2/sandbox-vercel.md` documents the operational requirement as: "Run `koi-sandbox-sweep --watch --vercel --owner-id=${ownerId}` on a long-lived host (operator-managed VM, k8s deployment, or equivalent — NOT a Vercel deployment) before constructing any Vercel adapter. The adapter refuses to start without an active reconciler." Includes example k8s/systemd/launchd manifests in the same doc.
 - **Adversarial test (mandatory):** `__tests__/sweep-control-plane-outage.test.ts` simulates a Cloudflare/Vercel control-plane API outage where host PATCH calls fail 503 for 10 minutes while the worker continues to serve invokes (worker-alive heartbeat stays fresh). Asserts the sweeper does NOT delete the artifact during the outage, and that invokes continue to succeed. CI runs this on every PR that touches lease/sweep code.
 - **Tag-application failure is a create failure:** if the provider does not accept the tags during deploy (older API, plan limitation), `create()` returns `KoiError { code: "TAGS_UNSUPPORTED" }` and tears down. We refuse to deploy untracked artifacts.
