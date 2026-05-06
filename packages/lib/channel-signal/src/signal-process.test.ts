@@ -33,7 +33,26 @@ function makeFake(): FakeProc {
     stdout,
     stdin: {
       write: (data: Uint8Array): void => {
-        stdinChunks.push(new TextDecoder().decode(data));
+        const text = new TextDecoder().decode(data);
+        stdinChunks.push(text);
+        // Auto-respond with a JSON-RPC `result` for the request id so the
+        // request/response correlation in createSignalProcess.send()
+        // resolves. Tests that need to simulate an `error` response or a
+        // dropped reply construct their own fake.
+        try {
+          const parsed = JSON.parse(text) as Record<string, unknown>;
+          if (typeof parsed.id === "number") {
+            queueMicrotask(() => {
+              controller?.enqueue(
+                new TextEncoder().encode(
+                  `${JSON.stringify({ jsonrpc: "2.0", id: parsed.id, result: {} })}\n`,
+                ),
+              );
+            });
+          }
+        } catch {
+          // ignore non-JSON writes
+        }
       },
     },
     exited,
@@ -227,6 +246,75 @@ describe("@koi/channel-signal createSignalProcess", () => {
     expect(parsed.method).toBe("send");
     f.finishExit();
     await p.stop();
+  });
+
+  test("send() rejects when signal-cli replies with a JSON-RPC error frame", async () => {
+    // Custom fake: on stdin write, emit a JSON-RPC error response keyed
+    // to the request id. send() must surface a typed rejection rather
+    // than report success based on the stdin write alone.
+    let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let resolveExit: () => void = () => undefined;
+    const exited = new Promise<void>((r) => {
+      resolveExit = r;
+    });
+    const proc: SignalChildProcess = {
+      stdout: new ReadableStream<Uint8Array>({
+        start(c): void {
+          controller = c;
+        },
+      }),
+      stdin: {
+        write: (data: Uint8Array): void => {
+          const parsed = JSON.parse(new TextDecoder().decode(data)) as Record<string, unknown>;
+          queueMicrotask(() => {
+            controller?.enqueue(
+              new TextEncoder().encode(
+                `${JSON.stringify({
+                  jsonrpc: "2.0",
+                  id: parsed.id,
+                  error: { code: -32602, message: "invalid recipient" },
+                })}\n`,
+              ),
+            );
+          });
+        },
+      },
+      exited,
+      kill: () => undefined,
+    };
+    const spawn: SpawnFn = () => proc;
+    const p = createSignalProcess("+15551234567", "signal-cli", undefined, spawn);
+    await p.start();
+    await expect(
+      p.send({ method: "send", params: { recipient: "+15551234567", message: "hi" } }),
+    ).rejects.toThrow(/invalid recipient/);
+    resolveExit();
+    await p.stop();
+  });
+
+  test("send() rejects when subprocess exits before responding (no false success on stdin write)", async () => {
+    // Fake that swallows writes (no auto-response) and lets the test
+    // resolve `exited` mid-flight to simulate a crash after the write.
+    let resolveExit: () => void = () => undefined;
+    const exited = new Promise<void>((r) => {
+      resolveExit = r;
+    });
+    const proc: SignalChildProcess = {
+      stdout: new ReadableStream<Uint8Array>(),
+      stdin: { write: () => undefined },
+      exited,
+      kill: () => undefined,
+    };
+    const spawn: SpawnFn = () => proc;
+    const p = createSignalProcess("+15551234567", "signal-cli", undefined, spawn);
+    await p.start();
+    const inflight = p.send({
+      method: "send",
+      params: { recipient: "+15551234567", message: "hi" },
+    });
+    // Subprocess dies after the stdin write but before any response.
+    resolveExit();
+    await expect(inflight).rejects.toThrow(/exited before responding/);
   });
 
   test("subprocess exiting unexpectedly flips running false and fires onUnexpectedExit", async () => {

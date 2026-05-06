@@ -307,6 +307,37 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
+  test("webhook: seenWebhookUpdate callback skips duplicate update_ids without invoking onMessage", async () => {
+    const f = fakeBot();
+    const seenIds = new Set<number>();
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "s",
+      seenWebhookUpdate: async (id: number): Promise<boolean> => {
+        if (seenIds.has(id)) return true;
+        seenIds.add(id);
+        return false;
+      },
+    });
+    await adapter.connect();
+    const seen: unknown[] = [];
+    adapter.onMessage(async (m) => {
+      seen.push(m);
+    });
+    const update = {
+      update_id: 42,
+      message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+    };
+    await adapter.handleWebhook("s", update);
+    await adapter.handleWebhook("s", update);
+    await new Promise((r) => setTimeout(r, 10));
+    // Second call sees update_id 42 already marked → skipped silently.
+    expect(seen).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
   test("webhook: handleWebhook does NOT dedupe in-memory (callers must layer dedupe at a durable boundary)", async () => {
     // Adapter-level dedupe is unsafe: deliver() is fire-and-forget, so
     // marking an update as seen before it is durably processed would

@@ -100,6 +100,21 @@ export interface TelegramChannelConfig {
   /** Test-only injected bot double. */
   readonly bot?: TelegramBotLike;
   readonly onHandlerError?: (err: unknown, ctx: unknown) => void;
+  /**
+   * Optional replay barrier for webhook mode. Telegram retries the same
+   * `update_id` after timeouts/5xx/network blips, so without dedupe a
+   * single user message can fire the agent loop multiple times. Return
+   * `true` to indicate the `update_id` has already been processed and
+   * should be skipped; the adapter will swallow it and the HTTPS handler
+   * can return 200 to stop further retries.
+   *
+   * The callback MUST be backed by durable storage (DB, Redis, queue
+   * dedupe table) and the seen-marker MUST be written only after
+   * downstream processing has succeeded. An in-memory mark-on-receive
+   * Set will silently suppress legitimate retries after a crash and
+   * cause permanent message loss.
+   */
+  readonly seenWebhookUpdate?: (updateId: number) => boolean | Promise<boolean>;
 }
 
 export interface TelegramChannelAdapter extends ChannelAdapter {
@@ -122,7 +137,7 @@ export interface TelegramChannelAdapter extends ChannelAdapter {
   readonly handleWebhook: (
     secretHeaderValue: string | undefined,
     update: TelegramUpdateLike,
-  ) => void;
+  ) => Promise<void>;
   /**
    * Resolves an inbound `tg://file/<fileId>` reference (or a bare file_id) to
    * a short-lived token-bearing download URL. Call this only at the fetch
@@ -353,7 +368,7 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
       }
       deliver(update);
     },
-    handleWebhook: (secretHeaderValue, update): void => {
+    handleWebhook: async (secretHeaderValue, update): Promise<void> => {
       if (config.webhookSecret === undefined) {
         throw new Error(
           "[channel-telegram] handleWebhook requires `webhookSecret` in TelegramChannelConfig — refusing to dispatch unauthenticated update",
@@ -375,17 +390,19 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
           "[channel-telegram] handleWebhook called while disconnected — return a non-200 so Telegram retries",
         );
       }
-      // NOTE on replay protection: Telegram retries webhook delivery
-      // on timeouts/5xx/network blips, so the same `update_id` can
-      // land more than once. We deliberately do NOT dedupe inside the
-      // adapter — `deliver()` is fire-and-forget and provides no
-      // signal for "downstream processed this successfully", so an
-      // in-process dedupe would suppress legitimate retries that
-      // arrive after a crash mid-handling and cause permanent message
-      // loss. Operators MUST layer dedupe at the HTTPS handler keyed
-      // on `update.update_id` (or in their queue/persistence layer)
-      // around a durable success boundary. We surface `update_id` on
-      // the inbound message so the gateway has it to work with.
+      // Optional durable-replay barrier. Telegram retries the same
+      // update_id on timeouts/5xx; if the operator wired a
+      // seenWebhookUpdate callback (DB/Redis/queue), consult it before
+      // dispatch and silently swallow already-processed updates so the
+      // HTTPS handler can return 200 and end the retry chain. The
+      // callback MUST mark seen only after downstream success — see the
+      // doc comment on TelegramChannelConfig.seenWebhookUpdate. When no
+      // callback is configured we forward unconditionally; callers are
+      // then responsible for dedupe at their HTTPS / queue layer.
+      if (config.seenWebhookUpdate !== undefined) {
+        const seen = await config.seenWebhookUpdate(update.update_id);
+        if (seen) return;
+      }
       deliver(update);
     },
     resolveMediaUrl,

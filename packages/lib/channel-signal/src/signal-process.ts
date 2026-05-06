@@ -72,6 +72,20 @@ export function createSignalProcess(
   // growth is bounded in practice.
   // let requires justification: drained when onEvent installs a handler.
   const pendingEvents: SignalEvent[] = [];
+  // JSON-RPC request/response correlation. Each send() creates an entry
+  // keyed by request id; dispatchLine resolves it on a `result` frame and
+  // rejects on an `error` frame. Stop()/unexpected-exit reject the
+  // remainder so callers do not observe success against a dead subprocess.
+  // let requires justification: mutable map of in-flight RPC waiters
+  const pendingRpc: Map<
+    number,
+    {
+      resolve: () => void;
+      reject: (err: Error) => void;
+    }
+  > = new Map();
+  // let requires justification: monotonically increasing JSON-RPC id
+  let nextRpcId = 1;
   // let requires justification: tracks subprocess liveness across async reads
   let running = false;
   // let requires justification: cancels stdout reader during stop()
@@ -80,6 +94,13 @@ export function createSignalProcess(
   // child.exited handler can distinguish an intentional shutdown (suppress
   // onUnexpectedExit) from a crash / external kill (fire onUnexpectedExit).
   let stopping = false;
+
+  function failAllPendingRpc(reason: string): void {
+    if (pendingRpc.size === 0) return;
+    const err = new Error(`[channel-signal] ${reason}`);
+    for (const waiter of pendingRpc.values()) waiter.reject(err);
+    pendingRpc.clear();
+  }
 
   async function readStdout(stream: ReadableStream<Uint8Array>): Promise<void> {
     const reader = stream.getReader();
@@ -123,6 +144,33 @@ export function createSignalProcess(
     } catch {
       return;
     }
+    // JSON-RPC response correlation: a frame carrying our `id` and a
+    // `result` or `error` matches a pending send(). Resolve/reject before
+    // attempting event parsing so RPC responses are never misclassified
+    // as inbound events.
+    if (typeof json === "object" && json !== null && !Array.isArray(json)) {
+      const obj = json as Record<string, unknown>;
+      if (typeof obj.id === "number" && pendingRpc.has(obj.id)) {
+        const waiter = pendingRpc.get(obj.id);
+        pendingRpc.delete(obj.id);
+        if (waiter !== undefined) {
+          if (obj.error !== undefined) {
+            const errObj =
+              typeof obj.error === "object" && obj.error !== null
+                ? (obj.error as Record<string, unknown>)
+                : undefined;
+            const message =
+              errObj !== undefined && typeof errObj.message === "string"
+                ? errObj.message
+                : JSON.stringify(obj.error);
+            waiter.reject(new Error(`[channel-signal] signal-cli error: ${message}`));
+          } else {
+            waiter.resolve();
+          }
+        }
+        return;
+      }
+    }
     const event = parseEvent(json);
     if (event === null) return;
     if (eventHandler !== undefined) {
@@ -151,6 +199,9 @@ export function createSignalProcess(
         cancelReader?.();
         cancelReader = undefined;
         proc = undefined;
+        // Fail any in-flight send() so callers see explicit rejection
+        // instead of a hung promise after the subprocess died mid-RPC.
+        failAllPendingRpc("signal-cli exited before responding to send");
         onUnexpectedExit?.();
       });
       void readStdout(child.stdout);
@@ -213,19 +264,32 @@ export function createSignalProcess(
       }
       proc = undefined;
       stopping = false;
+      failAllPendingRpc("signal-cli stopped while a send was in flight");
     },
 
     send: async (command: SignalCommand): Promise<void> => {
       if (proc === undefined || !running) {
         throw new Error("[channel-signal] process not running");
       }
+      const id = nextRpcId++;
       const rpc = {
         jsonrpc: "2.0",
         method: command.method,
         params: command.params,
-        id: Date.now(),
+        id,
       };
-      proc.stdin.write(new TextEncoder().encode(`${JSON.stringify(rpc)}\n`));
+      // Enroll BEFORE writing — guarantees the response handler can
+      // correlate even if signal-cli replies on the next event-loop tick.
+      const promise = new Promise<void>((resolve, reject) => {
+        pendingRpc.set(id, { resolve, reject });
+      });
+      try {
+        proc.stdin.write(new TextEncoder().encode(`${JSON.stringify(rpc)}\n`));
+      } catch (err: unknown) {
+        pendingRpc.delete(id);
+        throw err;
+      }
+      await promise;
     },
 
     onEvent: (handler): (() => void) => {

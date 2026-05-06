@@ -26,7 +26,29 @@ function makeSpawn(captured: Captured[]): SpawnFn {
     });
     const proc: SignalChildProcess = {
       stdout,
-      stdin: { write: (d) => stdinLines.push(new TextDecoder().decode(d)) },
+      stdin: {
+        write: (d): void => {
+          const text = new TextDecoder().decode(d);
+          stdinLines.push(text);
+          // Auto-respond to JSON-RPC requests so send() resolves on
+          // request/response correlation. Tests asserting send-failure
+          // semantics build their own spawn that omits this echo.
+          try {
+            const parsed = JSON.parse(text) as Record<string, unknown>;
+            if (typeof parsed.id === "number") {
+              queueMicrotask(() => {
+                controller?.enqueue(
+                  new TextEncoder().encode(
+                    `${JSON.stringify({ jsonrpc: "2.0", id: parsed.id, result: {} })}\n`,
+                  ),
+                );
+              });
+            }
+          } catch {
+            // ignore non-JSON writes
+          }
+        },
+      },
       exited,
       kill: () => undefined,
     };
