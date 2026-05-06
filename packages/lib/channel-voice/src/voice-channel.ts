@@ -331,8 +331,16 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
   let pendingUtterances: Array<{ sessionId: string; utterance: Uint8Array }> = [];
   let unsubTransport: (() => void) | undefined;
 
-  // ALS captures the connectGen + a per-turn token at handler-entry time.
-  // wrappedSend checks both on every send:
+  // ALS pins the per-turn dispatch context. The STT chain enters the ALS
+  // ONCE per inbound utterance — channel-base then fans out concurrently
+  // to every registered onMessage handler INSIDE that ALS, so all
+  // handlers for one turn share a single `turnToken` and push their
+  // promises into a single `collector`. This is essential: previously
+  // each wrapped handler invocation overwrote a per-handler tracker, so
+  // the watchdog only fenced the last-registered handler's token. With
+  // ≥2 async handlers (logging + business logic, etc.) an earlier hung
+  // handler could resume past the watchdog and speak audio into the next
+  // turn unfenced. Sharing the token closes that hole.
   //   • gen mismatch → handler awaited across disconnect/reconnect; reject.
   //   • token in expiredTurnTokens → the dispatch watchdog already gave up
   //     on this turn and admitted the next utterance for the same session;
@@ -341,6 +349,7 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
   const inboundGenContext = new AsyncLocalStorage<{
     readonly gen: number;
     readonly turnToken: object;
+    readonly collector?: { readonly promises: Promise<unknown>[] };
   }>();
   // Per-turn fence. Inserted by the dispatch watchdog when a handler
   // exceeds dispatchHandlerTimeoutMs; checked by wrappedSend so a hung
@@ -350,18 +359,11 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
   // releases — no cross-session memory growth.
   const expiredTurnTokens = new WeakSet<object>();
 
-  // Per-session dispatch-completion tracker. The wrapped onMessage
-  // below records every async handler invocation's promise here so the
-  // STT chain (in onPlatformEvent) can await it before processing the
-  // next utterance for the same sessionId. This extends the per-
-  // session ordering guarantee from "STT serialized" to "full handler
-  // pipeline serialized" — a host whose onMessage handler does multi-
-  // second runtime work (model+tool calls) cannot have two same-session
-  // turns running concurrently.
-  const sessionDispatchInFlight = new Map<
-    string,
-    { readonly promise: Promise<unknown>; readonly turnToken: object }
-  >();
+  // (Per-turn dispatch tracking lives entirely in the ALS collector
+  // mutated below — no per-session map needed. Per-session ordering
+  // is enforced by the chain in onPlatformEvent: each utterance's
+  // .then() awaits the prior turn's collected handler promises before
+  // admitting the next utterance.)
 
   const inner = createChannelAdapter<TransportEvent>({
     name: "voice",
@@ -465,22 +467,26 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
               (config.onSttError ?? defaultSttErrorLogger)(err, utterance);
               return;
             }
-            // Mark this session as "dispatch in flight" BEFORE handler()
-            // synchronously enqueues the dispatch. The wrapped onMessage
-            // (below) populates `sessionDispatchInFlight[sessionId]`
-            // when each handler invocation returns a Promise. The STT
-            // chain then awaits it so the NEXT utterance for this
-            // session waits for all current handlers to finish. Cross-
-            // session traffic remains parallel.
-            handler({ sessionId, utterance, text });
-            const inFlight = sessionDispatchInFlight.get(sessionId);
-            if (inFlight !== undefined) {
-              sessionDispatchInFlight.delete(sessionId);
+            // Enter the per-turn ALS ONCE for this utterance. All
+            // registered onMessage handlers are dispatched concurrently
+            // by channel-base inside this scope, so they share the same
+            // {gen, turnToken, collector}. The wrapped onMessage below
+            // pushes its handler-result Promise into collector.promises
+            // synchronously, so by the time `handler(...)` returns we
+            // have the full set of in-flight handler promises for this
+            // turn — not just the last-registered one.
+            const turnToken: object = {};
+            const collector: { readonly promises: Promise<unknown>[] } = { promises: [] };
+            const capturedGen = connectGen;
+            inboundGenContext.run({ gen: capturedGen, turnToken, collector }, () => {
+              handler({ sessionId, utterance, text });
+            });
+            if (collector.promises.length > 0) {
               // Bounded wait: a hung handler must not wedge later
               // utterances on the same session forever. On timeout we
               // surrender ordering for the next utterance AND fence the
-              // stuck handler's future sends — without that fence a
-              // late-resolving turn would inject audio out of order
+              // stuck turn's future sends — without that fence a
+              // late-resolving handler would inject audio out of order
               // into the now-current turn for the same session.
               const watchdogMs =
                 config.dispatchHandlerTimeoutMs ?? DEFAULT_DISPATCH_HANDLER_TIMEOUT_MS;
@@ -491,11 +497,11 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
               });
               try {
                 const outcome = await Promise.race([
-                  inFlight.promise.then(() => "settled" as const),
+                  Promise.allSettled(collector.promises).then(() => "settled" as const),
                   watchdog,
                 ]);
                 if (outcome === "watchdog") {
-                  expiredTurnTokens.add(inFlight.turnToken);
+                  expiredTurnTokens.add(turnToken);
                 }
               } finally {
                 if (watchdogTimer !== undefined) clearTimeout(watchdogTimer);
@@ -774,12 +780,9 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       // them on a next connect).
       rawUtteranceSink = undefined;
       pendingUtterances = [];
-      // Drop stale per-session handler-completion promises so a hung
-      // handler from this connection cannot block the next inbound
-      // turn after reconnect. Without this, the next utterance for
-      // a reused threadId would Promise.allSettled([prev, ...]) the
-      // dead promise and wedge the chain indefinitely.
-      sessionDispatchInFlight.clear();
+      // (Per-turn collectors live on the stack inside the STT chain's
+      // .then(); they are released as each turn completes or its
+      // watchdog fires. No global per-session map to clear here.)
       // Drain in-flight per-session sends before tearing down transport
       // so partial frames don't fly into a closing call. Failures are
       // swallowed — they were already surfaced to their callers.
@@ -821,38 +824,21 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       await inner.disconnect();
     },
     send: wrappedSend,
-    // Wrap onMessage so each handler invocation that returns a Promise
-    // gets recorded under sessionDispatchInFlight[threadId]. The STT
-    // chain awaits these before processing the next utterance,
-    // extending per-session ordering through the host's full handler
-    // pipeline (not just STT).
+    // Wrap onMessage so the host handler runs INSIDE the per-turn ALS
+    // (entered by the STT chain) and its returned Promise is added to
+    // the per-turn collector. The collector aggregates promises from
+    // ALL registered handlers for one inbound, so the watchdog fences
+    // every handler's turn token together — not just the
+    // last-registered one. This is the multi-handler safety property
+    // (round 34): two async handlers, the first hangs past the
+    // watchdog, the second turn runs, the first handler's late
+    // ch.send() must still be rejected.
     onMessage: (handler: import("@koi/core").MessageHandler): (() => void) =>
       inner.onMessage((msg) => {
-        // Snapshot the connection generation AND mint a per-turn token
-        // at handler-entry time. wrappedSend checks both: gen guards
-        // against handlers that awaited across reconnect; turnToken
-        // guards against handlers that ran past dispatchHandlerTimeoutMs
-        // and are about to speak after the watchdog already gave up
-        // ordering on this turn.
-        const capturedGen = connectGen;
-        const turnToken: object = {};
-        const result = inboundGenContext.run({ gen: capturedGen, turnToken }, () => handler(msg));
-        const sid = msg.threadId;
-        if (sid !== undefined && sid.length > 0 && result instanceof Promise) {
-          // Compose with any existing in-flight promise for this
-          // session — multiple handlers attached to the same session
-          // should all complete before the next utterance dispatches.
-          // The composed entry adopts THIS handler's token so the
-          // watchdog fences whichever turn was most recently dispatched.
-          const prev = sessionDispatchInFlight.get(sid);
-          const composed: Promise<unknown> =
-            prev !== undefined
-              ? Promise.allSettled([prev.promise, result]).then(() => undefined)
-              : result;
-          sessionDispatchInFlight.set(sid, {
-            promise: composed.catch(() => undefined),
-            turnToken,
-          });
+        const ctx = inboundGenContext.getStore();
+        const result = handler(msg);
+        if (ctx?.collector !== undefined && result instanceof Promise) {
+          ctx.collector.promises.push(result);
         }
         return result;
       }),

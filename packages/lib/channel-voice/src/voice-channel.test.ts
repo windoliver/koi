@@ -1447,6 +1447,90 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("multi-handler turn: hung first handler is fenced even when later handlers settle", async () => {
+    // Regression (round 34 high): per-handler turn tracking overwrote
+    // the session-dispatch slot on every wrapped handler invocation,
+    // so the watchdog only fenced the LAST registered handler. With
+    // ≥2 async handlers (e.g. logging + business logic), an earlier
+    // hung handler could resume past the watchdog and speak into a
+    // newer turn. The per-turn collector aggregates ALL registered
+    // handlers' promises so the watchdog fences the ENTIRE turn.
+    let listener: ((sessionId: string, audio: Uint8Array) => void) | undefined;
+    const sentBy: string[] = [];
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async (_s, _u, frames) => {
+        for (const f of frames) sentBy.push(`[${f[0]}]`);
+      },
+      onUtterance: (h) => {
+        listener = h;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = { transcribe: async () => "ok" };
+    const tts: Tts = { synthesize: async (text) => new Uint8Array([text.charCodeAt(0)]) };
+    const ch = createVoiceChannel({
+      transport,
+      stt,
+      tts,
+      dispatchHandlerTimeoutMs: 50,
+    });
+    // First handler: hangs forever on its first invocation, then tries
+    // to speak when finally released — must be fenced.
+    let releaseHung: (() => void) | undefined;
+    let firstHandlerSawTurn = 0;
+    let hungAttemptedSpeak = false;
+    let hungRejected = false;
+    ch.onMessage(async (msg) => {
+      firstHandlerSawTurn++;
+      if (firstHandlerSawTurn === 1) {
+        await new Promise<void>((r) => {
+          releaseHung = r;
+        });
+        hungAttemptedSpeak = true;
+        try {
+          await ch.send({
+            threadId: msg.threadId ?? "call-A",
+            content: [{ kind: "text", text: "X" }],
+          });
+        } catch (e) {
+          hungRejected = e instanceof VoicePoisonedSessionError;
+        }
+      }
+    });
+    // Second handler: also async but settles fast. Under the broken
+    // implementation the second handler's token would be the only one
+    // tracked — its quick settle would never trigger the watchdog and
+    // the first handler's late send would slip through unfenced.
+    let secondHandlerSawTurn = 0;
+    ch.onMessage(async (msg) => {
+      secondHandlerSawTurn++;
+      if (secondHandlerSawTurn === 2) {
+        await ch.send({
+          threadId: msg.threadId ?? "call-A",
+          content: [{ kind: "text", text: "B" }],
+        });
+      }
+    });
+    await ch.connect();
+    listener?.("call-A", new Uint8Array([1]));
+    listener?.("call-A", new Uint8Array([2]));
+    // Wait past the watchdog and turn B's send.
+    await new Promise((r) => setTimeout(r, 250));
+    expect(secondHandlerSawTurn).toBe(2); // the watchdog admitted turn 2
+    expect(sentBy).toEqual([`[${"B".charCodeAt(0)}]`]); // only B spoke
+    // Release the hung first handler — its late send must be fenced.
+    releaseHung?.();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(hungAttemptedSpeak).toBe(true);
+    expect(hungRejected).toBe(true);
+    expect(sentBy).toEqual([`[${"B".charCodeAt(0)}]`]); // X never spoke
+    await ch.disconnect();
+  });
+
   test("watchdog-expired turn cannot speak audio after the session moves on", async () => {
     // Regression (round 32 high): the watchdog dropped per-session
     // ordering after timeout but did NOT fence the stuck handler. If
