@@ -99,14 +99,15 @@ A future `sandbox-edge-router` package can offer cross-provider selection betwee
 
 This doc update is a required deliverable of this PR (see Acceptance below) so that no documented contract conflicts with what ships.
 
-### Forbidden workload class — non-idempotent payloads
+### Workload-class acknowledgment (operator-declared, NOT adapter-enforced)
 
-The duplicate-side-effect hazard introduced by timeout/abort/destroy + per-isolate dedupe is real and cannot be eliminated at the adapter layer with available provider primitives. Rather than ship a generic adapter that documents the hazard, the contract narrows the supported workload class:
+The duplicate-side-effect hazard introduced by timeout/abort/destroy + per-isolate dedupe is real and cannot be eliminated at the adapter layer with available provider primitives. The adapter does **NOT** enforce idempotency — that would require runtime verification of every deployed handler's behavior, which is impossible without a sandbox the size of the one we're trying to build. Instead, the contract makes the limitation explicit and forces operators to acknowledge it:
 
-- **`createCloudflareAdapter` and `createVercelAdapter` REQUIRE `config.assertIdempotent: true`.** This is a literal-true field, not a default. The adapter refuses to construct otherwise (returns `KoiError { code: "IDEMPOTENCY_NOT_ASSERTED" }`).
-- Setting `assertIdempotent: true` is the operator's affirmation that every `payload` they pass to `invoke()` represents an idempotent operation: a retry with the same `requestId` AND a retry with a fresh `requestId` BOTH must produce the same observable side effect (or no additional side effect after the first). This includes downstream API calls, database writes, payments, and state transitions performed by the deployed JS handler.
-- Mutating workloads (non-idempotent payments, sequence-dependent writes, etc.) are NOT supported by these adapters in this PR. Operators wanting them MUST either implement idempotency at the side-effect target before adopting the adapter OR wait for a future `sandbox-cloudflare-durable` package that backs dedupe with Durable Objects (out of scope here).
-- The `assertIdempotent: true` literal lives in the orphan ledger metadata for the adapter and is also logged on every `create()` so audit trails can confirm operators consented to the workload-class restriction.
+- **`createCloudflareAdapter` and `createVercelAdapter` REQUIRE `config.assertIdempotent: true`.** This is a literal-true field, not a default. The adapter refuses to construct otherwise (returns `KoiError { code: "IDEMPOTENCY_NOT_ASSERTED" }`). The flag is **acknowledgment-only**: it does not verify the handler's behavior, only forces the operator to read the docs and consciously opt in.
+- The flag's documented contract states unambiguously: "By setting this flag, the operator certifies that every deployed handler payload is idempotent under retry — that is, the operator has independently audited their handler and confirmed that downstream side effects are dedupe-keyed by `operationId`. The adapter does not verify this property and a non-idempotent handler will produce duplicate effects under retry."
+- **The adapter's safety contribution is bounded:** it ensures `operationId` reaches the handler reliably (mandatory wire field), provides shim-cache best-effort dedupe (per-isolate), and honestly reports `DestroyOutcome` so callers know when residual remote work is possible. The adapter does NOT provide exactly-once execution and the documentation says so explicitly.
+- Mutating workloads (non-idempotent payments, sequence-dependent writes, etc.) are accepted by the adapter contract — but the responsibility for correctness is fully on the operator's deployed handler. Operators who cannot guarantee handler-level idempotency MUST either implement an audited dedupe layer at their side-effect target before adopting the adapter OR wait for a future `sandbox-cloudflare-durable` package that backs dedupe with Durable Objects (out of scope here).
+- The `assertIdempotent: true` literal is logged on every `create()` and audit trails record the flag value with the timestamp, ownerId, and instance scriptName so post-incident review can confirm operator consent.
 
 ### Kernel / runtime integration path
 
@@ -328,7 +329,12 @@ In-process delayed re-verify is necessary but not sufficient: a host crash, cont
   - `koi-stale-after` is in the past (artifact's lease has expired).
   It then deletes them. Long-lived active instances renew their lease and are never swept regardless of age. The 1-hour threshold is replaced by the `koi-stale-after` lease check: sweep is gated on durable provider-side staleness, not just elapsed time.
   - The sweep additionally consults the local SQLite ledger to skip rows with `last_tried_at` within 5 minutes (some other host is actively reconciling).
-- **Lease renewal failure handling:** if the host fails to renew a lease (network error, expired token, etc.), the local adapter logs `LEASE_RENEWAL_FAILED` and increments a counter. After 3 consecutive failures over 30 minutes, the host considers the artifact lost and tears down the local handle (POISONED state) so callers stop sending invokes. The artifact then ages out via lease expiry as normal.
+- **Fail-closed lease renewal — poison before sweep eligibility:** the lease window (5 minutes) and the renewal cadence (every 2 minutes) are deliberately decoupled from the poison threshold so the host stops accepting invokes well before the sweeper can delete the artifact:
+  - The host attempts a PATCH renewal every 2 minutes with a 30-second timeout.
+  - **On the FIRST missed renewal** (timeout, 4xx, 5xx, or network error), the instance immediately enters **POISONED** state. Subsequent `invoke` calls reject with `KoiError { code: "POISONED", reason: "lease-renewal-failed" }`. In-flight invokes see their `AbortController` abort.
+  - At the moment of first-miss poisoning, the most recent successful `koi-stale-after` value is at least `now + 3 minutes` (because the renewal interval is 2 min and previous renewal set it to `+5 min`). The sweeper cannot delete the artifact until that timestamp passes, leaving a buffer of ≥3 minutes during which (a) all callers see POISONED and (b) `destroy()` can run cleanly on the local handle and explicitly tear down the artifact.
+  - This eliminates the race: the local handle is dead before the artifact is sweep-eligible. There is no window where invokes are accepted on an instance the sweeper might delete.
+- **No retries on renewal failure** — the renewal path is single-shot per cycle. Adding retries would slow the poison transition. A failed renewal is a hard signal that something is wrong; fail closed.
 - **Tag-application failure is a create failure:** if the provider does not accept the tags during deploy (older API, plan limitation), `create()` returns `KoiError { code: "TAGS_UNSUPPORTED" }` and tears down. We refuse to deploy untracked artifacts.
 - **Synchronous cleanup option:** for callers that cannot tolerate any deferred cleanup, config exposes `synchronousCreateCleanup: boolean` (default `false`). When `true`, the adapter does not return until either (a) the cleanup DELETE returns confirmed-deleted (success path), or (b) cleanup fails and the orphan is persisted to the ledger. INDETERMINATE results are never returned with a still-pending in-process re-verify scheduled — the caller blocks until the durable trace is written. This trades latency for an absolute guarantee that no artifact exists outside the ledger.
 - **Idempotent retries are caller responsibility:** the adapter never auto-retries `create`. Each retry produces a new UUID and is independent.
@@ -650,8 +656,9 @@ The implementation does not fit a single PR. The work is split into four sequent
 | 2 | Kernel + runtime extension for edge adapters | New `@koi/core` types (`EdgeFunctionAdapter` etc.), `CreateKoiOptions` extension on `@koi/engine`, `koi.edge.*` accessor, CI script extensions for `koi.adapter-kind`, `docs/L3/sandbox-stack.md` rewrite, `golden-edge-replay.test.ts` skeleton. **Reconciles existing L3 doc with the new contract.** | ~700 LOC |
 | 3 | `@koi/sandbox-wasm` | Full wasm executor package + binary scanner + tests + `docs/L2/sandbox-wasm.md` + golden replay assertion (uses the SandboxExecutor-style cassette path or the new edge replay; finalized in PR 2). | ~700 LOC |
 | 4 | `@koi/sandbox-cloudflare` + `@koi/sandbox-vercel` | Both cloud packages, shim templates, SQLite ledger, provider-smoke workflow, `docs/L2/sandbox-cloudflare.md` + `docs/L2/sandbox-vercel.md`, edge cassettes. | ~900 LOC |
+| 5 | `@koi/sandbox-sweep` | Continuous-mode janitor CLI (`koi-sandbox-sweep --watch`) that performs the cross-host tagged-artifact sweep described in the orphan-tracking section. Operator-deployable as a long-running daemon or per-minute cron. Includes provider-side credential handling, `koi-stale-after` evaluation, and DELETE issuance with retry/backoff. Without this PR shipped, multi-host orphan recovery does not exist. | ~400 LOC |
 
-PRs 3 and 4 can land in parallel after PR 2 merges. Each PR is gated independently by the acceptance criteria below for its scope only.
+PRs 3 and 4 can land in parallel after PR 2 merges. PR 5 (`sandbox-sweep`) blocks the multi-host safety claim — without it, the cloud adapters' documentation must declare single-host-only operation. PR 4's acceptance criteria therefore includes a "single-host-only" warning in the L2 docs that gets removed by PR 5 once the sweeper ships.
 
 ## Acceptance
 
@@ -692,3 +699,15 @@ PRs 3 and 4 can land in parallel after PR 2 merges. Each PR is gated independent
 - [ ] `provider-smoke.yml` green: happy path + 4 adversarial scenarios + leak sweep
 - [ ] `docs/L2/sandbox-cloudflare.md` and `sandbox-vercel.md` committed, including "Single-host vs multi-host orphan handling" sections and the `assertIdempotent` workload-class restriction
 - [ ] PR < 1500 LOC each (if they don't fit together, split into PR 4a Cloudflare and PR 4b Vercel)
+- [ ] L2 docs include a "Multi-host operation requires `@koi/sandbox-sweep`" warning that PR 5 removes
+
+### PR 5 (`@koi/sandbox-sweep`)
+
+- [ ] Package compiles, lints, typechecks under TS6 strict
+- [ ] CLI binary `koi-sandbox-sweep` works in `--watch` (continuous) and `--once` (single pass) modes
+- [ ] Reads `koi-managed=v1` + `koi-owner=${ownerId}` + expired `koi-stale-after` artifacts only
+- [ ] Idempotent DELETE with retry/backoff and rate-limit handling
+- [ ] Smoke test: deploy 3 stub artifacts, expire 1 lease, run sweep, assert exactly the expired artifact is deleted
+- [ ] L2 doc `docs/L2/sandbox-sweep.md` covering operator deployment patterns
+- [ ] L2 docs in `sandbox-cloudflare`/`sandbox-vercel` updated to remove the single-host warning and link to `sandbox-sweep`
+- [ ] PR < 1500 LOC
