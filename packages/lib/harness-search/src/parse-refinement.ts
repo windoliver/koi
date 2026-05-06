@@ -8,8 +8,8 @@
  * fragile because a trailing example would silently win.
  *
  * Strategy: accept exactly ONE fence, OR accept multi-block output
- * only when exactly one fence carries an explicit `typescript`/`ts`
- * tag (the convention adapters should emit). Anything else returns
+ * only when exactly one fence carries an explicit source-language tag
+ * (`typescript`, `ts`, `javascript`, `js`). Anything else returns
  * `null` so the caller surfaces `refine_failed` rather than evaluating
  * an arbitrary block.
  *
@@ -25,7 +25,12 @@
 // truncate a valid candidate at the wrong place.
 const CODE_FENCE_GLOBAL = /```([a-zA-Z]*)\s*\n([\s\S]*?)\n```(?:$|\n|\r)/g;
 
-const TS_TAGS: ReadonlySet<string> = new Set(["typescript", "ts"]);
+// Tags that count as "the canonical code block" in multi-block output.
+// Both TS and JS are accepted: refiners targeting JS-only tooling
+// commonly return one example block plus a final js/javascript block,
+// and rejecting that as ambiguous would force a refine_failed exit on a
+// perfectly valid response.
+const CANONICAL_TAGS: ReadonlySet<string> = new Set(["typescript", "ts", "javascript", "js"]);
 // Source-language tags accepted as candidate code on the single-block
 // happy path. Untagged ("") fences are also accepted because adapters
 // commonly emit bare ``` for the only output. Tags like `json`,
@@ -65,9 +70,12 @@ export function parseRefinementOutput(raw: unknown): string | null {
     return SOURCE_TAGS.has(only.tag) ? only.body : null;
   }
 
-  // Multi-block output: accept only when exactly one block is tagged
-  // typescript/ts. Otherwise refuse to guess which one is the answer.
-  const tsBlocks = blocks.filter((b) => TS_TAGS.has(b.tag));
-  if (tsBlocks.length === 1) return tsBlocks[0]?.body ?? null;
+  // Multi-block output: accept only when exactly one block carries an
+  // explicit source-language tag (ts/typescript/js/javascript). Untagged
+  // blocks deliberately don't count here — they're usually examples or
+  // shell snippets, and treating them as candidates would silently win
+  // when the model emitted a tagged final block alongside.
+  const canonical = blocks.filter((b) => CANONICAL_TAGS.has(b.tag));
+  if (canonical.length === 1) return canonical[0]?.body ?? null;
   return null;
 }

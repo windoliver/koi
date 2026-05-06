@@ -597,7 +597,14 @@ function isValidEvalResult(r: unknown): r is EvalResult {
       cand.successRate < 0 ||
       cand.successRate > 1 ||
       !Number.isInteger(cand.sampleCount) ||
-      cand.sampleCount < 0 ||
+      // sampleCount must be strictly positive: a `successRate` reported
+      // against zero evidence is meaningless, would skew best-tracking
+      // and Thompson updates, and could even drive false convergence
+      // when callers lower minEvalSamples. Force evaluators to either
+      // run at least one sample or surface no result at all (throw /
+      // eval_failed), instead of letting them claim a perfect rate
+      // backed by nothing.
+      cand.sampleCount < 1 ||
       !Array.isArray(cand.failures)
     ) {
       return false;

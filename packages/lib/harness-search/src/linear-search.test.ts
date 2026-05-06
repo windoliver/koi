@@ -455,6 +455,20 @@ describe("linearSearch", () => {
     expect(result.stopReason).toBe("aborted");
   });
 
+  test("evaluator returning sampleCount=0 with successRate=1 is rejected as eval_failed", async () => {
+    // Regression: zero-sample results are meaningless evidence and must
+    // not flow into best-tracking, plateau, or Thompson updates — even
+    // less so drive convergence when minEvalSamples is lowered.
+    const config = makeConfig({
+      minEvalSamples: 0,
+      convergenceThreshold: 1.0,
+      evaluate: async () => ({ successRate: 1.0, sampleCount: 0, failures: [] }),
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_failed");
+    expect(result.converged).toBe(false);
+  });
+
   test("eval throw populates terminalDiagnostic with cause class + iteration", async () => {
     let i = 0;
     const config = makeConfig({
@@ -522,12 +536,9 @@ describe("linearSearch", () => {
     // into terminalDiagnostic.causeClass via { constructor: { name: ... } }
     // — defeating the redaction contract for failure exits. Now only
     // an allowlist of built-in error classes passes through.
+    const hostileReason: unknown = { constructor: { name: "tenant-abc-secret-token" } };
     const config = makeConfig({
-      // biome-ignore lint/suspicious/noExplicitAny: deliberately exercise hostile rejection
-      evaluate: () =>
-        Promise.reject({
-          constructor: { name: "tenant-abc-secret-token" },
-        } as any),
+      evaluate: () => Promise.reject(hostileReason),
     });
     const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
     expect(result.stopReason).toBe("eval_failed");

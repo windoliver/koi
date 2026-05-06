@@ -22,7 +22,7 @@ describe("parseRefinementOutput", () => {
     expect(parseRefinementOutput(raw)).toBe("plain code");
   });
 
-  test("rejects multi-block output with no unique ts tag (ambiguous — first is example or stale)", () => {
+  test("rejects multi-block output with no unique source-language tag (two ts blocks — ambiguous)", () => {
     const raw = "```ts\nfirst\n```\nthen\n```ts\nsecond\n```";
     expect(parseRefinementOutput(raw)).toBeNull();
   });
@@ -32,13 +32,25 @@ describe("parseRefinementOutput", () => {
     expect(parseRefinementOutput(raw)).toBe("new code");
   });
 
-  test("rejects multi-block output when no block carries a ts tag", () => {
+  test("accepts multi-block output when exactly one block is js-tagged", () => {
+    // Regression: multi-block disambiguation previously only accepted
+    // ts/typescript, forcing refine_failed on valid JS-only refiners.
+    const raw = "Example:\n```\nold\n```\nFinal:\n```js\nnew code\n```";
+    expect(parseRefinementOutput(raw)).toBe("new code");
+  });
+
+  test("accepts multi-block output when exactly one block is javascript-tagged", () => {
+    const raw = "Old:\n```\nstale\n```\nNew:\n```javascript\nfresh\n```";
+    expect(parseRefinementOutput(raw)).toBe("fresh");
+  });
+
+  test("rejects multi-block output when no block carries a source-language tag", () => {
     const raw = "```\none\n```\nand\n```\ntwo\n```";
     expect(parseRefinementOutput(raw)).toBeNull();
   });
 
-  test("rejects multi-block output even when one block is js-tagged (only ts/typescript counts)", () => {
-    const raw = "```js\nold\n```\n```\nplain\n```";
+  test("rejects multi-block output when both ts AND js are tagged (ambiguous)", () => {
+    const raw = "```ts\nfirst\n```\n```js\nsecond\n```";
     expect(parseRefinementOutput(raw)).toBeNull();
   });
 
