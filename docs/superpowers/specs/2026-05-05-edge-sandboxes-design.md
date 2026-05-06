@@ -151,7 +151,7 @@ fresh → claimed (claimer holds lease) → completed (terminal: result cached f
 
 Rules:
 
-- `claim`: atomic compareAndSwap from `fresh|claim-expired` to `claimed`. The caller writes its `requestId`, `claimedAt`, `leaseUntil = claimedAt + 15_000ms`, AND `dedupeFingerprint` (a canonical `sha256("${pairUUID}:${handlerCodeHash}:${sha256(payload)}")` computed by Worker A's shim from the inbound request) into the DO's transactional storage. Returns one of FIVE statuses to the caller:
+- `claim`: atomic compareAndSwap from `fresh|claim-expired` to `claimed`. The caller writes its `requestId`, `claimedAt`, `leaseUntil = claimedAt + 15_000ms`, AND `dedupeFingerprint` (a canonical `sha256("${ownerId}:${handlerCodeHash}:${sha256(payload)}")` computed by Worker A's shim from the inbound request — note: `pairUUID` is INTENTIONALLY EXCLUDED so retries of the same logical operation across a destroy/recreate cycle compute the same fingerprint and observe the prior terminal record instead of being rejected; `handlerCodeHash` IS included because a handler-version change is a semantic change to the operation) into the DO's transactional storage. Returns one of FIVE statuses to the caller:
   - `{ status: "fresh" }` — new owner, this isolate runs the handler.
   - `{ status: "in-progress", claimer: <other_requestId>, leaseUntil }` — loser; must poll via the wait protocol.
   - `{ status: "completed", result, statusCode }` — terminal cached success; return immediately to the caller without running the handler.
@@ -175,6 +175,7 @@ Rules:
   | 422 | absent | `{ ok: false, error: { code: "HANDLER_PERMANENT_FAILURE", cachedError: <body> } }` (compat fallback for unhealthy shim version) |
   | 504 | `timeout` OR absent | `{ ok: false, error: { code: "TIMEOUT" } }` |
   | 503 | any | `{ ok: false, error: { code: "DEDUPE_PERSISTENCE_FAILED" or specific 503 sub-code } }` |
+  | 409 | `operation-id-conflict` | `{ ok: false, error: { code: "OPERATION_ID_CONFLICT", storedFingerprint: <body.storedFingerprint> } }` |
   | other 4xx/5xx | any | `{ ok: false, error: { code: "PROVIDER_ERROR", status, body } }` |
 
   Missing `X-Koi-Result-Kind` is **NOT** treated as malformed — the host falls back to the HTTP status code's documented mapping, which preserves backward compatibility with shim versions that pre-date the header. The header tightens disambiguation; it is not the sole signal. The earlier "missing header → MALFORMED_SHIM_RESPONSE" rule is removed because it would have rejected normal success responses from older shims and from the inline pseudocode in this very doc.
@@ -227,6 +228,7 @@ All Vercel KV keys are **fleet-namespaced** with `ownerId` to prevent cross-tena
 - `${ownerId}:claim:${operationId}` — holds the active claimer's `requestId` with a **15-second TTL** (heartbeat lease — sized below the 30s invoke timeout so waiters can reclaim a crashed owner's claim within the same invoke window).
 - `${ownerId}:result:${operationId}` — holds the cached result with a 24-hour TTL.
 - `${ownerId}:failed:${operationId}` — cached terminal failures (24h TTL).
+- `${ownerId}:fingerprint:${operationId}` — durable `dedupeFingerprint = sha256("${ownerId}:${handlerCodeHash}:${sha256(payload)}")` for the first attempt that ever wrote claim/result/failed under this `operationId`. TTL = 24h (same as terminal records). **Excludes per-instance identity (no `pairUUID`) so retries across destroy/recreate compute the same fingerprint and observe the prior terminal record. Includes `handlerCodeHash` so handler-version bumps surface as conflicts.** Identical fingerprint definition to the Cloudflare DO model — host-side mapping is provider-symmetric.
 
 Two fleets reusing the same `operationId` value never contend because their key prefixes differ. The shim reads `ownerId` from a worker env var (`KOI_OWNER_ID`) injected at deploy time by the koi adapter, NOT from the request — clients cannot spoof a different owner.
 
@@ -238,10 +240,25 @@ const ns = KOI_OWNER_ID; // injected at deploy time
 const claimKey = `${ns}:claim:${operationId}`;
 const resultKey = `${ns}:result:${operationId}`;
 const failedKey = `${ns}:failed:${operationId}`;
+const fingerprintKey = `${ns}:fingerprint:${operationId}`;
+
+// dedupeFingerprint: identical definition to Cloudflare DO. pairUUID is INTENTIONALLY EXCLUDED.
+const dedupeFingerprint = sha256(`${ns}:${handlerCodeHash}:${sha256(payloadCanonical)}`);
 
 // 1+2. Atomic check-or-claim via single Lua EVAL (no race window between check and claim).
-// Returns one of: "result:<json>" | "failed:<json>" | "claim:fresh" | "claim:in-progress:<requestId>"
+// Fingerprint is checked FIRST and atomically: if a record exists for this operationId with a
+// different fingerprint, the request is rejected as a fingerprint-conflict — never silently
+// served a stale-aliased result. If no fingerprint exists yet (fresh op), the claim writes both
+// the claim and the fingerprint atomically so subsequent attempts can be compared.
+// Returns one of:
+//   "fingerprint-conflict:<storedFingerprint>"
+//   "result:<json>"
+//   "failed:<json>"
+//   "claim:fresh"
+//   "claim:in-progress:<requestId>"
 const CHECK_OR_CLAIM_LUA = `
+  local fp = redis.call('GET', KEYS[4])
+  if fp and fp ~= ARGV[2] then return 'fingerprint-conflict:'..fp end
   local r = redis.call('GET', KEYS[1])
   if r then return 'result:'..r end
   local f = redis.call('GET', KEYS[2])
@@ -249,9 +266,15 @@ const CHECK_OR_CLAIM_LUA = `
   local c = redis.call('GET', KEYS[3])
   if c then return 'claim:in-progress:'..c end
   redis.call('SET', KEYS[3], ARGV[1], 'EX', '15')
+  if not fp then redis.call('SET', KEYS[4], ARGV[2], 'EX', '86400') end
   return 'claim:fresh'
 `;
-const checkResult = await kvCommand("EVAL", [CHECK_OR_CLAIM_LUA, "3", resultKey, failedKey, claimKey, requestId]);
+const checkResult = await kvCommand("EVAL", [CHECK_OR_CLAIM_LUA, "4", resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint]);
+if (checkResult.startsWith("fingerprint-conflict:")) {
+  // operationId was reused with a different payload OR handler version. Reject loudly — never
+  // serve a stale-aliased result. Host-side adapter maps this to KoiError { code: "OPERATION_ID_CONFLICT" }.
+  return new Response(JSON.stringify({ error: "OPERATION_ID_CONFLICT", storedFingerprint: checkResult.slice("fingerprint-conflict:".length) }), { status: 409, headers: { "X-Koi-Result-Kind": "operation-id-conflict" } });
+}
 if (checkResult.startsWith("result:")) {
   return new Response(checkResult.slice("result:".length), { status: 200 });
 }
