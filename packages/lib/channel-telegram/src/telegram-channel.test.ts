@@ -6,6 +6,7 @@ import {
   splitText,
   type TelegramApiLike,
   type TelegramBotLike,
+  TelegramPartialDeliveryError,
 } from "./telegram-channel.js";
 
 interface ApiCall {
@@ -229,6 +230,31 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       update_id: 1,
       message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
     });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(seen).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
+  test("webhook: handleWebhook dedupes by update_id (Telegram retry should not re-fire)", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "s",
+    });
+    await adapter.connect();
+    const seen: unknown[] = [];
+    adapter.onMessage(async (m) => {
+      seen.push(m);
+    });
+    const update = {
+      update_id: 42,
+      message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+    };
+    adapter.handleWebhook("s", update);
+    adapter.handleWebhook("s", update);
+    adapter.handleWebhook("s", update);
     await new Promise((r) => setTimeout(r, 10));
     expect(seen).toHaveLength(1);
     await adapter.disconnect();
@@ -499,6 +525,49 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       }),
     ).rejects.toThrow(/callback_data exceeds/);
     expect(f.calls).toHaveLength(0);
+    await adapter.disconnect();
+  });
+
+  test("send: partial delivery surfaces TelegramPartialDeliveryError with delivered count", async () => {
+    const f = fakeBot();
+    // Make the second call (sendDocument) throw — first photo already
+    // landed by then, so the adapter must escalate to a partial-delivery
+    // error so retry middleware does not blindly resend the same
+    // OutboundMessage and duplicate the photo.
+    let calls = 0;
+    const partialBot: TelegramBotLike = {
+      ...f.bot,
+      api: {
+        ...f.bot.api,
+        sendPhoto: async () => {
+          calls++;
+          return undefined;
+        },
+        sendDocument: async () => {
+          calls++;
+          throw new Error("network blip");
+        },
+      },
+    };
+    const adapter = createTelegramChannel({ token: "T", bot: partialBot });
+    await adapter.connect();
+    let captured: unknown;
+    try {
+      await adapter.send({
+        content: [
+          { kind: "image", url: "https://x/p.jpg" },
+          { kind: "file", url: "https://x/d.pdf", mimeType: "application/pdf" },
+        ],
+        threadId: "200",
+      });
+    } catch (err) {
+      captured = err;
+    }
+    expect(captured).toBeInstanceOf(TelegramPartialDeliveryError);
+    if (captured instanceof TelegramPartialDeliveryError) {
+      expect(captured.deliveredParts).toBe(1);
+    }
+    expect(calls).toBe(2);
     await adapter.disconnect();
   });
 

@@ -28,4 +28,8 @@ export type {
   TelegramSendMessageOther,
   TelegramSendPhotoOther,
 } from "./telegram-channel.js";
-export { createTelegramChannel, splitText } from "./telegram-channel.js";
+export {
+  createTelegramChannel,
+  splitText,
+  TelegramPartialDeliveryError,
+} from "./telegram-channel.js";

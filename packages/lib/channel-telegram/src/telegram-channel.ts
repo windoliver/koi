@@ -172,6 +172,26 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
   const PENDING_BUFFER_MAX = 256;
   // let requires justification: drained when updateHandler is installed.
   let pending: TelegramUpdateLike[] = [];
+  // Webhook dedupe ring. Telegram retries a webhook delivery on any
+  // ambiguous response (timeout, 5xx, network blip), so the same
+  // update_id can land more than once. Without this guard each retry
+  // would re-run the same agent turn and any attached tool side effects.
+  // The ring holds the last N update_ids — adequate because Telegram
+  // only retries the most recent undelivered update, not arbitrarily
+  // old ones.
+  const WEBHOOK_DEDUPE_RING_SIZE = 1024;
+  const seenUpdateIds = new Set<number>();
+  const seenUpdateOrder: number[] = [];
+  const isDuplicateUpdate = (id: number): boolean => {
+    if (seenUpdateIds.has(id)) return true;
+    seenUpdateIds.add(id);
+    seenUpdateOrder.push(id);
+    if (seenUpdateOrder.length > WEBHOOK_DEDUPE_RING_SIZE) {
+      const evicted = seenUpdateOrder.shift();
+      if (evicted !== undefined) seenUpdateIds.delete(evicted);
+    }
+    return false;
+  };
 
   const deliver = (update: TelegramUpdateLike): void => {
     if (updateHandler !== undefined) {
@@ -374,6 +394,11 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
           "[channel-telegram] handleWebhook called while disconnected — return a non-200 so Telegram retries",
         );
       }
+      // Replay protection: Telegram retries webhook delivery on
+      // timeouts/5xx/network blips, so the same update_id can land
+      // more than once. Drop duplicates BEFORE dispatch so an
+      // already-processed agent turn does not re-fire its tool calls.
+      if (isDuplicateUpdate(update.update_id)) return;
       // Use the same buffered delivery path as polling so updates that
       // arrive between connect() and onPlatformEvent's handler install
       // are not silently dropped.
@@ -453,23 +478,45 @@ async function sendOutbound(api: TelegramApiLike, message: OutboundMessage): Pro
   const docOther = (): TelegramSendDocumentOther | undefined =>
     threadId !== undefined ? { message_thread_id: threadId } : undefined;
 
+  // Multi-call sends are not transactional: a transient failure mid-way
+  // leaves earlier parts already delivered to the user. Track how many
+  // parts succeeded so the error we throw tells callers exactly how
+  // many parts went through, and that retrying the same OutboundMessage
+  // will duplicate them. The wrapper class lets retry/queue middleware
+  // recognise and skip blind retries.
+  // let requires justification: accumulates across sub-calls below
+  let delivered = 0;
+  const tryStep = async (step: () => Promise<unknown>): Promise<void> => {
+    try {
+      await step();
+      delivered++;
+    } catch (err: unknown) {
+      if (delivered === 0) throw err;
+      throw new TelegramPartialDeliveryError(delivered, err);
+    }
+  };
+
   // Photos: one API call each
   for (const photo of parts.images) {
     const other = photoOther(photo.alt);
-    await callWith429Retry(() =>
-      other === undefined
-        ? api.sendPhoto(chatId, photo.url)
-        : api.sendPhoto(chatId, photo.url, other),
+    await tryStep(() =>
+      callWith429Retry(() =>
+        other === undefined
+          ? api.sendPhoto(chatId, photo.url)
+          : api.sendPhoto(chatId, photo.url, other),
+      ),
     );
   }
 
   // Documents: one API call each
   for (const doc of parts.files) {
     const other = docOther();
-    await callWith429Retry(() =>
-      other === undefined
-        ? api.sendDocument(chatId, doc.url)
-        : api.sendDocument(chatId, doc.url, other),
+    await tryStep(() =>
+      callWith429Retry(() =>
+        other === undefined
+          ? api.sendDocument(chatId, doc.url)
+          : api.sendDocument(chatId, doc.url, other),
+      ),
     );
   }
 
@@ -489,10 +536,33 @@ async function sendOutbound(api: TelegramApiLike, message: OutboundMessage): Pro
       if (threadId !== undefined) other.message_thread_id = threadId;
       if (isLast && keyboard !== undefined) other.reply_markup = keyboard;
       const hasOther = Object.keys(other).length > 0;
-      await callWith429Retry(() =>
-        hasOther ? api.sendMessage(chatId, text, other) : api.sendMessage(chatId, text),
+      await tryStep(() =>
+        callWith429Retry(() =>
+          hasOther ? api.sendMessage(chatId, text, other) : api.sendMessage(chatId, text),
+        ),
       );
     }
+  }
+}
+
+/**
+ * Thrown when a multi-part Telegram send fails after at least one part
+ * has already been delivered. Retry/queue middleware should detect this
+ * error class and NOT blindly retry the same `OutboundMessage` — doing
+ * so would duplicate the already-delivered parts in the chat. Surface
+ * it to the caller so they can either accept partial delivery or
+ * compose a manual recovery (e.g. send only the missing chunks).
+ */
+export class TelegramPartialDeliveryError extends Error {
+  readonly deliveredParts: number;
+  override readonly cause: unknown;
+  constructor(deliveredParts: number, cause: unknown) {
+    super(
+      `[channel-telegram] partial delivery: ${deliveredParts} part(s) sent before failure; retrying the same OutboundMessage will duplicate them`,
+    );
+    this.name = "TelegramPartialDeliveryError";
+    this.deliveredParts = deliveredParts;
+    this.cause = cause;
   }
 }
 
