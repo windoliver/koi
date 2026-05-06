@@ -143,6 +143,21 @@ export interface TelegramChannelConfig {
     updateId: number,
   ) => "claimed" | "duplicate" | Promise<"claimed" | "duplicate">;
   /**
+   * Release a previously-claimed `update_id` so a Telegram retry can
+   * re-enter. Required when `claimWebhookUpdate` is set: if a handler
+   * rejects (or `markWebhookProcessed` itself fails) we fire this hook
+   * so the operator's claim row can be deleted/expired and the next
+   * Telegram retry sees `"claimed"` again instead of being permanently
+   * suppressed as a duplicate. Without it, a transient downstream
+   * failure becomes permanent message loss because the durable claim
+   * row outlives the failed processing attempt.
+   *
+   * Implementations MUST be idempotent — release may run for a claim
+   * that was never persisted (race between claim write and process
+   * crash), and may run more than once if cleanup itself fails.
+   */
+  readonly releaseWebhookClaim?: (updateId: number) => void | Promise<void>;
+  /**
    * Optional post-success commit hook for webhook mode. After
    * `handleWebhook(...)` has awaited every registered onMessage
    * handler to completion, this callback fires so the operator can
@@ -250,6 +265,18 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
   // let requires justification: flipped at platformConnect when we
   // instantiate; remains false for injected bots throughout.
   let botOwnedByAdapter = false;
+  // Polling-mode ingress gate. The dispatch middleware uses this
+  // (NOT `connected`) to decide whether to buffer/forward updates.
+  // We flip ingressReady to true BEFORE calling bot.start() so any
+  // updates Telegram delivers immediately after start (typical for
+  // backlog after reconnect) land in `pending` instead of being
+  // silently dropped during the 250ms startup probe; without this,
+  // those updates are consumed by Telegram with no retry path.
+  // `connected` still gates handleUpdate / handleWebhook so external
+  // ingress is only accepted after the probe survives.
+  // let requires justification: flipped to true before bot.start,
+  // back to false in platformDisconnect.
+  let ingressReady = false;
 
   const deliver = (update: TelegramUpdateLike): void => {
     if (updateHandler !== undefined) {
@@ -317,10 +344,15 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
         if (!wiredBots.has(b)) {
           wiredBots.add(b);
           b.use(async (ctx, next): Promise<void> => {
-            if (connected) deliver(ctx.update);
+            if (ingressReady) deliver(ctx.update);
             await next();
           });
         }
+        // Flip ingress ON before bot.start so the middleware buffers
+        // any updates Telegram drains in the first 250ms — `pending`
+        // collects them and onPlatformEvent will drain them once the
+        // base factory installs its handler.
+        ingressReady = true;
         // grammY's bot.start() is the long-poll loop and only resolves on
         // stop(). Race it against a short startup window so connect() fails
         // fast when polling startup itself rejects (e.g. another instance
@@ -343,6 +375,7 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
           // start() — connect() never completed, so there is no
           // legitimate consumer for them.
           bot = undefined;
+          ingressReady = false;
           pending = [];
           throw new Error(
             `[channel-telegram] bot.start() rejected during connect: ${String(result.rejected)}`,
@@ -383,6 +416,7 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
 
     platformDisconnect: async (): Promise<void> => {
       connected = false;
+      ingressReady = false;
       if (bot === undefined) return;
       if (deployment.mode === "polling") {
         await bot.stop();
@@ -522,16 +556,37 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
       // Atomic claim wins when both are configured — see the
       // claimWebhookUpdate doc for why check-then-act seenWebhookUpdate
       // is unsafe under concurrent retries.
-      if (config.claimWebhookUpdate !== undefined) {
+      const usedClaim = config.claimWebhookUpdate !== undefined;
+      if (usedClaim && config.claimWebhookUpdate !== undefined) {
         const result = await config.claimWebhookUpdate(update.update_id);
         if (result === "duplicate") return;
       } else if (config.seenWebhookUpdate !== undefined) {
         const seen = await config.seenWebhookUpdate(update.update_id);
         if (seen) return;
       }
-      await dispatchWebhook(update);
-      if (config.markWebhookProcessed !== undefined) {
-        await config.markWebhookProcessed(update.update_id);
+      try {
+        await dispatchWebhook(update);
+        if (config.markWebhookProcessed !== undefined) {
+          await config.markWebhookProcessed(update.update_id);
+        }
+      } catch (err: unknown) {
+        // Release the claim so the next Telegram retry can re-enter.
+        // Without this, a transient handler failure leaves the claim
+        // row permanently in place and every retry returns "duplicate"
+        // → permanent message loss. We log but don't rethrow release
+        // failures because the original processing error is what the
+        // HTTPS layer needs to see (it drives the non-200 → retry).
+        if (usedClaim && config.releaseWebhookClaim !== undefined) {
+          try {
+            await config.releaseWebhookClaim(update.update_id);
+          } catch (releaseErr: unknown) {
+            console.error(
+              `[channel-telegram] releaseWebhookClaim(${update.update_id}) failed after handler error:`,
+              releaseErr,
+            );
+          }
+        }
+        throw err;
       }
     },
     resolveMediaUrl,

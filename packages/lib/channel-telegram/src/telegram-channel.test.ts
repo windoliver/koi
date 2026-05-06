@@ -473,6 +473,79 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
+  test("webhook: handler failure releases the claim so Telegram retries can re-enter (no permanent loss)", async () => {
+    const f = fakeBot();
+    const claims = new Set<number>();
+    const releases: number[] = [];
+    let attempts = 0;
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "s",
+      claimWebhookUpdate: (id: number) => {
+        if (claims.has(id)) return "duplicate";
+        claims.add(id);
+        return "claimed";
+      },
+      releaseWebhookClaim: (id: number) => {
+        releases.push(id);
+        claims.delete(id);
+      },
+    });
+    await adapter.connect();
+    adapter.onMessage(async () => {
+      attempts++;
+      if (attempts === 1) throw new Error("transient");
+    });
+    const update = {
+      update_id: 11,
+      message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+    };
+    // First attempt fails — release fires, claim is gone.
+    await expect(adapter.handleWebhook("s", update)).rejects.toThrow(/transient/);
+    expect(releases).toEqual([11]);
+    expect(claims.has(11)).toBe(false);
+    // Telegram retries; second attempt succeeds.
+    await adapter.handleWebhook("s", update);
+    expect(attempts).toBe(2);
+    await adapter.disconnect();
+  });
+
+  test("polling: updates received during the 250ms startup probe are buffered, not dropped", async () => {
+    const f = fakeBot();
+    // fakeBot.start() resolves immediately; we synthesize the
+    // startup-window race by emitting AFTER start has been called by
+    // platformConnect but BEFORE adapter.connect() returns. The clean
+    // way to observe this is to register onMessage AFTER connect and
+    // confirm the burst is delivered.
+    const adapter = createTelegramChannel({ token: "T", bot: f.bot });
+    const connectPromise = adapter.connect();
+    // Tick once so platformConnect has installed the middleware and
+    // flipped ingressReady=true. The 250ms probe may still be running
+    // (`connected` not yet true), but the middleware should buffer
+    // updates anyway.
+    await new Promise((r) => setTimeout(r, 0));
+    f.emit({
+      update_id: 100,
+      message: {
+        message_id: 100,
+        from: { id: 9 },
+        chat: { id: 200 },
+        date: 1700000000,
+        text: "early",
+      },
+    });
+    await connectPromise;
+    const seen: unknown[] = [];
+    adapter.onMessage(async (m) => {
+      seen.push(m);
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(seen).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
   test("webhook: claimWebhookUpdate provides atomic single-execution under concurrent retries", async () => {
     const f = fakeBot();
     // Atomic claim implementation: only the first call sees "claimed",
