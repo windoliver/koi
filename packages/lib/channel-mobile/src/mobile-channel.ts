@@ -507,20 +507,28 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
             return new Response("conflict: another client connected", { status: 409 });
           }
           pendingUpgrades++;
-          // Safety net: if Bun's upgrade succeeds but the client drops the
-          // connection before websocket.open() ever fires (TCP RST during
-          // the upgrade gap, client crash, network blip), nothing else in
-          // this state machine clears the reservation — the channel would
-          // wedge in permanent 409 until process restart. A bounded timer
-          // guarantees the slot is released; legitimate opens cancel it.
-          // let requires justification: timer captured for cancel
+          // The reservation slot has two distinct phases that need different
+          // failure handling, so we keep a single release flag but DO NOT
+          // arm the safety timer until phase 2:
+          //   Phase 1 (auth in flight): the slot is held while authenticate()
+          //     runs. A slow IdP must NOT release the slot — that would
+          //     allow concurrent clients to enter authenticate() in parallel,
+          //     defeating the auth-amplification guard. So the timer is
+          //     deliberately NOT armed during this phase; explicit failure
+          //     paths (auth reject, auth throw, upgrade fail) release
+          //     synchronously.
+          //   Phase 2 (upgrade succeeded, awaiting open()): only here can
+          //     the connection silently die in a way no callback observes
+          //     (TCP RST in the upgrade-to-open gap). The bounded timer is
+          //     armed AFTER srv.upgrade() returns true to release the slot
+          //     if open() never fires.
+          // let requires justification: tracks whether decrement happened
           let upgradeReleased = false;
           const releaseUpgrade = (): void => {
             if (upgradeReleased) return;
             upgradeReleased = true;
             if (pendingUpgrades > 0) pendingUpgrades--;
           };
-          const reservationTimer = setTimeout(releaseUpgrade, UPGRADE_RESERVATION_TIMEOUT_MS);
           // authenticate() runs BEFORE upgrade so an unauthenticated
           // client never gets a socket and cannot occupy the single slot.
           // The verified identity rides through Bun's per-connection
@@ -539,17 +547,19 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
               // the isolation guarantee that live-delivery and push routing
               // depend on.
               if (result === null || result.trim().length === 0) {
-                clearTimeout(reservationTimer);
                 releaseUpgrade();
                 return new Response("unauthorized", { status: 401 });
               }
               identity = result;
             }
           } catch (err) {
-            clearTimeout(reservationTimer);
             releaseUpgrade();
             throw err;
           }
+          // Phase 2 begins: arm the safety timer only now, scoped to the
+          // post-upgrade / pre-open() gap. Slow auth above could not have
+          // released the slot.
+          const reservationTimer = setTimeout(releaseUpgrade, UPGRADE_RESERVATION_TIMEOUT_MS);
           if (srv.upgrade(req, { data: { identity, releaseUpgrade, reservationTimer } })) {
             return undefined;
           }
@@ -710,10 +720,6 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       const wireMessage = stripInternalMetadata(message);
       if (liveRecipient && activeSocket !== undefined) {
         const payload = JSON.stringify({ kind: "msg", ...wireMessage, timestamp: Date.now() });
-        // Bun's WebSocket.send returns the byte-count actually queued.
-        // Treat anything less than the full UTF-8 byte length as a
-        // failed/partial write and fall through to push, so a stressed
-        // connection can never silently truncate or drop the payload.
         const expectedBytes = new TextEncoder().encode(payload).byteLength;
         // let requires justification: capture write outcome
         let written = 0;
@@ -723,6 +729,20 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
           written = -1;
         }
         if (written >= expectedBytes) return;
+        // Partial write (0 < written < expectedBytes) is the dangerous case:
+        // some bytes are already on the wire, so falling through to
+        // pushNotifier would deliver the same logical message twice (once
+        // truncated/garbled live, once complete via push). Close the socket
+        // to terminate the corrupt frame stream and surface the failure to
+        // the caller; idempotent retry is the host's responsibility.
+        if (written > 0) {
+          activeSocket.close();
+          throw new Error(
+            `@koi/channel-mobile: partial WebSocket write (${String(written)}/${String(expectedBytes)} bytes); socket closed to prevent duplicate delivery via push fallback`,
+          );
+        }
+        // written <= 0: nothing reached the wire (closed / -1 / 0), so it
+        // is safe to fall through to push without risk of duplication.
       }
       if (config.pushNotifier === undefined) {
         throw new MobileNoDeliveryTargetError();

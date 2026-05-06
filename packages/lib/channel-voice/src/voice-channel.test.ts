@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { InboundMessage, TextBlock } from "@koi/core";
-import { createVoiceChannel, type Stt, type Tts, type VoiceTransport } from "./voice-channel.js";
+import {
+  createVoiceChannel,
+  type Stt,
+  type Tts,
+  VoiceSttTimeoutError,
+  type VoiceTransport,
+} from "./voice-channel.js";
 
 interface SentUtterance {
   readonly sessionId: string;
@@ -488,6 +494,57 @@ describe("createVoiceChannel", () => {
     const startA2 = sttOrder.indexOf("start-2");
     expect(doneA1).toBeGreaterThanOrEqual(0);
     expect(startA2).toBeGreaterThan(doneA1);
+    await ch.disconnect();
+  });
+
+  test("hung STT call times out so the per-session chain does not deadlock all later utterances", async () => {
+    // Regression: per-session STT chaining (added round 3) made one stuck
+    // stt.transcribe() block every later utterance for that sessionId
+    // forever — a transient provider hang turning into a persistent one-
+    // way voice outage. Now a bounded sttTimeoutMs causes the chain to
+    // advance, the offender to surface via onSttError, and subsequent
+    // turns to dispatch.
+    // let requires justification: harness state captured by callbacks
+    let listener: ((sessionId: string, frame: Uint8Array) => void) | undefined;
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (handler) => {
+        listener = handler;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = {
+      transcribe: async (audio) => {
+        // First frame: never resolves. Later frames: fast.
+        if (audio[0] === 99) await new Promise(() => {});
+        return `t${String(audio[0])}`;
+      },
+    };
+    const tts: Tts = { synthesize: async () => new Uint8Array() };
+    const sttErrors: unknown[] = [];
+    const ch = createVoiceChannel({
+      transport,
+      stt,
+      tts,
+      sttTimeoutMs: 30,
+      onSttError: (err) => sttErrors.push(err),
+    });
+    const dispatched: string[] = [];
+    ch.onMessage(async (msg) => {
+      const block = msg.content[0];
+      if (block && block.kind === "text") dispatched.push(block.text);
+    });
+    await ch.connect();
+    listener?.("call-A", new Uint8Array([99]));
+    listener?.("call-A", new Uint8Array([1]));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(sttErrors).toHaveLength(1);
+    expect(sttErrors[0]).toBeInstanceOf(VoiceSttTimeoutError);
+    expect(dispatched).toEqual(["t1"]);
     await ch.disconnect();
   });
 

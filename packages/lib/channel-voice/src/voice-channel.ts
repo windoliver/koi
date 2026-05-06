@@ -64,7 +64,28 @@ export interface VoiceChannelConfig {
    * pipeline; passing `() => {}` explicitly opts into silent drop.
    */
   readonly onSttError?: (error: unknown, frame: Uint8Array) => void;
+  /**
+   * Maximum milliseconds to wait for `stt.transcribe()` on a single
+   * utterance before treating it as failed. STT is serialized per
+   * sessionId so a hung request would otherwise block every later
+   * utterance for that call indefinitely (one-way voice outage).
+   * On timeout the chain advances, the utterance is dropped, and
+   * `onSttError` fires with a `VoiceSttTimeoutError`. Default 30 s.
+   */
+  readonly sttTimeoutMs?: number;
 }
+
+/** Thrown into `onSttError` when STT exceeds `sttTimeoutMs`. */
+export class VoiceSttTimeoutError extends Error {
+  readonly timeoutMs: number;
+  constructor(timeoutMs: number) {
+    super(`@koi/channel-voice: STT transcribe exceeded ${String(timeoutMs)}ms`);
+    this.name = "VoiceSttTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+const DEFAULT_STT_TIMEOUT_MS = 30_000;
 
 const defaultSttErrorLogger = (error: unknown, frame: Uint8Array): void => {
   // Default-on observability: at minimum, leave a breadcrumb in stderr so a
@@ -208,15 +229,36 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       // sessionIds get distinct chains, so a slow caller can't head-of-
       // line block other callers' turns.
       const chains = new Map<string, Promise<unknown>>();
+      const sttTimeoutMs = config.sttTimeoutMs ?? DEFAULT_STT_TIMEOUT_MS;
       return config.transport.onUtterance((sessionId, utterance) => {
         const prev = chains.get(sessionId) ?? Promise.resolve();
         const next = prev
           .catch(() => undefined)
           .then(async () => {
-            // let requires justification: STT may throw or return null
+            // Bounded STT — without this, a single hung transcribe()
+            // (provider outage, network black-hole) would block every
+            // subsequent utterance for this sessionId forever via the
+            // chain, turning a transient hiccup into a persistent
+            // one-way voice outage. On timeout the chain advances and
+            // the dropped utterance is surfaced via onSttError so the
+            // host can retry / page / reroute.
+            // let requires justification: STT may throw, time out, or return null
             let text: string | null;
             try {
-              text = await config.stt.transcribe(utterance);
+              const transcribePromise = config.stt.transcribe(utterance);
+              // let requires justification: handle assigned conditionally for cleanup
+              let timer: ReturnType<typeof setTimeout> | undefined;
+              const timeoutPromise = new Promise<never>((_, reject) => {
+                timer = setTimeout(
+                  () => reject(new VoiceSttTimeoutError(sttTimeoutMs)),
+                  sttTimeoutMs,
+                );
+              });
+              try {
+                text = await Promise.race([transcribePromise, timeoutPromise]);
+              } finally {
+                if (timer !== undefined) clearTimeout(timer);
+              }
             } catch (err) {
               (config.onSttError ?? defaultSttErrorLogger)(err, utterance);
               return;
