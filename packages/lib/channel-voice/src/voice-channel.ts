@@ -331,12 +331,24 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
   let pendingUtterances: Array<{ sessionId: string; utterance: Uint8Array }> = [];
   let unsubTransport: (() => void) | undefined;
 
-  // ALS captures the connectGen at handler-entry time. wrappedSend
-  // checks this on every send: if the host's handler awaited across
-  // disconnect/reconnect and now calls send(), the captured gen will
-  // not match the current connectGen and the stale reply is rejected
-  // (preventing cross-session leak into a reused threadId).
-  const inboundGenContext = new AsyncLocalStorage<{ readonly gen: number }>();
+  // ALS captures the connectGen + a per-turn token at handler-entry time.
+  // wrappedSend checks both on every send:
+  //   • gen mismatch → handler awaited across disconnect/reconnect; reject.
+  //   • token in expiredTurnTokens → the dispatch watchdog already gave up
+  //     on this turn and admitted the next utterance for the same session;
+  //     the late send must NOT speak audio from a stale turn into a fresh
+  //     one (would overlap or reorder the conversation).
+  const inboundGenContext = new AsyncLocalStorage<{
+    readonly gen: number;
+    readonly turnToken: object;
+  }>();
+  // Per-turn fence. Inserted by the dispatch watchdog when a handler
+  // exceeds dispatchHandlerTimeoutMs; checked by wrappedSend so a hung
+  // handler that eventually wakes up cannot inject late audio into a
+  // session whose ordering window has already closed. WeakSet so an
+  // expired token gets GC'd as soon as the handler closes over it
+  // releases — no cross-session memory growth.
+  const expiredTurnTokens = new WeakSet<object>();
 
   // Per-session dispatch-completion tracker. The wrapped onMessage
   // below records every async handler invocation's promise here so the
@@ -346,7 +358,10 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
   // pipeline serialized" — a host whose onMessage handler does multi-
   // second runtime work (model+tool calls) cannot have two same-session
   // turns running concurrently.
-  const sessionDispatchInFlight = new Map<string, Promise<unknown>>();
+  const sessionDispatchInFlight = new Map<
+    string,
+    { readonly promise: Promise<unknown>; readonly turnToken: object }
+  >();
 
   const inner = createChannelAdapter<TransportEvent>({
     name: "voice",
@@ -463,8 +478,10 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
               sessionDispatchInFlight.delete(sessionId);
               // Bounded wait: a hung handler must not wedge later
               // utterances on the same session forever. On timeout we
-              // surrender ordering for the next utterance; the stuck
-              // promise is left to settle on its own.
+              // surrender ordering for the next utterance AND fence the
+              // stuck handler's future sends — without that fence a
+              // late-resolving turn would inject audio out of order
+              // into the now-current turn for the same session.
               const watchdogMs =
                 config.dispatchHandlerTimeoutMs ?? DEFAULT_DISPATCH_HANDLER_TIMEOUT_MS;
               // let requires justification: timer ref captured for cleanup
@@ -473,7 +490,13 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
                 watchdogTimer = setTimeout(() => resolve("watchdog"), watchdogMs);
               });
               try {
-                await Promise.race([inFlight.then(() => "settled" as const), watchdog]);
+                const outcome = await Promise.race([
+                  inFlight.promise.then(() => "settled" as const),
+                  watchdog,
+                ]);
+                if (outcome === "watchdog") {
+                  expiredTurnTokens.add(inFlight.turnToken);
+                }
               } finally {
                 if (watchdogTimer !== undefined) clearTimeout(watchdogTimer);
               }
@@ -660,6 +683,13 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     if (inboundCtx !== undefined && inboundCtx.gen !== connectGen) {
       return Promise.reject(new VoicePoisonedSessionError(message.threadId));
     }
+    // Per-turn fence: this handler ran past the dispatch watchdog and
+    // the next utterance for the same session has already been admitted.
+    // A late send from this turn would inject audio out of order into
+    // (or overlap) the now-current turn — reject it instead of speaking.
+    if (inboundCtx !== undefined && expiredTurnTokens.has(inboundCtx.turnToken)) {
+      return Promise.reject(new VoicePoisonedSessionError(message.threadId));
+    }
     // Poison persists for the adapter's lifetime once set. A non-
     // cooperative transport's stale call can still surface audio
     // later, so we MUST NOT admit a new send on the same threadId
@@ -788,24 +818,31 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     // pipeline (not just STT).
     onMessage: (handler: import("@koi/core").MessageHandler): (() => void) =>
       inner.onMessage((msg) => {
-        // Snapshot the connection generation at handler-entry time and
-        // pin it into ALS for the duration of the handler chain. Any
-        // wrappedSend() called from within (even after disconnect/
-        // reconnect bumps connectGen) sees the captured value and
-        // rejects if it no longer matches.
+        // Snapshot the connection generation AND mint a per-turn token
+        // at handler-entry time. wrappedSend checks both: gen guards
+        // against handlers that awaited across reconnect; turnToken
+        // guards against handlers that ran past dispatchHandlerTimeoutMs
+        // and are about to speak after the watchdog already gave up
+        // ordering on this turn.
         const capturedGen = connectGen;
-        const result = inboundGenContext.run({ gen: capturedGen }, () => handler(msg));
+        const turnToken: object = {};
+        const result = inboundGenContext.run({ gen: capturedGen, turnToken }, () => handler(msg));
         const sid = msg.threadId;
         if (sid !== undefined && sid.length > 0 && result instanceof Promise) {
           // Compose with any existing in-flight promise for this
           // session — multiple handlers attached to the same session
           // should all complete before the next utterance dispatches.
+          // The composed entry adopts THIS handler's token so the
+          // watchdog fences whichever turn was most recently dispatched.
           const prev = sessionDispatchInFlight.get(sid);
-          const tracked = prev !== undefined ? Promise.allSettled([prev, result]) : result;
-          sessionDispatchInFlight.set(
-            sid,
-            (tracked as Promise<unknown>).catch(() => undefined),
-          );
+          const composed: Promise<unknown> =
+            prev !== undefined
+              ? Promise.allSettled([prev.promise, result]).then(() => undefined)
+              : result;
+          sessionDispatchInFlight.set(sid, {
+            promise: composed.catch(() => undefined),
+            turnToken,
+          });
         }
         return result;
       }),

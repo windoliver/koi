@@ -1392,6 +1392,71 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("watchdog-expired turn cannot speak audio after the session moves on", async () => {
+    // Regression (round 32 high): the watchdog dropped per-session
+    // ordering after timeout but did NOT fence the stuck handler. If
+    // turn A eventually woke and called ch.send(), its audio would be
+    // serialized behind turn B's — out of order, possibly overlapping.
+    // The fence must reject any send from a turn the watchdog already
+    // expired so a slow tool/model call cannot speak into the next
+    // turn on the same session.
+    let listener: ((sessionId: string, audio: Uint8Array) => void) | undefined;
+    const sentBy: string[] = [];
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async (_s, _u, frames) => {
+        for (const f of frames) sentBy.push(`[${f[0]}]`);
+      },
+      onUtterance: (h) => {
+        listener = h;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = { transcribe: async () => "ok" };
+    const tts: Tts = { synthesize: async (text) => new Uint8Array([text.charCodeAt(0)]) };
+    const ch = createVoiceChannel({
+      transport,
+      stt,
+      tts,
+      dispatchHandlerTimeoutMs: 50,
+    });
+    // let requires justification: each handler needs to hold its own controller
+    let releaseA: (() => void) | undefined;
+    let aRejected = false;
+    let firstSeen = false;
+    ch.onMessage(async (msg) => {
+      const tid = msg.threadId ?? "call-A";
+      if (!firstSeen) {
+        firstSeen = true;
+        await new Promise<void>((r) => {
+          releaseA = r;
+        });
+        try {
+          await ch.send({ threadId: tid, content: [{ kind: "text", text: "A" }] });
+        } catch (e) {
+          aRejected = e instanceof VoicePoisonedSessionError;
+        }
+      } else {
+        await ch.send({ threadId: tid, content: [{ kind: "text", text: "B" }] });
+      }
+    });
+    await ch.connect();
+    listener?.("call-A", new Uint8Array([1]));
+    listener?.("call-A", new Uint8Array([2]));
+    // Wait past watchdog + B's send.
+    await new Promise((r) => setTimeout(r, 200));
+    // Now release A; its send must be rejected with VoicePoisonedSessionError.
+    releaseA?.();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(aRejected).toBe(true);
+    // Only B's audio reached the transport — A never spoke.
+    expect(sentBy).toEqual([`[${"B".charCodeAt(0)}]`]);
+    await ch.disconnect();
+  });
+
   test("hung onMessage handler does not wedge later utterances forever (dispatch watchdog)", async () => {
     // Regression (round 31 high): full-pipeline ordering awaited inFlight
     // unconditionally. A handler that never settled would wedge every
