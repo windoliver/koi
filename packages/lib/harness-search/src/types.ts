@@ -256,6 +256,32 @@ export type StopReason =
   | "refine_timeout"
   | "aborted";
 
+/**
+ * Redacted terminal failure diagnostic. Populated only when
+ * `stopReason` is a non-success exit (`*_failed`, `*_timeout`,
+ * `aborted`); `null` for `converged`, `budget_exhausted`,
+ * `no_improvement`, and `thompson_deploy`.
+ *
+ * Surface deliberately small. Callers driving automated retries /
+ * incident triage need to tell *why* a run died (parser drift vs.
+ * timeout vs. infra outage vs. genuine refiner failure) without the
+ * package leaking error messages, stack traces, or sandbox stderr
+ * across the LLM trust boundary. `causeClass` is a static label (e.g.
+ * `"TypeError"`, `"RangeError"`) chosen by the runtime, safe to log.
+ */
+export interface TerminalDiagnostic {
+  readonly kind: "eval_failed" | "refine_failed" | "eval_timeout" | "refine_timeout" | "aborted";
+  /** Iteration index at which the failure occurred (0-based). */
+  readonly iteration: number;
+  /**
+   * Static error-class label when the failure originated from a thrown
+   * exception (callback rejection, sanitizer throw, malformed evaluator
+   * payload). `null` for timeouts, abort, and validation rejections
+   * where there is no underlying exception to classify.
+   */
+  readonly causeClass: string | null;
+}
+
 export interface SearchResult {
   /** Best variant found across the search. */
   readonly best: SearchNode;
@@ -266,4 +292,9 @@ export interface SearchResult {
   readonly totalIterations: number;
   /** Whether `best` met both convergence gates. */
   readonly converged: boolean;
+  /**
+   * Redacted failure diagnostic. Set when `stopReason` is a non-success
+   * exit; `null` otherwise. See {@link TerminalDiagnostic}.
+   */
+  readonly terminalDiagnostic: TerminalDiagnostic | null;
 }

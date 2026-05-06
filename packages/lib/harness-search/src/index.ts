@@ -19,4 +19,5 @@ export {
   type SearchNode,
   type SearchResult,
   type StopReason,
+  type TerminalDiagnostic,
 } from "./types.js";

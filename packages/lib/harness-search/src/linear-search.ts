@@ -17,6 +17,7 @@ import {
   type SearchNode,
   type SearchResult,
   type StopReason,
+  type TerminalDiagnostic,
 } from "./types.js";
 
 /**
@@ -174,10 +175,12 @@ export async function linearSearch(
   let continueState = createThompsonState();
   let deployState = createThompsonState();
   let stopReason: StopReason = "budget_exhausted";
+  let terminalDiagnostic: TerminalDiagnostic | null = null;
 
   for (let iteration = 0; iteration < maxIterations; iteration++) {
     if (isAborted(signal)) {
       stopReason = "aborted";
+      terminalDiagnostic = { kind: "aborted", iteration, causeClass: null };
       break;
     }
 
@@ -193,6 +196,16 @@ export async function linearSearch(
           : evalOutcome.kind === "timeout"
             ? "eval_timeout"
             : "eval_failed";
+      terminalDiagnostic = {
+        kind:
+          evalOutcome.kind === "aborted"
+            ? "aborted"
+            : evalOutcome.kind === "timeout"
+              ? "eval_timeout"
+              : "eval_failed",
+        iteration,
+        causeClass: evalOutcome.kind === "error" ? (evalOutcome.causeClass ?? null) : null,
+      };
       break;
     }
     // Validate evaluator output as a trust-boundary input — a buggy
@@ -200,6 +213,7 @@ export async function linearSearch(
     // would otherwise drive false convergence and best-node selection.
     if (!isValidEvalResult(evalOutcome.value)) {
       stopReason = "eval_failed";
+      terminalDiagnostic = { kind: "eval_failed", iteration, causeClass: null };
       break;
     }
     // Coerce to plain data so every later dereference goes through
@@ -221,8 +235,9 @@ export async function linearSearch(
           parameters: { ...f.parameters },
         })),
       };
-    } catch (_err: unknown) {
+    } catch (err: unknown) {
       stopReason = "eval_failed";
+      terminalDiagnostic = { kind: "eval_failed", iteration, causeClass: classifyCause(err) };
       break;
     }
 
@@ -309,8 +324,13 @@ export async function linearSearch(
       let sanitized: readonly EvalFailure[];
       try {
         sanitized = sanitizeFailures(evalResult.failures);
-      } catch (_err: unknown) {
+      } catch (err: unknown) {
         stopReason = "refine_failed";
+        terminalDiagnostic = {
+          kind: "refine_failed",
+          iteration,
+          causeClass: classifyCause(err),
+        };
         break;
       }
       const refineOutcome = await withDeadline(
@@ -325,6 +345,16 @@ export async function linearSearch(
             : refineOutcome.kind === "timeout"
               ? "refine_timeout"
               : "refine_failed";
+        terminalDiagnostic = {
+          kind:
+            refineOutcome.kind === "aborted"
+              ? "aborted"
+              : refineOutcome.kind === "timeout"
+                ? "refine_timeout"
+                : "refine_failed",
+          iteration,
+          causeClass: refineOutcome.kind === "error" ? (refineOutcome.causeClass ?? null) : null,
+        };
         break;
       }
       // RefineCallback returns the candidate source directly. Wire-format
@@ -337,6 +367,7 @@ export async function linearSearch(
       const next = refineOutcome.value;
       if (typeof next !== "string" || next.trim().length === 0) {
         stopReason = "refine_failed";
+        terminalDiagnostic = { kind: "refine_failed", iteration, causeClass: null };
         break;
       }
       // Hard byte cap. LLM-backed refiners can echo prior code, emit
@@ -346,6 +377,7 @@ export async function linearSearch(
       // cost. Same failure mode harness-synth caps explicitly.
       if (byteLength(next) > maxRefinedCodeBytes) {
         stopReason = "refine_failed";
+        terminalDiagnostic = { kind: "refine_failed", iteration, causeClass: null };
         break;
       }
       currentCode = next;
@@ -378,6 +410,7 @@ export async function linearSearch(
       finalBest.successRate !== null &&
       finalBest.successRate >= convergenceThreshold &&
       finalBest.evalSamples >= minEvalSamples,
+    terminalDiagnostic,
   };
 }
 
@@ -413,7 +446,36 @@ function deepFreeze<T>(o: T): T {
 
 type DeadlineOutcome<T> =
   | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly kind: "timeout" | "aborted" | "error" };
+  | {
+      readonly ok: false;
+      readonly kind: "timeout" | "aborted" | "error";
+      /** Constructor name of the rejection (best-effort, "error" kind only). */
+      readonly causeClass?: string;
+    };
+
+/**
+ * Best-effort extraction of an error class name for terminal
+ * diagnostics. Avoids stringifying the message itself — that would
+ * leak caller-controlled or sandbox-stderr content across the trust
+ * boundary the package fails closed on. Constructor name is a static
+ * label (TypeError, RangeError, ...) chosen by the runtime, safe to
+ * surface.
+ */
+function classifyCause(err: unknown): string {
+  if (err === null || err === undefined) return "Unknown";
+  // Object with a constructor name we trust (Error subclasses, custom
+  // classes). Hostile values may forge `.constructor` so guard tightly.
+  if (typeof err === "object") {
+    try {
+      const name = (err as { constructor?: { name?: unknown } }).constructor?.name;
+      if (typeof name === "string" && name.length > 0 && name.length < 64) return name;
+    } catch (_e: unknown) {
+      // Accessor threw — fall through.
+    }
+    return "Object";
+  }
+  return typeof err;
+}
 
 /**
  * Race a callback against THREE outcomes: callback resolution,
@@ -478,10 +540,10 @@ async function withDeadline<T>(
       })
       .then(
         (value): DeadlineOutcome<T> => ({ ok: true, value }),
-        (): DeadlineOutcome<T> => {
+        (err: unknown): DeadlineOutcome<T> => {
           if (timedOut) return { ok: false, kind: "timeout" };
           if (isAborted(parentSignal)) return { ok: false, kind: "aborted" };
-          return { ok: false, kind: "error" };
+          return { ok: false, kind: "error", causeClass: classifyCause(err) };
         },
       );
     return await Promise.race([callbackPromise, timeoutPromise, abortPromise]);

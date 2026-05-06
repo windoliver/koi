@@ -59,7 +59,7 @@ const result = await linearSearch(initialCode, descriptor, {
   parser that matches their wire format.
 - Types: `SearchNode`, `EvalResult`, `EvalFailure`, `RefineCallback`,
   `EvaluateCallback`, `SearchConfig`, `SearchResult`, `StopReason`,
-  `DEFAULT_SEARCH_CONFIG`.
+  `TerminalDiagnostic`, `DEFAULT_SEARCH_CONFIG`.
 
 ## Semantics
 
@@ -98,6 +98,14 @@ const result = await linearSearch(initialCode, descriptor, {
 
 Every result carries the full `history` plus `converged: boolean` so
 callers can publish on success or triage on failure without re-running.
+
+Failure exits (`*_failed`, `*_timeout`, `aborted`) also populate
+`terminalDiagnostic: TerminalDiagnostic | null` — a redacted record
+with the failure `kind`, `iteration` index, and a static `causeClass`
+label (`"TypeError"`, `"RangeError"`, …) when an exception was
+captured. Successful exits leave it `null`. The package deliberately
+does NOT surface error messages or stack traces — those belong to the
+caller's evaluator/refiner, behind their own trust boundary.
 
 ## Out of scope
 

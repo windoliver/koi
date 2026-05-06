@@ -455,6 +455,85 @@ describe("linearSearch", () => {
     expect(result.stopReason).toBe("aborted");
   });
 
+  test("eval throw populates terminalDiagnostic with cause class + iteration", async () => {
+    let i = 0;
+    const config = makeConfig({
+      evaluate: async () => {
+        i++;
+        if (i === 2) throw new TypeError("bad input");
+        return {
+          successRate: 0.4,
+          sampleCount: 10,
+          failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+        };
+      },
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_failed");
+    expect(result.terminalDiagnostic).toEqual({
+      kind: "eval_failed",
+      iteration: 1,
+      causeClass: "TypeError",
+    });
+  });
+
+  test("eval timeout populates terminalDiagnostic with null causeClass", async () => {
+    const config = makeConfig({
+      attemptTimeoutMs: 30,
+      evaluate: () => new Promise(() => {}),
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_timeout");
+    expect(result.terminalDiagnostic).toEqual({
+      kind: "eval_timeout",
+      iteration: 0,
+      causeClass: null,
+    });
+  });
+
+  test("converged exit leaves terminalDiagnostic null", async () => {
+    const config = makeConfig({
+      evaluate: async () => ({ successRate: 1.0, sampleCount: 10, failures: [] }),
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("converged");
+    expect(result.terminalDiagnostic).toBeNull();
+  });
+
+  test("budget_exhausted leaves terminalDiagnostic null", async () => {
+    const config = makeConfig({
+      maxIterations: 2,
+      noImprovementLimit: 99,
+      evaluate: async () => ({
+        successRate: 0.4,
+        sampleCount: 10,
+        failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+      }),
+      random: () => 0.99,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("budget_exhausted");
+    expect(result.terminalDiagnostic).toBeNull();
+  });
+
+  test("refine throw classifies cause as RangeError when refiner throws RangeError", async () => {
+    const config = makeConfig({
+      evaluate: async () => ({
+        successRate: 0.4,
+        sampleCount: 10,
+        failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+      }),
+      refine: async () => {
+        throw new RangeError("envelope unparseable");
+      },
+      random: () => 0.99,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("refine_failed");
+    expect(result.terminalDiagnostic?.kind).toBe("refine_failed");
+    expect(result.terminalDiagnostic?.causeClass).toBe("RangeError");
+  });
+
   test("pre-aborted parent signal never invokes evaluate or refine", async () => {
     const ctrl = new AbortController();
     ctrl.abort();
