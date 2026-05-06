@@ -385,6 +385,51 @@ describe("createDiscordChannel — interaction reply path", () => {
     await adapter.disconnect();
   });
 
+  test("ephemeral slash interaction stamps every editReply/followUp with ephemeral so multi-payload sends stay private", async () => {
+    const f = fakeClient();
+    const editReplyArgs: unknown[] = [];
+    const followUpArgs: unknown[] = [];
+    const adapter = createDiscordChannel({
+      token: "T",
+      client: f.client,
+      slashCommandEphemeral: true,
+    });
+    await adapter.connect();
+    f.emit("interactionCreate", {
+      id: "iEPH",
+      isChatInputCommand: () => true,
+      isButton: () => false,
+      commandName: "say",
+      options: { data: [] },
+      user: { id: "U1" },
+      channelId: "C1",
+      guildId: "G1",
+      createdTimestamp: 1,
+      deferReply: async () => undefined,
+      editReply: async (p: unknown): Promise<undefined> => {
+        editReplyArgs.push(p);
+        return undefined;
+      },
+      followUp: async (p: unknown): Promise<undefined> => {
+        followUpArgs.push(p);
+        return undefined;
+      },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    // Long content that splits into multiple chunks → editReply for the
+    // first, followUp for the rest. Every chunk must carry ephemeral.
+    await adapter.send({
+      content: [{ kind: "text", text: "a".repeat(2200) }],
+      threadId: "interaction:cmd:iEPH:C1",
+    });
+    expect(editReplyArgs).toHaveLength(1);
+    expect((editReplyArgs[0] as { ephemeral?: boolean }).ephemeral).toBe(true);
+    expect(followUpArgs.length).toBeGreaterThanOrEqual(1);
+    for (const arg of followUpArgs) {
+      expect((arg as { ephemeral?: boolean }).ephemeral).toBe(true);
+    }
+  });
+
   test("slashCommandEphemeral configured + expired interaction refuses channel fallback (no public leak)", async () => {
     // When ephemeral is configured we cannot tell after-the-fact
     // whether the now-expired interaction was deferred ephemeral, so

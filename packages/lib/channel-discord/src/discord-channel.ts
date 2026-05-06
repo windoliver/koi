@@ -66,6 +66,15 @@ export interface DiscordSendPayload {
   readonly embeds?: readonly Record<string, unknown>[];
   readonly components?: readonly Record<string, unknown>[];
   readonly files?: readonly { readonly attachment: string; readonly name: string }[];
+  /**
+   * Ephemeral flag for InteractionReplyOptions (discord.js). Only
+   * meaningful on `editReply()` / `followUp()` invoked through a
+   * pending interaction; ignored by `channel.send()`. The adapter sets
+   * this internally when the interaction was deferred ephemeral so
+   * multi-payload follow-ups stay private; callers do not normally
+   * supply it.
+   */
+  readonly ephemeral?: boolean;
 }
 
 /** A slash command definition consumed by registerCommands. */
@@ -155,6 +164,14 @@ interface PendingInteraction {
   readonly interaction: InteractionResponseLike;
   readonly kind: InteractionReplyKind;
   readonly expiresAt: number;
+  /**
+   * True when the interaction was acknowledged with ephemeral
+   * visibility. discord.js follow-ups inherit ephemeral state from the
+   * deferred reply only if every subsequent editReply/followUp also
+   * carries the ephemeral flag — without this, multi-payload sends
+   * would leak later chunks into the public channel.
+   */
+  readonly ephemeral: boolean;
 }
 
 export function createDiscordChannel(config: DiscordChannelConfig): DiscordChannelAdapter {
@@ -241,10 +258,25 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
         typeof raw.isChatInputCommand === "function" && raw.isChatInputCommand() === true;
       const isButton = typeof raw.isButton === "function" && raw.isButton() === true;
       if (isSlash || isButton) {
+        // Mirror ackInteraction's ephemeral resolution so editReply /
+        // followUp can pass the flag through on every chunk. For
+        // buttons we conservatively treat them as ephemeral whenever
+        // the operator configured slashCommandEphemeral — Discord
+        // gives us no way to inspect the source message's flags here.
+        const policy = config.slashCommandEphemeral;
+        // let requires justification: branchy boolean derivation
+        let ephemeral = false;
+        if (isSlash) {
+          const commandName = typeof raw.commandName === "string" ? raw.commandName : "";
+          ephemeral = typeof policy === "function" ? policy(commandName) : policy === true;
+        } else if (isButton) {
+          ephemeral = policy !== undefined;
+        }
         pendingInteractions.set(raw.id, {
           interaction: raw,
           kind: isSlash ? "slash" : "button",
           expiresAt: Date.now() + INTERACTION_TTL_MS,
+          ephemeral,
         });
       }
     }
@@ -426,6 +458,13 @@ async function sendOutbound(
       // interaction handle (preserves the retry-after-network-blip
       // behavior the comments below describe).
       pendingInteractions.delete(parsed.interactionId);
+      // Stamp ephemeral on every editReply/followUp so multi-payload
+      // sends keep the visibility the deferred reply locked in.
+      // discord.js does not auto-propagate ephemeral from the defer to
+      // follow-ups; without this, second/third chunks would post as
+      // ordinary public messages.
+      const stamp = (p: DiscordSendPayload): DiscordSendPayload =>
+        entry.ephemeral ? { ...p, ephemeral: true } : p;
       const first = payloads[0];
       const followUp = entry.interaction.followUp;
       if (entry.kind === "button") {
@@ -436,7 +475,7 @@ async function sendOutbound(
         }
         if (first !== undefined) {
           try {
-            await tryStep(() => followUp.call(entry.interaction, first));
+            await tryStep(() => followUp.call(entry.interaction, stamp(first)));
           } catch (err: unknown) {
             // First payload never reached Discord — restore the claim
             // so a retry on the same threadId can use the interaction.
@@ -448,7 +487,7 @@ async function sendOutbound(
         }
         for (let i = 1; i < payloads.length; i++) {
           const p = payloads[i];
-          if (p !== undefined) await tryStep(() => followUp.call(entry.interaction, p));
+          if (p !== undefined) await tryStep(() => followUp.call(entry.interaction, stamp(p)));
         }
         return;
       }
@@ -456,7 +495,7 @@ async function sendOutbound(
       // failure so transient retries can recover.
       if (first !== undefined) {
         try {
-          await tryStep(() => entry.interaction.editReply(first));
+          await tryStep(() => entry.interaction.editReply(stamp(first)));
         } catch (err: unknown) {
           if (delivered === 0 && entry.expiresAt > Date.now()) {
             pendingInteractions.set(parsed.interactionId, entry);
@@ -468,8 +507,15 @@ async function sendOutbound(
         if (typeof followUp === "function") {
           for (let i = 1; i < payloads.length; i++) {
             const p = payloads[i];
-            if (p !== undefined) await tryStep(() => followUp.call(entry.interaction, p));
+            if (p !== undefined) await tryStep(() => followUp.call(entry.interaction, stamp(p)));
           }
+        } else if (entry.ephemeral) {
+          // No followUp available AND the interaction was deferred
+          // ephemeral — falling through to channel.send would post
+          // the overflow chunks publicly. Fail closed instead.
+          throw new Error(
+            `[channel-discord] slash interaction "${parsed.interactionId}" was ephemeral but the interaction has no followUp(); refusing to post ${payloads.length - 1} overflow payload(s) to the public channel`,
+          );
         } else {
           const channel = await resolveChannel(client, parsed.channelId);
           if (channel === null) {
