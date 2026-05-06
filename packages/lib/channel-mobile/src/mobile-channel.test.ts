@@ -1415,6 +1415,56 @@ describe("createMobileChannel", () => {
     await ch.disconnect();
   });
 
+  test("disconnect during unacked send unblocks promptly (no ackTimeoutMs wait)", async () => {
+    // Round-15 high finding: channel-base drained sendChain BEFORE
+    // platformDisconnect, but mobile only rejected pendingAcks inside
+    // platformDisconnect — circular wait. A disconnect during a live
+    // send with ackTimeoutMs > 0 stalled for the full ack window before
+    // the socket was even closed. Fix: prePlatformDisconnect hook
+    // rejects pending acks first so the chain drains immediately.
+    const port = await freePort();
+    const pushed: OutboundMessage[] = [];
+    const ch = createMobileChannel({
+      port,
+      authenticate: async () => "test-device",
+      pushNotifier: async (m) => {
+        pushed.push(m);
+      },
+      ackTimeoutMs: 60_000, // very large — would dominate disconnect time
+    });
+    let captured: InboundMessage | undefined;
+    ch.onMessage(async (m: InboundMessage) => {
+      captured = m;
+    });
+    await ch.connect();
+    const ws = await openWs(port); // non-acking
+    ws.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: "hi" }] }));
+    await new Promise((r) => setTimeout(r, 30));
+    const sendPromise = ch.send(
+      replyToInbound(captured as InboundMessage, {
+        content: [{ kind: "text", text: "needs-ack" }],
+      }),
+    );
+    // Give the in-flight send a microtask to actually start arming its
+    // ack wait so we exercise the prePlatformDisconnect drain path
+    // (rather than the "send hasn't started yet" shuttingDown short-
+    // circuit). 50ms is plenty for the chain's .then to fire.
+    await new Promise((r) => setTimeout(r, 50));
+    // Close the client WS first so platformDisconnect's server.stop(true)
+    // doesn't wait for graceful close — we're testing the ack-drain
+    // fast-path, not socket teardown.
+    ws.close();
+    const disconnectStart = Date.now();
+    await ch.disconnect();
+    const elapsed = Date.now() - disconnectStart;
+    // Must be well under the 60s ackTimeoutMs — the prePlatformDisconnect
+    // hook fired the ack waiters early.
+    expect(elapsed).toBeLessThan(2_000);
+    // The send was promoted to push fallback (delivered, not lost).
+    await sendPromise;
+    expect(pushed).toHaveLength(1);
+  });
+
   test("ack-timeout push fallback carries deliveryId for end-to-end dedup", async () => {
     // Round-11 high finding: when the live frame was written but the ack
     // is lost (flaky radio, mid-ack disconnect), the adapter pushes the

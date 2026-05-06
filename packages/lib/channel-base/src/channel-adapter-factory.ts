@@ -28,6 +28,19 @@ export interface ChannelAdapterConfig<E> {
 
   /** Connect to the platform (create readline, open websocket, etc.). */
   readonly platformConnect: () => Promise<void>;
+  /**
+   * Optional fast-path called BEFORE the send-chain drain. Adapters whose
+   * platformSend may block on application-level acks (mobile delivery
+   * acks, etc.) use this to immediately reject those waits so the chain
+   * drain unblocks promptly. Without this hook, a disconnect during an
+   * unacked live send waits for the full ack timeout before the actual
+   * platformDisconnect runs, stalling shutdown / failover.
+   *
+   * MUST NOT touch the platform transport itself — only release in-flight
+   * waits inside platformSend so the chain can drain. The real teardown
+   * happens in platformDisconnect after the drain.
+   */
+  readonly prePlatformDisconnect?: () => Promise<void> | void;
   /** Disconnect from the platform (close readline, close websocket, etc.). */
   readonly platformDisconnect: () => Promise<void>;
   /** Write an OutboundMessage to the platform. Blocks already downgraded by renderBlocks(). */
@@ -151,10 +164,22 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
         //    events are dispatched during the drain window
         unsubPlatform?.();
         unsubPlatform = undefined;
-        // 3. Wait for the send chain to settle before tearing down
+        // 3. Pre-drain hook: let the adapter release any application-
+        //    level waits inside platformSend (e.g. mobile delivery acks)
+        //    so the chain can drain immediately rather than blocking on
+        //    a per-message ack timeout. Errors here are swallowed —
+        //    this is best-effort fast-path; teardown still proceeds.
+        if (config.prePlatformDisconnect !== undefined) {
+          try {
+            await config.prePlatformDisconnect();
+          } catch {
+            /* fast-path; the real teardown handles failures */
+          }
+        }
+        // 4. Wait for the send chain to settle before tearing down
         //    the transport, preventing writes into a closing channel
         await sendChain.catch(() => {});
-        // 4. Tear down the platform transport
+        // 5. Tear down the platform transport
         await config.platformDisconnect();
       }),
 

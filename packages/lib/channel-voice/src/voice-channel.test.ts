@@ -766,27 +766,20 @@ describe("createVoiceChannel", () => {
     resolveStuck?.();
     await new Promise((r) => setTimeout(r, 20));
     expect(sentOrder).toEqual(["other", "stuck"]);
-    // Round-14: disconnect does NOT clear poison — the underlying call
-    // may still surface; admitting same-threadId sends on a reconnect
-    // would risk reorder/overlap with that stale audio. Recovery on the
-    // SAME threadId requires a fresh adapter; OR the host can keep
-    // using the same adapter by switching to a different threadId.
+    // Round-15: disconnect aborts every in-flight controller (cooperative
+    // transports reject promptly), then clears poison. Stable-session
+    // transports (single-call adapters using a constant threadId) recover
+    // cleanly on reconnect. The transport in this test is non-cooperative
+    // (ignores signal), so we manually release after disconnect.
     await ch.disconnect();
+    resolveStuck = undefined;
     await ch.connect();
-    await expect(
-      ch.send({
-        threadId: "session-1",
-        content: [{ kind: "text", text: "still-poisoned" }],
-        metadata: { utteranceId: "still-poisoned" },
-      }),
-    ).rejects.toBeInstanceOf(VoicePoisonedSessionError);
-    // Distinct threadId on the same reconnected adapter still works.
     await ch.send({
-      threadId: "session-3",
-      content: [{ kind: "text", text: "fresh-thread" }],
-      metadata: { utteranceId: "fresh-thread" },
+      threadId: "session-1",
+      content: [{ kind: "text", text: "after-recovery" }],
+      metadata: { utteranceId: "after-recovery" },
     });
-    expect(sentOrder).toContain("fresh-thread");
+    expect(sentOrder).toContain("after-recovery");
     await ch.disconnect();
   });
 

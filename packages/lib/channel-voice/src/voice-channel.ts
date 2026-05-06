@@ -425,10 +425,17 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
   // chain forever — the per-session chain advances via rejection.
   const sessionSendChains = new Map<string, Promise<void>>();
   // Sessions whose prior outbound exceeded ttsTimeoutMs / transportSendTimeoutMs.
-  // The underlying TTS/transport call cannot be aborted and may still resolve
-  // later, so admitting newer sends on the same session would risk overlapping
-  // or out-of-order playback. Stays set until disconnect() clears it.
+  // Within a connection, subsequent same-session sends fail-fast so the stale
+  // call (which we cannot force-cancel) cannot reorder with new audio. Cleared
+  // on disconnect after aborting all in-flight controllers and awaiting drain
+  // — cooperative transports honor the AbortSignal and settle promptly, so
+  // recovery is clean. Non-cooperative transports may leak audio across
+  // reconnect; that is documented as the host's responsibility.
   const poisonedSessions = new Set<string>();
+  // All AbortControllers for in-flight TTS/transport calls. disconnect()
+  // aborts every one to give cooperative impls a chance to fence cleanly
+  // before the channel reports recovery.
+  const inflightControllers = new Set<AbortController>();
   const ttsTimeoutMs = config.ttsTimeoutMs ?? DEFAULT_TTS_TIMEOUT_MS;
   const transportSendTimeoutMs = config.transportSendTimeoutMs ?? DEFAULT_TRANSPORT_SEND_TIMEOUT_MS;
 
@@ -461,6 +468,8 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     // same threadId. Full recovery requires creating a fresh adapter.
     const ttsCtl = new AbortController();
     const sendCtl = new AbortController();
+    inflightControllers.add(ttsCtl);
+    inflightControllers.add(sendCtl);
     try {
       const frames: Uint8Array[] = [];
       // Defer abort() to a microtask AFTER returning the timeout error so
@@ -495,6 +504,9 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
         poisonedSessions.add(sessionId);
       }
       throw e;
+    } finally {
+      inflightControllers.delete(ttsCtl);
+      inflightControllers.delete(sendCtl);
     }
   };
 
@@ -563,15 +575,20 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       // swallowed — they were already surfaced to their callers.
       const inflight = [...sessionSendChains.values()];
       sessionSendChains.clear();
-      // Poison persists across disconnect/reconnect for the adapter's
-      // lifetime. We only saw the timeout race; we did NOT see the
-      // underlying tts.synthesize() / transport.sendUtterance() actually
-      // settle, so a non-cooperative impl could still surface audio
-      // after a reconnect onto the same sessionId. Forcing the host
-      // to construct a fresh adapter for full recovery is honest about
-      // that uncancellable-op risk. Cooperative impls that honor
-      // AbortSignal limit the leak in practice.
+      // Abort every in-flight TTS / transport call BEFORE awaiting the
+      // chain so cooperative impls reject promptly instead of running
+      // to their per-call timeout. This is the recovery fence: once
+      // every controller has been signalled and the chain has drained,
+      // any cooperative transport has had its chance to release the
+      // sessionId, so the poison set is safe to clear.
+      for (const ctl of inflightControllers) ctl.abort();
       await Promise.allSettled(inflight);
+      // Non-cooperative transports that ignore the abort signal MAY
+      // still surface audio after this point — the channel cannot
+      // guarantee otherwise. Hosts whose transport does not honor
+      // AbortSignal SHOULD construct a fresh adapter on reconnect for
+      // strict ordering guarantees.
+      poisonedSessions.clear();
       await inner.disconnect();
     },
     send: wrappedSend,

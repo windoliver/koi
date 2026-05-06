@@ -495,6 +495,14 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   // let requires justification: socket and server lifecycle managed dynamically
   let server: ServerLike | undefined;
   let activeSocket: SocketLike | undefined;
+  // Set true by prePlatformDisconnect to short-circuit ack waiting on
+  // any send that hasn't yet started executing when disconnect runs.
+  // Without this flag, an in-flight call to channel-base's send() that
+  // hasn't reached platformSend yet would still arm a 60-second ack
+  // wait after disconnect already cleared the original pendingAcks
+  // map, stalling the chain drain.
+  // let requires justification: shutdown gate flipped by lifecycle
+  let shuttingDown = false;
   // Identity bound to activeSocket by the authenticate() handshake. When
   // set, this overrides defaultSenderId for inbound frames from this socket
   // and is the recipient key passed to pushNotifier.
@@ -595,6 +603,7 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
     name: "mobile",
     capabilities: MOBILE_CAPABILITIES,
     platformConnect: async () => {
+      shuttingDown = false;
       const bunGlobal = (globalThis as { Bun?: { serve: (opts: unknown) => ServerLike } }).Bun;
       if (bunGlobal === undefined) {
         throw new Error("@koi/channel-mobile requires the Bun runtime");
@@ -804,6 +813,21 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         },
       });
     },
+    // Pre-drain hook: rejected ack waits BEFORE channel-base awaits the
+    // send chain, otherwise a disconnect during an unacked live send
+    // would block for the full ackTimeoutMs before platformDisconnect
+    // ran — stalling shutdown / failover under packet loss.
+    prePlatformDisconnect: () => {
+      shuttingDown = true;
+      // Reject pending ack waits so platformSend's catch arm can promote
+      // them to push (or reject with no-target) and the chain drains
+      // immediately instead of stalling on the per-message ack timeout.
+      for (const [id, pending] of pendingAcks) {
+        clearTimeout(pending.timer);
+        pendingAcks.delete(id);
+        pending.reject(ACK_TIMEOUT_SENTINEL);
+      }
+    },
     platformDisconnect: async () => {
       activeSocket?.close();
       activeSocket = undefined;
@@ -890,7 +914,11 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       // Strip our internal metadata fields before they cross the wire — the
       // remote client has no use for them.
       const wireMessage = stripInternalMetadata(message);
-      if (liveRecipient && activeSocket !== undefined) {
+      // Disconnect race: a send queued in channel-base's chain may
+      // reach platformSend AFTER prePlatformDisconnect already drained
+      // pendingAcks. Skip the live path entirely so we don't arm a new
+      // ack wait that nothing will ever drain.
+      if (liveRecipient && activeSocket !== undefined && !shuttingDown) {
         // Application-level ack: a fresh deliveryId rides on the wire
         // payload. The client must respond with `{kind:"ack",deliveryId}`
         // within ackTimeoutMs to confirm receipt — otherwise the radio
