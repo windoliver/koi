@@ -170,14 +170,28 @@ export function createTokenVerifier(
   const { issuer, jwksUri } = resolveIssuer(config);
   const clock = options.clock ?? Date.now;
   // Default to the package's Bot Framework client-credentials minter
-  // when the caller does not supply one. The default is safe — it
-  // derives tenant + scope from `config.cloud` so public/gov configs
-  // mint against the correct authority — and it is the path
-  // documented in the package README. Callers that need to override
-  // (custom IDP, inline cloud profile with non-standard endpoints,
-  // or test stubs) can still pass `options.mintAppToken`.
-  const mintAppToken: () => Promise<string> =
-    options.mintAppToken ?? createBotFrameworkAppTokenMinter(config);
+  // when the caller does not supply one. The default is safe for
+  // public + gov clouds — it derives tenant + scope from
+  // `config.cloud` and mints against the correct authority. Inline
+  // clouds (`{issuer, jwksUri}`) have no safe default token endpoint
+  // (TeamsConfig carries no outbound tenant/scope), so the verifier
+  // refuses to auto-construct one and requires the caller to pass
+  // `options.mintAppToken` explicitly. Otherwise the verifier would
+  // throw at construction time even on inbound-only deployments.
+  const mintAppToken: () => Promise<string> = (() => {
+    if (options.mintAppToken !== undefined) return options.mintAppToken;
+    if (config.cloud === "public" || config.cloud === "gov") {
+      return createBotFrameworkAppTokenMinter(config);
+    }
+    // Inline cloud: appToken() is only invoked on outbound send. Defer
+    // failure until then so inbound-only callers can still construct
+    // the verifier; outbound callers get a clear INVALID_CONFIG.
+    return async (): Promise<string> => {
+      throw new Error(
+        "INVALID_CONFIG: inline cloud profile requires options.mintAppToken — no default Bot Framework minter exists for inline clouds (no safe tenant/scope)",
+      );
+    };
+  })();
   // Construct the remote JWKS resolver ONCE per verifier instance.
   // jose's resolver caches keys + cooldown timers internally; recreating
   // it per-request defeats that cache and turns each webhook into a

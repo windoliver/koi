@@ -152,14 +152,18 @@ describe("startHandlerWorker", () => {
     expect(await queue.claim("w2", 100)).toBeNull();
   });
 
-  test("capacity-exhausted: dead-letters terminally after maxRetries (drain unblocks)", async () => {
-    // Regression: previously the worker treated a capacity-exhausted
-    // tryBegin result identically to in-flight — pure transient nack
-    // forever. Drain-gated channels (email IMAP) block the provider
-    // callback on awaitDrain; a permanently-full idempotency store
-    // would wedge mailbox progress with no operator surface. Now
-    // capacity-exhausted nacks while attempts are below maxRetries
-    // and dead-letters terminally on the last attempt.
+  test("capacity-exhausted: nacks indefinitely (no terminal deadLetter, no redelivery storm)", async () => {
+    // Regression: previously deadLetter-on-capacity created an
+    // unbounded loop — drain-gated sources (IMAP) keep the
+    // message un-acked, the next poll re-enqueues the same key,
+    // tryBegin still capacity-exhausted, deadLetter again.
+    // Without a poison tombstone (which we cannot write because
+    // the store is the thing that's full) there is no way to
+    // tombstone the redelivery. Nacking indefinitely accepts
+    // wedged drain during the outage as the lesser harm — the
+    // operator has to drain the store anyway before any new
+    // traffic flows, and the wedge surfaces the outage without
+    // creating an infinite deadLetter pile.
     const queue = new InMemoryIngressQueue<{ readonly v: number }, null>();
     const idem = new InMemoryIdempotencyStore();
     const wrapped = {
@@ -173,9 +177,7 @@ describe("startHandlerWorker", () => {
     const stop = startHandlerWorker({
       queue,
       idempotencyStore: wrapped,
-      handler: async () => {
-        // Should never run: tryBegin always says capacity-exhausted.
-      },
+      handler: async () => {},
       commitTtlMs: 1000,
       handlerTimeoutMs: 1000,
       maxHandlerRetries: 2,
@@ -183,12 +185,11 @@ describe("startHandlerWorker", () => {
       workerId: "w1",
     });
     await queue.enqueue("k1", { key: "k1", payload: { v: 1 }, normalized: null });
-    const drain = await queue.awaitDrain("k1");
+    await new Promise((r) => setTimeout(r, 80));
     await stop();
-    expect(drain.ok).toBe(false);
+    // No dead-letters: capacity-exhausted alone is not terminal.
     const dl = await queue.getDeadLetters();
-    expect(dl).toHaveLength(1);
-    expect(dl[0]?.reason).toContain("capacity-exhausted");
+    expect(dl).toHaveLength(0);
   });
 
   test("handler timeout + poison-commit failure: still dead-letters (drain unblocks)", async () => {

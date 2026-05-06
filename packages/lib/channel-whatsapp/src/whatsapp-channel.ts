@@ -53,7 +53,12 @@ export type WhatsAppIngressIssue =
       readonly rawBody: string;
       readonly malformedCount: number;
     }
-  | { readonly kind: "phone-number-mismatch"; readonly expected: string; readonly got: string }
+  | {
+      readonly kind: "phone-number-mismatch";
+      readonly expected: string;
+      readonly got: string;
+      readonly message: WhatsAppMessage;
+    }
   | { readonly kind: "normalize-failed"; readonly reason: string };
 
 export type WhatsAppDependencies = {
@@ -337,10 +342,17 @@ export function createWhatsAppChannel(
     const items: Item[] = [];
     for (const { message: msg, phoneNumberId } of extracted.messages) {
       if (phoneNumberId !== config.phoneNumberId) {
+        // Include the full WhatsApp message so the operator's
+        // hook can route or persist for replay. Telemetry-only
+        // surfacing was insufficient — the message body must
+        // flow because Meta treats 200 as terminal and a
+        // multi-tenant deployment may need to forward foreign
+        // pid traffic to the owning channel instance.
         deps.onIngressIssue?.({
           kind: "phone-number-mismatch",
           expected: config.phoneNumberId,
           got: phoneNumberId,
+          message: msg,
         });
         continue;
       }

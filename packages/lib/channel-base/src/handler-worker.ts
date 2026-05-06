@@ -117,22 +117,17 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
           await opts.queue.nack(opts.workerId, claimed.key);
         } else {
           // capacity-exhausted: the idempotency store cannot accept
-          // new work. This MAY be transient (operator drains, store
-          // frees up) or persistent (storage outage, quota wall). To
-          // avoid wedging drain-gated adapters' awaitDrain forever
-          // we nack while attempts are below maxRetries, then dead-
-          // letter terminally so awaitDrain unblocks with ok:false.
-          // Without this terminal step, an email IMAP callback would
-          // wait indefinitely on a permanently-full store.
-          if (claimed.attempts + 1 >= maxRetries) {
-            await opts.queue.deadLetter(
-              opts.workerId,
-              claimed.key,
-              "idempotency-store-capacity-exhausted",
-            );
-          } else {
-            await opts.queue.nack(opts.workerId, claimed.key);
-          }
+          // new work. We nack indefinitely (no terminal deadLetter)
+          // because terminal-deadLetter without a poison tombstone
+          // would create a redelivery loop: the source-side keeps
+          // the message un-acked (drain ok:false), the next poll
+          // re-enqueues the same key, capacity is still exhausted,
+          // and we deadLetter again. The drain-wedge during a
+          // capacity outage is preferable to an unbounded
+          // deadLetter storm — operators must drain the store
+          // before new traffic can flow either way, and the wedge
+          // surfaces the outage explicitly.
+          await opts.queue.nack(opts.workerId, claimed.key);
         }
         continue;
       }
