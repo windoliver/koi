@@ -119,6 +119,15 @@ export interface DiscordChannelConfig {
    * duplicate side effects when the user retries.
    */
   readonly slashCommandFallbackToChannel?: boolean;
+  /**
+   * Controls button-reply visibility independently from
+   * `slashCommandEphemeral`. Discord does not let us inspect the
+   * source message's flags client-side, so the adapter cannot
+   * automatically infer whether a button click came from an ephemeral
+   * message. Default is `false` (public). Set to `true` (or a function
+   * keyed by `customId`) to mark button followUps ephemeral.
+   */
+  readonly buttonInteractionEphemeral?: boolean | ((customId: string) => boolean);
 }
 
 export interface DiscordChannelAdapter extends ChannelAdapter {
@@ -258,19 +267,27 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
         typeof raw.isChatInputCommand === "function" && raw.isChatInputCommand() === true;
       const isButton = typeof raw.isButton === "function" && raw.isButton() === true;
       if (isSlash || isButton) {
-        // Mirror ackInteraction's ephemeral resolution so editReply /
-        // followUp can pass the flag through on every chunk. For
-        // buttons we conservatively treat them as ephemeral whenever
-        // the operator configured slashCommandEphemeral — Discord
-        // gives us no way to inspect the source message's flags here.
-        const policy = config.slashCommandEphemeral;
+        // Slash commands lock visibility at deferReply time, mirroring
+        // ackInteraction's policy. Buttons are NOT coupled to the slash
+        // policy: the source-message visibility is not knowable
+        // client-side, and forcing ephemeral on every button reply
+        // when an operator enabled ephemeral for one sensitive slash
+        // command would silently hide unrelated public-button workflow
+        // replies. Default buttons to public; callers who need
+        // ephemeral button replies can opt in via
+        // `buttonInteractionEphemeral`.
         // let requires justification: branchy boolean derivation
         let ephemeral = false;
         if (isSlash) {
+          const policy = config.slashCommandEphemeral;
           const commandName = typeof raw.commandName === "string" ? raw.commandName : "";
           ephemeral = typeof policy === "function" ? policy(commandName) : policy === true;
         } else if (isButton) {
-          ephemeral = policy !== undefined;
+          const buttonPolicy = config.buttonInteractionEphemeral;
+          ephemeral =
+            typeof buttonPolicy === "function"
+              ? buttonPolicy(typeof raw.customId === "string" ? raw.customId : "")
+              : buttonPolicy === true;
         }
         pendingInteractions.set(raw.id, {
           interaction: raw,

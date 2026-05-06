@@ -366,6 +366,113 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
+  test("webhook: handleWebhook awaits onMessage handler completion before resolving (no fire-and-forget ack)", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "s",
+    });
+    await adapter.connect();
+    let releaseHandler: () => void = () => undefined;
+    const handlerDone = new Promise<void>((r) => {
+      releaseHandler = r;
+    });
+    const ordered: string[] = [];
+    adapter.onMessage(async () => {
+      ordered.push("handler-start");
+      await handlerDone;
+      ordered.push("handler-end");
+    });
+    const webhookPromise = adapter.handleWebhook("s", {
+      update_id: 1,
+      message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+    });
+    // Tick so the handler starts but is still waiting.
+    await new Promise((r) => setTimeout(r, 5));
+    expect(ordered).toEqual(["handler-start"]);
+    let webhookResolved = false;
+    void webhookPromise.then(() => {
+      webhookResolved = true;
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(webhookResolved).toBe(false);
+    releaseHandler();
+    await webhookPromise;
+    expect(ordered).toEqual(["handler-start", "handler-end"]);
+    await adapter.disconnect();
+  });
+
+  test("webhook: handleWebhook rethrows handler rejection so HTTPS layer can return non-200 (Telegram retries)", async () => {
+    const f = fakeBot();
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "s",
+    });
+    await adapter.connect();
+    adapter.onMessage(async () => {
+      throw new Error("downstream-failed");
+    });
+    await expect(
+      adapter.handleWebhook("s", {
+        update_id: 1,
+        message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+      }),
+    ).rejects.toThrow(/downstream-failed/);
+    await adapter.disconnect();
+  });
+
+  test("webhook: markWebhookProcessed fires only on full success (post-success commit point)", async () => {
+    const f = fakeBot();
+    const marks: number[] = [];
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "s",
+      markWebhookProcessed: async (id: number): Promise<void> => {
+        marks.push(id);
+      },
+    });
+    await adapter.connect();
+    adapter.onMessage(async () => undefined);
+    await adapter.handleWebhook("s", {
+      update_id: 42,
+      message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+    });
+    expect(marks).toEqual([42]);
+    await adapter.disconnect();
+  });
+
+  test("webhook: markWebhookProcessed is NOT called when a handler rejects", async () => {
+    const f = fakeBot();
+    const marks: number[] = [];
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "s",
+      markWebhookProcessed: async (id: number): Promise<void> => {
+        marks.push(id);
+      },
+    });
+    await adapter.connect();
+    adapter.onMessage(async () => {
+      throw new Error("boom");
+    });
+    await expect(
+      adapter.handleWebhook("s", {
+        update_id: 99,
+        message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+      }),
+    ).rejects.toThrow();
+    expect(marks).toHaveLength(0);
+    await adapter.disconnect();
+  });
+
   test("webhook: seenWebhookUpdate callback skips duplicate update_ids without invoking onMessage", async () => {
     const f = fakeBot();
     const seenIds = new Set<number>();

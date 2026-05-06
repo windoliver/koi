@@ -115,6 +115,22 @@ export interface TelegramChannelConfig {
    * cause permanent message loss.
    */
   readonly seenWebhookUpdate?: (updateId: number) => boolean | Promise<boolean>;
+  /**
+   * Optional post-success commit hook for webhook mode. After
+   * `handleWebhook(...)` has awaited every registered onMessage
+   * handler to completion, this callback fires so the operator can
+   * durably mark `update_id` as processed under the same transaction
+   * boundary that produced the user-visible side effects. Pairs with
+   * `seenWebhookUpdate` to give callers a real two-phase
+   * reserve/commit boundary: pre-check skips already-committed
+   * retries, post-success commit marks the new update.
+   *
+   * `handleWebhook` only invokes this callback when every handler
+   * resolved successfully. If any handler rejected, the callback is
+   * SKIPPED and `handleWebhook` rethrows so the HTTPS layer can
+   * return non-200 and let Telegram retry.
+   */
+  readonly markWebhookProcessed?: (updateId: number) => void | Promise<void>;
 }
 
 export interface TelegramChannelAdapter extends ChannelAdapter {
@@ -386,8 +402,43 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
     ...(config.onHandlerError !== undefined && { onHandlerError: config.onHandlerError }),
   });
 
+  // Webhook-mode awaitable dispatch. We track onMessage handlers
+  // locally so `handleWebhook` can normalize + dispatch + AWAIT the
+  // full chain, then return success only after every handler
+  // resolved. channel-base's dispatcher is fire-and-forget through
+  // the platform-event path; routing webhook updates through it
+  // would force `handleWebhook` to ack before processing finished
+  // (the original "fire-and-forget" defect).
+  // let requires justification: mutates as callers (un)subscribe
+  type LocalHandler = (msg: import("@koi/core").InboundMessage) => Promise<void>;
+  let webhookHandlers: ReadonlyArray<{ readonly id: number; readonly fn: LocalHandler }> = [];
+  // let requires justification: monotonic counter for handler ids
+  let nextWebhookHandlerId = 0;
+  const wrappedOnMessage = (handler: LocalHandler): (() => void) => {
+    const id = nextWebhookHandlerId++;
+    webhookHandlers = [...webhookHandlers, { id, fn: handler }];
+    const unsubBase = base.onMessage(handler);
+    return (): void => {
+      webhookHandlers = webhookHandlers.filter((h) => h.id !== id);
+      unsubBase();
+    };
+  };
+
+  const dispatchWebhook = async (update: TelegramUpdateLike): Promise<void> => {
+    const msg = await normalize(update);
+    if (msg === null) return;
+    const handlers = webhookHandlers;
+    if (handlers.length === 0) return;
+    const results = await Promise.allSettled(handlers.map((h) => h.fn(msg)));
+    const rejected = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (rejected !== undefined) {
+      throw rejected.reason instanceof Error ? rejected.reason : new Error(String(rejected.reason));
+    }
+  };
+
   adapter = {
     ...base,
+    onMessage: wrappedOnMessage,
     handleUpdate: (update: TelegramUpdateLike): void => {
       // In webhook mode `handleUpdate` is hard-disabled. The same
       // adapter instance must not expose two ingress paths — one
@@ -430,20 +481,25 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
           "[channel-telegram] handleWebhook called while disconnected — return a non-200 so Telegram retries",
         );
       }
-      // Optional durable-replay barrier. Telegram retries the same
-      // update_id on timeouts/5xx; if the operator wired a
-      // seenWebhookUpdate callback (DB/Redis/queue), consult it before
-      // dispatch and silently swallow already-processed updates so the
-      // HTTPS handler can return 200 and end the retry chain. The
-      // callback MUST mark seen only after downstream success — see the
-      // doc comment on TelegramChannelConfig.seenWebhookUpdate. When no
-      // callback is configured we forward unconditionally; callers are
-      // then responsible for dedupe at their HTTPS / queue layer.
+      // Two-phase reserve/commit:
+      //   1. seenWebhookUpdate (pre-check) skips updates that are
+      //      already committed in the operator's durable store.
+      //   2. dispatchWebhook awaits every onMessage handler so this
+      //      function only resolves after end-to-end processing
+      //      succeeds — handler rejection becomes a thrown error so
+      //      the HTTPS layer can return non-200 and Telegram retries.
+      //   3. markWebhookProcessed (post-commit) fires only on full
+      //      success so the operator can durably mark the update_id
+      //      under the same transaction that produced the side
+      //      effects.
       if (config.seenWebhookUpdate !== undefined) {
         const seen = await config.seenWebhookUpdate(update.update_id);
         if (seen) return;
       }
-      deliver(update);
+      await dispatchWebhook(update);
+      if (config.markWebhookProcessed !== undefined) {
+        await config.markWebhookProcessed(update.update_id);
+      }
     },
     resolveMediaUrl,
   };
