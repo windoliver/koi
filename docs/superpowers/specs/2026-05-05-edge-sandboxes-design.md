@@ -1173,8 +1173,8 @@ Cloud golden queries use a mocked `fetch` (injected via the adapter's `client` c
 - [ ] `bun run typecheck` — strict TS6 across new packages
 - [ ] `bun run lint` — Biome
 - [ ] `bun run check:layers` — L2-only deps (`@koi/core` + L0u only)
-- [ ] `bun run check:orphans` — all 3 packages wired into `@koi/runtime`
-- [ ] `bun run check:golden-queries` — 3 new queries land assertions
+- [ ] `bun run check:orphans` — sandbox-wasm and sandbox-cloudflare wired into `@koi/runtime`. `sandbox-vercel` is deferred to PR 5 (experimental, opt-in, not runtime-integrated) and is therefore EXEMPT from the orphan check.
+- [ ] `bun run check:golden-queries` — 2 new queries (wasm, cloudflare) land assertions. Vercel golden-query coverage is deferred to PR 5.
 - [ ] `bun run check:duplicates` — accept 5+ line cloud duplication only if Rule-of-Three justified inline
 - [ ] `bun run test` — coverage ≥80%
 - [ ] `provider-smoke.yml` — required workflow; blocks merge on cleanup failure or leaked artifacts
@@ -1183,9 +1183,9 @@ Cloud golden queries use a mocked `fetch` (injected via the adapter's `client` c
 
 Write before code:
 
-- `docs/L2/sandbox-wasm.md`
-- `docs/L2/sandbox-cloudflare.md`
-- `docs/L2/sandbox-vercel.md`
+- `docs/L2/sandbox-wasm.md` (PR 3)
+- `docs/L2/sandbox-cloudflare.md` (PR 4)
+- `docs/L2/sandbox-vercel.md` (PR 5 — experimental; written but not tied to PR 4 ship)
 
 Each follows existing `docs/L2/sandbox-*.md` template: purpose, contract, config, capabilities, threat model, tests.
 
@@ -1215,9 +1215,10 @@ The implementation does not fit a single PR. The work is split into four sequent
 | 1 | This spec | Design doc (`docs/superpowers/specs/2026-05-05-edge-sandboxes-design.md`). No code, no doc reconciliation. | ~600 lines markdown |
 | 2 | Kernel + runtime extension for edge adapters | New `@koi/core` types (`EdgeFunctionAdapter` etc.), `CreateKoiOptions` extension on `@koi/engine`, `koi.edge.*` accessor, CI script extensions for `koi.adapter-kind`, `docs/L3/sandbox-stack.md` rewrite, `golden-edge-replay.test.ts` skeleton. **Reconciles existing L3 doc with the new contract.** | ~700 LOC |
 | 3 | `@koi/sandbox-wasm` | Full wasm executor package + binary scanner + tests + `docs/L2/sandbox-wasm.md` + golden replay assertion (uses the SandboxExecutor-style cassette path or the new edge replay; finalized in PR 2). | ~700 LOC |
-| 4 | `@koi/sandbox-cloudflare` + `@koi/sandbox-vercel` + `@koi/sandbox-sweep` (single delivery unit) | Both cloud packages PLUS the **always-on reconciler CLI** (`koi-sandbox-sweep --watch --vercel`). They ship together because (a) Cloudflare relies on a fleet sweeper (CF Cron Trigger Worker auto-deployed by the adapter), and (b) Vercel requires `--watch --vercel` running on an operator-attested separate failure domain BEFORE adapter construction succeeds — the adapter rejects with `VERCEL_RECONCILER_NOT_RUNNING` otherwise. Vercel ships single-host only; multi-host is a future PR. There is **no `--reconcile` post-hoc mode** — that earlier CLI variant is removed because Vercel's leak-bound guarantee depends on continuous heartbeat presence, not after-the-fact recovery. Includes shim templates with mandatory DO/KV dedupe enforcement, SQLite ledger, provider-smoke workflow with adversarial scenarios, three L2 docs (`sandbox-cloudflare.md`, `sandbox-vercel.md`, `sandbox-sweep.md`), edge cassettes, and the watch-mode CLI. | ~1300 LOC |
+| 4 | `@koi/sandbox-cloudflare` + `@koi/sandbox-sweep` (Cloudflare-only ship bundle) | Cloudflare adapter PLUS the fleet sweeper template auto-deployed by the adapter. Includes shim template with mandatory DO dedupe enforcement, SQLite ledger, provider-smoke workflow (CF-only adversarial scenarios), L2 docs (`sandbox-cloudflare.md`, `sandbox-sweep.md`), and CF edge cassette. **Vercel is explicitly NOT in the runtime-integrated shipping bundle** for the reasons documented in the Vercel section: cleanup is unbounded, reconciler isolation is operator-attested rather than mechanically enforced, and shipping such a public-orphan path as a default-available runtime adapter extends the blast radius of any auth bug. Cloudflare's multi-host story IS protected by the fleet sweeper from day one. | ~900 LOC |
+| 5 (deferred) | `@koi/sandbox-vercel` (experimental, NOT runtime-integrated) | Lands as a separate published package gated behind `unsafelyEnableExperimentalProvider: true` AND `KOI_ENV != production`. **NOT** wired into `@koi/runtime`'s golden-query coverage, **NOT** included in `provider-smoke.yml`'s required path, **NOT** listed as a default `koi.edge.*` accessor. Operators who explicitly opt in can install and import it directly. Promotion to runtime-integrated status is gated on either (a) Vercel exposing a provider-owned cleanup primitive (deployment TTL, scheduled-execution primitive, or authoritative inbound-liveness probe), or (b) a mechanically-verifiable isolation/fencing mechanism replacing operator attestation. The L2 doc carries the EXPERIMENTAL — UNBOUNDED ORPHAN RISK label and the production-env reject. The package may be developed and reviewed against this spec but does not block PR 4 and is not part of the v1 ship contract. | ~600 LOC, separate timeline |
 
-PRs 3 and 4 can land in parallel after PR 2 merges. PR 4 bundles `@koi/sandbox-sweep` because (a) Cloudflare relies on the fleet-scoped sweeper Worker the adapter deploys (its source template lives in `@koi/sandbox-sweep`), and (b) Vercel requires the operator-runnable `--watch --vercel` CLI as a hard runtime prerequisite. Cloudflare's multi-host story IS protected by the fleet sweeper from day one; Vercel's multi-host story is **explicitly deferred** to a future PR.
+PRs 3 and 4 can land in parallel after PR 2 merges. PR 4 bundles `@koi/sandbox-sweep` because Cloudflare relies on the fleet-scoped sweeper Worker the adapter deploys (its source template lives in `@koi/sandbox-sweep`). Vercel's multi-host story AND its single-host story are both deferred to PR 5 (separate timeline, opt-in only).
 
 ## Acceptance
 
