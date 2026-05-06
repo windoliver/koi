@@ -6,7 +6,6 @@ import {
   splitText,
   type TelegramApiLike,
   type TelegramBotLike,
-  type TelegramSendOptions,
 } from "./telegram-channel.js";
 
 interface ApiCall {
@@ -21,25 +20,28 @@ function fakeBot(): {
   setSendError: (err: unknown) => void;
 } {
   const calls: ApiCall[] = [];
-  // let requires justification: mutable state for the fake — listeners + injected error
-  let listener: ((u: TelegramUpdateLike) => void) | undefined;
+  // let requires justification: mutable state for the fake — middlewares + injected error
+  let middlewares: ((
+    ctx: { readonly update: TelegramUpdateLike },
+    next: () => Promise<void>,
+  ) => Promise<void> | void)[] = [];
   let sendError: unknown;
   const api: TelegramApiLike = {
-    sendMessage: async (opts: TelegramSendOptions) => {
+    sendMessage: async (chat_id, text, other) => {
       if (sendError !== undefined) {
         const err = sendError;
         sendError = undefined;
         throw err;
       }
-      calls.push({ method: "sendMessage", args: opts });
+      calls.push({ method: "sendMessage", args: { chat_id, text, ...(other ?? {}) } });
       return undefined;
     },
-    sendPhoto: async (opts) => {
-      calls.push({ method: "sendPhoto", args: opts });
+    sendPhoto: async (chat_id, photo, other) => {
+      calls.push({ method: "sendPhoto", args: { chat_id, photo, ...(other ?? {}) } });
       return undefined;
     },
-    sendDocument: async (opts) => {
-      calls.push({ method: "sendDocument", args: opts });
+    sendDocument: async (chat_id, document, other) => {
+      calls.push({ method: "sendDocument", args: { chat_id, document, ...(other ?? {}) } });
       return undefined;
     },
     getFile: async () => ({ file_path: "doc/abc.bin" }),
@@ -51,11 +53,9 @@ function fakeBot(): {
   };
   const bot: TelegramBotLike = {
     api,
-    on: (_event, h) => {
-      listener = h;
-      return () => {
-        listener = undefined;
-      };
+    use: (mw) => {
+      middlewares = [...middlewares, mw];
+      return undefined;
     },
     start: async () => undefined,
     stop: async () => undefined,
@@ -63,7 +63,9 @@ function fakeBot(): {
   return {
     bot,
     calls,
-    emit: (u) => listener?.(u),
+    emit: (u) => {
+      for (const mw of middlewares) void mw({ update: u }, async () => undefined);
+    },
     setSendError: (e) => {
       sendError = e;
     },
@@ -161,7 +163,12 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.send(out);
     expect(f.calls).toHaveLength(1);
     expect(f.calls[0]?.method).toBe("sendMessage");
-    const args = f.calls[0]?.args as TelegramSendOptions;
+    const args = f.calls[0]?.args as {
+      chat_id: number;
+      text?: string;
+      message_thread_id?: number;
+      reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] };
+    };
     expect(args.chat_id).toBe(200);
     expect(args.text).toBe("hello");
     expect(args.message_thread_id).toBeUndefined();
@@ -176,7 +183,12 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       content: [{ kind: "text", text: "x" }],
       threadId: "200:5",
     });
-    const args = f.calls[0]?.args as TelegramSendOptions;
+    const args = f.calls[0]?.args as {
+      chat_id: number;
+      text?: string;
+      message_thread_id?: number;
+      reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] };
+    };
     expect(args.chat_id).toBe(200);
     expect(args.message_thread_id).toBe(5);
     await adapter.disconnect();
@@ -191,7 +203,12 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       threadId: "200",
     });
     expect(f.calls).toHaveLength(1);
-    const args = f.calls[0]?.args as TelegramSendOptions;
+    const args = f.calls[0]?.args as {
+      chat_id: number;
+      text?: string;
+      message_thread_id?: number;
+      reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] };
+    };
     expect(args.text).toBeDefined();
     expect((args.text as string).length).toBeGreaterThan(0);
     expect(args.reply_markup?.inline_keyboard[0]?.[0]?.callback_data).toBe("yes");
@@ -210,7 +227,12 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
       ],
       threadId: "200",
     });
-    const args = f.calls[0]?.args as TelegramSendOptions;
+    const args = f.calls[0]?.args as {
+      chat_id: number;
+      text?: string;
+      message_thread_id?: number;
+      reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] };
+    };
     expect(args.reply_markup?.inline_keyboard[0]).toEqual([
       { text: "Yes", callback_data: "yes" },
       { text: "No", callback_data: 'no:{"reason":"x"}' },
@@ -383,6 +405,25 @@ describe("resolveMediaUrl (token boundary)", () => {
     const url = await adapter.resolveMediaUrl("F1");
     expect(url).toBe("https://api.telegram.org/file/botT/doc/abc.bin");
     await adapter.disconnect();
+  });
+});
+
+describe("grammY shape compatibility", () => {
+  test("a real grammY Bot satisfies TelegramBotLike (use/start/stop/api shape)", async () => {
+    // Imports the real grammy module and verifies a constructed Bot can be
+    // assigned to TelegramBotLike. This is the contract test the
+    // adversarial reviewer asked for: the adapter's interface must match
+    // grammY's actual surface, not a hand-shaped double. Token format
+    // follows Telegram's "<bot_id>:<auth_token>" scheme so the constructor
+    // doesn't reject us; we never call start() so no network happens.
+    const { Bot } = await import("grammy");
+    const bot = new Bot("1:abcdefghijklmnopqrstuvwxyz0123456789");
+    const asLike: TelegramBotLike = bot;
+    expect(typeof asLike.use).toBe("function");
+    expect(typeof asLike.start).toBe("function");
+    expect(typeof asLike.stop).toBe("function");
+    expect(typeof asLike.api.sendMessage).toBe("function");
+    expect(typeof asLike.api.getMe).toBe("function");
   });
 });
 

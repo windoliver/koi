@@ -20,9 +20,12 @@ export type {
   TelegramBotLike,
   TelegramChannelAdapter,
   TelegramChannelConfig,
+  TelegramContextLike,
   TelegramDeployment,
   TelegramInlineButton,
   TelegramReplyMarkup,
-  TelegramSendOptions,
+  TelegramSendDocumentOther,
+  TelegramSendMessageOther,
+  TelegramSendPhotoOther,
 } from "./telegram-channel.js";
 export { createTelegramChannel, splitText } from "./telegram-channel.js";

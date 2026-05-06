@@ -13,25 +13,37 @@ import { createNormalizer } from "./normalize.js";
 
 export type TelegramDeployment = { readonly mode: "polling" } | { readonly mode: "webhook" };
 
-/** Bot-like surface required by the adapter. Subset of grammy's `Bot`. */
+/** Subset of grammY's `Context`. We only need the raw Update. */
+export interface TelegramContextLike {
+  readonly update: TelegramUpdateLike;
+}
+
+/**
+ * Bot-like surface required by the adapter. Subset of grammY's `Bot`.
+ *
+ * grammY does not expose `on(event, handler) => unsubscribe`. The supported
+ * extension point is `use(middleware)` (and friends), which has no
+ * unsubscribe semantics — once registered, middleware runs for the life of
+ * the bot. We rely on a captured guard variable inside `onPlatformEvent` to
+ * stop dispatching after the listener tears down.
+ */
 export interface TelegramBotLike {
   readonly api: TelegramApiLike;
-  /** Register an update listener. Returns an unsubscribe function. */
-  on(event: "update", handler: (update: TelegramUpdateLike) => void): () => void;
+  /** Register middleware to observe every update. Return value is ignored. */
+  use(
+    middleware: (ctx: TelegramContextLike, next: () => Promise<void>) => Promise<void> | void,
+  ): unknown;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
 
-export interface TelegramSendOptions {
-  readonly chat_id: number;
-  readonly text?: string;
-  readonly caption?: string;
-  readonly message_thread_id?: number;
-  readonly reply_markup?: TelegramReplyMarkup;
-}
-
+/**
+ * grammY uses mutable array shapes for inline keyboards, so this type is
+ * intentionally non-readonly to remain assignable from a real `Bot.api`
+ * call. The payload object we construct is single-use and never shared.
+ */
 export interface TelegramReplyMarkup {
-  readonly inline_keyboard: readonly (readonly TelegramInlineButton[])[];
+  inline_keyboard: TelegramInlineButton[][];
 }
 
 export interface TelegramInlineButton {
@@ -39,22 +51,36 @@ export interface TelegramInlineButton {
   readonly callback_data: string;
 }
 
+export interface TelegramSendMessageOther {
+  readonly message_thread_id?: number;
+  readonly reply_markup?: TelegramReplyMarkup;
+}
+
+export interface TelegramSendPhotoOther {
+  readonly caption?: string;
+  readonly message_thread_id?: number;
+}
+
+export interface TelegramSendDocumentOther {
+  readonly caption?: string;
+  readonly message_thread_id?: number;
+}
+
+/**
+ * Subset of grammY's `Api`. Methods use grammY's positional shape:
+ * `sendMessage(chat_id, text, other?)` rather than an options bag, so a real
+ * `Bot` instance is assignable to this type without an adapter shim.
+ */
 export interface TelegramApiLike {
-  sendMessage(opts: TelegramSendOptions): Promise<unknown>;
-  sendPhoto(opts: {
-    readonly chat_id: number;
-    readonly photo: string;
-    readonly caption?: string;
-    readonly message_thread_id?: number;
-  }): Promise<unknown>;
-  sendDocument(opts: {
-    readonly chat_id: number;
-    readonly document: string;
-    readonly caption?: string;
-    readonly message_thread_id?: number;
-  }): Promise<unknown>;
-  getFile(fileId: string): Promise<{ readonly file_path?: string }>;
-  answerCallbackQuery(id: string): Promise<unknown>;
+  sendMessage(chat_id: number, text: string, other?: TelegramSendMessageOther): Promise<unknown>;
+  sendPhoto(chat_id: number, photo: string, other?: TelegramSendPhotoOther): Promise<unknown>;
+  sendDocument(
+    chat_id: number,
+    document: string,
+    other?: TelegramSendDocumentOther,
+  ): Promise<unknown>;
+  getFile(file_id: string): Promise<{ readonly file_path?: string }>;
+  answerCallbackQuery(callback_query_id: string): Promise<unknown>;
   /** Returns the bot's identity. Used as a connect-time handshake. */
   getMe(): Promise<{ readonly id: number; readonly username?: string }>;
 }
@@ -166,22 +192,32 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
     },
 
     onPlatformEvent: (handler): (() => void) => {
+      // grammY's `bot.use()` has no unsubscribe — middleware runs for the
+      // life of the bot. The `active` flag below is the only stop signal
+      // honoured after teardown; without it, late updates from the polling
+      // loop would invoke a stale handler after disconnect().
+      // let requires justification: flipped to false by the returned cleanup
+      let active = true;
       const dispatch = (update: TelegramUpdateLike): void => {
-        handler(update);
+        if (active) handler(update);
       };
       updateHandler = dispatch;
       if (deployment.mode === "polling") {
         const b = requireBot();
-        const unsub = b.on("update", dispatch);
-        // Attach the listener BEFORE polling starts so no update arrives
-        // before there's a handler to receive it. Then drive the long-poll
-        // loop in the background; surface fatal errors via onHandlerError.
+        // Register middleware BEFORE start() so no update reaches the bot
+        // before it has a handler. grammY drains the polling loop through
+        // registered middleware; we observe each Context's raw Update and
+        // forward to the channel's normalize() pipeline.
+        b.use(async (ctx, next): Promise<void> => {
+          dispatch(ctx.update);
+          await next();
+        });
         void b.start().catch((err: unknown) => {
           config.onHandlerError?.(err, { phase: "polling" });
         });
-        return unsub;
       }
       return (): void => {
+        active = false;
         updateHandler = undefined;
       };
     },
@@ -227,26 +263,32 @@ async function sendOutbound(api: TelegramApiLike, message: OutboundMessage): Pro
 
   const parts = partitionContent(message.content);
 
+  const photoOther = (alt: string | undefined): TelegramSendPhotoOther | undefined => {
+    const o: { -readonly [K in keyof TelegramSendPhotoOther]: TelegramSendPhotoOther[K] } = {};
+    if (alt !== undefined) o.caption = alt;
+    if (threadId !== undefined) o.message_thread_id = threadId;
+    return Object.keys(o).length > 0 ? o : undefined;
+  };
+  const docOther = (): TelegramSendDocumentOther | undefined =>
+    threadId !== undefined ? { message_thread_id: threadId } : undefined;
+
   // Photos: one API call each
   for (const photo of parts.images) {
+    const other = photoOther(photo.alt);
     await callWith429Retry(() =>
-      api.sendPhoto({
-        chat_id: chatId,
-        photo: photo.url,
-        ...(photo.alt !== undefined ? { caption: photo.alt } : {}),
-        ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
-      }),
+      other === undefined
+        ? api.sendPhoto(chatId, photo.url)
+        : api.sendPhoto(chatId, photo.url, other),
     );
   }
 
   // Documents: one API call each
   for (const doc of parts.files) {
+    const other = docOther();
     await callWith429Retry(() =>
-      api.sendDocument({
-        chat_id: chatId,
-        document: doc.url,
-        ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
-      }),
+      other === undefined
+        ? api.sendDocument(chatId, doc.url)
+        : api.sendDocument(chatId, doc.url, other),
     );
   }
 
@@ -271,13 +313,14 @@ async function sendOutbound(api: TelegramApiLike, message: OutboundMessage): Pro
     for (let i = 0; i < chunks.length; i++) {
       const text = chunks[i] ?? "";
       const isLast = i === chunks.length - 1;
+      const other: {
+        -readonly [K in keyof TelegramSendMessageOther]: TelegramSendMessageOther[K];
+      } = {};
+      if (threadId !== undefined) other.message_thread_id = threadId;
+      if (isLast && keyboard !== undefined) other.reply_markup = keyboard;
+      const hasOther = Object.keys(other).length > 0;
       await callWith429Retry(() =>
-        api.sendMessage({
-          chat_id: chatId,
-          text,
-          ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
-          ...(isLast && keyboard !== undefined ? { reply_markup: keyboard } : {}),
-        }),
+        hasOther ? api.sendMessage(chatId, text, other) : api.sendMessage(chatId, text),
       );
     }
   }
