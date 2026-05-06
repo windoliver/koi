@@ -95,6 +95,21 @@ describe("parseRefinementOutput", () => {
     expect(parseRefinementOutput(raw)).toBe("fresh");
   });
 
+  test("accepts list-indented fence (markdown bullet wrapping)", () => {
+    // Regression: opener/closer required column 0. Models answering
+    // inside a numbered list or bullet emit indented fences; rejecting
+    // them surfaces as refine_failed even on otherwise-valid output.
+    const raw = "1. Here is the code:\n   ```ts\n   const x = 1;\n   ```\n   Explanation.";
+    const out = parseRefinementOutput(raw);
+    expect(out).toBe("const x = 1;");
+  });
+
+  test("accepts deeply indented fence (nested list)", () => {
+    const raw = "  - Item:\n      ```ts\n      const y = 2;\n      ```";
+    const out = parseRefinementOutput(raw);
+    expect(out).toBe("const y = 2;");
+  });
+
   test("does not truncate at triple-backticks inside multi-line template literal", () => {
     // Regression: the regex parser closed at any `\n```` sequence,
     // including triple-backticks ON THEIR OWN LINE inside a JS template

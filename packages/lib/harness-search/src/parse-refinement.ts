@@ -17,14 +17,20 @@
  * (forge-verifier), invoked downstream of search.
  */
 
-// Line-oriented opener match: ``` followed by an ASCII-letter language
-// token (capture group 1; may be empty) plus an optional info-string
-// (filename, attrs) consumed and ignored. Must occupy the whole line —
-// triple-backticks mid-string in code don't open a fence.
-const FENCE_OPEN = /^```([a-zA-Z]*)[^\n]*$/;
-// Line-oriented closer: a line that is EXACTLY ``` (optionally trailed
-// by whitespace). A standalone ``` line on its own ends the block.
-const FENCE_CLOSE = /^```\s*$/;
+// Line-oriented opener match: optional leading whitespace, then ```
+// followed by an ASCII-letter language token (capture group 1; may be
+// empty) plus an optional info-string (filename, attrs) consumed and
+// ignored. Leading whitespace is permitted because models answering
+// inside a numbered list / bullet emit indented fences and rejecting
+// them would force refine_failed on perfectly normal responses.
+// Triple-backticks mid-line inside body content still don't open a
+// fence — the regex requires the ``` to begin the (post-whitespace)
+// line.
+const FENCE_OPEN = /^\s*```([a-zA-Z]*)[^\n]*$/;
+// Line-oriented closer: optional leading whitespace, then EXACTLY ```
+// (optionally trailed by whitespace). Pairs with the opener at any
+// indentation level that markdown accepts.
+const FENCE_CLOSE = /^\s*```\s*$/;
 
 // Tags that count as "the canonical code block" in multi-block output.
 // Both TS and JS are accepted: refiners targeting JS-only tooling

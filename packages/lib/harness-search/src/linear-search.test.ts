@@ -505,6 +505,27 @@ describe("linearSearch", () => {
     expect(calls).toBe(1);
   });
 
+  test("contradictory eval rejected even when under-sampled (sampleCount < minEvalSamples)", async () => {
+    // Regression: the contradictory-eval guard previously also required
+    // sampleCount >= minEvalSamples, so a payload with rate=1.0 +
+    // sampleCount=2 + non-empty failures would slip through, push a
+    // node into history, and update bestNode. Same poisoned-best risk
+    // applies regardless of sample count.
+    const config = makeConfig({
+      convergenceThreshold: 1.0,
+      minEvalSamples: 5,
+      evaluate: async () => ({
+        successRate: 1.0,
+        sampleCount: 2,
+        failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+      }),
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_failed");
+    expect(result.best).toBeNull();
+    expect(result.history.length).toBe(0);
+  });
+
   test("contradictory eval (rate>=threshold + failures>0) rejected before history mutation", async () => {
     // Regression: result.best previously could point at the very node
     // whose payload was rejected as contradictory. SearchNode does not

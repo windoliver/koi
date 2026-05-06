@@ -262,15 +262,15 @@ export async function linearSearch(
 
     // Reject contradictory payloads (rate >= threshold AND non-empty
     // failures) BEFORE materializing a node, pushing to history, or
-    // updating bestNode. Otherwise result.best could point at the very
-    // candidate the loop just rejected as invalid — SearchNode does
-    // not carry the failures list, so downstream callers would have
-    // no way to tell the returned winner came from a poisoned eval.
-    if (
-      evalResult.successRate >= convergenceThreshold &&
-      evalResult.sampleCount >= minEvalSamples &&
-      evalResult.failures.length > 0
-    ) {
+    // updating bestNode. The minEvalSamples gate is deliberately NOT
+    // checked here — an under-sampled threshold-clearing payload that
+    // also reports failures is still a contradiction, and skipping it
+    // would let history/bestNode update with a node the evaluator just
+    // told us is failing. The same poisoned-best risk applies whether
+    // sampleCount is 1 or 100. SearchNode does not carry the failures
+    // list, so downstream callers would have no way to tell the
+    // returned winner came from a poisoned eval.
+    if (evalResult.successRate >= convergenceThreshold && evalResult.failures.length > 0) {
       stopReason = "eval_failed";
       terminalDiagnostic = { kind: "eval_failed", iteration, causeClass: null };
       break;
