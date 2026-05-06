@@ -146,6 +146,16 @@ const TEXT_LIMIT = 4096;
 
 export function createTelegramChannel(config: TelegramChannelConfig): TelegramChannelAdapter {
   const deployment: TelegramDeployment = config.deployment ?? { mode: "polling" };
+  // Fail closed at construction. Webhook mode without a configured secret
+  // is the most common way operators accidentally ship an unauthenticated
+  // public ingress route. Refuse to construct rather than leaving the
+  // verification optional and hoping callers wire handleWebhook
+  // correctly.
+  if (deployment.mode === "webhook" && config.webhookSecret === undefined) {
+    throw new Error(
+      "[channel-telegram] webhook mode requires `webhookSecret` in TelegramChannelConfig (the value also passed to setWebhook). Without it any caller hitting the webhook URL can spoof updates.",
+    );
+  }
   // let requires justification: bot is created lazily inside platformConnect
   let bot: TelegramBotLike | undefined = config.bot;
   // let requires justification: registered listener invoked by handleUpdate
@@ -573,13 +583,29 @@ function isTelegramRateLimit(err: unknown): err is TelegramApiError {
   return e.error_code === 429;
 }
 
+/**
+ * Maximum seconds to honour a Telegram `retry_after` value. The Bot API
+ * occasionally returns very large `retry_after` (minutes to hours), and
+ * because send() calls are serialized in this adapter, blindly sleeping
+ * would wedge every subsequent send and prevent disconnect/restart for
+ * that whole window. Cap at 60s and surface a retryable error past it
+ * so operators (or middleware) can back off explicitly.
+ */
+const TELEGRAM_429_MAX_WAIT_SECONDS = 60;
+
 async function callWith429Retry<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (err: unknown) {
     if (!isTelegramRateLimit(err)) throw err;
-    const wait = err.parameters?.retry_after ?? 1;
-    await new Promise((r) => setTimeout(r, wait * 1000));
+    const requested = err.parameters?.retry_after ?? 1;
+    if (requested > TELEGRAM_429_MAX_WAIT_SECONDS) {
+      throw new Error(
+        `[channel-telegram] 429 retry_after=${requested}s exceeds adapter cap (${TELEGRAM_429_MAX_WAIT_SECONDS}s) — refusing to block the send pipeline; retry later`,
+        { cause: err },
+      );
+    }
+    await new Promise((r) => setTimeout(r, requested * 1000));
     return await fn();
   }
 }

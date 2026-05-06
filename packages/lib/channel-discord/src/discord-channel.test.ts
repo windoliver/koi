@@ -315,7 +315,7 @@ describe("createDiscordChannel — interaction reply path", () => {
     await adapter.disconnect();
   });
 
-  test("second reply on the same interaction threadId falls back to channel.send", async () => {
+  test("second reply on the same interaction threadId fails closed by default (no late duplicate)", async () => {
     const f = fakeClient();
     const adapter = createDiscordChannel({ token: "T", client: f.client });
     await adapter.connect();
@@ -337,9 +337,47 @@ describe("createDiscordChannel — interaction reply path", () => {
       content: [{ kind: "text", text: "first" }],
       threadId: "interaction:cmd:i101:C1",
     });
+    // Default: no fallback. Discord has shown the user the result via
+    // the deferred reply; reposting publicly would create duplicates.
+    await expect(
+      adapter.send({
+        content: [{ kind: "text", text: "second" }],
+        threadId: "interaction:cmd:i101:C1",
+      }),
+    ).rejects.toThrow(/expired or missing/);
+    expect(f.sent).toHaveLength(0);
+    await adapter.disconnect();
+  });
+
+  test("slashCommandFallbackToChannel: true opts in to channel.send for expired slash threads", async () => {
+    const f = fakeClient();
+    const adapter = createDiscordChannel({
+      token: "T",
+      client: f.client,
+      slashCommandFallbackToChannel: true,
+    });
+    await adapter.connect();
+    f.emit("interactionCreate", {
+      id: "i101b",
+      isChatInputCommand: () => true,
+      isButton: () => false,
+      commandName: "say",
+      options: { data: [] },
+      user: { id: "U1" },
+      channelId: "C1",
+      guildId: "G1",
+      createdTimestamp: 1,
+      deferReply: async () => undefined,
+      editReply: async () => undefined,
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    await adapter.send({
+      content: [{ kind: "text", text: "first" }],
+      threadId: "interaction:cmd:i101b:C1",
+    });
     await adapter.send({
       content: [{ kind: "text", text: "second" }],
-      threadId: "interaction:cmd:i101:C1",
+      threadId: "interaction:cmd:i101b:C1",
     });
     expect(f.sent).toHaveLength(1);
     expect(f.sent[0]?.payload.content).toBe("second");
@@ -378,9 +416,14 @@ describe("createDiscordChannel — interaction reply path", () => {
     await adapter.disconnect();
   });
 
-  test("expired pending interactions are swept when a new interaction arrives (no leak)", async () => {
+  test("expired pending interactions are swept when a new interaction arrives (no late editReply)", async () => {
     const f = fakeClient();
-    const adapter = createDiscordChannel({ token: "T", client: f.client });
+    // Opt into channel fallback so the sweep is observable end-to-end.
+    const adapter = createDiscordChannel({
+      token: "T",
+      client: f.client,
+      slashCommandFallbackToChannel: true,
+    });
     await adapter.connect();
     const editsByInteraction: Record<string, number> = {};
     const makeInteraction = (id: string): Record<string, unknown> => ({
@@ -402,11 +445,8 @@ describe("createDiscordChannel — interaction reply path", () => {
     const t0 = Date.now();
     const nowSpy = spyOn(Date, "now").mockReturnValue(t0);
     f.emit("interactionCreate", makeInteraction("OLD"));
-    // Advance virtual clock past the 15-minute TTL.
     nowSpy.mockReturnValue(t0 + 16 * 60 * 1000);
     f.emit("interactionCreate", makeInteraction("NEW"));
-    // Try to reply to the OLD interaction — should fall back to channel.send,
-    // because the sweep on NEW evicted it.
     await adapter.send({
       content: [{ kind: "text", text: "late" }],
       threadId: "interaction:cmd:OLD:C1",
@@ -486,16 +526,32 @@ describe("createDiscordChannel — interaction reply path", () => {
     await adapter.disconnect();
   });
 
-  test("unknown interaction id falls back to channel.send", async () => {
-    const f = fakeClient();
-    const adapter = createDiscordChannel({ token: "T", client: f.client });
-    await adapter.connect();
-    await adapter.send({
+  test("unknown interaction id throws by default, falls back to channel.send when opted in", async () => {
+    const f1 = fakeClient();
+    const a1 = createDiscordChannel({ token: "T", client: f1.client });
+    await a1.connect();
+    await expect(
+      a1.send({
+        content: [{ kind: "text", text: "x" }],
+        threadId: "interaction:cmd:unknown-id:C1",
+      }),
+    ).rejects.toThrow(/expired or missing/);
+    expect(f1.sent).toHaveLength(0);
+    await a1.disconnect();
+
+    const f2 = fakeClient();
+    const a2 = createDiscordChannel({
+      token: "T",
+      client: f2.client,
+      slashCommandFallbackToChannel: true,
+    });
+    await a2.connect();
+    await a2.send({
       content: [{ kind: "text", text: "x" }],
       threadId: "interaction:cmd:unknown-id:C1",
     });
-    expect(f.sent).toHaveLength(1);
-    await adapter.disconnect();
+    expect(f2.sent).toHaveLength(1);
+    await a2.disconnect();
   });
 
   test("retry after a transient editReply failure still routes through editReply (not channel.send)", async () => {

@@ -94,6 +94,15 @@ export interface DiscordChannelConfig {
    * name (e.g. `whoami`/diagnostics ephemeral, public commands public).
    */
   readonly slashCommandEphemeral?: boolean | ((commandName: string) => boolean);
+  /**
+   * When true, an `interaction:cmd:...` thread whose live interaction
+   * has expired (15-minute Discord token TTL) or been lost across a
+   * reconnect falls through to `channel.send()` on the same channel.
+   * Default `false` — fail closed. Posting late results publicly after
+   * Discord has already shown the user "interaction failed" creates
+   * duplicate side effects when the user retries.
+   */
+  readonly slashCommandFallbackToChannel?: boolean;
 }
 
 export interface DiscordChannelAdapter extends ChannelAdapter {
@@ -282,7 +291,9 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
     },
 
     platformSend: async (message: OutboundMessage): Promise<void> => {
-      await sendOutbound(getClient(), pendingInteractions, message);
+      await sendOutbound(getClient(), pendingInteractions, message, {
+        slashCommandFallbackToChannel: config.slashCommandFallbackToChannel === true,
+      });
     },
 
     onPlatformEvent: (handler): (() => void) => {
@@ -343,6 +354,7 @@ async function sendOutbound(
   client: DiscordClientLike,
   pendingInteractions: Map<string, PendingInteraction>,
   message: OutboundMessage,
+  options: { readonly slashCommandFallbackToChannel: boolean },
 ): Promise<void> {
   if (message.threadId === undefined) {
     throw new Error("[channel-discord] OutboundMessage.threadId is required");
@@ -410,11 +422,20 @@ async function sendOutbound(
     // Interaction expired/missing. For BUTTON threads, fail closed: the
     // interaction was ephemeral or otherwise scoped, and falling through
     // to channel.send would repost a private reply publicly. For slash
-    // commands, the original command was already public, so channel.send
-    // is a safe (degraded) fallback.
+    // commands the default is also fail-closed: Discord has already
+    // shown the user "interaction failed" by the time the token
+    // expired, so a late public repost creates duplicate side effects
+    // when the user retries. Callers can opt in via
+    // `slashCommandFallbackToChannel: true` when duplicates are
+    // tolerable for their workflow.
     if (parsed.kind === "button") {
       throw new Error(
         `[channel-discord] button interaction "${parsed.interactionId}" expired or missing — refusing channel fallback to preserve ephemeral scope`,
+      );
+    }
+    if (!options.slashCommandFallbackToChannel) {
+      throw new Error(
+        `[channel-discord] slash interaction "${parsed.interactionId}" expired or missing — channel fallback disabled (set slashCommandFallbackToChannel: true to opt in)`,
       );
     }
   }

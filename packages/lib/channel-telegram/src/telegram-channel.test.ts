@@ -171,21 +171,15 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
-  test("webhook: handleWebhook rejects when no webhookSecret is configured (fails closed)", async () => {
+  test("webhook mode without webhookSecret refuses to construct (fails closed at boundary)", async () => {
     const f = fakeBot();
-    const adapter = createTelegramChannel({
-      token: "T",
-      bot: f.bot,
-      deployment: { mode: "webhook" },
-    });
-    await adapter.connect();
     expect(() =>
-      adapter.handleWebhook("any", {
-        update_id: 1,
-        message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "x" },
+      createTelegramChannel({
+        token: "T",
+        bot: f.bot,
+        deployment: { mode: "webhook" },
       }),
     ).toThrow(/webhookSecret/);
-    await adapter.disconnect();
   });
 
   test("webhook: handleWebhook rejects on secret mismatch", async () => {
