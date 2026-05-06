@@ -52,6 +52,7 @@ Same reasoning as wasm: rather than overload `SandboxAdapter` and break router s
 // in @koi/sandbox-cloudflare/src/types.ts (also @koi/sandbox-vercel)
 export interface EdgeInvokeRequest {
   readonly payload: unknown;          // arbitrary JSON-serializable input
+  readonly requestId: string;         // REQUIRED — UUIDv4. Used for shim-side dedupe across retries.
   readonly timeoutMs?: number;        // capped by profile.resources.timeoutMs
   readonly signal?: AbortSignal;
 }
@@ -140,18 +141,29 @@ src/
 
 #### Create-failure state machine (orphan-safe)
 
-Remote create involves multiple sequential mutations: (1) `PUT /workers/scripts/{name}` (deploy bytes), (2) optional per-key `PUT /workers/scripts/{name}/secrets` (env vars from profile), (3) optional route binding. Any of these can fail mid-way.
+Remote create involves multiple sequential mutations. The order is chosen so that **a partially-created artifact is never reachable with secrets attached**:
+
+1. `PUT /workers/scripts/{name}` with `workers_dev: false` and no custom route — deploy the bytes but with **zero reachability**. The worker exists but has no `*.workers.dev` URL and no custom hostname, so no external request can reach it.
+2. (only if step 1 succeeded) `PUT /workers/scripts/{name}/secrets` per env-var key — uploads secrets onto an unreachable artifact. If create fails here, an attacker has no way to invoke the worker even if cleanup races leave it behind.
+3. (only if step 2 succeeded) **Activation step**: `PATCH /workers/scripts/{name}/subdomain` to set `enabled: true`, OR bind a custom route. This is the single atomic step that makes the worker reachable. If activation fails, secrets are already attached but reachability was never granted.
+4. (only if step 3 succeeded) instance enters `ready`; the host stores the activated URL and `invoke()` becomes available.
+
+Failure at any step before step 3 means the worker is **not externally invokable** even if the cleanup DELETE races. This is a structural guarantee, not a best-effort one — Cloudflare's `workers_dev: false` default + no custom route is a hard provider-level reachability gate.
 
 States:
 
 ```
-allocating → deploying → secrets-uploading → bound → ready
-       \         \              \                \
-        \         \              \                +--> create failure → cleanup
-         \         \              +-------------------> create failure → cleanup
-          \         +--------------------------------> create failure → cleanup
-           +-------------------------------------------> no remote artifact yet
+allocating → deploying-unreachable → secrets-uploading → activating → ready
+        \           \                       \                \
+         \           \                       \                +--> create failure → cleanup (was reachable briefly)
+          \           \                       +----------------> create failure → cleanup (unreachable, secrets attached but inert)
+           \           +-----------------------------------------> create failure → cleanup (unreachable, no secrets)
+            +---------------------------------------------------> no remote artifact yet
 ```
+
+The `unreachable` qualifier on intermediate states is a real provider-side property, not a documentation note. Until the `activating` step completes, `https://{name}.{subdomain}.workers.dev` returns a Cloudflare 522/523 (no route configured), regardless of what the worker code does.
+
+For Vercel, the analogous gate is the `target` field on `POST /v13/deployments`: deployments are created with `target: "production"` only at activation. Until activation, the deployment URL is preview-only and gated behind Vercel access controls; no public DNS resolves to it. Same structural guarantee.
 
 Rules:
 
@@ -194,7 +206,12 @@ In-process delayed re-verify is necessary but not sufficient: a host crash, cont
   - Cloudflare: `provider === "cloudflare" && accountId === config.accountId`.
   - Vercel: `provider === "vercel" && (teamId ?? null) === (config.teamId ?? null) && projectId === config.projectId`.
   Each matched orphan triggers a provider-specific DELETE (`/workers/scripts/{scriptName}` for CF, `/v13/deployments/{deploymentId}` for Vercel). Successful deletions (or 404 confirmed by a follow-up GET) remove the entry; failures bump `lastTriedAt` and stay queued. The Vercel adapter requires `projectId` in its config so reconciliation has a deterministic key — it is not optional.
-- **External reconciliation:** the `provider-smoke.yml` nightly cron job lists ALL scripts/deployments older than 1 hour, regardless of prefix, that the configured token has authority to delete. The configurable `scriptPrefix` defaults to `koi-sandbox` but is not relied on for sweeping — operators can override prefix without losing janitor coverage. The sweep cross-references the SQLite ledger to skip artifacts the local process is still actively managing (rows with `last_tried_at` within 5 minutes), and deletes everything else. This is the cross-host backstop independent of any prefix convention; the local SQLite ledger is the single-host transactional backstop.
+- **Ownership-tagged artifacts (cleanup is provider-metadata gated):** every create attempt tags the deployed artifact with provider-side metadata that uniquely identifies it as koi-managed:
+  - **Cloudflare:** uses Workers `tags` field on the script: `["koi-managed:v1", "koi-owner:${ownerId}"]` where `ownerId` is a stable opaque identifier from `config.ownerId` (required, no default — operators must set it per deployment to namespace their fleet).
+  - **Vercel:** uses the `meta` object on deployments: `{ "koi-managed": "v1", "koi-owner": "${ownerId}" }`.
+  Artifacts created outside this adapter (or by other tools) lack these tags and are NEVER touched by sweep.
+- **External reconciliation:** the `provider-smoke.yml` nightly cron job lists scripts/deployments where `tags` (CF) or `meta` (Vercel) match `koi-managed=v1` AND `koi-owner=${expectedOwnerId}` AND age > 1 hour, then deletes them. Operators configure the workflow with the `ownerId`(s) they intend to sweep; multi-tenant accounts list each owner separately. The sweep additionally consults the local SQLite ledger to skip rows with `last_tried_at` within 5 minutes (some other host is actively reconciling), but the primary safety boundary is the provider-side tag — an artifact without the koi tag pair is invisible to the sweep regardless of age, prefix, or any other property. This is safe in shared accounts because non-koi resources are mechanically excluded.
+- **Tag-application failure is a create failure:** if the provider does not accept the tags during deploy (older API, plan limitation), `create()` returns `KoiError { code: "TAGS_UNSUPPORTED" }` and tears down. We refuse to deploy untracked artifacts.
 - **Synchronous cleanup option:** for callers that cannot tolerate any deferred cleanup, config exposes `synchronousCreateCleanup: boolean` (default `false`). When `true`, the adapter does not return until either (a) the cleanup DELETE returns confirmed-deleted (success path), or (b) cleanup fails and the orphan is persisted to the ledger. INDETERMINATE results are never returned with a still-pending in-process re-verify scheduled — the caller blocks until the durable trace is written. This trades latency for an absolute guarantee that no artifact exists outside the ledger.
 - **Idempotent retries are caller responsibility:** the adapter never auto-retries `create`. Each retry produces a new UUID and is independent.
 - **No orphan from successful create then later failure:** once `ready`, only `destroy()` deletes; failures during `exec()` poison but do not auto-delete (caller decides).
@@ -260,6 +277,19 @@ This is documented prominently in `docs/L2/sandbox-cloudflare.md` and tested in 
 | `signal` (`AbortSignal`) | bridged-locally + remote-cancel | (a) Local: abort the host `fetch` so the caller's promise rejects on schedule. (b) Remote: when signal fires OR `timeoutMs` elapses, fire-and-forget POST to a `/cancel` endpoint on the worker. The shim implements `/cancel` by aborting in-flight work it controls. |
 
 There is no `onStdout`/`onStderr` on `EdgeInvokeRequest` — streaming is not part of the contract, by design. Callers who need streaming use a different adapter.
+
+#### Request-ID idempotency (mandatory wire-protocol dedupe)
+
+Because `destroy()` and timeout/abort can leave remote work in flight (see `DestroyOutcome`), **`requestId` is required, not optional, on every `invoke()`**. The shim deduplicates by ID:
+
+- The shim caches `requestId → { status, result, expiresAt }` in a per-isolate Map for **300 seconds** after the original invocation completes (or fails). Expiration is wall-clock; entries are pruned lazily on each invoke.
+- On `POST /invoke` arrival:
+  - **Unknown ID:** execute the handler, store result, return it.
+  - **Known ID, in-flight:** the second request awaits the first's outcome (same Promise) and returns the same response. Two callers using the same `requestId` see the same result; the handler runs exactly once.
+  - **Known ID, completed:** return the cached result without re-running the handler.
+- The host-side `invoke()` auto-generates `requestId` via `crypto.randomUUID()` if the caller passes a request without one — but at the wire level it is always present. A caller wanting application-controlled dedupe (e.g., to retry across `destroy()` and a fresh `create()`) supplies the same UUID twice; the second hits cache on the new shim only if the new shim is in the same isolate, which Cloudflare does not guarantee. Therefore **dedupe is per-instance**, and the contract documents this: cross-instance retries can still produce duplicate side effects, and idempotency at side-effect targets (downstream APIs, databases) is the caller's responsibility.
+- The shim's per-isolate cache is bounded: max 1000 entries with LRU eviction. Above that, oldest entries are dropped, and a duplicate request for an evicted ID re-runs the handler. Operators tune this via deployed code if higher concurrency requires it.
+- Caller-visible: the standard pattern is "let the SDK auto-generate a UUID per logical operation; reuse the same UUID for retries within the same instance lifetime; treat anything across `destroy()`/`create()` boundaries as a new operation". Documented prominently in `docs/L2/sandbox-cloudflare.md`.
 
 #### Cancellation honesty (always-poison on timeout)
 
