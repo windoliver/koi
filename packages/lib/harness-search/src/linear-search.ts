@@ -63,22 +63,28 @@ export async function linearSearch(
   const {
     refine,
     evaluate,
-    maxIterations = DEFAULT_SEARCH_CONFIG.maxIterations,
+    maxIterations: requestedMaxIterations = DEFAULT_SEARCH_CONFIG.maxIterations,
     convergenceThreshold = DEFAULT_SEARCH_CONFIG.convergenceThreshold,
     minEvalSamples = DEFAULT_SEARCH_CONFIG.minEvalSamples,
     noImprovementLimit = DEFAULT_SEARCH_CONFIG.noImprovementLimit,
     attemptTimeoutMs = DEFAULT_SEARCH_CONFIG.attemptTimeoutMs,
+    adapterHonorsAbort = false,
     sanitizeFailures = DEFAULT_SEARCH_CONFIG.sanitizeFailures,
     clock = DEFAULT_SEARCH_CONFIG.clock,
     random = DEFAULT_SEARCH_CONFIG.random,
     signal,
   } = config;
+  // Best-effort mode forces single-shot — a timed-out / aborted attempt
+  // may keep running in the background, so starting another one would
+  // overlap side effects. Callers that wrap abort-safe adapters opt in
+  // to retries by setting adapterHonorsAbort: true.
+  const maxIterations = adapterHonorsAbort ? requestedMaxIterations : 1;
 
   // Fail-fast on config bugs that would otherwise silently break the
   // bounded-search guarantee (NaN slips past Number.isFinite into the
   // "Infinity disables deadline" branch in withDeadline; <= 0 produces
   // immediate timeouts; non-integer maxIterations corrupts loop bounds).
-  if (!Number.isInteger(maxIterations) || maxIterations < 1) {
+  if (!Number.isInteger(requestedMaxIterations) || requestedMaxIterations < 1) {
     throw new TypeError("linearSearch: maxIterations must be a positive integer");
   }
   if (!Number.isInteger(minEvalSamples) || minEvalSamples < 0) {
@@ -109,6 +115,11 @@ export async function linearSearch(
   let nodeCounter = 0;
   let currentCode = initialCode;
   let bestNode: SearchNode | null = null;
+  // Tracks the immediately-prior node so refinements record their actual
+  // predecessor (the node whose code was refined into the current
+  // candidate), not whichever historical node currently holds the best
+  // score. Lineage and best-tracking are different questions.
+  let lastNode: SearchNode | null = null;
   let bestSuccessRate = -1;
   let consecutiveNoImprovement = 0;
   let continueState = createThompsonState();
@@ -151,10 +162,11 @@ export async function linearSearch(
       iteration,
       successRate: evalResult.successRate,
       evalSamples: evalResult.sampleCount,
-      parentId: bestNode?.id ?? null,
+      parentId: lastNode?.id ?? null,
       createdAt: clock(),
     };
     history.push(node);
+    lastNode = node;
 
     const previousBestRate = bestSuccessRate;
 

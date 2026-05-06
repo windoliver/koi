@@ -97,15 +97,15 @@ export type EvaluateCallback = (
 /**
  * Sanitizer applied to `EvalFailure[]` before they are forwarded into
  * `refine()`. Failures cross a trust boundary back into the LLM
- * provider — `errorMessage`, `parameters`, and even `errorCode` may
- * contain sandbox stderr, stack traces, user payloads, or tenant data
- * that callers do not want exfiltrated to the model. Mirrors the
+ * provider — `errorMessage`, `parameters`, and `errorCode` may contain
+ * sandbox stderr, stack traces, user payloads, or tenant data that
+ * callers do not want exfiltrated to the model. Mirrors the
  * `sanitizeVerifierReason` pattern in `@koi/harness-synth`.
  *
- * Default ({@link DEFAULT_SEARCH_CONFIG}) drops free-text fields and
- * keeps only `toolName` + `errorCode` for steering the next refinement;
- * callers wrapping trusted in-process evaluators may pass through with
- * `(f) => f`, or supply their own redactor.
+ * Default ({@link DEFAULT_SEARCH_CONFIG}) keeps only `toolName` (a
+ * static identifier) and redacts every other field. Callers wrapping
+ * trusted in-process evaluators may pass through with `(f) => f`, or
+ * supply a partial redactor that re-includes specific vetted fields.
  */
 export type SanitizeFailures = (failures: readonly EvalFailure[]) => readonly EvalFailure[];
 
@@ -132,9 +132,29 @@ export interface SearchConfig {
    */
   readonly attemptTimeoutMs?: number;
   /**
+   * Caller's assertion that BOTH `evaluate` and `refine` honor the
+   * `AbortSignal` they receive — i.e. they stop work and release any
+   * non-idempotent side effects when aborted. When `false` (the
+   * conservative default), the loop forces `maxIterations = 1` so a
+   * timed-out or aborted attempt cannot be followed by another one
+   * while the prior callback may still be in flight, mutating external
+   * state outside the caller's view. Set to `true` only after wrapping
+   * adapters in code that proves abort-safety. Mirrors the same flag
+   * in `@koi/harness-synth`.
+   *
+   * Note: even when `true`, JavaScript cannot truly kill an async
+   * callback that ignores its signal — the loop releases its hold on
+   * the wall-clock budget within `attemptTimeoutMs`, but a
+   * non-cooperative callback may continue running in the background
+   * after the search returns. Callers asserting `true` accept that
+   * cost as the price of retries.
+   */
+  readonly adapterHonorsAbort?: boolean;
+  /**
    * Sanitizer applied to evaluator failures before they are passed into
-   * `refine()`. Default redacts `errorMessage` and `parameters` to
-   * prevent caller-controlled data from leaking into the LLM prompt.
+   * `refine()`. Default keeps only `toolName` and redacts every other
+   * field to prevent caller-controlled data from leaking into the LLM
+   * prompt.
    */
   readonly sanitizeFailures?: SanitizeFailures;
   /** Wall-clock source. Default Date.now. */
@@ -146,16 +166,20 @@ export interface SearchConfig {
 }
 
 /**
- * Default redactor — keeps `toolName` + `errorCode` for steering
- * refinement, drops `errorMessage` and `parameters`. Both can carry
- * caller-controlled / sandbox-emitted free text or tenant data; the
- * package fails closed on this trust boundary so callers must opt in
- * to passing diagnostic detail through to the model.
+ * Default redactor — keeps only `toolName` (typically a static
+ * descriptor identifier baked at synthesis time) and replaces every
+ * other field with a fixed string / empty object. `errorCode` is
+ * redacted in addition to `errorMessage` and `parameters` because
+ * evaluator code-vocabularies can encode tenant identifiers, sandbox
+ * paths, or user-derived tags; the package fails closed on this trust
+ * boundary so callers must opt in to passing diagnostic detail through
+ * to the model. Pass-through `(f) => f` is supported for in-process
+ * trusted evaluators; partial redactors can re-include vetted fields.
  */
 const DEFAULT_SANITIZE_FAILURES: SanitizeFailures = (failures) =>
   failures.map((f) => ({
     toolName: f.toolName,
-    errorCode: f.errorCode,
+    errorCode: "redacted",
     errorMessage: "redacted",
     parameters: {},
   }));

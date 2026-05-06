@@ -40,6 +40,8 @@ function makeConfig(overrides: Partial<SearchConfig> = {}): SearchConfig {
     convergenceThreshold: 1.0,
     minEvalSamples: 5,
     noImprovementLimit: 3,
+    // Tests use cooperative in-memory callbacks — opt into retries.
+    adapterHonorsAbort: true,
     clock: () => 1_700_000_000_000,
     random: seededRandom(42),
     ...overrides,
@@ -474,8 +476,13 @@ describe("linearSearch", () => {
     expect(result.stopReason).toBe("eval_failed");
   });
 
-  test("default sanitizer redacts errorMessage and parameters before refine sees failures", async () => {
-    let receivedFailures: readonly { errorMessage: string; parameters: object }[] = [];
+  test("default sanitizer redacts errorMessage, parameters, AND errorCode (only toolName preserved)", async () => {
+    let receivedFailures: readonly {
+      toolName: string;
+      errorCode: string;
+      errorMessage: string;
+      parameters: object;
+    }[] = [];
     const config = makeConfig({
       maxIterations: 2,
       evaluate: async () => ({
@@ -484,7 +491,7 @@ describe("linearSearch", () => {
         failures: [
           {
             toolName: "tool",
-            errorCode: "E1",
+            errorCode: "TENANT_ABC_TIMEOUT",
             errorMessage: "secret token=abc123",
             parameters: { tenantId: "private", userInput: "ssn=42" },
           },
@@ -499,6 +506,8 @@ describe("linearSearch", () => {
     await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
 
     expect(receivedFailures.length).toBe(1);
+    expect(receivedFailures[0]?.toolName).toBe("tool");
+    expect(receivedFailures[0]?.errorCode).toBe("redacted");
     expect(receivedFailures[0]?.errorMessage).toBe("redacted");
     expect(receivedFailures[0]?.parameters).toEqual({});
   });
@@ -531,6 +540,52 @@ describe("linearSearch", () => {
       evaluate: async () => ({ successRate: 1.0, sampleCount: 10, failures: [] }),
     });
     expect(result.stopReason).toBe("converged");
+  });
+
+  test("adapterHonorsAbort defaults to false — forces single-shot", async () => {
+    let evalCalls = 0;
+    // Note: explicitly NOT using makeConfig (which sets adapterHonorsAbort: true).
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, {
+      refine: async () => "```ts\nrefined\n```",
+      evaluate: async () => {
+        evalCalls++;
+        return {
+          successRate: 0.4,
+          sampleCount: 10,
+          failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+        };
+      },
+      maxIterations: 10,
+    });
+    expect(evalCalls).toBe(1);
+    expect(result.totalIterations).toBe(1);
+    expect(result.stopReason).toBe("budget_exhausted");
+  });
+
+  test("parentId follows actual lineage (immediate predecessor), not the historical best", async () => {
+    // Iter 0: rate 0.9 (becomes best)
+    // Iter 1: rate 0.4 (regression — best stays at iter 0)
+    // Iter 2: rate 0.5 (still worse than best, but parent should be iter 1, not iter 0)
+    let i = 0;
+    const rates = [0.9, 0.4, 0.5];
+    const config = makeConfig({
+      maxIterations: 3,
+      noImprovementLimit: 5,
+      evaluate: async () => ({
+        successRate: rates[i++] ?? 0.5,
+        sampleCount: 10,
+        failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+      }),
+      random: () => 0.99,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+
+    expect(result.history.length).toBe(3);
+    expect(result.history[0]?.parentId).toBeNull();
+    expect(result.history[1]?.parentId).toBe(result.history[0]?.id ?? "");
+    // Critical assertion: parent of iter 2 must be iter 1 (the actual
+    // predecessor whose code was refined), NOT iter 0 (the best so far).
+    expect(result.history[2]?.parentId).toBe(result.history[1]?.id ?? "");
   });
 
   test("never exceeds maxIterations even with infinite-failure evaluator", async () => {
