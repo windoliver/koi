@@ -90,7 +90,19 @@ function dispatchInbound(
   return async ({ normalized }, signal) => {
     if (signal.aborted) return;
     const handler = ref.current;
-    if (handler) await handler(normalized);
+    if (handler === null) {
+      // No onMessage handler installed yet. Treating null as success
+      // would let the worker commit + ack the queue item, returning
+      // 200 to Bot Framework while the user code never sees the
+      // message — silent permanent loss. Throw so the worker's
+      // catch path nacks (with retry) and on terminal exhaustion
+      // dead-letters: operators see an explicit failure rather than
+      // missing inbound traffic.
+      throw new Error(
+        "NO_HANDLER: onMessage() handler not installed; cannot dispatch inbound message",
+      );
+    }
+    await handler(normalized);
   };
 }
 

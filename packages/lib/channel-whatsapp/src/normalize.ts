@@ -110,9 +110,13 @@ export function normalizeWhatsApp(
   const inbound: InboundMessage = {
     content: buildContent(message),
     senderId: message.from,
-    threadId: message.from,
+    // Composite threadId scopes the conversation by business number so
+    // a multi-number deployment cannot merge two distinct conversations
+    // that share the same end-user phone. The raw recipient phone is
+    // preserved in metadata.recipientPhone for outbound routing.
+    threadId: `${phoneNumberId}|${message.from}`,
     timestamp,
-    metadata: meta,
+    metadata: { ...meta, recipientPhone: message.from },
   };
   return { ok: true, value: inbound };
 }

@@ -128,7 +128,15 @@ function dispatchInbound(handlerRef: HandlerRef): (
   return async ({ normalized }, signal) => {
     if (signal.aborted) return;
     const handler = handlerRef.current;
-    if (!handler) return;
+    if (handler === null) {
+      // No onMessage handler installed yet. Throw so the worker
+      // nacks (with retry / eventual deadLetter) instead of
+      // committing the message and acking the IMAP source — silent
+      // null-handler success would lose user mail without trace.
+      throw new Error(
+        "NO_HANDLER: onMessage() handler not installed; cannot dispatch inbound message",
+      );
+    }
     await handler(normalized);
   };
 }

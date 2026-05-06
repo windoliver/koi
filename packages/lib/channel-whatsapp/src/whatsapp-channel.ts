@@ -104,7 +104,15 @@ function dispatchInbound(
   return async ({ normalized }, signal) => {
     if (signal.aborted) return;
     const handler = ref.current;
-    if (handler) await handler(normalized);
+    if (handler === null) {
+      // No onMessage handler installed yet. Throw so the worker
+      // nacks (with retry / eventual deadLetter) instead of treating
+      // null-handler as success and silently committing the message.
+      throw new Error(
+        "NO_HANDLER: onMessage() handler not installed; cannot dispatch inbound message",
+      );
+    }
+    await handler(normalized);
   };
 }
 
@@ -420,11 +428,21 @@ export function createWhatsAppChannel(
     },
 
     send: async (message: OutboundMessage) => {
-      const recipient = message.threadId;
-      if (typeof recipient !== "string" || recipient.length === 0) {
+      // threadId is composite (`${phoneNumberId}|${recipientPhone}`)
+      // for inbound-derived replies — scope the conversation by
+      // business number so a multi-number deployment cannot mix
+      // numbers on reply. Bare-phone threadIds (proactive sends from
+      // legacy callers) are still accepted for back-compat.
+      const tid = message.threadId;
+      if (typeof tid !== "string" || tid.length === 0) {
         throw new Error(
-          "INVALID_PAYLOAD: send() requires message.threadId (the recipient phone number)",
+          "INVALID_PAYLOAD: send() requires message.threadId (`${phoneNumberId}|${recipientPhone}` or bare recipient phone)",
         );
+      }
+      const sep = tid.indexOf("|");
+      const recipient = sep >= 0 ? tid.slice(sep + 1) : tid;
+      if (recipient.length === 0) {
+        throw new Error("INVALID_PAYLOAD: empty recipient phone in composite threadId");
       }
       const ctxId =
         typeof message.metadata?.contextMessageId === "string"

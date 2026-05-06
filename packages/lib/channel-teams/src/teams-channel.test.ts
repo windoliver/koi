@@ -203,6 +203,28 @@ describe("createTeamsChannel", () => {
     expect(res.status).toBe(503);
   });
 
+  test("inbound delivered before onMessage handler is installed: NOT silently committed", async () => {
+    // Regression: previously the worker treated handlerRef.current === null
+    // as success and acked the queue item, returning 200 to Bot
+    // Framework while user code never saw the message. Now the
+    // dispatcher throws NO_HANDLER so the worker nacks (and on
+    // terminal exhaustion dead-letters) — operators see an explicit
+    // ingress failure rather than missing inbound traffic.
+    const deps = buildDeps(fakeVerifier(okVerdict));
+    const ch = createTeamsChannel(config, deps);
+    await ch.connect();
+    // Note: NO ch.onMessage() registration before sending traffic.
+    const res = await ch.handleHttpRequest(makeRequest(makeActivity()));
+    expect(res.status).toBe(200);
+    // Give the worker a moment to claim the queue item, fail
+    // dispatch (NO_HANDLER), and after maxRetries dead-letter it.
+    await new Promise((r) => setTimeout(r, 500));
+    const dl = await deps.ingressQueue.getDeadLetters();
+    expect(dl.length).toBeGreaterThan(0);
+    expect(dl[0]?.reason).toContain("NO_HANDLER");
+    await ch.disconnect();
+  });
+
   test("handleHttpRequest before connect() returns 503 (worker not running)", async () => {
     // Regression: previously the webhook accepted and 200-acked
     // requests regardless of channel state, including before

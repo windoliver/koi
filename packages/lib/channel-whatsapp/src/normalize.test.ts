@@ -13,16 +13,32 @@ const textMessage: WhatsAppMessage = {
 };
 
 describe("normalizeWhatsApp", () => {
+  test("threadId scopes by business number (cross-number isolation)", () => {
+    // Regression: previously threadId was the sender phone alone, so
+    // the same end user reaching two distinct WhatsApp business
+    // numbers landed in the same runtime thread and reply context
+    // could bleed across numbers. Composite phoneNumberId|fromPhone
+    // keeps conversations isolated per business number.
+    const a = normalizeWhatsApp(textMessage, "pn-A", clock);
+    const b = normalizeWhatsApp(textMessage, "pn-B", clock);
+    if (!a.ok || !b.ok) throw new Error("unreachable");
+    expect(a.value.threadId).toBe("pn-A|15551234567");
+    expect(b.value.threadId).toBe("pn-B|15551234567");
+    expect(a.value.threadId).not.toBe(b.value.threadId);
+  });
+
   test("text message happy path", () => {
     const r = normalizeWhatsApp(textMessage, PNID, clock);
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error("unreachable");
     expect(r.value.content).toEqual([{ kind: "text", text: "hello" }]);
     expect(r.value.senderId).toBe("15551234567");
-    expect(r.value.threadId).toBe("15551234567");
+    // Composite threadId scopes the conversation by business number.
+    expect(r.value.threadId).toBe(`${PNID}|15551234567`);
     expect(r.value.timestamp).toBe(1_700_000_000_000);
     expect(r.value.metadata?.wamid).toBe("wamid.ABC");
     expect(r.value.metadata?.phoneNumberId).toBe(PNID);
+    expect(r.value.metadata?.recipientPhone).toBe("15551234567");
   });
 
   test("image with caption emits image block + text caption", () => {

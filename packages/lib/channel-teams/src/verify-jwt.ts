@@ -178,11 +178,18 @@ export function createTokenVerifier(
   // or test stubs) can still pass `options.mintAppToken`.
   const mintAppToken: () => Promise<string> =
     options.mintAppToken ?? createBotFrameworkAppTokenMinter(config);
+  // Construct the remote JWKS resolver ONCE per verifier instance.
+  // jose's resolver caches keys + cooldown timers internally; recreating
+  // it per-request defeats that cache and turns each webhook into a
+  // live JWKS fetch — under load or transient Microsoft/DNS issues,
+  // valid traffic returns VERIFIER_UNAVAILABLE/503 far more often than
+  // intended. Hoist outside the verifyToken closure so all calls share
+  // the same memoized state.
+  const sharedJwks = createRemoteJWKSet(new URL(jwksUri));
   const verifyToken: VerifyTokenFn =
     options.verifyToken ??
     (async (token: string): Promise<JWTPayload> => {
-      const jwks = createRemoteJWKSet(new URL(jwksUri));
-      const { payload } = await jwtVerify(token, jwks);
+      const { payload } = await jwtVerify(token, sharedJwks);
       return payload;
     });
 
