@@ -183,19 +183,30 @@ export interface TelegramChannelConfig {
    */
   readonly markWebhookProcessed?: (updateId: number) => void | Promise<void>;
   /**
-   * Fires when `markWebhookProcessed` itself throws AFTER every handler
-   * has succeeded. The handlers already produced user-visible side
-   * effects, so the claim cannot simply be released (Telegram retries
-   * would re-run them and duplicate). But leaving the update silently
-   * "claimed but never processed" hides the inconsistency from
-   * operators. This callback is the recovery hook: enqueue a sweep,
-   * page oncall, or write a "needs-reconciliation" row keyed on
-   * `updateId`. The original commit error is rethrown after the
-   * callback returns so the HTTPS layer still returns non-200.
+   * Fires when the webhook claim/commit lifecycle reaches an
+   * unrecoverable state that cannot be auto-resolved without leaving
+   * the update silently dropped on retry. Specifically, three cases:
+   *
+   *   1. `markWebhookProcessed` throws AFTER every handler succeeded
+   *      (claim stays reserved; handlers already produced side
+   *      effects).
+   *   2. A partial multi-handler success (some handlers produced
+   *      side effects, another rejected) — claim cannot be released
+   *      without duplicating the successful handlers on retry.
+   *   3. `releaseWebhookClaim` itself throws after a handler-stage
+   *      failure or no-handlers fail-closed — the durable claim row
+   *      is now stuck and the next Telegram retry will be silently
+   *      ACKed as a "duplicate" until the operator clears it (or
+   *      returns `"reclaimed"` per the lease-recovery contract).
+   *
+   * Use this as a recovery hook: enqueue a sweep, page oncall, or
+   * write a "needs-reconciliation" row keyed on `updateId`. The
+   * original error is rethrown after the callback returns so the
+   * HTTPS layer still returns non-200.
    *
    * Errors raised by this callback are logged to stderr and
-   * swallowed — surfacing them would mask the underlying commit
-   * failure (which is the actionable signal).
+   * swallowed — surfacing them would mask the underlying failure
+   * (which is the actionable signal).
    */
   readonly onWebhookCommitFailure?: (updateId: number, err: unknown) => void | Promise<void>;
 }
@@ -625,6 +636,36 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
       // Post-handler failures (markWebhookProcessed throws AFTER all
       // handlers succeeded) follow the same "claim stays reserved"
       // rule for the same reason.
+      // releaseWebhookClaim failure is its own recovery state: if the
+      // claim store cannot delete the row, the next Telegram retry
+      // will see this update_id as a "duplicate" (the top-of-handler
+      // claim short-circuit returns silently ACKed) and the message
+      // is dropped forever. Surface release failure through the same
+      // onWebhookCommitFailure hook so the operator can drive a
+      // sweep / page / manual reconcile before the silent ACK happens.
+      const fireCommitFailure = async (err: unknown): Promise<void> => {
+        if (config.onWebhookCommitFailure === undefined) return;
+        try {
+          await config.onWebhookCommitFailure(update.update_id, err);
+        } catch (hookErr: unknown) {
+          console.error(
+            `[channel-telegram] onWebhookCommitFailure(${update.update_id}) threw:`,
+            hookErr,
+          );
+        }
+      };
+      const tryReleaseClaim = async (context: string): Promise<void> => {
+        if (!usedClaim || config.releaseWebhookClaim === undefined) return;
+        try {
+          await config.releaseWebhookClaim(update.update_id);
+        } catch (releaseErr: unknown) {
+          console.error(
+            `[channel-telegram] releaseWebhookClaim(${update.update_id}) failed ${context}:`,
+            releaseErr,
+          );
+          await fireCommitFailure(releaseErr);
+        }
+      };
       const dispatchResult = await dispatchWebhook(update);
       if (dispatchResult.kind === "no-handlers") {
         // Fail closed: an update arrived before any onMessage handler
@@ -634,41 +675,16 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
         // never reach a handler. Release the claim (no side effects
         // were produced) and throw so the HTTPS layer returns non-200
         // and Telegram retries when handlers are wired.
-        if (usedClaim && config.releaseWebhookClaim !== undefined) {
-          try {
-            await config.releaseWebhookClaim(update.update_id);
-          } catch (releaseErr: unknown) {
-            console.error(
-              `[channel-telegram] releaseWebhookClaim(${update.update_id}) failed during no-handler fail-closed:`,
-              releaseErr,
-            );
-          }
-        }
+        await tryReleaseClaim("during no-handler fail-closed");
         throw new Error(
           "[channel-telegram] handleWebhook received an update before any onMessage handler was registered — refusing to ACK so Telegram retries (wire onMessage before exposing the webhook route)",
         );
       }
       if (dispatchResult.kind === "rejected") {
         if (dispatchResult.fulfilled === 0) {
-          if (usedClaim && config.releaseWebhookClaim !== undefined) {
-            try {
-              await config.releaseWebhookClaim(update.update_id);
-            } catch (releaseErr: unknown) {
-              console.error(
-                `[channel-telegram] releaseWebhookClaim(${update.update_id}) failed after handler error:`,
-                releaseErr,
-              );
-            }
-          }
-        } else if (config.onWebhookCommitFailure !== undefined) {
-          try {
-            await config.onWebhookCommitFailure(update.update_id, dispatchResult.error);
-          } catch (hookErr: unknown) {
-            console.error(
-              `[channel-telegram] onWebhookCommitFailure(${update.update_id}) threw; original handler error rethrown:`,
-              hookErr,
-            );
-          }
+          await tryReleaseClaim("after handler error");
+        } else {
+          await fireCommitFailure(dispatchResult.error);
         }
         throw dispatchResult.error;
       }

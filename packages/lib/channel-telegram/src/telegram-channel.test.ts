@@ -654,6 +654,50 @@ describe("@koi/channel-telegram createTelegramChannel", () => {
     await adapter.disconnect();
   });
 
+  test("webhook: releaseWebhookClaim failure surfaces through onWebhookCommitFailure (avoids silent permanent drop on retry)", async () => {
+    const f = fakeBot();
+    const claims = new Set<number>();
+    const commitFailures: Array<{ id: number; err: unknown }> = [];
+    let releaseAttempts = 0;
+    const adapter = createTelegramChannel({
+      token: "T",
+      bot: f.bot,
+      deployment: { mode: "webhook" },
+      webhookSecret: "s",
+      claimWebhookUpdate: (id: number) => {
+        if (claims.has(id)) return "duplicate";
+        claims.add(id);
+        return "claimed";
+      },
+      releaseWebhookClaim: () => {
+        releaseAttempts++;
+        throw new Error("release-broken");
+      },
+      onWebhookCommitFailure: (id, err) => {
+        commitFailures.push({ id, err });
+      },
+    });
+    await adapter.connect();
+    adapter.onMessage(async () => {
+      throw new Error("transient");
+    });
+    const update = {
+      update_id: 123,
+      message: { message_id: 1, from: { id: 9 }, chat: { id: 200 }, date: 1, text: "hi" },
+    };
+    await expect(adapter.handleWebhook("s", update)).rejects.toThrow(/transient/);
+    expect(releaseAttempts).toBe(1);
+    expect(commitFailures).toHaveLength(1);
+    expect(commitFailures[0]?.id).toBe(123);
+    expect((commitFailures[0]?.err as Error).message).toBe("release-broken");
+    // Claim stayed reserved (release threw), so Telegram retry would
+    // hit "duplicate" and silently ACK — but the operator now has
+    // the recovery signal via onWebhookCommitFailure to drive a sweep
+    // / page / lease-takeover before that happens.
+    expect(claims.has(123)).toBe(true);
+    await adapter.disconnect();
+  });
+
   test("webhook: update arriving before any onMessage handler is wired fails closed (releases claim, throws)", async () => {
     const f = fakeBot();
     const claims = new Set<number>();
