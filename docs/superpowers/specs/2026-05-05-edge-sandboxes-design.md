@@ -4,6 +4,10 @@
 **Issue:** [#1377](https://github.com/windoliver/koi/issues/1377) — v2 Phase 3-sandbox-3
 **Branch:** `feat/issue-1377-edge-sandboxes`
 
+## Status: Design spec only
+
+This branch contains only this spec. It is not the implementation. Per CLAUDE.md "PR < 1500 lines logic", the implementation is split across multiple follow-up PRs (see "PR plan" below). Reviewing this branch reviews the design; reviewing the implementation requires the follow-up PRs.
+
 ## Goal
 
 Port three v1 sandbox packages to v2:
@@ -529,15 +533,21 @@ Mocked fetch is insufficient evidence for auth, header shape, endpoint correctne
 
 ### Golden queries (CI gate per CLAUDE.md)
 
-Add three queries to `packages/meta/runtime/scripts/record-cassettes.ts`:
+The wasm and edge packages use **different** golden-query paths because they have different shapes (process-style executor vs invoke-only adapter). The split is the same one introduced by the kernel/runtime integration section above.
 
-| Query | Coverage |
-|-------|----------|
-| `sandbox-wasm` | Tool invocation that uses `@koi/sandbox-wasm` to run a small wasm `add` |
-| `sandbox-cloudflare` | Stubbed adapter (no live deploy in golden) — verifies wiring path through `createKoi` |
-| `sandbox-vercel` | Same — wiring-only |
+| Query | Path | Recording script | Replay test |
+|-------|------|------------------|-------------|
+| `sandbox-wasm` | Standard sandbox (executor-shaped) | `packages/meta/runtime/scripts/record-cassettes.ts` (existing) | `packages/meta/runtime/src/__tests__/golden-replay.test.ts` (existing) |
+| `sandbox-cloudflare` | Edge-specific | `packages/meta/runtime/scripts/record-edge-cassettes.ts` (NEW in PR 2) | `packages/meta/runtime/src/__tests__/golden-edge-replay.test.ts` (NEW in PR 2) |
+| `sandbox-vercel` | Edge-specific | Same as cloudflare | Same as cloudflare |
 
-Cloud golden queries use a mocked `fetch` (injected via config) so replays are hermetic. Add corresponding assertions to `golden-replay.test.ts`.
+`scripts/check-golden-queries.ts` enforces the split:
+
+- A package with `koi.adapter-kind: "sandbox"` (wasm) MUST land assertions in `golden-replay.test.ts`.
+- A package with `koi.adapter-kind: "edge-cloudflare"` or `"edge-vercel"` MUST land assertions in `golden-edge-replay.test.ts`.
+- A package landing in the wrong replay test is a CI failure.
+
+Cloud golden queries use a mocked `fetch` (injected via the adapter's `client` config field) so replays are hermetic and no real provider tokens are needed in CI. The wasm golden query runs a real WebAssembly module in-process with no external dependencies.
 
 ## CI gates (must pass)
 
@@ -573,11 +583,55 @@ Each follows existing `docs/L2/sandbox-*.md` template: purpose, contract, config
 - Vercel Edge runtime vs Node runtime selection (defaults to Edge)
 - `findOrCreate` persistence on cloud adapters (script reuse) — current PR creates fresh per `create()`
 
+## PR plan (split per CLAUDE.md "<1500 lines logic" rule)
+
+The implementation does not fit a single PR. The work is split into four sequential PRs with independent acceptance gates. Each PR is reviewable on its own; later PRs build on earlier ones.
+
+| PR | Title | Scope | LOC budget |
+|----|-------|-------|-----------|
+| 1 | This spec | Design doc (`docs/superpowers/specs/2026-05-05-edge-sandboxes-design.md`). No code, no doc reconciliation. | ~600 lines markdown |
+| 2 | Kernel + runtime extension for edge adapters | New `@koi/core` types (`EdgeFunctionAdapter` etc.), `CreateKoiOptions` extension on `@koi/engine`, `koi.edge.*` accessor, CI script extensions for `koi.adapter-kind`, `docs/L3/sandbox-stack.md` rewrite, `golden-edge-replay.test.ts` skeleton. **Reconciles existing L3 doc with the new contract.** | ~700 LOC |
+| 3 | `@koi/sandbox-wasm` | Full wasm executor package + binary scanner + tests + `docs/L2/sandbox-wasm.md` + golden replay assertion (uses the SandboxExecutor-style cassette path or the new edge replay; finalized in PR 2). | ~700 LOC |
+| 4 | `@koi/sandbox-cloudflare` + `@koi/sandbox-vercel` | Both cloud packages, shim templates, SQLite ledger, provider-smoke workflow, `docs/L2/sandbox-cloudflare.md` + `docs/L2/sandbox-vercel.md`, edge cassettes. | ~900 LOC |
+
+PRs 3 and 4 can land in parallel after PR 2 merges. Each PR is gated independently by the acceptance criteria below for its scope only.
+
 ## Acceptance
 
-- [ ] Three packages compile, lint, typecheck under TS6 strict
-- [ ] All unit tests pass with ≥80% coverage
-- [ ] Layer + orphan + golden-query CI gates green
-- [ ] `provider-smoke.yml` green (cloud adapters: real create/invoke/destroy + leak check)
-- [ ] Three `docs/L2/*.md` files committed
-- [ ] PR < 1500 lines logic
+### PR 1 (this branch — design spec)
+
+- [x] Design spec committed to `docs/superpowers/specs/`
+- [x] Adversarial review converged (multiple Codex passes)
+- [ ] User approval to proceed to PR 2
+
+### PR 2 (kernel + runtime extension)
+
+- [ ] New `@koi/core/edge-function-adapter.ts` lands with the documented type set
+- [ ] `CreateKoiOptions` extended with `sandbox?` and `edgeAdapters?` fields
+- [ ] `koi.edge.{cloudflare,vercel}` accessor reachable when populated, typed `undefined` when not
+- [ ] `scripts/check-golden-queries.ts` and `scripts/check-orphans.ts` accept the `koi.adapter-kind` field on `package.json`
+- [ ] `docs/L3/sandbox-stack.md` rewritten to reflect `EdgeFunctionAdapter` contract (no remaining claims that Cloudflare/Vercel are `SandboxAdapter`s)
+- [ ] `golden-edge-replay.test.ts` skeleton (one passing dummy assertion to prove wiring)
+- [ ] Typecheck + lint + layer-check green
+- [ ] PR < 1500 LOC
+
+### PR 3 (`@koi/sandbox-wasm`)
+
+- [ ] Package compiles, lints, typechecks under TS6 strict
+- [ ] Unit tests pass with ≥80% coverage including adversarial fixtures (modules with internal memory, malformed LEB128)
+- [ ] Layer check green (depends only on `@koi/core` + L0u)
+- [ ] Orphan check green (wired into `@koi/runtime`)
+- [ ] Golden query for wasm lands assertion via the path PR 2 finalized
+- [ ] `docs/L2/sandbox-wasm.md` committed
+- [ ] PR < 1500 LOC
+
+### PR 4 (`@koi/sandbox-cloudflare` + `@koi/sandbox-vercel`)
+
+- [ ] Both packages compile, lint, typecheck under TS6 strict
+- [ ] Unit tests pass with ≥80% coverage including failure paths (poison-on-timeout, mid-create failure, ledger crash recovery, dedupe under retry)
+- [ ] Layer check green for both
+- [ ] Orphan check green for both
+- [ ] Golden edge replay covers both packages with cassettes
+- [ ] `provider-smoke.yml` green: happy path + 4 adversarial scenarios + leak sweep
+- [ ] `docs/L2/sandbox-cloudflare.md` and `sandbox-vercel.md` committed, including "Single-host vs multi-host orphan handling" sections and the `assertIdempotent` workload-class restriction
+- [ ] PR < 1500 LOC each (if they don't fit together, split into PR 4a Cloudflare and PR 4b Vercel)
