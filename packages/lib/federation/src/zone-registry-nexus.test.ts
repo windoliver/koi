@@ -251,6 +251,79 @@ describe("createZoneRegistryNexus", () => {
     await registry[Symbol.asyncDispose]();
   });
 
+  test("lookup (auto default) does NOT downgrade on a NOT_FOUND code (resource miss)", async () => {
+    // Regression for #1372 review-loop pass-4 round 1: a legitimate
+    // missing-zone result from an upgraded hub uses the generic
+    // NOT_FOUND code. That must not be conflated with method-not-found,
+    // or one empty lookup would permanently disable server reads.
+    const desc = makeDescriptor("present-zone");
+    let lookupCalls = 0;
+    const callImpl = async <T>(method: string): Promise<Result<T, KoiError>> => {
+      if (method === "federation.zone_lookup") {
+        lookupCalls += 1;
+        if (lookupCalls === 1) {
+          // First call: NOT_FOUND for the missing zone.
+          return {
+            ok: false,
+            error: { code: "NOT_FOUND", message: "no such zone", retryable: false },
+          };
+        }
+        // Second call: hub still healthy; returns a valid descriptor.
+        return { ok: true, value: desc as T };
+      }
+      return {
+        ok: false,
+        error: { code: "EXTERNAL", message: "unhandled", retryable: false },
+      };
+    };
+    const transport: NexusTransport = { call: callImpl, close: () => {} };
+    const registry = createZoneRegistryNexus({ transport });
+
+    expect(await registry.lookup(zoneId("missing-zone"))).toBeUndefined();
+    // Mode must NOT have downgraded — second lookup still hits the hub.
+    expect(await registry.lookup(zoneId("present-zone"))).toEqual(desc);
+    expect(lookupCalls).toBe(2);
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("auto mode hydrates projection from successful hub reads (survives rollback)", async () => {
+    // Regression for #1372 review-loop pass-4 round 1: a hub rollback
+    // that flips the registry into projection mode must still serve
+    // last-known-good state for zones learned from earlier successful
+    // hub responses, not strand callers behind an empty store.
+    const peer = makeDescriptor("peer-zone");
+    let zoneListAvailable = true;
+    const callImpl = async <T>(method: string): Promise<Result<T, KoiError>> => {
+      if (method === "federation.zone_list") {
+        if (!zoneListAvailable) {
+          return {
+            ok: false,
+            error: { code: "EXTERNAL", message: "Method not found: zone_list", retryable: false },
+          };
+        }
+        return { ok: true, value: [peer] as unknown as T };
+      }
+      return {
+        ok: false,
+        error: { code: "EXTERNAL", message: "unhandled", retryable: false },
+      };
+    };
+    const transport: NexusTransport = { call: callImpl, close: () => {} };
+    const registry = createZoneRegistryNexus({ transport });
+
+    // Initial server-backed list hydrates projection.
+    const initial = await registry.list();
+    expect(initial).toHaveLength(1);
+    expect(initial[0]?.zoneId).toBe(zoneId("peer-zone"));
+
+    // Hub "rolls back": next call signals method-not-found.
+    zoneListAvailable = false;
+    const afterRollback = await registry.list();
+    expect(afterRollback).toHaveLength(1);
+    expect(afterRollback[0]?.zoneId).toBe(zoneId("peer-zone"));
+    await registry[Symbol.asyncDispose]();
+  });
+
   test("watch returns unsubscribe function", async () => {
     const desc = makeDescriptor();
     const events: ZoneEvent[] = [];

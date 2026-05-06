@@ -627,4 +627,138 @@ describe("createSyncEngine", () => {
     await engine.sync();
     expect(received).toHaveLength(0);
   });
+
+  test("initialCursors rejects unknown zones, mismatched zoneId, and non-finite/negative values", () => {
+    // Regression for #1372 review-loop pass-4 round 6: a stale or
+    // corrupt persisted cursor would otherwise silently skip replay
+    // (dedup drops everything, empty post-dedup batch resets health
+    // to active). Fail closed at construction so bad durable state
+    // is loud, not silent.
+    const client: SyncClient = {
+      fetchDelta: async () => ({ ok: true, value: [] }),
+      publishEvents: async () => ({ ok: true, value: undefined }),
+    };
+    const remotes = new Map([["zone-b", client]]);
+    const base = {
+      localZoneId: ZA,
+      remoteClients: remotes,
+      pollIntervalMs: 1000,
+      offlineAfterFailures: 3,
+    } as const;
+
+    expect(() =>
+      createSyncEngine({
+        ...base,
+        initialCursors: new Map([
+          ["zone-ghost", { zoneId: zoneId("zone-ghost"), lastSequence: 0, lastSyncAt: 0 }],
+        ]),
+      }),
+    ).toThrow(/not in remoteClients/);
+
+    expect(() =>
+      createSyncEngine({
+        ...base,
+        initialCursors: new Map([
+          ["zone-b", { zoneId: zoneId("zone-other"), lastSequence: 0, lastSyncAt: 0 }],
+        ]),
+      }),
+    ).toThrow(/must equal the map key/);
+
+    expect(() =>
+      createSyncEngine({
+        ...base,
+        initialCursors: new Map([
+          ["zone-b", { zoneId: zoneId("zone-b"), lastSequence: -1, lastSyncAt: 0 }],
+        ]),
+      }),
+    ).toThrow(/non-negative integer/);
+
+    expect(() =>
+      createSyncEngine({
+        ...base,
+        initialCursors: new Map([
+          ["zone-b", { zoneId: zoneId("zone-b"), lastSequence: Number.NaN, lastSyncAt: 0 }],
+        ]),
+      }),
+    ).toThrow(/non-negative integer/);
+  });
+
+  test("dispose's zone_disconnect carries FEDERATION_PROTOCOL_VERSION on the wire", async () => {
+    // Regression for #1372 review-loop pass-4 round 7: every other
+    // federation RPC carries protocolVersion under the v1 contract.
+    // Shutdown notifications must too, or strict/upgraded receivers
+    // can reject them and leave the hub thinking the node is still
+    // active until heartbeat expiry.
+    const { FEDERATION_PROTOCOL_VERSION } = await import("./types.js");
+    type Recorded = { method: string; params: Record<string, unknown> };
+    const calls: Recorded[] = [];
+    const callImpl = async <T>(
+      method: string,
+      params: Record<string, unknown>,
+    ): Promise<Result<T, KoiError>> => {
+      calls.push({ method, params });
+      return { ok: true, value: undefined as T };
+    };
+    const hubTransport = { call: callImpl, close: () => {} };
+    const engine = createSyncEngine({
+      localZoneId: ZA,
+      remoteClients: new Map(),
+      pollIntervalMs: 1_000_000,
+      offlineAfterFailures: 3,
+      hubTransport,
+    });
+    await engine[Symbol.asyncDispose]();
+    const disconnect = calls.find((c) => c.method === "federation.zone_disconnect");
+    expect(disconnect).toBeDefined();
+    expect(disconnect?.params["protocolVersion"]).toBe(FEDERATION_PROTOCOL_VERSION);
+    expect(disconnect?.params["zoneId"]).toBe(ZA);
+  });
+
+  test("initialCursors seeds replication progress so a restart does not replay history", async () => {
+    // Regression for #1372 review-loop pass-4 round 4: process restarts
+    // must not re-emit already-processed remote events. Callers persist
+    // cursors via getCursor()/their own store and supply them back via
+    // initialCursors at construction.
+    const oldEvent: FederationSyncEvent = {
+      kind: "test",
+      originZoneId: zoneId("zone-b"),
+      sequence: 5,
+      data: { stale: true },
+      emittedAt: 1,
+    };
+    const newEvent: FederationSyncEvent = {
+      kind: "test",
+      originZoneId: zoneId("zone-b"),
+      sequence: 6,
+      data: { fresh: true },
+      emittedAt: 2,
+    };
+    const requestedSinces: number[] = [];
+    const client: SyncClient = {
+      fetchDelta: async (cursor) => {
+        requestedSinces.push(cursor.lastSequence);
+        // Hub returns whichever events follow the supplied cursor.
+        const all = [oldEvent, newEvent];
+        return { ok: true, value: all.filter((e) => e.sequence > cursor.lastSequence) };
+      },
+      publishEvents: async () => ({ ok: true, value: undefined }),
+    };
+    const engine = createSyncEngine({
+      localZoneId: ZA,
+      remoteClients: new Map([["zone-b", client]]),
+      pollIntervalMs: 1_000_000,
+      offlineAfterFailures: 3,
+      initialCursors: new Map([
+        ["zone-b", { zoneId: zoneId("zone-b"), lastSequence: 5, lastSyncAt: 999 }],
+      ]),
+    });
+    const received: FederationSyncEvent[] = [];
+    engine.onEvent((e) => received.push(e));
+
+    await engine.sync();
+    expect(requestedSinces).toEqual([5]);
+    expect(received).toHaveLength(1);
+    expect(received[0]?.sequence).toBe(6);
+    await engine[Symbol.asyncDispose]();
+  });
 });

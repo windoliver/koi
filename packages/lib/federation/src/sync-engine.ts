@@ -14,8 +14,9 @@ import type { ZoneId, ZoneStatus } from "@koi/core";
 import { zoneId } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
 import type { SyncClient } from "./sync-protocol.js";
-import { advanceCursor, deduplicateEvents } from "./sync-protocol.js";
+import { advanceCursor, deduplicateEvents, isFederationSyncEvent } from "./sync-protocol.js";
 import type { FederationSyncEvent, SyncCursor } from "./types.js";
+import { FEDERATION_PROTOCOL_VERSION } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Sync engine config
@@ -87,6 +88,21 @@ export interface SyncEngineConfig {
    * immediately rather than waiting for the heartbeat timeout.
    */
   readonly hubTransport?: NexusTransport | undefined;
+  /**
+   * Optional initial cursors keyed by remote zone id. Lets callers
+   * restore replication progress from durable storage on engine
+   * construction so a process restart does NOT re-emit already-
+   * processed remote events from `lastSequence: 0`.
+   *
+   * For each remote in `remoteClients`, the engine first looks up
+   * an entry here; if present, that cursor seeds replication.
+   * Otherwise the cursor starts at `{ lastSequence: 0 }` (Phase 3
+   * baseline default — non-idempotent event handlers must use this
+   * field plus their own checkpoint store to avoid duplicate side
+   * effects across restarts). Durable checkpointing inside the engine
+   * is tracked in #1410.
+   */
+  readonly initialCursors?: ReadonlyMap<string, SyncCursor>;
 }
 
 /** Handle returned by createSyncEngine. */
@@ -182,12 +198,53 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
    */
   const outstandingFetches = new Map<string, { startedAt: number; token: symbol }>();
 
+  // Fail-closed validation of any caller-supplied checkpoint state.
+  // A stale or corrupt persisted cursor (too high, wrong remote zone,
+  // non-finite, negative) would otherwise cause silent replay loss:
+  // dedup drops everything, the empty post-dedup batch resets health
+  // to active, and the zone looks normal while all skipped events
+  // are gone forever. Reject obviously-broken state at construction.
+  if (config.initialCursors !== undefined) {
+    for (const [remoteId, seed] of config.initialCursors.entries()) {
+      if (!remoteClients.has(remoteId)) {
+        throw new Error(
+          `createSyncEngine: initialCursors contains zone "${remoteId}" which is not in remoteClients`,
+        );
+      }
+      if (seed.zoneId !== remoteId) {
+        throw new Error(
+          `createSyncEngine: initialCursors["${remoteId}"].zoneId is "${seed.zoneId}"; must equal the map key`,
+        );
+      }
+      if (
+        !Number.isInteger(seed.lastSequence) ||
+        seed.lastSequence < 0 ||
+        !Number.isFinite(seed.lastSequence)
+      ) {
+        throw new Error(
+          `createSyncEngine: initialCursors["${remoteId}"].lastSequence must be a non-negative integer (got ${seed.lastSequence})`,
+        );
+      }
+      if (!Number.isFinite(seed.lastSyncAt) || seed.lastSyncAt < 0) {
+        throw new Error(
+          `createSyncEngine: initialCursors["${remoteId}"].lastSyncAt must be a finite non-negative number (got ${seed.lastSyncAt})`,
+        );
+      }
+    }
+  }
+
   for (const remoteId of remoteClients.keys()) {
-    cursors.set(remoteId, {
-      zoneId: zoneId(remoteId),
-      lastSequence: 0,
-      lastSyncAt: 0,
-    });
+    // Honor caller-supplied checkpoint when present so a restart
+    // does not replay already-processed history from sequence 0.
+    const seed = config.initialCursors?.get(remoteId);
+    cursors.set(
+      remoteId,
+      seed ?? {
+        zoneId: zoneId(remoteId),
+        lastSequence: 0,
+        lastSyncAt: 0,
+      },
+    );
     eventLogs.set(remoteId, []);
     truncatedCounts.set(remoteId, 0);
     failures.set(remoteId, 0);
@@ -317,6 +374,30 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
     if (!result.ok) {
       bumpFailure(remoteId);
       return;
+    }
+
+    // Defensive validation at the engine/SyncClient boundary. The
+    // bundled createNexusSyncClient already validates this, but the
+    // SyncClient interface accepts arbitrary implementations, and a
+    // custom or buggy client returning ok:true with a non-array or
+    // malformed event would otherwise throw on the .some(...) call
+    // and escape into Promise.allSettled — leaving the zone "active"
+    // with a stuck cursor.
+    if (!Array.isArray(result.value)) {
+      bumpFailure(remoteId);
+      return;
+    }
+    // Use the shared full-envelope guard — a weak check would let a
+    // custom SyncClient slip through events with NaN/Infinity/negative
+    // sequence, empty kind, or non-object data. Those would then be
+    // dropped by deduplicateEvents() (sequence comparison fails),
+    // leaving newEvents empty and the empty-batch path resetting the
+    // zone to "active" — silently masking corruption.
+    for (const ev of result.value) {
+      if (!isFederationSyncEvent(ev)) {
+        bumpFailure(remoteId);
+        return;
+      }
     }
 
     // Reject events whose claimed origin doesn't match the queried remote.
@@ -497,6 +578,7 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
       if (hubTransport !== undefined) {
         try {
           await hubTransport.call<void>("federation.zone_disconnect", {
+            protocolVersion: FEDERATION_PROTOCOL_VERSION,
             zoneId: localZoneId,
           });
         } catch (_: unknown) {

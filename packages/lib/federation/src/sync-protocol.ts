@@ -38,18 +38,74 @@ export interface NexusSyncClientConfig {
   readonly transport: NexusTransport;
 }
 
+/**
+ * Runtime guard for FederationSyncEvent shapes returned by the hub.
+ * Phase 3 wire contract: kind/originZoneId strings, finite numeric
+ * sequence and emittedAt, and a JsonObject `data` field. Anything
+ * weaker would let a skewed hub corrupt downstream consumers — the
+ * sync engine immediately calls array methods + reads `originZoneId`
+ * on the result, so a non-array or partially-typed payload would
+ * throw out of syncZone() and bypass the offline-after-failures
+ * health path.
+ */
+export function isFederationSyncEvent(value: unknown): value is FederationSyncEvent {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const c = value as Record<string, unknown>;
+  if (typeof c["kind"] !== "string" || c["kind"].length === 0) return false;
+  if (typeof c["originZoneId"] !== "string" || c["originZoneId"].length === 0) return false;
+  if (typeof c["sequence"] !== "number" || !Number.isInteger(c["sequence"]) || c["sequence"] < 0) {
+    return false;
+  }
+  if (typeof c["emittedAt"] !== "number" || !Number.isFinite(c["emittedAt"])) return false;
+  if (c["data"] === null || typeof c["data"] !== "object" || Array.isArray(c["data"])) return false;
+  return true;
+}
+
 /** Creates a SyncClient backed by Nexus JSON-RPC. */
 export function createNexusSyncClient(config: NexusSyncClientConfig): SyncClient {
   const { transport } = config;
 
   return {
-    fetchDelta: (cursor, maxEvents) => {
-      return transport.call<readonly FederationSyncEvent[]>("federation.sync_fetch_delta", {
-        protocolVersion: FEDERATION_PROTOCOL_VERSION,
-        zoneId: cursor.zoneId,
-        lastSequence: cursor.lastSequence,
-        maxEvents: maxEvents ?? 100,
-      });
+    fetchDelta: async (cursor, maxEvents) => {
+      const result = await transport.call<readonly FederationSyncEvent[]>(
+        "federation.sync_fetch_delta",
+        {
+          protocolVersion: FEDERATION_PROTOCOL_VERSION,
+          zoneId: cursor.zoneId,
+          lastSequence: cursor.lastSequence,
+          maxEvents: maxEvents ?? 100,
+        },
+      );
+      if (!result.ok) return result;
+      // Validate at the transport boundary so malformed payloads land
+      // as Result.error and feed the engine's offlineAfterFailures
+      // counter, instead of throwing out of syncZone() and getting
+      // swallowed by Promise.allSettled in syncAll().
+      if (!Array.isArray(result.value)) {
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: `federation.sync_fetch_delta returned a non-array payload for zone "${cursor.zoneId}"; treating as protocol fault`,
+            retryable: true,
+            context: { zoneId: cursor.zoneId },
+          },
+        };
+      }
+      for (let i = 0; i < result.value.length; i += 1) {
+        if (!isFederationSyncEvent(result.value[i])) {
+          return {
+            ok: false,
+            error: {
+              code: "EXTERNAL",
+              message: `federation.sync_fetch_delta returned a malformed event at index ${i} for zone "${cursor.zoneId}"; treating as protocol fault`,
+              retryable: true,
+              context: { zoneId: cursor.zoneId, index: i },
+            },
+          };
+        }
+      }
+      return result;
     },
 
     publishEvents: (events) => {

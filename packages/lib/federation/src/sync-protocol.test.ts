@@ -140,6 +140,27 @@ describe("createNexusSyncClient", () => {
     expect(calls[0]?.params["maxEvents"]).toBe(50);
   });
 
+  test("fetchDelta returns Result.error when payload is not an array", async () => {
+    // Regression for #1372 review-loop pass-4 round 1: a non-array
+    // payload from a buggy hub must surface as Result.error so the
+    // sync engine counts it toward offlineAfterFailures, not throw
+    // out of syncZone() and get swallowed by Promise.allSettled.
+    const { transport } = makeTransport(() => ({ not: "an array" }));
+    const client = createNexusSyncClient({ transport });
+    const result = await client.fetchDelta(baseCursor);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toMatch(/non-array payload/);
+  });
+
+  test("fetchDelta returns Result.error when an event is malformed", async () => {
+    const malformed = [{ kind: "test", originZoneId: "zb" /* missing seq/data */ }];
+    const { transport } = makeTransport(() => malformed);
+    const client = createNexusSyncClient({ transport });
+    const result = await client.fetchDelta(baseCursor);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toMatch(/malformed event at index 0/);
+  });
+
   test("publishEvents calls federation.sync_publish with events array", async () => {
     const events: readonly FederationSyncEvent[] = [evt(1)];
     const { transport, calls } = makeTransport(() => undefined);

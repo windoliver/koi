@@ -56,8 +56,13 @@ export interface ZoneRegistryNexusConfig {
  * that downgrades reads to projection, which is still a safer mode
  * than throwing on every read.
  */
-function isMethodNotFoundError(message: string, code: string): boolean {
-  if (code === "NOT_FOUND") return true;
+function isMethodNotFoundError(message: string, _code: string): boolean {
+  // Do NOT treat the generic `NOT_FOUND` taxonomy code as proof that
+  // the RPC method itself is missing — that code is also used for
+  // legitimate "no such zone" resource misses, and conflating the two
+  // would let a single empty lookup permanently disable server reads
+  // for the whole registry. Only the JSON-RPC -32601 marker or an
+  // explicit textual method-missing phrase should trigger downgrade.
   const m = message.toLowerCase();
   return (
     m.includes("method not found") ||
@@ -199,6 +204,11 @@ export function createZoneRegistryNexus(config: ZoneRegistryNexusConfig): ZoneRe
           mode = "never";
           return projection.get(id);
         }
+        // A genuine missing-zone result from the hub maps to the
+        // ZoneRegistry contract's `undefined` return value, not an
+        // exception. Other error codes still propagate so transport
+        // / network failures aren't silently swallowed.
+        if (result.error.code === "NOT_FOUND") return undefined;
         throw new Error(`Failed to lookup zone: ${result.error.message}`, {
           cause: result.error,
         });
@@ -209,6 +219,11 @@ export function createZoneRegistryNexus(config: ZoneRegistryNexusConfig): ZoneRe
           `federation.zone_lookup returned a payload that is not a ZoneDescriptor; refusing to surface untyped data to callers`,
         );
       }
+      // Hydrate the projection from successful server reads while in
+      // `auto` mode so a later auto-downgrade (e.g. hub rollback to a
+      // pre-v1 build) can still serve last-known-good state instead
+      // of stranding callers behind an empty local store.
+      if (mode === "auto") projection.set(result.value.zoneId, result.value);
       return result.value;
     },
 
@@ -250,6 +265,11 @@ export function createZoneRegistryNexus(config: ZoneRegistryNexusConfig): ZoneRe
           );
         }
         validated.push(entry);
+      }
+      // Hydrate projection from successful server reads while in
+      // `auto` mode (see lookup() comment).
+      if (mode === "auto") {
+        for (const entry of validated) projection.set(entry.zoneId, entry);
       }
       if (filter === undefined) return validated;
       return validated.filter((d) => {

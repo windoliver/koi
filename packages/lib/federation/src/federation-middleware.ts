@@ -262,20 +262,14 @@ export function createFederationMiddleware(config: FederationMiddlewareConfig): 
           });
       };
 
-      // Register the abort listener BEFORE dispatching zone_execute so an
-      // abort that fires between dispatch and listener-registration cannot
-      // be lost. The abort path will fire sendCancel + reject as soon as
-      // the signal flips.
-      let onAbort: (() => void) | undefined;
-      const abortPromise = new Promise<never>((_, reject) => {
-        if (signal === undefined) return; // never settles → harmless
-        onAbort = () => {
-          sendCancel();
-          reject(newAbortError(targetZoneId, request.toolId, federationCallId, cancelSupported));
-        };
-        signal.addEventListener("abort", onAbort, { once: true });
-      });
-
+      // Local validation (tenant + metadata allowlist) runs BEFORE the
+      // abort listener is registered. If validation throws, no remote
+      // RPC is in flight, so a later abort must NOT fire sendCancel
+      // for a callId the remote never saw — that could land on a
+      // reused/aliased correlation tuple and cancel the wrong call.
+      // The listener is also intentionally a no-op leak risk: setting
+      // it up after validation ensures every early-exit path leaves
+      // the AbortSignal untouched.
       // Identity-release is a LOCAL trust decision (not peer-advertised).
       // The principalForwarding map is operator-controlled — a peer
       // cannot opt itself into receiving identity by advertising
@@ -351,6 +345,20 @@ export function createFederationMiddleware(config: FederationMiddlewareConfig): 
         }
         filteredMetadata = pickAllowedKeys(request.metadata, forwardedMetadataKeys);
       }
+
+      // Register the abort listener BEFORE dispatching zone_execute so
+      // an abort that fires between dispatch and listener-registration
+      // cannot be lost. Validation has already run, so this point is
+      // the earliest moment we are committed to a remote call.
+      let onAbort: (() => void) | undefined;
+      const abortPromise = new Promise<never>((_, reject) => {
+        if (signal === undefined) return; // never settles → harmless
+        onAbort = () => {
+          sendCancel();
+          reject(newAbortError(targetZoneId, request.toolId, federationCallId, cancelSupported));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
 
       const callPromise = remoteTransport.call<ToolResponse>("federation.zone_execute", {
         protocolVersion: FEDERATION_PROTOCOL_VERSION,
