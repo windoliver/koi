@@ -296,7 +296,7 @@ return new Response(JSON.stringify(result), { status: 200, headers: { "X-Koi-Res
 
 Every shim response — fresh-owner success, terminal-cache hit, waiter-completed, waiter-failed, timeout, conflict, expired — sets `X-Koi-Result-Kind` per the host-mapping table. Absent header = `MALFORMED_SHIM_RESPONSE`. There is no compat fallback.
 
-The DO class implements `claim` atomically (single-threaded execution per object id), guarantees only one isolate transitions a key to `in-progress`, and persists results to its built-in transactional storage until `dedupeExpiresAtMs + 1h`. **`waitForTerminal(stub, operationId, requestId, dedupeExpiresAtMs, timeoutMs)` checks `Date.now() > dedupeExpiresAtMs` on every poll iteration**: if the wait spans the retry horizon AND no terminal record has been observed, the function returns `{ kind: "operation-expired" }` instead of continuing to poll or attempting takeover. The shim maps to 410 + `X-Koi-Result-Kind: operation-expired`. Adversarial test: `__tests__/cf-waiter-expiry-fail-closed.test.ts` starts a waiter with `dedupeExpiresAtMs` in the near future, kills the owning isolate, and asserts the waiter returns `operation-expired` past the horizon rather than attempting takeover. Cross-instance retries (after `destroy()` + new `create()`) hit the same DO id (because `operationId` keys the lookup) and observe the prior outcome. **This is the only provider primitive that makes cross-retry dedupe a real guarantee for Cloudflare.**
+The DO class implements `claim` atomically (single-threaded execution per object id), guarantees only one isolate transitions a key to `in-progress`, and persists results to its built-in transactional storage until `dedupeExpiresAtMs + 1h`. **`waitForTerminal(stub, operationId, requestId, timeoutMs)` reads expiry from the LEDGER ROW on every poll iteration — it does NOT trust any caller-supplied `dedupeExpiresAtMs` field.** Each poll RPC to the DO reads `(ledger.originalDedupeExpiresAtMs, terminalRecord?)` together in a single transaction; if `Date.now() > ledger.originalDedupeExpiresAtMs`, the function returns `{ kind: "operation-expired" }` immediately, regardless of whether a terminal record exists (consistent with the hard-cutoff rule above). If the request that entered the waiter carried a `dedupeExpiresAtMs` that differs from `ledger.originalDedupeExpiresAtMs` by more than the small skew tolerance, the DO RPC returns `{ kind: "operation-id-conflict", reason: "EXPIRY_HORIZON_MISMATCH" }` BEFORE any further polling — the waiter cannot extend or bypass the stored horizon. The shim maps to 410 + `X-Koi-Result-Kind: operation-expired` (or 409 + `operation-id-conflict` for mismatch). The previous signature `waitForTerminal(..., dedupeExpiresAtMs, timeoutMs)` is REMOVED; passing `dedupeExpiresAtMs` from the request into the waiter was the gap that allowed forward-shifted expiry to extend the wait. **Adversarial tests (mandatory):** `__tests__/cf-waiter-expiry-fail-closed.test.ts` starts a waiter against an existing ledger row whose `originalDedupeExpiresAtMs` is in the near future, kills the owning isolate, and asserts the waiter returns `operation-expired` past the LEDGER's horizon rather than attempting takeover. `__tests__/cf-waiter-rejects-shifted-expiry.test.ts` issues a retry that lands in the waiter path with a forward-shifted `dedupeExpiresAtMs` and asserts the waiter rejects with `OPERATION_ID_CONFLICT/EXPIRY_HORIZON_MISMATCH`, not a successful late completion. Cross-instance retries (after `destroy()` + new `create()`) hit the same DO id (because `operationId` keys the lookup) and observe the prior outcome subject to the same ledger-anchored expiry rule.
 
 #### Vercel: Vercel KV (Upstash Redis) with `SET NX EX`
 
@@ -307,9 +307,10 @@ The DO class implements `claim` atomically (single-threaded execution per object
 All Vercel KV keys are **fleet-namespaced** with `ownerId` to prevent cross-tenant collision when multiple deployments share a KV instance. The shim manages three keys per `operationId`, all prefixed by `ownerId`:
 
 - `${ownerId}:claim:${operationId}` — holds the active claimer's `requestId` with a **15-second TTL** (heartbeat lease — sized below the 30s invoke timeout so waiters can reclaim a crashed owner's claim within the same invoke window).
-- `${ownerId}:result:${operationId}` — holds the cached result with TTL = `(dedupeExpiresAtMs + 1h) - now` (caller-supplied retry-horizon plus a 1-hour grace window so a retry that arrives at the boundary observes the cached result rather than a fresh re-execution).
+- `${ownerId}:result:${operationId}` — holds the cached result with TTL = `(dedupeExpiresAtMs + 1h) - now` (1-hour grace beyond expiry for storage purposes ONLY; serving past expiry is governed by the ledger and is forbidden — see hard-cutoff rule).
 - `${ownerId}:failed:${operationId}` — cached terminal failures with the same TTL formula.
 - `${ownerId}:fingerprint:${operationId}` — durable `dedupeFingerprint = sha256("${ownerId}:${sha256(payload)}")` for the first attempt that ever wrote claim/result/failed under this `operationId`. TTL matches the terminal records. **Excludes both per-instance identity (`pairUUID`) and `handlerCodeHash`** so retries across destroy/recreate AND across routine handler rollouts compute the same fingerprint and observe the prior terminal record. Identical fingerprint definition to the Cloudflare DO model — host-side mapping is provider-symmetric. Handler-version drift is logged as `KOI_HANDLER_VERSION_DRIFT` telemetry but does NOT cause a conflict.
+- `${ownerId}:ledger:${operationId}` — **immutable per-operation ledger row, mirror of the Cloudflare ledger.** Written exactly once at first claim; carries `{ firstClaimAtMs, originalDedupeExpiresAtMs, originalDedupeFingerprint }`. TTL = `30 days + 1 hour - (now - firstClaimAtMs)` so retention dominates the result/failed/claim/fingerprint records. Every claim/wait path consults the ledger BEFORE any result/failed lookup; a present ledger with `now > originalDedupeExpiresAtMs` produces `operation-expired` regardless of whether a cached result still exists. A request whose `dedupeExpiresAtMs` differs from the stored `originalDedupeExpiresAtMs` by more than skew tolerance is rejected as `fingerprint-conflict:EXPIRY_HORIZON_MISMATCH`. Without this row, a Vercel-side caller could resend `operationId` with a forward-shifted expiry after the result/fingerprint TTLs aged out and obtain fresh execution — exactly the post-purge forge path the Cloudflare ledger closed.
 
 Two fleets reusing the same `operationId` value never contend because their key prefixes differ. The shim reads `ownerId` from a worker env var (`KOI_OWNER_ID`) injected at deploy time by the koi adapter, NOT from the request — clients cannot spoof a different owner.
 
@@ -322,6 +323,7 @@ const claimKey = `${ns}:claim:${operationId}`;
 const resultKey = `${ns}:result:${operationId}`;
 const failedKey = `${ns}:failed:${operationId}`;
 const fingerprintKey = `${ns}:fingerprint:${operationId}`;
+const ledgerKey = `${ns}:ledger:${operationId}`;
 
 // dedupeFingerprint: identical definition to Cloudflare DO.
 // pairUUID and handlerCodeHash are INTENTIONALLY EXCLUDED — see CF DO section for rationale.
@@ -341,27 +343,45 @@ const dedupeFingerprint = sha256(`${ns}:${sha256(payloadCanonical)}`);
 //   "claim:in-progress:<requestId>"
 //
 // Argument order: ARGV[1]=requestId, ARGV[2]=dedupeFingerprint, ARGV[3]=retentionSec,
-// ARGV[4]=nowMs, ARGV[5]=dedupeExpiresAtMs.
-// Expiry is checked AFTER terminal-record lookups (so retries arriving after expiry
-// but within the 1h grace observe the cached result/failed) but BEFORE writing a
-// fresh claim — past expiry with no terminal record returns "operation-expired"
-// and the shim maps to 410 + X-Koi-Result-Kind: operation-expired.
+// ARGV[4]=nowMs, ARGV[5]=dedupeExpiresAtMs, ARGV[6]=ledgerRetentionSec, ARGV[7]=skewToleranceMs.
+// LEDGER-FIRST ordering (matches CF DO and the hard-cutoff rule):
+//  1. Read ledger row. If present:
+//     a. If request's dedupeExpiresAtMs differs from stored originalDedupeExpiresAtMs by > skew → fingerprint-conflict:EXPIRY_HORIZON_MISMATCH.
+//     b. If now > stored originalDedupeExpiresAtMs → operation-expired (regardless of result/failed presence).
+//  2. Else: read fingerprint key (legacy aliasing protection).
+//  3. Only AFTER ledger and fingerprint pass: read result/failed.
+//  4. Else: try claim. If fresh, write ledger row + fingerprint atomically as part of the claim transaction.
 const CHECK_OR_CLAIM_LUA = `
-  local fp = redis.call('GET', KEYS[4])
-  if fp and fp ~= ARGV[2] then return 'fingerprint-conflict:'..fp end
-  local r = redis.call('GET', KEYS[1])
-  if r then return 'result:'..r end
-  local f = redis.call('GET', KEYS[2])
-  if f then return 'failed:'..f end
+  local ledger = redis.call('GET', KEYS[5])
+  if ledger then
+    local sep = string.find(ledger, ':')
+    local origExpiry = tonumber(string.sub(ledger, 1, sep - 1))
+    local origFp = string.sub(ledger, sep + 1)
+    if origFp ~= ARGV[2] then return 'fingerprint-conflict:'..origFp end
+    if math.abs(tonumber(ARGV[5]) - origExpiry) > tonumber(ARGV[7]) then
+      return 'fingerprint-conflict:EXPIRY_HORIZON_MISMATCH:'..origExpiry
+    end
+    if tonumber(ARGV[4]) > origExpiry then return 'operation-expired' end
+    local r = redis.call('GET', KEYS[1])
+    if r then return 'result:'..r end
+    local f = redis.call('GET', KEYS[2])
+    if f then return 'failed:'..f end
+    local c = redis.call('GET', KEYS[3])
+    if c then return 'claim:in-progress:'..c end
+    redis.call('SET', KEYS[3], ARGV[1], 'EX', '15')
+    return 'claim:fresh'
+  end
+  -- No ledger yet → first-ever claim for this operationId.
   if tonumber(ARGV[4]) > tonumber(ARGV[5]) then return 'operation-expired' end
-  local c = redis.call('GET', KEYS[3])
-  if c then return 'claim:in-progress:'..c end
   redis.call('SET', KEYS[3], ARGV[1], 'EX', '15')
-  if not fp then redis.call('SET', KEYS[4], ARGV[2], 'EX', ARGV[3]) end
+  redis.call('SET', KEYS[4], ARGV[2], 'EX', ARGV[3])
+  redis.call('SET', KEYS[5], tostring(ARGV[5])..':'..ARGV[2], 'EX', ARGV[6])
   return 'claim:fresh'
 `;
 const initialRetentionSec = Math.floor((dedupeExpiresAtMs + 3_600_000 - Date.now()) / 1000);
-const checkResult = await kvCommand("EVAL", [CHECK_OR_CLAIM_LUA, "4", resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, String(initialRetentionSec), String(Date.now()), String(dedupeExpiresAtMs)]);
+const ledgerRetentionSec = Math.floor((30 * 86400 + 3600)); // 30 days + 1h grace, written once at first claim
+const SKEW_TOLERANCE_MS = 1000;
+const checkResult = await kvCommand("EVAL", [CHECK_OR_CLAIM_LUA, "5", resultKey, failedKey, claimKey, fingerprintKey, ledgerKey, requestId, dedupeFingerprint, String(initialRetentionSec), String(Date.now()), String(dedupeExpiresAtMs), String(ledgerRetentionSec), String(SKEW_TOLERANCE_MS)]);
 if (checkResult === "operation-expired") {
   return new Response(JSON.stringify({ error: "OPERATION_EXPIRED", dedupeExpiresAtMs }), { status: 410, headers: { "X-Koi-Result-Kind": "operation-expired" } });
 }
@@ -386,7 +406,11 @@ if (checkResult.startsWith("claim:in-progress:")) {
   //   { kind: "takeover" }                → fall through; this isolate now holds the claim, run handler
   //   { kind: "timeout" }                 → return 504 to caller
   // SHIM_POLL_DEADLINE_MS = 25_000 is the koi-shim INTERNAL bound; NOT the caller's waiterTimeoutMs.
-  const wait = await waitForTerminal(resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, dedupeExpiresAtMs, SHIM_POLL_DEADLINE_MS);
+  // waitForTerminal reads expiry from the LEDGER on every poll — it does NOT trust the request's dedupeExpiresAtMs.
+  // dedupeExpiresAtMs is passed only so the waiter can detect EXPIRY_HORIZON_MISMATCH on each poll and short-circuit
+  // with operation-id-conflict (matches CF DO behavior). If now > ledger.originalDedupeExpiresAtMs at any poll,
+  // the waiter returns { kind: "operation-expired" } regardless of result/failed key presence.
+  const wait = await waitForTerminal(resultKey, failedKey, claimKey, fingerprintKey, ledgerKey, requestId, dedupeFingerprint, dedupeExpiresAtMs, SHIM_POLL_DEADLINE_MS);
   // EVERY tagged outcome handled explicitly. Unknown kinds are a fatal protocol bug, not a takeover.
   if (wait.kind === "completed") return new Response(wait.body, { status: 200, headers: { "X-Koi-Result-Kind": "success" } });
   if (wait.kind === "failed") return new Response(wait.body, { status: 200, headers: { "X-Koi-Result-Kind": "failed-permanent" } });
