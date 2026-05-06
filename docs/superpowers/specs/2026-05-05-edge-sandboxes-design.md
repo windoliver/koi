@@ -107,7 +107,25 @@ The duplicate-side-effect hazard from timeout/abort/destroy + per-isolate dedupe
 
 `createCloudflareAdapter` REQUIRES `config.dedupeDurableObjectId: string` (a DO namespace ID with a class declared by the operator that exposes `idempotencyCheck(operationId)`). The deploy step wires the namespace as a binding (`KOI_DEDUPE_DO`). Adapter construction fails with `KoiError { code: "DEDUPE_STORE_REQUIRED" }` if missing.
 
-DO is the only Cloudflare primitive with linearizable single-key consistency. The shim handler:
+DO is the only Cloudflare primitive with linearizable single-key consistency.
+
+**Dedupe state machine** (operates on a single Durable Object instance per `operationId`):
+
+```
+fresh → claimed (claimer holds lease) → completed (terminal: result cached for 24h)
+                              \-------> failed-permanent (terminal: error cached for 24h, retries see error)
+                              \-------> claim-expired (lease ran out: any caller can transition to claimed)
+```
+
+Rules:
+
+- `claim`: atomic compareAndSwap from `fresh|claim-expired` to `claimed`. The caller writes its `requestId`, `claimedAt`, and `leaseUntil = claimedAt + 60_000ms` into the DO's transactional storage. Returns `{ status: "fresh" }` to the new owner, `{ status: "in-progress", claimer: <other_requestId>, leaseUntil }` to losers.
+- **Heartbeat lease while running:** the running isolate calls `extendLease` every 30 seconds — atomic CAS that sets `leaseUntil = now + 60_000ms` IFF the current claimer's `requestId` matches. If the heartbeat fails (isolate crashed, evicted), the lease expires after 60s and another isolate can take over via the `claim-expired` transition.
+- **Atomic completion:** `complete` is a single transaction that writes `{ status: "completed", result, statusCode, completedAt, ttlExpiresAt: now + 86400_000ms }` AND clears the claim. If the handler succeeded but `complete` fails (network error, DO transient), the isolate retries `complete` up to 3 times with backoff. After 3 failures, the isolate logs `DEDUPE_COMPLETE_PERSISTENCE_FAILED` and continues to return the result to its caller; the lease will expire and the next caller will take over and re-run the handler. **The handler's external side effects already happened**, so this leaves the door open to duplicate execution — but the workload-class restriction (`assertIdempotent: true`) makes that acceptable; the operator certified retries are safe.
+- **Atomic failure:** `fail` writes `{ status: "failed-permanent", error, failedAt, ttlExpiresAt: now + 86400_000ms }` for handler errors that the operator wants cached (e.g., validation failures with no retry semantics). The handler signals this via a special return shape `{ koi: { failed: true, error } }`. Default behavior is to NOT cache failures — the next retry runs the handler fresh.
+- **Stuck-claim recovery:** if a caller observes `claim-expired` with a non-null result (handler ran but didn't complete the DO), it does NOT trust the partial state. It transitions to `claimed` itself and re-runs the handler. This is the only path where idempotency-at-side-effect-targets matters; the workload-class restriction covers it.
+
+The shim handler:
 
 ```js
 const stub = KOI_DEDUPE_DO.get(KOI_DEDUPE_DO.idFromName(operationId));
@@ -139,31 +157,77 @@ The DO class implements `claim` atomically (single-threaded execution per object
 
 `createVercelAdapter` REQUIRES `config.dedupeKvUrl: string` and `config.dedupeKvToken: string` — a Vercel KV connection (Upstash Redis-compatible REST API). Vercel Edge Config is read-only and write-async, so it cannot serve as a dedupe store. Vercel KV uses Redis primitives which support strongly-consistent `SET NX EX` (set if not exists, with expiry) — the operation is atomic on a single key. The adapter wires the connection as bindings `KOI_DEDUPE_KV_URL` and `KOI_DEDUPE_KV_TOKEN` so the shim can issue authenticated requests.
 
-The shim handler:
+**Dedupe state machine** (parallels the Cloudflare DO design):
+
+The shim manages two keys per `operationId`:
+- `claim:${operationId}` — holds the active claimer's `requestId` with a 60-second TTL (heartbeat lease).
+- `result:${operationId}` — holds the cached result with a 24-hour TTL.
+
+Plus a `failed:${operationId}` key for cached terminal failures (24h TTL).
+
+Atomic operations via Upstash Redis pipelined commands:
 
 ```js
 const claimKey = `claim:${operationId}`;
 const resultKey = `result:${operationId}`;
-// Strong consistency via SET NX EX (atomic claim with 5-minute hold while running)
-const claim = await fetch(`${KOI_DEDUPE_KV_URL}/set/${claimKey}/${requestId}/EX/300/NX`, {
-  headers: { authorization: `Bearer ${KOI_DEDUPE_KV_TOKEN}` },
-});
-const claimBody = await claim.json();
-if (claimBody.result === null) {
-  // someone else claimed; wait for the resultKey or timeout
-  return await waitForResult(KOI_DEDUPE_KV_URL, KOI_DEDUPE_KV_TOKEN, resultKey, timeoutMs);
+const failedKey = `failed:${operationId}`;
+
+// 1. Check terminal cache first (single MGET, atomic across the two keys)
+const cacheCheck = await kvCommand("MGET", [resultKey, failedKey]);
+if (cacheCheck[0]) return new Response(cacheCheck[0], { status: 200 });
+if (cacheCheck[1]) return new Response(cacheCheck[1], { status: 500 });
+
+// 2. Atomic claim with 60s lease
+const claim = await kvCommand("SET", [claimKey, requestId, "EX", "60", "NX"]);
+if (claim !== "OK") {
+  // Lost race; poll for result/failed keys until timeout
+  return await waitForTerminal(resultKey, failedKey, timeoutMs);
 }
-// We own the operation
-const result = await handler({ payload, operationId, requestId });
-// Write result with 24h TTL, atomic SET (overwrite ok — SET NX is for the claim only)
-await fetch(`${KOI_DEDUPE_KV_URL}/set/${resultKey}/${encodeURIComponent(JSON.stringify(result))}/EX/86400`, {
-  method: "POST",
-  headers: { authorization: `Bearer ${KOI_DEDUPE_KV_TOKEN}` },
-});
-return new Response(JSON.stringify(result));
+
+// 3. Spawn heartbeat: every 30s, atomic CAS that extends the lease IFF still owned by us
+const heartbeat = setInterval(async () => {
+  await kvCommand("SET", [claimKey, requestId, "XX", "EX", "60"]); // XX = only if exists
+}, 30_000);
+
+try {
+  const result = await handler({ payload, operationId, requestId });
+  clearInterval(heartbeat);
+
+  // 4. Atomic commit: write result via POST body (NOT URL path — handles arbitrary size up to KV limit)
+  const resultJson = JSON.stringify(result);
+  if (resultJson.length > MAX_DEDUPE_RESULT_BYTES /* = 8 MB, configurable */) {
+    // Result too large to cache durably. Log and return without persisting; lease will expire and next retry will re-run the handler.
+    console.warn("DEDUPE_RESULT_TOO_LARGE", { operationId, size: resultJson.length });
+    await kvCommand("DEL", [claimKey]); // release claim early so retries don't wait full 60s
+    return new Response(resultJson, { status: 200 });
+  }
+  // POST body, not URL path. Upstash REST supports binary-safe SET via the body endpoint.
+  const setResp = await fetch(`${KOI_DEDUPE_KV_URL}/set/${encodeURIComponent(resultKey)}?EX=86400`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${KOI_DEDUPE_KV_TOKEN}`, "content-type": "application/json" },
+    body: resultJson,
+  });
+  if (!setResp.ok) {
+    // Persistence failed after side effects. Retry up to 3x with backoff; if still failing, log and continue.
+    // Same posture as Cloudflare: the workload-class restriction (assertIdempotent) makes this acceptable.
+    await retryPersistResult(resultKey, resultJson, 86400, 3);
+  }
+  await kvCommand("DEL", [claimKey]);
+  return new Response(resultJson, { status: 200 });
+} catch (err) {
+  clearInterval(heartbeat);
+  // Don't cache transient handler errors; only operator-marked terminal failures.
+  await kvCommand("DEL", [claimKey]);
+  throw err;
+}
 ```
 
-Redis `SET NX` is single-key atomic across all clients, so cross-instance retries serialize correctly. Vercel KV (Upstash Redis) advertises strong consistency for single-key operations.
+Rules mirror the Cloudflare design:
+- Strong consistency via Redis `SET NX` for the claim and `MGET` for the terminal-cache check.
+- 60-second lease with 30-second heartbeat ensures crashed isolates don't block retries indefinitely.
+- Stuck-claim recovery: a polling caller that observes `claim` expire (TTL hit) without `result`/`failed` being set transitions to its own claim and re-runs.
+- Result writes use POST body, not URL path, to handle arbitrary size up to a configurable `MAX_DEDUPE_RESULT_BYTES` (default 8 MB).
+- Persistence failures after side effects fall back to "log and serve result without caching" — same as Cloudflare DO, justified by the workload-class restriction.
 
 #### No opt-out
 
@@ -496,8 +560,8 @@ The contract distinguishes two distinct idempotency scopes — they are NOT the 
 
 | Field | Lifetime | Owner | Purpose |
 |-------|----------|-------|---------|
-| `operationId` | Full logical operation, **persists across `destroy()` + new `create()` + multiple instances** | Caller (NEVER auto-generated) | Passed to deployed handler; the handler uses it as the dedupe/idempotency key against external side-effect targets (downstream APIs, databases). The handler MUST treat two requests with the same `operationId` as the same logical operation regardless of their `requestId`. |
-| `requestId` | Single network attempt only — generate fresh on every retry | Caller (per-attempt; e.g., `crypto.randomUUID()` per `invoke()` call) | Per-isolate shim cache key. NOT a downstream-correctness mechanism; only a performance/duplicate-effect-reduction optimization for the case where the same isolate handles a retry within 300s. |
+| `operationId` | Full logical operation, **persists across `destroy()` + new `create()` + multiple instances** | Caller (NEVER auto-generated) | **Authoritative dedupe key for the adapter's durable store** (Cloudflare DO / Vercel KV) — see "Adapter-enforced idempotency" above. The shim consults the durable store keyed on `operationId` BEFORE invoking the handler; if a completed result exists for the same `operationId`, the handler is NOT called and the cached result is returned. Cross-instance retries (after `destroy()` + new `create()`) hit the same DO id / KV key and observe the prior outcome. The handler may also use `operationId` as a downstream idempotency key as defense-in-depth, but the adapter's mechanical dedupe is the primary correctness mechanism. |
+| `requestId` | Single network attempt only — generate fresh on every retry | Caller (per-attempt; e.g., `crypto.randomUUID()` per `invoke()` call) | Per-isolate in-memory cache key for the same-isolate same-attempt deduplication of in-flight calls. NOT a cross-instance mechanism; the durable store keyed on `operationId` handles cross-instance dedupe. `requestId` is forwarded to the handler for tracing/logging only. |
 
 The previous spec passes used `requestId` for both purposes, which collapsed them and contradicted itself across the destroy/recreate boundary. The two-field model resolves this:
 
@@ -511,7 +575,7 @@ Because `destroy()` and timeout/abort can leave remote work in flight (see `Dest
 
 - **The dedupe is a best-effort cache, not an exactly-once guarantee.** The shim caches `requestId → { status, result, expiresAt }` in a per-isolate in-memory `Map`. Cloudflare and Vercel do not pin retries to the same isolate; isolates can also be evicted at any time. Therefore a retry can land on a fresh isolate where the dedupe entry does not exist, and the handler runs again.
 - **Contract claim:** the adapter does NOT promise exactly-once execution. The contract is "if the retry lands on the same warm isolate within the cache window, dedupe takes effect; otherwise the handler may run twice." This is documented at the top of `docs/L2/sandbox-cloudflare.md` and `sandbox-vercel.md` so callers cannot mistake the mechanism for a stronger guarantee.
-- **Caller-side correctness requirement (downstream dedupe is keyed by `operationId` ONLY):** for any `invoke()` whose `payload` triggers non-idempotent side effects (external writes, payments, state mutations), the caller's deployed handler MUST implement idempotency at the side-effect boundary using **`operationId`** as the dedupe key — e.g., a unique constraint on the downstream database keyed on `operationId`, an idempotency-key header on the downstream API populated with `operationId`, or an in-application dedupe table indexed by `operationId`. **`requestId` MUST NOT be used for downstream dedupe** — it changes per attempt and across `destroy()`/`create()` boundaries, so keying downstream effects on it would make every retry look like a new operation and defeat the purpose. The shim cache (keyed on `requestId`) helps performance only; it is NOT a correctness mechanism.
+- **Defense-in-depth idempotency at downstream targets (recommended, not required):** the adapter's durable dedupe store provides cross-instance mechanical enforcement, so handler-level idempotency at downstream side-effect targets is no longer the primary correctness mechanism. However, defense-in-depth is recommended for high-stakes operations: a downstream API that ALSO accepts `operationId` as an idempotency key adds a second layer of protection against unforeseen adapter bugs. **`requestId` MUST NOT be used for any dedupe purpose** — neither the durable store nor the downstream target should key on it.
 - The shim caches entries for **300 seconds** after the original invocation completes (or fails). Expiration is wall-clock; entries are pruned lazily on each invoke.
 - On `POST /invoke` arrival:
   - **Unknown ID:** execute the handler, store result, return it.
