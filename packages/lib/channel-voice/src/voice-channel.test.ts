@@ -767,16 +767,23 @@ describe("createVoiceChannel", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(sentOrder).toEqual(["other", "stuck"]);
     // Round-15: disconnect aborts every in-flight controller (cooperative
-    // transports reject promptly), then clears poison. Stable-session
-    // transports (single-call adapters using a constant threadId) recover
-    // cleanly on reconnect. The transport in this test is non-cooperative
-    // (ignores signal), so we manually release after disconnect.
+    // Round-20 contract: poison persists across reconnect for the
+    // poisoned threadId. Hosts using stable threadIds with non-
+    // cooperative transports must construct a fresh adapter; same-
+    // adapter recovery requires a different threadId.
     await ch.disconnect();
     resolveStuck = undefined;
     await ch.connect();
+    await expect(
+      ch.send({
+        threadId: "session-1",
+        content: [{ kind: "text", text: "still-poisoned" }],
+        metadata: { utteranceId: "still-poisoned" },
+      }),
+    ).rejects.toBeInstanceOf(VoicePoisonedSessionError);
     await ch.send({
-      threadId: "session-1",
-      content: [{ kind: "text", text: "after-recovery" }],
+      threadId: "session-recovered",
+      content: [{ kind: "text", text: "fresh" }],
       metadata: { utteranceId: "after-recovery" },
     });
     expect(sentOrder).toContain("after-recovery");
@@ -844,16 +851,15 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
-  test("reused threadId recovers cleanly after timeout+reconnect even with abort-ignoring transport", async () => {
-    // Round-19 high finding: previously, a single timeout against a
-    // non-cooperative transport poisoned the session permanently —
-    // disconnect/reconnect could not clear it because the raw op
-    // never settled within the fence. That permanently bricked
-    // commonly reused threadIds (e.g. "default" for single-call
-    // transports). Fix: poison is scoped to the connection generation
-    // (incremented on each connect), so a reconnect admits sends on
-    // the same threadId. Stale ops still run in the dead generation
-    // but cannot block new ones.
+  test("after timeout+reconnect, same threadId stays poisoned but a fresh threadId works", async () => {
+    // Round-20 high finding: a non-cooperative transport's stale op
+    // can surface AFTER reconnect, so reused threadIds cannot be
+    // safely re-admitted (overlap risk). Contract: poison persists
+    // for the adapter's lifetime per threadId. Hosts using stable
+    // threadIds (the documented `"default"` pattern) MUST construct
+    // a fresh adapter to recover; hosts using unique threadIds per
+    // call are unaffected — different threadId works on the same
+    // adapter post-reconnect.
     // let requires justification: harness state captured by closures
     let resolveStuck: (() => void) | undefined;
     const sentOrder: string[] = [];
@@ -897,17 +903,81 @@ describe("createVoiceChannel", () => {
     ).rejects.toBeInstanceOf(VoicePoisonedSessionError);
     // Disconnect (raw op still hung; fence times out at 2 s).
     await ch.disconnect();
-    // Reconnect — a fresh generation that ignores stale poison.
+    // Reconnect — a fresh generation; poison entries persist.
     await ch.connect();
-    // The same threadId now works.
+    // Reused threadId is STILL poisoned (overlap protection).
+    await expect(
+      ch.send({
+        threadId: "default",
+        content: [{ kind: "text", text: "still-blocked" }],
+        metadata: { utteranceId: "still-blocked" },
+      }),
+    ).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+    // A fresh threadId works on the same adapter.
     await ch.send({
-      threadId: "default",
-      content: [{ kind: "text", text: "after-reconnect" }],
-      metadata: { utteranceId: "after-reconnect" },
+      threadId: "fresh-thread",
+      content: [{ kind: "text", text: "fresh" }],
+      metadata: { utteranceId: "fresh" },
     });
-    expect(sentOrder).toContain("after-reconnect");
+    expect(sentOrder).toContain("fresh");
     // Release the still-hung first call so the test process exits.
     resolveStuck?.();
+    await ch.disconnect();
+  });
+
+  test("queued sends behind a hung send do not execute after disconnect/reconnect", async () => {
+    // Round-20 high finding: wrappedSend chains queued ops as
+    // `prev.catch().then(() => performSend(...))`. If prev hangs and
+    // disconnect/reconnect happens before prev settles, the queued op
+    // would later execute performSend in the new generation —
+    // synthesizing TTS and sending audio for a turn the host thought
+    // was drained. Fix: capture queuedGen at queue time; performSend
+    // skips with VoicePoisonedSessionError if the gen no longer matches.
+    // let requires justification: harness state captured by closures
+    let resolveStuck: (() => void) | undefined;
+    const sentOrder: string[] = [];
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async (_s, utteranceId) => {
+        if (utteranceId === "stuck") {
+          await new Promise<void>((r) => {
+            resolveStuck = r;
+          });
+        }
+        sentOrder.push(utteranceId);
+      },
+      onUtterance: () => () => {},
+    };
+    const stt: Stt = { transcribe: async () => null };
+    const tts: Tts = { synthesize: async () => new Uint8Array(0) };
+    const ch = createVoiceChannel({ transport, stt, tts });
+    await ch.connect();
+    // First send hangs.
+    const stuckPromise = ch.send({
+      threadId: "session-q",
+      content: [{ kind: "text", text: "first" }],
+      metadata: { utteranceId: "stuck" },
+    });
+    // Second send queues behind it on the same session chain.
+    const queuedPromise = ch.send({
+      threadId: "session-q",
+      content: [{ kind: "text", text: "queued" }],
+      metadata: { utteranceId: "queued-after-disconnect" },
+    });
+    // Disconnect + reconnect while both are pending.
+    await new Promise((r) => setTimeout(r, 30));
+    await ch.disconnect();
+    await ch.connect();
+    // Release the stuck call so prev settles and the queued op runs.
+    resolveStuck?.();
+    // Queued op MUST be rejected with VoicePoisonedSessionError, not
+    // execute performSend in the new generation.
+    await expect(queuedPromise).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+    // Stuck completed (its underlying transport call ran in old gen).
+    await stuckPromise;
+    // Queued utterance MUST NOT have reached the transport.
+    expect(sentOrder).not.toContain("queued-after-disconnect");
     await ch.disconnect();
   });
 

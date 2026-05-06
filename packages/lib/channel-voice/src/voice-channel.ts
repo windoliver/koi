@@ -453,17 +453,14 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
   // from a prior connection cannot block sends on the new one.
   // let requires justification: monotonic counter ticked by connect()
   let connectGen = 0;
-  // Map of sessionId → generation in which that session was poisoned.
-  // A send is rejected only if the poisoned generation matches the
-  // current connectGen. After disconnect()/connect() bumps connectGen,
-  // prior-generation poison entries are naturally invalidated, so
-  // reused threadId values (e.g. a stable "default" sessionId for
-  // single-call transports) remain usable after recovery. Stale
-  // underlying ops still run in the OLD generation — even if their
-  // transport.sendUtterance eventually surfaces audio, the channel
-  // never accepted a same-session send in the new generation that
-  // could have been reordered against it.
-  const poisonedSessions = new Map<string, number>();
+  // Set of threadIds permanently poisoned for this adapter's lifetime.
+  // A non-cooperative transport that ignores AbortSignal could still
+  // surface audio after reconnect, so we keep the threadId blocked to
+  // prevent overlap with newer audio on the same logical session.
+  // Hosts using unique threadIds per call are unaffected; hosts using
+  // stable/reused threadIds (the documented `"default"` pattern) MUST
+  // construct a fresh adapter to recover after a transport timeout.
+  const poisonedSessions = new Set<string>();
   // All AbortControllers for in-flight TTS/transport calls. disconnect()
   // aborts every one to give cooperative impls a chance to fence cleanly
   // before the channel reports recovery.
@@ -548,7 +545,7 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       });
     } catch (e: unknown) {
       if (e instanceof VoiceTtsTimeoutError || e instanceof VoiceTransportSendTimeoutError) {
-        poisonedSessions.set(sessionId, connectGen);
+        poisonedSessions.add(sessionId);
       }
       throw e;
     } finally {
@@ -564,12 +561,15 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     if (message.threadId === undefined || message.threadId.length === 0) {
       return Promise.reject(new VoiceMissingSessionError());
     }
-    // Poison only blocks sends in the SAME generation it was set in.
-    // A prior-generation entry left over from a non-cooperative
-    // transport timeout is naturally invalidated by reconnect, so
-    // reused threadIds (e.g. constant `"default"` sessionId for
-    // single-call transports) recover cleanly after disconnect/connect.
-    if (poisonedSessions.get(message.threadId) === connectGen) {
+    // Poison persists for the adapter's lifetime once set. A non-
+    // cooperative transport's stale call can still surface audio
+    // later, so we MUST NOT admit a new send on the same threadId
+    // even after reconnect — overlap would mix prior-call and
+    // current-call audio. Recovery for stable/reused threadIds
+    // requires constructing a fresh adapter; hosts using unique
+    // threadIds per call (most realistic web/mobile patterns) are
+    // unaffected.
+    if (poisonedSessions.has(message.threadId)) {
       return Promise.reject(new VoicePoisonedSessionError(message.threadId));
     }
     // Pre-render rich blocks → text so non-text content (image alt, file
@@ -593,10 +593,23 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
         ? suppliedId
         : randomBytes(16).toString("hex");
     const prev = sessionSendChains.get(sessionId) ?? Promise.resolve();
-    // .catch on prev swallows prior failures so a single bad turn doesn't
-    // poison every later turn for the same session — the chain advances
-    // and the next caller gets a fresh attempt.
-    const op = prev.catch(() => undefined).then(() => performSend(sessionId, utteranceId, pieces));
+    // Capture the generation at queue time. If this op sits behind a
+    // hung `prev` and disconnect/reconnect happens before `prev`
+    // settles, queuedGen will not match the new connectGen — refuse
+    // to execute a pre-disconnect queue entry against the new
+    // connection so stale TTS/transport work cannot leak into a
+    // recovered session. .catch on prev swallows prior failures so a
+    // single bad turn doesn't poison every later turn for the same
+    // session.
+    const queuedGen = connectGen;
+    const op = prev
+      .catch(() => undefined)
+      .then(() => {
+        if (connectGen !== queuedGen) {
+          return Promise.reject(new VoicePoisonedSessionError(sessionId));
+        }
+        return performSend(sessionId, utteranceId, pieces);
+      });
     // Store a swallowed copy as the chain head. The caller still awaits
     // the rejecting `op` directly; the Map entry must not be a rejecting
     // promise or it would surface as an unhandled rejection when the
