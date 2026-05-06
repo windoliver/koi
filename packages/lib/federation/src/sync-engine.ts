@@ -74,12 +74,14 @@ export interface SyncEngineConfig {
   readonly outstandingFetchMaxAgeMs?: number;
   /**
    * Maximum number of replicated events retained per remote zone in
-   * memory. **Default `Infinity` (unbounded)** — opt in to a bounded
-   * ring-buffer cap for long-lived deployments where unbounded memory
-   * growth is a concern. When set to a finite N, the engine drops
-   * oldest entries when the log exceeds N. The truncated count is
-   * exposed via `getTruncatedCount(remoteZoneId)` so callers can
-   * detect that `getEventLog()` is no longer a complete history.
+   * memory. **Default 10_000** — bounded by default so a long-lived
+   * federated deployment cannot grow per-zone logs without limit.
+   * Older entries are evicted when the log exceeds the cap, and the
+   * evicted count is exposed via `getTruncatedCount(remoteZoneId)`
+   * so callers can detect that `getEventLog()` is no longer a
+   * complete history. Pass `Number.POSITIVE_INFINITY` to opt into
+   * the legacy unbounded mode (e.g. for short-lived test runs); the
+   * caller takes responsibility for the resulting memory growth.
    */
   readonly eventLogMaxPerZone?: number;
   /**
@@ -124,6 +126,19 @@ export interface SyncEngineHandle extends AsyncDisposable {
   readonly getHealth: (remoteZoneId: string) => RemoteHealth | undefined;
   /** Subscribe to incoming sync events. Returns unsubscribe function. */
   readonly onEvent: (handler: (event: FederationSyncEvent) => void) => () => void;
+  /**
+   * Operator-visible recovery for a wedged remote: clears any
+   * outstanding fetch slot for the zone so the next sync cycle can
+   * issue a fresh `fetchDelta`, and resets health from `offline` to
+   * `active` with the failure counter at 0. Use this after operator
+   * confirms the leaked transport promise will never settle (e.g.
+   * underlying TCP/HTTP client was reset out-of-band) — without
+   * this, the zone would stay offline until process restart.
+   *
+   * Returns `true` if a slot was cleared, `false` if the zone has
+   * no outstanding fetch (no-op).
+   */
+  readonly forceResetZone: (remoteZoneId: string) => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +152,7 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
   const { localZoneId, remoteClients, pollIntervalMs, offlineAfterFailures, hubTransport } = config;
   const strictV1 = config.strictV1 ?? true;
   const fetchTimeoutMs = config.fetchTimeoutMs ?? 30_000;
-  const eventLogMaxPerZone = config.eventLogMaxPerZone ?? Number.POSITIVE_INFINITY;
+  const eventLogMaxPerZone = config.eventLogMaxPerZone ?? 10_000;
   const outstandingFetchMaxAgeMs = config.outstandingFetchMaxAgeMs ?? fetchTimeoutMs * 5;
 
   // Validate the new tunables — silent misconfiguration here can
@@ -254,14 +269,26 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
   // let: reassigned on subscribe/unsubscribe (immutable swap pattern)
   let handlers: ReadonlySet<(event: FederationSyncEvent) => void> = new Set();
 
-  function notifyHandlers(event: FederationSyncEvent): void {
+  /**
+   * Deliver an event to every subscribed handler. Returns `true` only
+   * if every handler accepted the event without throwing. Callers use
+   * the return value to decide whether the cursor may safely advance:
+   * advancing past an event a handler refused would be silent data
+   * loss (the next sync starts from a higher cursor and never
+   * redelivers). Handler errors do NOT short-circuit delivery to
+   * later handlers — each subscriber is independent.
+   */
+  function notifyHandlers(event: FederationSyncEvent): boolean {
+    // let: walks handlers, OR-folds any caught error into the result.
+    let allOk = true;
     for (const handler of handlers) {
       try {
         handler(event);
       } catch (_: unknown) {
-        // Listener errors must not disrupt sync processing.
+        allOk = false;
       }
     }
+    return allOk;
   }
 
   // let: reassigned on each poll cycle, cleared on dispose
@@ -283,6 +310,7 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
 
   /** Sync a single remote zone. */
   async function syncZone(remoteId: string, client: SyncClient): Promise<void> {
+    if (disposed) return;
     const cursor = cursors.get(remoteId);
     if (cursor === undefined) return;
 
@@ -363,6 +391,12 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
       return;
     }
     if (timeoutId !== undefined) clearTimeout(timeoutId);
+    // Re-check disposal: dispose() may have run while we were awaiting
+    // the fetch. Without this guard, a late successful response would
+    // continue mutating cursors/eventLogs/handlers/statuses, violating
+    // the contract that disposal is terminal and leaking memory after
+    // teardown.
+    if (disposed) return;
     if (raced === timeoutSentinel) {
       // Timeout: count failure NOW. The original fetchPromise stays in
       // outstandingFetches and will only be cleared when it eventually
@@ -452,15 +486,43 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
       return;
     }
 
-    // Forward progress — reset health, deliver the validated prefix.
-    failures.set(remoteId, 0);
-    statuses.set(remoteId, "active");
-
+    // Deliver the validated prefix BEFORE advancing the cursor so a
+    // handler failure cannot silently strand events past the cursor.
+    // Stop at the first event a handler refused: all earlier events
+    // were accepted, so it's safe to advance the cursor through the
+    // delivered prefix; the failed event and the rest will be
+    // redelivered on the next sync. Counted as a retryable failure
+    // toward offlineAfterFailures so a perpetually-failing handler
+    // surfaces in health rather than silently looping forever.
+    // let: walks the deliverable batch up to the first handler refusal.
+    let deliveredCount = 0;
+    // let: flips on the first handler exception in the batch.
+    let handlerFailed = false;
     for (const event of deliverable) {
-      notifyHandlers(event);
+      const ok = notifyHandlers(event);
+      if (!ok) {
+        handlerFailed = true;
+        break;
+      }
+      deliveredCount += 1;
     }
 
-    const advanced = advanceCursor(cursor, deliverable);
+    if (handlerFailed) {
+      const next = (failures.get(remoteId) ?? 0) + 1;
+      failures.set(remoteId, next);
+      if (next >= offlineAfterFailures) {
+        statuses.set(remoteId, "offline");
+      }
+    } else {
+      // Forward progress — reset health when every handler accepted.
+      failures.set(remoteId, 0);
+      statuses.set(remoteId, "active");
+    }
+
+    const accepted = deliverable.slice(0, deliveredCount);
+    if (accepted.length === 0) return;
+
+    const advanced = advanceCursor(cursor, accepted);
     if (advanced.ok) {
       cursors.set(remoteId, advanced.value);
     } else {
@@ -477,7 +539,7 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
       return;
     }
     const log = eventLogs.get(remoteId) ?? [];
-    const merged = [...log, ...deliverable];
+    const merged = [...log, ...accepted];
     // Optional ring-buffer cap. Default is unbounded — opt in by setting
     // a finite eventLogMaxPerZone. When the cap fires, track the number
     // of evicted events so callers can detect the gap via
@@ -559,6 +621,20 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
         next.delete(handler);
         handlers = next;
       };
+    },
+
+    forceResetZone: (remoteZoneId) => {
+      const had = outstandingFetches.delete(remoteZoneId);
+      if (had) {
+        // The original promise can still settle later; if so, its
+        // tokenized .finally would normally clear the slot — but the
+        // slot may already hold a newer fetch, and the token check
+        // there guards against deleting the wrong entry. Resetting
+        // health makes the next sync cycle treat this zone as fresh.
+        failures.set(remoteZoneId, 0);
+        if (statuses.has(remoteZoneId)) statuses.set(remoteZoneId, "active");
+      }
+      return had;
     },
 
     [Symbol.asyncDispose]: async () => {

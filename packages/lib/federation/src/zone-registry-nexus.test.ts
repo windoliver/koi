@@ -240,6 +240,82 @@ describe("createZoneRegistryNexus", () => {
     await registry[Symbol.asyncDispose]();
   });
 
+  test("auto downgrade is bounded — re-probes the hub after retryAfterMs and recovers", async () => {
+    // Regression for #1372 review-loop pass-4 round 10: a sticky
+    // permanent downgrade would let one false-positive method-not-
+    // found error isolate the process from authoritative discovery.
+    // With bounded re-probe, the cooldown elapses and the registry
+    // re-tries the hub; on success it returns to auto and clears
+    // the cooldown.
+    const desc = makeDescriptor("peer-zone");
+    let serverHealthy = false;
+    let lookupCalls = 0;
+    const callImpl = async <T>(method: string): Promise<Result<T, KoiError>> => {
+      if (method === "federation.zone_lookup") {
+        lookupCalls += 1;
+        if (!serverHealthy) {
+          return {
+            ok: false,
+            error: { code: "EXTERNAL", message: "Method not found", retryable: false },
+          };
+        }
+        return { ok: true, value: desc as T };
+      }
+      return {
+        ok: false,
+        error: { code: "EXTERNAL", message: "unhandled", retryable: false },
+      };
+    };
+    const transport: NexusTransport = { call: callImpl, close: () => {} };
+    const registry = createZoneRegistryNexus({ transport, serverReadsRetryAfterMs: 50 });
+
+    // First lookup: server method-not-found, downgrades to projection.
+    expect(await registry.lookup(zoneId("peer-zone"))).toBeUndefined();
+    expect(lookupCalls).toBe(1);
+
+    // Within cooldown: must NOT hit the server again.
+    expect(await registry.lookup(zoneId("peer-zone"))).toBeUndefined();
+    expect(lookupCalls).toBe(1);
+
+    // Wait past cooldown; hub now healthy.
+    await new Promise((r) => setTimeout(r, 80));
+    serverHealthy = true;
+    expect(await registry.lookup(zoneId("peer-zone"))).toEqual(desc);
+    expect(lookupCalls).toBe(2);
+
+    // After successful re-probe, cooldown is cleared — subsequent
+    // reads continue to hit the server immediately.
+    expect(await registry.lookup(zoneId("peer-zone"))).toEqual(desc);
+    expect(lookupCalls).toBe(3);
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("serverReadsRetryAfterMs=Infinity restores the legacy sticky-downgrade behavior", async () => {
+    let lookupCalls = 0;
+    const callImpl = async <T>(method: string): Promise<Result<T, KoiError>> => {
+      if (method === "federation.zone_lookup") {
+        lookupCalls += 1;
+        return {
+          ok: false,
+          error: { code: "EXTERNAL", message: "Method not found", retryable: false },
+        };
+      }
+      return {
+        ok: false,
+        error: { code: "EXTERNAL", message: "unhandled", retryable: false },
+      };
+    };
+    const transport: NexusTransport = { call: callImpl, close: () => {} };
+    const registry = createZoneRegistryNexus({
+      transport,
+      serverReadsRetryAfterMs: Number.POSITIVE_INFINITY,
+    });
+    expect(await registry.lookup(ZA)).toBeUndefined();
+    expect(await registry.lookup(ZA)).toBeUndefined();
+    expect(lookupCalls).toBe(1);
+    await registry[Symbol.asyncDispose]();
+  });
+
   test("lookup (auto default) propagates non-method-not-found errors instead of downgrading", async () => {
     // Transient network errors must NOT permanently downgrade the
     // registry — only signals that the method genuinely doesn't exist.

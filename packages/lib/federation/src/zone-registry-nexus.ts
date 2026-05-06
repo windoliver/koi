@@ -44,6 +44,20 @@ export interface ZoneRegistryNexusConfig {
    * Prefer `serverReadsMode`. Ignored if `serverReadsMode` is set.
    */
   readonly useServerReads?: boolean;
+  /**
+   * Cooldown (ms) before an `auto`-mode registry that has downgraded
+   * to local projection re-tries the hub. Defaults to 60_000 (1 min).
+   *
+   * Without bounded re-probe, a single false-positive method-not-found
+   * (transient proxy error that happens to mention "not implemented",
+   * a brief upgrade window, etc.) would permanently isolate the
+   * process from authoritative discovery. With re-probe, the next
+   * read after the cooldown attempts the hub again; on success the
+   * registry returns to `auto` and resumes serving authoritative data.
+   * Set to `Infinity` to opt out of re-probe (sticky downgrade —
+   * legacy behavior).
+   */
+  readonly serverReadsRetryAfterMs?: number;
 }
 
 /**
@@ -109,15 +123,50 @@ function isZoneDescriptor(value: unknown): value is ZoneDescriptor {
  */
 export function createZoneRegistryNexus(config: ZoneRegistryNexusConfig): ZoneRegistry {
   const { transport } = config;
-  // let: serverReadsMode may auto-downgrade to "never" when the hub
-  // signals method-not-found, so subsequent reads skip the RPC.
-  let mode: ServerReadsMode =
+  const requestedMode: ServerReadsMode =
     config.serverReadsMode ??
     (config.useServerReads === true
       ? "always"
       : config.useServerReads === false
         ? "never"
         : "auto");
+  const retryAfterMs = config.serverReadsRetryAfterMs ?? 60_000;
+  if (
+    retryAfterMs !== Number.POSITIVE_INFINITY &&
+    (!Number.isFinite(retryAfterMs) || retryAfterMs <= 0)
+  ) {
+    throw new Error(
+      `createZoneRegistryNexus: serverReadsRetryAfterMs must be a positive finite number or Infinity (got ${retryAfterMs})`,
+    );
+  }
+
+  // let: under "auto" we transiently flip to "never" to skip the
+  // failed RPC, then return to "auto" after retryAfterMs so a healthy
+  // hub recovers automatically. "always" / "never" stay fixed.
+  let mode: ServerReadsMode = requestedMode;
+  // let: ms timestamp at which we may re-probe the hub. 0 = never
+  // downgraded, retryAfterMs from now after a downgrade fires.
+  let downgradedUntil = 0;
+  function shouldTryServer(): boolean {
+    if (mode === "always") return true;
+    if (mode === "never") return false;
+    return true;
+  }
+  function applyDowngrade(): void {
+    // Auto re-probes after the cooldown window unless the operator
+    // has opted out by setting Infinity.
+    if (retryAfterMs === Number.POSITIVE_INFINITY) {
+      mode = "never";
+      return;
+    }
+    downgradedUntil = Date.now() + retryAfterMs;
+  }
+  function inCooldown(): boolean {
+    return downgradedUntil > Date.now();
+  }
+  function clearCooldown(): void {
+    downgradedUntil = 0;
+  }
 
   // In-memory projection for fast reads
   const projection = new Map<string, ZoneDescriptor>();
@@ -191,17 +240,19 @@ export function createZoneRegistryNexus(config: ZoneRegistryNexusConfig): ZoneRe
     },
 
     lookup: async (id: ZoneId) => {
-      if (mode === "never") return projection.get(id);
+      if (!shouldTryServer()) return projection.get(id);
+      if (mode === "auto" && inCooldown()) return projection.get(id);
 
       const result = await transport.call<ZoneDescriptor | null>("federation.zone_lookup", {
         zoneId: id,
       });
       if (!result.ok) {
         if (mode === "auto" && isMethodNotFoundError(result.error.message, result.error.code)) {
-          // Hub doesn't implement zone_lookup — pin this registry to
-          // projection mode so subsequent reads don't keep paying the
-          // failed-RPC cost. Real network errors keep propagating.
-          mode = "never";
+          // Hub doesn't implement zone_lookup — start the cooldown so
+          // subsequent reads serve from projection until retryAfterMs
+          // elapses, then re-probe. Set Infinity to opt into the
+          // legacy sticky-downgrade behavior.
+          applyDowngrade();
           return projection.get(id);
         }
         // A genuine missing-zone result from the hub maps to the
@@ -213,6 +264,10 @@ export function createZoneRegistryNexus(config: ZoneRegistryNexusConfig): ZoneRe
           cause: result.error,
         });
       }
+      // Success ⇒ hub is healthy. Clear any in-flight cooldown so the
+      // next read uses the server immediately rather than waiting out
+      // the rest of the window.
+      if (mode === "auto") clearCooldown();
       if (result.value === null || result.value === undefined) return undefined;
       if (!isZoneDescriptor(result.value)) {
         throw new Error(
@@ -238,20 +293,22 @@ export function createZoneRegistryNexus(config: ZoneRegistryNexusConfig): ZoneRe
         });
       };
 
-      if (mode === "never") return localList();
+      if (!shouldTryServer()) return localList();
+      if (mode === "auto" && inCooldown()) return localList();
 
       const result = await transport.call<readonly ZoneDescriptor[]>("federation.zone_list", {
         filter: filter ?? null,
       });
       if (!result.ok) {
         if (mode === "auto" && isMethodNotFoundError(result.error.message, result.error.code)) {
-          mode = "never";
+          applyDowngrade();
           return localList();
         }
         throw new Error(`Failed to list zones: ${result.error.message}`, {
           cause: result.error,
         });
       }
+      if (mode === "auto") clearCooldown();
       if (!Array.isArray(result.value)) {
         throw new Error(
           `federation.zone_list returned a non-array payload; refusing to surface untyped data to callers`,

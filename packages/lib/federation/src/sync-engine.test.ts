@@ -683,6 +683,55 @@ describe("createSyncEngine", () => {
     ).toThrow(/non-negative integer/);
   });
 
+  test("handler exception keeps cursor at the last successfully-delivered event so the failed batch is redelivered", async () => {
+    // Regression for #1372 review-loop pass-4 round 10: previously the
+    // cursor advanced past every event in the batch even when a
+    // subscriber threw, causing silent data loss. Now the cursor
+    // stops at the failed event and the next sync redelivers it.
+    const events = [evt(1), evt(2), evt(3)];
+    let attempt = 0;
+    const client: SyncClient = {
+      fetchDelta: async (cursor) => {
+        attempt += 1;
+        // First call: hub has [1,2,3]. Second call (after handler
+        // recovers): hub has the same events; cursor should have
+        // advanced only past the events the handler accepted.
+        return { ok: true, value: events.filter((e) => e.sequence > cursor.lastSequence) };
+      },
+      publishEvents: async () => ({ ok: true, value: undefined }),
+    };
+    const engine = createSyncEngine({
+      localZoneId: ZA,
+      remoteClients: new Map([["zone-b", client]]),
+      pollIntervalMs: 1_000_000,
+      offlineAfterFailures: 100,
+    });
+    engines.push(engine);
+
+    let throwOnSeq2 = true;
+    const received: number[] = [];
+    engine.onEvent((e) => {
+      if (e.sequence === 2 && throwOnSeq2) {
+        throw new Error("downstream write failed");
+      }
+      received.push(e.sequence);
+    });
+
+    await engine.sync();
+    // Only seq 1 was delivered before the throw on seq 2.
+    expect(received).toEqual([1]);
+    expect(engine.getCursor("zone-b")?.lastSequence).toBe(1);
+    expect(engine.getHealth("zone-b")?.consecutiveFailures).toBe(1);
+
+    // Handler recovers, second sync redelivers seq 2 + seq 3.
+    throwOnSeq2 = false;
+    await engine.sync();
+    expect(received).toEqual([1, 2, 3]);
+    expect(engine.getCursor("zone-b")?.lastSequence).toBe(3);
+    expect(engine.getHealth("zone-b")?.consecutiveFailures).toBe(0);
+    expect(attempt).toBe(2);
+  });
+
   test("dispose's zone_disconnect carries FEDERATION_PROTOCOL_VERSION on the wire", async () => {
     // Regression for #1372 review-loop pass-4 round 7: every other
     // federation RPC carries protocolVersion under the v1 contract.
@@ -760,5 +809,110 @@ describe("createSyncEngine", () => {
     expect(received).toHaveLength(1);
     expect(received[0]?.sequence).toBe(6);
     await engine[Symbol.asyncDispose]();
+  });
+
+  test("forceResetZone clears a leaked outstanding fetch slot and restores active status", async () => {
+    // Regression for #1372 review-loop pass-4: operator-visible recovery
+    // path for a permanently-stuck fetch (e.g. crashed remote whose
+    // fetchDelta promise will never settle). Without forceResetZone the
+    // operator's only recovery is a process restart.
+    let fetchCalls = 0;
+    let release: (() => void) | undefined;
+    const client: SyncClient = {
+      fetchDelta: async () => {
+        fetchCalls++;
+        if (fetchCalls === 1) {
+          await new Promise<void>((res) => {
+            release = res;
+          });
+          return { ok: true, value: [] };
+        }
+        return { ok: true, value: [] };
+      },
+      publishEvents: async () => ({ ok: true, value: undefined }),
+    };
+    const engine = createSyncEngine({
+      localZoneId: ZA,
+      remoteClients: new Map([["zone-b", client]]),
+      pollIntervalMs: 60_000,
+      offlineAfterFailures: 1,
+      fetchTimeoutMs: 10,
+      outstandingFetchMaxAgeMs: 1_000_000,
+    });
+    engines.push(engine);
+
+    await engine.sync(); // first call hangs, times out → offline, slot held
+    expect(fetchCalls).toBe(1);
+    expect(engine.getHealth("zone-b")?.status).toBe("offline");
+
+    await engine.sync(); // slot still held → SKIP
+    expect(fetchCalls).toBe(1);
+
+    // Operator force-resets — slot cleared, status restored.
+    expect(engine.forceResetZone("zone-b")).toBe(true);
+    expect(engine.getHealth("zone-b")?.status).toBe("active");
+
+    await engine.sync(); // fresh fetch dispatched
+    expect(fetchCalls).toBe(2);
+
+    // Idempotent: returns false when no outstanding fetch exists.
+    expect(engine.forceResetZone("zone-b")).toBe(false);
+
+    release?.();
+  });
+
+  test("late-settling fetch after dispose does not mutate engine state", async () => {
+    // Regression for #1372 review-loop pass-4: dispose() is terminal —
+    // a fetch that resolves AFTER disposal must not deliver events,
+    // advance cursors, or flip status. Without the post-await disposed
+    // re-check, a slow successful response leaked memory and could
+    // surface events to handlers that the caller already detached.
+    let resolveFetch: ((v: { ok: true; value: FederationSyncEvent[] }) => void) | undefined;
+    const client: SyncClient = {
+      fetchDelta: () =>
+        new Promise<{ ok: true; value: FederationSyncEvent[] }>((res) => {
+          resolveFetch = res;
+        }),
+      publishEvents: async () => ({ ok: true, value: undefined }),
+    };
+    const engine = createSyncEngine({
+      localZoneId: ZA,
+      remoteClients: new Map([["zone-b", client]]),
+      pollIntervalMs: 60_000,
+      offlineAfterFailures: 999,
+      fetchTimeoutMs: 1_000_000,
+    });
+    engines.push(engine);
+    const received: FederationSyncEvent[] = [];
+    engine.onEvent((e) => received.push(e));
+
+    const syncPromise = engine.sync();
+    // Allow fetchDelta to register before disposing.
+    await new Promise((r) => setTimeout(r, 5));
+
+    await engine[Symbol.asyncDispose]();
+
+    // Settle the fetch AFTER dispose with a real event.
+    resolveFetch?.({
+      ok: true,
+      value: [
+        {
+          originZoneId: zoneId("zone-b"),
+          sequence: 1,
+          kind: "agent.created",
+          data: {},
+          emittedAt: 1,
+        },
+      ],
+    });
+    await syncPromise;
+
+    // Handler must NOT have received the late event; cursor must NOT
+    // reflect the late event's sequence; status must NOT have been
+    // touched. (getCursor may return undefined since no successful
+    // delivery ever happened — either undefined or 0 is correct.)
+    expect(received).toEqual([]);
+    const cursor = engine.getCursor("zone-b");
+    expect(cursor === undefined || cursor.lastSequence === 0).toBe(true);
   });
 });
