@@ -10,7 +10,10 @@
 // config
 export { validateFederationConfig } from "./config.js";
 // federation middleware
-export type { FederationMiddlewareConfig } from "./federation-middleware.js";
+export type {
+  FederationAbortError,
+  FederationMiddlewareConfig,
+} from "./federation-middleware.js";
 export { createFederationMiddleware } from "./federation-middleware.js";
 // sync engine
 export type { RemoteHealth, SyncEngineConfig, SyncEngineHandle } from "./sync-engine.js";
@@ -20,7 +23,7 @@ export type { NexusSyncClientConfig, SyncClient } from "./sync-protocol.js";
 export { advanceCursor, createNexusSyncClient, deduplicateEvents } from "./sync-protocol.js";
 // types
 export type { FederationConfig, FederationSyncEvent, SyncCursor } from "./types.js";
-export { DEFAULT_FEDERATION_CONFIG } from "./types.js";
+export { DEFAULT_FEDERATION_CONFIG, FEDERATION_PROTOCOL_VERSION } from "./types.js";
 // zone registry (Nexus-backed)
 export type { ZoneRegistryNexusConfig } from "./zone-registry-nexus.js";
 export { createZoneRegistryNexus } from "./zone-registry-nexus.js";

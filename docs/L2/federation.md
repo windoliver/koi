@@ -143,7 +143,7 @@ Zone A publishes events     Zone B syncs
 event { seq: 1 }
 event { seq: 2 }               ← fetchDelta(cursor.lastSequence)
 event { seq: 3 }               ← deduplicateEvents (seq > lastSequence)
-                                ← advanceCursor (lastSequence = max)
+                                ← advanceCursor (highest contiguous prefix)
                                 ← notifyHandlers
 ```
 
@@ -315,9 +315,20 @@ interface SyncCursor {
 }
 ```
 
-`advanceCursor(cursor, events)` updates `lastSequence` to the max sequence
-across the batch. `deduplicateEvents(events, cursor)` keeps only events with
-`sequence > cursor.lastSequence`.
+`advanceCursor(cursor, events)` advances `lastSequence` only through the
+highest **contiguous** prefix starting at `cursor.lastSequence + 1`. Gaps
+or out-of-order batches are a protocol fault — the cursor stays put and
+the engine counts a failure. `deduplicateEvents(events, cursor)` keeps
+only events with `sequence > cursor.lastSequence`.
+
+This is **federation wire-protocol v1** (`FEDERATION_PROTOCOL_VERSION = 1`),
+established by this Phase 3 baseline. All RPC calls
+(`sync_fetch_delta`, `sync_publish`, `zone_execute`, `zone_cancel`)
+include a `protocolVersion` field on the wire. Receiver-side validation
+(rejecting mismatched versions) is the responsibility of the federation
+server handler (out of scope for this client PR — handler is a follow-up
+under #1410). Until then, sending the field provides forward-compatibility:
+when v2 lands, both sides can negotiate without an incompatible cutover.
 
 ---
 
@@ -397,7 +408,7 @@ isVisibleToAgent(brick, "agent-1", "us-east-1");
 
 | Function | Description |
 |----------|-------------|
-| `advanceCursor(cursor, events)` | Update cursor `lastSequence` to max across batch |
+| `advanceCursor(cursor, events)` | Advance cursor through highest contiguous prefix (gaps stop progression) |
 | `deduplicateEvents(events, cursor)` | Filter already-seen events (seq > lastSequence) |
 
 > Vector-clock helpers (`incrementClock`, `mergeClock`, `compareClock`,

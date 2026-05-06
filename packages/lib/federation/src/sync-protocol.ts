@@ -9,6 +9,7 @@
 import type { KoiError, Result } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
 import type { FederationSyncEvent, SyncCursor } from "./types.js";
+import { FEDERATION_PROTOCOL_VERSION } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Sync client interface
@@ -44,6 +45,7 @@ export function createNexusSyncClient(config: NexusSyncClientConfig): SyncClient
   return {
     fetchDelta: (cursor, maxEvents) => {
       return transport.call<readonly FederationSyncEvent[]>("federation.sync_fetch_delta", {
+        protocolVersion: FEDERATION_PROTOCOL_VERSION,
         zoneId: cursor.zoneId,
         lastSequence: cursor.lastSequence,
         maxEvents: maxEvents ?? 100,
@@ -51,7 +53,10 @@ export function createNexusSyncClient(config: NexusSyncClientConfig): SyncClient
     },
 
     publishEvents: (events) => {
-      return transport.call<void>("federation.sync_publish", { events });
+      return transport.call<void>("federation.sync_publish", {
+        protocolVersion: FEDERATION_PROTOCOL_VERSION,
+        events,
+      });
     },
   };
 }
@@ -62,8 +67,13 @@ export function createNexusSyncClient(config: NexusSyncClientConfig): SyncClient
 
 /**
  * Advance a sync cursor after processing a batch of events.
- * Updates lastSequence to the max sequence across the batch and refreshes
- * lastSyncAt.
+ *
+ * Advances `lastSequence` only through the highest contiguous prefix
+ * starting at `cursor.lastSequence + 1`. If the batch is gapped or
+ * out-of-order, the cursor stops at the last contiguous sequence — the
+ * remaining events are NOT acknowledged and will be redelivered on the
+ * next sync. This prevents permanent event loss when a remote returns
+ * a non-contiguous batch (pagination, retry, partial replay).
  */
 export function advanceCursor(
   cursor: SyncCursor,
@@ -74,17 +84,22 @@ export function advanceCursor(
     return { zoneId: cursor.zoneId, lastSequence: cursor.lastSequence, lastSyncAt: now };
   }
 
-  // let: accumulates max sequence across event batch
-  let maxSequence = cursor.lastSequence;
+  const seen = new Set<number>();
   for (const event of events) {
-    if (event.sequence > maxSequence) {
-      maxSequence = event.sequence;
+    if (event.sequence > cursor.lastSequence) {
+      seen.add(event.sequence);
     }
+  }
+
+  // let: walks the contiguous prefix above the prior cursor
+  let advanced = cursor.lastSequence;
+  while (seen.has(advanced + 1)) {
+    advanced += 1;
   }
 
   return {
     zoneId: cursor.zoneId,
-    lastSequence: maxSequence,
+    lastSequence: advanced,
     lastSyncAt: now,
   };
 }

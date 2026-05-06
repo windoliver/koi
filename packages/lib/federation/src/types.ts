@@ -35,6 +35,33 @@ export interface FederationSyncEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Wire-protocol version
+// ---------------------------------------------------------------------------
+
+/**
+ * Federation wire-protocol version. Increment on any breaking change to
+ * the on-the-wire contract for `sync_fetch_delta` / `sync_publish` /
+ * `zone_execute` / `zone_cancel`.
+ *
+ * **v1 contract (this Phase 3 baseline)**:
+ * - `sync_fetch_delta` returns events whose sequences must form a
+ *   contiguous prefix starting at `cursor.lastSequence + 1`. Gapped or
+ *   non-contiguous batches are a protocol fault — the cursor will not
+ *   advance and the local engine will count a failure.
+ * - Duplicate sequence numbers within one batch are allowed only when
+ *   the full event envelope matches byte-for-byte (kind, originZoneId,
+ *   sequence, emittedAt, data). Mismatched payloads are a protocol fault.
+ * - Every event's `originZoneId` must equal the zone being queried.
+ * - `zone_cancel` must carry the full correlation tuple
+ *   `{ callId, targetZoneId, originZoneId, toolId }`.
+ *
+ * Vector clocks, LWW conflict resolution, adaptive polling, snapshot
+ * truncation, and clock pruning are deferred to a future protocol
+ * version (#1410, Phase 4e).
+ */
+export const FEDERATION_PROTOCOL_VERSION: 1 = 1;
+
+// ---------------------------------------------------------------------------
 // Federation config
 // ---------------------------------------------------------------------------
 

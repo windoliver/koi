@@ -38,6 +38,24 @@ describe("advanceCursor", () => {
     const next = advanceCursor(cursor, [evt(2), evt(5)]);
     expect(next.lastSequence).toBe(10);
   });
+
+  test("stops at the highest contiguous prefix when batch has a gap", () => {
+    // Regression for #1372 review-loop: a remote returning [1,2,4,5] (missing 3)
+    // must not advance past 2, otherwise event 3 is lost forever.
+    const next = advanceCursor(baseCursor, [evt(1), evt(2), evt(4), evt(5)]);
+    expect(next.lastSequence).toBe(2);
+  });
+
+  test("does not advance when the next sequence is missing", () => {
+    // Out-of-order delivery: [5] before [1..4]. Cursor must not jump to 5.
+    const next = advanceCursor(baseCursor, [evt(5)]);
+    expect(next.lastSequence).toBe(0);
+  });
+
+  test("ignores duplicates while still advancing through contiguous prefix", () => {
+    const next = advanceCursor(baseCursor, [evt(1), evt(1), evt(2), evt(3)]);
+    expect(next.lastSequence).toBe(3);
+  });
 });
 
 describe("deduplicateEvents", () => {

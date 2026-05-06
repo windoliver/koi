@@ -36,6 +36,17 @@ export interface SyncEngineConfig {
   /** Mark a remote offline locally after N consecutive fetch failures. */
   readonly offlineAfterFailures: number;
   /**
+   * Strict wire-protocol-v1 batch validation. When `true` (default),
+   * non-contiguous, reordered, or duplicate-conflicting batches are
+   * treated as protocol faults and counted toward `offlineAfterFailures`.
+   * When `false`, the engine falls back to permissive replication: it
+   * delivers any contiguous prefix it can find without faulting on gaps.
+   * The permissive mode exists to avoid partitioning federation during
+   * rolling upgrades against pre-v1 peers — set to `false` only for
+   * peers that haven't been upgraded to advertise v1 contract support.
+   */
+  readonly strictV1?: boolean;
+  /**
    * Optional transport bound to the federation hub. Used on dispose() to send
    * `federation.zone_disconnect` so the hub can mark this local zone draining
    * immediately rather than waiting for the heartbeat timeout.
@@ -66,6 +77,7 @@ export interface SyncEngineHandle extends AsyncDisposable {
  */
 export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
   const { localZoneId, remoteClients, pollIntervalMs, offlineAfterFailures, hubTransport } = config;
+  const strictV1 = config.strictV1 ?? true;
 
   // Per-zone state
   const cursors = new Map<string, SyncCursor>();
@@ -119,23 +131,68 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
       return;
     }
 
-    // Successful fetch — reset failures, restore active status
-    failures.set(remoteId, 0);
-    statuses.set(remoteId, "active");
+    // Reject events whose claimed origin doesn't match the queried remote.
+    // A buggy or compromised remote must not be able to inject events
+    // masquerading as another zone. Treat mismatches as a protocol fault:
+    // count as failure, do not advance the cursor.
+    const spoofed = result.value.some((e) => e.originZoneId !== remoteId);
+    if (spoofed) {
+      const next = (failures.get(remoteId) ?? 0) + 1;
+      failures.set(remoteId, next);
+      if (next >= offlineAfterFailures) {
+        statuses.set(remoteId, "offline");
+      }
+      return;
+    }
 
     const newEvents = deduplicateEvents(result.value, cursor);
     if (newEvents.length === 0) {
+      // Empty fetch is a clean liveness signal — reset health.
+      failures.set(remoteId, 0);
+      statuses.set(remoteId, "active");
       cursors.set(remoteId, advanceCursor(cursor, []));
       return;
     }
 
-    for (const event of newEvents) {
+    const validation = validateV1Batch(newEvents, cursor.lastSequence);
+
+    if (!validation.ok) {
+      if (strictV1) {
+        const next = (failures.get(remoteId) ?? 0) + 1;
+        failures.set(remoteId, next);
+        if (next >= offlineAfterFailures) {
+          statuses.set(remoteId, "offline");
+        }
+        return;
+      }
+      // Permissive mode: deliver the contiguous prefix the validator was
+      // able to recognize and continue. Used during rolling upgrades
+      // against pre-v1 peers; never the safer default.
+    }
+
+    const deliverable = validation.prefix;
+    if (deliverable.length === 0) {
+      // Permissive mode with nothing safe to deliver — count a failure
+      // so a perpetually broken remote still surfaces eventually.
+      const next = (failures.get(remoteId) ?? 0) + 1;
+      failures.set(remoteId, next);
+      if (next >= offlineAfterFailures) {
+        statuses.set(remoteId, "offline");
+      }
+      return;
+    }
+
+    // Forward progress — reset health, deliver the validated prefix.
+    failures.set(remoteId, 0);
+    statuses.set(remoteId, "active");
+
+    for (const event of deliverable) {
       notifyHandlers(event);
     }
 
-    cursors.set(remoteId, advanceCursor(cursor, newEvents));
+    cursors.set(remoteId, advanceCursor(cursor, deliverable));
     const log = eventLogs.get(remoteId) ?? [];
-    eventLogs.set(remoteId, [...log, ...newEvents]);
+    eventLogs.set(remoteId, [...log, ...deliverable]);
   }
 
   async function syncAll(): Promise<void> {
@@ -223,4 +280,76 @@ export function createSyncEngine(config: SyncEngineConfig): SyncEngineHandle {
       }
     },
   };
+}
+
+/**
+ * Validate a sync batch against wire-protocol v1:
+ *   - sequences form a strict contiguous ascending run starting at
+ *     `lastSequence + 1`
+ *   - events appear in ascending order (byte-identical duplicates ok)
+ *   - duplicate sequences with mismatched payloads are faults
+ *
+ * Returns `ok: true` plus the deduped contiguous prefix on success.
+ * Returns `ok: false` plus the contiguous prefix the validator was able
+ * to recognize before the fault — callers in permissive (non-strict)
+ * mode can still deliver that prefix safely.
+ */
+interface BatchValidation {
+  readonly ok: boolean;
+  readonly prefix: readonly FederationSyncEvent[];
+}
+
+function validateV1Batch(
+  events: readonly FederationSyncEvent[],
+  cursorLastSequence: number,
+): BatchValidation {
+  const seenAtSeq = new Map<number, FederationSyncEvent>();
+  const dedupedInOrder: FederationSyncEvent[] = [];
+  let lastSeqSeen = cursorLastSequence;
+  for (const event of events) {
+    const prior = seenAtSeq.get(event.sequence);
+    if (prior !== undefined) {
+      if (!sameEvent(prior, event)) {
+        return { ok: false, prefix: dedupedInOrder };
+      }
+      continue;
+    }
+    if (event.sequence <= lastSeqSeen || event.sequence !== lastSeqSeen + 1) {
+      return { ok: false, prefix: dedupedInOrder };
+    }
+    seenAtSeq.set(event.sequence, event);
+    dedupedInOrder.push(event);
+    lastSeqSeen = event.sequence;
+  }
+  return { ok: true, prefix: dedupedInOrder };
+}
+
+/**
+ * Deep-equal two FederationSyncEvent envelopes. Used to detect a remote
+ * returning conflicting payloads under the same sequence number — a
+ * protocol fault that must not silently advance the cursor.
+ */
+function sameEvent(a: FederationSyncEvent, b: FederationSyncEvent): boolean {
+  if (a === b) return true;
+  if (
+    a.kind !== b.kind ||
+    a.originZoneId !== b.originZoneId ||
+    a.sequence !== b.sequence ||
+    a.emittedAt !== b.emittedAt
+  ) {
+    return false;
+  }
+  // data is JsonObject — JSON.stringify with sorted keys gives a stable form.
+  return stableStringify(a.data) === stableStringify(b.data);
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => stableStringify(v)).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
 }
