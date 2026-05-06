@@ -147,7 +147,12 @@ export function createTeamsChannel(
       serviceUrl: parsed.serviceUrl,
     });
     if (!verifyResult.ok) {
-      return new Response(verifyResult.code, { status: 401 });
+      // VERIFIER_UNAVAILABLE indicates a transient dependency failure
+      // (JWKS fetch, DNS, network) — return 503 so Bot Framework
+      // retries instead of 401-ing real user traffic into the void.
+      // Genuine signature/claim failures still 401.
+      const status = verifyResult.code === "VERIFIER_UNAVAILABLE" ? 503 : 401;
+      return new Response(verifyResult.code, { status });
     }
     // Bind routing identity to the verified `tid` claim. If the body's
     // tenantId is present and disagrees with the claim, reject — that is
@@ -166,6 +171,18 @@ export function createTeamsChannel(
     // service into install/update breakage. Only structurally-invalid
     // payloads warrant 400 (already rejected by isActivity above).
     if (parsed.type !== "message") {
+      // Lifecycle activities (conversationUpdate on install,
+      // proactive welcome triggers, etc.) MUST seed the address
+      // store too — otherwise the bot's first welcome reply fails
+      // with CONVERSATION_ADDRESS_UNKNOWN until the user sends a
+      // real message. Persist (monotonic, freshness-aware) and
+      // 200-ack without enqueueing for handler dispatch.
+      const lifecycleAddressKey = composeConversationKey(
+        parsed.channelId,
+        tenantId,
+        parsed.conversation.id,
+      );
+      await persistAddressOnly(lifecycleAddressKey);
       return new Response(null, { status: 200 });
     }
     const norm = normalizeActivity(parsed, clock, fallbackTenant);
@@ -246,6 +263,34 @@ export function createTeamsChannel(
       }
       await deps.ingressQueue.enqueue(key, { key, payload: parsed, normalized });
       await deps.idempotencyStore.abort(lease).catch(() => {});
+    }
+
+    async function persistAddressOnly(addressKey: string): Promise<void> {
+      // Same monotonic / freshness-aware policy as persistAndEnqueue,
+      // but without idempotency claim or queue dispatch — lifecycle
+      // activities are seeding-only. Replays of older lifecycle
+      // activities cannot clobber a newer stored address.
+      const activityTs =
+        typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : Number.NaN;
+      const hasTs = Number.isFinite(activityTs);
+      const lastSeenAt = hasTs ? activityTs : 0;
+      const address: ConversationAddress = {
+        serviceUrl: parsed.serviceUrl,
+        tenantId,
+        channelId: parsed.channelId,
+        conversationId: parsed.conversation.id,
+        recipient: {
+          id: parsed.from.id,
+          ...(parsed.from.name !== undefined ? { name: parsed.from.name } : {}),
+        },
+        lastSeenAt,
+      };
+      const existing = await deps.conversationAddressStore.get(addressKey);
+      if (existing === null) {
+        await deps.conversationAddressStore.put(addressKey, address);
+      } else if (hasTs && existing.lastSeenAt <= lastSeenAt) {
+        await deps.conversationAddressStore.put(addressKey, address);
+      }
     }
   };
 

@@ -158,6 +158,47 @@ describe("createTeamsChannel", () => {
     expect(res.status).toBe(200);
   });
 
+  test("non-message activity seeds ConversationAddressStore so welcome/proactive sends work", async () => {
+    // Regression: previously non-message activities 200-acked without
+    // seeding the address store, so bots saw `conversationUpdate` on
+    // install but the first welcome reply failed
+    // CONVERSATION_ADDRESS_UNKNOWN until the user sent a real message.
+    const addressStore = new InMemoryConversationAddressStore();
+    const deps: TeamsDependencies = {
+      ...buildDeps(fakeVerifier(okVerdict)),
+      conversationAddressStore: addressStore,
+    };
+    const ch = createTeamsChannel(config, deps);
+    const update = makeActivity({
+      type: "conversationUpdate",
+      id: "act-install",
+      timestamp: "2026-05-05T11:00:00.000Z",
+      serviceUrl: "https://smba.trafficmanager.net/install/",
+    });
+    await ch.handleHttpRequest(makeRequest(update));
+    const stored = await addressStore.get("msteams|tenant-1|conv-1");
+    expect(stored).not.toBeNull();
+    expect(stored?.serviceUrl).toBe("https://smba.trafficmanager.net/install/");
+  });
+
+  test("VERIFIER_UNAVAILABLE returns 503 (retryable), not 401", async () => {
+    // Regression: a transient JWKS / network failure used to surface
+    // as INVALID_JWT → 401. Bot Framework does not retry 401s
+    // reliably, dropping valid traffic during a verifier outage.
+    const ch = createTeamsChannel(
+      config,
+      buildDeps(
+        fakeVerifier({
+          ok: false,
+          code: "VERIFIER_UNAVAILABLE",
+          message: "fetch failed",
+        }),
+      ),
+    );
+    const res = await ch.handleHttpRequest(makeRequest(makeActivity()));
+    expect(res.status).toBe(503);
+  });
+
   test("address store: replay without parseable timestamp does NOT overwrite existing", async () => {
     // Regression: previously the wall-clock fallback let a stale
     // replay missing/invalid `timestamp` clobber a fresh stored

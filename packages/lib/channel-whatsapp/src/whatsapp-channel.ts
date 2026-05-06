@@ -46,6 +46,7 @@ export type WhatsAppErrorCode =
   | "UNSUPPORTED_BLOCK";
 
 export type WhatsAppIngressIssue =
+  | { readonly kind: "envelope-unrecognized" }
   | { readonly kind: "malformed-entry"; readonly count: number }
   | { readonly kind: "phone-number-mismatch"; readonly expected: string; readonly got: string }
   | { readonly kind: "normalize-failed"; readonly reason: string };
@@ -127,6 +128,15 @@ type ExtractedMessage = {
 type ExtractResult = {
   readonly messages: readonly ExtractedMessage[];
   readonly malformedCount: number;
+  /**
+   * True when the top-level shape is recognizable as a Meta WhatsApp
+   * webhook envelope (`object: "whatsapp_business_account"` or at
+   * minimum a non-empty `entry[]` array). False indicates the
+   * payload is so malformed we cannot tell whether it was supposed
+   * to carry messages or be a status callback — surface as a
+   * non-2xx so envelope-shape drift / proxy truncation is visible.
+   */
+  readonly envelopeRecognized: boolean;
 };
 
 /**
@@ -144,10 +154,14 @@ type ExtractResult = {
  * INVALID_PAYLOAD instead of an empty 200.
  */
 function extractMessages(parsed: unknown): ExtractResult {
-  const empty: ExtractResult = { messages: [], malformedCount: 0 };
-  if (typeof parsed !== "object" || parsed === null || !("entry" in parsed)) return empty;
+  const unrecognized: ExtractResult = {
+    messages: [],
+    malformedCount: 0,
+    envelopeRecognized: false,
+  };
+  if (typeof parsed !== "object" || parsed === null || !("entry" in parsed)) return unrecognized;
   const entry: unknown = parsed.entry;
-  if (!Array.isArray(entry)) return empty;
+  if (!Array.isArray(entry)) return unrecognized;
   const out: ExtractedMessage[] = [];
   let malformed = 0;
   for (const e of entry) {
@@ -177,7 +191,7 @@ function extractMessages(parsed: unknown): ExtractResult {
       }
     }
   }
-  return { messages: out, malformedCount: malformed };
+  return { messages: out, malformedCount: malformed, envelopeRecognized: true };
 }
 
 async function handleHandshake(request: Request, config: WhatsAppConfig): Promise<Response | null> {
@@ -249,6 +263,17 @@ export function createWhatsAppChannel(
       return new Response("INVALID_PAYLOAD", { status: 400 });
     }
     const extracted = extractMessages(parsed);
+    if (!extracted.envelopeRecognized) {
+      // Top-level shape drift (missing `entry`, non-array `entry`,
+      // proxy truncation, schema regression). We cannot tell whether
+      // this delivery was meant to carry messages or be a status
+      // callback. Surface to operators via onIngressIssue and return
+      // 400 so the failure is visible — Meta will not retry, but
+      // silent 200-ack would mean every affected message is lost
+      // without any signal at all.
+      deps.onIngressIssue?.({ kind: "envelope-unrecognized" });
+      return new Response("INVALID_PAYLOAD: unrecognized envelope shape", { status: 400 });
+    }
     if (extracted.malformedCount > 0) {
       // Surface malformed-entry count via the ingress-issue hook so
       // operators see the producer regression, but do NOT 400 the

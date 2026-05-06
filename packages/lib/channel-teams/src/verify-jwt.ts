@@ -22,7 +22,13 @@ export type TeamsErrorCode =
   | "AUDIENCE_MISMATCH"
   | "TENANT_NOT_ALLOWED"
   | "SERVICE_URL_NOT_ALLOWED"
-  | "AUTH_FAILED";
+  | "AUTH_FAILED"
+  /** Verifier dependency failure (JWKS fetch error, DNS, transient
+   * network). Distinct from INVALID_JWT (signature/claim failure) so
+   * the webhook handler can return 503 (retryable) instead of 401
+   * (Bot Framework will not reliably retry 401, dropping valid
+   * traffic during a JWKS outage). */
+  | "VERIFIER_UNAVAILABLE";
 
 export type VerifiedClaims = {
   readonly aud: string;
@@ -204,8 +210,22 @@ export function createTokenVerifier(
     try {
       payload = await verifyToken(token);
     } catch (e) {
+      // Classify: signature/claim failures from `jose` carry a `code`
+      // starting with "ERR_JW" (e.g. ERR_JWS_SIGNATURE_VERIFICATION_FAILED,
+      // ERR_JWT_CLAIM_VALIDATION_FAILED, ERR_JWT_EXPIRED). Anything else
+      // — TypeError on a fetch failure, AbortError, "fetch failed",
+      // network errors thrown by createRemoteJWKSet — is a verifier
+      // dependency outage and MUST be retryable so a transient JWKS
+      // problem does not silently drop user traffic.
+      const errCode =
+        typeof (e as { readonly code?: unknown }).code === "string"
+          ? (e as { readonly code: string }).code
+          : "";
       const msg = e instanceof Error ? e.message : "signature verification failed";
-      return { ok: false, code: "INVALID_JWT", message: msg };
+      if (errCode.startsWith("ERR_JW")) {
+        return { ok: false, code: "INVALID_JWT", message: msg };
+      }
+      return { ok: false, code: "VERIFIER_UNAVAILABLE", message: msg };
     }
     const claims = validateClaims(payload, config, issuer, clock());
     if (!claims.ok) return claims;

@@ -87,15 +87,16 @@ describe("startHandlerWorker", () => {
     expect(renewals).toBe(0);
   });
 
-  test("handler timeout: lease retained until expiry, no successor reclaim, no dead-letter", async () => {
-    // The public MessageHandler contract is single-arg (no AbortSignal),
-    // so the worker cannot guarantee a hung handler stopped. Releasing
-    // the queue claim or idempotency lease on timeout would let a
-    // successor reclaim and re-execute concurrently with the original.
-    // The worker therefore moves on without releasing — the lease
-    // expires naturally after handlerTimeoutMs + leaseGraceMs and the
-    // queue/store machinery handles post-expiry reclaim. Within the
-    // lease window, no second invocation occurs.
+  test("handler timeout: poison tombstone + dead-letter, drain unblocks, no successor reclaim", async () => {
+    // Timeout requires a terminal observable outcome (so drain-gated
+    // adapters' awaitDrain unblocks) AND single-execution
+    // preservation (the original handler may still run; we cannot
+    // stop it without an enforceable AbortSignal). Poison + dead-
+    // letter is the only combination that meets both: the original
+    // runs to completion in the background, future redelivery is
+    // suppressed by the poison tombstone, and awaitDrain fires
+    // ok:false so source-side callbacks can keep the message un-
+    // acked for operator triage.
     const queue = new InMemoryIngressQueue<{ readonly v: number }, null>();
     const idem = new InMemoryIdempotencyStore();
     let started = 0;
@@ -113,15 +114,16 @@ describe("startHandlerWorker", () => {
       workerId: "w1",
     });
     await queue.enqueue("k1", { key: "k1", payload: { v: 1 }, normalized: null });
-    await tick(80);
+    const drain = await queue.awaitDrain("k1");
     await stop();
-    // Within the 80ms test window, only the original invocation ran:
-    // the lease window (20+5000=5020ms) protects against successor
-    // reclaim. Releasing on timeout would have allowed multiple
-    // concurrent invocations.
+    // Original ran exactly once (no successor reclaim).
     expect(started).toBe(1);
+    expect(drain.ok).toBe(false);
     const dl = await queue.getDeadLetters();
-    expect(dl).toHaveLength(0);
+    expect(dl).toHaveLength(1);
+    // Future redelivery: poison tombstone suppresses re-execution.
+    const r = await idem.tryBegin("k1", 1000);
+    expect(r).toEqual({ ok: false, reason: "poisoned" });
   });
 
   test("already-committed key is acked without invoking handler", async () => {

@@ -12,14 +12,15 @@
  *
  * **Timeout policy.** The public MessageHandler contract is single-arg
  * (no AbortSignal), so a worker cannot reliably stop a handler that
- * ignores cancellation. Timeouts therefore abort the lease and nack
- * the queue item (transient retry), NEVER dead-letter or commit a
- * poison tombstone. Declaring terminal failure while the original
- * handler may still complete would let operators replay/compensate
- * AND have the original handler emit the same side effects later.
- * The max-retries path remains terminal (poison tombstone + dead-
- * letter): an explicitly-thrown failure is something the handler
- * decided to surface, distinct from a wall-clock-only timeout.
+ * ignores cancellation. Timeout therefore commits a POISON tombstone
+ * and dead-letters the queue item: the original handler runs to
+ * completion in the background (we cannot stop it) but no other
+ * invocation occurs — future redelivery sees `poisoned` on tryBegin
+ * and dead-letters the new item too. Drain-gated channels (email
+ * IMAP) get a terminal awaitDrain outcome and can keep the source
+ * message un-acked for operator triage. Without this terminal step,
+ * the IMAP callback would wait forever on a hung handler and wedge
+ * mailbox progress.
  *
  * There is deliberately NO mid-handler renewal:
  *
@@ -142,22 +143,46 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
           // effects. So we dead-letter immediately and rely on the
           // operator to inspect / replay the stuck item.
           if (handlerResult.timedOut) {
-            // Timeout: the public MessageHandler contract is single-
-            // arg (no AbortSignal), so the worker cannot guarantee
-            // the original handler stopped. We must NOT release the
-            // queue claim or idempotency lease — calling nack/abort
-            // would let a successor reclaim and re-execute the same
-            // key while the original handler is still running,
-            // duplicating side effects. Instead the worker simply
-            // moves on to the next item; the queue claim and lease
-            // expire naturally after `leaseMs` (handlerTimeoutMs +
-            // grace), at which point a successor can claim. This is
-            // the only safe contract until the public MessageHandler
-            // type carries an enforceable AbortSignal.
+            // Timeout requires a TERMINAL observable outcome and
+            // single-execution preservation:
             //
-            // Trade-off: per-key throughput stalls for one leaseMs
-            // window after each timeout. That is acceptable; silent
-            // duplication is not.
+            // - TERMINAL because drain-gated channel adapters (email
+            //   IMAP) block their provider callback on awaitDrain;
+            //   silently moving on would leave that callback waiting
+            //   forever and wedge mailbox progress with no operator
+            //   surface.
+            // - SINGLE-EXECUTION because the public MessageHandler
+            //   contract is single-arg (no AbortSignal); the original
+            //   handler may still be running, and a successor reclaim
+            //   would duplicate side effects.
+            //
+            // Resolution: commit a POISON tombstone (so any future
+            // redelivery — IMAP replay, provider redelivery — sees
+            // `poisoned` on tryBegin and is dead-lettered, never
+            // re-executed) and deadLetter the queue item (so
+            // awaitDrain fires with ok:false and the source-side
+            // callback can keep the message un-acked / unread for
+            // operator triage). The original handler runs to
+            // completion in the background; nothing else does.
+            const poisonOk = await commitPoisonDurably(
+              opts.idempotencyStore,
+              begin.lease,
+              opts.commitTtlMs,
+            );
+            if (poisonOk) {
+              await opts.queue.deadLetter(
+                opts.workerId,
+                claimed.key,
+                `handler-timeout: ${handlerResult.error.message}`,
+              );
+            } else {
+              // Poison commit failed: do NOT deadLetter (no terminal
+              // marker would let a future redelivery re-execute).
+              // Keep the lease + claim until natural expiry — the
+              // drain-gated adapter will time out at the IMAP layer
+              // and operators see retries rather than silent
+              // duplication.
+            }
             continue;
           }
           throw handlerResult.error;

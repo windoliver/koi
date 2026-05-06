@@ -205,6 +205,24 @@ describe("createWhatsAppChannel", () => {
     expect(issues).toEqual([{ kind: "malformed-entry", count: 1 }]);
   });
 
+  test("envelope-shape drift: 400 + onIngressIssue, not silent 200", async () => {
+    // Regression: a missing `entry` array (Meta schema regression,
+    // proxy truncation) used to silently 200-ack with no operator
+    // signal and no retry. Now it surfaces as 400 +
+    // envelope-unrecognized issue so the producer regression is
+    // visible.
+    const issues: unknown[] = [];
+    const deps: WhatsAppDependencies = {
+      ...buildDeps(),
+      onIngressIssue: (i) => issues.push(i),
+    };
+    const ch = createWhatsAppChannel(config, deps);
+    const body = JSON.stringify({ object: "whatsapp_business_account" });
+    const res = await ch.handleHttpRequest(makePostRequest(body));
+    expect(res.status).toBe(400);
+    expect(issues).toEqual([{ kind: "envelope-unrecognized" }]);
+  });
+
   test("production mode requires onIngressIssue hook", async () => {
     // Regression: all-invalid webhook batches 200-ack with no native
     // retry surface. The ingress-issue hook is the operator's only

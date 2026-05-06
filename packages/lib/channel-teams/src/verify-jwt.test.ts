@@ -174,16 +174,42 @@ describe("createTokenVerifier (DI path)", () => {
     expect(r.ok).toBe(false);
   });
 
-  test("propagates jwtVerify failure as INVALID_JWT", async () => {
+  test("propagates jwtVerify signature/claim failure as INVALID_JWT", async () => {
     const v = createTokenVerifier(baseConfig, {
       mintAppToken: async () => "tok",
       verifyToken: async () => {
-        throw new Error("bad signature");
+        // jose-style errors carry `code` strings like
+        // ERR_JWS_SIGNATURE_VERIFICATION_FAILED. The verifier maps
+        // these to INVALID_JWT (401-class).
+        const err = new Error("signature verification failed") as Error & {
+          code?: string;
+        };
+        err.code = "ERR_JWS_SIGNATURE_VERIFICATION_FAILED";
+        throw err;
       },
     });
     const r = await v.verify("Bearer xxx", { serviceUrl: "https://smba.trafficmanager.net/" });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe("INVALID_JWT");
+  });
+
+  test("propagates non-JWT error as VERIFIER_UNAVAILABLE (retryable, not 401)", async () => {
+    // Regression: previously any verifier exception collapsed into
+    // INVALID_JWT, which the webhook handler turned into 401. Bot
+    // Framework does not reliably retry 401s, so a transient JWKS /
+    // network outage silently dropped valid traffic. The verifier now
+    // distinguishes jose-style auth failures (ERR_JW* codes) from
+    // generic exceptions (network / DNS / fetch failed) and the
+    // webhook handler maps VERIFIER_UNAVAILABLE to 503.
+    const v = createTokenVerifier(baseConfig, {
+      mintAppToken: async () => "tok",
+      verifyToken: async () => {
+        throw new TypeError("fetch failed");
+      },
+    });
+    const r = await v.verify("Bearer xxx", { serviceUrl: "https://smba.trafficmanager.net/" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe("VERIFIER_UNAVAILABLE");
   });
 
   test("full success path with mocked verifyToken", async () => {
