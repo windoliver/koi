@@ -236,7 +236,11 @@ if (claim.status === "failed-permanent") {
 }
 if (claim.status === "in-progress") {
   // poll the DO until it transitions to a TERMINAL status (completed or failed-permanent) or timeout fires
-  return await waitForTerminal(stub, operationId, requestId, dedupeExpiresAtMs, timeoutMs);
+  // SHIM_POLL_DEADLINE_MS is a koi-shim INTERNAL constant (25_000), NOT the caller's waiterTimeoutMs.
+  // The caller's waiterTimeoutMs is host-local-only and is NEVER forwarded to Worker A.
+  // Worker A bounds its own in-isolate poll at 25s so the host has 5s of remaining waiterTimeoutMs slack
+  // for network RTT before the host's 30s default waiter cap fires.
+  return await waitForTerminal(stub, operationId, requestId, dedupeExpiresAtMs, SHIM_POLL_DEADLINE_MS);
 }
 // claim.status === "fresh" — this isolate owns the operation
 const result = await handler({ payload, operationId, requestId });
@@ -338,7 +342,8 @@ if (checkResult.startsWith("claim:in-progress:")) {
   //   { kind: "failed", body }            → return body with 200 + X-Koi-Result-Kind: failed-permanent header
   //   { kind: "takeover" }                → fall through; this isolate now holds the claim, run handler
   //   { kind: "timeout" }                 → return 504 to caller
-  const wait = await waitForTerminal(resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, timeoutMs);
+  // SHIM_POLL_DEADLINE_MS = 25_000 is the koi-shim INTERNAL bound; NOT the caller's waiterTimeoutMs.
+  const wait = await waitForTerminal(resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, SHIM_POLL_DEADLINE_MS);
   // EVERY tagged outcome handled explicitly. Unknown kinds are a fatal protocol bug, not a takeover.
   if (wait.kind === "completed") return new Response(wait.body, { status: 200, headers: { "X-Koi-Result-Kind": "success" } });
   if (wait.kind === "failed") return new Response(wait.body, { status: 200, headers: { "X-Koi-Result-Kind": "failed-permanent" } });
@@ -464,10 +469,10 @@ try {
 
 ```js
 // Tagged result discriminated on `kind`. Caller branches explicitly.
-async function waitForTerminal(resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, timeoutMs) {
+async function waitForTerminal(resultKey, failedKey, claimKey, fingerprintKey, requestId, dedupeFingerprint, shimPollDeadlineMs) {
   const start = Date.now();
   const POLL_MS = 1000;
-  while (Date.now() - start < timeoutMs) {
+  while (Date.now() - start < shimPollDeadlineMs) {
     // Prefer terminal state if present.
     const result = await kvCommand("GET", [resultKey]);
     if (result) return { kind: "completed", body: result };
@@ -1123,7 +1128,8 @@ Mapping is built against the actual fields in `packages/kernel/core/src/sandbox-
 | `resources.timeoutMs` | accept iff `<= 10_000` | **Reclaim-safe handler budget with explicit network/commit slack**, NOT the raw CF Workers Unbound CPU limit (30_000). Budget breakdown of the 30s host invoke timeout: 15s claim-lease TTL (worst-case wait until a crashed owner's lease expires) + 1s polling tick (loser observes expiry) + ~1s reclaim Lua RTT + ~1s second-invoke handshake/RTT + 10s handler budget + ~1s commit RTT + ~1s safety margin = 30s total. Profiles requesting more than 10_000 ms are rejected with `KoiError { code: "TIMEOUT_EXCEEDS_RECLAIM_BUDGET" }` because under realistic network latency the reclaim protocol cannot complete the operation inside the host invoke window — the failure mode would be host-side TIMEOUTs surfacing while the prior attempt may still commit side effects. The earlier 14_000 ms cap consumed the entire window with no slack and was unsafe under normal control-plane latency. Operators who need longer end-to-end deadlines split the work into multiple `invoke()` calls each within the 10s budget. The cap is documented in `docs/L2/sandbox-cloudflare.md` and `sandbox-vercel.md`. |
 | `resources.maxPids` | accept iff `=== 1` or omitted | Workers run a single isolate; multi-process not available. Reject `> 1`. |
 | `resources.maxOpenFiles` | accept (vacuously) | No host FDs in Workers. |
-| `env` | mapped | Forwarded as Worker secrets via `PUT /workers/scripts/{name}/secrets` per key (typed) **after** the deploy step succeeds and **before** the instance transitions to `ready` (see Create-failure state machine — secrets-uploading phase). The instance does NOT accept `invoke()` calls until `ready`; the host-side mutex is held in `secrets-uploading` so any concurrent invoke attempt waits or fails the create flow. |
+| `env` (non-empty) | **REJECT** | Class A is the only supported workload class in v1; class A handlers are pure functions of `payload` and have no use for operator secrets. Construction rejects with `KoiError { code: "ENV_FORBIDDEN_FOR_CLASS_A" }`. The earlier "mapped — forwarded as Worker secrets" rule is REMOVED; only koi-managed internal secrets (`KOI_PAIR_VERIFY_KEY`, `KOI_HANDLER_ARMED` on Worker B; `KOI_INSTANCE_TOKEN`, `KOI_OWNER_ID`, dedupe credentials, `KOI_PAIR_SIGNING_KEY` on Worker A) are uploaded by the create state machine. Any future class-B (mediated outbound) workload will reintroduce a controlled `env` upload path with explicit per-key approval; v1 has no such path. |
+| `env` (empty/omitted) | accept | The only valid shape for class A. |
 | `nexusMounts` | REJECT | Requires FUSE; not available on edge. |
 | `ssh` | **ignore** | Per `SandboxProfile.ssh` doc comment: "Other adapters MUST ignore this field." Treating it as a validation error would break profile portability when a profile carries an SSH stanza for a different backend. |
 | `required` (capabilities) | **enforced by adapter** (and additionally by router) | The adapter calls `validateRequiredCapabilities(profile.required, SUPPORTED)` at the top of `create()` and rejects unsupported capabilities with `UNSUPPORTED_PROFILE` before any remote call. The router does the same upstream as a fast-path; the adapter never assumes the router pre-filtered. Single source of safety for direct callers. |
@@ -1149,7 +1155,7 @@ const PROFILE_FIELD_DISPOSITIONS = {
   filesystem: "reject-or-accept-by-subfield",  // handled by inner table
   network: "reject-or-accept-by-subfield",
   resources: "validate-against-edge-caps",
-  env: "mapped",
+  env: "reject-if-non-empty",  // class A admits only empty env; non-empty rejects with ENV_FORBIDDEN_FOR_CLASS_A
   nexusMounts: "reject",
   required: "validate-empty-only",
   ssh: "ignore",
