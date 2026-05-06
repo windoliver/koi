@@ -45,6 +45,37 @@ export {
   matchesBreakpoint,
   SUPPORTED_EVENT_KINDS,
 } from "@koi/debug";
+// Cross-zone federation (L2 @koi/federation) — re-exported so runtime
+// consumers compose federation middleware/sync without depending on
+// @koi/federation directly.
+export type {
+  FederationAbortError,
+  FederationConfig,
+  FederationMiddlewareConfig,
+  FederationPrincipalPolicy,
+  FederationRemoteCapabilities,
+  FederationSyncEvent,
+  NexusSyncClientConfig,
+  RemoteHealth,
+  ServerReadsMode,
+  SyncClient,
+  SyncCursor,
+  SyncEngineConfig,
+  SyncEngineHandle,
+  TenantResolverContext,
+  ZoneRegistryNexusConfig,
+} from "@koi/federation";
+export {
+  advanceCursor,
+  createFederationMiddleware,
+  createNexusSyncClient,
+  createSyncEngine,
+  createZoneRegistryNexus,
+  DEFAULT_FEDERATION_CONFIG,
+  deduplicateEvents,
+  FEDERATION_PROTOCOL_VERSION,
+  validateFederationConfig,
+} from "@koi/federation";
 export type {
   ChannelRegistration,
   Gateway,

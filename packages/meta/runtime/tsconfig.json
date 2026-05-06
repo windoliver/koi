@@ -37,6 +37,7 @@
     { "path": "../../lib/eval" },
     { "path": "../../lib/event-trace" },
     { "path": "../../lib/execution-context" },
+    { "path": "../../lib/federation" },
     { "path": "../../lib/hooks" },
     { "path": "../../lib/long-running" },
     { "path": "../../lib/loop" },

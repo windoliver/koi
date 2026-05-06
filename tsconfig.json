@@ -25,6 +25,7 @@
     { "path": "packages/lib/context-manager" },
     { "path": "packages/lib/eval" },
     { "path": "packages/lib/event-trace" },
+    { "path": "packages/lib/federation" },
     { "path": "packages/lib/middleware-otel" },
     { "path": "packages/lib/middleware-tool-audit" },
     { "path": "packages/lib/middleware-tool-recovery" },

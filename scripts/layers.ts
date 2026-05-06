@@ -86,6 +86,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/dashboard-api",
   "@koi/dashboard-client",
   "@koi/eval",
+  "@koi/federation",
   "@koi/governance-approval-tiers",
   "@koi/governance-security",
   "@koi/handoff",
