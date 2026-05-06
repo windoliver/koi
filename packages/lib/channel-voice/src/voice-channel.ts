@@ -915,6 +915,18 @@ export function createVoiceChannel(config: VoiceChannelConfig): VoiceChannelAdap
         if (connectGen !== queuedGen) {
           return Promise.reject(new VoicePoisonedSessionError(sessionId));
         }
+        // Round-45 high: re-check poison BEFORE running performSend. The
+        // upfront check at wrappedSend entry runs only at queue-admission
+        // time. If send A times out (poisoning sessionId) while send B is
+        // already queued behind A, the queued continuation must NOT
+        // execute B against the now-poisoned session — otherwise B speaks
+        // and then A's late completion arrives, causing reordered or
+        // overlapping audio. Reject queued sends for poisoned sessions
+        // here so the contract holds for the entire chain, not just the
+        // entry path.
+        if (poisonedSessions.has(sessionId)) {
+          return Promise.reject(new VoicePoisonedSessionError(sessionId));
+        }
         return performSend(sessionId, utteranceId, pieces);
       });
     // Store a swallowed copy as the chain head. The caller still awaits

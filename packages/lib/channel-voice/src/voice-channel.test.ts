@@ -1777,6 +1777,41 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("queued send is rejected once a prior in-flight send poisons the session (round-45 high)", async () => {
+    // Round-45 high: the wrappedSend entry-point poison check only ran
+    // at queue-admission time. If send A was in flight (transport
+    // hanging) and send B was already queued behind A on the per-session
+    // chain, an A timeout that poisons the session must NOT let B
+    // execute — otherwise B speaks then A's late completion arrives
+    // (reordered/overlapping audio on a live call). The fix re-checks
+    // poison inside the queued continuation BEFORE performSend.
+    const transportHangs: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async (sessionId: string, _u: string, _f: Uint8Array) => {
+        if (sessionId === "call-X") await new Promise(() => {});
+      },
+      onUtterance: () => () => {},
+    };
+    const stt: Stt = { transcribe: async () => null };
+    const ttsFast: Tts = { synthesize: async () => new Uint8Array([1]) };
+    const ch = createVoiceChannel({
+      transport: transportHangs,
+      stt,
+      tts: ttsFast,
+      transportSendTimeoutMs: 30,
+    });
+    await ch.connect();
+    // A's transport.sendUtterance for call-X hangs forever → times out → poison.
+    const aPromise = ch.send({ threadId: "call-X", content: [{ kind: "text", text: "A" }] });
+    // Queue B BEFORE A times out — B sits behind A on the per-session chain.
+    const bPromise = ch.send({ threadId: "call-X", content: [{ kind: "text", text: "B" }] });
+    await expect(aPromise).rejects.toBeInstanceOf(VoiceTransportSendTimeoutError);
+    // B must reject (poison set by A's timeout) — must NOT speak.
+    await expect(bPromise).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+    await ch.disconnect();
+  });
+
   test("detached post-watchdog reply is fenced even when only voiceCallEpoch+voiceTurnId are present (round-43 high)", async () => {
     // Round-43 high: prior fence only checked the per-turn token in
     // expiredTurnTokens when ALS was still present. A handler that hung
