@@ -233,6 +233,36 @@ const DEFAULT_TRANSPORT_SEND_TIMEOUT_MS = 30_000;
 // handler promise is left to settle on its own.
 const DEFAULT_DISPATCH_HANDLER_TIMEOUT_MS = 60_000;
 
+/**
+ * Metadata key carrying the connect-cycle epoch a reply belongs to.
+ * Stamped on every inbound by the adapter; surviving copies on
+ * outbound (via metadata propagation or `replyToVoiceInbound`) let
+ * `wrappedSend` reject stale detached replies that would otherwise
+ * speak into a later call on a reused threadId.
+ */
+export const VOICE_CALL_EPOCH_KEY = "voiceCallEpoch";
+
+/**
+ * Copy the per-call epoch tag from an inbound onto an outbound reply.
+ * Use this in any callsite where the reply is built outside the
+ * inbound's ALS scope (e.g., after `await`-ing an external work
+ * promise that crosses ALS boundaries, or when fanning into a
+ * background queue and replying later). Without the tag, a
+ * detached send issued after disconnect/reconnect could leak into
+ * a fresh call sharing the same threadId.
+ */
+export function replyToVoiceInbound(
+  inbound: InboundMessage,
+  outbound: OutboundMessage,
+): OutboundMessage {
+  const inboundEpoch = inbound.metadata?.[VOICE_CALL_EPOCH_KEY];
+  if (typeof inboundEpoch !== "number") return outbound;
+  return {
+    ...outbound,
+    metadata: { ...(outbound.metadata ?? {}), [VOICE_CALL_EPOCH_KEY]: inboundEpoch },
+  };
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, makeError: () => Error): Promise<T> {
   // let requires justification: timer ref captured for cleanup
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -571,6 +601,13 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
         // (and replyToInbound-style helpers) keep replies on the right call.
         threadId: event.sessionId,
         timestamp: Date.now(),
+        // Stamp the connect generation so detached replies (handlers
+        // that captured the inbound, returned, then resumed outside ALS)
+        // can still prove they belong to the call that produced them.
+        // wrappedSend rejects if this epoch no longer matches the
+        // current connectGen — preventing cross-call leakage when a
+        // host reuses a stable threadId across reconnects.
+        metadata: { [VOICE_CALL_EPOCH_KEY]: connectGen },
       };
     },
   });
@@ -717,6 +754,25 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     // A late send from this turn would inject audio out of order into
     // (or overlap) the now-current turn — reject it instead of speaking.
     if (inboundCtx !== undefined && expiredTurnTokens.has(inboundCtx.turnToken)) {
+      return Promise.reject(new VoicePoisonedSessionError(message.threadId));
+    }
+    // Detached-reply fence: ALS context can be lost across boundaries
+    // the host doesn't control (queueMicrotask, setTimeout, third-party
+    // promise libraries, worker dispatch, deferred queues). For those
+    // cases the epoch must travel on the message itself — the adapter
+    // stamps every inbound with `metadata.voiceCallEpoch`, and either
+    // `replyToVoiceInbound()` or manual metadata propagation carries
+    // it to the outbound. If the tag is present it MUST match the
+    // current connectGen; if it is absent AND the adapter has ever
+    // disconnected, the send is rejected. This protects against
+    // cross-call leakage when a host reuses a stable threadId across
+    // reconnects (e.g. `"default"`).
+    const messageEpochRaw = message.metadata?.[VOICE_CALL_EPOCH_KEY];
+    if (typeof messageEpochRaw === "number") {
+      if (messageEpochRaw !== connectGen) {
+        return Promise.reject(new VoicePoisonedSessionError(message.threadId));
+      }
+    } else if (inboundCtx === undefined && connectGen > 0) {
       return Promise.reject(new VoicePoisonedSessionError(message.threadId));
     }
     // Poison persists for the adapter's lifetime once set. A non-

@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import type { InboundMessage, TextBlock } from "@koi/core";
 import {
   createVoiceChannel,
+  replyToVoiceInbound,
   type Stt,
   type Tts,
+  VOICE_CALL_EPOCH_KEY,
   VoicePoisonedSessionError,
   VoiceSttTimeoutError,
   type VoiceTransport,
@@ -784,10 +786,16 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
     resolveStuck = undefined;
     await ch.connect();
+    // Round-38 contract: post-reconnect bare sends require the per-call
+    // epoch tag — the adapter has disconnected at least once, so any
+    // detached send (no ALS context, no metadata.voiceCallEpoch) would
+    // be rejected as a stale-leak guard. Stamping the current epoch
+    // (1 after first disconnect) demonstrates the explicit recovery
+    // path.
     await ch.send({
       threadId: "session-1",
       content: [{ kind: "text", text: "recovered" }],
-      metadata: { utteranceId: "recovered" },
+      metadata: { utteranceId: "recovered", voiceCallEpoch: 1 },
     });
     expect(sentOrder).toContain("recovered");
     await ch.disconnect();
@@ -978,11 +986,14 @@ describe("createVoiceChannel", () => {
         metadata: { utteranceId: "still-blocked" },
       }),
     ).rejects.toBeInstanceOf(VoicePoisonedSessionError);
-    // A fresh threadId works on the same adapter.
+    // A fresh threadId works on the same adapter — but the post-
+    // reconnect bare send must still carry the per-call epoch tag
+    // (round-38 contract) since the adapter has disconnected once
+    // (connectGen === 1).
     await ch.send({
       threadId: "fresh-thread",
       content: [{ kind: "text", text: "fresh" }],
-      metadata: { utteranceId: "fresh" },
+      metadata: { utteranceId: "fresh", voiceCallEpoch: 1 },
     });
     expect(sentOrder).toContain("fresh");
     // Release the still-hung first call so the test process exits.
@@ -1503,6 +1514,67 @@ describe("createVoiceChannel", () => {
     listener?.("call-C", new Uint8Array([1]));
     await new Promise((r) => setTimeout(r, 60));
     expect(sttMaxConcurrent).toBe(3);
+    await ch.disconnect();
+  });
+
+  test("detached send post-reconnect requires per-call epoch tag (cross-call leak fence)", async () => {
+    // Regression (round 38 high): a handler that captures the inbound,
+    // returns, and later resumes OUTSIDE the inbound's ALS scope (e.g.,
+    // through queueMicrotask, setTimeout, or a third-party promise
+    // wrapper) used to slip through the gen check because the ALS
+    // store was empty. With a stable threadId pattern (`"default"`),
+    // the stale reply could speak into a fresh post-reconnect call.
+    // Fix: every inbound is stamped with metadata.voiceCallEpoch; the
+    // adapter rejects any post-reconnect bare send that neither has
+    // ALS context nor a matching epoch tag.
+    let listener: ((sessionId: string, audio: Uint8Array) => void) | undefined;
+    const sentBy: string[] = [];
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async (_s, _u, frames) => {
+        for (const f of frames) sentBy.push(`[${f[0]}]`);
+      },
+      onUtterance: (h) => {
+        listener = h;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = { transcribe: async () => "ok" };
+    const tts: Tts = { synthesize: async (text) => new Uint8Array([text.charCodeAt(0)]) };
+    const ch = createVoiceChannel({ transport, stt, tts });
+    let captured: InboundMessage | undefined;
+    ch.onMessage(async (msg) => {
+      captured = msg;
+    });
+    await ch.connect();
+    listener?.("default", new Uint8Array([1]));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(captured).toBeDefined();
+    // Inbound is stamped with the current epoch (0 on first connect).
+    expect(captured?.metadata?.[VOICE_CALL_EPOCH_KEY]).toBe(0);
+    // Disconnect + reconnect — the captured inbound is now stale.
+    await ch.disconnect();
+    await ch.connect();
+    // A detached send carrying the OLD epoch (via replyToVoiceInbound)
+    // must be rejected — old call done, do not speak into the new one
+    // even on the reused threadId.
+    const detachedReply = replyToVoiceInbound(captured as InboundMessage, {
+      threadId: "default",
+      content: [{ kind: "text", text: "stale" }],
+    });
+    await expect(ch.send(detachedReply)).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+    // A bare detached send (no ALS, no tag) is also rejected post-
+    // reconnect — the cross-call leak guard.
+    await expect(
+      ch.send({
+        threadId: "default",
+        content: [{ kind: "text", text: "untagged" }],
+      }),
+    ).rejects.toBeInstanceOf(VoicePoisonedSessionError);
+    expect(sentBy).toEqual([]); // nothing leaked into the new call.
     await ch.disconnect();
   });
 
