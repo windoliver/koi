@@ -391,10 +391,37 @@ const CHECK_OR_CLAIM_LUA = `
     return 'claim:fresh'
   end
   -- No ledger yet → first-ever claim for this operationId.
+  -- Atomic single-winner first-claim: SET ledger NX EX. Only the writer that wins the SET-NX
+  -- proceeds to write claim/fingerprint and return claim:fresh. A loser observes the winner's
+  -- ledger and recurses into the ledger branch on its next call.
+  -- (Redis Lua is single-threaded so any two EVALs serialize; the SET NX is belt-and-braces
+  -- against any future provider whose EVAL semantics deviate from CRedis.)
   if tonumber(ARGV[4]) > tonumber(ARGV[5]) then return 'operation-expired' end
+  local ledgerWon = redis.call('SET', KEYS[5], tostring(ARGV[5])..':'..ARGV[2], 'NX', 'EX', ARGV[6])
+  if not ledgerWon then
+    -- Lost the race. Re-read the ledger and apply ledger-branch logic.
+    local now = redis.call('GET', KEYS[5])
+    local sep2 = string.find(now, ':')
+    local origExpiry2 = tonumber(string.sub(now, 1, sep2 - 1))
+    local origFp2 = string.sub(now, sep2 + 1)
+    if origFp2 ~= ARGV[2] then return 'fingerprint-conflict:'..origFp2 end
+    if math.abs(tonumber(ARGV[5]) - origExpiry2) > tonumber(ARGV[7]) then
+      return 'fingerprint-conflict:EXPIRY_HORIZON_MISMATCH:'..origExpiry2
+    end
+    if tonumber(ARGV[4]) > origExpiry2 then return 'operation-expired' end
+    local r2 = redis.call('GET', KEYS[1])
+    if r2 then return 'result:'..r2 end
+    local f2 = redis.call('GET', KEYS[2])
+    if f2 then return 'failed:'..f2 end
+    local c2 = redis.call('GET', KEYS[3])
+    if c2 then return 'claim:in-progress:'..c2 end
+    -- No claim and no terminal — winner crashed before writing claim. Recover by becoming claimer.
+    redis.call('SET', KEYS[3], ARGV[1], 'EX', '15')
+    return 'claim:fresh'
+  end
+  -- Ledger SET-NX won — we are the single legitimate first claimer.
   redis.call('SET', KEYS[3], ARGV[1], 'EX', '15')
   redis.call('SET', KEYS[4], ARGV[2], 'EX', ARGV[3])
-  redis.call('SET', KEYS[5], tostring(ARGV[5])..':'..ARGV[2], 'EX', ARGV[6])
   return 'claim:fresh'
 `;
 const initialRetentionSec = Math.floor((dedupeExpiresAtMs + 3_600_000 - Date.now()) / 1000);
@@ -505,6 +532,18 @@ try {
       return new Response(JSON.stringify({ error: "OWNERSHIP_LOST" }), { status: 503, headers: { "X-Koi-Result-Kind": "shim-error", "X-Koi-Shim-Error-Code": "OWNERSHIP_LOST" } });
     }
     return new Response(failedJson, { status: 200, headers: { "X-Koi-Result-Kind": "failed-permanent" } });
+  }
+
+  if (outcome === "transient") {
+    // Retryable handler error. Per the documented contract: do NOT cache; retries must rerun.
+    // Ownership-checked claim release — never delete a claim that has rotated to a different owner.
+    // Adversarial test: __tests__/vercel-transient-not-cached.test.ts (a) handler returns
+    // X-Koi-Handler-Outcome: transient, (b) asserts no resultKey/failedKey is written, (c) asserts
+    // a follow-up retry against the same operationId runs the handler again (no cached value).
+    const RELEASE_LUA = `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end`;
+    await kvCommand("EVAL", [RELEASE_LUA, "1", claimKey, requestId]);
+    const transientErrorJson = body; // body = JSON-encoded error envelope from Worker B
+    return new Response(transientErrorJson, { status: 503, headers: { "X-Koi-Result-Kind": "shim-error", "X-Koi-Shim-Error-Code": "HANDLER_TRANSIENT", "Retry-After": "1" } });
   }
 
   // 4. Atomic ownership-checked commit via Lua EVAL: write result + delete claim ONLY IF still owned.
