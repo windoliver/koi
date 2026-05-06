@@ -513,6 +513,31 @@ describe("linearSearch", () => {
     expect(evalFinishes).toBe(0);
   });
 
+  test("thompson_deploy gated on minEvalSamples — under-sampled high-rate does not exit as deploy", async () => {
+    // Regression: the deploy gate previously only checked
+    // bestNode.successRate >= convergenceThreshold, ignoring the
+    // minEvalSamples floor that the converged exit applies. An
+    // evaluator returning rate=1.0 + sampleCount=2 + failures=[] on
+    // every iteration could exit as thompson_deploy — orchestration
+    // would see "intentional deploy" on a candidate the loop's own
+    // convergence gate considers under-evidenced. Now both gates apply
+    // to both exits.
+    const config = makeConfig({
+      maxIterations: 10,
+      convergenceThreshold: 1.0,
+      minEvalSamples: 5,
+      noImprovementLimit: 99,
+      // rate >= threshold but sampleCount < minEvalSamples: must NOT
+      // satisfy the deploy floor.
+      evaluate: async () => ({ successRate: 1.0, sampleCount: 2, failures: [] }),
+      // Always deploy if allowed — would exit thompson_deploy without floor.
+      random: () => 0.0,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).not.toBe("thompson_deploy");
+    expect(result.stopReason).not.toBe("converged");
+  });
+
   test("thompson_deploy gated on quality floor — low-rate plateau does not exit as deploy", async () => {
     // Regression: the deploy arm was rewarded for !progressedOverPredecessor,
     // so a search stuck at a low success rate (rate << convergenceThreshold)

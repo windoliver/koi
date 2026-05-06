@@ -399,18 +399,21 @@ export async function linearSearch(
       deployState = updateThompson(deployState, !progressedOverPredecessor);
     }
 
-    // Quality floor on thompson_deploy: the bandit must NOT exit as
-    // an "intentional deploy" on a candidate that is still below the
-    // convergence threshold. Otherwise a search stuck at a low
-    // success rate (rate << threshold across iterations) trains the
-    // deploy arm via !progressedOverPredecessor and exits as
-    // thompson_deploy — orchestration cannot tell that apart from a
-    // healthy exploit decision on a deployable winner. With this
-    // floor, low-quality plateaus exit via no_improvement /
-    // budget_exhausted instead, preserving the signal that the
-    // search did not produce a deployable candidate.
+    // Deployability floor on thompson_deploy: mirrors BOTH gates of
+    // the converged exit (rate >= threshold AND sampleCount >= min).
+    // A bandit "intentional deploy" decision on an under-sampled or
+    // low-rate result would be the worst kind of premature ship —
+    // orchestration sees `thompson_deploy` and routes the candidate
+    // as a winner, even though the loop itself does NOT consider the
+    // evidence sufficient for `converged`. Keeping the predicates
+    // aligned means the bandit can only deploy what the convergence
+    // gate would also accept; under-sampled or low-rate plateaus
+    // exit via no_improvement / budget_exhausted with the correct
+    // signal.
     const bestSampledRate = bestNode?.successRate ?? -1;
-    const meetsDeployFloor = bestSampledRate >= convergenceThreshold;
+    const bestSamples = bestNode?.evalSamples ?? 0;
+    const meetsDeployFloor =
+      bestSampledRate >= convergenceThreshold && bestSamples >= minEvalSamples;
     if (iteration > 0 && meetsDeployFloor && !shouldContinue(continueState, deployState, random)) {
       stopReason = "thompson_deploy";
       break;
