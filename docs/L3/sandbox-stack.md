@@ -307,8 +307,6 @@ Low-level helper. Wraps any executor with `Promise.race` timeout enforcement.
 
 ### Cloud Dispatch
 
-> **Edge adapters (Cloudflare, Vercel) are NOT part of this `createCloudSandbox` dispatch.** They are being introduced as a separate `EdgeFunctionAdapter` contract — see `docs/superpowers/specs/2026-05-05-edge-sandboxes-design.md` for the authoritative design. The factories `createCloudflareAdapter` and `createVercelAdapter` are NOT exposed by `@koi/sandbox-stack`; they are accessed via `koi.edge.cloudflare` (Vercel is design-only and not exposed in v1). The remaining cloud adapters below (Daytona, Docker, E2B) follow the original `SandboxAdapter` process-level contract.
-
 #### `createCloudSandbox(config: CloudSandboxConfig): Promise<Result<SandboxAdapter, KoiError>>`
 
 Async dispatch factory. Lazy-loads the provider package and routes to the correct adapter based on `config.provider`.
@@ -319,11 +317,13 @@ Returns `{ ok: true, value: SandboxAdapter }` on success, `{ ok: false, error: K
 
 ```typescript
 type CloudSandboxConfig =
+  | { readonly provider: "cloudflare" } & CloudflareAdapterConfig
   | { readonly provider: "daytona" } & DaytonaAdapterConfig
   | { readonly provider: "docker" } & DockerAdapterConfig
-  | { readonly provider: "e2b" } & E2bAdapterConfig;
+  | { readonly provider: "e2b" } & E2bAdapterConfig
+  | { readonly provider: "vercel" } & VercelAdapterConfig;
 
-type CloudSandboxProvider = "daytona" | "docker" | "e2b";
+type CloudSandboxProvider = "cloudflare" | "daytona" | "docker" | "e2b" | "vercel";
 ```
 
 ### Lazy-Loaded Adapter Factories
@@ -332,9 +332,11 @@ Each factory lazy-loads its backend package on first call. Install the provider 
 
 | Factory | Provider Package | Install |
 |---------|-----------------|---------|
+| `createCloudflareAdapter` | `@koi/sandbox-cloudflare` | `bun add @koi/sandbox-cloudflare` |
 | `createDaytonaAdapter` | `@koi/sandbox-daytona` | `bun add @koi/sandbox-daytona` |
 | `createDockerAdapter` | `@koi/sandbox-docker` | `bun add @koi/sandbox-docker` |
 | `createE2bAdapter` | `@koi/sandbox-e2b` | `bun add @koi/sandbox-e2b` |
+| `createVercelAdapter` | `@koi/sandbox-vercel` | `bun add @koi/sandbox-vercel` |
 
 ### Re-Exported Cloud Base Utilities
 
