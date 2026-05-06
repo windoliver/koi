@@ -1,5 +1,5 @@
 import { createChannelAdapter } from "@koi/channel-base";
-import type { ChannelAdapter, ChannelCapabilities, OutboundMessage } from "@koi/core";
+import type { ChannelAdapter, ChannelCapabilities, ContentBlock, OutboundMessage } from "@koi/core";
 
 /**
  * Audio I/O transport for the voice channel. Vendor wiring (LiveKit, Twilio,
@@ -70,17 +70,17 @@ const defaultSttErrorLogger = (error: unknown, frame: Uint8Array): void => {
   );
 };
 
-// images/files/buttons declared TRUE so channel-base does NOT pre-downgrade
-// these blocks to a generic `[Image: alt]` text fallback that loses URLs,
-// mime types, and the distinction between alt-text and label semantics.
-// Voice CAN convey them — as a richer spoken-text rendering produced by
-// platformSend below. Threads true so a host can multiplex multiple live
-// calls through one adapter without cross-talk via InboundMessage.threadId.
+// Capabilities advertise honestly what voice CAN deliver natively: text
+// (via TTS) and audio. Images/files/buttons are NOT natively rendered, so
+// upstream routing/fallback decisions must see them as `false`. Rich-block
+// preservation is handled by a voice-specific rendering pass installed
+// AROUND channel-base (see `createVoiceChannel` below) — before base's
+// renderBlocks reduces them to a lossy generic fallback.
 const VOICE_CAPABILITIES: ChannelCapabilities = {
   text: true,
-  images: true,
-  files: true,
-  buttons: true,
+  images: false,
+  files: false,
+  buttons: false,
   audio: true,
   video: false,
   threads: true,
@@ -121,7 +121,32 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
     readonly utterance: Uint8Array;
   }
 
-  return createChannelAdapter<TransportEvent>({
+  // Pre-render rich blocks to text BEFORE channel-base's renderBlocks
+  // sees them. Capabilities are honestly false for images/files/buttons,
+  // which would cause base to downgrade to a lossy generic fallback
+  // (`[Image: alt]`). By collapsing them to `text` blocks here first,
+  // base's renderBlocks becomes a passthrough and our rich spoken
+  // representation reaches the wire intact.
+  const renderBlockToSpokenText = (block: ContentBlock): string => {
+    switch (block.kind) {
+      case "text":
+        return block.text;
+      case "image":
+        return block.alt !== undefined && block.alt.length > 0
+          ? `Image: ${block.alt}`
+          : `Image at ${block.url}`;
+      case "file":
+        return block.name !== undefined && block.name.length > 0
+          ? `File ${block.name} (${block.mimeType}) at ${block.url}`
+          : `File (${block.mimeType}) at ${block.url}`;
+      case "button":
+        return `Button: ${block.label}`;
+      case "custom":
+        return `[custom ${block.type}]`;
+    }
+  };
+
+  const inner = createChannelAdapter<TransportEvent>({
     name: "voice",
     capabilities: VOICE_CAPABILITIES,
     onNormalizationError: (err: unknown, event: TransportEvent) =>
@@ -145,38 +170,14 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       //            playback / non-idempotent retry race lives at the
       //            transport boundary (where it can use codec sequence
       //            numbers / acks), not inside the channel.
-      // Render each block to a spoken-text representation that preserves
-      // the user-visible meaning. Generic placeholders like `[image: image]`
-      // would lose alt text, file names, and button labels, leaving the
-      // listener with unintelligible audio for any rich reply.
+      // By the time platformSend runs, the outer wrapper has already
+      // collapsed every block to a `text` block via renderBlockToSpokenText,
+      // so this loop only sees text. Chunking is per-text-block so very
+      // long replies fit the TTS engine's input limits.
       const pieces: string[] = [];
       for (const block of message.content) {
-        // let requires justification: reduce to spoken text by kind
-        let text: string;
-        switch (block.kind) {
-          case "text":
-            text = block.text;
-            break;
-          case "image":
-            text =
-              block.alt !== undefined && block.alt.length > 0
-                ? `Image: ${block.alt}`
-                : `Image at ${block.url}`;
-            break;
-          case "file":
-            text =
-              block.name !== undefined && block.name.length > 0
-                ? `File ${block.name} (${block.mimeType}) at ${block.url}`
-                : `File (${block.mimeType}) at ${block.url}`;
-            break;
-          case "button":
-            text = `Button: ${block.label}`;
-            break;
-          case "custom":
-            text = `[custom ${block.type}]`;
-            break;
-        }
-        for (const piece of chunk(text, maxTtsChars)) pieces.push(piece);
+        if (block.kind !== "text") continue;
+        for (const piece of chunk(block.text, maxTtsChars)) pieces.push(piece);
       }
       const frames: Uint8Array[] = [];
       for (const piece of pieces) {
@@ -201,4 +202,17 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       };
     },
   });
+
+  // Wrap send() to pre-render rich blocks → text BEFORE channel-base sees
+  // them, so its capability-driven renderBlocks pass cannot lose semantics.
+  return {
+    ...inner,
+    send: (message: OutboundMessage): Promise<void> =>
+      inner.send({
+        ...message,
+        content: message.content.map(
+          (block): ContentBlock => ({ kind: "text", text: renderBlockToSpokenText(block) }),
+        ),
+      }),
+  };
 }

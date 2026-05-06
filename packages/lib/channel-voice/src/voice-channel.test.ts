@@ -92,7 +92,7 @@ describe("createVoiceChannel", () => {
     const ch = createVoiceChannel({ transport: h.transport, stt: h.stt, tts: h.tts });
     expect(ch.capabilities.text).toBe(true);
     expect(ch.capabilities.audio).toBe(true);
-    expect(ch.capabilities.images).toBe(true);
+    expect(ch.capabilities.images).toBe(false);
   });
 
   test("name is 'voice'", () => {

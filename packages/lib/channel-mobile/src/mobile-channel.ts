@@ -376,6 +376,14 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   // let requires justification: per-socket identity reset on close
   let activeIdentity: string | undefined;
   let lineHandler: ((line: string) => void) | undefined;
+  // channel-base calls platformConnect() BEFORE it registers the inbound
+  // handler via onPlatformEvent(). Without buffering, a client that
+  // connects + sends in that startup window would silently lose its first
+  // frame. We hold up to a small bounded backlog of pending lines and
+  // drain them as soon as the handler is installed.
+  // let requires justification: bounded startup buffer
+  let pendingLines: string[] = [];
+  const MAX_PENDING_LINES = 32;
   // Monotonic counter that ticks on every open AND every close — any
   // disconnect/reconnect cycle (even with the same client) creates a new
   // session boundary that strict-mode correlation can detect.
@@ -444,7 +452,13 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
               return;
             }
             const text = typeof data === "string" ? data : new TextDecoder().decode(data);
-            lineHandler?.(text);
+            if (lineHandler !== undefined) {
+              lineHandler(text);
+            } else if (pendingLines.length < MAX_PENDING_LINES) {
+              // Startup race: handler not yet installed. Buffer briefly so
+              // the first inbound after a fresh connect/restart isn't lost.
+              pendingLines.push(text);
+            }
           },
           close(ws: SocketLike) {
             if (activeSocket === ws) {
@@ -547,6 +561,12 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
     },
     onPlatformEvent: (handler) => {
       lineHandler = handler;
+      // Drain any frames that arrived during the connect/setup window
+      // BEFORE the handler was installed. Without this, the first inbound
+      // after a fresh restart would be silently lost.
+      const drain = pendingLines;
+      pendingLines = [];
+      for (const line of drain) handler(line);
       return () => {
         lineHandler = undefined;
       };

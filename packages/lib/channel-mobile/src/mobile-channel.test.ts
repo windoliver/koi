@@ -47,6 +47,31 @@ describe("createMobileChannel", () => {
     expect(ch.name).toBe("mobile");
   });
 
+  test("startup race: a frame sent immediately after connect is NOT lost", async () => {
+    // Regression: channel-base calls platformConnect() BEFORE registering
+    // the inbound handler via onPlatformEvent. Prior version lost any
+    // frame that arrived during that window because lineHandler was still
+    // undefined and the message was dropped silently.
+    const port = await freePort();
+    const ch = createMobileChannel({ port });
+    const received: InboundMessage[] = [];
+    // Register the message handler AFTER connect to maximize the chance
+    // the inbound frame races the handler installation.
+    await ch.connect();
+    const ws = await openWs(port);
+    ws.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: "first" }] }));
+    // Install handler after the frame is already inflight.
+    ch.onMessage(async (m: InboundMessage) => {
+      received.push(m);
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(received).toHaveLength(1);
+    expect((received[0]?.content[0] as TextBlock | undefined)?.text).toBe("first");
+    ws.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
   test("inbound: client msg → InboundMessage", async () => {
     const port = await freePort();
     const ch = createMobileChannel({ port });
