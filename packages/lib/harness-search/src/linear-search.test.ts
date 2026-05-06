@@ -484,6 +484,59 @@ describe("linearSearch", () => {
     expect(result.best).toBeNull();
   });
 
+  test("eval timeout terminates the loop — no further iterations after timeout", async () => {
+    // The reviewer flagged "timed-out attempts can keep running while
+    // later iterations proceed." This test pins the design intent:
+    // any timeout/abort exits withDeadline returns terminal, the loop
+    // breaks, and no subsequent evaluate/refine call is made by this
+    // run. (The hostile callback's background work is the caller's
+    // responsibility, gated on the adapterHonorsAbort assertion;
+    // linearSearch itself does not start another iteration after a
+    // timeout.)
+    let evalStarts = 0;
+    let evalFinishes = 0;
+    const config = makeConfig({
+      maxIterations: 5,
+      attemptTimeoutMs: 30,
+      evaluate: async () => {
+        evalStarts += 1;
+        // Non-cooperative: never resolves, ignores its signal.
+        await new Promise(() => {});
+        evalFinishes += 1;
+        return { successRate: 1, sampleCount: 10, failures: [] };
+      },
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_timeout");
+    // Exactly ONE evaluate call started — no retry initiated by the loop.
+    expect(evalStarts).toBe(1);
+    expect(evalFinishes).toBe(0);
+  });
+
+  test("thompson_deploy gated on quality floor — low-rate plateau does not exit as deploy", async () => {
+    // Regression: the deploy arm was rewarded for !progressedOverPredecessor,
+    // so a search stuck at a low success rate (rate << convergenceThreshold)
+    // would train the deploy arm and exit as thompson_deploy. Now gated
+    // on bestNode.successRate >= convergenceThreshold; below the floor
+    // the bandit cannot make a "intentional deploy" decision, and the
+    // run exits via no_improvement / budget_exhausted instead.
+    const config = makeConfig({
+      maxIterations: 10,
+      convergenceThreshold: 1.0,
+      noImprovementLimit: 99,
+      // Plateau at 0.3 across iterations — far below threshold.
+      evaluate: async () => ({
+        successRate: 0.3,
+        sampleCount: 10,
+        failures: [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }],
+      }),
+      // Always pick deploy — would exit thompson_deploy without floor.
+      random: () => 0.0,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).not.toBe("thompson_deploy");
+  });
+
   test("non-cloneable descriptor rejected with typed TypeError (no opaque DataCloneError)", async () => {
     // Regression: structuredClone failed unconditionally on descriptors
     // carrying functions / accessors / transferables, leaving callers

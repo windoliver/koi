@@ -399,7 +399,19 @@ export async function linearSearch(
       deployState = updateThompson(deployState, !progressedOverPredecessor);
     }
 
-    if (iteration > 0 && !shouldContinue(continueState, deployState, random)) {
+    // Quality floor on thompson_deploy: the bandit must NOT exit as
+    // an "intentional deploy" on a candidate that is still below the
+    // convergence threshold. Otherwise a search stuck at a low
+    // success rate (rate << threshold across iterations) trains the
+    // deploy arm via !progressedOverPredecessor and exits as
+    // thompson_deploy — orchestration cannot tell that apart from a
+    // healthy exploit decision on a deployable winner. With this
+    // floor, low-quality plateaus exit via no_improvement /
+    // budget_exhausted instead, preserving the signal that the
+    // search did not produce a deployable candidate.
+    const bestSampledRate = bestNode?.successRate ?? -1;
+    const meetsDeployFloor = bestSampledRate >= convergenceThreshold;
+    if (iteration > 0 && meetsDeployFloor && !shouldContinue(continueState, deployState, random)) {
       stopReason = "thompson_deploy";
       break;
     }
