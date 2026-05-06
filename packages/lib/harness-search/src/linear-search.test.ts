@@ -238,13 +238,15 @@ describe("linearSearch", () => {
     expect(result.stopReason).toBe("converged");
   });
 
-  test("aborts when external signal fires before next iteration", async () => {
+  test("aborts when external signal fires during in-flight evaluate", async () => {
+    // Parent abort is a first-class race participant in withDeadline —
+    // it wins over the callback's resolution path even when the
+    // evaluator is fast/cooperative, so the loop never accepts the
+    // result of an attempt the caller has already cancelled.
     const ctrl = new AbortController();
-    let calls = 0;
     const config = makeConfig({
       evaluate: async () => {
-        calls++;
-        if (calls === 1) ctrl.abort();
+        ctrl.abort();
         return {
           successRate: 0.3,
           sampleCount: 10,
@@ -256,7 +258,7 @@ describe("linearSearch", () => {
     });
     const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
     expect(result.stopReason).toBe("aborted");
-    expect(result.totalIterations).toBe(1);
+    expect(result.totalIterations).toBe(0);
   });
 
   test("multiple strategies are tried — refined code is fed forward", async () => {
@@ -390,6 +392,86 @@ describe("linearSearch", () => {
     });
     const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
     expect(result.totalIterations).toBeGreaterThan(0);
+  });
+
+  test("parent abort terminates non-cooperative callback even with Infinity timeout", async () => {
+    const ctrl = new AbortController();
+    const config = makeConfig({
+      attemptTimeoutMs: Number.POSITIVE_INFINITY,
+      // Non-cooperative: never resolves, ignores its signal.
+      evaluate: () => new Promise(() => {}),
+      signal: ctrl.signal,
+    });
+    setTimeout(() => ctrl.abort(), 30);
+    const start = Date.now();
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    const elapsed = Date.now() - start;
+
+    expect(result.stopReason).toBe("aborted");
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  test("parent abort beats finite timeout when both could fire", async () => {
+    const ctrl = new AbortController();
+    const config = makeConfig({
+      attemptTimeoutMs: 5_000,
+      evaluate: () => new Promise(() => {}),
+      signal: ctrl.signal,
+    });
+    setTimeout(() => ctrl.abort(), 20);
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("aborted");
+  });
+
+  test("invalid attemptTimeoutMs throws fast (NaN)", async () => {
+    const config = makeConfig({ attemptTimeoutMs: Number.NaN });
+    expect(linearSearch(INITIAL_CODE, DESCRIPTOR, config)).rejects.toThrow(/attemptTimeoutMs/);
+  });
+
+  test("invalid attemptTimeoutMs throws fast (zero)", async () => {
+    const config = makeConfig({ attemptTimeoutMs: 0 });
+    expect(linearSearch(INITIAL_CODE, DESCRIPTOR, config)).rejects.toThrow(/attemptTimeoutMs/);
+  });
+
+  test("invalid attemptTimeoutMs throws fast (negative)", async () => {
+    const config = makeConfig({ attemptTimeoutMs: -1 });
+    expect(linearSearch(INITIAL_CODE, DESCRIPTOR, config)).rejects.toThrow(/attemptTimeoutMs/);
+  });
+
+  test("invalid maxIterations throws fast", async () => {
+    const config = makeConfig({ maxIterations: 0 });
+    expect(linearSearch(INITIAL_CODE, DESCRIPTOR, config)).rejects.toThrow(/maxIterations/);
+  });
+
+  test("invalid convergenceThreshold throws fast", async () => {
+    const config = makeConfig({ convergenceThreshold: 1.5 });
+    expect(linearSearch(INITIAL_CODE, DESCRIPTOR, config)).rejects.toThrow(/convergenceThreshold/);
+  });
+
+  test("malformed evaluator (out-of-range rate) yields eval_failed", async () => {
+    const config = makeConfig({
+      // Buggy evaluator emitting percentage instead of fraction.
+      evaluate: async () => ({ successRate: 95, sampleCount: 10, failures: [] }),
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_failed");
+    expect(result.converged).toBe(false);
+  });
+
+  test("malformed evaluator (NaN rate) yields eval_failed", async () => {
+    const config = makeConfig({
+      evaluate: async () => ({ successRate: Number.NaN, sampleCount: 10, failures: [] }),
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_failed");
+  });
+
+  test("malformed evaluator (negative samples) yields eval_failed", async () => {
+    const config = makeConfig({
+      evaluate: async () => ({ successRate: 0.9, sampleCount: -1, failures: [] }),
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+    expect(result.stopReason).toBe("eval_failed");
   });
 
   test("never exceeds maxIterations even with infinite-failure evaluator", async () => {

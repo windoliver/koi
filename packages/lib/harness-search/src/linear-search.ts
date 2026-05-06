@@ -73,6 +73,37 @@ export async function linearSearch(
     signal,
   } = config;
 
+  // Fail-fast on config bugs that would otherwise silently break the
+  // bounded-search guarantee (NaN slips past Number.isFinite into the
+  // "Infinity disables deadline" branch in withDeadline; <= 0 produces
+  // immediate timeouts; non-integer maxIterations corrupts loop bounds).
+  if (!Number.isInteger(maxIterations) || maxIterations < 1) {
+    throw new TypeError("linearSearch: maxIterations must be a positive integer");
+  }
+  if (!Number.isInteger(minEvalSamples) || minEvalSamples < 0) {
+    throw new TypeError("linearSearch: minEvalSamples must be a non-negative integer");
+  }
+  if (!Number.isInteger(noImprovementLimit) || noImprovementLimit < 1) {
+    throw new TypeError("linearSearch: noImprovementLimit must be a positive integer");
+  }
+  if (
+    typeof attemptTimeoutMs !== "number" ||
+    Number.isNaN(attemptTimeoutMs) ||
+    attemptTimeoutMs <= 0
+  ) {
+    throw new TypeError(
+      "linearSearch: attemptTimeoutMs must be a positive finite number or Infinity",
+    );
+  }
+  if (
+    typeof convergenceThreshold !== "number" ||
+    !Number.isFinite(convergenceThreshold) ||
+    convergenceThreshold < 0 ||
+    convergenceThreshold > 1
+  ) {
+    throw new TypeError("linearSearch: convergenceThreshold must be a finite number in [0, 1]");
+  }
+
   const history: SearchNode[] = [];
   let nodeCounter = 0;
   let currentCode = initialCode;
@@ -101,6 +132,13 @@ export async function linearSearch(
           : evalOutcome.kind === "timeout"
             ? "eval_timeout"
             : "eval_failed";
+      break;
+    }
+    // Validate evaluator output as a trust-boundary input — a buggy
+    // evaluator returning percentages (95), NaN, or negative counts
+    // would otherwise drive false convergence and best-node selection.
+    if (!isValidEvalResult(evalOutcome.value)) {
+      stopReason = "eval_failed";
       break;
     }
     const evalResult: EvalResult = evalOutcome.value;
@@ -222,13 +260,13 @@ type DeadlineOutcome<T> =
   | { readonly ok: false; readonly kind: "timeout" | "aborted" | "error" };
 
 /**
- * Race a callback against a per-attempt deadline AND the external
- * cancellation signal. Returns a tagged outcome; the caller decides
- * which `StopReason` to surface. The deadline is enforced *here* — not
- * left to the callback to honor — so a non-cooperative adapter cannot
- * hang the bounded search loop. The per-attempt AbortSignal is forwarded
- * to the callback so cooperative adapters can release in-flight work
- * promptly.
+ * Race a callback against THREE outcomes: callback resolution,
+ * per-attempt deadline, and external cancellation. The deadline AND
+ * parent abort are first-class race participants — neither relies on
+ * the callback honoring its forwarded `AbortSignal`. The signal IS
+ * forwarded so cooperative adapters can release in-flight work
+ * promptly, but a non-cooperative adapter (ignores the signal, never
+ * resolves) cannot block `withDeadline` from returning.
  */
 async function withDeadline<T>(
   fn: (signal: AbortSignal) => Promise<T>,
@@ -236,11 +274,20 @@ async function withDeadline<T>(
   timeoutMs: number,
 ): Promise<DeadlineOutcome<T>> {
   const controller = new AbortController();
-  const onParentAbort = (): void => controller.abort();
-  if (parentSignal !== undefined) {
-    if (parentSignal.aborted) controller.abort();
-    else parentSignal.addEventListener("abort", onParentAbort, { once: true });
-  }
+  let onParentAbort: (() => void) | undefined;
+  const abortPromise: Promise<DeadlineOutcome<T>> = new Promise((resolve) => {
+    if (parentSignal === undefined) return;
+    if (parentSignal.aborted) {
+      controller.abort();
+      resolve({ ok: false, kind: "aborted" });
+      return;
+    }
+    onParentAbort = (): void => {
+      controller.abort();
+      resolve({ ok: false, kind: "aborted" });
+    };
+    parentSignal.addEventListener("abort", onParentAbort, { once: true });
+  });
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
@@ -253,7 +300,8 @@ async function withDeadline<T>(
         }, timeoutMs);
       })
     : new Promise(() => {
-        // Never resolves — Infinity disables the deadline; callback wins.
+        // Never resolves — Infinity disables the deadline. Parent abort
+        // and callback resolution still terminate the race.
       });
 
   try {
@@ -265,9 +313,28 @@ async function withDeadline<T>(
         return { ok: false, kind: "error" };
       },
     );
-    return await Promise.race([callbackPromise, timeoutPromise]);
+    return await Promise.race([callbackPromise, timeoutPromise, abortPromise]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
-    if (parentSignal !== undefined) parentSignal.removeEventListener("abort", onParentAbort);
+    if (parentSignal !== undefined && onParentAbort !== undefined) {
+      parentSignal.removeEventListener("abort", onParentAbort);
+    }
   }
+}
+
+/**
+ * Validate evaluator output. Treats non-finite rates, out-of-range
+ * rates, non-integer/negative sample counts, and non-array failures as
+ * a typed eval failure instead of letting them drive convergence.
+ */
+function isValidEvalResult(r: EvalResult): boolean {
+  return (
+    typeof r.successRate === "number" &&
+    Number.isFinite(r.successRate) &&
+    r.successRate >= 0 &&
+    r.successRate <= 1 &&
+    Number.isInteger(r.sampleCount) &&
+    r.sampleCount >= 0 &&
+    Array.isArray(r.failures)
+  );
 }
