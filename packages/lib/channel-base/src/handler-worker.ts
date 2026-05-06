@@ -99,6 +99,12 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
         continue;
       }
       await processClaim(ctx, claimed);
+      // Cooperative yield: every iteration ends in a setTimeout(0) so a tight
+      // nack-only path (e.g. capacity-exhausted, or a poison-replay drain
+      // storm) cannot starve macrotasks. Without this, callers that race
+      // against the loop with their own setTimeout-based wait can stall
+      // because the microtask queue never empties.
+      await sleep(0);
     }
   };
 
