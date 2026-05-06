@@ -136,6 +136,22 @@ export function createSignalProcess(
         onUnexpectedExit?.();
       });
       void readStdout(child.stdout);
+      // Readiness probe: race child.exited against a short startup window so
+      // connect() fails fast when signal-cli dies immediately (unregistered
+      // account, missing JRE, malformed config). Without this the adapter
+      // would report a successful connect, accept sends, and only surface
+      // the failure on the first send when stdin is already closed.
+      const STARTUP_WINDOW_MS = 250;
+      const earlyExit = await Promise.race<"alive" | "exited">([
+        child.exited.then((): "exited" => "exited"),
+        new Promise<"alive">((resolve) => setTimeout(() => resolve("alive"), STARTUP_WINDOW_MS)),
+      ]);
+      if (earlyExit === "exited") {
+        // child.exited handler above has already cleared proc/running.
+        throw new Error(
+          `[channel-signal] signal-cli exited within ${STARTUP_WINDOW_MS}ms of spawn — check that the account "${account}" is registered and the binary at "${signalCliPath}" runs standalone`,
+        );
+      }
     },
 
     stop: async (): Promise<void> => {

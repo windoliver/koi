@@ -288,6 +288,26 @@ describe("@koi/channel-signal createSignalProcess", () => {
     if (seen[0]?.kind === "message") expect(seen[0].body).toBe("tail");
   });
 
+  test("start() rejects when subprocess exits within the startup window (no false-connected state)", async () => {
+    // Resolve exited immediately so the start() readiness probe sees the
+    // child die before the startup window elapses.
+    const exited = Promise.resolve();
+    const proc: SignalChildProcess = {
+      stdout: new ReadableStream<Uint8Array>({
+        start(c): void {
+          c.close();
+        },
+      }),
+      stdin: { write: () => undefined },
+      exited,
+      kill: () => undefined,
+    };
+    const spawn: SpawnFn = () => proc;
+    const p = createSignalProcess("+15551234567", "signal-cli", undefined, spawn);
+    await expect(p.start()).rejects.toThrow(/exited within/);
+    expect(p.isRunning()).toBe(false);
+  });
+
   test("isRunning reflects start/stop", async () => {
     const f = makeFake();
     const spawn: SpawnFn = () => f.proc;
