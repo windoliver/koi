@@ -152,6 +152,50 @@ describe("startHandlerWorker", () => {
     expect(await queue.claim("w2", 100)).toBeNull();
   });
 
+  test("handler timeout + poison-commit failure: still dead-letters (drain unblocks)", async () => {
+    // Regression: previously the timeout branch left the queue item
+    // in limbo when commitPoisonDurably failed (no ack, no
+    // deadLetter), which blocked awaitDrain forever and wedged
+    // drain-gated channels (email IMAP). Now the timeout path
+    // deadLetters unconditionally so the source-side callback always
+    // sees a terminal outcome. The lease is intentionally NOT
+    // aborted — the active (or naturally-expiring) lease prevents
+    // successor reclaim during the original handler's run.
+    const queue = new InMemoryIngressQueue<{ readonly v: number }, null>();
+    const idem = new InMemoryIdempotencyStore();
+    const wrapped = {
+      tryBegin: idem.tryBegin.bind(idem),
+      commit: idem.commit.bind(idem),
+      commitPoison: async () => {
+        throw new Error("idempotency store unavailable during outage");
+      },
+      abort: idem.abort.bind(idem),
+      renew: idem.renew.bind(idem),
+    };
+    let started = 0;
+    const stop = startHandlerWorker({
+      queue,
+      idempotencyStore: wrapped,
+      handler: async () => {
+        started++;
+        return new Promise<void>(() => {});
+      },
+      commitTtlMs: 1000,
+      handlerTimeoutMs: 20,
+      leaseGraceMs: 5_000,
+      pollIntervalMs: 1,
+      workerId: "w1",
+    });
+    await queue.enqueue("k1", { key: "k1", payload: { v: 1 }, normalized: null });
+    const drain = await queue.awaitDrain("k1");
+    await stop();
+    expect(started).toBe(1);
+    expect(drain.ok).toBe(false);
+    const dl = await queue.getDeadLetters();
+    expect(dl).toHaveLength(1);
+    expect(dl[0]?.reason).toContain("poison-commit-failed");
+  });
+
   test("commitPoison failure on max-retry blocks dead-letter (item stays retryable)", async () => {
     // Regression: if the poison tombstone cannot land durably on a
     // max-retry terminal path, dead-lettering would remove the queue

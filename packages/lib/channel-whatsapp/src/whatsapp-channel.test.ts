@@ -205,13 +205,15 @@ describe("createWhatsAppChannel", () => {
     expect(issues).toEqual([{ kind: "malformed-entry", count: 1 }]);
   });
 
-  test("messages[] present but metadata.phone_number_id missing → 400 + malformed-entry issue", async () => {
+  test("messages[] without metadata.phone_number_id → 200 + all-invalid-batch issue with raw body", async () => {
     // Regression: when a message-bearing webhook arrived with a valid
     // entry but no `metadata.phone_number_id`, the previous code
-    // silently 200-acked and dropped every contained message. Now the
-    // missing pid counts each message as malformed; with no valid
-    // siblings the response is 400 + onIngressIssue so the Meta-side
-    // schema regression is visible to operators.
+    // silently 200-acked and dropped every contained message. We now
+    // count each missing-pid message as malformed and surface the raw
+    // body via onIngressIssue(all-invalid-batch) so operators can
+    // persist for replay. Response stays 200 because Meta does not
+    // retry 4xx — a 400 would permanently drop every contained user
+    // message; the operator's issue feed IS the dead-letter surface.
     const issues: unknown[] = [];
     const deps: WhatsAppDependencies = {
       ...buildDeps(),
@@ -244,16 +246,21 @@ describe("createWhatsAppChannel", () => {
       ],
     });
     const res = await ch.handleHttpRequest(makePostRequest(body));
-    expect(res.status).toBe(400);
-    expect(issues).toEqual([{ kind: "malformed-entry", count: 1 }]);
+    expect(res.status).toBe(200);
+    expect(issues).toEqual([
+      { kind: "malformed-entry", count: 1 },
+      { kind: "all-invalid-batch", rawBody: body, malformedCount: 1 },
+    ]);
   });
 
-  test("envelope-shape drift: 400 + onIngressIssue, not silent 200", async () => {
+  test("envelope-shape drift: 200 + onIngressIssue with raw body (no permanent loss)", async () => {
     // Regression: a missing `entry` array (Meta schema regression,
-    // proxy truncation) used to silently 200-ack with no operator
-    // signal and no retry. Now it surfaces as 400 +
-    // envelope-unrecognized issue so the producer regression is
-    // visible.
+    // proxy truncation) used to either silently 200-ack with no
+    // signal OR (after round-23) 400 — both lose the message
+    // because Meta does not retry 4xx. Now: 200-ack so Meta stops
+    // retrying AND surface the raw body via onIngressIssue so the
+    // operator's hook can persist it for replay (production
+    // requires the hook).
     const issues: unknown[] = [];
     const deps: WhatsAppDependencies = {
       ...buildDeps(),
@@ -262,8 +269,8 @@ describe("createWhatsAppChannel", () => {
     const ch = createWhatsAppChannel(config, deps);
     const body = JSON.stringify({ object: "whatsapp_business_account" });
     const res = await ch.handleHttpRequest(makePostRequest(body));
-    expect(res.status).toBe(400);
-    expect(issues).toEqual([{ kind: "envelope-unrecognized" }]);
+    expect(res.status).toBe(200);
+    expect(issues).toEqual([{ kind: "envelope-unrecognized", rawBody: body }]);
   });
 
   test("production mode requires onIngressIssue hook", async () => {

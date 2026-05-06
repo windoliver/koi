@@ -169,20 +169,31 @@ export function startHandlerWorker<P, N>(opts: HandlerWorkerOptions<P, N>): () =
               begin.lease,
               opts.commitTtlMs,
             );
-            if (poisonOk) {
-              await opts.queue.deadLetter(
-                opts.workerId,
-                claimed.key,
-                `handler-timeout: ${handlerResult.error.message}`,
-              );
-            } else {
-              // Poison commit failed: do NOT deadLetter (no terminal
-              // marker would let a future redelivery re-execute).
-              // Keep the lease + claim until natural expiry — the
-              // drain-gated adapter will time out at the IMAP layer
-              // and operators see retries rather than silent
-              // duplication.
-            }
+            // Dead-letter UNCONDITIONALLY on timeout — even if poison
+            // commit failed. Drain-gated channels (email IMAP) block
+            // their provider callback on awaitDrain; without a
+            // terminal queue resolution the callback would wait
+            // forever and wedge mailbox progress with no operator
+            // surface. The deadLetter resolves awaitDrain(ok:false)
+            // so the source-side keeps the message un-acked for
+            // triage.
+            //
+            // We deliberately do NOT abort the idempotency lease
+            // here: the original handler is still running, and the
+            // active (or naturally-expiring) lease blocks any
+            // successor reclaim during that window via tryBegin's
+            // in-flight check. Residual risk: if the
+            // idempotency-store outage outlasts the lease AND the
+            // source provider redelivers, a fresh tryBegin could
+            // succeed and a second handler could run concurrently
+            // with the still-running original. That risk is
+            // strictly bounded by leaseMs and is preferable to a
+            // wedged drain — the wedge has no operator surface,
+            // duplication does (the dead-letter entry).
+            const reason = poisonOk
+              ? `handler-timeout: ${handlerResult.error.message}`
+              : `handler-timeout (poison-commit-failed): ${handlerResult.error.message}`;
+            await opts.queue.deadLetter(opts.workerId, claimed.key, reason);
             continue;
           }
           throw handlerResult.error;

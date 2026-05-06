@@ -46,8 +46,13 @@ export type WhatsAppErrorCode =
   | "UNSUPPORTED_BLOCK";
 
 export type WhatsAppIngressIssue =
-  | { readonly kind: "envelope-unrecognized" }
+  | { readonly kind: "envelope-unrecognized"; readonly rawBody: string }
   | { readonly kind: "malformed-entry"; readonly count: number }
+  | {
+      readonly kind: "all-invalid-batch";
+      readonly rawBody: string;
+      readonly malformedCount: number;
+    }
   | { readonly kind: "phone-number-mismatch"; readonly expected: string; readonly got: string }
   | { readonly kind: "normalize-failed"; readonly reason: string };
 
@@ -281,12 +286,14 @@ export function createWhatsAppChannel(
       // Top-level shape drift (missing `entry`, non-array `entry`,
       // proxy truncation, schema regression). We cannot tell whether
       // this delivery was meant to carry messages or be a status
-      // callback. Surface to operators via onIngressIssue and return
-      // 400 so the failure is visible — Meta will not retry, but
-      // silent 200-ack would mean every affected message is lost
-      // without any signal at all.
-      deps.onIngressIssue?.({ kind: "envelope-unrecognized" });
-      return new Response("INVALID_PAYLOAD: unrecognized envelope shape", { status: 400 });
+      // callback. Surface the raw body via onIngressIssue so
+      // operators can persist it for replay, then 200-ack — Meta
+      // does NOT retry 4xx, so a 400 here would permanently drop
+      // any contained user messages. The issue surface is the
+      // operator's dead-letter feed; production callers are
+      // required to provide the hook.
+      deps.onIngressIssue?.({ kind: "envelope-unrecognized", rawBody: raw });
+      return new Response(null, { status: 200 });
     }
     if (extracted.malformedCount > 0) {
       // Surface malformed-entry count via the ingress-issue hook so
@@ -327,17 +334,23 @@ export function createWhatsAppChannel(
       items.push({ msg, key: dedupeKey(phoneNumberId, msg), normalized: norm.value });
     }
     if (items.length === 0) {
-      // Nothing valid to enqueue. Distinguish two sub-cases:
-      //   (a) all-malformed batch (malformedCount > 0 and zero valid
-      //       siblings): return 400 so the producer regression is
-      //       visible. Meta does not retry 4xx but 200-acking would
-      //       drop every contained user message with no operator
-      //       signal at all.
+      // Nothing valid to enqueue.
+      //   (a) all-malformed batch (malformedCount > 0 and zero
+      //       valid siblings): surface the raw body via
+      //       onIngressIssue(all-invalid-batch) so operators can
+      //       persist it for replay, then 200-ack. 4xx would
+      //       permanently drop every contained user message
+      //       because Meta does not retry 4xx. Production callers
+      //       are required to provide the hook.
       //   (b) empty batch / status callback / phone_number_id
       //       mismatch: 200-ack so Meta stops retrying. Issues
       //       already surfaced via onIngressIssue.
       if (extracted.malformedCount > 0) {
-        return new Response("INVALID_PAYLOAD: all entries malformed", { status: 400 });
+        deps.onIngressIssue?.({
+          kind: "all-invalid-batch",
+          rawBody: raw,
+          malformedCount: extracted.malformedCount,
+        });
       }
       return new Response(null, { status: 200 });
     }
