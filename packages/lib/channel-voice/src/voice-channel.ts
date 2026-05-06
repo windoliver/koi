@@ -445,6 +445,11 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
             // abandoned transcription per utterance behind dropped
             // turns — wasting compute and hiding the real outage.
             const sttCtl = new AbortController();
+            // Track the STT controller so disconnect aborts an in-flight
+            // transcription instead of leaving it to burn provider quota
+            // until the upstream timeout. Removed in finally so completed
+            // (or aborted) calls don't keep the controller live.
+            inflightControllers.add(sttCtl);
             try {
               const transcribePromise = config.stt.transcribe(utterance, sttCtl.signal);
               // let requires justification: handle assigned conditionally for cleanup
@@ -462,6 +467,7 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
                 text = await Promise.race([transcribePromise, timeoutPromise]);
               } finally {
                 if (timer !== undefined) clearTimeout(timer);
+                inflightControllers.delete(sttCtl);
               }
             } catch (err) {
               (config.onSttError ?? defaultSttErrorLogger)(err, utterance);

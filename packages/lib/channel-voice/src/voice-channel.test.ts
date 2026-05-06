@@ -1346,6 +1346,55 @@ describe("createVoiceChannel", () => {
     await ch.disconnect();
   });
 
+  test("disconnect aborts in-flight STT (no orphaned transcription burning provider quota)", async () => {
+    // Regression (round 35 medium): STT controllers were tracked only
+    // in the per-utterance enqueue closure; disconnect() aborted only
+    // TTS/transport controllers. A disconnect/failover during STT left
+    // the transcription request alive until its own provider timeout,
+    // accumulating unrecoverable load on repeated reconnects.
+    let listener: ((sessionId: string, audio: Uint8Array) => void) | undefined;
+    let sttAborted = false;
+    let sttSignalSeen = false;
+    const transport: VoiceTransport = {
+      connect: async () => {},
+      disconnect: async () => {},
+      sendUtterance: async () => {},
+      onUtterance: (h) => {
+        listener = h;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const stt: Stt = {
+      transcribe: (_audio, signal) => {
+        sttSignalSeen = signal !== undefined;
+        return new Promise<string>((_, reject) => {
+          signal?.addEventListener("abort", () => {
+            sttAborted = true;
+            reject(new Error("aborted"));
+          });
+        });
+      },
+    };
+    const tts: Tts = { synthesize: async () => new Uint8Array() };
+    const ch = createVoiceChannel({
+      transport,
+      stt,
+      tts,
+      // Long STT timeout so disconnect — not the timeout — does the abort.
+      sttTimeoutMs: 60_000,
+    });
+    ch.onMessage(async () => {});
+    await ch.connect();
+    listener?.("call-stt-disc", new Uint8Array([1]));
+    // Let the STT request register its controller.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sttSignalSeen).toBe(true);
+    await ch.disconnect();
+    expect(sttAborted).toBe(true);
+  });
+
   test("AbortSignal is forwarded to TTS and transport on timeout (cooperative cancellation)", async () => {
     // Round-14 high finding: withTimeout only races; underlying calls
     // could leak after the channel reports failure. Cooperative impls

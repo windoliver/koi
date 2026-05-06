@@ -1815,6 +1815,52 @@ describe("createMobileChannel", () => {
     await ch.disconnect();
   });
 
+  test("disconnect during slow authenticate() refuses the late upgrade (lifecycle fence)", async () => {
+    // Regression (round 35 high): authenticate() awaited before
+    // srv.upgrade() with no lifecycle check. If disconnect ran while
+    // auth was in flight, a late auth result could still reach
+    // upgrade()/open() and claim activeSocket on a torn-down adapter,
+    // stranding the slot or accepting frames into a dead lifecycle.
+    // The connect-generation fence must reject any auth that resolves
+    // after disconnect bumps connectGen.
+    const port = await freePort();
+    let releaseAuth: ((id: string) => void) | undefined;
+    const ch = createMobileChannel({
+      port,
+      authenticate: () =>
+        new Promise<string>((r) => {
+          releaseAuth = r;
+        }),
+      // Long enough not to fire during the test.
+      authenticateTimeoutMs: 60_000,
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
+      pushNotifier: async () => {},
+    });
+    ch.onMessage(async () => {});
+    await ch.connect();
+    const reqPromise = fetch(`http://127.0.0.1:${port}`, {
+      headers: { Upgrade: "websocket", Connection: "Upgrade", "Sec-WebSocket-Version": "13" },
+    });
+    // Wait until the request is in authenticate() (slot reserved).
+    await new Promise((r) => setTimeout(r, 50));
+    // Disconnect WHILE authenticate is in flight. The connect-gen bumps;
+    // when releaseAuth resolves, the post-auth fence must catch it.
+    await ch.disconnect();
+    releaseAuth?.("device-late");
+    // The pending fetch either gets a 410 response or ECONNRESET when
+    // server.stop(true) tears down the listener before the response
+    // flushes. Either proves the fence killed the upgrade. Crucially,
+    // status === 101 (switching protocols) would mean the late auth
+    // bound a socket on a torn-down adapter — that MUST NOT happen.
+    const outcome = await reqPromise.then(
+      (r) => r.status,
+      () => "reset" as const,
+    );
+    expect(outcome).not.toBe(101);
+    expect(outcome === 410 || outcome === "reset").toBe(true);
+  });
+
   test("upgrade reservation timer releases the slot if open() never fires", async () => {
     // Regression: pendingUpgrades was incremented before authenticate() and
     // only decremented inside open() or explicit failure paths. A client

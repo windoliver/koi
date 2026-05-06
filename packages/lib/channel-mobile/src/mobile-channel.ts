@@ -605,6 +605,15 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
   // session boundary that strict-mode correlation can detect.
   // let requires justification: monotonic counter for session boundaries
   let sessionEpoch = 0;
+  // Connect-cycle generation. Bumped in platformDisconnect so any auth/
+  // upgrade work captured while the prior connect was live is fenced
+  // from claiming activeSocket on a torn-down or post-reconnect adapter.
+  // Without this fence, a slow authenticate() that resolves AFTER
+  // disconnect() returned could still reach srv.upgrade()/open() and
+  // strand the single-client slot or accept inbound frames into a
+  // lifecycle the host believes is gone.
+  // let requires justification: monotonic counter for connect cycles
+  let connectGen = 0;
   // Pending application-level acks for live-delivered frames. The wire
   // payload of every live send carries a `deliveryId` and the client
   // must respond with `{kind:"ack", deliveryId}` within `ackTimeoutMs`.
@@ -724,6 +733,12 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
           if (!looksLikeUpgrade) {
             return new Response("expected websocket upgrade", { status: 426 });
           }
+          // Capture the connect-cycle generation at the entry to this
+          // upgrade. If platformDisconnect bumps connectGen while
+          // authenticate() is in flight, we must NOT proceed to
+          // srv.upgrade() — the adapter the host believes is gone would
+          // otherwise resurrect a session on a torn-down lifecycle.
+          const genAtFetch = connectGen;
           // Single-client short-circuit: reserve the slot BEFORE running
           // authenticate() — and BEFORE awaiting any other in-flight
           // handshake. Without the pendingUpgrades counter, concurrent
@@ -805,6 +820,16 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
             releaseUpgrade();
             throw err;
           }
+          // Post-auth lifecycle fence: if disconnect ran while
+          // authenticate() was in flight, refuse to proceed to
+          // srv.upgrade(). The single-client slot must not be claimed
+          // on an adapter the host already tore down. 410 Gone signals
+          // the resource is permanently unavailable for this auth
+          // attempt; clients should retry against a fresh connect.
+          if (connectGen !== genAtFetch) {
+            releaseUpgrade();
+            return new Response("adapter disconnected", { status: 410 });
+          }
           // Phase 2 begins: arm the safety timer only now, scoped to the
           // post-upgrade / pre-open() gap. Slow auth above could not have
           // released the slot.
@@ -823,7 +848,13 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
           const isReservationExpired = (): boolean => reservationExpired;
           if (
             srv.upgrade(req, {
-              data: { identity, releaseUpgrade, reservationTimer, isReservationExpired },
+              data: {
+                identity,
+                releaseUpgrade,
+                reservationTimer,
+                isReservationExpired,
+                gen: genAtFetch,
+              },
             })
           ) {
             return undefined;
@@ -840,9 +871,25 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
                 readonly releaseUpgrade?: () => void;
                 readonly reservationTimer?: ReturnType<typeof setTimeout>;
                 readonly isReservationExpired?: () => boolean;
+                readonly gen?: number;
               };
             },
           ) {
+            // Lifecycle fence: if disconnect ran between fetch() and
+            // open(), this upgrade was for a generation the host has
+            // already abandoned. Refuse to bind activeSocket so a new
+            // post-reconnect adapter (or no adapter) is not stranded
+            // with a stale client.
+            if (ws.data?.gen !== undefined && ws.data.gen !== connectGen) {
+              if (ws.data?.reservationTimer !== undefined) {
+                clearTimeout(ws.data.reservationTimer);
+              }
+              if (ws.data?.releaseUpgrade !== undefined) {
+                ws.data.releaseUpgrade();
+              }
+              ws.close();
+              return;
+            }
             // Expired-reservation guard MUST run before we touch
             // activeSocket: if our reservation already timed out, a
             // newer client may already hold (or be about to hold) the
@@ -939,6 +986,11 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       }
     },
     platformDisconnect: async () => {
+      // Bump the connect-cycle generation FIRST so any auth/upgrade
+      // work currently in flight (captured genAtFetch === old connectGen)
+      // detects the lifecycle change after it eventually resumes and
+      // refuses to claim activeSocket on this torn-down adapter.
+      connectGen++;
       activeSocket?.close();
       activeSocket = undefined;
       activeIdentity = undefined;
