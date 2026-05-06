@@ -198,7 +198,7 @@ The DO class implements `claim` atomically (single-threaded execution per object
 
 All Vercel KV keys are **fleet-namespaced** with `ownerId` to prevent cross-tenant collision when multiple deployments share a KV instance. The shim manages three keys per `operationId`, all prefixed by `ownerId`:
 
-- `${ownerId}:claim:${operationId}` — holds the active claimer's `requestId` with a 60-second TTL (heartbeat lease).
+- `${ownerId}:claim:${operationId}` — holds the active claimer's `requestId` with a **15-second TTL** (heartbeat lease — sized below the 30s invoke timeout so waiters can reclaim a crashed owner's claim within the same invoke window).
 - `${ownerId}:result:${operationId}` — holds the cached result with a 24-hour TTL.
 - `${ownerId}:failed:${operationId}` — cached terminal failures (24h TTL).
 
@@ -222,7 +222,7 @@ const CHECK_OR_CLAIM_LUA = `
   if f then return 'failed:'..f end
   local c = redis.call('GET', KEYS[3])
   if c then return 'claim:in-progress:'..c end
-  redis.call('SET', KEYS[3], ARGV[1], 'EX', '60')
+  redis.call('SET', KEYS[3], ARGV[1], 'EX', '15')
   return 'claim:fresh'
 `;
 const checkResult = await kvCommand("EVAL", [CHECK_OR_CLAIM_LUA, "3", resultKey, failedKey, claimKey, requestId]);
@@ -230,13 +230,26 @@ if (checkResult.startsWith("result:")) {
   return new Response(checkResult.slice("result:".length), { status: 200 });
 }
 if (checkResult.startsWith("failed:")) {
-  return new Response(checkResult.slice("failed:".length), { status: 500 });
+  // Wire-shape parity with the Cloudflare failed-permanent path: 422 + { koi: { failed: true, error } }.
+  // Host-side mapping is identical for both providers — callers cannot distinguish.
+  const error = JSON.parse(checkResult.slice("failed:".length));
+  return new Response(JSON.stringify({ koi: { failed: true, error } }), { status: 422 });
 }
+let claimGranted = checkResult === "claim:fresh";
 if (checkResult.startsWith("claim:in-progress:")) {
-  // Another isolate owns it; poll for terminal state
-  return await waitForTerminal(resultKey, failedKey, timeoutMs);
+  // Another isolate owns it. waitForTerminal returns a TAGGED result:
+  //   { kind: "completed", body }         → return body to caller
+  //   { kind: "failed", body }            → return body (422 + koi.failed envelope)
+  //   { kind: "takeover" }                → fall through; this isolate now holds the claim, run handler
+  //   { kind: "timeout" }                 → return 504 to caller
+  const wait = await waitForTerminal(resultKey, failedKey, claimKey, requestId, timeoutMs);
+  if (wait.kind === "completed") return new Response(wait.body, { status: 200 });
+  if (wait.kind === "failed") return new Response(wait.body, { status: 422 });
+  if (wait.kind === "timeout") return new Response(JSON.stringify({ koi: { error: "TIMEOUT" } }), { status: 504 });
+  // wait.kind === "takeover" — proceed to the handler path below as if claim:fresh.
+  claimGranted = true;
 }
-// checkResult === "claim:fresh" — we own the operation
+// claimGranted === true — we own the operation (either fresh or via takeover)
 
 // 3. Spawn heartbeat: every 30s, ownership-checked TTL extension via Lua EVAL
 //    Lua: extend TTL ONLY IF the current value still matches our requestId.
@@ -303,9 +316,47 @@ try {
 }
 ```
 
+**Vercel `waitForTerminal` reclaim protocol (parity with Cloudflare's claim-expired takeover):**
+
+```js
+// Tagged result discriminated on `kind`. Caller branches explicitly.
+async function waitForTerminal(resultKey, failedKey, claimKey, requestId, timeoutMs) {
+  const start = Date.now();
+  const POLL_MS = 1000;
+  while (Date.now() - start < timeoutMs) {
+    // Prefer terminal state if present.
+    const result = await kvCommand("GET", [resultKey]);
+    if (result) return { kind: "completed", body: result };
+    const failed = await kvCommand("GET", [failedKey]);
+    if (failed) {
+      const error = JSON.parse(failed);
+      return { kind: "failed", body: JSON.stringify({ koi: { failed: true, error } }) };
+    }
+    // No terminal state yet. Atomically check the claim. If the prior owner's
+    // claim-lease has expired (claimKey absent), THIS isolate takes over.
+    const reclaim = await kvCommand("EVAL", [CHECK_OR_CLAIM_LUA, "3", resultKey, failedKey, claimKey, requestId]);
+    if (reclaim === "claim:fresh") {
+      // Lease expired AND we won the SETNX — caller runs the handler under our own claim.
+      return { kind: "takeover" };
+    }
+    // Else: still in-progress under same or different requestId; keep polling.
+    await sleep(POLL_MS);
+  }
+  return { kind: "timeout" };
+}
+```
+
+**Claim-lease timing must permit reclaim under the host invoke timeout.** The host-side `invoke()` `timeoutMs` defaults to 30_000ms (and is the documented profile cap). For takeover to be feasible inside that envelope, the claim lease MUST expire before the waiter's host timeout fires. The Vercel claim-key parameters are therefore set as:
+- Claim-lease TTL: **15 seconds** (down from the earlier 60s — that was incompatible with the 30s invoke cap).
+- Owner heartbeat cadence: **5 seconds** (3-of-3 standard tolerance).
+- Up to 2 consecutive heartbeat failures (~10 s) tolerated before the owner forfeits ownership.
+- Net: a crashed owner's claim-lease expires within at most 15 seconds, the next waiter polling tick (1s after expiry) atomically takes over, and the new owner runs the handler with at least 14 seconds remaining of the 30s invoke window — enough for any handler the workload-class restriction (`assertIdempotent: true` plus quick handlers) admits. Handlers that need longer than 14s should not be deployed under this adapter; the L2 doc says so explicitly.
+
+**`__tests__/vercel-claim-takeover.test.ts` is mandatory:** spawn a stub that calls `claim`, kills the process before commit; a concurrent waiter must take over within 15–16 seconds (the claim-lease TTL + one polling tick) AND produce a terminal record before the 30s invoke timeout fires.
+
 Rules mirror the Cloudflare design:
 - Strong consistency via Redis `SET NX` for the claim and `MGET` for the terminal-cache check.
-- 60-second lease with 30-second heartbeat. **All heartbeat, commit, and release operations use ownership-checked Lua scripts** that compare the current value of `claim:${operationId}` against this isolate's `requestId` before mutating anything. A stale claimer whose lease expired and was re-acquired by another isolate cannot extend its lease, write results, or delete the new owner's claim — the Lua script's `GET == ARGV[1]` guard fails and the operation returns 0.
+- 15-second lease with 5-second heartbeat (sized below the 30s host invoke timeout so waiters can reclaim within one invoke window). **All heartbeat, commit, and release operations use ownership-checked Lua scripts** that compare the current value of `claim:${operationId}` against this isolate's `requestId` before mutating anything. A stale claimer whose lease expired and was re-acquired by another isolate cannot extend its lease, write results, or delete the new owner's claim — the Lua script's `GET == ARGV[1]` guard fails and the operation returns 0.
 - **Lease loss → poison and abort:** if the heartbeat detects ownership loss mid-handler, the isolate marks `lostLease = true`, clears the heartbeat, and returns a `503 LEASE_LOST` response WITHOUT writing any result or releasing the claim. The new owner's state is preserved untouched. The handler may already have committed external side effects — that risk is covered by the workload-class restriction.
 - **Commit ownership check:** the final write of `result` and `DEL` of `claim` is a single atomic Lua `EVAL`. If ownership has been lost in the gap between handler completion and commit attempt, the script returns 0 and the isolate returns `503 OWNERSHIP_LOST` without polluting the new owner's state.
 - Result writes use POST body, not URL path, to handle arbitrary size up to a configurable `MAX_DEDUPE_RESULT_BYTES` (default 8 MB).
@@ -443,11 +494,10 @@ src/
 
     Worker A satisfies the provider gate by sending Vercel's documented automation-bypass header `x-vercel-protection-bypass: ${KOI_VERCEL_BYPASS}` on every request. The bypass secret is project-scoped (Vercel's documented mechanism for trusted automation), provisioned to Worker A's secrets only, never to Worker B (Worker B does not need to verify the bypass — Vercel does, before routing). Worker A also signs with the per-pair Ed25519 key. Defense-in-depth: bypass alone (e.g., leaked operator automation key) doesn't give an attacker access to Worker B because they still need the per-pair Ed25519 signing key (which Worker B verifies via Ed25519 — there is no symmetric secret an attacker could exfiltrate); Ed25519 alone (e.g., implausible host-side key extraction) doesn't give them access either because Vercel's gate blocks them. Both layers must be defeated.
 
-    **Bypass-secret rotation is a first-class lifecycle event.** Vercel's documented Protection Bypass for Automation secret is project-scoped and is injected at deployment time; rotating it would invalidate every Worker A in the project that holds the prior value. The adapter handles this explicitly:
-    - Adapter config requires `config.vercelBypassSecretFingerprint: string` — a stable hash (SHA-256 of the secret value, truncated to 16 hex chars) the host computes once and persists in deployment metadata `meta.koi-bypass-fingerprint` at create time.
-    - On every `__do_lease`-equivalent control call AND on a 60-second background timer, the adapter compares the project's current `vercelBypassSecretFingerprint` (the value the operator passed at adapter construction) against each live instance's stored `koi-bypass-fingerprint`. Drift (operator rotated the secret) → the affected instances POISON with `KoiError { code: "VERCEL_BYPASS_ROTATED" }` and the next valid `create()` after the operator passes the new fingerprint produces fresh pairs that work.
-    - Operators rotating the bypass MUST update adapter config in the same window. The L2 doc documents this as: "Rotating the project Protection Bypass for Automation secret invalidates all live Vercel pairs. Pass the new fingerprint to every adapter and recreate instances."
-    - The legacy alternative — making A→B traffic NOT depend on the project bypass — was rejected because Vercel does not expose any documented authenticated-but-non-public-call channel between deployments other than the bypass mechanism. The rotation handling above turns a silent outage into an explicit POISON event the operator can resolve.
+    **Bypass-secret rotation is operator-coordinated, not auto-detected.** Vercel's documented Protection Bypass for Automation secret is project-scoped and injected into deployments at build time. The Vercel API does NOT expose the live secret value to API callers, so the adapter cannot independently observe rotation against a provider source of truth — any "drift detection" based purely on `config.bypassSecret` would compare operator-supplied values against operator-supplied values and silently miss rotations on hosts the operator forgot to update. The earlier draft's auto-poison-on-drift mechanism is therefore removed:
+    - Rotation is treated as an **operator-coordinated lifecycle event**, not an automatic poison path. The L2 doc documents the procedure: "Rotating the project Protection Bypass for Automation secret invalidates all live Vercel pairs. The operator MUST: (1) rotate the secret in the Vercel project, (2) update adapter config on every host with the new value, (3) call `destroy()` on all live instances and recreate them. The adapter does NOT detect rotation automatically."
+    - The runtime-observable signal of an unannounced rotation IS request-level failure: Worker A's calls to Worker B start being blocked by Vercel's gate (HTTP from Vercel before reaching Worker B). The adapter logs these as `VERCEL_BYPASS_REJECTED` and surfaces them via `invoke()`'s normal error path, which lets operators detect and remediate. This is observable, not silent — but recovery requires the recreate workflow above, not an adapter-internal poison.
+    - The legacy alternative — making A→B traffic NOT depend on the project bypass — was rejected because Vercel does not expose any documented authenticated-but-non-public-call channel between deployments other than the bypass mechanism.
 
     The trust boundary is **application-layer Ed25519 signature verification** plus **Vercel deployment protection**, not symmetric HMAC and not provider-enforced privacy:
     - The host generates a fresh per-pair Ed25519 keypair at create time. The **private signing key** is provisioned to Worker A as `KOI_PAIR_SIGNING_KEY` (Worker A only, never Worker B). The **public verification key** is provisioned to Worker B as `KOI_PAIR_VERIFY_KEY` (Worker B only, sufficient to verify signatures, useless for forging them).
@@ -499,7 +549,13 @@ Per-step artifact-existence-and-cleanup table (single source of truth — derive
 | 6 (binding-probe) | yes | yes | DELETE Worker A, then DELETE Worker B. |
 | 7 (activating) | yes | yes (briefly reachable) | DELETE Worker A first (revoke reachability), then DELETE Worker B. |
 
-Failure at any step ≤ 6 means **Worker A is never externally invokable** (still `workers_dev: false`), and Worker B is **never** externally invokable at any step (always `workers_dev: false`). Step 7 is the only step where Worker A becomes briefly reachable, and the bearer-token gate is the only auth path during that window. This is a structural guarantee, not best-effort: Cloudflare's `workers_dev: false` default + absent custom route is a hard provider-level reachability gate.
+Reachability of leaked artifacts during create-failure cleanup **differs by provider** because Cloudflare and Vercel have different provider primitives for non-public deployments:
+
+- **Cloudflare (structural privacy, all steps ≤ 6):** Worker A is never externally invokable until step 7 (`workers_dev: false` until activation). Worker B is **never** externally invokable at any step (always `workers_dev: false`, no route, no activation). Step 7 is the only window where Worker A is briefly reachable, gated by `KOI_INSTANCE_TOKEN`. This IS a structural provider-level guarantee.
+
+- **Vercel (public-but-authenticated from the moment of materialization):** Worker B's deployment URL becomes URL-reachable from the open internet as soon as Vercel materializes the deployment (step 1 onward). Vercel deployment protection (provider gate) AND per-pair Ed25519 signature (application layer) both apply from the moment Worker B materializes. **A leaked Vercel Worker B is invokable on its public URL by anyone who learns the URL** — they will be rejected by Vercel's protection gate, and even if they bypass it (leaked operator automation secret), they will be rejected by Ed25519 verification because they don't hold the per-pair signing key. Cleanup urgency is correspondingly higher than for Cloudflare: every minute a leaked Vercel Worker B exists is a minute of public exposure (auth-gated, but auth-gated is still public). Worker A is similarly URL-reachable from step 4 onward; pre-step-7 the bearer token + protection bypass + signing key are required to invoke it.
+
+Net: Cloudflare leaks behind a structural-privacy gate are **inert**; Vercel leaks behind authentication are **public-but-authenticated** and require Ed25519 + bypass + protection-gate failures (multi-layer defense) to be exploited. The cleanup guarantees and adversarial tests above (paired DELETE, orphan ledger persistence, reconciler) apply to both, but operators on Vercel must treat any `CREATE_FAILED_INDETERMINATE` outcome as a higher-urgency cleanup incident than the equivalent CF outcome.
 
 States:
 
