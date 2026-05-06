@@ -283,4 +283,38 @@ describe("createIdeChannel", () => {
     expect(received[0]?.threadId).toBe("t1");
     await ch.disconnect();
   });
+
+  test("inbound size cap is enforced on UTF-8 bytes, not UTF-16 code units", async () => {
+    // Regression: round-7 used line.length so a frame full of multi-byte
+    // chars could exceed the 256 KiB byte cap by 3-4x and still parse,
+    // bypassing the only memory guard at the IDE trust boundary.
+    const h = harness();
+    const ch = createIdeChannel({ transport: h.transport });
+    const received: InboundMessage[] = [];
+    ch.onMessage(async (m) => {
+      received.push(m);
+    });
+    await ch.connect();
+    // 4-byte emoji × 80k = ~320 KB UTF-8 but ~160k code units (each emoji
+    // is 2 code units), well under the 256 Ki code-unit threshold.
+    const fatEmojiText = "\u{1F600}".repeat(80_000);
+    h.emitLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notify",
+        params: { content: [{ kind: "text", text: fatEmojiText }] },
+      }),
+    );
+    h.emitLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notify",
+        params: { content: [{ kind: "text", text: "ok" }] },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toHaveLength(1);
+    expect((received[0]?.content[0] as TextBlock | undefined)?.text).toBe("ok");
+    await ch.disconnect();
+  });
 });

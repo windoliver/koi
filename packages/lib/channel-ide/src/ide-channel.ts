@@ -100,7 +100,11 @@ function validateContentBlocks(value: readonly unknown[]): readonly ContentBlock
 }
 
 function parseFrame(line: string): NotifyFrame | null {
-  if (line.length > MAX_INBOUND_FRAME_BYTES) return null;
+  // UTF-8 byte length, not string.length (UTF-16 code units), so multi-
+  // byte payloads (CJK, emoji at 4 bytes/char) cannot stay under the
+  // code-unit limit while busting the documented byte cap and force the
+  // adapter to allocate an oversized JSON parse.
+  if (Buffer.byteLength(line, "utf8") > MAX_INBOUND_FRAME_BYTES) return null;
   try {
     const v = JSON.parse(line) as unknown;
     if (typeof v !== "object" || v === null) return null;
