@@ -356,7 +356,8 @@ async function waitForTerminal(resultKey, failedKey, claimKey, requestId, timeou
     const failed = await kvCommand("GET", [failedKey]);
     if (failed) {
       const error = JSON.parse(failed);
-      return { kind: "failed", body: JSON.stringify({ koi: { failed: true, error } }) };
+      // Out-of-band wire shape: body is { error }, header X-Koi-Result-Kind: failed-permanent set by caller below.
+      return { kind: "failed", body: JSON.stringify({ error }) };
     }
     // No terminal state yet. Atomically check the claim. If the prior owner's
     // claim-lease has expired (claimKey absent), THIS isolate takes over.
@@ -699,9 +700,18 @@ In-process delayed re-verify is necessary but not sufficient: a host crash, cont
       - The `empty_lookups` column is reset to 0 on any non-empty result (including failures) so a single materialized observation always triggers DELETE on the next pass.
   - Successful deletions (or 404 confirmed by a follow-up GET) remove the entry; failures bump `lastTriedAt` and stay queued.
   - The Vercel adapter requires `projectId` AND `ownerId` in its config so reconciliation has both a deterministic key and a namespace — neither is optional.
-- **Ownership-tagged artifacts + heartbeat lease (cleanup gated on staleness, not just tags):** every create attempt tags the deployed artifact with provider-side metadata identifying it as koi-managed AND a heartbeat lease tag that says "this artifact is in active use until time X":
-  - **Cloudflare:** Workers `tags` field on the script: `["koi-managed:v1", "koi-owner:${ownerId}", "koi-stale-after:${ISO_TIMESTAMP}"]`.
-  - **Vercel:** `meta` object on deployments: `{ "koi-managed": "v1", "koi-owner": "${ownerId}", "koi-stale-after": "${ISO_TIMESTAMP}" }`.
+- **Ownership-tagged artifacts + heartbeat lease (cleanup gated on staleness, not just tags):** every create attempt tags the deployed artifact with provider-side metadata identifying it as koi-managed AND a heartbeat lease tag that says "this artifact is in active use until time X". **Canonical metadata schema (single source of truth — every cleanup invariant in this doc references these field names):**
+  - **Cloudflare:** Workers `tags` field on the script: `["koi-managed:v1", "koi-owner:${ownerId}", "koi-host-uuid:${hostUUID}", "koi-pair-uuid:${pairUUID}", "koi-artifact-kind:worker-a"|"worker-b", "koi-stale-after:${ISO_TIMESTAMP}"]`.
+  - **Vercel:** `meta` object on deployments: `{ "koi-managed": "v1", "koi-owner": "${ownerId}", "koi-host-uuid": "${hostUUID}", "koi-pair-uuid": "${pairUUID}", "koi-artifact-kind": "worker-a"|"worker-b", "koi-stale-after": "${ISO_TIMESTAMP}" }`.
+  - **Field semantics:**
+    - `koi-managed:v1` — adapter-managed marker; sweep ignores any artifact lacking it.
+    - `koi-owner:${ownerId}` — fleet namespace; sweep only deletes artifacts whose owner matches the configured one.
+    - `koi-host-uuid:${hostUUID}` — REQUIRED. Identifies the host that originally created the artifact. The Vercel reconciler's false-delete guard reads this and refuses to delete unless the host UUID has lost the fleet-exclusivity lease (i.e., that host is provably gone). Cloudflare's fleet sweeper uses it for telemetry only (CF's safety gate is the bounded DO-alarm liveness, not host identity).
+    - `koi-pair-uuid:${pairUUID}` — REQUIRED. Shared by both Worker A and Worker B in the same pair so the sweeper, given one half, can locate the other (`GET /workers/scripts?tag=koi-pair-uuid:${pairUUID}` on CF; `GET /v6/deployments?meta-koi-pair-uuid=${pairUUID}` on Vercel). The orphan-ledger `pair_uuid` index is the in-host equivalent.
+    - `koi-artifact-kind` — `"worker-a"` or `"worker-b"`. Lets DELETE-ordering logic identify which side is which without parsing names.
+    - `koi-stale-after:${ISO_TIMESTAMP}` — heartbeat lease deadline.
+  - **Failure mode if any required field is missing:** the sweeper/reconciler MUST treat the artifact as `untagged-koi-artifact` and refuse to delete it. Missing fields are an indication of an externally-created artifact or an adapter-version mismatch — neither is safe to delete. Adversarial test: `__tests__/sweeper-skips-incomplete-metadata.test.ts` deploys an artifact missing `koi-host-uuid` and asserts the sweeper logs and skips it.
+  - **Adversarial test for pair recovery:** `__tests__/sweep-recovers-pair-from-one-half.test.ts` deletes one orphan-ledger row before sweep runs (simulating a crash before both rows persisted); asserts the sweeper queries `koi-pair-uuid` on the surviving half, discovers the missing artifact provider-side, and DELETEs both. Test must pass for every PR touching the sweep code.
   **Single source of truth for Cloudflare lease parameters (used everywhere in this doc):**
   - Lease window: **15 minutes** (`koi-stale-after = now + 15 minutes` at create; renewed to `now + 15 minutes` on each successful PATCH).
   - Host-side renewal cadence: **every 2 minutes** with a 30-second PATCH timeout.
