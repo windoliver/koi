@@ -385,6 +385,30 @@ describe("createDiscordChannel — interaction reply path", () => {
     await adapter.disconnect();
   });
 
+  test("slashCommandEphemeral configured + expired interaction refuses channel fallback (no public leak)", async () => {
+    // When ephemeral is configured we cannot tell after-the-fact
+    // whether the now-expired interaction was deferred ephemeral, so
+    // fail closed to prevent reposting a private reply into the public
+    // channel.
+    const f = fakeClient();
+    const adapter = createDiscordChannel({
+      token: "T",
+      client: f.client,
+      slashCommandEphemeral: true,
+      slashCommandFallbackToChannel: true,
+    });
+    await adapter.connect();
+    // Note: we send WITHOUT first emitting the interactionCreate, so the
+    // interaction id is unknown / "expired" from the adapter's view.
+    await expect(
+      adapter.send({
+        content: [{ kind: "text", text: "secret reply" }],
+        threadId: "interaction:cmd:expired-id:C1",
+      }),
+    ).rejects.toThrow(/refusing channel fallback to prevent leaking an ephemeral reply/);
+    expect(f.sent).toHaveLength(0);
+  });
+
   test("slashCommandFallbackToChannel: true opts in to channel.send for expired slash threads", async () => {
     const f = fakeClient();
     const adapter = createDiscordChannel({

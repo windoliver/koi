@@ -309,6 +309,7 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
     platformSend: async (message: OutboundMessage): Promise<void> => {
       await sendOutbound(getClient(), pendingInteractions, message, {
         slashCommandFallbackToChannel: config.slashCommandFallbackToChannel === true,
+        slashCommandEphemeralConfigured: config.slashCommandEphemeral !== undefined,
       });
     },
 
@@ -370,7 +371,10 @@ async function sendOutbound(
   client: DiscordClientLike,
   pendingInteractions: Map<string, PendingInteraction>,
   message: OutboundMessage,
-  options: { readonly slashCommandFallbackToChannel: boolean },
+  options: {
+    readonly slashCommandFallbackToChannel: boolean;
+    readonly slashCommandEphemeralConfigured: boolean;
+  },
 ): Promise<void> {
   if (message.threadId === undefined) {
     throw new Error("[channel-discord] OutboundMessage.threadId is required");
@@ -467,6 +471,18 @@ async function sendOutbound(
     if (parsed.kind === "button") {
       throw new Error(
         `[channel-discord] button interaction "${parsed.interactionId}" expired or missing — refusing channel fallback to preserve ephemeral scope`,
+      );
+    }
+    // Slash commands deferred as ephemeral MUST NOT fall back to a
+    // public channel send: that would expose a private reply (auth
+    // tokens, PII, command output the user marked sensitive) in the
+    // visible channel. Refuse the fallback whenever the operator
+    // configured ephemeral semantics for slash commands at all — we
+    // cannot tell from the expired interaction alone which branch the
+    // ack used, so fail closed.
+    if (options.slashCommandEphemeralConfigured) {
+      throw new Error(
+        `[channel-discord] slash interaction "${parsed.interactionId}" expired or missing AND slashCommandEphemeral is configured — refusing channel fallback to prevent leaking an ephemeral reply publicly`,
       );
     }
     if (!options.slashCommandFallbackToChannel) {
