@@ -382,29 +382,10 @@ describe("linearSearch", () => {
     expect(elapsed).toBeLessThan(500);
   });
 
-  test("Infinity attemptTimeoutMs disables deadline (cooperative-only, requires parent signal)", async () => {
-    const ctrl = new AbortController();
-    let i = 0;
-    const config = makeConfig({
-      maxIterations: 3,
-      attemptTimeoutMs: Number.POSITIVE_INFINITY,
-      signal: ctrl.signal,
-      evaluate: async () => ({
-        successRate: ++i * 0.4,
-        sampleCount: 10,
-        failures:
-          i < 3 ? [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }] : [],
-      }),
-      random: () => 0.99,
-    });
-    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
-    expect(result.totalIterations).toBeGreaterThan(0);
-  });
-
-  test("parent abort terminates non-cooperative callback even with Infinity timeout", async () => {
+  test("parent abort terminates non-cooperative callback under finite timeout", async () => {
     const ctrl = new AbortController();
     const config = makeConfig({
-      attemptTimeoutMs: Number.POSITIVE_INFINITY,
+      attemptTimeoutMs: 5_000,
       // Non-cooperative: never resolves, ignores its signal.
       evaluate: () => new Promise(() => {}),
       signal: ctrl.signal,
@@ -809,30 +790,22 @@ describe("linearSearch", () => {
     expect(linearSearch(INITIAL_CODE, DESCRIPTOR, config)).rejects.toThrow(/maxRefinedCodeBytes/);
   });
 
-  test("attemptTimeoutMs=Infinity without parent signal throws fast (cannot guarantee bounded termination)", async () => {
+  test("attemptTimeoutMs=Infinity is rejected outright (Infinity not allowed)", async () => {
     const config = makeConfig({ attemptTimeoutMs: Number.POSITIVE_INFINITY });
     expect(linearSearch(INITIAL_CODE, DESCRIPTOR, config)).rejects.toThrow(
-      /attemptTimeoutMs=Infinity requires a parent signal/,
+      /Infinity is not allowed/,
     );
   });
 
-  test("attemptTimeoutMs=Infinity is allowed when a parent signal is provided", async () => {
+  test("attemptTimeoutMs=Infinity is rejected even when parent signal is provided", async () => {
     const ctrl = new AbortController();
-    let i = 0;
     const config = makeConfig({
-      maxIterations: 3,
       attemptTimeoutMs: Number.POSITIVE_INFINITY,
       signal: ctrl.signal,
-      evaluate: async () => ({
-        successRate: ++i * 0.4,
-        sampleCount: 10,
-        failures:
-          i < 3 ? [{ toolName: "t", errorCode: "E", errorMessage: "m", parameters: {} }] : [],
-      }),
-      random: () => 0.99,
     });
-    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
-    expect(result.totalIterations).toBeGreaterThan(0);
+    expect(linearSearch(INITIAL_CODE, DESCRIPTOR, config)).rejects.toThrow(
+      /Infinity is not allowed/,
+    );
   });
 
   test("recovery sequence (0.9 → 0.2 → 0.8 → 1.0) does not stop on plateau before reaching 1.0", async () => {

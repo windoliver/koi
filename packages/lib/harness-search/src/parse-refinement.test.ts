@@ -50,6 +50,23 @@ describe("parseRefinementOutput", () => {
     expect(parseRefinementOutput("```ts\n   \n```")).toBeNull();
   });
 
+  test("rejects single-block non-source tag (json)", () => {
+    expect(parseRefinementOutput('```json\n{"x":1}\n```')).toBeNull();
+  });
+
+  test("rejects single-block non-source tag (diff)", () => {
+    expect(parseRefinementOutput("```diff\n+ line\n- line\n```")).toBeNull();
+  });
+
+  test("rejects single-block non-source tag (bash)", () => {
+    expect(parseRefinementOutput("```bash\necho hi\n```")).toBeNull();
+  });
+
+  test("rejects single-block non-source tag (text/md)", () => {
+    expect(parseRefinementOutput("```text\nplain\n```")).toBeNull();
+    expect(parseRefinementOutput("```md\n# title\n```")).toBeNull();
+  });
+
   test("returns null for non-string input (no throw)", () => {
     expect(parseRefinementOutput(null)).toBeNull();
     expect(parseRefinementOutput(undefined)).toBeNull();

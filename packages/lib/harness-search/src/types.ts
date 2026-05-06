@@ -126,9 +126,10 @@ export interface SearchConfig {
    * aborting the per-attempt controller on either trigger and surfacing
    * `eval_timeout` / `refine_timeout` so the bounded-search contract
    * holds even when an injected callback ignores its signal. Default
-   * 30_000. Use `Number.POSITIVE_INFINITY` to disable the deadline (only
-   * for callbacks proven to be cooperative). Must be a positive number
-   * or `Infinity`.
+   * 30_000. Must be a positive FINITE number — `Infinity` is rejected
+   * at config validation because the bounded-termination contract
+   * cannot be proven against an uncooperative callback paired with a
+   * caller-supplied signal that may never fire.
    */
   readonly attemptTimeoutMs?: number;
   /**

@@ -22,15 +22,26 @@
 const CODE_FENCE_GLOBAL = /```([a-zA-Z]*)\s*\n([\s\S]*?)```/g;
 
 const TS_TAGS: ReadonlySet<string> = new Set(["typescript", "ts"]);
+// Source-language tags accepted as candidate code on the single-block
+// happy path. Untagged ("") fences are also accepted because adapters
+// commonly emit bare ``` for the only output. Tags like `json`,
+// `diff`, `bash`, `text`, `md`, etc. are NOT in this set — they signal
+// the refiner emitted something other than tool source, and should
+// surface as refine_failed at the trust boundary instead of being
+// evaluated as code.
+const SOURCE_TAGS: ReadonlySet<string> = new Set(["", "typescript", "ts", "javascript", "js"]);
 
 /**
  * Extract the canonical fenced code block from refinement output.
- * Returns null when the input is not a string, when there is no block,
- * when the only block is empty, or when the output is ambiguous
- * (multiple fences without a single unambiguous typescript-tagged
- * block). Accepts `unknown` so a refiner that accidentally resolves
- * structured output / null / undefined degrades to `refine_failed`
- * instead of throwing.
+ * Returns null when:
+ *   - the input is not a string;
+ *   - there is no block, or the only block is empty;
+ *   - the only block carries a non-source tag (json, diff, bash, ...);
+ *   - the output is multi-block AND there is no single unambiguous
+ *     typescript-tagged block among them.
+ * Accepts `unknown` so a refiner that accidentally resolves structured
+ * output / null / undefined degrades to `refine_failed` instead of
+ * throwing.
  */
 export function parseRefinementOutput(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
@@ -42,7 +53,13 @@ export function parseRefinementOutput(raw: unknown): string | null {
   }
 
   if (blocks.length === 0) return null;
-  if (blocks.length === 1) return blocks[0]?.body ?? null;
+  if (blocks.length === 1) {
+    const only = blocks[0];
+    if (only === undefined) return null;
+    // Single-block path: accept untagged or recognized source language.
+    // Reject `json` / `diff` / `bash` / etc. — they signal refiner drift.
+    return SOURCE_TAGS.has(only.tag) ? only.body : null;
+  }
 
   // Multi-block output: accept only when exactly one block is tagged
   // typescript/ts. Otherwise refuse to guess which one is the answer.

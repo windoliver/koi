@@ -108,24 +108,20 @@ export async function linearSearch(
   if (!Number.isInteger(noImprovementLimit) || noImprovementLimit < 1) {
     throw new TypeError("linearSearch: noImprovementLimit must be a positive integer");
   }
+  // Must be a positive FINITE number — Infinity is not allowed because
+  // the bounded-termination contract cannot be proven against
+  // arbitrary parent signals. A present AbortSignal that never fires
+  // is indistinguishable from a never-fires signal at validation time;
+  // if both the callback and the signal are uncooperative, the search
+  // hangs forever. Force callers to set a real deadline.
   if (
     typeof attemptTimeoutMs !== "number" ||
-    Number.isNaN(attemptTimeoutMs) ||
+    !Number.isFinite(attemptTimeoutMs) ||
     attemptTimeoutMs <= 0
   ) {
     throw new TypeError(
-      "linearSearch: attemptTimeoutMs must be a positive finite number or Infinity",
-    );
-  }
-  // Bounded-termination contract requires SOME way to escape a wedged
-  // callback. With attemptTimeoutMs=Infinity AND no parent signal,
-  // there is no remaining liveness path — Promise.race only sees the
-  // (potentially never-resolving) callback. Refuse this combination.
-  if (!Number.isFinite(attemptTimeoutMs) && signal === undefined) {
-    throw new TypeError(
-      "linearSearch: attemptTimeoutMs=Infinity requires a parent signal " +
-        "(otherwise a wedged callback can hang the search indefinitely). " +
-        "Either pass a finite attemptTimeoutMs, or supply config.signal as a cancellation source.",
+      "linearSearch: attemptTimeoutMs must be a positive finite number (Infinity is not allowed; " +
+        "the bounded-termination contract requires a real per-attempt deadline)",
     );
   }
   if (
@@ -437,20 +433,17 @@ async function withDeadline<T>(
     parentSignal.addEventListener("abort", onParentAbort, { once: true });
   });
 
+  // timeoutMs is validated as a positive finite number at linearSearch
+  // entry — no Infinity branch here.
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
-  const timeoutPromise: Promise<DeadlineOutcome<T>> = Number.isFinite(timeoutMs)
-    ? new Promise((resolve) => {
-        timer = setTimeout(() => {
-          timedOut = true;
-          controller.abort();
-          resolve({ ok: false, kind: "timeout" });
-        }, timeoutMs);
-      })
-    : new Promise(() => {
-        // Never resolves — Infinity disables the deadline. Parent abort
-        // and callback resolution still terminate the race.
-      });
+  const timeoutPromise: Promise<DeadlineOutcome<T>> = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      resolve({ ok: false, kind: "timeout" });
+    }, timeoutMs);
+  });
 
   try {
     // Wrap fn() in Promise.resolve().then so a synchronous throw before
