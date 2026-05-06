@@ -110,6 +110,15 @@ export async function linearSearch(
   ) {
     throw new TypeError("linearSearch: convergenceThreshold must be a finite number in [0, 1]");
   }
+  // Strict boolean check — this flag is the safety gate that decides
+  // whether multiple iterations may run while a timed-out callback may
+  // still be in flight. Truthy junk like "false", 1, or {} would
+  // silently opt into multi-iteration mode and re-introduce overlapping
+  // side effects in exactly the cases adapterHonorsAbort is meant to
+  // prevent. JS truthiness is too permissive here.
+  if (typeof adapterHonorsAbort !== "boolean") {
+    throw new TypeError("linearSearch: adapterHonorsAbort must be a boolean");
+  }
 
   const history: SearchNode[] = [];
   let nodeCounter = 0;
@@ -168,8 +177,6 @@ export async function linearSearch(
     history.push(node);
     lastNode = node;
 
-    const previousBestRate = bestSuccessRate;
-
     // Replace best on strict rate improvement OR on a tie that brings more
     // evidence (higher sampleCount) — otherwise an early under-sampled hit
     // at successRate=1.0 sticks around even after a later, fully-sampled
@@ -183,8 +190,13 @@ export async function linearSearch(
     if (beatsRate || tiesRateWithMoreEvidence) {
       bestSuccessRate = evalResult.successRate;
       bestNode = node;
-      if (beatsRate) consecutiveNoImprovement = 0;
-      else consecutiveNoImprovement++;
+      // Both strict-rate gains AND evidence accumulation on the same
+      // rate are progress — the latter pushes a candidate toward the
+      // minEvalSamples gate. Counting it as "no improvement" caused
+      // the loop to stop with stopReason="no_improvement" before a
+      // legitimate convergence could be reached (e.g. successRate=1.0
+      // with sampleCount climbing 1, 2, 3, 4 toward minEvalSamples=5).
+      consecutiveNoImprovement = 0;
     } else {
       consecutiveNoImprovement++;
     }
@@ -202,15 +214,26 @@ export async function linearSearch(
       break;
     }
 
+    // Update Thompson posteriors BEFORE the deploy decision so the
+    // sampler always reflects the latest observed improvement /
+    // regression. Updating after meant iteration N's evidence was
+    // invisible to its own continue/deploy choice — the sampler ran
+    // one step behind, sometimes deploying right after a strong gain.
+    if (iteration > 0) {
+      // Treat evidence accumulation on the same rate as "improved" for
+      // Thompson updates, mirroring the plateau rule above. Otherwise
+      // a successful but under-sampled best (e.g. rate 1.0 sampleCount 1)
+      // teaches the deploy arm on every subsequent evidence-gathering
+      // iteration and the sampler bails out before reaching
+      // minEvalSamples.
+      const improved = beatsRate || tiesRateWithMoreEvidence;
+      continueState = updateThompson(continueState, improved);
+      deployState = updateThompson(deployState, !improved);
+    }
+
     if (iteration > 0 && !shouldContinue(continueState, deployState, random)) {
       stopReason = "thompson_deploy";
       break;
-    }
-
-    if (iteration > 0) {
-      const improved = evalResult.successRate > previousBestRate;
-      continueState = updateThompson(continueState, improved);
-      deployState = updateThompson(deployState, !improved);
     }
 
     if (iteration < maxIterations - 1 && evalResult.failures.length > 0) {

@@ -111,6 +111,9 @@ describe("linearSearch", () => {
   test("convergence detected when improvement plateaus", async () => {
     const config = makeConfig({
       maxIterations: 20,
+      // Tight plateau gate so it fires before the Thompson sampler
+      // (which now reads the latest update) can deploy on a flat rate.
+      noImprovementLimit: 1,
       evaluate: async () => ({
         successRate: 0.5,
         sampleCount: 10,
@@ -540,6 +543,40 @@ describe("linearSearch", () => {
       evaluate: async () => ({ successRate: 1.0, sampleCount: 10, failures: [] }),
     });
     expect(result.stopReason).toBe("converged");
+  });
+
+  test("evidence accumulation on tied rate is progress, not plateau (reaches minEvalSamples)", async () => {
+    // Iter 0..4: successRate=1.0 with sampleCount climbing 1..5.
+    // minEvalSamples=5: only iteration 4 satisfies the convergence gate.
+    // Pre-fix: every tied-rate iteration incremented consecutiveNoImprovement
+    // and the loop stopped on no_improvement after iter 3, never reaching
+    // a legitimate convergence at iter 4.
+    let i = 0;
+    const config = makeConfig({
+      maxIterations: 6,
+      noImprovementLimit: 2,
+      convergenceThreshold: 1.0,
+      minEvalSamples: 5,
+      evaluate: async () => ({ successRate: 1.0, sampleCount: ++i, failures: [] }),
+      random: () => 0.99,
+    });
+    const result = await linearSearch(INITIAL_CODE, DESCRIPTOR, config);
+
+    expect(result.stopReason).toBe("converged");
+    expect(result.converged).toBe(true);
+    expect(result.best.evalSamples).toBe(5);
+  });
+
+  test("adapterHonorsAbort rejects non-boolean values (truthy junk)", async () => {
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately exercise runtime guard
+    const config = { ...makeConfig(), adapterHonorsAbort: "false" as any };
+    expect(linearSearch(INITIAL_CODE, DESCRIPTOR, config)).rejects.toThrow(/adapterHonorsAbort/);
+  });
+
+  test("adapterHonorsAbort rejects numeric values", async () => {
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately exercise runtime guard
+    const config = { ...makeConfig(), adapterHonorsAbort: 1 as any };
+    expect(linearSearch(INITIAL_CODE, DESCRIPTOR, config)).rejects.toThrow(/adapterHonorsAbort/);
   });
 
   test("adapterHonorsAbort defaults to false — forces single-shot", async () => {
