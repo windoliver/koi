@@ -207,6 +207,11 @@ export function createSignalProcess(
         cancelReader?.();
         cancelReader = undefined;
         proc = undefined;
+        // Discard anything the dead session enqueued before an event
+        // handler was installed. Without this, replayed inbound traffic
+        // from a crashed signal-cli session would survive into a later
+        // reconnect and dispatch as if it were fresh.
+        pendingEvents.length = 0;
         // Fail any in-flight send() so callers see explicit rejection
         // instead of a hung promise after the subprocess died mid-RPC.
         failAllPendingRpc("signal-cli exited before responding to send");
@@ -224,7 +229,8 @@ export function createSignalProcess(
         new Promise<"alive">((resolve) => setTimeout(() => resolve("alive"), STARTUP_WINDOW_MS)),
       ]);
       if (earlyExit === "exited") {
-        // child.exited handler above has already cleared proc/running.
+        // child.exited handler above has already cleared proc/running
+        // and discarded pendingEvents from the failed session.
         throw new Error(
           `[channel-signal] signal-cli exited within ${STARTUP_WINDOW_MS}ms of spawn — check that the account "${account}" is registered and the binary at "${signalCliPath}" runs standalone`,
         );
@@ -237,6 +243,10 @@ export function createSignalProcess(
       running = false;
       cancelReader?.();
       cancelReader = undefined;
+      // Drop any events queued while a handler was uninstalled — they
+      // belong to the session being torn down and must not survive
+      // into the next reconnect.
+      pendingEvents.length = 0;
       const child = proc;
       child.kill(15);
       const result = await Promise.race([

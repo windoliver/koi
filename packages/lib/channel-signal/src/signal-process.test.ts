@@ -248,6 +248,41 @@ describe("@koi/channel-signal createSignalProcess", () => {
     await p.stop();
   });
 
+  test("stop() and unexpected exit clear the pre-handler event buffer (no stale replay on reconnect)", async () => {
+    const f1 = makeFake();
+    const f2 = makeFake();
+    let calls = 0;
+    const spawn: SpawnFn = (): SignalChildProcess => {
+      calls++;
+      return calls === 1 ? f1.proc : f2.proc;
+    };
+    const p = createSignalProcess("+15551234567", "signal-cli", undefined, spawn, 5);
+    await p.start();
+    // No handler installed yet — events buffer in pendingEvents.
+    f1.emit(
+      JSON.stringify({
+        params: {
+          envelope: {
+            source: "+15551234567",
+            dataMessage: { message: "stale", timestamp: 1 },
+          },
+        },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    f1.finishExit();
+    await p.stop();
+    // Reconnect on the second fake; install handler BEFORE start so
+    // any residue from the first session would drain through it.
+    const seen: SignalEvent[] = [];
+    p.onEvent((e) => seen.push(e));
+    await p.start();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(seen).toHaveLength(0);
+    f2.finishExit();
+    await p.stop();
+  });
+
   test("send() rejects when signal-cli stays alive but never responds (per-request timeout)", async () => {
     // Live-but-unresponsive child: stdin accepts writes, exited never
     // resolves, no stdout traffic. Without a per-RPC timeout the send
