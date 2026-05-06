@@ -83,6 +83,24 @@ Note the differences vs. `SandboxAdapter`:
 
 A future `sandbox-edge-router` package can offer cross-provider selection between Cloudflare and Vercel; that's out of scope here.
 
+### Kernel / runtime integration path
+
+The CLAUDE.md golden-query rule requires every new L2 package to be wired into `@koi/runtime`. Because `EdgeFunctionAdapter` is not a `SandboxAdapter`, this PR explicitly extends `@koi/core` (types-only, no runtime logic — preserves L0 invariant) and `@koi/runtime` (assembly layer) to add a parallel registration slot for edge adapters:
+
+**`@koi/core` additions (L0, types-only):**
+
+- `packages/kernel/core/src/edge-function-adapter.ts` — defines `EdgeFunctionAdapter`, `EdgeFunctionInstance`, `EdgeInvokeRequest`, `EdgeInvokeResult`, `DestroyOutcome`. Pure interfaces, zero logic.
+- Re-exported from `@koi/core/edge` entry point.
+
+**`@koi/runtime` additions:**
+
+- `createKoi(config)` accepts an optional `edgeAdapters: { cloudflare?: EdgeFunctionAdapter; vercel?: EdgeFunctionAdapter }` field on its config — a parallel slot to the existing `sandbox` field which expects a `SandboxAdapter`.
+- Edge adapters do NOT participate in the `@koi/sandbox-router` selection algorithm. They are accessible to user code by name (`koi.edge.cloudflare.create({...})`) for direct invocation.
+- The runtime treats these adapters as first-class L2 dependencies for layer/orphan checks (they ARE deps of `@koi/runtime`), but they do NOT need to satisfy `SandboxAdapter`-shaped golden queries. A separate golden-query template (`golden-edge-replay.test.ts`) covers them by mocking `fetch` and replaying recorded responses.
+- The CLAUDE.md `check:orphans` and `check:golden-queries` scripts get a small extension: an L2 package whose top-level export type is `EdgeFunctionAdapter` is checked against the edge-replay template instead of the sandbox-replay template. This change ships as part of this PR (small scripts edit, ~30 LOC).
+
+This integration path is explicit and bounded: 3 new types in L0, one new optional field on `createKoi`, one new template in the golden-query script set. No router changes, no `SandboxAdapter` reshaping.
+
 ## Package layout
 
 Each package follows `packages/sandbox/sandbox-docker` conventions: `adapter.ts`, `instance.ts`, `validate.ts`, `classify.ts`, `types.ts`, `index.ts` plus colocated `*.test.ts` per file.
@@ -180,7 +198,9 @@ Rules:
 
 In-process delayed re-verify is necessary but not sufficient: a host crash, container restart, or kill-9 between detecting the failure and completing cleanup leaves a billable artifact behind. The adapter therefore persists pending orphans **durably** before declaring an INDETERMINATE result:
 
-- **Orphan ledger storage — SQLite, not a JSON file:** `${config.orphanLedgerPath ?? "${HOME}/.koi/sandbox-orphans.db"}` — a `bun:sqlite` database. JSON files are unsafe under concurrent writers (multi-process or multi-host hosts re-running the adapter): two failing creates can read the same snapshot, each rewrite, and the last rename wins. SQLite gives us proper transactional read-modify-write with row-level mutation safety inside a single process, and `BEGIN IMMEDIATE` + WAL mode handles cross-process contention via the OS-level lock SQLite already implements.
+- **Orphan ledger storage — SQLite, single-host only:** `${config.orphanLedgerPath ?? "${HOME}/.koi/sandbox-orphans.db"}` — a `bun:sqlite` database. JSON files are unsafe even within one host because two failing creates from concurrent processes can read the same snapshot, each rewrite, and the last rename wins. SQLite gives us proper transactional read-modify-write with `BEGIN IMMEDIATE` + WAL handling cross-process contention via the OS-level lock SQLite already implements — for **processes that share the same filesystem**.
+- **Multi-host coordination is NOT provided by the ledger:** the SQLite ledger covers single-host failure modes only. Hosts that do not share a filesystem (typical multi-machine deployments) each maintain their own ledger and cannot see each other's orphans. Multi-host coordination is intentionally **delegated to the provider-side ownership-tagged sweep** (next bullet): the nightly cron has authority over every artifact tagged `koi-managed:v1` + `koi-owner:${ownerId}`, regardless of which host originally created it, and is the authoritative cross-host backstop. The local SQLite ledger is the fast in-host reconciliation path; the tagged sweep is the slow cross-host one. The two together cover the deployment topologies operators actually run.
+- **Operator-visible doc requirement:** `docs/L2/sandbox-cloudflare.md` and `sandbox-vercel.md` MUST include a section "Single-host vs multi-host orphan handling" stating these guarantees explicitly so operators don't assume the local ledger covers their fleet.
 - **Schema (one table, two row variants discriminated by `provider`):**
   ```sql
   CREATE TABLE IF NOT EXISTS orphans (
@@ -336,9 +356,32 @@ Vercel applies the same template, but since runtime selection is deferred (see O
 
 The mapping lives in `validate.ts` as a pure function `mapProfileToCloudflare(profile): Result<CloudflareDeployConfig, KoiError>`. Adapter `create()` calls it first and short-circuits on error before any fetch. The function uses an exhaustive switch over a discriminated union derived from the profile so adding a new core field without updating this mapper is a TypeScript error.
 
-#### Profile conformance tests
+#### Profile conformance tests + compile-time exhaustiveness
 
-`packages/sandbox/sandbox-conformance` provides a profile-rejection harness. Each cloud package adds a conformance test that walks every documented profile field and asserts the accept/reject behavior above. A separate gate test imports `SandboxProfile` reflectively and fails if any top-level key is missing from the cloud mapping table — this prevents new core fields from landing without an explicit edge-adapter decision.
+`packages/sandbox/sandbox-conformance` provides a profile-rejection harness. Each cloud package adds a conformance test that walks every documented profile field and asserts the accept/reject behavior above.
+
+Schema-drift detection cannot be runtime-reflective because `SandboxProfile` is a TypeScript interface (erased at runtime). Instead, drift is caught at **compile time** via an exhaustive `satisfies`-keyed const:
+
+```ts
+// in @koi/sandbox-cloudflare/src/validate.ts
+import type { SandboxProfile } from "@koi/core";
+
+type ProfileFieldDisposition = "accept" | "reject" | "vacuous" | "ignore" | "mapped";
+
+const PROFILE_FIELD_DISPOSITIONS = {
+  filesystem: "reject-or-accept-by-subfield",  // handled by inner table
+  network: "reject-or-accept-by-subfield",
+  resources: "validate-against-edge-caps",
+  env: "mapped",
+  nexusMounts: "reject",
+  required: "validate-empty-only",
+  ssh: "ignore",
+} as const satisfies Record<keyof SandboxProfile, string>;
+```
+
+If a future PR adds a new top-level key to `SandboxProfile` without updating this const, TypeScript fails compilation with `Property '<newField>' is missing in type ...`. The cloud package will not build. This is a hard gate, not a runtime test.
+
+Each subfield (filesystem.*, network.*, resources.*) gets its own `satisfies`-keyed const using `keyof FilesystemPolicy`, `keyof NetworkPolicy`, `keyof ResourceLimits` for the same exhaustiveness guarantee at compile time.
 
 ### `@koi/sandbox-vercel` (~350 LOC src + tests)
 
