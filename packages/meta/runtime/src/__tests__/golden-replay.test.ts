@@ -13924,7 +13924,7 @@ describe("Golden: @koi/workspace", () => {
       execSync("git init --initial-branch=main", { cwd: tmp, stdio: "ignore" });
       execSync('git config user.email "test@koi.dev"', { cwd: tmp, stdio: "ignore" });
       execSync('git config user.name "Koi Test"', { cwd: tmp, stdio: "ignore" });
-      execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "ignore" });
+      execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "pipe" });
 
       const worktreeBase = realpathSync(
         mkdtempSync(join(tmpdir(), `koi-golden-wt-${Date.now()}-`)),
@@ -13960,7 +13960,7 @@ describe("Golden: @koi/workspace", () => {
       execSync("git init --initial-branch=main", { cwd: tmp, stdio: "ignore" });
       execSync('git config user.email "test@koi.dev"', { cwd: tmp, stdio: "ignore" });
       execSync('git config user.name "Koi Test"', { cwd: tmp, stdio: "ignore" });
-      execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "ignore" });
+      execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "pipe" });
 
       const backend = createGitWorktreeBackend({ repoPath: tmp, worktreeBasePath: worktreeBase });
       const aid = agentId("golden-agent");
