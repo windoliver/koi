@@ -380,6 +380,49 @@ describe("createMobileChannel", () => {
     ).toThrow(/pushNotifier requires/);
   });
 
+  test("inbound: malformed ContentBlock dropped (no untyped object reaches handler)", async () => {
+    const port = await freePort();
+    const ch = createMobileChannel({ port });
+    const received: InboundMessage[] = [];
+    ch.onMessage(async (m: InboundMessage) => {
+      received.push(m);
+    });
+    await ch.connect();
+    const ws = await openWs(port);
+    // Each frame would smuggle an invalid object into ContentBlock[] under
+    // the prior unchecked path. All MUST be dropped.
+    ws.send(JSON.stringify({ kind: "msg", content: [{ kind: "image", url: 42 }] }));
+    ws.send(JSON.stringify({ kind: "msg", content: [{ kind: "text" }] }));
+    ws.send(JSON.stringify({ kind: "msg", content: [{ kind: "unknown" }] }));
+    ws.send(JSON.stringify({ kind: "msg", content: [null] }));
+    // A well-formed frame still gets through.
+    ws.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: "ok" }] }));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(received).toHaveLength(1);
+    expect((received[0]?.content[0] as TextBlock | undefined)?.text).toBe("ok");
+    ws.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
+  test("inbound: oversized frame dropped before parse (memory bound)", async () => {
+    const port = await freePort();
+    const ch = createMobileChannel({ port });
+    const received: InboundMessage[] = [];
+    ch.onMessage(async (m: InboundMessage) => {
+      received.push(m);
+    });
+    await ch.connect();
+    const ws = await openWs(port);
+    const huge = "x".repeat(70 * 1024); // > 64 KiB cap
+    ws.send(JSON.stringify({ kind: "msg", content: [{ kind: "text", text: huge }] }));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(received).toHaveLength(0);
+    ws.close();
+    await new Promise((r) => setTimeout(r, 10));
+    await ch.disconnect();
+  });
+
   test("authenticate() rejection (returns null) closes the upgrade with 401", async () => {
     const port = await freePort();
     const ch = createMobileChannel({

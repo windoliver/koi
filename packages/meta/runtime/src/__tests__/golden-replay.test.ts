@@ -17131,13 +17131,14 @@ describe("Golden: @koi/channel-mobile", () => {
     const seen: number[] = [];
     const ch = createMobileChannel({
       port: 0,
+      authenticate: async () => "test-device",
       pushNotifier: async (m) => {
         seen.push(m.content.length);
       },
     });
     await ch.connect();
-    await ch.send({ content: [{ kind: "text", text: "a" }] });
-    await ch.send({ content: [{ kind: "text", text: "b" }] });
+    await ch.sendUnsolicited({ content: [{ kind: "text", text: "a" }] });
+    await ch.sendUnsolicited({ content: [{ kind: "text", text: "b" }] });
     expect(seen).toEqual([1, 1]);
     await ch.disconnect();
   });

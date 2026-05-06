@@ -187,8 +187,59 @@ export function replyToInbound(inbound: InboundMessage, message: OutboundMessage
 
 interface InboundFrame {
   readonly kind?: string;
-  readonly content?: readonly ContentBlock[];
+  readonly content?: readonly unknown[];
   readonly senderId?: string;
+}
+
+/**
+ * Maximum byte length of a single inbound WebSocket frame. Larger payloads
+ * are dropped before JSON.parse to bound memory pressure from a hostile or
+ * buggy client. 64 KiB is generous for text + small button payloads while
+ * staying well below typical WebSocket fragment limits.
+ */
+const MAX_INBOUND_FRAME_BYTES = 64 * 1024;
+
+/**
+ * Strict ContentBlock validator. Returns the input narrowed to ContentBlock
+ * if every required field is present and well-typed; returns null otherwise.
+ * Refusing malformed blocks at the trust boundary stops bad client input
+ * from being smuggled into downstream handlers as `ContentBlock[]`.
+ */
+function validateContentBlock(value: unknown): ContentBlock | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as Record<string, unknown>;
+  switch (v.kind) {
+    case "text":
+      return typeof v.text === "string" ? (value as ContentBlock) : null;
+    case "file":
+      return typeof v.url === "string" &&
+        typeof v.mimeType === "string" &&
+        (v.name === undefined || typeof v.name === "string")
+        ? (value as ContentBlock)
+        : null;
+    case "image":
+      return typeof v.url === "string" && (v.alt === undefined || typeof v.alt === "string")
+        ? (value as ContentBlock)
+        : null;
+    case "button":
+      return typeof v.label === "string" && typeof v.action === "string"
+        ? (value as ContentBlock)
+        : null;
+    case "custom":
+      return typeof v.type === "string" ? (value as ContentBlock) : null;
+    default:
+      return null;
+  }
+}
+
+function validateContentBlocks(value: readonly unknown[]): readonly ContentBlock[] | null {
+  const out: ContentBlock[] = [];
+  for (const item of value) {
+    const valid = validateContentBlock(item);
+    if (valid === null) return null;
+    out.push(valid);
+  }
+  return out;
 }
 
 function extractAndVerifyEpoch(
@@ -466,11 +517,18 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       };
     },
     normalize: (line: string): InboundMessage | null => {
+      // Bound memory pressure from oversized client frames before parsing.
+      if (line.length > MAX_INBOUND_FRAME_BYTES) return null;
       try {
         const frame = JSON.parse(line) as InboundFrame;
         if (frame.kind !== "msg") return null;
-        const content = frame.content ?? [];
-        if (content.length === 0) return null;
+        const rawContent = frame.content ?? [];
+        if (!Array.isArray(rawContent) || rawContent.length === 0) return null;
+        // Reject any frame containing a malformed ContentBlock — never
+        // smuggle untyped client objects into downstream handlers as
+        // ContentBlock[].
+        const content = validateContentBlocks(rawContent);
+        if (content === null) return null;
         // Identity precedence: server-authenticated handshake wins over
         // client-supplied (even when trusted) wins over host placeholder.
         // The authenticate() identity is the strongest server-side signal.

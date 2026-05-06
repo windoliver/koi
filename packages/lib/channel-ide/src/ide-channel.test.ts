@@ -87,6 +87,48 @@ describe("createIdeChannel", () => {
     await ch.disconnect();
   });
 
+  test("inbound: malformed ContentBlock dropped (no untyped object reaches handler)", async () => {
+    const h = harness();
+    const ch = createIdeChannel({ transport: h.transport });
+    const received: InboundMessage[] = [];
+    ch.onMessage(async (m) => {
+      received.push(m);
+    });
+    await ch.connect();
+    h.emitLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notify",
+        params: { content: [{ kind: "image", url: 42 }] },
+      }),
+    );
+    h.emitLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notify",
+        params: { content: [{ kind: "text" }] },
+      }),
+    );
+    h.emitLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notify",
+        params: { content: [{ kind: "unknown" }] },
+      }),
+    );
+    // A well-formed frame still gets through.
+    h.emitLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notify",
+        params: { content: [{ kind: "text", text: "ok" }] },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toHaveLength(1);
+    await ch.disconnect();
+  });
+
   test("inbound: malformed JSON dropped silently", async () => {
     const h = harness();
     const ch = createIdeChannel({ transport: h.transport });
