@@ -99,28 +99,81 @@ A future `sandbox-edge-router` package can offer cross-provider selection betwee
 
 This doc update is a required deliverable of this PR (see Acceptance below) so that no documented contract conflicts with what ships.
 
-### Adapter-enforced idempotency via mandatory durable dedupe store
+### Adapter-enforced idempotency via strongly-consistent durable dedupe store
 
-The duplicate-side-effect hazard from timeout/abort/destroy + per-isolate dedupe is unacceptable on the honor system. The adapter therefore **mechanically enforces** cross-retry dedupe by requiring operators to bind a provider-side durable key-value store, and the shim consults it on every invoke before calling the handler:
+The duplicate-side-effect hazard from timeout/abort/destroy + per-isolate dedupe is unacceptable on the honor system. The adapter mechanically enforces cross-retry dedupe by requiring operators to bind a **strongly-consistent** provider-side store (eventually-consistent stores like Cloudflare KV are insufficient — within their 60-second propagation window, a cross-instance retry can miss a just-written entry and double-execute the handler).
 
-- **Cloudflare:** `createCloudflareAdapter` REQUIRES `config.dedupeKvNamespaceId: string` — a Cloudflare Workers KV namespace ID owned by the operator. The deploy step wires the namespace as a binding (`KOI_DEDUPE_KV`) in the worker's `wrangler` config so the shim can read/write it. Adapter construction fails with `KoiError { code: "DEDUPE_STORE_REQUIRED" }` if `dedupeKvNamespaceId` is missing.
-- **Vercel:** `createVercelAdapter` REQUIRES `config.dedupeEdgeConfigId: string` — a Vercel Edge Config ID. The deploy step wires it as a binding (`KOI_DEDUPE_EDGE_CONFIG`). Same `DEDUPE_STORE_REQUIRED` error if missing.
-- **Shim-side enforcement (mandatory, not opt-in):** the deployed shim's request handler executes:
-  ```js
-  const existing = await KOI_DEDUPE_KV.get(operationId, { type: "json" });
-  if (existing !== null) {
-    return new Response(JSON.stringify(existing.result), { status: existing.status });
-  }
-  // call the operator's handler
-  const result = await handler({ payload, operationId, requestId });
-  // write-after-success: only cache successful outcomes; failures get a fresh attempt next time
-  await KOI_DEDUPE_KV.put(operationId, JSON.stringify({ status: 200, result }), { expirationTtl: 86400 });
-  return new Response(JSON.stringify(result));
-  ```
-- The store is keyed on `operationId` (the durable, caller-owned key), with a 24-hour TTL on entries. Two `invoke()` calls from any source — same instance, fresh instance after destroy/recreate, or even two different machines using the same Cloudflare account — see the same dedupe entry. **Cross-instance dedupe now actually works**, because the store is provider-side and shared across all isolates that import the binding.
-- **The `assertIdempotent: true` flag is still required** as an additional acknowledgment that the operator understands the dedupe boundary, but it is now belt-and-braces: the dedupe store is the enforcement mechanism, the flag is the operator's confirmation that they understood the contract.
-- **Cost note:** Cloudflare KV reads cost money; the adapter's documentation makes this explicit and exposes a `dedupeReadOptional?: boolean` flag (default false). Setting it true allows operators to skip dedupe for handlers they have personally certified as idempotent (rare, dangerous, but available); setting it requires the adapter to ALSO log a warning on every create indicating dedupe is bypassed.
-- A future `sandbox-cloudflare-durable` package can offer Durable-Object-backed dedupe with strong consistency for workloads that need it (KV is eventually consistent within ~60s, which is acceptable for the timeout/destroy retry window but not for hot-path back-to-back retries from the same caller). That is out of scope here.
+#### Cloudflare: Durable Objects with `compareAndSwap`
+
+`createCloudflareAdapter` REQUIRES `config.dedupeDurableObjectId: string` (a DO namespace ID with a class declared by the operator that exposes `idempotencyCheck(operationId)`). The deploy step wires the namespace as a binding (`KOI_DEDUPE_DO`). Adapter construction fails with `KoiError { code: "DEDUPE_STORE_REQUIRED" }` if missing.
+
+DO is the only Cloudflare primitive with linearizable single-key consistency. The shim handler:
+
+```js
+const stub = KOI_DEDUPE_DO.get(KOI_DEDUPE_DO.idFromName(operationId));
+const claimResult = await stub.fetch("https://do/claim", {
+  method: "POST",
+  body: JSON.stringify({ operationId, requestId }),
+});
+const claim = await claimResult.json();
+// claim.status: "fresh" | "in-progress" | "completed"
+if (claim.status === "completed") {
+  return new Response(JSON.stringify(claim.result), { status: claim.statusCode });
+}
+if (claim.status === "in-progress") {
+  // poll the DO until it transitions to "completed" or timeout fires
+  return await waitForCompletion(stub, operationId, requestId, timeoutMs);
+}
+// claim.status === "fresh" — this isolate owns the operation
+const result = await handler({ payload, operationId, requestId });
+await stub.fetch("https://do/complete", {
+  method: "POST",
+  body: JSON.stringify({ operationId, result, statusCode: 200 }),
+});
+return new Response(JSON.stringify(result));
+```
+
+The DO class implements `claim` atomically (single-threaded execution per object id), guarantees only one isolate transitions a key to `in-progress`, and persists results to its built-in transactional storage with 24h TTL. Cross-instance retries (after `destroy()` + new `create()`) hit the same DO id (because `operationId` keys the lookup) and observe the prior outcome. **This is the only provider primitive that makes cross-retry dedupe a real guarantee for Cloudflare.**
+
+#### Vercel: Vercel KV (Upstash Redis) with `SET NX EX`
+
+`createVercelAdapter` REQUIRES `config.dedupeKvUrl: string` and `config.dedupeKvToken: string` — a Vercel KV connection (Upstash Redis-compatible REST API). Vercel Edge Config is read-only and write-async, so it cannot serve as a dedupe store. Vercel KV uses Redis primitives which support strongly-consistent `SET NX EX` (set if not exists, with expiry) — the operation is atomic on a single key. The adapter wires the connection as bindings `KOI_DEDUPE_KV_URL` and `KOI_DEDUPE_KV_TOKEN` so the shim can issue authenticated requests.
+
+The shim handler:
+
+```js
+const claimKey = `claim:${operationId}`;
+const resultKey = `result:${operationId}`;
+// Strong consistency via SET NX EX (atomic claim with 5-minute hold while running)
+const claim = await fetch(`${KOI_DEDUPE_KV_URL}/set/${claimKey}/${requestId}/EX/300/NX`, {
+  headers: { authorization: `Bearer ${KOI_DEDUPE_KV_TOKEN}` },
+});
+const claimBody = await claim.json();
+if (claimBody.result === null) {
+  // someone else claimed; wait for the resultKey or timeout
+  return await waitForResult(KOI_DEDUPE_KV_URL, KOI_DEDUPE_KV_TOKEN, resultKey, timeoutMs);
+}
+// We own the operation
+const result = await handler({ payload, operationId, requestId });
+// Write result with 24h TTL, atomic SET (overwrite ok — SET NX is for the claim only)
+await fetch(`${KOI_DEDUPE_KV_URL}/set/${resultKey}/${encodeURIComponent(JSON.stringify(result))}/EX/86400`, {
+  method: "POST",
+  headers: { authorization: `Bearer ${KOI_DEDUPE_KV_TOKEN}` },
+});
+return new Response(JSON.stringify(result));
+```
+
+Redis `SET NX` is single-key atomic across all clients, so cross-instance retries serialize correctly. Vercel KV (Upstash Redis) advertises strong consistency for single-key operations.
+
+#### No opt-out
+
+There is no `dedupeReadOptional` flag. Bypassing the dedupe store would defeat the only mechanical safety the adapter provides. Operators who have audited their handlers as idempotent at the side-effect target can still use the adapter — they just pay the dedupe-store roundtrip on every invoke. The cost is the price of correctness for retried invocations.
+
+#### `assertIdempotent: true` still required
+
+The flag is now belt-and-braces: the dedupe store is the enforcement mechanism, the flag is the operator's confirmation that they understood the contract and provisioned the store correctly. The flag's documentation states the operator certifies handler-level idempotency in addition to the durable dedupe.
+
+A future `sandbox-cloudflare-kv-only` package can offer cheaper KV-backed best-effort dedupe for cost-sensitive workloads that accept eventual consistency; that is out of scope here. This PR ships strongly-consistent dedupe only.
 
 ### Kernel / runtime integration path
 
@@ -265,7 +318,7 @@ For Vercel, the analogous gate (for pre-activation reachability) requires **adap
 
 - The adapter's `createVercelAdapter(config)` requires `config.projectId` and verifies via `GET /v9/projects/{projectId}` at construction time that the project has `ssoProtection.deploymentType` (or `passwordProtection.deploymentType`) set to `"all"` or `"prod_deployment_urls_and_all_previews"`. If protection is disabled or scoped narrower, `createVercelAdapter` returns `KoiError { code: "VERCEL_PROTECTION_REQUIRED", reason: "preview-protection-not-enforced" }` and refuses to construct.
 - **Uncached re-check inside every `create()`:** project protection settings can drift after adapter construction (operator changes them on the dashboard). Each `create()` therefore re-issues the same `GET /v9/projects/{projectId}` check IMMEDIATELY before any deploy mutation, with **no caching of allow results**. Allow decisions are evaluated against fresh provider state on every create. The optional cache stores ONLY negative/terminal failures (e.g., `VERCEL_PROTECTION_REQUIRED`) for 30 seconds to short-circuit retries against a known-bad project; a positive `protection-enforced` result is never cached and never reused. This bounds API rate on the failure path while preserving the safety property on the allow path. If the live check shows protection has been disabled or scoped narrower, `create()` returns `VERCEL_PROTECTION_REQUIRED` and never deploys. The structural reachability invariant is therefore guarded both at adapter construction (for fast failure of misconfigured deployments) and at every create call with provider-fresh data (against post-construction drift).
-- Each deployment is created with `target: "preview"` until activation, so it lands behind the protection gate. Activation either flips `target: "production"` (after secrets and protection are confirmed) or attaches a custom domain — both are explicit final-step transitions.
+- Each deployment is created with `target: "preview"` until activation, so it lands behind the protection gate. Activation flips `target: "production"` after secrets and protection are confirmed. **Custom-domain attachment is explicitly out of scope for this PR** (matching the Cloudflare custom-route exclusion above): trusting an arbitrary hostname during activation would force the adapter to send `Authorization: Bearer ${instanceToken}` payloads to a non-Vercel-owned endpoint, which the spec's threat model forbids without an ownership-verification protocol that does not exist yet. The host-side endpoint validation only accepts `https://${deploymentId}-*.vercel.app` and `https://${deploymentId}.vercel.app` URLs; anything else is rejected with `KoiError { code: "ENDPOINT_NOT_TRUSTED" }`.
 - Pre-activation, the preview URL is reachable only with a valid Vercel SSO/password token bound to that project. The koi adapter never publishes that URL externally; even if leaked, the protection gate stops anonymous invocation.
 - The smoke workflow (`provider-smoke.yml`) includes a `vercel-protection-required` scenario: temporarily disable protection on the test project, attempt `createVercelAdapter`, assert it returns `VERCEL_PROTECTION_REQUIRED` and refuses to construct. Re-enable, assert success.
 
