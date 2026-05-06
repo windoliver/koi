@@ -103,6 +103,16 @@ This doc update is a required deliverable of this PR (see Acceptance below) so t
 
 The duplicate-side-effect hazard from timeout/abort/destroy + per-isolate dedupe is unacceptable on the honor system. The adapter mechanically enforces cross-retry dedupe by requiring operators to bind a **strongly-consistent** provider-side store (eventually-consistent stores like Cloudflare KV are insufficient — within their 60-second propagation window, a cross-instance retry can miss a just-written entry and double-execute the handler).
 
+#### Two-worker isolation: handler code never sees dedupe credentials
+
+The deployed shim is a **two-worker** (or two-function) pattern, not one. Operator handler code never has access to dedupe state or credentials:
+
+- **Worker A — `koi-dedupe-gateway`:** koi-owned. Holds the Durable Object binding (Cloudflare) or Vercel KV credentials. Source is the same `≤80 LOC` shim template the koi packages ship — operators do not modify it. Exposes only one method to Worker B: `runWithDedupe(operationId, payloadEnvelope)` which (a) checks the durable dedupe store, (b) if fresh, invokes Worker B via Service Binding (CF) or internal `fetch` (Vercel), (c) commits the result atomically. Worker A never executes operator code.
+- **Worker B — `koi-handler-runner`:** runs the operator's handler. Has NO dedupe binding, NO dedupe credentials, NO direct access to KV/DO. It receives `payload`, `operationId`, and `requestId` as call arguments from Worker A and returns the handler result. The bearer token (`KOI_INSTANCE_TOKEN`) for shim-level auth is also held by Worker A only — Worker B does not need it because Worker A authenticates the inbound request before invoking it.
+- **Communication:** Cloudflare uses Service Bindings (`env.HANDLER_RUNNER.fetch(req)`) — a private internal RPC channel that requires no auth and cannot be reached from outside the account. Vercel uses an internal hostname-private invocation: Worker A is on `https://${gatewayDeploymentId}.vercel.app`, Worker B is on `https://${handlerDeploymentId}.vercel.app` with deployment protection set to allow ONLY Worker A's signed JWT (using Vercel's `x-vercel-signature` for inter-deployment calls). Worker B refuses requests without that signature.
+- **Guest cannot escalate:** since Worker B has no dedupe binding and no token, even a fully malicious handler cannot tamper with `claim:*`/`result:*` keys, forge dedupe records, or read KV credentials. The dedupe gateway is the trust boundary.
+- **Operator surface:** the operator deploys ONLY Worker B's handler logic (their own code). Worker A is generated and deployed by the koi adapter from a fixed template; operators do not modify it. The L2 doc explicitly tells operators not to inspect or edit Worker A.
+
 #### Cloudflare: Durable Objects with `compareAndSwap`
 
 `createCloudflareAdapter` REQUIRES `config.dedupeDurableObjectId: string` (a DO namespace ID with a class declared by the operator that exposes `idempotencyCheck(operationId)`). The deploy step wires the namespace as a binding (`KOI_DEDUPE_DO`). Adapter construction fails with `KoiError { code: "DEDUPE_STORE_REQUIRED" }` if missing.
@@ -121,7 +131,7 @@ Rules:
 
 - `claim`: atomic compareAndSwap from `fresh|claim-expired` to `claimed`. The caller writes its `requestId`, `claimedAt`, and `leaseUntil = claimedAt + 60_000ms` into the DO's transactional storage. Returns `{ status: "fresh" }` to the new owner, `{ status: "in-progress", claimer: <other_requestId>, leaseUntil }` to losers.
 - **Heartbeat lease while running:** the running isolate calls `extendLease` every 30 seconds — atomic CAS that sets `leaseUntil = now + 60_000ms` IFF the current claimer's `requestId` matches. If the heartbeat fails (isolate crashed, evicted), the lease expires after 60s and another isolate can take over via the `claim-expired` transition.
-- **Atomic completion:** `complete` is a single transaction that writes `{ status: "completed", result, statusCode, completedAt, ttlExpiresAt: now + 86400_000ms }` AND clears the claim. If the handler succeeded but `complete` fails (network error, DO transient), the isolate retries `complete` up to 3 times with backoff. After 3 failures, the isolate logs `DEDUPE_COMPLETE_PERSISTENCE_FAILED` and continues to return the result to its caller; the lease will expire and the next caller will take over and re-run the handler. **The handler's external side effects already happened**, so this leaves the door open to duplicate execution — but the workload-class restriction (`assertIdempotent: true`) makes that acceptable; the operator certified retries are safe.
+- **Atomic completion (fail-closed on persistence failure):** `complete` is a single transaction that writes `{ status: "completed", result, statusCode, completedAt, ttlExpiresAt: now + 86400_000ms }` AND clears the claim. If the handler succeeded but `complete` fails (network error, DO transient), the isolate retries `complete` up to 3 times with backoff. **After 3 failures, the isolate returns `503 DEDUPE_PERSISTENCE_FAILED` to the caller WITHOUT serving the handler's result.** The instance is poisoned. The host-side adapter, on receiving this response, transitions the local handle to POISONED and the caller's `invoke()` rejects with `KoiError { code: "DEDUPE_PERSISTENCE_FAILED" }`. The handler's external side effects already happened — but no result is returned to the caller, and the next retry of the same `operationId` will see the still-active claim, wait for it to expire, and then re-run. Because the workload-class restriction (`assertIdempotent: true`) requires handler-level idempotency at side-effect targets, this re-run is safe. **There is no path where the adapter reports success without persisting a terminal record.**
 - **Atomic failure:** `fail` writes `{ status: "failed-permanent", error, failedAt, ttlExpiresAt: now + 86400_000ms }` for handler errors that the operator wants cached (e.g., validation failures with no retry semantics). The handler signals this via a special return shape `{ koi: { failed: true, error } }`. Default behavior is to NOT cache failures — the next retry runs the handler fresh.
 - **Stuck-claim recovery:** if a caller observes `claim-expired` with a non-null result (handler ran but didn't complete the DO), it does NOT trust the partial state. It transitions to `claimed` itself and re-runs the handler. This is the only path where idempotency-at-side-effect-targets matters; the workload-class restriction covers it.
 
@@ -226,11 +236,11 @@ try {
   `;
   const resultJson = JSON.stringify(result);
   if (resultJson.length > MAX_DEDUPE_RESULT_BYTES /* = 8 MB, configurable */) {
-    // Result too large to cache durably. Ownership-checked claim release; if not owned, do nothing.
-    const RELEASE_LUA = `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end`;
-    await kvCommand("EVAL", [RELEASE_LUA, "1", claimKey, requestId]);
-    console.warn("DEDUPE_RESULT_TOO_LARGE", { operationId, size: resultJson.length });
-    return new Response(resultJson, { status: 200 });
+    // Result too large to cache durably. FAIL CLOSED: do not return success, do not release claim.
+    // The handler's side effects already happened, but the caller does not get a success result.
+    // Same posture as DEDUPE_PERSISTENCE_FAILED above. Lease will expire normally, retries re-run.
+    console.error("DEDUPE_RESULT_TOO_LARGE", { operationId, size: resultJson.length });
+    return new Response(JSON.stringify({ koi: { error: "RESULT_TOO_LARGE", maxBytes: MAX_DEDUPE_RESULT_BYTES } }), { status: 503 });
   }
   const committed = await kvCommand("EVAL", [COMMIT_LUA, "2", claimKey, resultKey, requestId, resultJson]);
   if (committed === 0) {
@@ -255,7 +265,7 @@ Rules mirror the Cloudflare design:
 - **Lease loss → poison and abort:** if the heartbeat detects ownership loss mid-handler, the isolate marks `lostLease = true`, clears the heartbeat, and returns a `503 LEASE_LOST` response WITHOUT writing any result or releasing the claim. The new owner's state is preserved untouched. The handler may already have committed external side effects — that risk is covered by the workload-class restriction.
 - **Commit ownership check:** the final write of `result` and `DEL` of `claim` is a single atomic Lua `EVAL`. If ownership has been lost in the gap between handler completion and commit attempt, the script returns 0 and the isolate returns `503 OWNERSHIP_LOST` without polluting the new owner's state.
 - Result writes use POST body, not URL path, to handle arbitrary size up to a configurable `MAX_DEDUPE_RESULT_BYTES` (default 8 MB).
-- Persistence failures after side effects fall back to "log and serve result without caching" — same as Cloudflare DO, justified by the workload-class restriction.
+- **Persistence failures fail closed** — same as Cloudflare DO. If `commit` returns 0 (ownership lost) OR the network call fails after retries OR the result exceeds `MAX_DEDUPE_RESULT_BYTES`, the shim returns `503` to the caller WITHOUT serving a success. The handler's side effects already happened (the operator's idempotency contract handles that), but the caller is told the operation did not durably commit. There is no path where the adapter reports `200` without a terminal record persisted.
 
 **Adversarial test (mandatory):** `__tests__/vercel-dedupe-lease-race.test.ts` spawns two stubbed shim invocations with the same `operationId`. Test scenarios:
 1. Isolate A claims, then sleeps past lease TTL (simulated via fake timers).
