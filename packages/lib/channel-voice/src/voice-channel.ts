@@ -699,6 +699,12 @@ export function createVoiceChannel(config: VoiceChannelConfig): ChannelAdapter {
       // them on a next connect).
       rawUtteranceSink = undefined;
       pendingUtterances = [];
+      // Drop stale per-session handler-completion promises so a hung
+      // handler from this connection cannot block the next inbound
+      // turn after reconnect. Without this, the next utterance for
+      // a reused threadId would Promise.allSettled([prev, ...]) the
+      // dead promise and wedge the chain indefinitely.
+      sessionDispatchInFlight.clear();
       // Drain in-flight per-session sends before tearing down transport
       // so partial frames don't fly into a closing call. Failures are
       // swallowed — they were already surfaced to their callers.

@@ -927,6 +927,13 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       // Strip our internal metadata fields before they cross the wire — the
       // remote client has no use for them.
       const wireMessage = stripInternalMetadata(message);
+      // Identity captured if we reached the live-write path. Used to
+      // route the immediate-fallback push (write returned <= 0 before
+      // any bytes hit the wire) to the same authenticated user we were
+      // about to deliver to. Without this, an unsolicited send whose
+      // socket closed mid-write would push with no recipient context.
+      // let requires justification: assigned only on live-attempt path
+      let liveAttemptIdentity: string | undefined;
       // Disconnect race: a send queued in channel-base's chain may
       // reach platformSend AFTER prePlatformDisconnect already drained
       // pendingAcks. Skip the live path entirely so we don't arm a new
@@ -954,6 +961,7 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
         // route to whoever is connected then if A disconnected and
         // B reconnected in between.
         const identityAtSend = activeIdentity ?? defaultSenderId;
+        liveAttemptIdentity = identityAtSend;
         // let requires justification: capture write outcome
         let written = 0;
         try {
@@ -1006,7 +1014,10 @@ export function createMobileChannel(config: MobileChannelConfig): MobileChannelA
       if (config.pushNotifier === undefined) {
         throw new MobileNoDeliveryTargetError();
       }
-      await config.pushNotifier(wireMessage, derivePushContext(verifiedReply, alsCtx));
+      await config.pushNotifier(
+        wireMessage,
+        derivePushContext(verifiedReply, alsCtx, undefined, liveAttemptIdentity),
+      );
     },
     onPlatformEvent: (handler) => {
       lineHandler = handler;
