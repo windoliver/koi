@@ -57,7 +57,7 @@ async function rollbackThreadIfPresent(threadStore: ThreadStore, row: OutboxReco
 async function abortPreSendRow(
   deps: RecoverDeps,
   row: OutboxRecord,
-  expected: "reserving" | "reserved" | "aborting",
+  expected: "reserving" | "reserved" | "dispatching" | "aborting",
 ): Promise<RecoverResult> {
   await rollbackThreadIfPresent(deps.threadStore, row);
   const ok = await deps.outboxStore.cas(row.messageId, expected, "aborted");
@@ -79,6 +79,12 @@ export async function recoverOrphanedReservations(
   }
   for (const row of await deps.outboxStore.list({ status: "reserved" })) {
     results.push(await abortPreSendRow(deps, row, "reserved"));
+  }
+  // `dispatching` is the explicit pre-SMTP-I/O phase marker: SMTP had not
+  // been observed to start, so auto-abort is safe and avoids unnecessary
+  // operator intervention after benign restarts.
+  for (const row of await deps.outboxStore.list({ status: "dispatching" })) {
+    results.push(await abortPreSendRow(deps, row, "dispatching"));
   }
 
   // A resolver crashed mid-flight after CAS-claiming `awaiting-recovery →

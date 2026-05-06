@@ -13,9 +13,26 @@
  * thread state, so a concurrent `"sent"` resolver cannot interleave and
  * leave the outbox `sent` while the thread chain is rolled back.
  */
+/**
+ * Outbox states (email channel):
+ *
+ *   reserving   pre-CAS intent record; thread CAS may not have landed
+ *   reserved    pre-SMTP, post-CAS; SMTP not yet invoked
+ *   dispatching pre-SMTP-I/O explicit phase marker; cas reserved → dispatching
+ *               happens immediately before the SMTP transport call. A row in
+ *               this state after a crash is "pre-send" — the SMTP I/O had not
+ *               been observed to start, so recovery auto-aborts (no operator
+ *               intervention required).
+ *   sending     SMTP attempted post-DATA; outcome ambiguous
+ *   sent        delivered (post-DATA OK)
+ *   aborting    resolver-owned intermediate during failed-resolution
+ *   aborted     terminal failure
+ *   awaiting-recovery  post-DATA uncertain; operator must resolve
+ */
 export type OutboxStatus =
   | "reserving"
   | "reserved"
+  | "dispatching"
   | "sending"
   | "sent"
   | "aborting"

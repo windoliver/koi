@@ -85,9 +85,31 @@ export function normalizeActivity(
     };
   }
   const text = (activity.text ?? "").replace(/<at>.*?<\/at>\s*/g, "").trim();
-  const blocks: readonly ContentBlock[] = text.length > 0 ? [{ kind: "text", text }] : [];
-
+  // Map Bot Framework attachments into first-class content blocks. Without
+  // this, agents that read only `content` (the standard channel contract)
+  // would never see uploaded files / images — a real regression for Teams
+  // support flows where the attachment IS the request payload. Metadata
+  // also carries the raw shape so adapters that need provider-specific
+  // fields can still reach them.
   const attachments = activity.attachments ?? [];
+  const textBlock: readonly ContentBlock[] = text.length > 0 ? [{ kind: "text", text }] : [];
+  const attachmentBlocks: readonly ContentBlock[] = attachments
+    .filter(
+      (a): a is ActivityAttachment & { contentUrl: string } => typeof a.contentUrl === "string",
+    )
+    .map((a): ContentBlock => {
+      const isImage = a.contentType.startsWith("image/");
+      if (isImage) {
+        return a.name !== undefined
+          ? { kind: "image", url: a.contentUrl, alt: a.name }
+          : { kind: "image", url: a.contentUrl };
+      }
+      return a.name !== undefined
+        ? { kind: "file", url: a.contentUrl, mimeType: a.contentType, name: a.name }
+        : { kind: "file", url: a.contentUrl, mimeType: a.contentType };
+    });
+  const blocks: readonly ContentBlock[] = [...textBlock, ...attachmentBlocks];
+
   const meta: JsonObject =
     attachments.length > 0
       ? {

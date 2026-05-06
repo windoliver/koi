@@ -32,7 +32,7 @@ describe("normalizeActivity", () => {
     expect(r.error.code).toBe("INVALID_ACTIVITY");
   });
 
-  test("attachments stored in metadata, not content blocks", () => {
+  test("image attachments emit ImageBlock content alongside metadata", () => {
     const r = normalizeActivity(
       {
         ...baseActivity,
@@ -42,9 +42,30 @@ describe("normalizeActivity", () => {
     );
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error("unreachable");
-    expect(r.value.content.length).toBe(1); // only text block
+    expect(r.value.content).toEqual([
+      { kind: "text", text: "hello" },
+      { kind: "image", url: "https://x/y.png", alt: "y.png" },
+    ]);
     const meta = r.value.metadata ?? {};
     expect(Array.isArray(meta.attachments)).toBe(true);
+  });
+
+  test("non-image attachments emit FileBlock content", () => {
+    const r = normalizeActivity(
+      {
+        ...baseActivity,
+        text: "",
+        attachments: [
+          { contentType: "application/pdf", contentUrl: "https://x/doc.pdf", name: "doc.pdf" },
+        ],
+      },
+      clock,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.value.content).toEqual([
+      { kind: "file", url: "https://x/doc.pdf", mimeType: "application/pdf", name: "doc.pdf" },
+    ]);
   });
 
   test("missing timestamp falls back to clock()", () => {

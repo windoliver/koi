@@ -206,12 +206,16 @@ export async function executeOutbound(
   if (!reserved.ok) return reserved;
   const { messageId, threadVersion, priorThread } = reserved.value;
 
-  // reserved → sending
-  const flipped = await deps.outboxStore.cas(messageId, "reserved", "sending");
-  if (!flipped) {
+  // reserved → dispatching: explicit pre-SMTP-I/O phase marker. A row
+  // stuck in `dispatching` after a crash is unambiguously "SMTP I/O not
+  // yet observed", so recovery auto-aborts without forcing operator
+  // intervention. We promote dispatching → sending only AFTER sendViaSmtp
+  // has crossed into the post-DATA territory (returning post-data result).
+  const dispatched = await deps.outboxStore.cas(messageId, "reserved", "dispatching");
+  if (!dispatched) {
     return {
       ok: false,
-      error: err("SEND_FAILED", "outbox CAS reserved→sending failed", { messageId }),
+      error: err("SEND_FAILED", "outbox CAS reserved→dispatching failed", { messageId }),
     };
   }
 
@@ -226,6 +230,24 @@ export async function executeOutbound(
   });
   const result = await sendViaSmtp(deps.smtp, envelope);
 
+  if (result.phase === "pre-data") {
+    // Pre-DATA failure → aborted + thread rollback (strip-by-id loop).
+    await deps.outboxStore.cas(messageId, "dispatching", "aborted");
+    await rollbackThread(deps.threadStore, input.threadKey, threadVersion, messageId);
+    return {
+      ok: false,
+      error: err("SEND_FAILED", `pre-data failure: ${result.error}`, {
+        messageId,
+        phase: "pre-data",
+      }),
+    };
+  }
+
+  // We crossed into post-DATA territory: promote to `sending` so a future
+  // crash before the terminal flip is correctly recovered as
+  // awaiting-recovery (post-DATA outcome ambiguous), not auto-aborted.
+  await deps.outboxStore.cas(messageId, "dispatching", "sending");
+
   if (result.phase === "post-data" && result.ok) {
     const ok = await deps.outboxStore.cas(messageId, "sending", "sent");
     if (!ok) {
@@ -235,19 +257,6 @@ export async function executeOutbound(
       };
     }
     return { ok: true, value: { messageId } };
-  }
-
-  if (result.phase === "pre-data") {
-    // Pre-DATA failure → aborted + best-effort thread rollback.
-    await deps.outboxStore.cas(messageId, "sending", "aborted");
-    await rollbackThread(deps.threadStore, input.threadKey, threadVersion, messageId);
-    return {
-      ok: false,
-      error: err("SEND_FAILED", `pre-data failure: ${result.error}`, {
-        messageId,
-        phase: "pre-data",
-      }),
-    };
   }
 
   // Post-DATA failure → awaiting-recovery; thread state stays advanced.
