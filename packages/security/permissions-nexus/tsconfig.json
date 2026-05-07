@@ -1,9 +1,17 @@
 {
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "isolatedDeclarations": false,
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "../..",
+    "baseUrl": ".",
+    "paths": {
+      "@koi/core": ["../../kernel/core/src/index.ts"],
+      "@koi/nexus-client": ["../../lib/nexus-client/src/index.ts"]
+    }
   },
-  "include": ["src/**/*"],
-  "references": [{ "path": "../../kernel/core" }, { "path": "../../lib/nexus-client" }]
+  "include": ["src/**/*", "../../kernel/core/src/**/*.ts", "../../lib/nexus-client/src/**/*.ts"]
 }
