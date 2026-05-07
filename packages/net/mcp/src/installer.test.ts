@@ -283,7 +283,7 @@ describe("installMcpServer", () => {
       const file = (await Bun.file(path).json()) as {
         mcpServers: Record<string, ExternalServerConfig>;
       };
-      expect(file.mcpServers.existing).toBeDefined();
+      expect(file.mcpServers["existing"]).toBeDefined();
       expect(file.mcpServers[baseServer.name]).toBeUndefined();
     } finally {
       cleanup();

@@ -388,7 +388,7 @@ export async function evaluateSpecGuard(opts: {
     // Over-denying is safe; over-allowing is not.
     if (specResult.kind === "refused" && backendSupportsDualKey) {
       const argv0 = cmd.argv[0];
-      if (argv0?.includes("/")) {
+      if (argv0 !== undefined && argv0.includes("/")) {
         const basename = argv0.split("/").pop();
         if (basename !== undefined && basename.length > 0) {
           const basenameResult = evaluateBashCommand(

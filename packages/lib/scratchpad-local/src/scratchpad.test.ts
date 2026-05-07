@@ -244,7 +244,7 @@ describe("createLocalScratchpad", () => {
 
     it("returns VALIDATION error for non-JSON-serializable metadata (circular ref)", () => {
       const circular: Record<string, unknown> = {};
-      circular.self = circular;
+      circular["self"] = circular;
       const wr = sp.write({ path: scratchpadPath("circ"), content: "x", metadata: circular });
       expect(wr.ok).toBe(false);
       if (wr.ok) return;
