@@ -2,8 +2,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { type ComponentProvider, type HookConfig, isAttachResult, type Tool } from "@koi/core";
+import {
+  type ComponentProvider,
+  type FileSystemBackend,
+  type HookConfig,
+  isAttachResult,
+  type Tool,
+} from "@koi/core";
 import type { McpServerConfig } from "@koi/mcp";
+import type { SemanticSearchFn } from "@koi/tools-builtin";
 import {
   __setUserHooksConfigPathForTests,
   __setUserMcpHomeDirForTests,
@@ -272,31 +279,34 @@ describe("buildCoreProviders: filesystem operation gating", () => {
   });
 
   test("wires fs_semantic_search when filesystem backend exposes semanticSearch", async () => {
+    const filesystemBackend: FileSystemBackend & {
+      readonly semanticSearch: SemanticSearchFn;
+    } = {
+      name: "nexus",
+      read: async () => ({ ok: true as const, value: { content: "", path: "", size: 0 } }),
+      write: async () => ({ ok: true as const, value: { path: "", bytesWritten: 0 } }),
+      edit: async () => ({ ok: true as const, value: { path: "", hunksApplied: 0 } }),
+      list: async () => ({ ok: true as const, value: { entries: [], truncated: false } }),
+      search: async () => ({ ok: true as const, value: { matches: [], truncated: false } }),
+      semanticSearch: async () => ({
+        ok: true as const,
+        value: {
+          results: [
+            {
+              path: "src/auth.ts",
+              snippet: "retry logic",
+              score: 0.88,
+              lineStart: 4,
+              lineEnd: 8,
+            },
+          ],
+        },
+      }),
+    };
     const providers = buildCoreProviders({
       cwd: mkTempCwd(),
       includeWebFetch: false,
-      filesystemBackend: {
-        name: "nexus",
-        read: async () => ({ ok: true, value: { content: "", path: "", size: 0 } }),
-        write: async () => ({ ok: true, value: { path: "", bytesWritten: 0 } }),
-        edit: async () => ({ ok: true, value: { path: "", hunksApplied: 0 } }),
-        list: async () => ({ ok: true, value: { entries: [], truncated: false } }),
-        search: async () => ({ ok: true, value: { matches: [], truncated: false } }),
-        semanticSearch: async () => ({
-          ok: true as const,
-          value: {
-            results: [
-              {
-                path: "src/auth.ts",
-                snippet: "retry logic",
-                score: 0.88,
-                lineStart: 4,
-                lineEnd: 8,
-              },
-            ],
-          },
-        }),
-      },
+      filesystemBackend,
     });
     const semanticTool = await getToolFromProvider(
       providers,
