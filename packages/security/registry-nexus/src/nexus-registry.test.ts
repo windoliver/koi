@@ -918,7 +918,7 @@ describe("createNexusRegistry — startup timeout", () => {
 });
 
 describe("createNexusRegistry — register rollback", () => {
-  test("deletes orphaned Nexus record when transition fails after register", async () => {
+  test("deletes orphaned Nexus record only when refetch confirms pre-transition state", async () => {
     const transport = createMockTransport();
     stubEmptyList(transport);
     transport.stub("register_agent", async () => ({
@@ -928,6 +928,11 @@ describe("createNexusRegistry — register rollback", () => {
     transport.stub("agent_transition", async () => ({
       ok: false,
       error: { code: "EXTERNAL", message: "transition failed", retryable: true },
+    }));
+    // Refetch confirms agent is still UNKNOWN — safe to delete.
+    transport.stub("get_agent", async () => ({
+      ok: true,
+      value: { agent_id: "a-orphan", state: "UNKNOWN", generation: 0, metadata: {} },
     }));
     let deleteCalled = false;
     transport.stub("delete_agent", async () => {
@@ -940,6 +945,37 @@ describe("createNexusRegistry — register rollback", () => {
       /transition to CONNECTED failed/,
     );
     expect(deleteCalled).toBe(true);
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("skips destructive rollback when refetch shows transition committed despite RPC failure", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    transport.stub("register_agent", async () => ({
+      ok: true,
+      value: { agent_id: "ambiguous", state: "UNKNOWN", generation: 0 },
+    }));
+    transport.stub("agent_transition", async () => ({
+      ok: false,
+      error: { code: "EXTERNAL", message: "transport timeout", retryable: true },
+    }));
+    // Refetch reveals agent IS in CONNECTED — the transition committed
+    // before the response was lost. Deleting would destroy a live agent.
+    transport.stub("get_agent", async () => ({
+      ok: true,
+      value: { agent_id: "ambiguous", state: "CONNECTED", generation: 1, metadata: {} },
+    }));
+    let deleteCalled = false;
+    transport.stub("delete_agent", async () => {
+      deleteCalled = true;
+      return { ok: true, value: undefined };
+    });
+
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    await expect(registry.register(makeEntry("ambiguous"))).rejects.toThrow(
+      /CONNECTED|refusing destructive rollback|skipped delete/,
+    );
+    expect(deleteCalled).toBe(false);
     await registry[Symbol.asyncDispose]();
   });
 });

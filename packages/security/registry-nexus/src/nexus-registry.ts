@@ -266,14 +266,16 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
         console.warn(
           `[registry-nexus] poll get_agent ${nexusAgent.agent_id} failed (${String(next)}/${String(MAX_PER_AGENT_GET_FAILURES)}): ${detail.error.message}`,
         );
-        if (next >= MAX_PER_AGENT_GET_FAILURES) {
-          // Tombstone this entry: persistent hydration failure means we
-          // can't trust the local projection for this agent. Reads return
-          // undefined; mutating ops reject; a later successful poll will
-          // clear the tombstone.
+        // Fail closed immediately when the remote generation has
+        // advanced: the local projection is provably stale, so reads
+        // must not keep serving the old phase. The retry counter still
+        // governs how long we keep trying to refetch; the tombstone is
+        // cleared on the first successful hydration.
+        const generationAdvanced = existing !== undefined && remoteGen !== localNexusGen;
+        if (generationAdvanced || next >= MAX_PER_AGENT_GET_FAILURES) {
           stale.add(id);
           console.error(
-            `[registry-nexus] tombstoning ${nexusAgent.agent_id} after ${String(MAX_PER_AGENT_GET_FAILURES)} consecutive get_agent failures — reads will return undefined until refetch succeeds`,
+            `[registry-nexus] tombstoning ${nexusAgent.agent_id} (${generationAdvanced ? "generation advanced; local mirror stale" : `${String(MAX_PER_AGENT_GET_FAILURES)} consecutive get_agent failures`}) — reads will return undefined until refetch succeeds`,
           );
         }
         continue;
@@ -405,15 +407,29 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       );
     }
 
-    async function rollbackOrphan(reason: string, cause: unknown): Promise<never> {
-      // Best-effort cleanup of the partially-created Nexus record. Swallow
-      // delete errors to avoid masking the original failure; surface them as
-      // the cause chain instead.
-      const deleteAttempt = await nexusDeleteAgent(transport, entry.agentId);
-      const failure = !deleteAttempt.ok ? deleteAttempt.error : undefined;
+    async function rollbackOrphan(
+      reason: string,
+      cause: unknown,
+      expectedFailedState: string,
+    ): Promise<never> {
+      // Refetch-and-reconcile: a transition RPC error can be ambiguous
+      // (the request may have committed before the response was lost).
+      // Only delete when we can prove Nexus is still in the
+      // pre-transition state. Otherwise surface the failure without
+      // touching a possibly-live agent — caller can retry.
+      const probe = await nexusGetAgent(transport, entry.agentId);
+      const remoteState = probe.ok ? probe.value.state : undefined;
+      const safeToDelete = remoteState === expectedFailedState;
+      let rollbackFailureMessage: string | undefined;
+      if (safeToDelete) {
+        const deleteAttempt = await nexusDeleteAgent(transport, entry.agentId);
+        if (!deleteAttempt.ok) rollbackFailureMessage = deleteAttempt.error.message;
+      } else {
+        rollbackFailureMessage = `skipped delete: remote agent state is ${remoteState ?? "unknown"} — refusing destructive rollback after ambiguous transition failure`;
+      }
       throw new Error(
         `Failed to register agent ${entry.agentId}: ${reason}${
-          failure !== undefined ? ` (rollback also failed: ${failure.message})` : ""
+          rollbackFailureMessage !== undefined ? ` (rollback: ${rollbackFailureMessage})` : ""
         }`,
         { cause },
       );
@@ -430,9 +446,12 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       currentNexusGen,
     );
     if (!connectedResult.ok) {
+      // Pre-transition state for first-step rollback is UNKNOWN
+      // (register_agent's initial state).
       await rollbackOrphan(
         `transition to CONNECTED failed: ${connectedResult.error.message}`,
         connectedResult.error,
+        "UNKNOWN",
       );
     }
     currentNexusGen = connectedResult.ok
@@ -447,9 +466,12 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
         currentNexusGen,
       );
       if (!targetResult.ok) {
+        // After CONNECTED step succeeded, agent is in CONNECTED state;
+        // only delete if the second-step ambiguous failure left it there.
         await rollbackOrphan(
           `transition to ${targetNexusState} failed: ${targetResult.error.message}`,
           targetResult.error,
+          "CONNECTED",
         );
       }
       currentNexusGen = targetResult.ok

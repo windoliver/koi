@@ -61,12 +61,18 @@ export function createNexusSearch<T = unknown>(config: NexusSearchConfig): Searc
     if (!result.ok) return result;
 
     const value = result.value;
-    const hits = value.hits;
     const minScore = query.minScore;
-    const filtered = minScore !== undefined ? hits.filter((h) => h.score >= minScore) : hits;
+    // min_score is sent to Nexus above so the server applies the
+    // threshold *before* paginating. Defensively re-filter here only as
+    // a guard against a backend that ignores the parameter — pagination
+    // (cursor/hasMore) still reflects the server's filtered slice, so
+    // post-filter trimming cannot hide later qualifying hits on the
+    // next page.
+    const hits =
+      minScore !== undefined ? value.hits.filter((h) => h.score >= minScore) : value.hits;
 
     const page: SearchPage<T> = {
-      results: filtered.map((hit) => ({
+      results: hits.map((hit) => ({
         id: hit.id,
         score: hit.score,
         content: hit.content,
