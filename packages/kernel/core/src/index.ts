@@ -1067,6 +1067,19 @@ export type {
   ScratchpadWriteResult,
 } from "./scratchpad.js";
 export { SCRATCHPAD_DEFAULTS, scratchpadPath } from "./scratchpad.js";
+// search backend — Retriever, Indexer, value types for full-text/keyword search
+export type {
+  IndexDocument,
+  Indexer,
+  Retriever,
+  SearchBackend,
+  SearchFilter,
+  SearchPage,
+  SearchQuery,
+  SearchResult,
+  SearchScore,
+} from "./search-backend.js";
+export { DEFAULT_SEARCH_LIMIT } from "./search-backend.js";
 // security analyzer — dynamic risk classification contract
 export type {
   RiskAnalysis,
@@ -1102,19 +1115,6 @@ export type {
 } from "./skill-registry.js";
 // skill registry — runtime values
 export { DEFAULT_SKILL_SEARCH_LIMIT, skillId } from "./skill-registry.js";
-// search backend — Retriever, Indexer, value types for full-text/keyword search
-export type {
-  IndexDocument,
-  Indexer,
-  Retriever,
-  SearchBackend,
-  SearchFilter,
-  SearchPage,
-  SearchQuery,
-  SearchResult,
-  SearchScore,
-} from "./search-backend.js";
-export { DEFAULT_SEARCH_LIMIT } from "./search-backend.js";
 // snapshot chain — immutable DAG for time travel, fork, and recovery
 export type {
   AncestorQuery,

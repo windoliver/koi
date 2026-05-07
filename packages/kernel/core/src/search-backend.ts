@@ -97,9 +97,7 @@ export interface Retriever<T = unknown> {
 // ---------------------------------------------------------------------------
 
 export interface Indexer<T = unknown> {
-  readonly index: (
-    documents: readonly IndexDocument<T>[],
-  ) => Promise<Result<void, KoiError>>;
+  readonly index: (documents: readonly IndexDocument<T>[]) => Promise<Result<void, KoiError>>;
   readonly remove: (ids: readonly string[]) => Promise<Result<void, KoiError>>;
 }
 
