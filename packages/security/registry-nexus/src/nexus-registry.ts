@@ -146,8 +146,14 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     onError: (err) =>
       console.warn("[registry-nexus] listener threw:", err instanceof Error ? err.message : err),
   });
-  // let: timer handle, cleared on dispose
-  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  // let: self-scheduled poll handle (setTimeout). Used instead of
+  // setInterval so polls cannot overlap — re-entrant polls can produce
+  // split-brain deletions when an older slow poll completes after a
+  // newer poll has already added a fresh agent.
+  let pollTimer: ReturnType<typeof setTimeout> | undefined;
+  // let: in-flight guard belt-and-braces against bugs where dispose
+  // races a tick boundary.
+  let pollInFlight = false;
   // let: disposed flag to gate background work
   let disposed = false;
   // let: broken flag — set when poll detects an unrecoverable overflow
@@ -222,7 +228,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       broken = `poll failed ${String(MAX_POLL_FAILURES)} consecutive times — last error: ${err.message}`;
       console.error(`[registry-nexus] ${broken}`);
       if (pollTimer !== undefined) {
-        clearInterval(pollTimer);
+        clearTimeout(pollTimer);
         pollTimer = undefined;
       }
     }
@@ -281,7 +287,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
         broken = `poll observed remote agent ${nexusAgent.agent_id} but projection is at capacity (${String(maxEntries)}); raise maxEntries or scale out`;
         console.error(`[registry-nexus] ${broken}`);
         if (pollTimer !== undefined) {
-          clearInterval(pollTimer);
+          clearTimeout(pollTimer);
           pollTimer = undefined;
         }
         return;
@@ -490,17 +496,18 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     return projection.get(id);
   }
 
-  function list(filter?: RegistryFilter, visibility?: VisibilityContext): readonly RegistryEntry[] {
+  function list(
+    filter?: RegistryFilter,
+    _visibility?: VisibilityContext,
+  ): readonly RegistryEntry[] {
     assertHealthy();
-    if (visibility !== undefined) {
-      // This adapter does not enforce permission scoping. Wrap the registry
-      // in createVisibilityFilter (or equivalent) to enforce VisibilityContext
-      // before reaching this layer. Failing closed prevents callers from
-      // believing visibility was applied when it was silently ignored.
-      throw new Error(
-        "registry-nexus does not enforce VisibilityContext directly — wrap with createVisibilityFilter",
-      );
-    }
+    // VisibilityContext is intentionally not enforced here — that is the
+    // job of createVisibilityFilter() (L2 engine-compose), which wraps an
+    // inner registry and applies permission scoping before returning the
+    // filtered set. Throwing here would break the AgentRegistry contract
+    // and break every permission-scoped caller (MCP koi_list_agents,
+    // createVisibilityFilter, discoverBySkill). The parameter is accepted
+    // and ignored so the contract remains satisfied.
     const entries = [...projection.values()].filter((e) => !stale.has(e.agentId));
     if (filter === undefined) return entries;
     return entries.filter((e) => matchesFilter(e, filter));
@@ -777,7 +784,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
   async function dispose(): Promise<void> {
     disposed = true;
     if (pollTimer !== undefined) {
-      clearInterval(pollTimer);
+      clearTimeout(pollTimer);
       pollTimer = undefined;
     }
     projection.clear();
@@ -796,11 +803,26 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
   }
 
-  if (pollIntervalMs > 0) {
-    pollTimer = setInterval(() => {
-      void poll();
+  function schedulePoll(): void {
+    if (disposed || broken !== undefined || pollIntervalMs <= 0) return;
+    pollTimer = setTimeout(async () => {
+      if (pollInFlight) {
+        // Should not happen with self-scheduling, but guard against
+        // re-entrant calls from manual triggers / tests.
+        schedulePoll();
+        return;
+      }
+      pollInFlight = true;
+      try {
+        await poll();
+      } finally {
+        pollInFlight = false;
+        schedulePoll();
+      }
     }, pollIntervalMs);
   }
+
+  schedulePoll();
 
   return {
     register,

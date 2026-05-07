@@ -674,14 +674,16 @@ describe("createNexusRegistry — reserved metadata keys", () => {
   });
 });
 
-describe("createNexusRegistry — visibility fail-closed", () => {
-  test("list throws when VisibilityContext is supplied", async () => {
+describe("createNexusRegistry — visibility passthrough", () => {
+  test("list accepts VisibilityContext for AgentRegistry contract compatibility (enforcement is in createVisibilityFilter)", async () => {
     const transport = createMockTransport();
     stubEmptyList(transport);
     const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
-    expect(() => registry.list(undefined, { callerId: agentId("caller-1") })).toThrow(
-      /createVisibilityFilter/,
-    );
+    // Must not throw — registry-nexus is contractually compatible with
+    // AgentRegistry.list(filter, visibility); permission scoping is the
+    // job of createVisibilityFilter wrapping this layer.
+    const listed = registry.list(undefined, { callerId: agentId("caller-1") });
+    expect(Array.isArray(listed)).toBe(true);
     await registry[Symbol.asyncDispose]();
   });
 });
