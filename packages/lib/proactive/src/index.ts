@@ -11,6 +11,12 @@ export {
 } from "./composition-approval.js";
 export { mapSystemSignalToCompositionTrigger } from "./composition-trigger.js";
 export { createProactiveTools } from "./create-proactive-tools.js";
+export {
+  type CompositionPlannerAdapter,
+  type CompositionPlannerAdapterInput,
+  createLlmCompositionPlanner,
+  type LlmCompositionPlannerConfig,
+} from "./llm-composition-planner.js";
 export { createProactiveToolsProvider } from "./provider.js";
 export {
   createRuleBasedCompositionPlanner,
