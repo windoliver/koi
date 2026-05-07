@@ -114,12 +114,14 @@ export {
   createReplayContext,
   loadCassette,
 } from "@koi/replay";
-// Cloudflare edge function adapter (issue #1377) — contract-surface only.
-// `createCloudflareAdapter` is intentionally NOT re-exported here because the
-// deploy/invoke path is not yet implemented; re-exporting it would advertise
-// a shipping provider whose `create()` always fails. Operators who want the
-// in-development surface import it directly from `@koi/sandbox-cloudflare`.
-// Vercel adapter is design-only and is not exported either.
+// Cloudflare edge function adapter (issue #1377) — stable helper/contract
+// surface only. The experimental factory (`EXPERIMENTAL_createCloudflareAdapter`)
+// is NOT re-exported here because its `create()` path is design-only and the
+// renamed factory deliberately requires opting in at the package import site.
+// The helpers below (config validator, JCS canonicaliser, fingerprint,
+// shim-response mapper) and the config type are stable building blocks
+// callers need today, so they ship under the stable runtime root.
+// `@koi/sandbox-vercel` is fully design-only and is not exported.
 export type { CloudflareAdapterConfig } from "@koi/sandbox-cloudflare";
 export {
   computeDedupeFingerprint,

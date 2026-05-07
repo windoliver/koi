@@ -25,17 +25,38 @@ export type EdgeIntegrityVerification = "cached" | "strict" | "async";
 /**
  * Outcome of `EdgeFunctionInstance.destroy()`. Spec calls for "cancellation
  * honesty": destroy() reports whether the underlying provider artifact was
- * actually torn down, not just whether the local handle was released.
+ * actually torn down, not just whether the local handle was released. Kind
+ * names match the normative design doc verbatim:
  *
- * Structured union — operators must be able to distinguish a clean teardown
- * from a leaked artifact (orphaned provider deployment that may incur cost),
- * an indeterminate remote delete (network failed mid-call; provider state
- * unknown), or an in-flight invoke that may still execute remotely after
- * `destroy()` returned. The string union (`"destroyed"` etc.) is preserved
- * inside `kind` so `switch` exhaustiveness is unchanged.
+ *   - `destroyed-clean`: local handle released AND provider artifact deleted.
+ *   - `destroyed-local-remote-leaked`: local handle released, provider
+ *     artifact remained allocated. Operator must reconcile to avoid
+ *     orphan-cost.
+ *   - `destroyed-local-remote-uncertain`: remote teardown call failed mid-
+ *     flight; provider state is unknown.
+ *   - `destroyed-local-remote-indeterminate`: best-effort teardown completed
+ *     locally with a known in-flight invoke that may still execute remotely.
+ *   - `already-destroyed`: prior destroy() already cleared the artifact.
+ *   - `detached-only`: local handle released without attempting remote
+ *     teardown (e.g. attached to an external lifecycle).
  */
 export type EdgeDestroyOutcome =
-  | { readonly kind: "destroyed"; readonly providerArtifactId?: string }
+  | { readonly kind: "destroyed-clean"; readonly providerArtifactId?: string }
+  | {
+      readonly kind: "destroyed-local-remote-leaked";
+      readonly providerArtifactId: string;
+      readonly reason: string;
+    }
+  | {
+      readonly kind: "destroyed-local-remote-uncertain";
+      readonly providerArtifactId?: string;
+      readonly reason: string;
+    }
+  | {
+      readonly kind: "destroyed-local-remote-indeterminate";
+      readonly providerArtifactId?: string;
+      readonly inFlightRequestIds: readonly string[];
+    }
   | {
       readonly kind: "already-destroyed";
       readonly providerArtifactId?: string;
@@ -44,24 +65,6 @@ export type EdgeDestroyOutcome =
       readonly kind: "detached-only";
       readonly reason: string;
       readonly providerArtifactId?: string;
-    }
-  | {
-      /** Provider artifact remained allocated; operator must reconcile to avoid orphan-cost. */
-      readonly kind: "leaked";
-      readonly providerArtifactId: string;
-      readonly reason: string;
-    }
-  | {
-      /** Remote teardown call failed mid-flight; provider state is unknown. */
-      readonly kind: "uncertain";
-      readonly providerArtifactId?: string;
-      readonly reason: string;
-    }
-  | {
-      /** A concurrent invoke() may still execute remotely after destroy() returned. */
-      readonly kind: "in-flight";
-      readonly providerArtifactId?: string;
-      readonly inFlightRequestIds: readonly string[];
     };
 
 /**
