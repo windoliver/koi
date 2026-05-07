@@ -9,11 +9,20 @@ const invalidConfig = (message: string, field: string): KoiError => ({
   context: { field },
 });
 
+// Rejects ":" (dedupe key delimiter), any whitespace, and any control char.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional rejection
+const OWNER_ID_RESERVED_RE = /[:\s\x00-\x1f\x7f]/;
+
 /**
  * Reject empty/`"default"` `ownerId`, missing API token, missing DO namespace,
  * unknown integrity-verification mode. v1 admits ONLY workloadClass `"A"` —
  * the workload class is validated at `create()` against the per-call config,
  * not here.
+ *
+ * `ownerId` is also rejected if it contains the dedupe key delimiter (`:`),
+ * any whitespace, or any control character — the dedupe key is built as
+ * `${ownerId}:${operationId}` and unrestricted ownerIds would let distinct
+ * (ownerId, operationId) pairs alias the same DO key (cross-tenant collision).
  */
 export const validateCloudflareAdapterConfig = (
   config: CloudflareAdapterConfig,
@@ -35,6 +44,15 @@ export const validateCloudflareAdapterConfig = (
     return {
       ok: false,
       error: invalidConfig('ownerId "default" is reserved', "ownerId"),
+    };
+  }
+  if (OWNER_ID_RESERVED_RE.test(ownerId)) {
+    return {
+      ok: false,
+      error: invalidConfig(
+        'ownerId must not contain ":", whitespace, or control characters',
+        "ownerId",
+      ),
     };
   }
   if (config.dedupeDurableObjectNamespaceId.trim().length === 0) {

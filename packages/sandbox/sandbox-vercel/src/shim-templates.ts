@@ -113,8 +113,10 @@ export default {
 
 export const HANDLER_RUNNER_SHIM_SOURCE: string = `// koi-handler-runner (Worker B) — generated, do not edit.
 // Holds verify key only (KOI_PAIR_VERIFY_KEY_PEM). NO KV credentials.
-// Runtime fence is prepended at deploy time.
-import handler from "./handler.js";
+// Runtime fence is prepended at deploy time and runs at module top before
+// any operator code is loaded. The operator handler is imported LAZILY via
+// dynamic import inside the request handler — its top-level code cannot
+// execute before the fence is installed.
 
 const HEADER_OUTCOME = "X-Koi-Handler-Outcome";
 const HEADER_SIG = "X-Koi-Signature";
@@ -156,6 +158,12 @@ const failPermanent = (error) => new Response(JSON.stringify({ error }), { statu
 
 const koi = { success, failPermanent };
 
+let handlerPromise = null;
+const loadHandler = () => {
+  if (handlerPromise === null) handlerPromise = import("./handler.js").then((m) => m.default);
+  return handlerPromise;
+};
+
 export default {
   async fetch(req) {
     const sig = req.headers.get(HEADER_SIG);
@@ -182,6 +190,7 @@ export default {
     try { body = JSON.parse(bodyText); } catch (_e) { return new Response(JSON.stringify({ error: "INVALID_BODY" }), { status: 400 }); }
     const { payload, operationId, requestId: rid } = body || {};
     try {
+      const handler = await loadHandler();
       const result = await handler({ payload, operationId, requestId: rid, koi });
       if (result instanceof Response) return result;
       return success(result);

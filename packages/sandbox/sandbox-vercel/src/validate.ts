@@ -9,6 +9,10 @@ const invalidConfig = (message: string, field: string): KoiError => ({
   context: { field },
 });
 
+// Rejects ":" (KV key delimiter), any whitespace, and any control char.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional rejection
+const OWNER_ID_RESERVED_RE = /[:\s\x00-\x1f\x7f]/;
+
 export const validateVercelAdapterConfig = (
   config: VercelAdapterConfig,
 ): Result<VercelAdapterConfig> => {
@@ -27,6 +31,15 @@ export const validateVercelAdapterConfig = (
   }
   if (ownerId === "default") {
     return { ok: false, error: invalidConfig('ownerId "default" is reserved', "ownerId") };
+  }
+  if (OWNER_ID_RESERVED_RE.test(ownerId)) {
+    return {
+      ok: false,
+      error: invalidConfig(
+        'ownerId must not contain ":", whitespace, or control characters',
+        "ownerId",
+      ),
+    };
   }
   if (
     config.integrityVerification !== undefined &&

@@ -31,8 +31,10 @@ describe("GATEWAY_SHIM_SOURCE", () => {
 });
 
 describe("HANDLER_RUNNER_SHIM_SOURCE", () => {
-  it("imports the operator handler from a static specifier", () => {
-    expect(HANDLER_RUNNER_SHIM_SOURCE).toContain('import handler from "./handler.js"');
+  it("loads the operator handler via dynamic import (deferred until after fence install)", () => {
+    expect(HANDLER_RUNNER_SHIM_SOURCE).not.toContain('import handler from "./handler.js"');
+    expect(HANDLER_RUNNER_SHIM_SOURCE).toContain('import("./handler.js")');
+    expect(HANDLER_RUNNER_SHIM_SOURCE).toContain("loadHandler");
   });
 
   it("exposes a `koi.failPermanent` helper that sets the outcome header", () => {

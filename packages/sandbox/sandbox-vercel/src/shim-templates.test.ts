@@ -26,6 +26,12 @@ describe("shim-templates", () => {
     expect(HANDLER_RUNNER_SHIM_SOURCE).not.toContain("KOI_KV_URL");
   });
 
+  it("handler runner loads the operator via dynamic import (deferred until after fence install)", () => {
+    expect(HANDLER_RUNNER_SHIM_SOURCE).not.toContain('import handler from "./handler.js"');
+    expect(HANDLER_RUNNER_SHIM_SOURCE).toContain('import("./handler.js")');
+    expect(HANDLER_RUNNER_SHIM_SOURCE).toContain("loadHandler");
+  });
+
   it("handler runner enforces a timestamp skew tolerance", () => {
     expect(HANDLER_RUNNER_SHIM_SOURCE).toContain("SKEW_TOLERANCE_SEC");
     expect(HANDLER_RUNNER_SHIM_SOURCE).toContain("STALE_REQUEST");

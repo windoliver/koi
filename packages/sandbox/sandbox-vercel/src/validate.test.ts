@@ -32,6 +32,21 @@ describe("validateVercelAdapterConfig", () => {
     expect(r.error.code).toBe("INVALID_CONFIG");
   });
 
+  it("rejects ownerId containing the KV-key delimiter ':'", () => {
+    const r = validateVercelAdapterConfig({ ...base, ownerId: "acme:rogue" });
+    expect(r.ok).toBe(false);
+  });
+
+  it("rejects whitespace-only ownerId", () => {
+    const r = validateVercelAdapterConfig({ ...base, ownerId: "   " });
+    expect(r.ok).toBe(false);
+  });
+
+  it("rejects ownerId containing a control character", () => {
+    const r = validateVercelAdapterConfig({ ...base, ownerId: "acme\x00rogue" });
+    expect(r.ok).toBe(false);
+  });
+
   it("rejects empty ownerId", () => {
     const r = validateVercelAdapterConfig({ ...base, ownerId: "" });
     expect(r.ok).toBe(false);

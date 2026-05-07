@@ -82,10 +82,10 @@ export default {
 
 export const HANDLER_RUNNER_SHIM_SOURCE: string = `// koi-handler-runner (Worker B) — generated, do not edit.
 // Receives invoke from Worker A via Service Binding. NO dedupe credentials.
-// Runtime fence is prepended at deploy time (see runtime-fence.ts).
-// Operator handler is bundled below as the default export of "./handler.js".
-import handler from "./handler.js";
-
+// Runtime fence is prepended at deploy time (see runtime-fence.ts) and runs
+// at module top before any operator code is loaded. The operator handler is
+// imported LAZILY via dynamic import inside the request handler so its
+// top-level code cannot execute before the fence is installed.
 const HEADER_OUTCOME = "X-Koi-Handler-Outcome";
 
 const success = (value) => new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
@@ -93,12 +93,19 @@ const failPermanent = (error) => new Response(JSON.stringify({ error }), { statu
 
 const koi = { success, failPermanent };
 
+let handlerPromise = null;
+const loadHandler = () => {
+  if (handlerPromise === null) handlerPromise = import("./handler.js").then((m) => m.default);
+  return handlerPromise;
+};
+
 export default {
   async fetch(req) {
     let body;
     try { body = await req.json(); } catch (_e) { return new Response(JSON.stringify({ error: "INVALID_BODY" }), { status: 400 }); }
     const { payload, operationId, requestId } = body || {};
     try {
+      const handler = await loadHandler();
       const result = await handler({ payload, operationId, requestId, koi });
       // If the handler itself constructed a Response (e.g. via koi.failPermanent), forward it verbatim.
       if (result instanceof Response) return result;

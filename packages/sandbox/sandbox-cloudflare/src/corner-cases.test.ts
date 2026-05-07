@@ -18,16 +18,20 @@ const baseConfig: CloudflareAdapterConfig = {
 describe("validate — corner cases", () => {
   // The dedupe key is `${ownerId}:${operationId}`. An ownerId containing `:`
   // would alias `acme:foo` (op `bar`) with `acme` (op `foo:bar`) — silent
-  // cross-tenant collision. Spec: ownerId is "non-empty" + reserves "default"
-  // but does NOT mention `:`. Documenting the gap loudly.
-  it("currently ACCEPTS ownerId with a colon — known gap, see comment", () => {
+  // cross-tenant collision. The validator now rejects `:` in ownerId.
+  it("rejects ownerId containing the dedupe-key delimiter ':'", () => {
     const r = validateCloudflareAdapterConfig({ ...baseConfig, ownerId: "acme:rogue" });
-    expect(r.ok).toBe(true);
+    expect(r.ok).toBe(false);
   });
 
-  it("accepts whitespace-only ownerId today (another known gap; spec only forbids empty)", () => {
+  it("rejects whitespace-only ownerId", () => {
     const r = validateCloudflareAdapterConfig({ ...baseConfig, ownerId: "   " });
-    expect(r.ok).toBe(true);
+    expect(r.ok).toBe(false);
+  });
+
+  it("rejects ownerId containing a control character", () => {
+    const r = validateCloudflareAdapterConfig({ ...baseConfig, ownerId: "acme\x00rogue" });
+    expect(r.ok).toBe(false);
   });
 
   it("rejects whitespace-only accountId via the trim() check", () => {

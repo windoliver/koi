@@ -1,5 +1,6 @@
 import type { Result } from "@koi/core";
 
+import { scanWasmSections } from "./section-scan.js";
 import type { WasmCall, WasmError, WasmExecuteOptions, WasmExecutor, WasmResult } from "./types.js";
 
 const WASM_MAGIC = Object.freeze([0x00, 0x61, 0x73, 0x6d]); // \0asm
@@ -70,6 +71,45 @@ export const createWasmExecutor = (): WasmExecutor => {
     }
     if (!WebAssembly.validate(moduleBytes)) {
       return fail("VALIDATION", "WebAssembly.validate() rejected the module", startedAtMs);
+    }
+
+    // Pre-compilation structural scan — enforces the resource-safety invariants
+    // the host page cap can't enforce post-instantiation (internal memory bypass,
+    // internal table bypass, missing imported memory when a cap is requested).
+    const scan = scanWasmSections(moduleBytes);
+    if (!scan.ok) {
+      return fail("VALIDATION", `wasm section scan failed: ${scan.error.kind}`, startedAtMs);
+    }
+    if (scan.value.hasInternalMemory) {
+      return fail(
+        "VALIDATION",
+        "module declares an internal memory section; memory must be imported from the host",
+        startedAtMs,
+      );
+    }
+    if (scan.value.hasInternalTable) {
+      return fail(
+        "VALIDATION",
+        "module declares an internal table section; tables must be imported from the host",
+        startedAtMs,
+      );
+    }
+    if (options?.maxMemoryPages !== undefined) {
+      if (scan.value.importedMemoryCount === 0) {
+        return fail(
+          "VALIDATION",
+          "maxMemoryPages requires the module to import memory from the host",
+          startedAtMs,
+        );
+      }
+      const declared = scan.value.importedMemoryLimits;
+      if (declared !== undefined && declared.min > options.maxMemoryPages) {
+        return fail(
+          "OOM",
+          `imported memory minimum ${declared.min} pages exceeds maxMemoryPages=${options.maxMemoryPages}`,
+          startedAtMs,
+        );
+      }
     }
 
     let mod: WebAssembly.Module;
