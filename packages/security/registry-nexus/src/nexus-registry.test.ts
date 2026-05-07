@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { agentId, type RegistryEntry } from "@koi/core";
+import { agentId, type RegistryEntry, zoneId } from "@koi/core";
 import { createNexusRegistry } from "./nexus-registry.js";
 import { createMockTransport, type MockTransport } from "./test-helpers.js";
 
@@ -173,6 +173,20 @@ describe("createNexusRegistry — register", () => {
       }),
     );
     expect(result.status.phase).toBe("waiting");
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("persists config.zoneId into local projection when entry.zoneId is undefined", async () => {
+    transport.stub("agent_list_by_zone", async () => ({ ok: true, value: [] }));
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({
+      transport,
+      pollIntervalMs: 0,
+      zoneId: "zone-default",
+    });
+    await registry.register(makeEntry("a1"));
+    const stored = await Promise.resolve(registry.lookup(agentId("a1")));
+    expect(stored?.zoneId).toBe(zoneId("zone-default"));
     await registry[Symbol.asyncDispose]();
   });
 

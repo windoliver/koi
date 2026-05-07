@@ -458,10 +458,18 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     // (agentType, registeredAt, parent/spawner/group) or lifecycle
     // markers (koi:status, koi:terminated) when rebuilding the outbound
     // metadata from `current.metadata`.
+    // Persist the effective zoneId used in the Nexus write. Without this
+    // a registration that picked up `config.zoneId` (because entry.zoneId
+    // was undefined) would create a split-brain projection: Nexus has the
+    // agent in a zone, local mirror reports zoneId=undefined, and
+    // list({ zoneId }) / zone-scoped schedulers would miss it.
+    const effectiveZoneId =
+      entry.zoneId ?? (config.zoneId !== undefined ? zoneId(config.zoneId) : undefined);
     const stored: RegistryEntry = {
       ...entry,
       status: canonicalStatus,
       metadata: canonicalMerged,
+      ...(effectiveZoneId !== undefined ? { zoneId: effectiveZoneId } : {}),
     };
     projection.set(entry.agentId, stored);
     nexusGens.set(entry.agentId, currentNexusGen);
