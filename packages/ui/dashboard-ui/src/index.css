@@ -1,0 +1,53 @@
+:root {
+  color: #d9e2ec;
+  background: linear-gradient(180deg, #08111f 0%, #10233d 100%);
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.dashboard-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 2rem;
+}
+
+.dashboard-card {
+  width: min(100%, 32rem);
+  padding: 2rem;
+  border: 1px solid rgba(217, 226, 236, 0.18);
+  border-radius: 1.25rem;
+  background: rgba(8, 17, 31, 0.7);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+}
+
+.dashboard-eyebrow {
+  margin: 0 0 0.75rem;
+  color: #9fb3c8;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.dashboard-card h1 {
+  margin: 0;
+  font-size: clamp(2rem, 4vw, 2.75rem);
+  line-height: 1.1;
+}
+
+.dashboard-copy {
+  margin: 0.75rem 0 0;
+  color: #bcccdc;
+  font-size: 1rem;
+  line-height: 1.5;
+}
