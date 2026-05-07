@@ -77,6 +77,31 @@ export async function* createLineReader(
 
       buffer += decoder.decode(value, { stream: true });
 
+      if (!dropping && encoder.encode(buffer).byteLength > maxLineBytes) {
+        const prefix = clampPrefix(buffer, maxLineBytes);
+        const { emitted, stop } = emitLine(prefix);
+        if (emitted !== undefined) {
+          yield emitted;
+        }
+        if (stop) {
+          return;
+        }
+
+        buffer = buffer.slice(prefix.length);
+        dropping = true;
+      }
+
+      if (dropping) {
+        const newlineIndex = buffer.indexOf("\n");
+        if (newlineIndex === -1) {
+          buffer = "";
+          continue;
+        }
+
+        buffer = buffer.slice(newlineIndex + 1);
+        dropping = false;
+      }
+
       while (true) {
         const newlineIndex = buffer.indexOf("\n");
         if (newlineIndex === -1) {
@@ -99,13 +124,6 @@ export async function* createLineReader(
         if (stop) {
           return;
         }
-      }
-
-      if (!dropping && encoder.encode(buffer).byteLength > maxLineBytes) {
-        dropping = true;
-        buffer = "";
-      } else if (dropping) {
-        buffer = "";
       }
     }
   } finally {
