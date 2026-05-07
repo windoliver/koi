@@ -358,15 +358,26 @@ describe("classifyCommand", () => {
     expect(pipeline.matchedPatterns.map((p) => p.id)).toContain("curl-pipe-shell");
   });
 
-  test("deep wrapper chains stay fast enough to avoid policy hot-path regressions", () => {
+  test("deep wrapper chains scale linearly enough to avoid policy hot-path regressions", () => {
     // Coarse regression guard against reintroducing quadratic wrapper peeling.
+    // Use a scaling check instead of a fixed wall-clock cutoff so slower CI
+    // runners do not fail a linear implementation under load.
+    const medium = `${Array(5_000).fill("env").join(" ")} sudo rm`;
     const deep = `${Array(20_000).fill("env").join(" ")} sudo rm`;
+
+    classifyCommand(medium);
     classifyCommand(deep);
-    const start = performance.now();
+
+    const mediumStart = performance.now();
+    classifyCommand(medium);
+    const mediumDurationMs = performance.now() - mediumStart;
+
+    const deepStart = performance.now();
     const result = classifyCommand(deep);
-    const durationMs = performance.now() - start;
+    const deepDurationMs = performance.now() - deepStart;
+
     expect(result.prefix).toBe("sudo");
     expect(result.severity).toBe("medium");
-    expect(durationMs).toBeLessThan(150);
+    expect(deepDurationMs).toBeLessThan(Math.max(750, mediumDurationMs * 8));
   });
 });

@@ -6,6 +6,11 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **Review-finding sync for TUI internals (#2139)**: no CLI command, flag, or
+  dependency changes. The TUI command registry comments now describe the
+  implemented command surface rather than parity aspirations, and clipboard
+  image tests use an internal platform override instead of probing host tools.
+
 - **fs_semantic_search wiring (#1319)**: `buildCoreProviders` in `shared-wiring.ts` now auto-exposes the new `fs_semantic_search` builtin tool whenever the active `FileSystemBackend` advertises a `semanticSearch` method (Nexus backends with the embedding bridge do; the default local backend does not). The same change tightens read-surface gating: `fs_semantic_search` and `Grep` are dropped from `builtin-search` whenever `manifest.filesystem.operations` omits `read`, closing a back-door content-read path that survived the `fs_*` tool gate. `Glob` and `ToolSearch` (path/name only, no content reads) remain regardless. No CLI flags or manifest-key changes — gating piggybacks on the existing `filesystemOperations` contract.
 
 - **`@koi/daemon` tmux worker backend (#1870)**: `koi bg` commands now transparently dispatch across both subprocess and tmux backends. `bg ps`/`bg logs`/`bg kill` resolve worker records from `FileSessionRegistry` (keyed by `WorkerId`) and route lifecycle ops to whichever backend owns each session — `backendKind: "tmux"` records flow through tmux session create/list/kill while existing `subprocess` records keep the legacy `process.kill` path. CLI args, output schemas, and the `KOI_BG_ATTACHED_*` env contract are unchanged; the new backend is selected per-session by the supervisor wiring layer (`wire-daemon-supervisor.ts`), not via CLI flags. See `docs/L2/daemon.md` for the backend selection contract.

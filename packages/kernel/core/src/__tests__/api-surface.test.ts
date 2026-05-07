@@ -42,6 +42,7 @@ function normalizeDtsSurface(dts: string): string {
       // without changing public API. Collapse hashed chunk module names so
       // snapshots track exported names and signatures, not rollup internals.
       .replace(/from '\.\/[a-z-]+-HASH\.(js|d\.ts)'/g, "from './chunk-HASH.$1'")
+      .replace(/import '\.\/[a-z-]+-HASH\.(js|d\.ts)';/g, "import './chunk-HASH.$1';")
       // Rollup-generated local symbol aliases are unstable across build paths.
       .replace(
         /\b(import|export) \{([^}]+)\} from/g,
@@ -54,6 +55,26 @@ function normalizeDtsSurface(dts: string): string {
       )
   );
 }
+
+describe("normalizeDtsSurface", () => {
+  test("collapses hashed side-effect chunk imports", () => {
+    expect(
+      normalizeDtsSurface(
+        [
+          "import { TaskableAgent } from './agent-definition-AbCd1234.js';",
+          "import './governance-AbCd1234.js';",
+          "import './errors.js';",
+        ].join("\n"),
+      ),
+    ).toBe(
+      [
+        "import { TaskableAgent } from './chunk-HASH.js';",
+        "import './chunk-HASH.js';",
+        "import './errors.js';",
+      ].join("\n"),
+    );
+  });
+});
 
 describe("@koi/core API surface", () => {
   test("package.json has at least one export entry", () => {
