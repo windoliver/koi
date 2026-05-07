@@ -185,7 +185,7 @@ Each line shows package name, package description, test-file count, and any exis
 - `@koi/federation` (packages/ipc/federation) - Coordinate multi-zone agents with vector clock sync and conflict resolution. Tests: 14. Docs: docs/L2/federation.md.
 - `@koi/handoff` (packages/ipc/handoff) - Relay typed context between agents via structured handoff tools and middleware. Tests: 12. Docs: docs/L2/handoff.md.
 - `@koi/ipc-local` (packages/ipc/ipc-local) - Route messages between in-process agents using in-memory mailbox dispatch. Tests: 3.
-- `@koi/ipc-nexus` (packages/ipc/ipc-nexus) - Enable agent messaging via Nexus REST API with subscriptions and inbox listing. Tests: 13. Docs: docs/L2/ipc-nexus.md.
+- `@koi/ipc-nexus` (packages/lib/ipc-nexus) - Route agent messages through Nexus transport with polling-based inbox delivery and optional fallback to another MailboxComponent. Tests: 5. Docs: docs/L2/ipc-nexus.md.
 - `@koi/scratchpad-local` (packages/ipc/scratchpad-local) - Store versioned files with CAS and TTL in in-memory scratchpad. Tests: 2.
 - `@koi/scratchpad-nexus` (packages/ipc/scratchpad-nexus) - Persist agent scratchpad state across zones via Nexus group-scoped storage. Tests: 4. Docs: docs/L2/scratchpad-nexus.md.
 - `@koi/task-spawn` (packages/ipc/task-spawn) - Inject task tool for zero-friction delegation to pre-registered subagent types. Tests: 16. Docs: docs/L2/task-spawn.md.

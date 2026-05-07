@@ -1,595 +1,66 @@
-# @koi/ipc-nexus — Agent-to-Agent Messaging via Nexus IPC
+# @koi/ipc-nexus
 
-Agent-to-agent messaging through a central REST mailbox. Any Koi agent can send messages to any other agent — the LLM decides when to communicate using `ipc_send`, `ipc_list`, and `ipc_discover` tools.
+**Layer:** L2  
+**Package:** `packages/lib/ipc-nexus`
 
-## Why
+`@koi/ipc-nexus` provides a Nexus-backed `MailboxComponent` for cross-node agent messaging.
 
-Agents working in a swarm need to coordinate — request code reviews, broadcast build results, delegate subtasks. Without IPC, agents are isolated:
+This v2 implementation is intentionally small and transport-centered:
 
-```
-Agent A ──(works alone)──► done
-Agent B ──(works alone)──► done     ← no coordination, duplicated effort
-Agent C ──(works alone)──► done
-```
+- it builds on `NexusTransport` from `@koi/nexus-client`
+- it implements the `MailboxComponent` contract from `@koi/core`
+- it uses polling for inbox delivery in the first pass
+- it supports explicit fallback to another `MailboxComponent` when Nexus is unavailable
 
-With `@koi/ipc-nexus`, agents talk to each other through a shared mailbox:
-
-```
-Agent A ──ipc_send("review this")──► Nexus ──► Agent B (reviewer)
-Agent B ──ipc_send("approved")─────► Nexus ──► Agent A
-Agent A ──ipc_send("deploy")───────► Nexus ──► Agent C (deployer)
-```
-
-## Use Cases
-
-### Autonomous CI Pipeline
-
-An orchestrator delegates tasks to specialist agents, aggregates results, and ships — zero human coordination:
-
-```
-  Human: "Ship feature X"
-         │
-         ▼
-  ┌──────────────┐
-  │ Orchestrator  │  "I'll coordinate the team"
-  └──────┬───────┘
-         │  Fan-out: 3 ipc_send(kind:"request") calls
-         │
-    ┌────┴────────────────┬──────────────────────┐
-    ▼                     ▼                      ▼
-┌──────────┐       ┌────────────┐         ┌────────────┐
-│  Coder   │       │ Test Runner│         │ Typechecker │
-│  Agent   │       │   Agent    │         │   Agent     │
-└────┬─────┘       └─────┬──────┘         └──────┬─────┘
-     │                   │                       │
-     │ "code ready"      │                       │
-     ├──────────────────▶│                       │
-     ├───────────────────┼──────────────────────▶│
-     │                   │                       │
-     │             runs tests               checks types
-     │                   │                       │
-     │  kind:"response"  │   kind:"response"     │
-     │  correlationId=X  │   correlationId=Y     │
-     │◀──────────────────┤                       │
-     │◀──────────────────┼───────────────────────┤
-     │
-     │  Orchestrator: ipc_list(kind:"response")
-     │  All 3 passed → ipc_send("deploy") to deployer
-     ▼
-┌──────────┐
-│ Deployer │
-│  Agent   │──── kind:"response" ────▶ Orchestrator
-└──────────┘
-
-  Orchestrator: "Feature X shipped. All checks passed."
-```
-
-### Peer Code Review
-
-Two agents collaborate: one writes code, the other reviews it:
-
-```
-┌─────────────┐                                     ┌─────────────┐
-│  Coder      │                                     │  Reviewer   │
-│  Agent      │                                     │  Agent      │
-│             │                                     │             │
-│ writes code │                                     │  idle...    │
-│ ...done     │                                     │             │
-│             │── kind:"request"  ──────────────────▶│             │
-│             │   type:"code-review"                │  reviews    │
-│             │   payload:{ file, diff }            │  the diff   │
-│             │                                     │  ...done    │
-│             │◀── kind:"response" ─────────────────│             │
-│             │    correlationId: <original-id>     │             │
-│             │    payload:{ approved: true }        │             │
-│  continues  │                                     │             │
-└─────────────┘                                     └─────────────┘
-```
-
-### Event-Driven Monitoring
-
-Agents broadcast status updates without expecting replies:
-
-```
-┌──────────┐   kind:"event"         ┌──────────────┐
-│ CI Agent │──type:"build-complete"─▶│ Deploy Agent │
-│          │  payload:{ success }    │  (listens)   │
-└──────────┘                        └──────┬───────┘
-                                           │
-     kind:"event"                          │  deploys if success
-     type:"deploy-complete"                │
-┌──────────────┐◀──────────────────────────┘
-│ Notification │
-│    Agent     │──── notifies Slack/email
-└──────────────┘
-
-  No responses. No correlation IDs. Fire-and-forget.
-```
-
-### Multi-Agent Debug Session
-
-An agent hits a bug it can't solve alone — it asks a specialist for help:
-
-```
-┌──────────────┐                              ┌──────────────┐
-│  Feature     │                              │  Debug       │
-│  Agent       │                              │  Specialist  │
-│              │                              │              │
-│ hits error   │                              │              │
-│ ...stuck     │                              │              │
-│              │── kind:"request" ───────────▶│              │
-│              │   type:"debug-help"          │ analyzes     │
-│              │   payload:{ error, stack,    │ the error    │
-│              │     file, context }          │ ...found fix │
-│              │                              │              │
-│              │◀── kind:"response" ──────────│              │
-│              │    payload:{ fix, patch }    │              │
-│ applies fix  │                              │              │
-│ continues    │                              │              │
-└──────────────┘                              └──────────────┘
-```
-
-## Architecture
-
-```
-L0  @koi/core          MailboxComponent + MAILBOX token + AgentMessage types
-L2  @koi/ipc-nexus     NexusClient + MailboxAdapter + ComponentProvider + tools
-```
-
-The mailbox is an **ECS component** attached to agents via a `ComponentProvider`. The provider registers `ipc_send` and `ipc_list` as agent-facing tools — the LLM calls them autonomously. When an `AgentRegistry` is provided, `ipc_discover` is also attached, enabling agents to find each other without hardcoded IDs.
-
-```
-┌───────────────────────────────────────────────────────────────┐
-│                     createKoi()                               │
-│   providers: [createIpcNexusProvider({ agentId, registry })]  │
-└────────────────────────┬──────────────────────────────────────┘
-                         │ attach()
-                         ▼
-                  ┌─────────────────────┐
-                  │   Agent             │
-                  │                     │
-                  │  MAILBOX            │◄── MailboxComponent (send/onMessage/list)
-                  │  tool:ipc_send      │◄── LLM-callable tool
-                  │  tool:ipc_list      │◄── LLM-callable tool
-                  │  tool:ipc_discover  │◄── LLM-callable tool (when registry provided)
-                  └──────┬──────────────┘
-                         │ HTTP
-                         ▼
-                  ┌──────────────┐
-                  │  Nexus IPC   │  Inbox per agent
-                  │  Server      │  REST API v2
-                  └──────────────┘
-```
-
-## Quick Start
+## API
 
 ```typescript
-import { createKoi } from "@koi/engine";
-import { createLoopAdapter } from "@koi/engine-loop";
-import { createIpcNexusProvider } from "@koi/ipc-nexus";
 import { agentId } from "@koi/core";
-import type { AgentRegistry } from "@koi/core";
-
-// 1. Create provider — attaches MAILBOX + tools
-//    Pass registry to also enable ipc_discover
-const provider = createIpcNexusProvider({
-  agentId: agentId("my-agent"),
-  nexusBaseUrl: "http://localhost:2026",
-  registry,  // optional — enables ipc_discover tool
-});
-
-// 2. Wire into runtime
-const runtime = await createKoi({
-  manifest: { name: "my-agent", version: "1.0.0", model: { name: "claude-haiku-4-5-20251001" } },
-  adapter: createLoopAdapter({ modelCall: handler, maxTurns: 10 }),
-  providers: [provider],
-});
-
-// 3. Agent can now send/receive messages via tools
-//    LLM sees ipc_send and ipc_list in its tool list
-const events = await collectEvents(
-  runtime.run({ kind: "text", text: "Send a code review request to reviewer-agent" }),
-);
-```
-
-The LLM will autonomously call `ipc_send` when it decides to communicate.
-
-## Message Flow
-
-```
-  Agent A calls ipc_send tool
-         │
-         ▼
-  ┌─────────────────┐
-  │ mapKoiToNexus() │  Koi "request" → Nexus "task"
-  │                 │  Koi "response" → Nexus "response"
-  │                 │  Koi "event"   → Nexus "event"
-  │                 │  Koi "cancel"  → Nexus "cancel"
-  └────────┬────────┘
-           │
-           ▼  POST /api/v2/ipc/send
-  ┌─────────────────┐     { from, to, kind, type, payload,
-  │  Nexus Server   │       correlationId?, ttlSeconds?,
-  │                 │       metadata? }
-  │  generates:     │
-  │  • UUID id      │     Response: NexusMessageEnvelope
-  │  • ISO timestamp│     { id, createdAt, ...request }
-  └────────┬────────┘
-           │  stored in recipient's inbox
-           ▼
-  Agent B notified via SSE push (or polls in fallback mode)
-           │  GET /api/v2/ipc/inbox/agent-b
-  ┌────────┴────────┐
-  │ mapNexusToKoi() │  Nexus "task" → Koi "request"
-  │ + deduplication │  seen-buffer ring (10K capacity)
-  └────────┬────────┘
-           │
-           ▼
-  handler(AgentMessage) ← Agent B's onMessage() fires
-```
-
-## Message Kinds
-
-| Kind | Purpose | Example |
-|------|---------|---------|
-| `"request"` | Ask another agent to do something | Code review, deploy, run tests |
-| `"response"` | Reply to a request (linked by `correlationId`) | Review approved, deploy succeeded |
-| `"event"` | Fire-and-forget notification | Build complete, status update |
-| `"cancel"` | Cancel a pending request | Abort deployment |
-
-## Patterns
-
-### Request-Response (Correlated)
-
-```typescript
-// Agent A sends a request
-const result = await mailbox.send({
-  from: agentId("agent-a"),
-  to: agentId("agent-b"),
-  kind: "request",
-  type: "code-review",
-  payload: { file: "auth.ts", diff: "..." },
-});
-
-// Agent B receives and responds with correlationId
-mailbox.onMessage(async (msg) => {
-  if (msg.kind === "request") {
-    await mailbox.send({
-      from: agentId("agent-b"),
-      to: msg.from,
-      kind: "response",
-      type: msg.type,
-      correlationId: msg.id,  // ← links response to request
-      payload: { approved: true },
-    });
-  }
-});
-```
-
-### Fan-Out (Orchestrator → Workers)
-
-```
-  ┌──────────────┐
-  │ Orchestrator  │
-  └──────┬───────┘
-         │  ipc_send × 3
-    ┌────┼────┐
-    ▼    ▼    ▼
-  ┌───┐┌───┐┌───┐
-  │ T ││ L ││ C │   T = test-runner, L = linter, C = typechecker
-  └─┬─┘└─┬─┘└─┬─┘
-    │    │    │  kind:"response", correlationId
-    └────┼────┘
-         ▼
-  ┌──────────────┐
-  │ Orchestrator  │  ipc_list(kind:"response")
-  │ aggregates    │  → all 3 passed → ship it
-  └──────────────┘
-```
-
-### Event Bus (Fire-and-Forget)
-
-```typescript
-// CI agent broadcasts build result
-await mailbox.send({
-  from: agentId("ci-agent"),
-  to: agentId("deploy-agent"),
-  kind: "event",
-  type: "build-complete",
-  payload: { success: true, buildId: "abc123" },
-  metadata: { source: "ci" },
-});
-// No response expected — fire and forget
-```
-
-## Direct Mailbox Usage
-
-For programmatic use outside the LLM tool loop:
-
-```typescript
+import { createHttpTransport } from "@koi/nexus-client";
 import { createNexusMailbox } from "@koi/ipc-nexus";
-import { agentId } from "@koi/core";
 
-const mailbox = createNexusMailbox({
-  agentId: agentId("my-agent"),
-  baseUrl: "http://localhost:2026",
-  delivery: "sse",        // "sse" (default) or "polling"
-  seenCapacity: 10_000,   // dedup ring buffer capacity (default: 10K)
-  pollMinMs: 1_000,       // min poll interval (fallback / polling mode)
-  pollMaxMs: 30_000,      // max poll interval (backoff ceiling)
-  pollMultiplier: 2,      // exponential backoff multiplier
-  pageLimit: 50,          // messages per poll page
+const transport = createHttpTransport({
+  url: "http://localhost:2026",
 });
 
-// Send
-const result = await mailbox.send({
-  from: agentId("my-agent"),
-  to: agentId("other-agent"),
-  kind: "request",
-  type: "task",
-  payload: { action: "review" },
+const mailbox = await createNexusMailbox({
+  agentId: agentId("agent-a"),
+  transport,
+  pollIntervalMs: 1_000,
+  pageSize: 50,
 });
-if (!result.ok) console.error(result.error.message);
-
-// Subscribe to incoming messages
-const unsubscribe = mailbox.onMessage((msg) => {
-  console.log(`Got ${msg.kind} from ${msg.from}: ${msg.type}`);
-});
-
-// Query inbox with filters
-const requests = await mailbox.list({ kind: "request", from: agentId("boss") });
-
-// Cleanup
-unsubscribe();
-mailbox[Symbol.dispose]();
 ```
 
-## Provider Configuration
+### `NexusMailboxConfig`
 
 ```typescript
-import { createIpcNexusProvider } from "@koi/ipc-nexus";
-
-const provider = createIpcNexusProvider({
-  agentId: agentId("my-agent"),        // required — agent's identity
-  nexusBaseUrl: "http://localhost:2026", // Nexus server URL
-  authToken: "Bearer ...",              // optional auth token
-  trustTier: "verified",               // tool trust tier (default: "verified")
-  prefix: "ipc",                       // tool name prefix (default: "ipc")
-  delivery: "sse",                     // "sse" (default) or "polling"
-  seenCapacity: 10_000,                // dedup ring buffer capacity
-  pollMinMs: 1_000,                    // min poll interval (fallback/polling)
-  pollMaxMs: 30_000,                   // max poll interval
-  pageLimit: 50,                       // messages per page
-  timeoutMs: 10_000,                   // HTTP timeout
-  operations: ["send", "list"],        // which tools to register (default: both)
-  registry,                            // optional — enables ipc_discover tool
-});
-```
-
-| Option | Default | Purpose |
-|--------|---------|---------|
-| `agentId` | — | Agent identity for inbox routing |
-| `nexusBaseUrl` | `http://localhost:2026` | Nexus IPC server URL |
-| `authToken` | `undefined` | Bearer token for authenticated Nexus |
-| `trustTier` | `"verified"` | Tool trust level |
-| `prefix` | `"ipc"` | Tool name prefix → `ipc_send`, `ipc_list` |
-| `delivery` | `"sse"` | Delivery mode: `"sse"` (push) or `"polling"` (pull) |
-| `seenCapacity` | `10000` | Deduplication ring buffer capacity |
-| `pollMinMs` | `1000` | Minimum polling interval (ms) |
-| `pollMaxMs` | `30000` | Maximum polling interval after backoff |
-| `pageLimit` | `50` | Messages fetched per poll cycle |
-| `timeoutMs` | `10000` | HTTP request timeout |
-| `operations` | `["send", "list"]` | Which tools to expose |
-| `registry` | `undefined` | `AgentRegistry` instance — enables `ipc_discover` tool |
-
-## Nexus REST API
-
-The client targets these 4 endpoints:
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/v2/ipc/send` | POST | Send a message to another agent's inbox |
-| `/api/v2/ipc/inbox/{agentId}` | GET | List messages in an agent's inbox |
-| `/api/v2/ipc/inbox/{agentId}/count` | GET | Count messages in inbox |
-| `/api/v2/ipc/provision/{agentId}` | POST | Create an empty inbox (204) |
-
-Query parameters for inbox listing: `limit` (page size), `offset` (pagination).
-
-## Message Delivery
-
-The mailbox supports two delivery modes: **SSE** (default) and **polling fallback**.
-
-### SSE Mode (Default)
-
-Server-Sent Events provide near-instant message delivery (~10ms latency vs 1-30s polling):
-
-```
-                    SSE Mode
-                    ────────
-Nexus Server ──SSE push──► sse-transport ──notification──► mailbox-adapter
-                                                                │
-                           nexus-client ◄──HTTP GET inbox───────┘
-                                │
-                          process-inbox → seen-buffer → handlers
-```
-
-1. When the first `onMessage` handler is registered, the adapter opens an SSE connection to `GET /api/v2/events/stream`
-2. The Nexus server pushes `ipc.inbox.*` events over the stream
-3. On each event, the adapter fetches the inbox via REST and dispatches new messages
-4. If SSE fails to connect within 2 seconds, it falls back to polling automatically
-5. The SSE transport handles reconnection with exponential backoff internally
-
-### Polling Mode (Fallback)
-
-```
-                    Polling Mode
-                    ────────────
-                           nexus-client ◄──HTTP GET inbox (on timer)──┐
-                                │                                      │
-                          process-inbox → seen-buffer → handlers      │
-                                                                       │
-                           mailbox-adapter ──setTimeout backoff────────┘
-```
-
-```
-  onMessage() registered
-       │
-       ▼
-  Start polling at pollMinMs (1s)
-       │
-       ├── messages found → reset to pollMinMs
-       │
-       └── no messages → interval × pollMultiplier
-                          │
-                          ▼
-                   capped at pollMaxMs (30s)
-```
-
-### Shared Behavior (Both Modes)
-
-- Delivery starts when the first handler is registered
-- Delivery stops when the last handler is unsubscribed
-- Each message is delivered exactly once (deduplication via bounded ring buffer)
-- Handler errors are swallowed — one broken handler cannot crash the delivery loop
-- The ring buffer caps memory at ~400KB (default 10K message IDs)
-
-## Error Handling
-
-`send()` returns `Result<AgentMessage, KoiError>` — never throws:
-
-| HTTP Status | Error Code | Retryable |
-|-------------|-----------|-----------|
-| 404 | `NOT_FOUND` | No |
-| 429 | `RATE_LIMIT` | Yes |
-| 408, 504 | `TIMEOUT` | Yes |
-| 500+ | `EXTERNAL` | Yes |
-| Network error | `EXTERNAL` | Depends |
-
-```typescript
-const result = await mailbox.send(message);
-if (!result.ok) {
-  if (result.error.retryable) {
-    // safe to retry
-  }
-  console.error(result.error.message);
+interface NexusMailboxConfig {
+  readonly agentId: AgentId;
+  readonly transport: NexusTransport;
+  readonly fallback?: MailboxComponent | undefined;
+  readonly inboxMethodPrefix?: string | undefined;
+  readonly pollIntervalMs?: number | undefined;
+  readonly pageSize?: number | undefined;
 }
 ```
 
-## Tools
+## Behavior
 
-### `ipc_send`
+- `send(message)` sends an `AgentMessageInput` through Nexus RPC and returns a fully populated `AgentMessage`
+- `list(filter)` lists inbox messages for the configured agent and applies the standard `MessageFilter`
+- `onMessage(handler)` starts polling and dispatches unseen messages to subscribers
+- `drain()` returns the locally seen message buffer and clears it
 
-Sends a message to another agent's mailbox.
+## Fallback
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `from` | string | yes | Sender agent ID |
-| `to` | string | yes | Recipient agent ID |
-| `kind` | string | yes | `request`, `response`, `event`, or `cancel` |
-| `type` | string | yes | Application-level message type |
-| `payload` | object | yes | Message payload |
-| `correlationId` | string | no | Links response to originating request |
-| `ttlSeconds` | number | no | Time-to-live in seconds |
-| `metadata` | object | no | Routing hints, tracing context |
+Fallback is explicit and injected through `config.fallback`.
 
-### `ipc_list`
+- if `transport.health()` fails during creation and a fallback exists, `createNexusMailbox()` returns the fallback mailbox
+- if startup health passes but a later `send()` or `list()` call fails, the mailbox degrades to the fallback for subsequent operations
+- if no fallback is configured, Nexus errors surface through the normal `MailboxComponent` return path
 
-Lists messages in the agent's inbox with optional filtering.
+## Design Notes
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `kind` | string | no | Filter by message kind |
-| `type` | string | no | Filter by message type |
-| `from` | string | no | Filter by sender |
-| `limit` | number | no | Maximum messages to return |
-
-### `ipc_discover`
-
-Lists live agents available for messaging. Only attached when `registry` is provided in the provider config. Enables agents to discover each other dynamically instead of relying on hardcoded agent IDs.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `agentType` | string | no | Filter by agent type: `"copilot"` or `"worker"` |
-| `phase` | string | no | Filter by process state: `"created"`, `"running"`, `"waiting"`, `"suspended"`, or `"terminated"`. Defaults to `"running"` |
-
-Returns `{ agents: [{ agentId, agentType, phase, registeredAt }] }`.
-
-```
-  Agent: "Who can I send a code review to?"
-         │
-         ▼  ipc_discover({ agentType: "worker" })
-  ┌──────────────┐
-  │ AgentRegistry│  list({ phase: "running", agentType: "worker" })
-  │              │  → [{ agentId: "reviewer-1", ... }]
-  └──────────────┘
-         │
-         ▼
-  Agent: "Found reviewer-1. Sending review request."
-         │
-         ▼  ipc_send({ to: "reviewer-1", kind: "request", ... })
-```
-
-## L0 Types (in @koi/core)
-
-```typescript
-// Branded message ID
-type MessageId = string & { readonly [__messageBrand]: "MessageId" };
-
-// Message kinds
-type MessageKind = "request" | "response" | "event" | "cancel";
-
-// Full message envelope (received)
-interface AgentMessage {
-  readonly id: MessageId;
-  readonly from: AgentId;
-  readonly to: AgentId;
-  readonly kind: MessageKind;
-  readonly correlationId?: MessageId;
-  readonly createdAt: string;
-  readonly ttlSeconds?: number;
-  readonly type: string;
-  readonly payload: JsonObject;
-  readonly metadata?: JsonObject;
-}
-
-// Message input (id + createdAt generated by backend)
-type AgentMessageInput = Omit<AgentMessage, "id" | "createdAt">;
-
-// ECS component
-interface MailboxComponent {
-  readonly send: (message: AgentMessageInput) => Promise<Result<AgentMessage, KoiError>>;
-  readonly onMessage: (handler: (message: AgentMessage) => void | Promise<void>) => () => void;
-  readonly list: (filter?: MessageFilter) => readonly AgentMessage[] | Promise<readonly AgentMessage[]>;
-}
-
-// Well-known token
-const MAILBOX: SubsystemToken<MailboxComponent>;
-```
-
-## Public API
-
-| Export | Type | Purpose |
-|--------|------|---------|
-| `createNexusMailbox` | Factory | Creates a `MailboxComponent` backed by Nexus REST |
-| `createIpcNexusProvider` | Factory | Creates a `ComponentProvider` (MAILBOX + tools) |
-| `createDiscoverTool` | Factory | Creates `ipc_discover` tool (advanced usage) |
-| `createSendTool` | Factory | Creates `ipc_send` tool (advanced usage) |
-| `createListTool` | Factory | Creates `ipc_list` tool (advanced usage) |
-| `NexusMailboxConfig` | Interface | Config for `createNexusMailbox` |
-| `IpcNexusProviderConfig` | Interface | Config for `createIpcNexusProvider` |
-| `DeliveryMode` | Type | `"sse" \| "polling"` |
-| `SseEvent` | Interface | Parsed SSE event (id, event, data, retry) |
-| `IpcOperation` | Type | `"send" \| "list"` |
-| `DEFAULT_DELIVERY_MODE` | Const | `"sse"` |
-| `DEFAULT_PREFIX` | Const | `"ipc"` |
-| `OPERATIONS` | Const | `["send", "list"]` |
-
-## Related
-
-- Issue #192 — Original implementation issue
-- Issue #608 — `ipc_discover` tool for agent discovery
-- Issue #618 — SSE push delivery upgrade
-- Issue #193 — `@koi/registry-nexus` (agent discovery)
-- Issue #397 — `@koi/events-nexus` (event sourcing)
-- `@koi/core` `mailbox.ts` — L0 types
-- `docs/service-provider.md` — `createServiceProvider` pattern used internally
+- This first v2 slice does **not** restore the archive-era SSE delivery path
+- The RPC method names are isolated behind a small client module so transport mapping can evolve without changing callers
+- The package focuses on contract parity with `MailboxComponent`, not on full v1 feature parity

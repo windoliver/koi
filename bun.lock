@@ -665,6 +665,14 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/ipc-nexus": {
+      "name": "@koi/ipc-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+    },
     "packages/lib/long-running": {
       "name": "@koi/long-running",
       "version": "0.0.0",
@@ -2632,6 +2640,8 @@
     "@koi/hooks": ["@koi/hooks@workspace:packages/lib/hooks"],
 
     "@koi/ipc-local": ["@koi/ipc-local@workspace:packages/lib/ipc-local"],
+
+    "@koi/ipc-nexus": ["@koi/ipc-nexus@workspace:packages/lib/ipc-nexus"],
 
     "@koi/long-running": ["@koi/long-running@workspace:packages/lib/long-running"],
 
