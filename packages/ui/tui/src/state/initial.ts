@@ -62,5 +62,17 @@ export function createInitialState(modelName = ""): TuiState {
       securityFindings: [],
     },
     toasts: [],
+    supervisor: {
+      attached: false,
+      status: { kind: "detached" },
+      health: null,
+      events: [],
+    },
+    bg: {
+      rows: [],
+      registryStatus: { kind: "live" },
+      tailingWorkerId: null,
+      killConfirm: null,
+    },
   };
 }

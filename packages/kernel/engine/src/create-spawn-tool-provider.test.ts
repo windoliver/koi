@@ -298,9 +298,20 @@ describe("createSpawnToolProvider", () => {
     const result = (await execute({
       agentName: "test-agent",
       description: "test task",
-    })) as { output: string };
+    })) as {
+      output: string;
+      agentName: string;
+      workerId: string;
+      isolation: string;
+      backendKind: string;
+    };
 
     expect(result.output).toBe("executor-test-output");
+    // Issue 1944: enriched result fields for TUI display
+    expect(result.agentName).toBe("test-agent");
+    expect(result.workerId).toBe("—");
+    expect(result.isolation).toBe("in-process");
+    expect(result.backendKind).toBe("in-process");
   });
 
   test("createSpawnExecutor propagates spawn failure as KoiRuntimeError", async () => {

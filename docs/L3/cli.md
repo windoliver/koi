@@ -6,6 +6,8 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **TUI daemon surface (#1944)**: `koi tui` now wires the real `@koi/daemon` `Supervisor` + `FileSessionRegistry` into the TUI when the manifest declares `supervision:` with at least one subprocess child. Three new commands surface daemon state: `/supervisor` (health + worker table + last-50 event feed + metrics), `/bg` (session rows with freshness colors, `Enter` tails logs in-TUI, `k` opens a kill-confirm prompt routed through `bridge.requestKill`), and a status-line health badge with worker counts. Manifest-declared subprocess children that include a `command` field route through `createDaemonSpawnChildFn` so the parent reconciler and daemon supervisor observe the same workers; subprocess children without `command` keep the legacy in-process registry-only stub. Registry path follows `KOI_STATE_DIR/daemon/sessions` (else `~/.koi/daemon/sessions`); the read-only `/bg` bridge only attaches when the directory already exists, so a fresh TUI launch never creates daemon state on hosts without one. Reconciler is the sole auto-restart authority — daemon-spawned children use `restart: "temporary", maxRestarts: 0`.
+
 - **`@koi/nexus-sandbox` wired (#1403)**: new direct CLI dependency.
   When a manifest declares `nexus.mode: "sandbox"` (or `auto` with no
   `NEXUS_URL`/`--nexus-url`), or simply needs Nexus and no external URL

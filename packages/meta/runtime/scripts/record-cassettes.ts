@@ -668,7 +668,7 @@ function createForgeToolSet(): {
 // One quartet for query-config providers (reused across non-forge cassettes
 // where forge tools are part of the descriptor list but not invoked).
 const initialForgeSet = createForgeToolSet();
-const forgeToolTool = initialForgeSet.forgeToolTool;
+const _forgeToolTool = initialForgeSet.forgeToolTool;
 const forgeMiddlewareTool = initialForgeSet.forgeMiddlewareTool;
 const forgeListTool = initialForgeSet.forgeListTool;
 const forgeInspectTool = initialForgeSet.forgeInspectTool;

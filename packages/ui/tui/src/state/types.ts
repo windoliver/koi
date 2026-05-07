@@ -7,6 +7,12 @@
 
 import type { JsonObject } from "@koi/core/common";
 import type { CostBreakdown } from "@koi/core/cost-tracker";
+import type {
+  BackgroundSessionStatus,
+  SupervisorHealth,
+  WorkerBackendKind,
+  WorkerEvent,
+} from "@koi/core/daemon";
 import type { EngineEvent } from "@koi/core/engine";
 import type { GovernanceSnapshot } from "@koi/core/governance";
 import type { RuleDescriptor } from "@koi/core/governance-backend";
@@ -58,6 +64,108 @@ export const MAX_VIOLATIONS_IN_MEMORY = 50;
  */
 export const MAX_SECURITY_FINDINGS_IN_MEMORY = 100;
 
+/** Cap on supervisor events retained in the TUI event log. */
+export const SUPERVISOR_EVENT_BUFFER_CAP = 50;
+
+// ---------------------------------------------------------------------------
+// Supervisor / background session state slices
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-channel liveness tracked independently. Composite UI status is
+ * derived from the worst dimension — never optimistic.
+ */
+export interface ChannelLiveness {
+  readonly health: "live" | "stale"; // supervisor.health() poll
+  readonly registryList: "live" | "stale"; // registry.describeList() poll
+  readonly workerEvents: "live" | "stale"; // supervisor.watchAll() iter
+  readonly registryEvents: "live" | "stale"; // registry.watch() iter
+}
+
+/**
+ * SUPERVISOR surface status — applies to status-line badge, toasts,
+ * /supervisor, inline lifecycle events. Gated on supervisor attachment.
+ */
+export type BridgeStatus =
+  | { readonly kind: "detached" }
+  | { readonly kind: "live" }
+  | {
+      readonly kind: "degraded";
+      readonly missing: readonly ("workerEvents" | "registryEvents")[];
+      readonly since: number;
+    }
+  | { readonly kind: "stale"; readonly since: number; readonly reason: string };
+
+/**
+ * REGISTRY surface status — applies to /bg ROWS only. Tracked
+ * independently of supervisor attachment.
+ */
+export type RegistryStatus =
+  | { readonly kind: "live" }
+  | { readonly kind: "degraded"; readonly since: number }
+  | { readonly kind: "stale"; readonly since: number; readonly reason: string };
+
+export interface SupervisorEventEntry {
+  readonly id: string;
+  readonly ts: number;
+  readonly kind: WorkerEvent["kind"];
+  readonly workerId: string;
+  readonly agentName: string;
+  readonly detail?: string;
+}
+
+export interface SupervisorSlice {
+  readonly attached: boolean;
+  readonly status: BridgeStatus;
+  readonly health: SupervisorHealth | null;
+  readonly events: readonly SupervisorEventEntry[];
+}
+
+/**
+ * Mirrors `BackgroundSessionRecord` from `@koi/core/daemon` 1:1 — never
+ * narrows `BackgroundSessionStatus`.
+ */
+export interface BgSessionRow {
+  readonly workerId: string;
+  readonly agentId: string;
+  readonly sessionId: string | null;
+  readonly status: BackgroundSessionStatus;
+  readonly pid: number;
+  readonly startedAt: number;
+  readonly endedAt: number | null;
+  readonly exitCode: number | null;
+  readonly lastHeartbeatAt: number | null;
+  readonly heartbeatDeadlineAt: number | null;
+  readonly logPath: string;
+  readonly backendKind: WorkerBackendKind;
+  readonly version: number;
+  readonly signaledAt: number | null;
+  readonly freshness:
+    | "pending"
+    | "ok"
+    | "stale"
+    | "timeout"
+    | "unmonitored"
+    | "foreign"
+    | "restarting"
+    | "quarantined"
+    | "stopping"
+    | "terminating"
+    | "detached"
+    | "terminal";
+}
+
+export interface BgSessionsSlice {
+  readonly rows: readonly BgSessionRow[];
+  readonly registryStatus: RegistryStatus;
+  readonly tailingWorkerId: string | null;
+  readonly killConfirm: {
+    readonly workerId: string;
+    readonly version: number;
+    readonly pid: number;
+  } | null;
+}
+
 // ---------------------------------------------------------------------------
 // View & Modal
 // ---------------------------------------------------------------------------
@@ -73,7 +181,9 @@ export type TuiView =
   | "cost"
   | "mcp"
   | "plugins"
-  | "governance";
+  | "governance"
+  | "supervisor"
+  | "bg";
 
 /** MCP server status entry for the /mcp view. */
 export interface McpServerInfo {
@@ -581,6 +691,10 @@ export interface TuiState {
   readonly governance: GovernanceSlice;
   /** Active toast queue (gov-9). FIFO display, capped at MAX_VISIBLE_TOASTS. */
   readonly toasts: readonly Toast[];
+  /** Supervisor process attachment + health surface. */
+  readonly supervisor: SupervisorSlice;
+  /** Background session registry rows + kill/tail state. */
+  readonly bg: BgSessionsSlice;
 }
 
 /** Summary of a trajectory step for display in the TUI /trajectory view. */
@@ -842,4 +956,20 @@ export type TuiAction =
         | { readonly ok: true; readonly models: readonly ModelEntry[] }
         | { readonly ok: false; readonly error: string };
     }
-  | { readonly kind: "model_switched"; readonly model: string };
+  | { readonly kind: "model_switched"; readonly model: string }
+  | { readonly kind: "set_supervisor_attached"; readonly attached: boolean }
+  | { readonly kind: "set_supervisor_status"; readonly status: BridgeStatus }
+  | { readonly kind: "set_supervisor_health"; readonly health: SupervisorHealth | null }
+  | { readonly kind: "push_supervisor_event"; readonly entry: SupervisorEventEntry }
+  | { readonly kind: "clear_supervisor_events" }
+  | { readonly kind: "set_bg_rows"; readonly rows: readonly BgSessionRow[] }
+  | { readonly kind: "set_bg_registry_status"; readonly status: RegistryStatus }
+  | { readonly kind: "set_bg_tailing"; readonly workerId: string | null }
+  | {
+      readonly kind: "set_bg_kill_confirm";
+      readonly confirm: {
+        readonly workerId: string;
+        readonly version: number;
+        readonly pid: number;
+      } | null;
+    };

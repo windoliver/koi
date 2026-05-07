@@ -31,6 +31,7 @@ import {
   MAX_TOOL_RESULT_BYTES,
   MAX_VIOLATIONS_IN_MEMORY,
   MAX_VISIBLE_TOASTS,
+  SUPERVISOR_EVENT_BUFFER_CAP,
 } from "./types.js";
 
 /**
@@ -1234,6 +1235,58 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
 
     case "dismiss_toast":
       return { ...state, toasts: state.toasts.filter((t) => t.id !== action.id) };
+
+    // --- Supervisor slice ---
+
+    case "set_bg_rows":
+      return { ...state, bg: { ...state.bg, rows: action.rows } };
+    case "set_bg_registry_status":
+      return { ...state, bg: { ...state.bg, registryStatus: action.status } };
+    case "set_bg_tailing":
+      return { ...state, bg: { ...state.bg, tailingWorkerId: action.workerId } };
+    case "set_bg_kill_confirm":
+      return { ...state, bg: { ...state.bg, killConfirm: action.confirm } };
+
+    case "set_supervisor_attached": {
+      const next = action.attached;
+      return {
+        ...state,
+        supervisor: {
+          ...state.supervisor,
+          attached: next,
+          health: next ? state.supervisor.health : null,
+        },
+      };
+    }
+
+    case "set_supervisor_status":
+      return {
+        ...state,
+        supervisor: { ...state.supervisor, status: action.status },
+      };
+
+    case "set_supervisor_health":
+      return {
+        ...state,
+        supervisor: { ...state.supervisor, health: action.health },
+      };
+
+    case "push_supervisor_event": {
+      const events = [action.entry, ...state.supervisor.events].slice(
+        0,
+        SUPERVISOR_EVENT_BUFFER_CAP,
+      );
+      return {
+        ...state,
+        supervisor: { ...state.supervisor, events },
+      };
+    }
+
+    case "clear_supervisor_events":
+      return {
+        ...state,
+        supervisor: { ...state.supervisor, events: [] },
+      };
 
     default:
       return state;

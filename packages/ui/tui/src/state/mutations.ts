@@ -6,16 +6,22 @@
  * The pure reducer is kept alongside as a regression safety net (Decision 9A).
  */
 
+import type { SupervisorHealth } from "@koi/core/daemon";
 import type { EngineEvent } from "@koi/core/engine";
 import { convertResumedMessagesToTui } from "./reduce.js";
 import type {
+  BgSessionRow,
+  BgSessionsSlice,
+  BridgeStatus,
   CumulativeMetrics,
   PlanTask,
+  RegistryStatus,
   SessionInfo,
   SessionSummary,
   SpawnProgress,
   SpawnRecord,
   SpawnStats,
+  SupervisorEventEntry,
   ToolResultData,
   TuiAction,
   TuiAssistantBlock,
@@ -28,6 +34,7 @@ import {
   MAX_MESSAGES,
   MAX_SESSIONS,
   MAX_TOOL_RESULT_BYTES,
+  SUPERVISOR_EVENT_BUFFER_CAP,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -877,6 +884,55 @@ export function mutate(state: Draft, action: TuiAction): void {
         ...state.messages,
       ];
       maybeCompact(state);
+      break;
+    }
+
+    // ----- #1944 supervisor + bg slices (parity with reducer) -----
+    case "set_supervisor_attached": {
+      const sup = state.supervisor as unknown as {
+        attached: boolean;
+        health: SupervisorHealth | null;
+      };
+      sup.attached = action.attached;
+      // Detaching clears the last health snapshot so views don't render stale workers.
+      if (!action.attached) sup.health = null;
+      break;
+    }
+    case "set_supervisor_status": {
+      (state.supervisor as unknown as { status: BridgeStatus }).status = action.status;
+      break;
+    }
+    case "set_supervisor_health": {
+      (state.supervisor as unknown as { health: SupervisorHealth | null }).health = action.health;
+      break;
+    }
+    case "push_supervisor_event": {
+      const sup = state.supervisor as unknown as { events: SupervisorEventEntry[] };
+      sup.events.unshift(action.entry);
+      if (sup.events.length > SUPERVISOR_EVENT_BUFFER_CAP) {
+        sup.events.length = SUPERVISOR_EVENT_BUFFER_CAP;
+      }
+      break;
+    }
+    case "clear_supervisor_events": {
+      (state.supervisor as unknown as { events: SupervisorEventEntry[] }).events = [];
+      break;
+    }
+    case "set_bg_rows": {
+      (state.bg as unknown as { rows: readonly BgSessionRow[] }).rows = action.rows;
+      break;
+    }
+    case "set_bg_registry_status": {
+      (state.bg as unknown as { registryStatus: RegistryStatus }).registryStatus = action.status;
+      break;
+    }
+    case "set_bg_tailing": {
+      (state.bg as unknown as { tailingWorkerId: string | null }).tailingWorkerId = action.workerId;
+      break;
+    }
+    case "set_bg_kill_confirm": {
+      (state.bg as unknown as { killConfirm: BgSessionsSlice["killConfirm"] }).killConfirm =
+        action.confirm;
       break;
     }
   }

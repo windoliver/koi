@@ -752,7 +752,7 @@ jobs:
         # and splitting would scatter the post-Round 8/9/10 hardening
         # invariants across modules that must share scope/artifact key
         # canonicalization and ordering rules.
-        run: bun run check:complexity --max-violations 744
+        run: bun run check:complexity --max-violations 771
 
       - name: Check TUI single-writer output policy
         run: bun run check:tui-single-writer

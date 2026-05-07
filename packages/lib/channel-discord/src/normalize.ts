@@ -1,0 +1,194 @@
+/**
+ * Discord event → InboundMessage normalization.
+ *
+ * Tagged-union dispatch: messageCreate and interactionCreate are the two
+ * platform events we accept. Bot's own messages are dropped.
+ */
+
+import type { ContentBlock, InboundMessage } from "@koi/core";
+
+export interface DiscordAuthor {
+  readonly id: string;
+  readonly bot: boolean;
+}
+
+export interface DiscordAttachment {
+  readonly url: string;
+  readonly name: string | null;
+  readonly contentType: string | null;
+}
+
+export interface DiscordMessageLike {
+  readonly id: string;
+  readonly content: string;
+  readonly author: DiscordAuthor;
+  readonly channelId: string;
+  readonly guildId: string | null;
+  readonly createdTimestamp: number;
+  readonly attachments: ReadonlyMap<string, DiscordAttachment>;
+  readonly isThread?: boolean;
+}
+
+export interface DiscordSlashCommandOption {
+  readonly name: string;
+  readonly value: string | number | boolean | null;
+}
+
+export interface DiscordSlashCommandLike {
+  readonly kind: "slash_command";
+  readonly id: string;
+  readonly name: string;
+  readonly options: readonly DiscordSlashCommandOption[];
+  readonly userId: string;
+  readonly channelId: string;
+  readonly guildId: string | null;
+  readonly createdTimestamp: number;
+}
+
+export interface DiscordButtonInteractionLike {
+  readonly kind: "button";
+  readonly id: string;
+  readonly customId: string;
+  readonly userId: string;
+  readonly channelId: string;
+  readonly guildId: string | null;
+  readonly createdTimestamp: number;
+}
+
+export type DiscordEvent =
+  | { readonly kind: "message"; readonly message: DiscordMessageLike }
+  | { readonly kind: "slash_command"; readonly command: DiscordSlashCommandLike }
+  | { readonly kind: "button"; readonly button: DiscordButtonInteractionLike };
+
+/**
+ * Builds a normalizer that filters out the bot's own messages by user id
+ * AND, by default, every other bot-authored message. Without the
+ * cross-bot filter a third-party bot or webhook in a shared server can
+ * prompt this agent and trigger tool execution; that is almost never
+ * what callers want. Set `allowBots: true` to opt in to bot-to-bot
+ * traffic.
+ */
+export function createNormalizer(
+  getBotUserId: () => string | undefined,
+  options: { readonly allowBots?: boolean } = {},
+): (event: DiscordEvent) => InboundMessage | null {
+  const allowBots = options.allowBots === true;
+  return (event: DiscordEvent): InboundMessage | null => {
+    switch (event.kind) {
+      case "message":
+        return normalizeMessage(event.message, getBotUserId(), allowBots);
+      case "slash_command":
+        return normalizeSlashCommand(event.command);
+      case "button":
+        return normalizeButton(event.button);
+    }
+  };
+}
+
+function normalizeMessage(
+  message: DiscordMessageLike,
+  botUserId: string | undefined,
+  allowBots: boolean,
+): InboundMessage | null {
+  // Always drop our own loopback messages.
+  if (message.author.bot && message.author.id === botUserId) return null;
+  // Drop messages from any other bot/webhook unless the caller has
+  // opted into bot-to-bot traffic.
+  if (message.author.bot && !allowBots) return null;
+
+  const blocks: ContentBlock[] = [];
+  if (message.content.length > 0) {
+    blocks.push({ kind: "text", text: message.content });
+  }
+  for (const [, att] of message.attachments) {
+    const ct = att.contentType ?? "application/octet-stream";
+    if (ct.startsWith("image/")) {
+      blocks.push({ kind: "image", url: att.url, ...(att.name ? { alt: att.name } : {}) });
+    } else {
+      blocks.push({
+        kind: "file",
+        url: att.url,
+        mimeType: ct,
+        ...(att.name ? { name: att.name } : {}),
+      });
+    }
+  }
+  if (blocks.length === 0) return null;
+
+  return {
+    content: blocks,
+    senderId: message.author.id,
+    threadId: resolveThreadId(message),
+    timestamp: message.createdTimestamp,
+  };
+}
+
+function normalizeSlashCommand(cmd: DiscordSlashCommandLike): InboundMessage {
+  const block: ContentBlock = {
+    kind: "custom",
+    type: "discord:slash_command",
+    data: { name: cmd.name, options: cmd.options.map((o) => ({ name: o.name, value: o.value })) },
+  };
+  return {
+    content: [block],
+    senderId: cmd.userId,
+    // "interaction:cmd:<id>:<channelId>" so the first outbound reply edits the
+    // deferred interaction; the channelId suffix is the fallback for spillover
+    // payloads or expired tokens. The `cmd` discriminator lets sendOutbound
+    // distinguish slash-command threads (channel.send fallback is safe — the
+    // command was already public) from button threads (must fail closed to
+    // preserve ephemeral scope) without consulting external state.
+    threadId: `interaction:cmd:${cmd.id}:${cmd.channelId}`,
+    timestamp: cmd.createdTimestamp,
+  };
+}
+
+function normalizeButton(btn: DiscordButtonInteractionLike): InboundMessage {
+  const [action, payloadJson] = splitCustomId(btn.customId);
+  const payload = payloadJson === undefined ? undefined : safeParse(payloadJson);
+  const block: ContentBlock = {
+    kind: "button",
+    label: action,
+    action,
+    ...(payload !== undefined ? { payload } : {}),
+  };
+  return {
+    content: [block],
+    senderId: btn.userId,
+    // "interaction:btn:<id>:<channelId>" — the `btn` discriminator marks
+    // this thread as fail-closed: when the live interaction handle is
+    // missing/expired, sendOutbound refuses to fall back to channel.send
+    // because that would repost an ephemeral/private reply publicly.
+    threadId: `interaction:btn:${btn.id}:${btn.channelId}`,
+    timestamp: btn.createdTimestamp,
+  };
+}
+
+function resolveThreadId(message: DiscordMessageLike): string {
+  return resolveThreadIdFromIds(message.guildId, message.channelId, message.author.id);
+}
+
+function resolveThreadIdFromIds(
+  guildId: string | null,
+  channelId: string,
+  _userId: string,
+): string {
+  // discord.js caches channels (including DM channels) by channel id, not user
+  // id. Using the channel id keeps inbound and outbound routing symmetric.
+  if (guildId === null) return `dm:${channelId}`;
+  return `${guildId}:${channelId}`;
+}
+
+function splitCustomId(customId: string): readonly [string, string | undefined] {
+  const idx = customId.indexOf(":");
+  if (idx < 0) return [customId, undefined];
+  return [customId.slice(0, idx), customId.slice(idx + 1)];
+}
+
+function safeParse(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return s;
+  }
+}

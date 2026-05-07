@@ -6,7 +6,8 @@ import { createEffect, createMemo, createSignal, on, onCleanup, Show } from "sol
 import type { JSX } from "solid-js";
 import { useTuiStore } from "../store-context.js";
 import { COLORS } from "../theme.js";
-import type { AgentStatus, CumulativeMetrics, SessionInfo } from "../state/types.js";
+import type { AgentStatus, BridgeStatus, CumulativeMetrics, SessionInfo } from "../state/types.js";
+import type { SupervisorHealth } from "@koi/core/daemon";
 import {
   chipTier,
   formatCost,
@@ -16,6 +17,45 @@ import {
 } from "./status-bar-helpers.js";
 
 export { formatCost, formatTokens };
+
+// ---------------------------------------------------------------------------
+// Supervisor badge — pure helper (exported for unit tests)
+// ---------------------------------------------------------------------------
+
+export type SupervisorChip = {
+  readonly symbol: string;
+  readonly color: string;
+  readonly label: string;
+};
+
+export function computeSupervisorChip(
+  status: BridgeStatus,
+  health: SupervisorHealth | null,
+  now: number,
+): SupervisorChip | null {
+  if (status.kind === "detached") return null;
+  if (status.kind === "stale") {
+    const secs = Math.max(0, Math.floor((now - status.since) / 1000));
+    return { symbol: "◌", color: COLORS.danger, label: `stale ${secs}s` };
+  }
+  if (status.kind === "degraded") {
+    const secs = Math.max(0, Math.floor((now - status.since) / 1000));
+    return { symbol: "◐", color: COLORS.amber, label: `degraded ${secs}s` };
+  }
+  // status.kind === "live"
+  const running = health?.workers.filter((w) => w.state === "running").length ?? 0;
+  const total = health?.metrics.poolSize ?? 0;
+  const healthStatus = health?.status ?? "ok";
+  const symbol =
+    healthStatus === "unhealthy" ? "●" : healthStatus === "degraded" ? "◑" : "◎";
+  const color =
+    healthStatus === "unhealthy"
+      ? COLORS.danger
+      : healthStatus === "degraded"
+        ? COLORS.amber
+        : COLORS.success;
+  return { symbol, color, label: `${running}/${total} workers` };
+}
 
 const STATUS_COLORS: Record<AgentStatus, string> = {
   idle: COLORS.success,
@@ -141,6 +181,16 @@ export function StatusBar(props: StatusBarProps): JSX.Element {
     return { color, text: `${prefix}gov: ${formatGovernanceChip(top)}` };
   });
 
+  // Supervisor badge
+  const supervisorAttached = useTuiStore((s) => s.supervisor.attached);
+  const supervisorStatus = useTuiStore((s) => s.supervisor.status);
+  const supervisorHealth = useTuiStore((s) => s.supervisor.health);
+
+  const supervisorChip = createMemo(() => {
+    if (!supervisorAttached()) return null;
+    return computeSupervisorChip(supervisorStatus(), supervisorHealth(), Date.now());
+  });
+
   return (
     <box
       flexDirection="row"
@@ -168,6 +218,17 @@ export function StatusBar(props: StatusBarProps): JSX.Element {
       <Show when={govChip()}>
         {(chip: () => { readonly color: string; readonly text: string }) => (
           <text fg={chip().color}>{chip().text}</text>
+        )}
+      </Show>
+      {/* Supervisor badge */}
+      <Show when={supervisorChip()}>
+        {(chip: () => SupervisorChip) => (
+          <>
+            <Show when={govChip()}>
+              <text fg={COLORS.textMuted}>·</text>
+            </Show>
+            <text fg={chip().color}>{`${chip().symbol} ${chip().label}`}</text>
+          </>
         )}
       </Show>
       {/* #20 retry countdown */}
