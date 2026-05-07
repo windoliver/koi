@@ -2,8 +2,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { type ComponentProvider, type HookConfig, isAttachResult, type Tool } from "@koi/core";
+import {
+  type ComponentProvider,
+  type FileSystemBackend,
+  type HookConfig,
+  isAttachResult,
+  type Tool,
+} from "@koi/core";
 import type { McpServerConfig } from "@koi/mcp";
+import type { SemanticSearchFn } from "@koi/tools-builtin";
 import {
   __setUserHooksConfigPathForTests,
   __setUserMcpHomeDirForTests,
@@ -269,6 +276,131 @@ describe("buildCoreProviders: filesystem operation gating", () => {
       path: join(homedir(), ".ssh", "id_rsa"),
     })) as { readonly code?: string };
     expect(result.code).toBe("CREDENTIAL_PATH_DENIED");
+  });
+
+  test("wires fs_semantic_search when filesystem backend exposes semanticSearch", async () => {
+    const filesystemBackend: FileSystemBackend & {
+      readonly semanticSearch: SemanticSearchFn;
+    } = {
+      name: "nexus",
+      read: async () => ({ ok: true as const, value: { content: "", path: "", size: 0 } }),
+      write: async () => ({ ok: true as const, value: { path: "", bytesWritten: 0 } }),
+      edit: async () => ({ ok: true as const, value: { path: "", hunksApplied: 0 } }),
+      list: async () => ({ ok: true as const, value: { entries: [], truncated: false } }),
+      search: async () => ({ ok: true as const, value: { matches: [], truncated: false } }),
+      semanticSearch: async () => ({
+        ok: true as const,
+        value: {
+          results: [
+            {
+              path: "src/auth.ts",
+              snippet: "retry logic",
+              score: 0.88,
+              lineStart: 4,
+              lineEnd: 8,
+            },
+          ],
+        },
+      }),
+    };
+    const providers = buildCoreProviders({
+      cwd: mkTempCwd(),
+      includeWebFetch: false,
+      filesystemBackend,
+    });
+    const semanticTool = await getToolFromProvider(
+      providers,
+      "builtin-search",
+      "fs_semantic_search",
+    );
+    const result = (await semanticTool.execute({ query: "retry logic" })) as {
+      readonly results: readonly { readonly path: string }[];
+    };
+
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]?.path).toBe("src/auth.ts");
+  });
+
+  test("fs_semantic_search survives includeFilesystemTools=false", async () => {
+    // Hosts that suppress raw fs_read/write/edit but rely on builtin
+    // discovery should still get semantic search. Capability is gated on
+    // read permission, not on whether the raw fs tool bundle is wired.
+    const filesystemBackend: FileSystemBackend & {
+      readonly semanticSearch: SemanticSearchFn;
+    } = {
+      name: "nexus",
+      read: async () => ({ ok: true as const, value: { content: "", path: "", size: 0 } }),
+      write: async () => ({ ok: true as const, value: { path: "", bytesWritten: 0 } }),
+      edit: async () => ({ ok: true as const, value: { path: "", hunksApplied: 0 } }),
+      list: async () => ({ ok: true as const, value: { entries: [], truncated: false } }),
+      search: async () => ({ ok: true as const, value: { matches: [], truncated: false } }),
+      semanticSearch: async () => ({
+        ok: true as const,
+        value: { results: [] },
+      }),
+    };
+    const providers = buildCoreProviders({
+      cwd: mkTempCwd(),
+      includeWebFetch: false,
+      includeFilesystemTools: false,
+      filesystemBackend,
+    });
+    const names = providers.map((p) => p.name);
+    expect(names).not.toContain("fs-read");
+    expect(names).toContain("builtin-search");
+    const semanticTool = await getToolFromProvider(
+      providers,
+      "builtin-search",
+      "fs_semantic_search",
+    );
+    expect(semanticTool).toBeDefined();
+  });
+
+  test("fs_semantic_search is gated off when read is not in filesystemOperations", async () => {
+    // Read suppression via `filesystemOperations` is a security boundary:
+    // a runtime that explicitly drops read must not retain a back-door
+    // read path through semantic search.
+    const filesystemBackend: FileSystemBackend & {
+      readonly semanticSearch: SemanticSearchFn;
+    } = {
+      name: "nexus",
+      read: async () => ({ ok: true as const, value: { content: "", path: "", size: 0 } }),
+      write: async () => ({ ok: true as const, value: { path: "", bytesWritten: 0 } }),
+      edit: async () => ({ ok: true as const, value: { path: "", hunksApplied: 0 } }),
+      list: async () => ({ ok: true as const, value: { entries: [], truncated: false } }),
+      search: async () => ({ ok: true as const, value: { matches: [], truncated: false } }),
+      semanticSearch: async () => ({ ok: true as const, value: { results: [] } }),
+    };
+    const providers = buildCoreProviders({
+      cwd: mkTempCwd(),
+      includeWebFetch: false,
+      filesystemOperations: ["write"],
+      filesystemBackend,
+    });
+    const builtin = providers.find((p) => p.name === "builtin-search");
+    if (builtin === undefined) throw new Error("builtin-search provider missing");
+    const attached = await builtin.attach({} as Parameters<typeof builtin.attach>[0]);
+    const components = isAttachResult(attached) ? attached.components : attached;
+    expect(components.has("tool:fs_semantic_search")).toBe(false);
+  });
+
+  test("Grep is dropped when read is not in filesystemOperations", async () => {
+    // Grep reads file *contents*. If `filesystemOperations` is the
+    // read/write authority boundary, builtin-search must not retain a
+    // content-read path when read is denied.
+    const providers = buildCoreProviders({
+      cwd: mkTempCwd(),
+      includeWebFetch: false,
+      filesystemOperations: ["write"],
+    });
+    const builtin = providers.find((p) => p.name === "builtin-search");
+    if (builtin === undefined) throw new Error("builtin-search provider missing");
+    const attached = await builtin.attach({} as Parameters<typeof builtin.attach>[0]);
+    const components = isAttachResult(attached) ? attached.components : attached;
+    const keys = Array.from(components.keys()).map((k) => k.toLowerCase());
+    expect(keys.some((k) => k.includes("grep"))).toBe(false);
+    // Glob (paths only, no content reads) stays available.
+    expect(keys.some((k) => k.includes("glob"))).toBe(true);
   });
 });
 

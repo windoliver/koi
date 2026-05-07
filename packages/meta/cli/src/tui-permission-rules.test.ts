@@ -50,6 +50,10 @@ describe("TUI permission rules (#1845)", () => {
     test("memory_search is allowed", () => {
       expect(checkTool(backend, "memory_search")).toBe("allow");
     });
+
+    test("fs_semantic_search is allowed", () => {
+      expect(checkTool(backend, "fs_semantic_search")).toBe("allow");
+    });
   });
 
   describe("tools requiring approval (#1845 — now works with 60m timeout)", () => {

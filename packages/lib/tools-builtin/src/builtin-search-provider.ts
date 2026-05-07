@@ -2,6 +2,8 @@ import type { ComponentProvider, JsonObject, ToolPolicy, ToolSummary } from "@ko
 import { COMPONENT_PRIORITY, DEFAULT_UNSANDBOXED_POLICY, toolToken } from "@koi/core";
 import type { BuiltinSearchOperation } from "./constants.js";
 import { BUILTIN_SEARCH_OPERATIONS } from "./constants.js";
+import type { SemanticSearchFn } from "./fs-semantic-search-tool.js";
+import { createFsSemanticSearchTool } from "./fs-semantic-search-tool.js";
 import { createGlobTool } from "./glob-tool.js";
 import { createGrepTool } from "./grep-tool.js";
 import { createToolSearchTool } from "./tool-search-tool.js";
@@ -11,6 +13,7 @@ export interface BuiltinSearchProviderConfig {
   readonly getTools?: () => readonly ToolSummary[];
   readonly policy?: ToolPolicy;
   readonly operations?: readonly BuiltinSearchOperation[];
+  readonly semanticSearch?: SemanticSearchFn;
 }
 
 export function createBuiltinSearchProvider(
@@ -21,6 +24,7 @@ export function createBuiltinSearchProvider(
     getTools = () => [],
     policy = DEFAULT_UNSANDBOXED_POLICY,
     operations = BUILTIN_SEARCH_OPERATIONS,
+    semanticSearch,
   } = config;
 
   const factories: Record<BuiltinSearchOperation, () => JsonObject> = {
@@ -37,6 +41,10 @@ export function createBuiltinSearchProvider(
       for (const op of operations) {
         const factory = factories[op];
         entries.push([toolToken(op), factory()]);
+      }
+      if (semanticSearch !== undefined) {
+        const tool = createFsSemanticSearchTool({ search: semanticSearch, policy });
+        entries.push([toolToken(tool.descriptor.name), tool]);
       }
       return new Map(entries);
     },

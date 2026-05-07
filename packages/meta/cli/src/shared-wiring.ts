@@ -28,6 +28,7 @@ import type {
   ComponentProvider,
   CredentialComponent,
   EngineState,
+  FileSystemBackend,
   HookConfig,
   InboundMessage,
   KoiMiddleware,
@@ -68,12 +69,15 @@ import {
 } from "@koi/session";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import {
+  BUILTIN_SEARCH_OPERATIONS,
+  type BuiltinSearchOperation,
   createBuiltinSearchProvider,
   createCredentialPathGuard,
   createFsEditTool,
   createFsReadTool,
   createFsWriteTool,
   type FsToolOptions,
+  type SemanticSearchFn,
 } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import { createSafeFetcher } from "@koi/url-safety";
@@ -1314,6 +1318,14 @@ export interface CoreProvidersConfig {
   readonly additional?: readonly ComponentProvider[];
 }
 
+interface SemanticSearchCapableBackend extends FileSystemBackend {
+  readonly semanticSearch: SemanticSearchFn;
+}
+
+function hasSemanticSearch(backend: FileSystemBackend): backend is SemanticSearchCapableBackend {
+  return "semanticSearch" in backend && typeof backend.semanticSearch === "function";
+}
+
 /**
  * Default TTL for the web_fetch LRU response cache (issue #1903).
  *
@@ -1370,8 +1382,30 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
   const { cwd, bashTool } = config;
   const includeFs = config.includeFilesystemTools ?? true;
   const includeWeb = config.includeWebFetch ?? true;
-
-  const providers: ComponentProvider[] = [createBuiltinSearchProvider({ cwd })];
+  const fs = config.filesystemBackend ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
+  const ops = config.filesystemOperations;
+  const wantRead = ops === undefined || ops.includes("read");
+  const wantWrite = ops === undefined || ops.includes("write");
+  const wantEdit = ops === undefined || ops.includes("edit");
+  // fs_semantic_search is a read-capable tool (returns paths + content
+  // snippets). Gate it on read permission (`wantRead`) plus backend
+  // capability — a runtime that explicitly drops `read` from
+  // `filesystemOperations` cannot still expose repository contents through
+  // semantic search. Decoupled from `includeFilesystemTools` so hosts that
+  // suppress raw fs_read/write/edit while keeping builtin search keep it.
+  const exposeSemantic = wantRead && hasSemanticSearch(fs);
+  // Grep reads file *contents*, not just paths — a host that drops `read`
+  // from `filesystemOperations` has explicitly disabled repository reads,
+  // so omit it from builtin-search to keep that boundary honest. Glob and
+  // ToolSearch only enumerate paths/tool names, no content reads, so they
+  // remain regardless.
+  const builtinSearchOps: readonly BuiltinSearchOperation[] = wantRead
+    ? BUILTIN_SEARCH_OPERATIONS
+    : BUILTIN_SEARCH_OPERATIONS.filter((op) => op !== "Grep");
+  const builtinSearchConfig = exposeSemantic
+    ? { cwd, semanticSearch: fs.semanticSearch, operations: builtinSearchOps }
+    : { cwd, operations: builtinSearchOps };
+  const providers: ComponentProvider[] = [createBuiltinSearchProvider(builtinSearchConfig)];
 
   if (includeFs) {
     // allowExternalPaths: the runtime has a real permission middleware
@@ -1383,17 +1417,14 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
     //
     // Use the caller-supplied backend when provided (e.g. a Nexus backend
     // from resolveFileSystemAsync); otherwise create the default local one.
-    const fs = config.filesystemBackend ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
     const fsToolOptions = config.fsToolOptions ?? { pathGuard: createCredentialPathGuard() };
     // Operation gating: `undefined` means "wire all three" (the default
     // for host-default filesystems). Manifest-driven filesystems apply
     // the `FileSystemConfig` contract's `["read"]` default at the host
     // level before calling into this builder, so by the time we see
     // `filesystemOperations` here it is already the resolved gate.
-    const ops = config.filesystemOperations;
-    const wantRead = ops === undefined || ops.includes("read");
-    const wantWrite = ops === undefined || ops.includes("write");
-    const wantEdit = ops === undefined || ops.includes("edit");
+    // (`wantRead`/`wantWrite`/`wantEdit` computed above for semantic-search
+    // gating; reused here.)
     if (wantRead) {
       providers.push(
         createSingleToolProvider({

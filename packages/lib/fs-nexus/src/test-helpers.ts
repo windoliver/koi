@@ -284,6 +284,47 @@ export function createFakeNexusTransport(options?: FakeTransportOptions): NexusT
         return { ok: true, value: { results } as T };
       }
 
+      case "semantic_search": {
+        const query = (params.query as string | undefined)?.toLowerCase() ?? "";
+        const searchPath = (params.path as string | undefined) ?? "/";
+        const limit = (params.limit as number | undefined) ?? 10;
+        const results: Array<{
+          readonly path: string;
+          readonly chunk_text: string;
+          readonly score: number;
+          readonly line_start: number;
+          readonly line_end: number;
+        }> = [];
+
+        const prefix = searchPath === "/" ? "/" : `${searchPath}/`;
+        for (const [filePath, file] of files) {
+          if (file.isDirectory) continue;
+          if (!filePath.startsWith(prefix) && filePath !== searchPath) continue;
+          if (results.length >= limit) break;
+
+          const haystack = file.content.toLowerCase();
+          if (!haystack.includes(query)) continue;
+          const lines = file.content.split("\n");
+          let lineMatch = 1;
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (line?.toLowerCase().includes(query)) {
+              lineMatch = i + 1;
+              break;
+            }
+          }
+          results.push({
+            path: filePath,
+            chunk_text: file.content,
+            score: 0.9,
+            line_start: lineMatch,
+            line_end: lineMatch,
+          });
+        }
+
+        return { ok: true, value: { results } as T };
+      }
+
       case "delete": {
         if (path === undefined) return rpcError(-32002, "path required");
         if (!files.has(path)) return rpcError(FILE_NOT_FOUND, `not found: ${path}`);

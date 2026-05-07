@@ -19,6 +19,7 @@ These are "primordial" tools — bundled at build time, highest trust level. The
 - **Glob** — Fast file pattern matching with mtime sort
 - **Grep** — Content search with rg backend + native literal fallback
 - **ToolSearch** — Keyword/select search over available tool summaries
+- **fs_semantic_search** — Embedding-backed file search (#1319). Wired into `builtin-search` only when the active `FileSystemBackend` exposes a `semanticSearch` method. Forwards `query` + optional `scope` glob, `maxResults`, `minScore` to the backend; the tool itself does no filtering. Failure-mode: backend `{ ok: false }` is wrapped as `{ error: "Semantic search failed" }`; empty/whitespace queries short-circuit to `{ error: "query must be a non-empty string" }`. Read-capable: shared-wiring gates it on `wantRead` so a host that drops `read` from `filesystemOperations` cannot keep a back-door content-read path. Grep is gated under the same rule for the same reason.
 
 ### Interaction Tools
 

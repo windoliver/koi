@@ -2814,6 +2814,98 @@ describe("Golden: @koi/tools-builtin", () => {
     expect(stored).toHaveLength(0);
   });
 
+  test("createFsSemanticSearchTool produces a primordial Tool named fs_semantic_search", async () => {
+    const { createFsSemanticSearchTool } = await import("@koi/tools-builtin");
+
+    const tool = createFsSemanticSearchTool({
+      search: async () => ({ ok: true, value: { results: [] } }),
+    });
+    expect(tool.descriptor.name).toBe("fs_semantic_search");
+    expect(tool.origin).toBe("primordial");
+    const schema = tool.descriptor.inputSchema as {
+      readonly required?: readonly string[];
+      readonly properties?: Record<string, unknown>;
+    };
+    expect(schema.required).toContain("query");
+    expect(schema.properties).toHaveProperty("scope");
+    expect(schema.properties).toHaveProperty("maxResults");
+    expect(schema.properties).toHaveProperty("minScore");
+  });
+
+  test("fs_semantic_search forwards options and returns backend value (incl. warning)", async () => {
+    const { createFsSemanticSearchTool } = await import("@koi/tools-builtin");
+
+    let captured:
+      | {
+          readonly query: string;
+          readonly scope?: string;
+          readonly maxResults?: number;
+          readonly minScore?: number;
+        }
+      | undefined;
+    const tool = createFsSemanticSearchTool({
+      search: async (query, options) => {
+        captured = { query, ...options };
+        return {
+          ok: true,
+          value: {
+            results: [
+              { path: "src/auth.ts", snippet: "retry", score: 0.91, lineStart: 4, lineEnd: 6 },
+            ],
+            warning: "indexed subset",
+          },
+        };
+      },
+    });
+
+    const result = (await tool.execute({
+      query: "retry logic",
+      scope: "src/**/*.ts",
+      maxResults: 5,
+      minScore: 0.5,
+    })) as { readonly results: readonly { readonly path: string }[]; readonly warning?: string };
+
+    expect(captured?.query).toBe("retry logic");
+    expect(captured?.scope).toBe("src/**/*.ts");
+    expect(captured?.maxResults).toBe(5);
+    expect(captured?.minScore).toBe(0.5);
+    expect(result.results[0]?.path).toBe("src/auth.ts");
+    expect(result.warning).toBe("indexed subset");
+
+    // Empty query short-circuits before delegating.
+    const errResult = (await tool.execute({ query: "   " })) as { readonly error?: string };
+    expect(errResult.error).toBeDefined();
+  });
+
+  test("ATIF trajectory: fs_semantic_search tool call captured", () => {
+    const { existsSync, readFileSync } = require("node:fs") as typeof import("node:fs");
+    const trajectoryPath = `${FIXTURES}/fs-semantic-search.trajectory.json`;
+    if (!existsSync(trajectoryPath)) {
+      throw new Error(
+        "fs-semantic-search.trajectory.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun run packages/meta/runtime/scripts/record-cassettes.ts --query fs-semantic-search",
+      );
+    }
+    const trajectory = JSON.parse(readFileSync(trajectoryPath, "utf-8")) as {
+      readonly schema_version?: string;
+      readonly steps?: readonly {
+        readonly source?: string;
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+      }[];
+    };
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    const steps = trajectory.steps ?? [];
+    expect(steps.length).toBeGreaterThan(0);
+    const toolSteps = steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+    const semanticInvoked = toolSteps.some((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "fs_semantic_search"),
+    );
+    expect(semanticInvoked).toBe(true);
+    const agentSteps = steps.filter((s) => s.source === "agent");
+    expect(agentSteps.length).toBeGreaterThanOrEqual(1);
+  });
+
   test("createEnterPlanModeTool returns FORBIDDEN in agent context, confirmation otherwise", async () => {
     const { createEnterPlanModeTool } = await import("@koi/tools-builtin");
 

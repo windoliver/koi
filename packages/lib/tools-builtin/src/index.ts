@@ -14,6 +14,13 @@ export { BUILTIN_SEARCH_OPERATIONS } from "./constants.js";
 // Credential path guard
 export type { PathGuardResult } from "./credential-path-guard.js";
 export { createCredentialPathGuard } from "./credential-path-guard.js";
+export type {
+  FsSemanticSearchToolConfig,
+  SemanticSearchFn,
+  SemanticSearchHit,
+  SemanticSearchResponse,
+} from "./fs-semantic-search-tool.js";
+export { createFsSemanticSearchTool } from "./fs-semantic-search-tool.js";
 export type { GlobToolConfig } from "./glob-tool.js";
 export { createGlobTool } from "./glob-tool.js";
 export type { GrepToolConfig } from "./grep-tool.js";

@@ -110,6 +110,24 @@ interface NexusGrepResponse {
   readonly results: readonly NexusGrepMatch[];
 }
 
+interface NexusSemanticSearchMatch {
+  readonly path: string;
+  readonly chunk_text: string;
+  readonly score: number;
+  readonly line_start?: number;
+  readonly line_end?: number;
+}
+
+interface NexusSemanticSearchRpcResponse {
+  readonly results: readonly NexusSemanticSearchMatch[];
+}
+
+function extractSemanticSearchMatches(
+  value: readonly NexusSemanticSearchMatch[] | NexusSemanticSearchRpcResponse,
+): readonly NexusSemanticSearchMatch[] {
+  return "results" in value ? value.results : value;
+}
+
 // ---------------------------------------------------------------------------
 // Config extension (allows injecting transport for testing)
 // ---------------------------------------------------------------------------
@@ -118,6 +136,19 @@ interface NexusGrepResponse {
 export interface NexusFileSystemFullConfig extends NexusFileSystemConfig {
   /** Injected transport — overrides HTTP transport creation. For testing only. */
   readonly transport?: NexusTransport | undefined;
+}
+
+export interface NexusSemanticSearchResult {
+  readonly path: string;
+  readonly snippet: string;
+  readonly score: number;
+  readonly lineStart: number;
+  readonly lineEnd: number;
+}
+
+export interface NexusSemanticSearchResponse {
+  readonly results: readonly NexusSemanticSearchResult[];
+  readonly warning?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -206,8 +237,10 @@ async function clientSideSearch(
 function simpleGlobMatch(filePath: string, pattern: string): boolean {
   const escaped = pattern
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*\//g, "<<GLOBSTAR_DIR>>")
     .replace(/\*\*/g, "<<GLOBSTAR>>")
     .replace(/\*/g, "[^/]*")
+    .replace(/<<GLOBSTAR_DIR>>/g, "(?:.*/)?")
     .replace(/<<GLOBSTAR>>/g, ".*");
   return new RegExp(`${escaped}$`).test(filePath);
 }
@@ -457,6 +490,83 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
     };
   }
 
+  async function semanticSearch(
+    query: string,
+    options?: {
+      readonly scope?: string;
+      readonly maxResults?: number;
+      readonly minScore?: number;
+    },
+  ): Promise<Result<NexusSemanticSearchResponse, KoiError>> {
+    const searchBase = basePath.startsWith("/") ? basePath : `/${basePath}`;
+    const requestedLimit = options?.maxResults ?? 10;
+    const scopePattern = options?.scope;
+    const minScore = options?.minScore ?? 0;
+
+    // Scope and minScore are enforced client-side. Over-fetch when either is
+    // active so post-filter does not silently drop valid in-scope hits that
+    // sat below the server's top-N. Cap the over-fetch to bound RPC cost.
+    const needsLocalFilter = scopePattern !== undefined || minScore > 0;
+    const OVER_FETCH_FACTOR = 5;
+    const OVER_FETCH_CAP = 200;
+    // Headroom is *additive*: requestedLimit + capped extra. The previous
+    // multiplicative form collapsed back to requestedLimit whenever
+    // requestedLimit*FACTOR exceeded the cap, so a `maxResults=300` query
+    // with active scope/minScore filtering got zero over-fetch budget and
+    // a leading run of out-of-scope hits could starve every in-scope match.
+    const headroomCap = (OVER_FETCH_FACTOR - 1) * OVER_FETCH_CAP;
+    const headroom = needsLocalFilter
+      ? Math.min(requestedLimit * (OVER_FETCH_FACTOR - 1), headroomCap)
+      : 0;
+    const fetchLimit = requestedLimit + headroom;
+
+    const result = await transport.call<
+      readonly NexusSemanticSearchMatch[] | NexusSemanticSearchRpcResponse
+    >("semantic_search", {
+      query,
+      path: searchBase,
+      limit: fetchLimit,
+      search_mode: "hybrid",
+    });
+    if (!result.ok) return result;
+
+    const rawResults = extractSemanticSearchMatches(result.value);
+    const filtered = rawResults
+      .map((entry: NexusSemanticSearchMatch) => ({
+        path: stripBasePath(basePath, entry.path),
+        snippet: entry.chunk_text,
+        score: entry.score,
+        lineStart: entry.line_start ?? 1,
+        lineEnd: entry.line_end ?? entry.line_start ?? 1,
+      }))
+      .filter((entry: NexusSemanticSearchResult) => entry.score >= minScore)
+      .filter((entry: NexusSemanticSearchResult) => {
+        if (scopePattern === undefined) return true;
+        return simpleGlobMatch(entry.path, scopePattern);
+      });
+
+    const truncatedToLimit = filtered.slice(0, requestedLimit);
+
+    // Warn when local filtering may have hidden valid matches: the server
+    // returned the full over-fetch window AND we still fell short of the
+    // caller's requested limit. Without this signal an empty/short result
+    // set is indistinguishable from "no matches".
+    const serverHitFetchCap = rawResults.length >= fetchLimit;
+    const incomplete =
+      needsLocalFilter && serverHitFetchCap && truncatedToLimit.length < requestedLimit;
+    const warning = incomplete
+      ? `semantic_search may be incomplete: client-side scope/minScore filtering ran on the server's top ${fetchLimit} hits and dropped matches. Tighten the scope or raise maxResults to widen the window.`
+      : undefined;
+
+    return {
+      ok: true,
+      value:
+        warning !== undefined
+          ? { results: truncatedToLimit, warning }
+          : { results: truncatedToLimit },
+    };
+  }
+
   async function del(path: string): Promise<Result<FileDeleteResult, KoiError>> {
     return withSafePath(basePath, path, async (fullPath) => {
       const result = await transport.call<unknown>("delete", { path: fullPath });
@@ -484,7 +594,9 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
     transport.close();
   }
 
-  return {
+  const backend: FileSystemBackend & {
+    readonly semanticSearch: typeof semanticSearch;
+  } = {
     name: "nexus",
     read,
     write,
@@ -494,5 +606,7 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
     delete: del,
     rename,
     dispose,
+    semanticSearch,
   };
+  return backend;
 }

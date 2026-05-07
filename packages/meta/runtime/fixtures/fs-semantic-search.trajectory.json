@@ -1,0 +1,572 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "fs-semantic-search",
+  "agent": {
+    "name": "golden-fs-semantic-search",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "fs_semantic_search",
+        "description": "Search files by meaning. Use when you need to find code by intent rather than exact pattern."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:41.664Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:41.665Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-05-07T07:31:41.682Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the fs_semantic_search tool to find files about \"retry logic\". Then briefly summarise what the top hit shows.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 188,
+        "completion_tokens": 11
+      },
+      "duration_ms": 918,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "fs_semantic_search",
+            "description": "Search files by meaning. Use when you need to find code by intent rather than exact pattern."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "33d5d146e33ab267804d72edcd6100bacf277e3a5c874c95c7060544bb627d42",
+        "turnIndex": 0
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "tool",
+      "timestamp": "2026-05-07T07:31:42.607Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_fs_semantic_search_3",
+          "function_name": "fs_semantic_search",
+          "arguments": {
+            "maxResults": 1,
+            "query": "retry logic"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_fs_semantic_search_3",
+            "content": "{\"results\":[{\"path\":\"src/auth/retry.ts\",\"snippet\":\"// retry policy for retry logic\\nexport function withRetry() {}\",\"score\":0.92,\"lineStart\":1,\"lineEnd\":2}]}"
+          }
+        ]
+      },
+      "duration_ms": 1,
+      "outcome": "success"
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:42.612Z",
+      "model_name": "hook:on-semantic-tool",
+      "message": "tool.succeeded → on-semantic-tool",
+      "duration_ms": 6.836084000000028,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded",
+        "hookName": "on-semantic-tool",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-semantic-tool"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:42.613Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 926.5536249999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1778139102606,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:42.615Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "fs_semantic_search({\"maxResults\":1,\"query\":\"retry logic\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 10.263875000000098,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "fs_semantic_search",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:42.616Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 924.866625,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 1,
+            "allowedCount": 1,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1778139102605,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:42.617Z",
+      "model_name": "middleware:permissions",
+      "message": "fs_semantic_search({\"maxResults\":1,\"query\":\"retry logic\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 9.838999999999942,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "fs_semantic_search",
+            "resource": "fs_semantic_search",
+            "toolInput": "{\"maxResults\":1,\"query\":\"retry logic\"}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1778139102614,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:42.618Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 922.3474160000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1778139102604,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:42.619Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 921.6580840000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1778139102603,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:42.620Z",
+      "model_name": "middleware:hooks",
+      "message": "fs_semantic_search({\"maxResults\":1,\"query\":\"retry logic\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 8.626792000000023,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "fs_semantic_search",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          },
+          {
+            "event": "tool.succeeded",
+            "toolId": "fs_semantic_search",
+            "toolOutput": "{\"results\":[{\"path\":\"src/auth/retry.ts\",\"snippet\":\"// retry policy for retry logic\\nexport function withRetry() {}\",\"score\":0.92,\"lineStart\":1,\"lineEnd\":2}]}",
+            "aggregated": "continue",
+            "hooks": [
+              {
+                "name": "on-semantic-tool",
+                "decision": "continue",
+                "durationMs": 6.836084000000028
+              }
+            ]
+          }
+        ],
+        "_original_timestamp": 1778139102613,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:42.621Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 921.0663339999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1778139102602,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:42.622Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "fs_semantic_search({\"maxResults\":1,\"query\":\"retry logic\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.8707500000000437,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1778139102609,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "agent",
+      "timestamp": "2026-05-07T07:31:42.623Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"results\":[{\"path\":\"src/auth/retry.ts\",\"snippet\":\"// retry policy for retry logic\\nexport function withRetry() {}\",\"score\":0.92,\"lineStart\":1,\"lineEnd\":2}]}",
+      "observation": {
+        "results": [
+          {
+            "content": "The top hit from the semantic search is the file `src/auth/retry.ts`. The snippet shows a comment indicating that this file likely contains retry logic and defines a function `withRetry`.\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 249,
+        "completion_tokens": 41
+      },
+      "duration_ms": 737,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "fs_semantic_search",
+            "description": "Search files by meaning. Use when you need to find code by intent rather than exact pattern."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "33d5d146e33ab267804d72edcd6100bacf277e3a5c874c95c7060544bb627d42",
+        "turnIndex": 1,
+        "_original_timestamp": 1778139102619
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:43.361Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 738.2825,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:43.362Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 738.2582500000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 1,
+            "allowedCount": 1,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1778139103360,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:43.363Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 738.116916,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1778139103359,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:43.364Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 738.086292,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1778139103358,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:43.365Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 737.994958,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1778139103357,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-05-07T07:31:43.366Z",
+      "model_name": "middleware:hooks",
+      "observation": {
+        "results": [
+          {
+            "content": "continue"
+          }
+        ]
+      },
+      "duration_ms": 0.08733299999994415,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "onBeforeStop",
+        "phase": "resolve",
+        "priority": 400,
+        "stopGateResult": "continue",
+        "_original_timestamp": 1778139103363,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    }
+  ]
+}

@@ -191,6 +191,51 @@ function revalidateAfterWrite(
   return undefined;
 }
 
+interface SemanticSearchHit {
+  readonly path: string;
+  readonly snippet: string;
+  readonly score: number;
+  readonly lineStart: number;
+  readonly lineEnd: number;
+}
+
+interface SemanticSearchResponse {
+  readonly results: readonly SemanticSearchHit[];
+  readonly warning?: string | undefined;
+}
+
+type SemanticSearchFn = (
+  query: string,
+  options?: {
+    readonly scope?: string;
+    readonly maxResults?: number;
+    readonly minScore?: number;
+  },
+) => Result<SemanticSearchResponse, KoiError> | Promise<Result<SemanticSearchResponse, KoiError>>;
+
+function hasSemanticSearch(backend: FileSystemBackend): backend is FileSystemBackend & {
+  readonly semanticSearch: SemanticSearchFn;
+} {
+  return "semanticSearch" in backend && typeof backend.semanticSearch === "function";
+}
+
+function applySemanticFilter(
+  result: Result<SemanticSearchResponse, KoiError>,
+  compiled: CompiledScopedFs,
+): Result<SemanticSearchResponse, KoiError> {
+  if (!result.ok) return result;
+  return {
+    ok: true,
+    value: {
+      ...result.value,
+      results: result.value.results.filter((entry) => {
+        const real = resolveReal(entry.path);
+        return real !== undefined && matchAny(toPosix(real), compiled.allow);
+      }),
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -200,6 +245,14 @@ export function createScopedFs(
   opts: ScopedFsOptions,
 ): FileSystemBackend {
   const compiled = compileScopedFs(opts);
+  const semanticSearch = hasSemanticSearch(backend)
+    ? (query: string, options?: Parameters<SemanticSearchFn>[1]) => {
+        const raw = backend.semanticSearch(query, options);
+        return raw instanceof Promise
+          ? raw.then((r) => applySemanticFilter(r, compiled))
+          : applySemanticFilter(raw, compiled);
+      }
+    : undefined;
 
   const del = backend.delete;
   const scopedDelete: Pick<FileSystemBackend, "delete"> = del
@@ -324,5 +377,6 @@ export function createScopedFs(
     ...scopedRename,
     ...scopedResolvePath,
     ...scopedDispose,
+    ...(semanticSearch !== undefined ? { semanticSearch } : {}),
   };
 }

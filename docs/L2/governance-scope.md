@@ -21,6 +21,9 @@ capability grants at the call site.
   rejected with a `PERMISSION` error. Fails closed on all resolution
   errors. Mutating operations (`write`, `delete`, `rename`, etc.) are
   rejected outright in `ro` mode regardless of scope.
+  When the wrapped backend exposes `semanticSearch` (#1319), the scoped
+  wrapper passes the call through, then post-filters returned hits against
+  the same allowlist so semantic-search cannot return out-of-scope paths.
 - `compileScopedFs(opts): CompiledScopedFs` — pre-compiles glob strings to
   `RegExp` instances at configuration time so the hot path does no
   recompilation. Takes `{ allow: string[]; mode: "ro" | "rw" }`.

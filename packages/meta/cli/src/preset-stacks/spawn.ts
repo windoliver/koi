@@ -165,7 +165,7 @@ export const spawnStack: PresetStack = {
         description: "Spawned sub-agent",
         model: { name: modelName },
         selfCeiling: {
-          tools: ["Glob", "Grep", "fs_read", "ToolSearch"],
+          tools: ["Glob", "Grep", "fs_read", "ToolSearch", "fs_semantic_search"],
         },
       },
       inheritedMiddleware,
@@ -239,11 +239,11 @@ export const spawnStack: PresetStack = {
         if (event.kind !== "put") return;
         const { item } = event;
         if (item.status !== "pending") return;
-        if (item.metadata?.["kind"] !== "local_agent") return;
+        if (item.metadata?.kind !== "local_agent") return;
 
-        const rawAgentType: unknown = item.metadata?.["agentType"];
+        const rawAgentType: unknown = item.metadata?.agentType;
         const localAgentType = typeof rawAgentType === "string" ? rawAgentType : item.subject;
-        const localInputs: unknown = item.metadata?.["inputs"] ?? item.description;
+        const localInputs: unknown = item.metadata?.inputs ?? item.description;
 
         const taskConfig: LocalAgentConfig = {
           agentType: localAgentType,
@@ -283,7 +283,7 @@ export const spawnStack: PresetStack = {
             version: "0.0.0",
             description: "Spawned sub-agent",
             model: { name: modelName },
-            selfCeiling: { tools: ["Glob", "Grep", "fs_read", "ToolSearch"] },
+            selfCeiling: { tools: ["Glob", "Grep", "fs_read", "ToolSearch", "fs_semantic_search"] },
           },
           inheritedMiddleware,
           ...(perChildManifestMiddlewareFactory !== undefined
