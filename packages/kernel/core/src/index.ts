@@ -239,6 +239,17 @@ export type {
 export { DEFAULT_SPAWN_CHANNEL_POLICY } from "./channel.js";
 // common
 export type { JsonObject } from "./common.js";
+// composition planner — trigger and planning contracts
+export type {
+  CompositionApprovalContext,
+  CompositionApprovalPolicy,
+  CompositionCapabilities,
+  CompositionMoment,
+  CompositionPlan,
+  CompositionPlanner,
+  CompositionStep,
+  CompositionTrigger,
+} from "./composition-planner.js";
 // config
 export type {
   ConfigListener,
