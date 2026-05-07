@@ -52,6 +52,76 @@ describe("mapNexusToKoi", () => {
   });
 });
 
+describe("decodeKoiStatus strictness", () => {
+  test("rejects unknown phase", () => {
+    expect(
+      decodeKoiStatus({
+        "koi:status": { phase: "haunted", generation: 0, conditions: [], lastTransitionAt: 0 },
+      }),
+    ).toBeUndefined();
+  });
+
+  test("rejects NaN generation", () => {
+    expect(
+      decodeKoiStatus({
+        "koi:status": {
+          phase: "running",
+          generation: Number.NaN,
+          conditions: [],
+          lastTransitionAt: 0,
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  test("rejects Infinity generation", () => {
+    expect(
+      decodeKoiStatus({
+        "koi:status": {
+          phase: "running",
+          generation: Number.POSITIVE_INFINITY,
+          conditions: [],
+          lastTransitionAt: 0,
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  test("rejects fractional generation", () => {
+    expect(
+      decodeKoiStatus({
+        "koi:status": { phase: "running", generation: 1.5, conditions: [], lastTransitionAt: 0 },
+      }),
+    ).toBeUndefined();
+  });
+
+  test("rejects non-string conditions", () => {
+    expect(
+      decodeKoiStatus({
+        "koi:status": {
+          phase: "running",
+          generation: 0,
+          conditions: [{ kind: "evil" }],
+          lastTransitionAt: 0,
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  test("accepts valid status", () => {
+    const status = decodeKoiStatus({
+      "koi:status": {
+        phase: "running",
+        generation: 5,
+        conditions: ["a", "b"],
+        lastTransitionAt: 1_700_000_000_000,
+      },
+    });
+    expect(status?.phase).toBe("running");
+    expect(status?.generation).toBe(5);
+  });
+});
+
 describe("encode/decode AgentStatus round-trip", () => {
   test("encodes status under koi:status key", () => {
     const status: AgentStatus = {

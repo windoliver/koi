@@ -406,6 +406,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
         { cause: registerResult.error },
       );
     }
+    const initialNexusGen = registerResult.value.generation ?? 0;
 
     async function rollbackOrphan(
       reason: string,
@@ -417,15 +418,43 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       // Only delete when we can prove Nexus is still in the
       // pre-transition state. Otherwise surface the failure without
       // touching a possibly-live agent — caller can retry.
-      const probe = await nexusGetAgent(transport, entry.agentId);
-      const remoteState = probe.ok ? probe.value.state : undefined;
+      //
+      // Bounded retry on probe failure: a single failed get_agent
+      // shouldn't strand an orphaned Nexus record with no local
+      // ownership. Retry the probe a few times before giving up.
+      const PROBE_ATTEMPTS = 3;
+      let probe: Awaited<ReturnType<typeof nexusGetAgent>> | undefined;
+      for (let attempt = 0; attempt < PROBE_ATTEMPTS; attempt++) {
+        if (attempt > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 50 * 2 ** (attempt - 1)));
+        }
+        probe = await nexusGetAgent(transport, entry.agentId);
+        if (probe.ok) break;
+      }
+      const remoteState = probe?.ok ? probe.value.state : undefined;
       const safeToDelete = remoteState === expectedFailedState;
       let rollbackFailureMessage: string | undefined;
       if (safeToDelete) {
         const deleteAttempt = await nexusDeleteAgent(transport, entry.agentId);
         if (!deleteAttempt.ok) rollbackFailureMessage = deleteAttempt.error.message;
+      } else if (probe?.ok) {
+        rollbackFailureMessage = `skipped delete: remote agent state is ${remoteState ?? "unknown"} — refusing destructive rollback after ambiguous transition failure (transition may have committed; retry register or call deregister explicitly)`;
       } else {
-        rollbackFailureMessage = `skipped delete: remote agent state is ${remoteState ?? "unknown"} — refusing destructive rollback after ambiguous transition failure`;
+        // Probe never succeeded — we cannot tell whether the agent is
+        // orphaned or live. Tombstone the id locally so subsequent ops
+        // see the entry as reconcile-pending rather than vanished, and
+        // surface the situation to the caller.
+        const tombstoneEntry: RegistryEntry = {
+          ...entry,
+          metadata: {
+            ...entry.metadata,
+            ...encodeKoiStatus(entry.status),
+          },
+        };
+        projection.set(entry.agentId, tombstoneEntry);
+        nexusGens.set(entry.agentId, initialNexusGen);
+        stale.add(entry.agentId);
+        rollbackFailureMessage = `probe failed after ${String(PROBE_ATTEMPTS)} attempts; remote record may be orphaned. Tombstoned local id ${entry.agentId} — call deregister() once Nexus is reachable again`;
       }
       throw new Error(
         `Failed to register agent ${entry.agentId}: ${reason}${
@@ -436,7 +465,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     }
 
     // let: advances through setup transitions
-    let currentNexusGen = registerResult.value.generation ?? 0;
+    let currentNexusGen = initialNexusGen;
 
     const targetNexusState = mapKoiToNexus(entry.status.phase);
     const connectedResult = await nexusTransition(

@@ -78,21 +78,29 @@ describe("createNexusSearch", () => {
     }
   });
 
-  test("retrieve filters by minScore client-side", async () => {
-    transport.stub("search_retrieve", async () => ({
-      ok: true,
-      value: {
-        hits: [
-          { id: "a", score: 0.9, content: "x" },
-          { id: "b", score: 0.4, content: "x" },
-          { id: "c", score: 0.6, content: "x" },
-        ],
-      },
-    }));
+  test("retrieve forwards minScore to Nexus and trusts the server-filtered slice", async () => {
+    let sentMinScore: unknown;
+    transport.stub("search_retrieve", async (params) => {
+      sentMinScore = params.min_score;
+      return {
+        ok: true,
+        // Server applied min_score before paginating: only qualifying hits
+        // are returned. Adapter must NOT post-filter, otherwise pagination
+        // (cursor/hasMore) would diverge from the visible results under
+        // version skew.
+        value: {
+          hits: [
+            { id: "a", score: 0.9, content: "x" },
+            { id: "c", score: 0.6, content: "x" },
+          ],
+        },
+      };
+    });
 
     const search = createNexusSearch({ transport });
     const result = await search.retrieve({ text: "x", limit: 10, minScore: 0.5 });
 
+    expect(sentMinScore).toBe(0.5);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.results.map((r) => r.id)).toEqual(["a", "c"]);

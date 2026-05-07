@@ -77,6 +77,25 @@ export function encodeKoiStatus(status: AgentStatus): Readonly<Record<string, un
   return base;
 }
 
+const VALID_PHASES: ReadonlySet<string> = new Set([
+  "created",
+  "running",
+  "waiting",
+  "idle",
+  "suspended",
+  "terminated",
+]);
+
+/**
+ * Decode a `koi:status` metadata blob into an AgentStatus.
+ *
+ * Strict: rejects unknown phases, non-finite/non-integer numbers, and
+ * non-string conditions. Schema drift or a malicious/corrupted remote
+ * record must not bleed into local AgentStatus — bad blobs return
+ * undefined so the adapter falls back to live Nexus state instead of
+ * trusting potentially-poisoned data (e.g. a NaN generation that would
+ * make every CAS comparison fail).
+ */
 export function decodeKoiStatus(
   metadata: Readonly<Record<string, unknown>>,
 ): AgentStatus | undefined {
@@ -89,10 +108,20 @@ export function decodeKoiStatus(
   const conditions = obj.conditions;
   const lastTransitionAt = obj.lastTransitionAt;
 
-  if (typeof phase !== "string") return undefined;
-  if (typeof generation !== "number") return undefined;
-  if (!Array.isArray(conditions)) return undefined;
-  if (typeof lastTransitionAt !== "number") return undefined;
+  if (typeof phase !== "string" || !VALID_PHASES.has(phase)) return undefined;
+  if (typeof generation !== "number" || !Number.isInteger(generation) || generation < 0) {
+    return undefined;
+  }
+  if (!Array.isArray(conditions) || !conditions.every((c) => typeof c === "string")) {
+    return undefined;
+  }
+  if (
+    typeof lastTransitionAt !== "number" ||
+    !Number.isFinite(lastTransitionAt) ||
+    lastTransitionAt < 0
+  ) {
+    return undefined;
+  }
 
   const reason = obj.reason as AgentStatus["reason"];
 
