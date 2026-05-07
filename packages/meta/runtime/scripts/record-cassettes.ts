@@ -168,6 +168,7 @@ import {
   createEnterPlanModeTool,
   createExitPlanModeTool,
   createFsReadTool,
+  createFsSemanticSearchTool,
   createGlobTool,
   createTodoTool,
 } from "@koi/tools-builtin";
@@ -1734,6 +1735,34 @@ if (nexusFsCheck.exitCode === 0) {
 }
 
 // ---------------------------------------------------------------------------
+// Semantic search (@koi/tools-builtin createFsSemanticSearchTool)
+// ---------------------------------------------------------------------------
+
+// Stub semantic-search backend — returns a fixed, deterministic hit so the
+// recorded cassette/trajectory is reproducible without an indexer.
+const semanticSearchProvider: ComponentProvider = createSingleToolProvider({
+  name: "fs-semantic-search",
+  toolName: "fs_semantic_search",
+  createTool: () =>
+    createFsSemanticSearchTool({
+      search: async (query) => ({
+        ok: true,
+        value: {
+          results: [
+            {
+              path: "src/auth/retry.ts",
+              snippet: `// retry policy for ${query}\nexport function withRetry() {}`,
+              score: 0.92,
+              lineStart: 1,
+              lineEnd: 2,
+            },
+          ],
+        },
+      }),
+    }),
+});
+
+// ---------------------------------------------------------------------------
 // Local filesystem (@koi/fs-local — no Nexus server needed)
 // ---------------------------------------------------------------------------
 
@@ -2945,6 +2974,28 @@ const queries: readonly QueryConfig[] = [
         },
       ]
     : []),
+
+  // fs-semantic-search: exercises createFsSemanticSearchTool from
+  // @koi/tools-builtin. Backend is stubbed to return a deterministic hit so
+  // the trajectory is reproducible without a live embedding index.
+  {
+    name: "fs-semantic-search",
+    prompt:
+      'Use the fs_semantic_search tool to find files about "retry logic". Then briefly summarise what the top hit shows.',
+    permissionMode: "bypass" as const,
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-semantic-tool",
+        cmd: ["echo", "semantic-tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [semanticSearchProvider],
+    maxTurns: 2,
+  },
 
   // 8. local-fs: @koi/fs-local exercised via real local filesystem
   {

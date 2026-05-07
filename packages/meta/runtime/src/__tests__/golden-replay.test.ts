@@ -2877,6 +2877,35 @@ describe("Golden: @koi/tools-builtin", () => {
     expect(errResult.error).toBeDefined();
   });
 
+  test("ATIF trajectory: fs_semantic_search tool call captured", () => {
+    const { existsSync, readFileSync } = require("node:fs") as typeof import("node:fs");
+    const trajectoryPath = `${FIXTURES}/fs-semantic-search.trajectory.json`;
+    if (!existsSync(trajectoryPath)) {
+      throw new Error(
+        "fs-semantic-search.trajectory.json not found. Re-record:\n" +
+          "  OPENROUTER_API_KEY=sk-... bun run packages/meta/runtime/scripts/record-cassettes.ts --query fs-semantic-search",
+      );
+    }
+    const trajectory = JSON.parse(readFileSync(trajectoryPath, "utf-8")) as {
+      readonly schema_version?: string;
+      readonly steps?: readonly {
+        readonly source?: string;
+        readonly tool_calls?: readonly { readonly function_name?: string }[];
+      }[];
+    };
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    const steps = trajectory.steps ?? [];
+    expect(steps.length).toBeGreaterThan(0);
+    const toolSteps = steps.filter((s) => s.source === "tool");
+    expect(toolSteps.length).toBeGreaterThanOrEqual(1);
+    const semanticInvoked = toolSteps.some((s) =>
+      s.tool_calls?.some((tc) => tc.function_name === "fs_semantic_search"),
+    );
+    expect(semanticInvoked).toBe(true);
+    const agentSteps = steps.filter((s) => s.source === "agent");
+    expect(agentSteps.length).toBeGreaterThanOrEqual(1);
+  });
+
   test("createEnterPlanModeTool returns FORBIDDEN in agent context, confirmation otherwise", async () => {
     const { createEnterPlanModeTool } = await import("@koi/tools-builtin");
 
