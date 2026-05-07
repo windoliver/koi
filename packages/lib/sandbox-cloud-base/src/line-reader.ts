@@ -7,7 +7,6 @@ export interface LineReaderOptions {
 
 const DEFAULT_MAX_LINE_BYTES = 1 * 1024 * 1024;
 const DEFAULT_MAX_TOTAL_BYTES = 10 * 1024 * 1024;
-const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
 function clampPrefix(text: string, maxBytes: number): string {
@@ -28,6 +27,7 @@ export async function* createLineReader(
 ): AsyncGenerator<LineReaderEvent, void, undefined> {
   const maxLineBytes = options?.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES;
   const maxTotalBytes = options?.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
+  const decoder = new TextDecoder();
   const reader = stream.getReader();
   let buffer = "";
   let totalBytes = 0;
@@ -50,8 +50,10 @@ export async function* createLineReader(
       const { value, done } = await reader.read();
       if (done) {
         const tail = clampPrefix(buffer.replace(/\r$/, ""), maxLineBytes);
-        if (tail.length > 0 && totalBytes < maxTotalBytes) {
-          yield tail;
+        const remainingBytes = maxTotalBytes - totalBytes;
+        if (tail.length > 0 && remainingBytes > 0) {
+          const tailBytes = encoder.encode(tail).byteLength;
+          yield tailBytes <= remainingBytes ? tail : clampPrefix(tail, remainingBytes);
         }
         return;
       }
