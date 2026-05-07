@@ -256,6 +256,49 @@ describe("createScopedFs — search", () => {
     // refusing.
     expect(backendSearchSpy.called).toBe(false);
   });
+
+  test("filters out-of-scope semantic search results", async () => {
+    const backend = {
+      name: "mock",
+      read: (p: string) => ({ ok: true as const, value: { content: "", path: p, size: 0 } }),
+      write: (p: string) => ({ ok: true as const, value: { path: p, bytesWritten: 0 } }),
+      edit: (p: string) => ({ ok: true as const, value: { path: p, hunksApplied: 0 } }),
+      list: () => ({ ok: true as const, value: { entries: [], truncated: false } }),
+      search: () => ({ ok: true as const, value: { matches: [], truncated: false } }),
+      semanticSearch: async () => ({
+        ok: true as const,
+        value: {
+          results: [
+            { path: join(scope, "ok.ts"), snippet: "ok", score: 0.93, lineStart: 1 },
+            { path: join(outside, "secret.txt"), snippet: "secret", score: 0.88, lineStart: 1 },
+          ],
+        },
+      }),
+    };
+    const fs = createScopedFs(backend, { allow: [`${scope}/**`], mode: "ro" }) as
+      | FileSystemBackend
+      | {
+          readonly semanticSearch?: (query: string) => Promise<
+            Result<
+              {
+                readonly results: readonly {
+                  readonly path: string;
+                  readonly snippet: string;
+                  readonly score: number;
+                  readonly lineStart?: number;
+                }[];
+              },
+              KoiError
+            >
+          >;
+        };
+    expect(typeof fs.semanticSearch).toBe("function");
+    const result = await fs.semanticSearch?.("ok");
+    expect(result).toHaveProperty("ok", true);
+    if (result === undefined || !result.ok) return;
+    expect(result.value.results).toHaveLength(1);
+    expect(result.value.results[0]?.path).toBe(join(scope, "ok.ts"));
+  });
 });
 
 // ---------------------------------------------------------------------------

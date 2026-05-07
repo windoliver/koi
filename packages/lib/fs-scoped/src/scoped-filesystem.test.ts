@@ -410,6 +410,52 @@ describe("createScopedFileSystem", () => {
       const r = scoped.search("x") as Result<unknown, KoiError>;
       expect(isErr(r)).toBe(true);
     });
+
+    test("filters out-of-scope semantic search results", async () => {
+      const inner = {
+        name: "inner",
+        read: () => ({ ok: true, value: { content: "", path: "", size: 0 } }),
+        write: () => ({ ok: true, value: { path: "", bytesWritten: 0 } }),
+        edit: () => ({ ok: true, value: { path: "", hunksApplied: 0 } }),
+        list: () => ({ ok: true, value: { entries: [], truncated: false } }),
+        search: () => ({ ok: true, value: { matches: [], truncated: false } }),
+        semanticSearch: async () => ({
+          ok: true as const,
+          value: {
+            results: [
+              { path: "/workspace/src/foo.ts", snippet: "foo", score: 0.91, lineStart: 4 },
+              { path: "/workspace/other/bar.ts", snippet: "bar", score: 0.84, lineStart: 9 },
+            ],
+            warning: "indexed subset",
+          },
+        }),
+      };
+      const scoped = createScopedFileSystem(inner, { root: "/workspace/src", mode: "ro" }) as
+        | FileSystemBackend
+        | {
+            readonly semanticSearch?: (query: string) => Promise<
+              Result<
+                {
+                  readonly results: readonly {
+                    readonly path: string;
+                    readonly snippet: string;
+                    readonly score: number;
+                    readonly lineStart?: number;
+                  }[];
+                  readonly warning?: string;
+                },
+                KoiError
+              >
+            >;
+          };
+      expect(typeof scoped.semanticSearch).toBe("function");
+      const result = await scoped.semanticSearch?.("foo");
+      expect(result).toHaveProperty("ok", true);
+      if (result === undefined || !result.ok) return;
+      expect(result.value.results).toHaveLength(1);
+      expect(result.value.results[0]?.path).toBe("/workspace/src/foo.ts");
+      expect(result.value.warning).toBe("indexed subset");
+    });
   });
 
   // ---------------------------------------------------------------------------

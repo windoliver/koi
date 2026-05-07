@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ToolSummary } from "@koi/core";
 import { isAttachResult } from "@koi/core";
 import { createBuiltinSearchProvider } from "./builtin-search-provider.js";
+import { createFsSemanticSearchTool } from "./fs-semantic-search-tool.js";
 import { createGlobTool } from "./glob-tool.js";
 import { createGrepTool } from "./grep-tool.js";
 import { createToolSearchTool } from "./tool-search-tool.js";
@@ -388,6 +389,63 @@ const MOCK_TOOLS: readonly ToolSummary[] = [
   { name: "Grep", description: "Content search with ripgrep" },
 ];
 
+describe("createFsSemanticSearchTool", () => {
+  test("returns semantic search results with optional warning", async () => {
+    const tool = createFsSemanticSearchTool({
+      search: async (query, options) => ({
+        ok: true,
+        value: {
+          results: [
+            {
+              path: "src/auth.ts",
+              snippet: "retry logic with exponential backoff",
+              score: 0.91,
+              lineStart: 12,
+              lineEnd: 18,
+            },
+          ],
+          warning:
+            query === "retry logic" && options?.scope === "src/**/*.ts"
+              ? "Index is warming"
+              : undefined,
+        },
+      }),
+    });
+
+    const result = (await tool.execute({
+      query: "retry logic",
+      scope: "src/**/*.ts",
+      maxResults: 3,
+      minScore: 0.5,
+    })) as {
+      readonly results: readonly {
+        readonly path: string;
+        readonly snippet: string;
+        readonly score: number;
+        readonly lineStart: number;
+        readonly lineEnd: number;
+      }[];
+      readonly warning?: string;
+    };
+
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]?.path).toBe("src/auth.ts");
+    expect(result.results[0]?.score).toBe(0.91);
+    expect(result.warning).toBe("Index is warming");
+  });
+
+  test("rejects empty query", async () => {
+    const tool = createFsSemanticSearchTool({
+      search: async () => ({
+        ok: true,
+        value: { results: [] },
+      }),
+    });
+    const result = (await tool.execute({ query: "" })) as { readonly error: string };
+    expect(result.error).toContain("query");
+  });
+});
+
 describe("createToolSearchTool", () => {
   const tool = createToolSearchTool({ getTools: () => MOCK_TOOLS });
 
@@ -454,6 +512,21 @@ describe("createBuiltinSearchProvider", () => {
     expect(components.has("tool:Glob")).toBe(true);
     expect(components.has("tool:Grep")).toBe(true);
     expect(components.has("tool:ToolSearch")).toBe(true);
+  });
+
+  test("attaches fs_semantic_search when semantic search is configured", async () => {
+    const provider = createBuiltinSearchProvider({
+      cwd: TMP,
+      getTools: () => MOCK_TOOLS,
+      semanticSearch: async () => ({
+        ok: true,
+        value: { results: [] },
+      }),
+    });
+
+    const result = await provider.attach({} as never);
+    const components = isAttachResult(result) ? result.components : result;
+    expect(components.has("tool:fs_semantic_search")).toBe(true);
   });
 
   test("respects operations filter", async () => {

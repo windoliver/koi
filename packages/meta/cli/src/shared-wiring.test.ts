@@ -270,6 +270,46 @@ describe("buildCoreProviders: filesystem operation gating", () => {
     })) as { readonly code?: string };
     expect(result.code).toBe("CREDENTIAL_PATH_DENIED");
   });
+
+  test("wires fs_semantic_search when filesystem backend exposes semanticSearch", async () => {
+    const providers = buildCoreProviders({
+      cwd: mkTempCwd(),
+      includeWebFetch: false,
+      filesystemBackend: {
+        name: "nexus",
+        read: async () => ({ ok: true, value: { content: "", path: "", size: 0 } }),
+        write: async () => ({ ok: true, value: { path: "", bytesWritten: 0 } }),
+        edit: async () => ({ ok: true, value: { path: "", hunksApplied: 0 } }),
+        list: async () => ({ ok: true, value: { entries: [], truncated: false } }),
+        search: async () => ({ ok: true, value: { matches: [], truncated: false } }),
+        semanticSearch: async () => ({
+          ok: true as const,
+          value: {
+            results: [
+              {
+                path: "src/auth.ts",
+                snippet: "retry logic",
+                score: 0.88,
+                lineStart: 4,
+                lineEnd: 8,
+              },
+            ],
+          },
+        }),
+      },
+    });
+    const semanticTool = await getToolFromProvider(
+      providers,
+      "builtin-search",
+      "fs_semantic_search",
+    );
+    const result = (await semanticTool.execute({ query: "retry logic" })) as {
+      readonly results: readonly { readonly path: string }[];
+    };
+
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]?.path).toBe("src/auth.ts");
+  });
 });
 
 // ---------------------------------------------------------------------------

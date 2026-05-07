@@ -120,6 +120,49 @@ describe("NexusFileSystem specifics", () => {
     }
   });
 
+  test("semanticSearch delegates to semantic_search RPC", async () => {
+    const transport = createFakeNexusTransport();
+    const backend = createNexusFileSystem({ url: "http://fake", transport }) as {
+      readonly semanticSearch?: (
+        query: string,
+        options?: {
+          readonly scope?: string;
+          readonly maxResults?: number;
+          readonly minScore?: number;
+        },
+      ) => Promise<
+        | {
+            readonly ok: true;
+            readonly value: {
+              readonly results: readonly {
+                readonly path: string;
+                readonly snippet: string;
+                readonly score: number;
+                readonly lineStart: number;
+                readonly lineEnd: number;
+              }[];
+              readonly warning?: string;
+            };
+          }
+        | { readonly ok: false }
+      >;
+    };
+    await backend.write("/semantic/auth.ts", "retry logic with exponential backoff");
+
+    expect(typeof backend.semanticSearch).toBe("function");
+    const result = await backend.semanticSearch?.("retry logic", {
+      scope: "semantic/**/*.ts",
+      maxResults: 5,
+      minScore: 0.3,
+    });
+    expect(result?.ok).toBe(true);
+    if (result?.ok) {
+      expect(result.value.results.length).toBeGreaterThanOrEqual(1);
+      expect(result.value.results[0]?.path).toContain("auth.ts");
+      expect(result.value.results[0]?.score).toBeGreaterThan(0);
+    }
+  });
+
   test("list returns structured entries with kind", async () => {
     const transport = createFakeNexusTransport();
     const backend = createNexusFileSystem({ url: "http://fake", transport });

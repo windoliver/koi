@@ -539,6 +539,19 @@ async def dispatch(fs, method, params):
 
         return {"results": results, "skipped": skipped}
 
+    if method == "semantic_search":
+        query = params.get("query", "")
+        search_path = params.get("path", "/")
+        limit = params.get("limit", 10)
+        search_mode = params.get("search_mode", "hybrid")
+        results = await fs.semantic_search(
+            query,
+            path=search_path,
+            limit=limit,
+            search_mode=search_mode,
+        )
+        return results
+
     if method == "delete":
         await fs.delete(path)
         return {"deleted": True}

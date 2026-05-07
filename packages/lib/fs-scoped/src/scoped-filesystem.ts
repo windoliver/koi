@@ -109,6 +109,51 @@ function applySearchFilter(
   return { ok: true, value: { matches: filtered, truncated: result.value.truncated } };
 }
 
+interface SemanticSearchHit {
+  readonly path: string;
+  readonly snippet: string;
+  readonly score: number;
+  readonly lineStart: number;
+  readonly lineEnd: number;
+}
+
+interface SemanticSearchResponse {
+  readonly results: readonly SemanticSearchHit[];
+  readonly warning?: string | undefined;
+}
+
+type SemanticSearchFn = (
+  query: string,
+  options?: {
+    readonly scope?: string;
+    readonly maxResults?: number;
+    readonly minScore?: number;
+  },
+) => Result<SemanticSearchResponse, KoiError> | Promise<Result<SemanticSearchResponse, KoiError>>;
+
+function hasSemanticSearch(backend: FileSystemBackend): backend is FileSystemBackend & {
+  readonly semanticSearch: SemanticSearchFn;
+} {
+  return "semanticSearch" in backend && typeof backend.semanticSearch === "function";
+}
+
+function applySemanticFilter(
+  result: Result<SemanticSearchResponse, KoiError>,
+  compiled: CompiledFileSystemScope,
+): Result<SemanticSearchResponse, KoiError> {
+  if (!result.ok) return result;
+  return {
+    ok: true,
+    value: {
+      ...result.value,
+      results: result.value.results.filter((entry) => {
+        const resolved = resolve(entry.path);
+        return resolved === compiled.root || resolved.startsWith(compiled.rootWithSep);
+      }),
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -118,6 +163,14 @@ export function createScopedFileSystem(
   scope: FileSystemScope,
 ): FileSystemBackend {
   const compiled = compileFileSystemScope(scope);
+  const semanticSearch = hasSemanticSearch(backend)
+    ? (query: string, options?: Parameters<SemanticSearchFn>[1]) => {
+        const raw = backend.semanticSearch(query, options);
+        return raw instanceof Promise
+          ? raw.then((r) => applySemanticFilter(r, compiled))
+          : applySemanticFilter(raw, compiled);
+      }
+    : undefined;
 
   // Build optional method objects conditionally to satisfy exactOptionalPropertyTypes.
   // Capture method references to avoid non-null assertions in the delegating closures.
@@ -216,5 +269,6 @@ export function createScopedFileSystem(
     ...scopedRename,
     ...scopedResolvePath,
     ...scopedDispose,
+    ...(semanticSearch !== undefined ? { semanticSearch } : {}),
   };
 }

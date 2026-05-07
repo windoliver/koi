@@ -28,6 +28,7 @@ import type {
   ComponentProvider,
   CredentialComponent,
   EngineState,
+  FileSystemBackend,
   HookConfig,
   InboundMessage,
   KoiMiddleware,
@@ -74,6 +75,7 @@ import {
   createFsReadTool,
   createFsWriteTool,
   type FsToolOptions,
+  type SemanticSearchFn,
 } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import { createSafeFetcher } from "@koi/url-safety";
@@ -1314,6 +1316,14 @@ export interface CoreProvidersConfig {
   readonly additional?: readonly ComponentProvider[];
 }
 
+interface SemanticSearchCapableBackend extends FileSystemBackend {
+  readonly semanticSearch: SemanticSearchFn;
+}
+
+function hasSemanticSearch(backend: FileSystemBackend): backend is SemanticSearchCapableBackend {
+  return "semanticSearch" in backend && typeof backend.semanticSearch === "function";
+}
+
 /**
  * Default TTL for the web_fetch LRU response cache (issue #1903).
  *
@@ -1370,8 +1380,12 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
   const { cwd, bashTool } = config;
   const includeFs = config.includeFilesystemTools ?? true;
   const includeWeb = config.includeWebFetch ?? true;
-
-  const providers: ComponentProvider[] = [createBuiltinSearchProvider({ cwd })];
+  const fs = config.filesystemBackend ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
+  const providers: ComponentProvider[] = [
+    createBuiltinSearchProvider(
+      hasSemanticSearch(fs) ? { cwd, semanticSearch: fs.semanticSearch } : { cwd },
+    ),
+  ];
 
   if (includeFs) {
     // allowExternalPaths: the runtime has a real permission middleware
@@ -1383,7 +1397,6 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
     //
     // Use the caller-supplied backend when provided (e.g. a Nexus backend
     // from resolveFileSystemAsync); otherwise create the default local one.
-    const fs = config.filesystemBackend ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
     const fsToolOptions = config.fsToolOptions ?? { pathGuard: createCredentialPathGuard() };
     // Operation gating: `undefined` means "wire all three" (the default
     // for host-default filesystems). Manifest-driven filesystems apply
