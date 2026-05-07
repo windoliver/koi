@@ -4,10 +4,10 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 204 workspace packages
+- 207 workspace packages
 - 11 package families
-- 204 packages with local test files
-- 182 packages with dedicated package docs
+- 207 packages with local test files
+- 185 packages with dedicated package docs
 
 ## Family Summary
 
@@ -20,7 +20,7 @@ Current snapshot:
 | meta | 3 | 107 | 3 |
 | mm | 12 | 54 | 12 |
 | net | 10 | 89 | 10 |
-| sandbox | 8 | 37 | 8 |
+| sandbox | 11 | 58 | 11 |
 | sched | 5 | 22 | 5 |
 | security | 19 | 105 | 19 |
 | ui | 1 | 54 | 1 |
@@ -221,8 +221,9 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/mcp-server` (packages/net/mcp-server) - Expose agent tools and platform capabilities via Model Context Protocol. Tests: 3. Docs: docs/L2/mcp-server.md.
 - `@koi/nexus-sandbox` (packages/net/nexus-sandbox) - Spawn local nexus-ai-fs[sandbox] subprocess: zero external services, SQLite + LRU + BM25S. Tests: 4. Docs: docs/L2/nexus-sandbox.md.
 
-## sandbox (8)
+## sandbox (11)
 
+- `@koi/sandbox-cloudflare` (packages/sandbox/sandbox-cloudflare) - Cloudflare Workers EdgeFunctionAdapter — durable per-(ownerId, operationId) dedupe via Durable Objects. Tests: 11. Docs: docs/L2/sandbox-cloudflare.md.
 - `@koi/sandbox-conformance` (packages/sandbox/sandbox-conformance) - Shared bun:test conformance suite for SandboxAdapter implementations. Tests: 5. Docs: docs/L2/sandbox-conformance.md.
 - `@koi/sandbox-daytona` (packages/sandbox/sandbox-daytona) - Daytona hosted-cloud SandboxAdapter for managed workspace execution. Tests: 3. Docs: docs/L2/sandbox-daytona.md.
 - `@koi/sandbox-docker` (packages/sandbox/sandbox-docker) - Docker-backed SandboxAdapter for containerized command execution. Tests: 10. Docs: docs/L2/sandbox-docker.md.
@@ -231,6 +232,8 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/sandbox-os` (packages/sandbox/sandbox-os) - OS-level sandbox adapter with seatbelt and bubblewrap backends. Tests: 8. Docs: docs/L2/sandbox-os.md.
 - `@koi/sandbox-router` (packages/sandbox/sandbox-router) - Capability-based selection over SandboxAdapter instances with create-time fallback and lifecycle tracking. Tests: 3. Docs: docs/L2/sandbox-router.md.
 - `@koi/sandbox-ssh` (packages/sandbox/sandbox-ssh) - SSH-backed SandboxAdapter for remote command execution via ssh2. Tests: 3. Docs: docs/L2/sandbox-ssh.md.
+- `@koi/sandbox-vercel` (packages/sandbox/sandbox-vercel) - Vercel Functions EdgeFunctionAdapter (DESIGN-ONLY in v1) — KV-backed dedupe per (ownerId, operationId).. Tests: 7. Docs: docs/L2/sandbox-vercel.md.
+- `@koi/sandbox-wasm` (packages/sandbox/sandbox-wasm) - In-process WebAssembly executor (package-local WasmExecutor contract; NOT SandboxExecutor). Tests: 3. Docs: docs/L2/sandbox-wasm.md.
 
 ## sched (5)
 
