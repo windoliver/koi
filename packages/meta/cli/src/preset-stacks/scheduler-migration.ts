@@ -1,4 +1,10 @@
-import type { ScheduleStore, TaskQueueBackend, TaskStore } from "@koi/core";
+import type {
+  CronSchedule,
+  ScheduledTask,
+  ScheduleStore,
+  TaskQueueBackend,
+  TaskStore,
+} from "@koi/core";
 
 export interface SchedulerMigrationReport {
   readonly schedulesImported: number;
@@ -13,6 +19,52 @@ export interface SchedulerMigrationArgs {
   readonly nexusTaskStore: TaskStore;
   readonly nexusScheduleStore: ScheduleStore;
   readonly nexusQueueBackend: TaskQueueBackend;
+}
+
+function repairForMigration(task: ScheduledTask): ScheduledTask {
+  if (task.status !== "running") return task;
+  if (task.retries < task.maxRetries) {
+    return { ...task, status: "pending" as const, retries: task.retries + 1 };
+  }
+  return { ...task, status: "dead_letter" as const };
+}
+
+async function importSchedules(
+  locals: readonly CronSchedule[],
+  store: ScheduleStore,
+): Promise<{ readonly imported: number; readonly skipped: number }> {
+  const existing = new Set((await store.loadSchedules()).map((s) => s.id));
+  let imported = 0;
+  let skipped = 0;
+  for (const schedule of locals) {
+    if (existing.has(schedule.id)) {
+      skipped += 1;
+      continue;
+    }
+    await store.saveSchedule(schedule);
+    imported += 1;
+  }
+  return { imported, skipped };
+}
+
+async function importTasks(
+  locals: readonly ScheduledTask[],
+  taskStore: TaskStore,
+  queue: TaskQueueBackend,
+): Promise<{ readonly imported: number; readonly skipped: number }> {
+  let imported = 0;
+  let skipped = 0;
+  for (const task of locals) {
+    if ((await taskStore.load(task.id)) !== undefined) {
+      skipped += 1;
+      continue;
+    }
+    const migrated = repairForMigration(task);
+    await taskStore.save(migrated);
+    if (migrated.status === "pending") await queue.enqueue(migrated, task.id);
+    imported += 1;
+  }
+  return { imported, skipped };
 }
 
 export async function migrateLocalSchedulerToNexus(
@@ -30,54 +82,13 @@ export async function migrateLocalSchedulerToNexus(
     };
   }
 
-  let schedulesImported = 0;
-  let tasksImported = 0;
-  let skippedExistingSchedules = 0;
-  let skippedExistingTasks = 0;
-
-  const existingSchedules = new Set(
-    (await args.nexusScheduleStore.loadSchedules()).map((schedule) => schedule.id),
-  );
-
-  for (const schedule of localSchedules) {
-    if (existingSchedules.has(schedule.id)) {
-      skippedExistingSchedules += 1;
-      continue;
-    }
-    await args.nexusScheduleStore.saveSchedule(schedule);
-    schedulesImported += 1;
-  }
-
-  for (const task of localTasks) {
-    const existingTask = await args.nexusTaskStore.load(task.id);
-    if (existingTask !== undefined) {
-      skippedExistingTasks += 1;
-      continue;
-    }
-    const migratedTask =
-      task.status === "running"
-        ? task.retries < task.maxRetries
-          ? {
-              ...task,
-              status: "pending" as const,
-              retries: task.retries + 1,
-            }
-          : {
-              ...task,
-              status: "dead_letter" as const,
-            }
-        : task;
-    await args.nexusTaskStore.save(migratedTask);
-    if (migratedTask.status === "pending") {
-      await args.nexusQueueBackend.enqueue(migratedTask, task.id);
-    }
-    tasksImported += 1;
-  }
+  const schedules = await importSchedules(localSchedules, args.nexusScheduleStore);
+  const tasks = await importTasks(localTasks, args.nexusTaskStore, args.nexusQueueBackend);
 
   return {
-    schedulesImported,
-    tasksImported,
-    skippedExistingSchedules,
-    skippedExistingTasks,
+    schedulesImported: schedules.imported,
+    tasksImported: tasks.imported,
+    skippedExistingSchedules: schedules.skipped,
+    skippedExistingTasks: tasks.skipped,
   };
 }

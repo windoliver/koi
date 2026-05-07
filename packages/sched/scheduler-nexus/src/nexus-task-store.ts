@@ -34,21 +34,38 @@ interface ApiQueryResponse {
   readonly tasks: readonly ApiTask[];
 }
 
+function buildUpdatePatch(
+  patch?: Partial<Pick<ScheduledTask, "startedAt" | "completedAt" | "lastError" | "retries">>,
+): Record<string, unknown> {
+  return {
+    ...(patch?.startedAt !== undefined ? { started_at: patch.startedAt } : {}),
+    ...(patch?.completedAt !== undefined ? { completed_at: patch.completedAt } : {}),
+    ...(patch?.lastError !== undefined ? { last_error: patch.lastError } : {}),
+    ...(patch?.retries !== undefined ? { retries: patch.retries } : {}),
+  };
+}
+
+function buildQueryFilter(filter: TaskFilter): Record<string, unknown> {
+  return {
+    ...(filter.status !== undefined ? { status: filter.status } : {}),
+    ...(filter.agentId !== undefined ? { agent_id: filter.agentId } : {}),
+    ...(filter.priority !== undefined ? { priority: filter.priority } : {}),
+    ...(filter.limit !== undefined ? { limit: filter.limit } : {}),
+  };
+}
+
 export function createNexusTaskStore(transport: NexusTransport): TaskStore {
   return {
     async save(task: ScheduledTask): Promise<void> {
       unwrap(await transport.call("scheduler.task.save", taskToWire(task)));
     },
-
     async load(id: ScheduledTask["id"]): Promise<ScheduledTask | undefined> {
       const result = unwrap<ApiLoadResponse>(await transport.call("scheduler.task.load", { id }));
       return result.task === null ? undefined : mapApiTask(result.task);
     },
-
     async remove(id: ScheduledTask["id"]): Promise<void> {
       unwrap(await transport.call("scheduler.task.remove", { id }));
     },
-
     async updateStatus(
       id: ScheduledTask["id"],
       status: ScheduledTaskStatus,
@@ -58,33 +75,22 @@ export function createNexusTaskStore(transport: NexusTransport): TaskStore {
         await transport.call("scheduler.task.updateStatus", {
           id,
           status,
-          ...(patch?.startedAt !== undefined ? { started_at: patch.startedAt } : {}),
-          ...(patch?.completedAt !== undefined ? { completed_at: patch.completedAt } : {}),
-          ...(patch?.lastError !== undefined ? { last_error: patch.lastError } : {}),
-          ...(patch?.retries !== undefined ? { retries: patch.retries } : {}),
+          ...buildUpdatePatch(patch),
         }),
       );
     },
-
     async query(filter: TaskFilter): Promise<readonly ScheduledTask[]> {
       const result = unwrap<ApiQueryResponse>(
-        await transport.call("scheduler.task.query", {
-          ...(filter.status !== undefined ? { status: filter.status } : {}),
-          ...(filter.agentId !== undefined ? { agent_id: filter.agentId } : {}),
-          ...(filter.priority !== undefined ? { priority: filter.priority } : {}),
-          ...(filter.limit !== undefined ? { limit: filter.limit } : {}),
-        }),
+        await transport.call("scheduler.task.query", buildQueryFilter(filter)),
       );
       return result.tasks.map(mapApiTask);
     },
-
     async loadPending(): Promise<readonly ScheduledTask[]> {
       const result = unwrap<ApiQueryResponse>(
         await transport.call("scheduler.task.query", { status: "pending" }),
       );
       return result.tasks.map(mapApiTask);
     },
-
     [Symbol.asyncDispose]: async (): Promise<void> => {
       transport.close();
     },

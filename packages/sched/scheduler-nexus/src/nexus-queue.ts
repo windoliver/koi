@@ -263,6 +263,34 @@ async function request<T>(
   }
 }
 
+function rpcErrorResult<T>(
+  err: { readonly code?: number; readonly message?: string },
+  method: string,
+): Result<T, KoiError> {
+  return {
+    ok: false,
+    error: {
+      code: err.code === -32000 ? "NOT_FOUND" : "EXTERNAL",
+      message: err.message ?? `RPC error calling ${method}`,
+      retryable: false,
+      context: { method, rpcCode: err.code },
+    },
+  };
+}
+
+function transportErrorResult<T>(error: unknown, method: string): Result<T, KoiError> {
+  return {
+    ok: false,
+    error: {
+      code: "TIMEOUT",
+      message: error instanceof Error ? error.message : String(error),
+      retryable: true,
+      cause: error,
+      context: { method },
+    },
+  };
+}
+
 function createSchedulerTransport(config: NexusTaskQueueConfig): NexusTransport {
   const fetchFn = config.fetch ?? globalThis.fetch;
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -279,43 +307,20 @@ function createSchedulerTransport(config: NexusTaskQueueConfig): NexusTransport 
           body: JSON.stringify({ jsonrpc: "2.0", method, params, id: 1 }),
           signal: AbortSignal.timeout(timeoutMs),
         });
-
         if (!response.ok) {
           return {
             ok: false,
             error: httpError(response.status, response.statusText),
           } satisfies Result<T, KoiError>;
         }
-
         const payload = (await response.json()) as {
           readonly result?: T;
           readonly error?: { readonly code?: number; readonly message?: string };
         };
-
-        if (payload.error !== undefined) {
-          return {
-            ok: false,
-            error: {
-              code: payload.error.code === -32000 ? "NOT_FOUND" : "EXTERNAL",
-              message: payload.error.message ?? `RPC error calling ${method}`,
-              retryable: false,
-              context: { method, rpcCode: payload.error.code },
-            },
-          } satisfies Result<T, KoiError>;
-        }
-
+        if (payload.error !== undefined) return rpcErrorResult<T>(payload.error, method);
         return { ok: true, value: payload.result as T } satisfies Result<T, KoiError>;
-      } catch (error) {
-        return {
-          ok: false,
-          error: {
-            code: "TIMEOUT",
-            message: error instanceof Error ? error.message : String(error),
-            retryable: true,
-            cause: error,
-            context: { method },
-          },
-        } satisfies Result<T, KoiError>;
+      } catch (error: unknown) {
+        return transportErrorResult<T>(error, method);
       }
     },
     close: () => {},
