@@ -107,62 +107,69 @@ function metricShiftFromAnomaly(
   }
 }
 
+function mapGovernanceSignal(
+  signal: Extract<SystemSignal, { kind: "governance" }>,
+): CompositionTrigger {
+  return {
+    id: `governance:${signal.sensor}:${String(signal.emittedAt)}`,
+    source: "governance",
+    confidence: 1,
+    moment: {
+      kind: "threshold_crossed",
+      sensor: signal.sensor,
+      value: signal.value,
+      limit: signal.limit,
+      direction: signal.direction,
+    },
+    suggestedCapabilities: signal.sensor === "error_rate" ? ["spawn_agent", "notify_user"] : [],
+    context: {},
+    emittedAt: signal.emittedAt,
+  };
+}
+
+function mapScheduleSignal(
+  signal: Extract<SystemSignal, { kind: "schedule" }>,
+): CompositionTrigger {
+  const outcome = mapTaskOutcome(signal.event);
+  return {
+    id: `schedule:${String(signal.event.taskId)}:${String(signal.emittedAt)}`,
+    source: "schedule",
+    confidence: 1,
+    moment: { kind: "task_terminal", taskId: signal.event.taskId, outcome },
+    suggestedCapabilities: suggestedCapabilitiesForTaskOutcome(outcome),
+    context: { schedulerEvent: signal.event },
+    emittedAt: signal.emittedAt,
+  };
+}
+
+function mapAnomalySignal(
+  signal: Extract<SystemSignal, { kind: "anomaly" }>,
+): CompositionTrigger | undefined {
+  const shift = metricShiftFromAnomaly(signal.anomaly);
+  if (shift === undefined) return undefined;
+  return {
+    id: `anomaly:${signal.anomaly.agentId}:${signal.anomaly.kind}:${String(signal.anomaly.timestamp)}`,
+    source: "anomaly",
+    confidence: 1,
+    moment: { kind: "frontier_changed", metric: shift.metric, improvement: shift.improvement },
+    suggestedCapabilities: ["spawn_agent"],
+    context: { anomaly: signal.anomaly },
+    emittedAt: signal.anomaly.timestamp,
+  };
+}
+
 export function mapSystemSignalToCompositionTrigger(
   signal: SystemSignal,
 ): CompositionTrigger | undefined {
   switch (signal.kind) {
     case "governance":
-      return {
-        id: `governance:${signal.sensor}:${String(signal.emittedAt)}`,
-        source: "governance",
-        confidence: 1,
-        moment: {
-          kind: "threshold_crossed",
-          sensor: signal.sensor,
-          value: signal.value,
-          limit: signal.limit,
-          direction: signal.direction,
-        },
-        suggestedCapabilities: signal.sensor === "error_rate" ? ["spawn_agent", "notify_user"] : [],
-        context: {},
-        emittedAt: signal.emittedAt,
-      };
+      return mapGovernanceSignal(signal);
     case "forge_demand":
       return mapForgeDemandToCompositionTrigger(signal);
-    case "schedule": {
-      const outcome = mapTaskOutcome(signal.event);
-      return {
-        id: `schedule:${String(signal.event.taskId)}:${String(signal.emittedAt)}`,
-        source: "schedule",
-        confidence: 1,
-        moment: {
-          kind: "task_terminal",
-          taskId: signal.event.taskId,
-          outcome,
-        },
-        suggestedCapabilities: suggestedCapabilitiesForTaskOutcome(outcome),
-        context: { schedulerEvent: signal.event },
-        emittedAt: signal.emittedAt,
-      };
-    }
-    case "anomaly": {
-      const shift = metricShiftFromAnomaly(signal.anomaly);
-      if (shift === undefined) return undefined;
-
-      return {
-        id: `anomaly:${signal.anomaly.agentId}:${signal.anomaly.kind}:${String(signal.anomaly.timestamp)}`,
-        source: "anomaly",
-        confidence: 1,
-        moment: {
-          kind: "frontier_changed",
-          metric: shift.metric,
-          improvement: shift.improvement,
-        },
-        suggestedCapabilities: ["spawn_agent"],
-        context: { anomaly: signal.anomaly },
-        emittedAt: signal.anomaly.timestamp,
-      };
-    }
+    case "schedule":
+      return mapScheduleSignal(signal);
+    case "anomaly":
+      return mapAnomalySignal(signal);
     case "vfs":
     case "agent_lifecycle":
     case "compaction":
