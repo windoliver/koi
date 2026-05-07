@@ -330,6 +330,88 @@ describe("createNexusRegistry — startup timeout", () => {
   });
 });
 
+describe("createNexusRegistry — register rollback", () => {
+  test("deletes orphaned Nexus record when transition fails after register", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    transport.stub("register_agent", async () => ({
+      ok: true,
+      value: { agent_id: "a-orphan", state: "UNKNOWN", generation: 0 },
+    }));
+    transport.stub("agent_transition", async () => ({
+      ok: false,
+      error: { code: "EXTERNAL", message: "transition failed", retryable: true },
+    }));
+    let deleteCalled = false;
+    transport.stub("delete_agent", async () => {
+      deleteCalled = true;
+      return { ok: true, value: undefined };
+    });
+
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    await expect(registry.register(makeEntry("a-orphan"))).rejects.toThrow(
+      /transition to CONNECTED failed/,
+    );
+    expect(deleteCalled).toBe(true);
+    await registry[Symbol.asyncDispose]();
+  });
+});
+
+describe("createNexusRegistry — patch zoneId not supported", () => {
+  test("returns VALIDATION error when zoneId is patched", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    await registry.register(makeEntry("a1"));
+
+    type ZoneId = import("@koi/core").ZoneId;
+    const result = await registry.patch(agentId("a1"), {
+      zoneId: "z1" as unknown as ZoneId,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toMatch(/zone-move/);
+    }
+    await registry[Symbol.asyncDispose]();
+  });
+});
+
+describe("mapNexusAgentToEntry — stale koi:status reconciliation", () => {
+  test("ignores stale koi:status when phase disagrees with Nexus state", async () => {
+    const transport = createMockTransport();
+    // Nexus says CONNECTED (running), but metadata's koi:status still
+    // claims phase: created. The mapper should trust Nexus over the
+    // stale metadata and report phase: running.
+    transport.stub("list_agents", async () => ({
+      ok: true,
+      value: [{ agent_id: "a-stale", state: "CONNECTED", generation: 5 }],
+    }));
+    transport.stub("get_agent", async () => ({
+      ok: true,
+      value: {
+        agent_id: "a-stale",
+        state: "CONNECTED",
+        generation: 5,
+        metadata: {
+          "koi:status": {
+            phase: "created",
+            generation: 1,
+            conditions: [],
+            lastTransitionAt: 100,
+          },
+        },
+      },
+    }));
+
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    const entry = await Promise.resolve(registry.lookup(agentId("a-stale")));
+    expect(entry?.status.phase).toBe("running");
+    await registry[Symbol.asyncDispose]();
+  });
+});
+
 describe("createNexusRegistry — watch unsubscribe", () => {
   test("unsubscribe stops further events", async () => {
     const transport = createMockTransport();

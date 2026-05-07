@@ -43,10 +43,18 @@ import { decodeKoiStatus, encodeKoiStatus, mapKoiToNexus, mapNexusToKoi } from "
 function mapNexusAgentToEntry(agent: NexusAgent): RegistryEntry {
   const metadata = agent.metadata ?? {};
   const koiStatus = decodeKoiStatus(metadata);
-  const phase = koiStatus?.phase ?? mapNexusToKoi(agent.state, metadata);
+  const remotePhase = mapNexusToKoi(agent.state, metadata);
 
-  const status: AgentStatus = koiStatus ?? {
-    phase,
+  // Trust koi:status only when its phase matches the authoritative Nexus
+  // state. After a partial-failure path (agent_transition succeeded,
+  // update_agent_metadata failed), Nexus has advanced but the metadata
+  // blob is stale — falling back to the live state prevents a phase rollback
+  // on the next poll.
+  const trustedKoiStatus =
+    koiStatus !== undefined && koiStatus.phase === remotePhase ? koiStatus : undefined;
+
+  const status: AgentStatus = trustedKoiStatus ?? {
+    phase: remotePhase,
     generation: agent.generation ?? 0,
     conditions: [],
     lastTransitionAt: Date.now(),
@@ -214,6 +222,20 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       );
     }
 
+    async function rollbackOrphan(reason: string, cause: unknown): Promise<never> {
+      // Best-effort cleanup of the partially-created Nexus record. Swallow
+      // delete errors to avoid masking the original failure; surface them as
+      // the cause chain instead.
+      const deleteAttempt = await nexusDeleteAgent(transport, entry.agentId);
+      const failure = !deleteAttempt.ok ? deleteAttempt.error : undefined;
+      throw new Error(
+        `Failed to register agent ${entry.agentId}: ${reason}${
+          failure !== undefined ? ` (rollback also failed: ${failure.message})` : ""
+        }`,
+        { cause },
+      );
+    }
+
     // let: advances through setup transitions
     let currentNexusGen = registerResult.value.generation ?? 0;
 
@@ -225,12 +247,14 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       currentNexusGen,
     );
     if (!connectedResult.ok) {
-      throw new Error(
-        `Failed to transition agent ${entry.agentId} to CONNECTED: ${connectedResult.error.message}`,
-        { cause: connectedResult.error },
+      await rollbackOrphan(
+        `transition to CONNECTED failed: ${connectedResult.error.message}`,
+        connectedResult.error,
       );
     }
-    currentNexusGen = connectedResult.value.generation ?? currentNexusGen + 1;
+    currentNexusGen = connectedResult.ok
+      ? (connectedResult.value.generation ?? currentNexusGen + 1)
+      : currentNexusGen;
 
     if (targetNexusState !== "CONNECTED") {
       const targetResult = await nexusTransition(
@@ -240,12 +264,14 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
         currentNexusGen,
       );
       if (!targetResult.ok) {
-        throw new Error(
-          `Failed to transition agent ${entry.agentId} to ${targetNexusState}: ${targetResult.error.message}`,
-          { cause: targetResult.error },
+        await rollbackOrphan(
+          `transition to ${targetNexusState} failed: ${targetResult.error.message}`,
+          targetResult.error,
         );
       }
-      currentNexusGen = targetResult.value.generation ?? currentNexusGen + 1;
+      currentNexusGen = targetResult.ok
+        ? (targetResult.value.generation ?? currentNexusGen + 1)
+        : currentNexusGen;
     }
 
     if (projection.size < maxEntries) {
@@ -414,19 +440,33 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       };
     }
 
+    if (fields.zoneId !== undefined) {
+      // Nexus does not expose a zone-move RPC, and `update_agent_metadata`
+      // does not touch the authoritative `agent.zone_id` field. Accepting
+      // a zoneId patch would make the local projection diverge from Nexus
+      // and silently revert on the next poll. Fail closed instead.
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message:
+            "patch({ zoneId }) is not supported by registry-nexus — Nexus has no zone-move RPC",
+          retryable: false,
+        },
+      };
+    }
+
     const updated: RegistryEntry = {
       ...current,
       ...(fields.priority !== undefined ? { priority: fields.priority } : {}),
       ...(fields.metadata !== undefined
         ? { metadata: { ...current.metadata, ...fields.metadata } }
         : {}),
-      ...(fields.zoneId !== undefined ? { zoneId: fields.zoneId } : {}),
     };
 
     const nexusMeta: Record<string, unknown> = { ...current.metadata };
     if (fields.priority !== undefined) nexusMeta.priority = fields.priority;
     if (fields.metadata !== undefined) Object.assign(nexusMeta, fields.metadata);
-    if (fields.zoneId !== undefined) nexusMeta.zoneId = fields.zoneId;
 
     const updateResult = await nexusUpdateMetadata(transport, id, nexusMeta);
     if (!updateResult.ok) {
