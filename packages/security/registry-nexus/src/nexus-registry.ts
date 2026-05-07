@@ -255,7 +255,11 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       const remoteGen = nexusAgent.generation ?? 0;
       const localNexusGen = nexusGens.get(id) ?? -1;
 
-      if (localNexusGen === remoteGen && existing !== undefined) continue;
+      // Force hydration for tombstoned entries even if the generation
+      // hasn't changed — otherwise a transient outage that produced a
+      // stale tombstone keeps the agent permanently invisible until
+      // some unrelated remote mutation bumps its generation.
+      if (localNexusGen === remoteGen && existing !== undefined && !stale.has(id)) continue;
 
       const detail = await nexusGetAgent(transport, nexusAgent.agent_id);
       if (!detail.ok) {

@@ -107,6 +107,32 @@ describe("createNexusSearch", () => {
     }
   });
 
+  test("retrieve drops cursor/total when client trims sub-threshold hits (mixed-version skew)", async () => {
+    transport.stub("search_retrieve", async () => ({
+      ok: true,
+      value: {
+        // Old Nexus node ignored min_score and returned all hits incl
+        // sub-threshold one. Adapter must trim AND clear pagination
+        // metadata so callers don't paginate into hidden pages.
+        hits: [
+          { id: "a", score: 0.9, content: "x" },
+          { id: "b", score: 0.3, content: "x" },
+        ],
+        total: 2,
+        cursor: "next-page",
+      },
+    }));
+    const search = createNexusSearch({ transport });
+    const result = await search.retrieve({ text: "x", limit: 10, minScore: 0.5 });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.results.map((r) => r.id)).toEqual(["a"]);
+      expect(result.value.total).toBeUndefined();
+      expect(result.value.cursor).toBeUndefined();
+      expect(result.value.hasMore).toBe(false);
+    }
+  });
+
   test("retrieve propagates transport error", async () => {
     transport.stub("search_retrieve", async () => ({
       ok: false,

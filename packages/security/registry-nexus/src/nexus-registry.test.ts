@@ -594,6 +594,55 @@ describe("createNexusRegistry — transition partial failure", () => {
   });
 });
 
+describe("createNexusRegistry — tombstone self-heal", () => {
+  test("poll forces hydration of stale entries even when generation is unchanged", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 5 });
+    await registry.register(makeEntry("a1"));
+
+    // Force tombstone via failing transition + failing reconcile.
+    transport.stub("update_agent_metadata", async () => ({
+      ok: false,
+      error: { code: "EXTERNAL", message: "fail", retryable: true },
+    }));
+    let getMode: "fail" | "succeed" = "fail";
+    transport.stub("get_agent", async () => {
+      if (getMode === "fail") {
+        return { ok: false, error: { code: "EXTERNAL", message: "fail", retryable: true } };
+      }
+      return {
+        ok: true,
+        value: {
+          agent_id: "a1",
+          state: "CONNECTED",
+          generation: 1,
+          metadata: { agentType: "worker", priority: 10, registeredAt: 1 },
+        },
+      };
+    });
+
+    await registry.transition(agentId("a1"), "waiting", 0, { kind: "awaiting_response" });
+    expect(registry.lookup(agentId("a1"))).toBeUndefined();
+
+    // Nexus is healthy now, but list_agents reports the same generation
+    // as locally cached. Without the stale-set bypass, poll would never
+    // re-hydrate this id.
+    transport.stub("list_agents", async () => ({
+      ok: true,
+      value: [{ agent_id: "a1", state: "CONNECTED", generation: 1 }],
+    }));
+    getMode = "succeed";
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    // Stale flag cleared by successful refetch — entry visible again.
+    expect(registry.lookup(agentId("a1"))).toBeDefined();
+    await registry[Symbol.asyncDispose]();
+  });
+});
+
 describe("createNexusRegistry — id reuse after tombstone", () => {
   test("re-registering a tombstoned id clears stale state and restores reads", async () => {
     const transport = createMockTransport();

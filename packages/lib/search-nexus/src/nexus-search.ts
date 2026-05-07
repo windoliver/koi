@@ -62,18 +62,19 @@ export function createNexusSearch<T = unknown>(config: NexusSearchConfig): Searc
 
     const value = result.value;
     // min_score is sent to Nexus to filter server-side before pagination.
-    // We also defensively drop sub-threshold hits client-side: under a
-    // rolling deploy, an older Nexus node can ignore the parameter and
-    // return hits below the requested score. Defensive trimming preserves
-    // correctness (no caller sees a hit that violates minScore) at the
-    // cost of a minor pagination skew (cursor/hasMore reflect the
-    // server's broader view). Wrong results are worse than short pages.
+    // We also defensively drop sub-threshold hits client-side under
+    // version skew (older Nexus may ignore the parameter). When that
+    // post-filter trims anything, server-supplied pagination metadata
+    // (cursor / hasMore / total) belongs to a different (broader)
+    // result set, so we either drop it or fail closed depending on
+    // whether the caller would otherwise paginate into hidden pages.
     const minScore = query.minScore;
-    const hits =
+    const filtered =
       minScore !== undefined ? value.hits.filter((h) => h.score >= minScore) : value.hits;
+    const trimmedByClient = minScore !== undefined && filtered.length !== value.hits.length;
 
     const page: SearchPage<T> = {
-      results: hits.map((hit) => ({
+      results: filtered.map((hit) => ({
         id: hit.id,
         score: hit.score,
         content: hit.content,
@@ -81,9 +82,15 @@ export function createNexusSearch<T = unknown>(config: NexusSearchConfig): Searc
         source: hit.source ?? indexName,
         ...(hit.data !== undefined ? { data: hit.data } : {}),
       })),
-      ...(value.total !== undefined ? { total: value.total } : {}),
-      ...(value.cursor !== undefined ? { cursor: value.cursor } : {}),
-      hasMore: value.cursor !== undefined,
+      // total reflects the server's unfiltered set; suppress it when
+      // we trimmed locally so callers don't display a count that
+      // doesn't match results.length.
+      ...(value.total !== undefined && !trimmedByClient ? { total: value.total } : {}),
+      // cursor/hasMore are only safe to surface when the server
+      // honored min_score (no client-side trim). Otherwise the next
+      // page would belong to the broader server result set.
+      ...(value.cursor !== undefined && !trimmedByClient ? { cursor: value.cursor } : {}),
+      hasMore: value.cursor !== undefined && !trimmedByClient,
     };
 
     return { ok: true, value: page };
