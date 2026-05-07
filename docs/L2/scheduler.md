@@ -119,3 +119,18 @@ databases in tests so there is no disk I/O and each test gets a fresh schema.
 `RunStoreFilter.status` accepts `"completed" | "failed" | "dead_letter"` — the `dead_letter`
 value matches the `TaskHistoryFilter.status` in `@koi/core` so callers can query
 dead-lettered runs directly via the store.
+
+## Distributed mode (issue #1390)
+
+`createScheduler` accepts an optional `{ queueBackend, nodeId }` parameter. When
+present, the local heap-based polling loop is replaced by `pollDistributed()`,
+which calls `queueBackend.claim(nodeId, available)` on each tick and dispatches
+claimed tasks. On dispatch completion the scheduler calls
+`queueBackend.ack(taskId)` (success) or `queueBackend.nack(taskId, reason)`
+(failure). Cron-driven submissions are deduped across nodes via
+`queueBackend.tick(scheduleId, nodeId)` — only the first node to claim a given
+minute key dispatches the cron run.
+
+Pair this with `@koi/scheduler-nexus` (Nexus-backed `TaskQueueBackend`) for
+cross-node task scheduling, or implement `TaskQueueBackend` against any other
+distributed store.

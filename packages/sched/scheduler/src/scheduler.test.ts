@@ -455,12 +455,13 @@ describe("createScheduler", () => {
       async (_agentId, _input, _mode) => {
         dispatched.push(claimedTask.id);
       },
-      createFakeClock(0),
+      undefined,
       undefined,
       { queueBackend: distributed.queueBackend, nodeId: "node-a" },
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Real-time poll on SYSTEM_CLOCK; allow at least one interval tick.
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(dispatched).toEqual([claimedTask.id]);
     expect(distributed.claimed).toEqual([`node-a:${String(claimedTask.id)}`]);

@@ -442,8 +442,23 @@ L2  @koi/scheduler-nexus ◄─────────────────�
 ## Related
 
 - Issue: #756 — feat: Scheduler Nexus Backend (Distributed Job Queue)
+- Issue: #1390 — Wire Nexus backend into runtime + CLI preset (this PR)
 - `@koi/scheduler` — Core scheduler with SQLite store, poll loop, cron engine
 - `@koi/nexus-client` — Shared JSON-RPC transport
 - `@koi/test-utils` — `createFakeNexusFetch()` with scheduler RPC handlers, contract test suites
 - `@koi/store-nexus` — Same pattern for ForgeStore (brick storage)
 - `@koi/filesystem-nexus` — Same pattern for FileSystemBackend
+
+## Public surface (after #1390 wiring)
+
+- `createNexusSchedulerBackends(config)` — returns `{ taskStore, scheduleStore, queueBackend }`
+  ready to plug into `@koi/scheduler`'s `createScheduler(...)` distributed-mode args.
+- `validateNexusSchedulerConfig` / `NexusSchedulerConfig` / `DEFAULT_VISIBILITY_TIMEOUT_MS` /
+  `DEFAULT_TIMEOUT_MS` — config helpers consumed by the CLI preset.
+- `validateNexusTaskQueueConfig` / `createNexusTaskQueue` — lower-level queue-only entry
+  point for hosts that already provide their own task/schedule stores.
+- `schedulerNexusDescriptor` — typed descriptor (`SchedulerNexusDescriptor<T, C>`) so hosts
+  can register the backend by name without importing the factory directly.
+
+The descriptor is generic over both the produced backend `T` and the validated config `C`,
+which keeps the validator's return type honest without `as Record<string, unknown>` casts.
