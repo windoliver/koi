@@ -51,6 +51,27 @@ describe("scanModuleGraphForFenceViolations", () => {
     expect(lib).toBeDefined();
   });
 
+  it("flags computed-property access on host globals (globalThis['fetch'])", () => {
+    const v = scanModuleGraphForFenceViolations({
+      entryPath: "handler.ts",
+      modules: {
+        "handler.ts": "export default () => globalThis['fetch']('/x');",
+      },
+    });
+    expect(v.find((x) => x.target.includes("computed-property-access"))).toBeDefined();
+  });
+
+  it("flags computed-property access on WebAssembly (globalThis['WebAssembly'])", () => {
+    const v = scanModuleGraphForFenceViolations({
+      entryPath: "handler.ts",
+      modules: {
+        "handler.ts":
+          "export default () => globalThis['WebAssembly']['instantiate'](new Uint8Array());",
+      },
+    });
+    expect(v.find((x) => x.target.includes("computed-property-access"))).toBeDefined();
+  });
+
   it("returns empty array for a clean class-A handler", () => {
     const v = scanModuleGraphForFenceViolations({
       entryPath: "handler.ts",

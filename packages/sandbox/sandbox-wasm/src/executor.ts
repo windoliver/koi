@@ -102,7 +102,7 @@ export const createWasmExecutor = (): WasmExecutor => {
           startedAtMs,
         );
       }
-      const declared = scan.value.importedMemoryLimits;
+      const declared = scan.value.importedMemory?.limits;
       if (declared !== undefined && declared.min > options.maxMemoryPages) {
         return fail(
           "OOM",
@@ -126,13 +126,41 @@ export const createWasmExecutor = (): WasmExecutor => {
       moduleCache.set(cacheKey, mod);
     }
 
+    // If the module imports memory and the caller didn't already supply that
+    // import, create a host-owned `WebAssembly.Memory` sized to the module's
+    // declared minimum and capped at `maxMemoryPages`. This is the only way
+    // the executor can actually enforce the page cap — the module declares
+    // the import, the host owns the buffer.
+    let hostMemory: WebAssembly.Memory | undefined;
+    const importsBase: Record<string, Record<string, unknown>> = {};
+    for (const [k, v] of Object.entries(options?.imports ?? {})) {
+      importsBase[k] = { ...v };
+    }
+    if (scan.value.importedMemory !== undefined) {
+      const desc = scan.value.importedMemory;
+      const callerNs = importsBase[desc.module];
+      const alreadyProvided = callerNs !== undefined && callerNs[desc.name] !== undefined;
+      if (!alreadyProvided) {
+        const initial = desc.limits.min;
+        const maxPages = options?.maxMemoryPages;
+        const maximum = maxPages !== undefined ? maxPages : (desc.limits.max ?? undefined);
+        try {
+          hostMemory =
+            maximum !== undefined
+              ? new WebAssembly.Memory({ initial, maximum })
+              : new WebAssembly.Memory({ initial });
+        } catch (cause) {
+          return fail("INSTANTIATE_FAILED", "host memory allocation failed", startedAtMs, cause);
+        }
+        const ns = importsBase[desc.module] ?? {};
+        ns[desc.name] = hostMemory;
+        importsBase[desc.module] = ns;
+      }
+    }
+
     let instance: WebAssembly.Instance;
     try {
-      // instantiate(Module, imports) overload returns Instance directly.
-      // Cast through `never` — `WasmImports` accepts `unknown` per-import for
-      // ergonomics, but `WebAssembly.instantiate` requires the runtime's strict
-      // `ImportValue` shape. Operator code supplies valid imports; executor does not narrow.
-      const importsArg = (options?.imports ?? {}) as never;
+      const importsArg = importsBase as never;
       instance = (await WebAssembly.instantiate(
         mod,
         importsArg,
@@ -151,7 +179,11 @@ export const createWasmExecutor = (): WasmExecutor => {
 
     const maxPages = options?.maxMemoryPages;
     if (maxPages !== undefined) {
-      const memory = (instance.exports as Record<string, unknown>).memory;
+      // Prefer the host-injected memory (definitive — we own the page cap on
+      // its `maximum`). Fall back to the export only when the caller supplied
+      // their own memory import, in which case best-effort post-instantiation
+      // page-count check is the strongest guarantee available.
+      const memory = hostMemory ?? (instance.exports as Record<string, unknown>).memory;
       if (memory instanceof WebAssembly.Memory) {
         const pages = memory.buffer.byteLength / 65536;
         if (pages > maxPages) {

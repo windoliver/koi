@@ -77,6 +77,25 @@ const findIdentifierLines = (cleanedSource: string, identifier: string): readonl
 };
 
 /**
+ * After comments and string literals are stripped, computed-property accesses
+ * collapse to bracket pairs containing only whitespace (since the literal
+ * contents were replaced with a single space). For each forbidden top-level
+ * identifier we also flag any line containing `[ ... ]` immediately after
+ * `globalThis`, `self`, `window`, or `globalThis.<...>` — the syntactic shape
+ * that smuggles `globalThis["fetch"]` or `globalThis["WebAssembly"]["compile"]`
+ * past the identifier-only walk.
+ */
+const findComputedAccessLines = (cleanedSource: string): readonly number[] => {
+  const lines = cleanedSource.split("\n");
+  const re = /\b(?:globalThis|self|window|WebAssembly|navigator|caches)\s*\[/;
+  const hits: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (re.test(lines[i] as string)) hits.push(i + 1);
+  }
+  return hits;
+};
+
+/**
  * Walk every module in `input.modules` and return any references to
  * `RUNTIME_FENCE_TARGETS`. Returns an empty array when the graph is clean.
  *
@@ -105,6 +124,13 @@ export const scanModuleGraphForFenceViolations = (
       for (const line of lines) {
         violations.push({ modulePath, target, line });
       }
+    }
+    for (const line of findComputedAccessLines(cleaned)) {
+      violations.push({
+        modulePath,
+        target: "<computed-property-access on host global>",
+        line,
+      });
     }
   };
 

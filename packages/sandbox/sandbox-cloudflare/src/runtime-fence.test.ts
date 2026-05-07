@@ -26,6 +26,13 @@ describe("RUNTIME_FENCE_PREAMBLE_SOURCE", () => {
     expect(RUNTIME_FENCE_PREAMBLE_SOURCE).toContain("installed = true;");
   });
 
+  it("installs throwing accessors on parent objects for member-chain targets", () => {
+    expect(RUNTIME_FENCE_PREAMBLE_SOURCE).toContain('"WebAssembly"');
+    expect(RUNTIME_FENCE_PREAMBLE_SOURCE).toContain('"instantiate"');
+    expect(RUNTIME_FENCE_PREAMBLE_SOURCE).toContain('"navigator"');
+    expect(RUNTIME_FENCE_PREAMBLE_SOURCE).toContain('"sendBeacon"');
+  });
+
   it("evaluates without syntax errors as a JS source string", () => {
     // Wrap in a function so identifier capture doesn't pollute the test environment.
     expect(() => {

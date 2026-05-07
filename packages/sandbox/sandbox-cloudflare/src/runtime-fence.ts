@@ -14,12 +14,12 @@
  * static scan flags any direct reference at deploy time.
  */
 
-import { RUNTIME_FENCE_TOP_LEVEL_IDENTIFIERS } from "@koi/core";
+import { RUNTIME_FENCE_TARGETS, RUNTIME_FENCE_TOP_LEVEL_IDENTIFIERS } from "@koi/core";
 
 const FENCE_FUNCTION_NAME = "__koiInstallRuntimeFence";
 
 const buildOverwriteBlock = (): string => {
-  const lines = RUNTIME_FENCE_TOP_LEVEL_IDENTIFIERS.map((name) => {
+  const topLevelLines = RUNTIME_FENCE_TOP_LEVEL_IDENTIFIERS.map((name) => {
     return [
       `  try {`,
       `    Object.defineProperty(globalThis, ${JSON.stringify(name)}, {`,
@@ -29,7 +29,28 @@ const buildOverwriteBlock = (): string => {
       `  } catch (_e) { /* already non-configurable on this runtime — earlier defineProperty stuck */ }`,
     ].join("\n");
   });
-  return lines.join("\n");
+  // Member-chain forms (e.g. `WebAssembly.instantiate`, `navigator.sendBeacon`).
+  // Both `globalThis.WebAssembly.instantiate` and `globalThis["WebAssembly"]["instantiate"]`
+  // resolve through the same underlying property — overwriting the property on
+  // the parent object closes the computed-access bypass that overwriting only
+  // top-level identifiers would leave open.
+  const memberLines = RUNTIME_FENCE_TARGETS.filter((t) => t.includes(".")).map((target) => {
+    const dot = target.indexOf(".");
+    const parent = target.slice(0, dot);
+    const child = target.slice(dot + 1);
+    return [
+      `  try {`,
+      `    var __p = globalThis[${JSON.stringify(parent)}];`,
+      `    if (__p && typeof __p === "object") {`,
+      `      Object.defineProperty(__p, ${JSON.stringify(child)}, {`,
+      `        configurable: false, enumerable: false,`,
+      `        get() { throw new Error("RUNTIME_FENCE: " + ${JSON.stringify(target)} + " is not allowed in class-A handlers"); },`,
+      `      });`,
+      `    }`,
+      `  } catch (_e) { /* parent missing or property non-configurable — fence may be incomplete on this runtime */ }`,
+    ].join("\n");
+  });
+  return [...topLevelLines, ...memberLines].join("\n");
 };
 
 /**

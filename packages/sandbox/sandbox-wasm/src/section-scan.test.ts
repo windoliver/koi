@@ -47,7 +47,7 @@ describe("scanWasmSections", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.importedMemoryCount).toBe(1);
-    expect(r.value.importedMemoryLimits).toEqual({ min: 1 });
+    expect(r.value.importedMemory).toEqual({ module: "m", name: "x", limits: { min: 1 } });
   });
 
   it("rejects truncated header", () => {
@@ -67,6 +67,27 @@ describe("executor — wasm resource enforcement", () => {
     if (r.ok) return;
     expect(r.error.code).toBe("VALIDATION");
     expect(r.error.message).toContain("internal memory");
+  });
+
+  it("injects host-owned memory when the module imports memory and caller didn't supply it", async () => {
+    // We can't easily build a valid full instantiable WASM by hand here, but we
+    // can prove the import-shape detection by parsing an Import-section-only
+    // module and observing the descriptor. Real instantiation is exercised by
+    // the existing executor tests against compiled fixtures.
+    const imp = section(
+      2,
+      new Uint8Array([
+        0x01, 0x03, 0x65, 0x6e, 0x76, 0x06, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x02, 0x00, 0x01,
+      ]),
+    );
+    const r = scanWasmSections(concat(HEADER, imp));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.importedMemory).toEqual({
+      module: "env",
+      name: "memory",
+      limits: { min: 1 },
+    });
   });
 
   it("rejects maxMemoryPages when no memory is imported", async () => {

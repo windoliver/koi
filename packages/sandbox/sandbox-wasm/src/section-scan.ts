@@ -18,12 +18,18 @@
  * for resource enforcement.
  */
 
+export interface ImportedMemoryDescriptor {
+  readonly module: string;
+  readonly name: string;
+  readonly limits: { readonly min: number; readonly max?: number };
+}
+
 export interface SectionScanResult {
   readonly hasInternalMemory: boolean;
   readonly hasInternalTable: boolean;
   readonly importedMemoryCount: number;
-  /** Min/max pages for the first imported memory, if present. */
-  readonly importedMemoryLimits: { readonly min: number; readonly max?: number } | undefined;
+  /** First imported memory's module/name/limits, if present. */
+  readonly importedMemory: ImportedMemoryDescriptor | undefined;
 }
 
 export type SectionScanError =
@@ -53,12 +59,14 @@ const decodeLeb128 = (bytes: Uint8Array, offset: number): readonly [number, numb
   return undefined;
 };
 
-const skipName = (bytes: Uint8Array, offset: number): readonly [number] | undefined => {
+const decodeName = (bytes: Uint8Array, offset: number): readonly [string, number] | undefined => {
   const len = decodeLeb128(bytes, offset);
   if (len === undefined) return undefined;
-  const end = offset + len[1] + len[0];
+  const start = offset + len[1];
+  const end = start + len[0];
   if (end > bytes.length) return undefined;
-  return [end];
+  const slice = bytes.subarray(start, end);
+  return [new TextDecoder().decode(slice), end - offset];
 };
 
 const decodeMemoryLimits = (
@@ -84,21 +92,23 @@ const scanImportSection = (
   bytes: Uint8Array,
   start: number,
   end: number,
-): { importedMemoryCount: number; importedMemoryLimits?: { min: number; max?: number } } => {
+): { importedMemoryCount: number; importedMemory?: ImportedMemoryDescriptor } => {
   let pos = start;
   const countDec = decodeLeb128(bytes, pos);
   if (countDec === undefined) return { importedMemoryCount: 0 };
   pos += countDec[1];
   const count = countDec[0];
   let memoryCount = 0;
-  let firstLimits: { min: number; max?: number } | undefined;
+  let firstMemory: ImportedMemoryDescriptor | undefined;
   for (let i = 0; i < count && pos < end; i++) {
-    const mod = skipName(bytes, pos);
+    const mod = decodeName(bytes, pos);
     if (mod === undefined) break;
-    pos = mod[0];
-    const name = skipName(bytes, pos);
-    if (name === undefined) break;
-    pos = name[0];
+    const modName = mod[0];
+    pos += mod[1];
+    const nm = decodeName(bytes, pos);
+    if (nm === undefined) break;
+    const importName = nm[0];
+    pos += nm[1];
     if (pos >= end) break;
     const kind = bytes[pos] as number;
     pos++;
@@ -106,7 +116,9 @@ const scanImportSection = (
       memoryCount++;
       const lim = decodeMemoryLimits(bytes, pos);
       if (lim === undefined) break;
-      if (firstLimits === undefined) firstLimits = lim[0];
+      if (firstMemory === undefined) {
+        firstMemory = { module: modName, name: importName, limits: lim[0] };
+      }
       pos += lim[1];
     } else if (kind === 0) {
       // typeidx
@@ -126,9 +138,9 @@ const scanImportSection = (
       break;
     }
   }
-  return firstLimits === undefined
+  return firstMemory === undefined
     ? { importedMemoryCount: memoryCount }
-    : { importedMemoryCount: memoryCount, importedMemoryLimits: firstLimits };
+    : { importedMemoryCount: memoryCount, importedMemory: firstMemory };
 };
 
 export const scanWasmSections = (
@@ -142,7 +154,7 @@ export const scanWasmSections = (
   let hasInternalMemory = false;
   let hasInternalTable = false;
   let importedMemoryCount = 0;
-  let importedMemoryLimits: { min: number; max?: number } | undefined;
+  let importedMemory: ImportedMemoryDescriptor | undefined;
   while (pos < bytes.length) {
     const id = bytes[pos] as number;
     pos++;
@@ -161,7 +173,7 @@ export const scanWasmSections = (
     } else if (id === SECTION_IMPORT) {
       const r = scanImportSection(bytes, sectionStart, sectionEnd);
       importedMemoryCount = r.importedMemoryCount;
-      importedMemoryLimits = r.importedMemoryLimits;
+      importedMemory = r.importedMemory;
     }
     pos = sectionEnd;
   }
@@ -171,7 +183,7 @@ export const scanWasmSections = (
       hasInternalMemory,
       hasInternalTable,
       importedMemoryCount,
-      importedMemoryLimits,
+      importedMemory,
     },
   };
 };
