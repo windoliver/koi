@@ -45,13 +45,29 @@ function mapNexusAgentToEntry(agent: NexusAgent): RegistryEntry {
   const koiStatus = decodeKoiStatus(metadata);
   const remotePhase = mapNexusToKoi(agent.state, metadata);
 
-  // Trust koi:status only when its phase matches the authoritative Nexus
-  // state. After a partial-failure path (agent_transition succeeded,
+  // Trust koi:status only when its phase agrees with the authoritative
+  // Nexus state. After a partial-failure path (agent_transition committed,
   // update_agent_metadata failed), Nexus has advanced but the metadata
-  // blob is stale — falling back to the live state prevents a phase rollback
+  // blob is stale — falling back to the live state prevents phase rollback
   // on the next poll.
+  //
+  // Special case: Nexus `SUSPENDED` is lossy — both Koi `suspended` and
+  // `terminated` map to it. The phase comparison alone is not enough to
+  // detect a stale metadata blob, since (e.g.) a stale `phase: "suspended"`
+  // matches the lossy decode of a remote `terminated` agent. Require that
+  // metadata.koi:terminated explicitly match the encoded phase before
+  // trusting the blob in this ambiguous case.
+  const remoteIsAmbiguousSuspended = agent.state === "SUSPENDED";
+  const terminatedFlag = metadata["koi:terminated"] === true;
+  const ambiguityResolved =
+    !remoteIsAmbiguousSuspended ||
+    (koiStatus?.phase === "terminated" && terminatedFlag) ||
+    (koiStatus?.phase === "suspended" && !terminatedFlag);
+
   const trustedKoiStatus =
-    koiStatus !== undefined && koiStatus.phase === remotePhase ? koiStatus : undefined;
+    koiStatus !== undefined && koiStatus.phase === remotePhase && ambiguityResolved
+      ? koiStatus
+      : undefined;
 
   const status: AgentStatus = trustedKoiStatus ?? {
     phase: remotePhase,
@@ -192,6 +208,14 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
   }
 
   async function register(entry: RegistryEntry): Promise<RegistryEntry> {
+    // Fail closed if the local projection is at capacity — registering
+    // remotely without a local mirror would silently desync state and
+    // hide the agent from list()/lookup() until eviction.
+    if (projection.size >= maxEntries && !projection.has(entry.agentId)) {
+      throw new Error(
+        `Registry projection at capacity (${String(maxEntries)} entries); refuse to register ${entry.agentId} without a local mirror`,
+      );
+    }
     const koiMetadata = encodeKoiStatus(entry.status);
     const merged: Record<string, unknown> = {
       ...entry.metadata,
@@ -274,9 +298,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
         : currentNexusGen;
     }
 
-    if (projection.size < maxEntries) {
-      projection.set(entry.agentId, entry);
-    }
+    projection.set(entry.agentId, entry);
     nexusGens.set(entry.agentId, currentNexusGen);
 
     notify({ kind: "registered", entry });
@@ -386,22 +408,39 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       ...encodeKoiStatus(newStatus),
     });
 
+    // Materialize the new lifecycle metadata so subsequent patch() calls
+    // don't replay a stale koi:status blob (which would clobber the
+    // terminated marker, etc.).
+    const refreshedMetadata: Readonly<Record<string, unknown>> = {
+      ...current.metadata,
+      ...encodeKoiStatus(newStatus),
+    };
+
     if (!updateResult.ok) {
-      // The remote phase HAS already advanced via agent_transition. Reflect that
-      // in the projection so callers see consistent state instead of the stale
-      // pre-transition phase. The richer Koi status (generation, conditions,
-      // reason) may not be persisted in Nexus metadata until the next poll
-      // cycle re-reads the authoritative record.
-      const updated: RegistryEntry = { ...current, status: newStatus };
-      projection.set(id, updated);
-      notify({
-        kind: "transitioned",
-        agentId: id,
-        from: current.status.phase,
-        to: targetPhase,
-        generation: newStatus.generation,
-        reason,
-      });
+      // agent_transition committed remotely, but the lifecycle metadata
+      // write did not. Reconcile the local projection from the
+      // authoritative Nexus record so we don't claim a phase that Nexus
+      // cannot actually represent without the missing metadata flag
+      // (notably: terminated requires `koi:terminated=true` to round-trip
+      // through the lossy SUSPENDED state).
+      const refetch = await nexusGetAgent(transport, id);
+      if (refetch.ok) {
+        const reconciled = mapNexusAgentToEntry(refetch.value);
+        projection.set(id, reconciled);
+        nexusGens.set(id, refetch.value.generation ?? currentNexusGen);
+        if (reconciled.status.phase !== current.status.phase) {
+          notify({
+            kind: "transitioned",
+            agentId: id,
+            from: current.status.phase,
+            to: reconciled.status.phase,
+            generation: reconciled.status.generation,
+            reason,
+          });
+        }
+        return { ok: false, error: updateResult.error };
+      }
+      // refetch also failed — preserve current projection rather than guess
       return { ok: false, error: updateResult.error };
     }
 
@@ -409,7 +448,11 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       nexusGens.set(id, updateResult.value.generation);
     }
 
-    const updated: RegistryEntry = { ...current, status: newStatus };
+    const updated: RegistryEntry = {
+      ...current,
+      status: newStatus,
+      metadata: refreshedMetadata,
+    };
     projection.set(id, updated);
 
     notify({

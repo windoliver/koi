@@ -274,7 +274,7 @@ describe("createNexusRegistry — deregister", () => {
 });
 
 describe("createNexusRegistry — transition partial failure", () => {
-  test("reconciles local projection when metadata update fails after phase commit", async () => {
+  test("refetches and reconciles from Nexus when metadata update fails after phase commit", async () => {
     const transport = createMockTransport();
     stubEmptyList(transport);
     stubRegisterFlow(transport, "a1");
@@ -286,15 +286,140 @@ describe("createNexusRegistry — transition partial failure", () => {
       ok: false,
       error: { code: "EXTERNAL", message: "metadata write failed", retryable: true },
     }));
+    // Refetch returns Nexus's authoritative post-transition state. Metadata
+    // still carries the OLD koi:status (phase: running) since the metadata
+    // write failed — reconciler must distrust it and fall back to live state.
+    transport.stub("get_agent", async () => ({
+      ok: true,
+      value: {
+        agent_id: "a1",
+        state: "IDLE",
+        generation: 1,
+        metadata: {
+          agentType: "worker",
+          priority: 10,
+          registeredAt: 1_700_000_000_000,
+          "koi:status": {
+            phase: "running",
+            generation: 0,
+            conditions: [],
+            lastTransitionAt: 1_700_000_000_000,
+          },
+        },
+      },
+    }));
 
     const result = await registry.transition(agentId("a1"), "waiting", 0, {
       kind: "awaiting_response",
     });
     expect(result.ok).toBe(false);
-    // Local projection MUST reflect the new phase since Nexus already committed it
+    // Reconciler should reflect the live Nexus state (IDLE → waiting) and
+    // distrust the stale koi:status blob (which still says "running").
     const after = await Promise.resolve(registry.lookup(agentId("a1")));
     expect(after?.status.phase).toBe("waiting");
-    expect(after?.status.generation).toBe(1);
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("preserves local projection when refetch also fails", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    await registry.register(makeEntry("a1"));
+
+    transport.stub("update_agent_metadata", async () => ({
+      ok: false,
+      error: { code: "EXTERNAL", message: "metadata write failed", retryable: true },
+    }));
+    transport.stub("get_agent", async () => ({
+      ok: false,
+      error: { code: "EXTERNAL", message: "refetch failed", retryable: true },
+    }));
+
+    const result = await registry.transition(agentId("a1"), "waiting", 0, {
+      kind: "awaiting_response",
+    });
+    expect(result.ok).toBe(false);
+    // No reconciliation possible — keep last-known state rather than guess.
+    const after = await Promise.resolve(registry.lookup(agentId("a1")));
+    expect(after?.status.phase).toBe("running");
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("treats SUSPENDED without koi:terminated as suspended (not terminated)", async () => {
+    const transport = createMockTransport();
+    transport.stub("list_agents", async () => ({
+      ok: true,
+      value: [{ agent_id: "a1", state: "SUSPENDED", generation: 5 }],
+    }));
+    transport.stub("get_agent", async () => ({
+      ok: true,
+      value: {
+        agent_id: "a1",
+        state: "SUSPENDED",
+        generation: 5,
+        // Stale koi:status claims terminated, but no koi:terminated flag —
+        // ambiguous, so reconciler must distrust it.
+        metadata: {
+          "koi:status": {
+            phase: "terminated",
+            generation: 9,
+            conditions: [],
+            lastTransitionAt: 1,
+          },
+        },
+      },
+    }));
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    const entry = await Promise.resolve(registry.lookup(agentId("a1")));
+    expect(entry?.status.phase).toBe("suspended");
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("trusts SUSPENDED + koi:terminated=true as terminated", async () => {
+    const transport = createMockTransport();
+    transport.stub("list_agents", async () => ({
+      ok: true,
+      value: [{ agent_id: "a1", state: "SUSPENDED", generation: 5 }],
+    }));
+    transport.stub("get_agent", async () => ({
+      ok: true,
+      value: {
+        agent_id: "a1",
+        state: "SUSPENDED",
+        generation: 5,
+        metadata: {
+          "koi:terminated": true,
+          "koi:status": {
+            phase: "terminated",
+            generation: 9,
+            conditions: [],
+            lastTransitionAt: 1,
+          },
+        },
+      },
+    }));
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    const entry = await Promise.resolve(registry.lookup(agentId("a1")));
+    expect(entry?.status.phase).toBe("terminated");
+    await registry[Symbol.asyncDispose]();
+  });
+});
+
+describe("createNexusRegistry — capacity", () => {
+  test("register fails closed when projection is at capacity", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({
+      transport,
+      pollIntervalMs: 0,
+      maxEntries: 1,
+    });
+    await registry.register(makeEntry("a1"));
+
+    stubRegisterFlow(transport, "a2");
+    await expect(registry.register(makeEntry("a2"))).rejects.toThrow(/capacity/);
     await registry[Symbol.asyncDispose]();
   });
 });
