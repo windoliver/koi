@@ -72,7 +72,7 @@ describe("mapSystemSignalToCompositionTrigger", () => {
   test("maps other forge demand triggers to the most specific missing capability", () => {
     const cases = [
       {
-        trigger: { kind: "composition_gap", requiredCapability: "reporting" },
+        trigger: { kind: "composition_gap", requiredCapability: "reporting", observedCount: 2 },
         missing: "reporting",
       },
       {
@@ -264,6 +264,56 @@ describe("mapSystemSignalToCompositionTrigger", () => {
       context: { schedulerEvent: signal.event },
       emittedAt: 89,
     });
+  });
+
+  test("maps metric anomalies to frontier_changed", () => {
+    const signal = {
+      kind: "anomaly",
+      anomaly: {
+        kind: "model_latency_anomaly",
+        sessionId: "session-1" as never,
+        agentId: "agent-1" as never,
+        timestamp: 90,
+        turnIndex: 4,
+        latencyMs: 1800,
+        mean: 600,
+        stddev: 100,
+        factor: 12,
+      },
+    } as const satisfies SystemSignal;
+
+    expect(mapSystemSignalToCompositionTrigger(signal)).toEqual({
+      id: "anomaly:agent-1:model_latency_anomaly:90",
+      source: "anomaly",
+      confidence: 1,
+      moment: {
+        kind: "frontier_changed",
+        metric: "model_latency_ms",
+        improvement: -1200,
+      },
+      suggestedCapabilities: ["spawn_agent"],
+      context: { anomaly: signal.anomaly },
+      emittedAt: 90,
+    });
+  });
+
+  test("ignores non-metric anomalies in the first pass", () => {
+    const signal = {
+      kind: "anomaly",
+      anomaly: {
+        kind: "tool_ping_pong",
+        sessionId: "session-1" as never,
+        agentId: "agent-2" as never,
+        timestamp: 91,
+        turnIndex: 5,
+        toolIdA: "search",
+        toolIdB: "summarize",
+        altCount: 8,
+        threshold: 4,
+      },
+    } as const satisfies SystemSignal;
+
+    expect(mapSystemSignalToCompositionTrigger(signal)).toBeUndefined();
   });
 
   test("ignores agent lifecycle in the first pass", () => {

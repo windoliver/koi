@@ -10,6 +10,9 @@
       "path": "../../kernel/core"
     },
     {
+      "path": "../../sched/scheduler"
+    },
+    {
       "path": "../tools-core"
     }
   ]

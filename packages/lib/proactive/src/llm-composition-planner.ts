@@ -289,7 +289,7 @@ const llmPlanSchema = z
   .object({
     triggerId: z.string(),
     steps: z.array(compositionStepSchema),
-    estimatedCost: z.number().finite(),
+    estimatedCost: z.number().finite().nonnegative(),
   })
   .passthrough();
 

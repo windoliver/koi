@@ -1,4 +1,10 @@
-import type { CompositionTrigger, ForgeDemandSignal, ForgeTrigger, SystemSignal } from "@koi/core";
+import type {
+  AnomalySignal,
+  CompositionTrigger,
+  ForgeDemandSignal,
+  ForgeTrigger,
+  SystemSignal,
+} from "@koi/core";
 
 function missingCapabilityFromForgeTrigger(trigger: ForgeTrigger): string {
   switch (trigger.kind) {
@@ -75,6 +81,31 @@ function suggestedCapabilitiesForTaskOutcome(
   }
 }
 
+function metricShiftFromAnomaly(
+  anomaly: AnomalySignal,
+): { readonly metric: string; readonly improvement: number } | undefined {
+  switch (anomaly.kind) {
+    case "error_spike":
+      return { metric: "error_count", improvement: anomaly.threshold - anomaly.errorCount };
+    case "model_latency_anomaly":
+      return { metric: "model_latency_ms", improvement: anomaly.mean - anomaly.latencyMs };
+    case "token_spike":
+      return { metric: "output_tokens", improvement: anomaly.mean - anomaly.outputTokens };
+    case "goal_drift":
+      return { metric: "goal_alignment", improvement: -anomaly.driftScore };
+    case "tool_rate_exceeded":
+      return { metric: "tool_rate", improvement: anomaly.threshold - anomaly.callsPerTurn };
+    case "tool_repeated":
+    case "denied_tool_calls":
+    case "irreversible_action_rate":
+    case "tool_diversity_spike":
+    case "tool_ping_pong":
+    case "session_duration_exceeded":
+    case "delegation_depth_exceeded":
+      return undefined;
+  }
+}
+
 export function mapSystemSignalToCompositionTrigger(
   signal: SystemSignal,
 ): CompositionTrigger | undefined {
@@ -113,9 +144,26 @@ export function mapSystemSignalToCompositionTrigger(
         emittedAt: signal.emittedAt,
       };
     }
+    case "anomaly": {
+      const shift = metricShiftFromAnomaly(signal.anomaly);
+      if (shift === undefined) return undefined;
+
+      return {
+        id: `anomaly:${signal.anomaly.agentId}:${signal.anomaly.kind}:${String(signal.anomaly.timestamp)}`,
+        source: "anomaly",
+        confidence: 1,
+        moment: {
+          kind: "frontier_changed",
+          metric: shift.metric,
+          improvement: shift.improvement,
+        },
+        suggestedCapabilities: ["spawn_agent"],
+        context: { anomaly: signal.anomaly },
+        emittedAt: signal.anomaly.timestamp,
+      };
+    }
     case "vfs":
     case "agent_lifecycle":
-    case "anomaly":
     case "compaction":
       return undefined;
   }

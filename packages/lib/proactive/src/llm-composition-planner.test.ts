@@ -210,6 +210,48 @@ describe("createLlmCompositionPlanner", () => {
     });
   });
 
+  test("negative estimated cost is rejected and can fall back to the rule planner", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "event-3",
+            steps: [],
+            estimatedCost: -1,
+          });
+        },
+      },
+      fallbackToRulePlanner: createRuleBasedCompositionPlanner(),
+    });
+
+    const trigger: CompositionTrigger = {
+      id: "event-3",
+      source: "external",
+      confidence: 1,
+      moment: {
+        kind: "external_event",
+        source: "slack",
+        eventType: "mention",
+      },
+      suggestedCapabilities: [],
+      context: {},
+      emittedAt: 1,
+    };
+
+    const plan = await planner.plan(trigger, {
+      tools: [],
+      agents: [],
+      schedules: [],
+    });
+
+    expect(plan).toEqual({
+      triggerId: "event-3",
+      steps: [],
+      estimatedCost: 0,
+      requiresApproval: true,
+    });
+  });
+
   test("rejects nested invalid message input that previously slipped through", async () => {
     const planner = createLlmCompositionPlanner({
       adapter: {
