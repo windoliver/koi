@@ -80,6 +80,18 @@ function sync<T>(r: Result<T, KoiError> | Promise<Result<T, KoiError>>): Result<
   return r;
 }
 
+type SemanticSearchTestResult = Result<
+  {
+    readonly results: readonly {
+      readonly path: string;
+      readonly snippet: string;
+      readonly score: number;
+      readonly lineStart?: number;
+    }[];
+  },
+  KoiError
+>;
+
 // ---------------------------------------------------------------------------
 // Real-fs fixture — needed to exercise realpath / symlink behaviour.
 // ---------------------------------------------------------------------------
@@ -258,7 +270,9 @@ describe("createScopedFs — search", () => {
   });
 
   test("filters out-of-scope semantic search results", async () => {
-    const backend = {
+    const backend: FileSystemBackend & {
+      readonly semanticSearch: (query: string) => Promise<SemanticSearchTestResult>;
+    } = {
       name: "mock",
       read: (p: string) => ({ ok: true as const, value: { content: "", path: p, size: 0 } }),
       write: (p: string) => ({ ok: true as const, value: { path: p, bytesWritten: 0 } }),
@@ -275,23 +289,12 @@ describe("createScopedFs — search", () => {
         },
       }),
     };
-    const fs = createScopedFs(backend, { allow: [`${scope}/**`], mode: "ro" }) as
-      | FileSystemBackend
-      | {
-          readonly semanticSearch?: (query: string) => Promise<
-            Result<
-              {
-                readonly results: readonly {
-                  readonly path: string;
-                  readonly snippet: string;
-                  readonly score: number;
-                  readonly lineStart?: number;
-                }[];
-              },
-              KoiError
-            >
-          >;
-        };
+    const fs = createScopedFs(backend, {
+      allow: [`${scope}/**`],
+      mode: "ro",
+    }) as FileSystemBackend & {
+      readonly semanticSearch?: (query: string) => Promise<SemanticSearchTestResult>;
+    };
     expect(typeof fs.semanticSearch).toBe("function");
     const result = await fs.semanticSearch?.("ok");
     expect(result).toHaveProperty("ok", true);
