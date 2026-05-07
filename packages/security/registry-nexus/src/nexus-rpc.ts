@@ -70,9 +70,11 @@ export function nexusUpdateMetadata(
   transport: NexusTransport,
   id: string,
   metadata: Readonly<Record<string, unknown>>,
+  expectedGeneration?: number,
 ): Promise<Result<NexusAgent, KoiError>> {
   return transport.call<NexusAgent>("update_agent_metadata", {
     agent_id: id,
     metadata,
+    ...(expectedGeneration !== undefined ? { expected_generation: expectedGeneration } : {}),
   });
 }

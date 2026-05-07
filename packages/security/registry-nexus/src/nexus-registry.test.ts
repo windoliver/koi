@@ -559,6 +559,58 @@ describe("createNexusRegistry — capacity", () => {
     await registry[Symbol.asyncDispose]();
   });
 
+  test("repeated per-agent get_agent failures tombstone the affected entry", async () => {
+    const transport = createMockTransport();
+    // Two agents listed: one will hydrate cleanly, the other will keep
+    // failing. Mixed-success ticks must tombstone only the broken one
+    // without tripping registry-wide broken state.
+    transport.stub("list_agents", async () => ({
+      ok: true,
+      value: [
+        { agent_id: "good", state: "CONNECTED", generation: 0 },
+        { agent_id: "bad", state: "CONNECTED", generation: 0 },
+      ],
+    }));
+    // Warmup hydrates both successfully.
+    let warmedUp = false;
+    transport.stub("get_agent", async (params) => {
+      const ok = {
+        ok: true as const,
+        value: {
+          agent_id: params.agent_id as string,
+          state: "CONNECTED",
+          generation: 0,
+          metadata: { agentType: "worker", priority: 10, registeredAt: 1 },
+        },
+      };
+      if (!warmedUp) return ok;
+      if (params.agent_id === "good") return ok;
+      return { ok: false, error: { code: "EXTERNAL", message: "transient", retryable: true } };
+    });
+
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 5 });
+    warmedUp = true;
+    expect(registry.lookup(agentId("good"))).toBeDefined();
+    expect(registry.lookup(agentId("bad"))).toBeDefined();
+
+    // Bump generations so poll() re-hydrates each tick.
+    let gen = 1;
+    transport.stub("list_agents", async () => ({
+      ok: true,
+      value: [
+        { agent_id: "good", state: "CONNECTED", generation: gen++ },
+        { agent_id: "bad", state: "CONNECTED", generation: gen++ },
+      ],
+    }));
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    // Bad entry tombstoned; good entry still served.
+    expect(registry.lookup(agentId("bad"))).toBeUndefined();
+    expect(registry.lookup(agentId("good"))).toBeDefined();
+    await registry[Symbol.asyncDispose]();
+  });
+
   test("repeated poll list_agents failures mark registry broken", async () => {
     const transport = createMockTransport();
     stubEmptyList(transport);
@@ -656,6 +708,46 @@ describe("createNexusRegistry — patch priority sync", () => {
       // Local metadata mirror must also reflect the patched priority.
       expect(result.value.metadata.priority).toBe(42);
     }
+    await registry[Symbol.asyncDispose]();
+  });
+});
+
+describe("createNexusRegistry — metadata CAS", () => {
+  test("transition update_agent_metadata includes expected_generation for CAS", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    await registry.register(makeEntry("a1"));
+
+    let lastExpected: unknown;
+    transport.stub("update_agent_metadata", async (params) => {
+      lastExpected = params.expected_generation;
+      return { ok: true, value: { agent_id: "a1", state: "IDLE", generation: 7 } };
+    });
+
+    await registry.transition(agentId("a1"), "waiting", 0, { kind: "awaiting_response" });
+    expect(lastExpected).toBeDefined();
+    expect(typeof lastExpected).toBe("number");
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("patch update_agent_metadata includes expected_generation for CAS", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    await registry.register(makeEntry("a1"));
+
+    let lastExpected: unknown;
+    transport.stub("update_agent_metadata", async (params) => {
+      lastExpected = params.expected_generation;
+      return { ok: true, value: { agent_id: "a1", state: "CONNECTED", generation: 8 } };
+    });
+
+    await registry.patch(agentId("a1"), { metadata: { added: "x" } });
+    expect(lastExpected).toBeDefined();
+    expect(typeof lastExpected).toBe("number");
     await registry[Symbol.asyncDispose]();
   });
 });

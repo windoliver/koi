@@ -164,6 +164,10 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
   // resyncs the projection — phase-based scheduling/cleanup must not act
   // on a value the registry knows is wrong.
   const stale = new Set<AgentId>();
+  // Per-agent poll hydration failures — a single agent that fails to
+  // refetch repeatedly is tombstoned so callers don't read stale state.
+  const perAgentGetFailures = new Map<AgentId, number>();
+  const MAX_PER_AGENT_GET_FAILURES = 3;
 
   function assertHealthy(): void {
     if (broken !== undefined) {
@@ -250,11 +254,25 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       const detail = await nexusGetAgent(transport, nexusAgent.agent_id);
       if (!detail.ok) {
         perTickGetFailures += 1;
+        const prev = perAgentGetFailures.get(id) ?? 0;
+        const next = prev + 1;
+        perAgentGetFailures.set(id, next);
         console.warn(
-          `[registry-nexus] poll get_agent ${nexusAgent.agent_id} failed: ${detail.error.message}`,
+          `[registry-nexus] poll get_agent ${nexusAgent.agent_id} failed (${String(next)}/${String(MAX_PER_AGENT_GET_FAILURES)}): ${detail.error.message}`,
         );
+        if (next >= MAX_PER_AGENT_GET_FAILURES) {
+          // Tombstone this entry: persistent hydration failure means we
+          // can't trust the local projection for this agent. Reads return
+          // undefined; mutating ops reject; a later successful poll will
+          // clear the tombstone.
+          stale.add(id);
+          console.error(
+            `[registry-nexus] tombstoning ${nexusAgent.agent_id} after ${String(MAX_PER_AGENT_GET_FAILURES)} consecutive get_agent failures — reads will return undefined until refetch succeeds`,
+          );
+        }
         continue;
       }
+      perAgentGetFailures.delete(id);
 
       if (projection.size >= maxEntries && existing === undefined) {
         // Fail closed: a partial mirror would silently hide live remote
@@ -568,10 +586,17 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       lastTransitionAt: Date.now(),
     };
 
-    const updateResult = await nexusUpdateMetadata(transport, id, {
-      ...current.metadata,
-      ...encodeKoiStatus(newStatus),
-    });
+    const updateResult = await nexusUpdateMetadata(
+      transport,
+      id,
+      {
+        ...current.metadata,
+        ...encodeKoiStatus(newStatus),
+      },
+      // CAS: bind to the post-transition Nexus generation so a concurrent
+      // writer cannot clobber this update by overwriting an older blob.
+      nexusGens.get(id),
+    );
 
     // Materialize the new lifecycle metadata so subsequent patch() calls
     // don't replay a stale koi:status blob (which would clobber the
@@ -718,7 +743,9 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       metadata: nexusMeta,
     };
 
-    const updateResult = await nexusUpdateMetadata(transport, id, nexusMeta);
+    // CAS: bind the patch to the last-known Nexus generation so concurrent
+    // writers can't clobber newer state with this stale-built blob.
+    const updateResult = await nexusUpdateMetadata(transport, id, nexusMeta, nexusGens.get(id));
     if (!updateResult.ok) {
       if (updateResult.error.code === "CONFLICT") {
         return {
