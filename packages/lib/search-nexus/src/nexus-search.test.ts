@@ -223,6 +223,71 @@ describe("createNexusSearch", () => {
     expect(transport.calls.length).toBe(0);
   });
 
+  test("retrieve forwards filter object verbatim to Nexus", async () => {
+    let sentFilter: unknown;
+    transport.stub("search_retrieve", async (params) => {
+      sentFilter = params.filter;
+      return { ok: true, value: { hits: [] } };
+    });
+    const search = createNexusSearch({ transport });
+    const filter = {
+      kind: "and",
+      filters: [
+        { kind: "eq", field: "tag", value: "ops" },
+        { kind: "in", field: "region", values: ["us", "eu"] },
+      ],
+    } as const;
+    await search.retrieve({ text: "x", limit: 5, filter });
+    expect(sentFilter).toEqual(filter);
+  });
+
+  test("retrieve keeps hits with score equal to minScore (boundary)", async () => {
+    transport.stub("search_retrieve", async () => ({
+      ok: true,
+      value: {
+        hits: [
+          { id: "a", score: 0.5, content: "x" },
+          { id: "b", score: 0.49, content: "x" },
+        ],
+      },
+    }));
+    const search = createNexusSearch({ transport });
+    const result = await search.retrieve({ text: "x", limit: 10, minScore: 0.5 });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.results.map((r) => r.id)).toEqual(["a"]);
+  });
+
+  test("index sends a single batch when documents.length === maxBatchSize", async () => {
+    let calls = 0;
+    transport.stub("search_index", async () => {
+      calls++;
+      return { ok: true, value: undefined };
+    });
+    const search = createNexusSearch({ transport, maxBatchSize: 3 });
+    const result = await search.index([
+      { id: "1", content: "a" },
+      { id: "2", content: "b" },
+      { id: "3", content: "c" },
+    ]);
+    expect(result.ok).toBe(true);
+    expect(calls).toBe(1);
+  });
+
+  test("retrieve returns empty results without cursor when Nexus returns no hits", async () => {
+    transport.stub("search_retrieve", async () => ({
+      ok: true,
+      value: { hits: [], total: 0 },
+    }));
+    const search = createNexusSearch({ transport });
+    const result = await search.retrieve({ text: "x", limit: 10 });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.results).toEqual([]);
+      expect(result.value.hasMore).toBe(false);
+      expect(result.value.cursor).toBeUndefined();
+    }
+  });
+
   test("remove sends ids to search_remove", async () => {
     transport.stub("search_remove", async () => ({ ok: true, value: undefined }));
 

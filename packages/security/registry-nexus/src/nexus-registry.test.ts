@@ -1272,6 +1272,116 @@ describe("mapNexusAgentToEntry — koi:status reconciliation", () => {
   });
 });
 
+describe("createNexusRegistry — corner cases (chaos)", () => {
+  test("watch listener cannot mutate event.entry to forge later patch payloads", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+
+    let captured: RegistryEntry | undefined;
+    registry.watch((e) => {
+      if (e.kind === "registered") {
+        captured = e.entry;
+        // Attempt to inject a reserved key through the event reference.
+        expect(() => {
+          (captured?.metadata as Record<string, unknown>)["koi:terminated"] = true;
+        }).toThrow();
+        expect(() => {
+          const ks = captured?.metadata["koi:status"] as Record<string, unknown> | undefined;
+          if (ks !== undefined) ks.phase = "terminated";
+        }).toThrow();
+      }
+    });
+
+    await registry.register(makeEntry("a1"));
+    const looked = await registry.lookup(agentId("a1"));
+    expect(looked?.metadata["koi:terminated"]).not.toBe(true);
+    const ks = looked?.metadata["koi:status"] as Record<string, unknown> | undefined;
+    expect(ks?.phase).not.toBe("terminated");
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("id reuse after deregister cleanly registers as a fresh entry", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    transport.stub("delete_agent", async () => ({ ok: true, value: undefined }));
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+
+    await registry.register(makeEntry("a1"));
+    await registry.deregister(agentId("a1"));
+    expect(await registry.lookup(agentId("a1"))).toBeUndefined();
+
+    // Re-register same id; per-id failure / stale state must be clean.
+    const second = await registry.register(
+      makeEntry("a1", {
+        status: { phase: "running", generation: 0, conditions: [], lastTransitionAt: 2 },
+        agentType: "copilot",
+      }),
+    );
+    expect(second.agentType).toBe("copilot");
+    expect(await registry.lookup(agentId("a1"))).toBeDefined();
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("poll repairs projection when remote generation rolls back (Nexus restart)", async () => {
+    const transport = createMockTransport();
+    transport.stub("list_agents", async () => ({
+      ok: true,
+      value: [{ agent_id: "a1", state: "CONNECTED", generation: 50 }],
+    }));
+    transport.stub("get_agent", async () => ({
+      ok: true,
+      value: {
+        agent_id: "a1",
+        state: "CONNECTED",
+        generation: 50,
+        metadata: { agentType: "worker", priority: 10, registeredAt: 1 },
+      },
+    }));
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 5 });
+    expect((await registry.lookup(agentId("a1")))?.status.phase).toBe("running");
+
+    // Nexus restarts, generation resets to 1; poll must re-hydrate, not
+    // short-circuit on the lower remoteGen.
+    transport.stub("list_agents", async () => ({
+      ok: true,
+      value: [{ agent_id: "a1", state: "IDLE", generation: 1 }],
+    }));
+    transport.stub("get_agent", async () => ({
+      ok: true,
+      value: {
+        agent_id: "a1",
+        state: "IDLE",
+        generation: 1,
+        metadata: { agentType: "worker", priority: 10, registeredAt: 1 },
+      },
+    }));
+    await new Promise((r) => setTimeout(r, 60));
+    expect((await registry.lookup(agentId("a1")))?.status.phase).toBe("waiting");
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("patch returns CONFLICT when Nexus rejects with stale expected_generation", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    transport.stub("update_agent_metadata", async () => ({
+      ok: false,
+      error: { code: "CONFLICT", message: "stale", retryable: true },
+    }));
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    await registry.register(makeEntry("a1"));
+    const result = await registry.patch(agentId("a1"), { priority: 5 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("CONFLICT");
+    // Local mirror unchanged on CONFLICT (no tombstone).
+    expect((await registry.lookup(agentId("a1")))?.priority).toBe(10);
+    await registry[Symbol.asyncDispose]();
+  });
+});
+
 describe("createNexusRegistry — watch unsubscribe", () => {
   test("unsubscribe stops further events", async () => {
     const transport = createMockTransport();
