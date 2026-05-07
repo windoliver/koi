@@ -29,6 +29,14 @@ const NEXUS_TO_KOI: Readonly<Record<string, ProcessState>> = Object.freeze({
   SUSPENDED: "suspended",
 });
 
+/**
+ * Map a Nexus AgentState to a Koi ProcessState.
+ *
+ * Throws on unknown states rather than silently defaulting — schema drift,
+ * a server bug, or a malformed payload should fail closed during hydration
+ * so the registry doesn't fabricate a synthetic lifecycle state and
+ * misdrive scheduling/cleanup decisions.
+ */
 export function mapNexusToKoi(
   state: string,
   metadata?: Readonly<Record<string, unknown>>,
@@ -37,7 +45,12 @@ export function mapNexusToKoi(
     return "terminated";
   }
   const mapped = NEXUS_TO_KOI[state];
-  return mapped ?? "created";
+  if (mapped === undefined) {
+    throw new Error(
+      `Unknown Nexus AgentState "${state}" — refuse to fabricate a synthetic Koi phase`,
+    );
+  }
+  return mapped;
 }
 
 /** Metadata key used to store the full Koi AgentStatus in Nexus. */

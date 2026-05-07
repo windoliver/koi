@@ -105,6 +105,20 @@ describe("createNexusRegistry — startup", () => {
     await expect(createNexusRegistry({ transport, pollIntervalMs: 0 })).rejects.toThrow(/hydrate/);
   });
 
+  test("fails closed when Nexus returns an unknown AgentState during warmup", async () => {
+    transport.stub("list_agents", async () => ({
+      ok: true,
+      value: [{ agent_id: "a1", state: "QUARANTINED", generation: 0 }],
+    }));
+    transport.stub("get_agent", async () => ({
+      ok: true,
+      value: { agent_id: "a1", state: "QUARANTINED", generation: 0, metadata: {} },
+    }));
+    await expect(createNexusRegistry({ transport, pollIntervalMs: 0 })).rejects.toThrow(
+      /Unknown Nexus AgentState/,
+    );
+  });
+
   test("fails closed when remote agent count exceeds maxEntries during warmup", async () => {
     transport.stub("list_agents", async () => ({
       ok: true,
@@ -187,6 +201,52 @@ describe("createNexusRegistry — register", () => {
     await registry.register(makeEntry("a1"));
     const stored = await Promise.resolve(registry.lookup(agentId("a1")));
     expect(stored?.zoneId).toBe(zoneId("zone-default"));
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("strips caller-supplied reserved metadata keys on register", async () => {
+    let registerMeta: Readonly<Record<string, unknown>> | undefined;
+    transport.stub("register_agent", async (params) => {
+      registerMeta = params.metadata as Readonly<Record<string, unknown>>;
+      return { ok: true, value: { agent_id: "a1", state: "UNKNOWN", generation: 0 } };
+    });
+    transport.stub("agent_transition", async (params) => ({
+      ok: true,
+      value: {
+        agent_id: "a1",
+        state: params.target_state as string,
+        generation: ((params.expected_generation as number) ?? 0) + 1,
+      },
+    }));
+    transport.stub("update_agent_metadata", async () => ({
+      ok: true,
+      value: { agent_id: "a1", state: "CONNECTED", generation: 99 },
+    }));
+
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    // Adversarial caller tries to mark a non-terminated agent as terminated
+    // via reserved metadata keys.
+    await registry.register(
+      makeEntry("a1", {
+        metadata: {
+          benign: "ok",
+          "koi:terminated": true,
+          "koi:status": {
+            phase: "terminated",
+            generation: 99,
+            conditions: [],
+            lastTransitionAt: 1,
+          },
+          agentType: "evil",
+        },
+      }),
+    );
+    expect(registerMeta?.benign).toBe("ok");
+    // Reserved keys must come from the adapter, not the caller.
+    expect(registerMeta?.["koi:terminated"]).toBe(false);
+    const status = registerMeta?.["koi:status"] as Record<string, unknown> | undefined;
+    expect(status?.phase).toBe("running"); // canonical, not the forged "terminated"
+    expect(registerMeta?.agentType).toBe("worker");
     await registry[Symbol.asyncDispose]();
   });
 

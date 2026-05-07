@@ -47,8 +47,8 @@ describe("mapNexusToKoi", () => {
     expect(mapNexusToKoi("SUSPENDED", { [KOI_TERMINATED_KEY]: true })).toBe("terminated");
   });
 
-  test("unknown state defaults to created", () => {
-    expect(mapNexusToKoi("ZZZ")).toBe("created");
+  test("unknown state throws to fail closed on schema drift", () => {
+    expect(() => mapNexusToKoi("ZZZ")).toThrow(/Unknown Nexus AgentState/);
   });
 });
 

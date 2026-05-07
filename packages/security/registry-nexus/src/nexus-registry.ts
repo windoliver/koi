@@ -293,7 +293,23 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
         return;
       }
 
-      const entry = mapNexusAgentToEntry(detail.value);
+      // mapNexusAgentToEntry throws on unknown Nexus state — treat that
+      // as a per-agent hydration failure (tombstone after threshold)
+      // rather than letting an uncaught throw kill the poll loop.
+      let entry: RegistryEntry;
+      try {
+        entry = mapNexusAgentToEntry(detail.value);
+      } catch (err) {
+        const prev = perAgentGetFailures.get(id) ?? 0;
+        perAgentGetFailures.set(id, prev + 1);
+        console.warn(
+          `[registry-nexus] failed to map Nexus agent ${nexusAgent.agent_id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        if ((perAgentGetFailures.get(id) ?? 0) >= MAX_PER_AGENT_GET_FAILURES) {
+          stale.add(id);
+        }
+        continue;
+      }
       projection.set(id, entry);
       nexusGens.set(id, detail.value.generation ?? 0);
       stale.delete(id);
@@ -344,10 +360,23 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
         `Registry projection at capacity (${String(maxEntries)} entries); refuse to register ${entry.agentId} without a local mirror`,
       );
     }
+    // Strip caller-supplied reserved keys before merging — register() must
+    // enforce the same trust boundary as patch(). A caller-supplied
+    // `koi:terminated`/`koi:status`/etc. would let user metadata flip
+    // authoritative lifecycle state on first hydration.
+    const sanitizedCallerMetadata: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(entry.metadata)) {
+      if (!RESERVED_METADATA_KEYS.has(k)) sanitizedCallerMetadata[k] = v;
+    }
     const koiMetadata = encodeKoiStatus(entry.status);
     const merged: Record<string, unknown> = {
-      ...entry.metadata,
+      ...sanitizedCallerMetadata,
       ...koiMetadata,
+      // Explicitly clear koi:terminated when the status is not terminated;
+      // encodeKoiStatus only sets it for terminated, so without this a
+      // future caller-supplied value (already filtered above) or a stale
+      // remote flag could bleed through on round-trip.
+      ...(entry.status.phase !== "terminated" ? { "koi:terminated": false } : {}),
       agentType: entry.agentType,
       registeredAt: entry.registeredAt,
       priority: entry.priority,
@@ -637,7 +666,14 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
         }
         const refetch = await nexusGetAgent(transport, id);
         if (refetch.ok) {
-          const reconciled = mapNexusAgentToEntry(refetch.value);
+          // Unknown-state errors during reconciliation should not crash
+          // the caller; treat as a refetch failure for the next attempt.
+          let reconciled: RegistryEntry;
+          try {
+            reconciled = mapNexusAgentToEntry(refetch.value);
+          } catch {
+            continue;
+          }
           projection.set(id, reconciled);
           nexusGens.set(id, refetch.value.generation ?? currentNexusGen);
           stale.delete(id);
