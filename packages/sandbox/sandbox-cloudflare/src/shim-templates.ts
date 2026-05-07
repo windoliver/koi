@@ -67,18 +67,22 @@ export default {
     try { handlerResp = await env.HANDLER_RUNNER.fetch(handlerReq); } catch (e) { return respond(503, { error: "HANDLER_UNREACHABLE", cause: String(e && e.message) }, "shim-error", { "X-Koi-Shim-Error-Code": "HANDLER_UNREACHABLE" }); }
     const outcome = handlerResp.headers.get(HEADER_OUTCOME) || "success";
     const respBody = await handlerResp.text();
-    // Store the DECODED handler value in the DO. The dedupe contract requires
-    // identical host-visible output between first execution and a cached
-    // replay; persisting the raw text would re-stringify on replay (claim.result
-    // would arrive as a JSON-encoded string and respond() would JSON.stringify
-    // it again). Decoding here means both paths feed the same shape into respond().
     var parsedResult; try { parsedResult = JSON.parse(respBody || "null"); } catch (_e) { parsedResult = respBody; }
     var parsedError; try { parsedError = JSON.parse(respBody || "null"); } catch (_e) { parsedError = respBody; }
     const ttlExpiresAtMs = dedupeExpiresAtMs + 3_600_000;
-    if (outcome === "failed-permanent") {
+    // Permanent failures: terminal cache.
+    if (handlerResp.status === 200 && outcome === "failed-permanent") {
       const failOk = await stub.fetch("https://do/fail", { method: "POST", body: JSON.stringify({ operationId, requestId, dedupeFingerprint, error: parsedError, ttlExpiresAtMs }) }).then((r) => r.json());
       if (!failOk.committed) return respond(503, { error: "OWNERSHIP_LOST" }, "shim-error", { "X-Koi-Shim-Error-Code": "OWNERSHIP_LOST" });
       return respond(200, { error: parsedError }, "failed-permanent");
+    }
+    // Transient or any non-200 handler response: NOT cacheable. Release the
+    // claim so the next invoke can re-run the handler, and surface as a
+    // shim error. Caching this as success would replay bogus output for
+    // every later retry of the same operationId.
+    if (handlerResp.status !== 200 || outcome !== "success") {
+      try { await stub.fetch("https://do/release", { method: "POST", body: JSON.stringify({ operationId, requestId }) }); } catch (_e) { /* best-effort */ }
+      return respond(503, { error: "HANDLER_TRANSIENT", status: handlerResp.status, outcome }, "shim-error", { "X-Koi-Shim-Error-Code": "HANDLER_TRANSIENT" });
     }
     const completeOk = await stub.fetch("https://do/complete", { method: "POST", body: JSON.stringify({ operationId, requestId, dedupeFingerprint, result: parsedResult, statusCode: 200, ttlExpiresAtMs }) }).then((r) => r.json());
     if (!completeOk.committed) return respond(503, { error: "DEDUPE_PERSISTENCE_FAILED" }, "shim-error", { "X-Koi-Shim-Error-Code": "DEDUPE_PERSISTENCE_FAILED" });

@@ -88,16 +88,27 @@ export default {
     const sig = await sign(env.KOI_PAIR_SIGNING_KEY_PEM, canonical);
     let handlerResp;
     try {
+      const handlerHeaders = {
+        "content-type": "application/json",
+        [HEADER_SIG]: sig,
+        [HEADER_REQ_ID]: requestId,
+        [HEADER_NONCE]: nonce,
+        [HEADER_TS]: String(timestampSec),
+        [HEADER_OPID]: operationId,
+      };
+      // Vercel deployment-protection bypass — required for preview deploys
+      // and for any production handler with protection enabled. Without this
+      // header the A->B fetch is blocked or challenged BEFORE signature
+      // verification runs, and the gateway would treat the protection-page
+      // body as handler output. KOI_VERCEL_BYPASS_TOKEN is provisioned per
+      // pair at deploy time alongside the signing key.
+      if (env.KOI_VERCEL_BYPASS_TOKEN) {
+        handlerHeaders["x-vercel-protection-bypass"] = env.KOI_VERCEL_BYPASS_TOKEN;
+        handlerHeaders["x-vercel-set-bypass-cookie"] = "samesitenone";
+      }
       handlerResp = await fetch(env.KOI_HANDLER_URL, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          [HEADER_SIG]: sig,
-          [HEADER_REQ_ID]: requestId,
-          [HEADER_NONCE]: nonce,
-          [HEADER_TS]: String(timestampSec),
-          [HEADER_OPID]: operationId,
-        },
+        headers: handlerHeaders,
         body: handlerBody,
       });
     } catch (e) {
@@ -105,10 +116,19 @@ export default {
     }
     const outcome = handlerResp.headers.get(HEADER_OUTCOME) || "success";
     const respBody = await handlerResp.text();
-    if (outcome === "failed-permanent") {
-      return respond(200, { error: respBody }, "failed-permanent");
+    if (handlerResp.status === 200 && outcome === "failed-permanent") {
+      var parsedFailErr; try { parsedFailErr = JSON.parse(respBody || "null"); } catch (_e) { parsedFailErr = respBody; }
+      return respond(200, { error: parsedFailErr }, "failed-permanent");
     }
-    return respond(200, JSON.parse(respBody || "null"), "success");
+    // Anything other than 200/success is non-cacheable transport failure
+    // (challenge page, protection block, transient handler error, missing
+    // signature headers, …). Surface as shim-error rather than corrupting
+    // the dedupe cache by treating the body as success output.
+    if (handlerResp.status !== 200 || outcome !== "success") {
+      return respond(503, { error: "HANDLER_TRANSIENT", status: handlerResp.status, outcome }, "shim-error", { "X-Koi-Shim-Error-Code": "HANDLER_TRANSIENT" });
+    }
+    var parsedSuccess; try { parsedSuccess = JSON.parse(respBody || "null"); } catch (_e) { parsedSuccess = respBody; }
+    return respond(200, parsedSuccess, "success");
   },
 };
 `;

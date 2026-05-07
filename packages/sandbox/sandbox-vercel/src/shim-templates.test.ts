@@ -42,6 +42,16 @@ describe("shim-templates", () => {
     expect(HANDLER_RUNNER_SHIM_SOURCE).not.toContain('"POST", url.pathname, "invoke",');
   });
 
+  it("gateway sends x-vercel-protection-bypass header when token is configured", () => {
+    expect(GATEWAY_SHIM_SOURCE).toContain("KOI_VERCEL_BYPASS_TOKEN");
+    expect(GATEWAY_SHIM_SOURCE).toContain("x-vercel-protection-bypass");
+  });
+
+  it("gateway does NOT cache transient/non-200 handler responses as success", () => {
+    expect(GATEWAY_SHIM_SOURCE).toContain('handlerResp.status !== 200 || outcome !== "success"');
+    expect(GATEWAY_SHIM_SOURCE).toContain("HANDLER_TRANSIENT");
+  });
+
   it("handler runner enforces a timestamp skew tolerance", () => {
     expect(HANDLER_RUNNER_SHIM_SOURCE).toContain("SKEW_TOLERANCE_SEC");
     expect(HANDLER_RUNNER_SHIM_SOURCE).toContain("STALE_REQUEST");

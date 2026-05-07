@@ -23,6 +23,15 @@ describe("GATEWAY_SHIM_SOURCE", () => {
     expect(GATEWAY_SHIM_SOURCE).toContain('"failed-permanent"');
   });
 
+  it("does NOT cache transient handler responses as success (release-claim path)", () => {
+    // The gateway must require status===200 AND outcome==="success" before
+    // calling /complete. A transient handler exception (503, outcome=transient)
+    // must release the claim and surface as a shim-error, not get cached.
+    expect(GATEWAY_SHIM_SOURCE).toContain('handlerResp.status !== 200 || outcome !== "success"');
+    expect(GATEWAY_SHIM_SOURCE).toContain("HANDLER_TRANSIENT");
+    expect(GATEWAY_SHIM_SOURCE).toContain("https://do/release");
+  });
+
   it("persists decoded handler results so cached replay matches fresh execution", () => {
     // The DO must hold the parsed JSON value. If we stored raw text
     // (`result: respBody`), claim.result on replay would be a string and
