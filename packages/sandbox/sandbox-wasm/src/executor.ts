@@ -174,10 +174,16 @@ export const createWasmExecutor = (): WasmExecutor => {
     if (scan.value.importedMemory !== undefined) {
       const desc = scan.value.importedMemory;
       const callerNs = importsBase[desc.module];
-      const alreadyProvided = callerNs !== undefined && callerNs[desc.name] !== undefined;
-      if (!alreadyProvided) {
+      const callerProvidedMemory = callerNs !== undefined && callerNs[desc.name] !== undefined;
+      const maxPages = options?.maxMemoryPages;
+      // When `maxMemoryPages` is set, the executor MUST own the memory object
+      // — a caller-supplied `WebAssembly.Memory` could declare a larger
+      // `maximum` (or no maximum at all), and the guest could `memory.grow()`
+      // past the host's cap during execution. Override any caller-supplied
+      // memory with a host-created one whose `maximum` equals the cap.
+      const shouldInject = !callerProvidedMemory || maxPages !== undefined;
+      if (shouldInject) {
         const initial = desc.limits.min;
-        const maxPages = options?.maxMemoryPages;
         const maximum = maxPages !== undefined ? maxPages : (desc.limits.max ?? undefined);
         try {
           hostMemory =
