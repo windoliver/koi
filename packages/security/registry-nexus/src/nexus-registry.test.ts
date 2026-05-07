@@ -1111,6 +1111,35 @@ describe("createNexusRegistry — patch zoneId not supported", () => {
   });
 });
 
+describe("createNexusRegistry — projection immutability", () => {
+  test("returned entries are frozen so callers cannot mutate metadata in place", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    const stored = await registry.register(makeEntry("a1"));
+
+    expect(Object.isFrozen(stored)).toBe(true);
+    expect(Object.isFrozen(stored.metadata)).toBe(true);
+    expect(Object.isFrozen(stored.status)).toBe(true);
+
+    // Attempted in-process injection of reserved key must throw in strict
+    // mode (frozen object) rather than silently corrupt later patch payloads.
+    expect(() => {
+      (stored.metadata as Record<string, unknown>)["koi:terminated"] = true;
+    }).toThrow();
+
+    const looked = await registry.lookup(agentId("a1"));
+    expect(looked).toBeDefined();
+    if (looked !== undefined) {
+      expect(Object.isFrozen(looked.metadata)).toBe(true);
+      // Mutation attempt above must not have leaked into the projection.
+      expect(looked.metadata["koi:terminated"]).not.toBe(true);
+    }
+    await registry[Symbol.asyncDispose]();
+  });
+});
+
 describe("mapNexusAgentToEntry — stale koi:status reconciliation", () => {
   test("ignores stale koi:status when phase disagrees with Nexus state", async () => {
     const transport = createMockTransport();

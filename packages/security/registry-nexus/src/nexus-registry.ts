@@ -60,6 +60,22 @@ const RESERVED_METADATA_KEYS: ReadonlySet<string> = new Set([
   "zoneId",
 ]);
 
+/**
+ * Deep-freeze a registry entry before storing or returning it. TypeScript
+ * `readonly` is compile-only; without runtime freezing, callers (including
+ * watch listeners) could mutate `entry.metadata` in place. Later
+ * `transition()` / `patch()` rebuild outbound Nexus payloads from
+ * `current.metadata`, so an in-process mutation could inject reserved
+ * keys (`koi:terminated`, `agentType`, etc.) that bypass the validation
+ * path in `patch({ metadata })` and corrupt lifecycle/identity state.
+ */
+function freezeEntry(entry: RegistryEntry): RegistryEntry {
+  Object.freeze(entry.status.conditions);
+  Object.freeze(entry.status);
+  Object.freeze(entry.metadata);
+  return Object.freeze(entry);
+}
+
 function mapNexusAgentToEntry(agent: NexusAgent): RegistryEntry {
   const metadata = agent.metadata ?? {};
   const koiStatus = decodeKoiStatus(metadata);
@@ -213,7 +229,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
           { cause: detail.error },
         );
       }
-      const entry = mapNexusAgentToEntry(detail.value);
+      const entry = freezeEntry(mapNexusAgentToEntry(detail.value));
       projection.set(entry.agentId, entry);
       nexusGens.set(entry.agentId, detail.value.generation ?? 0);
     }
@@ -304,7 +320,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       // rather than letting an uncaught throw kill the poll loop.
       let entry: RegistryEntry;
       try {
-        entry = mapNexusAgentToEntry(detail.value);
+        entry = freezeEntry(mapNexusAgentToEntry(detail.value));
       } catch (err) {
         const prev = perAgentGetFailures.get(id) ?? 0;
         perAgentGetFailures.set(id, prev + 1);
@@ -470,7 +486,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
             ...encodeKoiStatus(entry.status),
           },
         };
-        projection.set(entry.agentId, tombstoneEntry);
+        projection.set(entry.agentId, freezeEntry(tombstoneEntry));
         nexusGens.set(entry.agentId, initialNexusGen);
         stale.add(entry.agentId);
         rollbackFailureMessage = `probe failed after ${String(PROBE_ATTEMPTS)} attempts; remote record may be orphaned. Tombstoned local id ${entry.agentId} — call deregister() once Nexus is reachable again`;
@@ -566,12 +582,12 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     // list({ zoneId }) / zone-scoped schedulers would miss it.
     const effectiveZoneId =
       entry.zoneId ?? (config.zoneId !== undefined ? zoneId(config.zoneId) : undefined);
-    const stored: RegistryEntry = {
+    const stored: RegistryEntry = freezeEntry({
       ...entry,
       status: canonicalStatus,
       metadata: canonicalMerged,
       ...(effectiveZoneId !== undefined ? { zoneId: effectiveZoneId } : {}),
-    };
+    });
     projection.set(entry.agentId, stored);
     nexusGens.set(entry.agentId, currentNexusGen);
     // Clear all per-ID failure state — re-registering a previously
@@ -748,7 +764,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
           // the caller; treat as a refetch failure for the next attempt.
           let reconciled: RegistryEntry;
           try {
-            reconciled = mapNexusAgentToEntry(refetch.value);
+            reconciled = freezeEntry(mapNexusAgentToEntry(refetch.value));
           } catch {
             continue;
           }
@@ -783,11 +799,11 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       nexusGens.set(id, updateResult.value.generation);
     }
 
-    const updated: RegistryEntry = {
+    const updated: RegistryEntry = freezeEntry({
       ...current,
       status: newStatus,
       metadata: refreshedMetadata,
-    };
+    });
     projection.set(id, updated);
 
     notify({
@@ -866,11 +882,11 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     // Local metadata mirror MUST match the outbound Nexus payload — the
     // adapter rebuilds outbound metadata from `current.metadata` on later
     // writes, so any divergence here will get re-sent and clobber Nexus.
-    const updated: RegistryEntry = {
+    const updated: RegistryEntry = freezeEntry({
       ...current,
       ...(fields.priority !== undefined ? { priority: fields.priority } : {}),
       metadata: nexusMeta,
-    };
+    });
 
     // CAS: bind the patch to the last-known Nexus generation so concurrent
     // writers can't clobber newer state with this stale-built blob.
@@ -901,7 +917,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
         if (refetch.ok) {
           let reconciled: RegistryEntry;
           try {
-            reconciled = mapNexusAgentToEntry(refetch.value);
+            reconciled = freezeEntry(mapNexusAgentToEntry(refetch.value));
           } catch {
             continue;
           }
