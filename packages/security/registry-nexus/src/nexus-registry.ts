@@ -69,10 +69,21 @@ const RESERVED_METADATA_KEYS: ReadonlySet<string> = new Set([
  * keys (`koi:terminated`, `agentType`, etc.) that bypass the validation
  * path in `patch({ metadata })` and corrupt lifecycle/identity state.
  */
+function deepFreeze(value: unknown): void {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
+  Object.freeze(value);
+  for (const key of Object.keys(value)) {
+    deepFreeze((value as Record<string, unknown>)[key]);
+  }
+}
+
 function freezeEntry(entry: RegistryEntry): RegistryEntry {
-  Object.freeze(entry.status.conditions);
-  Object.freeze(entry.status);
-  Object.freeze(entry.metadata);
+  // Deep-freeze metadata: nested objects (notably the `koi:status` payload
+  // and any caller-supplied object values) must also be immutable, otherwise
+  // `metadata["koi:status"].phase = "terminated"` after lookup() would be
+  // re-sent verbatim by the next transition()/patch() rebuild.
+  deepFreeze(entry.metadata);
+  deepFreeze(entry.status);
   return Object.freeze(entry);
 }
 
@@ -100,10 +111,17 @@ function mapNexusAgentToEntry(agent: NexusAgent): RegistryEntry {
     (koiStatus?.phase === "terminated" && terminatedFlag) ||
     (koiStatus?.phase === "suspended" && !terminatedFlag);
 
+  // Trust koi:status when it round-trips through the same Nexus state, not
+  // only when it equals the default remotePhase. CONNECTED admits both
+  // `created` and `running`, IDLE admits both `waiting` and `idle`. Without
+  // this, a `created` agent registered through this adapter would be
+  // observable as `running` on every refetch — losing the `created → running`
+  // transition event that startup observers (ChildHandle, spawn-child) rely
+  // on.
+  const koiStatusRoundTrips =
+    koiStatus !== undefined && mapKoiToNexus(koiStatus.phase) === agent.state;
   const trustedKoiStatus =
-    koiStatus !== undefined && koiStatus.phase === remotePhase && ambiguityResolved
-      ? koiStatus
-      : undefined;
+    koiStatus !== undefined && koiStatusRoundTrips && ambiguityResolved ? koiStatus : undefined;
 
   const status: AgentStatus = trustedKoiStatus ?? {
     phase: remotePhase,
@@ -543,32 +561,16 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
         : currentNexusGen;
     }
 
-    // Canonicalize the post-transition Koi phase. Nexus only carries
-    // CONNECTED/IDLE/SUSPENDED, so caller-supplied phases like "created"
-    // (→ CONNECTED → "running") and "idle" (→ IDLE → "waiting") are
-    // collapsed by the round-trip mapping. Storing the original phase
-    // would leave the local mirror disagreeing with Nexus indefinitely
-    // (the poll generation short-circuit prevents repair). Force the
-    // mirror to the canonical post-transition phase and rewrite the
-    // koi:status metadata so subsequent reads see consistent state.
-    const canonicalPhase = mapNexusToKoi(targetNexusState, merged);
-    const canonicalStatus: AgentStatus = { ...entry.status, phase: canonicalPhase };
-    const canonicalMerged: Record<string, unknown> = {
-      ...merged,
-      ...encodeKoiStatus(canonicalStatus),
-    };
-
-    if (canonicalPhase !== entry.status.phase) {
-      // Rewrite the lifecycle metadata so Nexus reflects the canonical
-      // phase too — otherwise the next poll/refetch would re-hydrate from
-      // stale koi:status and the generation short-circuit would prevent
-      // repair. Best-effort: if this rewrite fails, keep the canonical
-      // local view (Nexus state is already the source of truth for phase).
-      const rewriteResult = await nexusUpdateMetadata(transport, entry.agentId, canonicalMerged);
-      if (rewriteResult.ok && rewriteResult.value.generation !== undefined) {
-        currentNexusGen = rewriteResult.value.generation;
-      }
-    }
+    // Preserve the caller's original phase. Nexus only carries
+    // CONNECTED/IDLE/SUSPENDED, but the koi:status metadata blob carries
+    // the precise Koi phase. mapNexusAgentToEntry trusts koi:status when
+    // it round-trips through the same Nexus state, so a `created` agent
+    // registered here remains observable as `created` until the runtime
+    // performs the real `created → running` transition. Without this,
+    // ChildHandle/spawn-child observers would miss the startup event
+    // because the agent would be observable as `running` immediately.
+    const canonicalStatus: AgentStatus = entry.status;
+    const canonicalMerged: Record<string, unknown> = merged;
 
     // Store the merged metadata blob locally so subsequent
     // patch()/transition() round-trips don't drop identity fields
@@ -745,12 +747,24 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     };
 
     if (!updateResult.ok) {
+      // Special case: target=terminated. Nexus is now in SUSPENDED but the
+      // `koi:terminated` flag write failed, so the authoritative record is
+      // ambiguous — refetching would map bare SUSPENDED back to `suspended`
+      // and silently downgrade an intended terminate to a resumable agent,
+      // letting cleanup logic act on a still-live entry. Tombstone instead:
+      // the agent stays invisible to reads until the caller explicitly
+      // deregisters or a subsequent transition repairs the metadata.
+      if (targetPhase === "terminated") {
+        stale.add(id);
+        console.warn(
+          `[registry-nexus] terminate metadata-write failed for ${id} (Nexus is SUSPENDED without koi:terminated=true); tombstoning to prevent silent downgrade to "suspended" — caller should retry transition() or deregister`,
+        );
+        return { ok: false, error: updateResult.error };
+      }
       // agent_transition committed remotely, but the lifecycle metadata
       // write did not. Reconcile the local projection from the
       // authoritative Nexus record so we don't claim a phase that Nexus
-      // cannot actually represent without the missing metadata flag
-      // (notably: terminated requires `koi:terminated=true` to round-trip
-      // through the lossy SUSPENDED state).
+      // cannot actually represent without the missing metadata flag.
       // Bounded retry: dropping the entry on a single transient failure
       // would orphan the live Nexus agent when polling is disabled.
       const RECONCILE_ATTEMPTS = 3;

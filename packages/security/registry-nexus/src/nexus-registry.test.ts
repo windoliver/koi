@@ -161,7 +161,7 @@ describe("createNexusRegistry — register", () => {
     expect(events).toContain("registered");
   });
 
-  test("canonicalizes lossy phases (created → running) on register", async () => {
+  test("preserves caller phase (created) on register so startup transitions can fire", async () => {
     stubRegisterFlow(transport, "a1");
     const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
     const result = await registry.register(
@@ -169,16 +169,18 @@ describe("createNexusRegistry — register", () => {
         status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: 1 },
       }),
     );
-    // "created" maps to Nexus CONNECTED, which maps back to "running".
-    // Storing the original "created" phase would leave the mirror
-    // permanently disagreeing with Nexus.
-    expect(result.status.phase).toBe("running");
+    // The koi:status metadata blob carries the precise phase. Both
+    // `created` and `running` round-trip through Nexus CONNECTED, so
+    // mapNexusAgentToEntry trusts the blob and we keep `created` until
+    // the runtime issues the real `created → running` transition. Without
+    // this, ChildHandle would never observe a startup transition event.
+    expect(result.status.phase).toBe("created");
     const stored = await Promise.resolve(registry.lookup(agentId("a1")));
-    expect(stored?.status.phase).toBe("running");
+    expect(stored?.status.phase).toBe("created");
     await registry[Symbol.asyncDispose]();
   });
 
-  test("canonicalizes lossy phases (idle → waiting) on register", async () => {
+  test("preserves caller phase (idle) on register", async () => {
     stubRegisterFlow(transport, "a1");
     const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
     const result = await registry.register(
@@ -186,7 +188,7 @@ describe("createNexusRegistry — register", () => {
         status: { phase: "idle", generation: 0, conditions: [], lastTransitionAt: 1 },
       }),
     );
-    expect(result.status.phase).toBe("waiting");
+    expect(result.status.phase).toBe("idle");
     await registry[Symbol.asyncDispose]();
   });
 
@@ -1138,14 +1140,110 @@ describe("createNexusRegistry — projection immutability", () => {
     }
     await registry[Symbol.asyncDispose]();
   });
+
+  test("nested koi:status object is deep-frozen against in-place phase tampering", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    const stored = await registry.register(makeEntry("a1"));
+
+    const koiStatus = stored.metadata["koi:status"];
+    expect(typeof koiStatus).toBe("object");
+    expect(Object.isFrozen(koiStatus)).toBe(true);
+
+    // Attempting to flip the nested phase via mutation must throw, not
+    // silently land in `current.metadata` for the next transition()/patch()
+    // outbound rebuild.
+    expect(() => {
+      (koiStatus as Record<string, unknown>).phase = "terminated";
+    }).toThrow();
+    await registry[Symbol.asyncDispose]();
+  });
 });
 
-describe("mapNexusAgentToEntry — stale koi:status reconciliation", () => {
-  test("ignores stale koi:status when phase disagrees with Nexus state", async () => {
+describe("createNexusRegistry — terminate ambiguous failure", () => {
+  test("tombstones rather than reconciling when terminate metadata-write fails", async () => {
     const transport = createMockTransport();
-    // Nexus says CONNECTED (running), but metadata's koi:status still
-    // claims phase: created. The mapper should trust Nexus over the
-    // stale metadata and report phase: running.
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    transport.stub("agent_transition", async () => ({
+      ok: true,
+      value: { agent_id: "a1", generation: 99 },
+    }));
+    transport.stub("update_agent_metadata", async () => ({
+      ok: false,
+      error: { code: "EXTERNAL", message: "metadata write lost", retryable: true },
+    }));
+    // get_agent must not be consulted: refetching SUSPENDED without
+    // koi:terminated would map back to "suspended" and silently downgrade.
+    let getCalls = 0;
+    transport.stub("get_agent", async () => {
+      getCalls++;
+      return {
+        ok: true,
+        value: { agent_id: "a1", state: "SUSPENDED", generation: 99, metadata: {} },
+      };
+    });
+
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    const registered = await registry.register(makeEntry("a1"));
+    const result = await registry.transition(
+      agentId("a1"),
+      "terminated",
+      registered.status.generation,
+      { kind: "completed" },
+    );
+    expect(result.ok).toBe(false);
+    // Tombstoned: lookup must return undefined rather than report
+    // "suspended" (which would happen if we reconciled from refetch).
+    const looked = await registry.lookup(agentId("a1"));
+    expect(looked).toBeUndefined();
+    // No reconcile path was taken on the terminate ambiguous failure.
+    expect(getCalls).toBe(0);
+    await registry[Symbol.asyncDispose]();
+  });
+});
+
+describe("mapNexusAgentToEntry — koi:status reconciliation", () => {
+  test("trusts koi:status when it round-trips through the same Nexus state", async () => {
+    const transport = createMockTransport();
+    // Nexus says CONNECTED; both `created` and `running` round-trip there,
+    // so a `koi:status.phase = created` blob must be trusted (otherwise
+    // a freshly-registered child would be observable as `running` without
+    // ever firing a `created → running` transition event).
+    transport.stub("list_agents", async () => ({
+      ok: true,
+      value: [{ agent_id: "a-created", state: "CONNECTED", generation: 5 }],
+    }));
+    transport.stub("get_agent", async () => ({
+      ok: true,
+      value: {
+        agent_id: "a-created",
+        state: "CONNECTED",
+        generation: 5,
+        metadata: {
+          "koi:status": {
+            phase: "created",
+            generation: 1,
+            conditions: [],
+            lastTransitionAt: 100,
+          },
+        },
+      },
+    }));
+
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    const entry = await Promise.resolve(registry.lookup(agentId("a-created")));
+    expect(entry?.status.phase).toBe("created");
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("ignores koi:status that doesn't round-trip to the live Nexus state", async () => {
+    const transport = createMockTransport();
+    // Nexus says CONNECTED but koi:status.phase = `suspended` (which would
+    // round-trip to SUSPENDED). The blob is provably stale; trust the
+    // live Nexus state and fall back to the default `running`.
     transport.stub("list_agents", async () => ({
       ok: true,
       value: [{ agent_id: "a-stale", state: "CONNECTED", generation: 5 }],
@@ -1158,7 +1256,7 @@ describe("mapNexusAgentToEntry — stale koi:status reconciliation", () => {
         generation: 5,
         metadata: {
           "koi:status": {
-            phase: "created",
+            phase: "suspended",
             generation: 1,
             conditions: [],
             lastTransitionAt: 100,
