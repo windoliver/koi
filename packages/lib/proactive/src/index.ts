@@ -5,6 +5,7 @@
  * SchedulerComponent. Channel/webhook/monitor surfaces ship in later phases.
  */
 
+export { mapSystemSignalToCompositionTrigger } from "./composition-trigger.js";
 export { createProactiveTools } from "./create-proactive-tools.js";
 export { createProactiveToolsProvider } from "./provider.js";
 export type { ProactiveToolsConfig, ProactiveToolsProviderConfig } from "./types.js";
