@@ -26,6 +26,7 @@ import { createS3BlobStore } from "@koi/artifacts-s3";
 import { runBlobStoreContract } from "@koi/blob-cas/contract";
 import type {
   Agent,
+  ChannelAdapter,
   ChannelStatus,
   EngineAdapter,
   EngineEvent,
@@ -38,6 +39,7 @@ import type {
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  OutboundMessage,
   SkillComponent,
   ToolCallId,
   ToolRequest,
@@ -17437,5 +17439,231 @@ describe("Golden: @koi/channel-whatsapp", () => {
       false,
     );
     expect(verifyMetaSignature({ rawBody: body, header: null, appSecret: secret }).ok).toBe(false);
+  });
+});
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/channel-voice (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/channel-voice", () => {
+  test("createVoiceChannel exposes text+audio capabilities", async () => {
+    const { createVoiceChannel } = await import("@koi/channel-voice");
+    const ch = createVoiceChannel({
+      transport: {
+        connect: async () => {},
+        disconnect: async () => {},
+        sendUtterance: async () => {},
+        onUtterance: () => () => {},
+      },
+      stt: { transcribe: async () => null },
+      tts: { synthesize: async () => new Uint8Array() },
+    });
+    expect(ch.name).toBe("voice");
+    expect(ch.capabilities.text).toBe(true);
+    expect(ch.capabilities.audio).toBe(true);
+    expect(ch.capabilities.images).toBe(false);
+  });
+
+  test("inbound audio frame becomes InboundMessage with TextBlock via STT", async () => {
+    const { createVoiceChannel } = await import("@koi/channel-voice");
+    let emit: ((f: Uint8Array) => void) | undefined;
+    const ch = createVoiceChannel({
+      transport: {
+        connect: async () => {},
+        disconnect: async () => {},
+        sendUtterance: async () => {},
+        onUtterance: (h) => {
+          emit = (f) => h("session-1", f);
+          return () => {};
+        },
+      },
+      stt: { transcribe: async () => "hello" },
+      tts: { synthesize: async () => new Uint8Array() },
+    });
+    const got: string[] = [];
+    ch.onMessage(async (m) => {
+      const b = m.content[0];
+      if (b !== undefined && b.kind === "text") got.push(b.text);
+    });
+    await ch.connect();
+    emit?.(new Uint8Array([1]));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(got).toEqual(["hello"]);
+    await ch.disconnect();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/channel-ide (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/channel-ide", () => {
+  test("createIdeChannel exposes text+files+buttons capabilities", async () => {
+    const { createIdeChannel } = await import("@koi/channel-ide");
+    const ch = createIdeChannel({
+      transport: {
+        connect: async () => {},
+        disconnect: async () => {},
+        send: async () => {},
+        onLine: () => () => {},
+      },
+    });
+    expect(ch.name).toBe("ide");
+    expect(ch.capabilities.text).toBe(true);
+    expect(ch.capabilities.files).toBe(true);
+    expect(ch.capabilities.buttons).toBe(true);
+  });
+
+  test("outbound send writes a JSON-RPC notify frame", async () => {
+    const { createIdeChannel } = await import("@koi/channel-ide");
+    const sent: string[] = [];
+    const ch = createIdeChannel({
+      transport: {
+        connect: async () => {},
+        disconnect: async () => {},
+        send: async (line) => {
+          sent.push(line);
+        },
+        onLine: () => () => {},
+      },
+    });
+    await ch.connect();
+    await ch.send({ content: [{ kind: "text", text: "x" }] });
+    expect(sent).toHaveLength(1);
+    const frame = JSON.parse(sent[0] ?? "") as {
+      jsonrpc: string;
+      method: string;
+      params: { content: { text: string }[] };
+    };
+    expect(frame.jsonrpc).toBe("2.0");
+    expect(frame.method).toBe("notify");
+    expect(frame.params.content[0]?.text).toBe("x");
+    await ch.disconnect();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/channel-mobile (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/channel-mobile", () => {
+  test("createMobileChannel exposes mobile capabilities", async () => {
+    const { createMobileChannel } = await import("@koi/channel-mobile");
+    // Construction-only test (no connect): any positive port satisfies the
+    // adapter's `port > 0` invariant without binding a socket.
+    const ch = createMobileChannel({ port: 1 });
+    expect(ch.name).toBe("mobile");
+    expect(ch.capabilities.text).toBe(true);
+    expect(ch.capabilities.images).toBe(true);
+    expect(ch.capabilities.files).toBe(true);
+    expect(ch.capabilities.buttons).toBe(true);
+    expect(ch.capabilities.threads).toBe(false);
+  });
+
+  test("no in-process buffer: outbound while disconnected goes to pushNotifier", async () => {
+    const { createMobileChannel } = await import("@koi/channel-mobile");
+    // Pick a free port. Try OS-assigned ephemeral first; fall back to
+    // randomized fixed-range probing in environments that restrict
+    // port:0 binding (sandboxed CI containers).
+    const pickPort = (): number => {
+      try {
+        const probe = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+        const p = probe.port;
+        probe.stop(true);
+        if (p !== undefined && p !== 0) return p;
+      } catch {
+        // fall through
+      }
+      for (let i = 0; i < 20; i++) {
+        const candidate = 30_000 + Math.floor(Math.random() * 30_000);
+        try {
+          const probe = Bun.serve({ port: candidate, fetch: () => new Response("ok") });
+          probe.stop(true);
+          return candidate;
+        } catch {
+          // EADDRINUSE — keep trying
+        }
+      }
+      throw new Error("failed to allocate port");
+    };
+    const port = pickPort();
+    const seen: number[] = [];
+    const ch = createMobileChannel({
+      port,
+      authenticate: async () => "test-device",
+      // Single-instance test fixture; explicitly opt into the unsafe
+      // defaults the adapter now requires alongside pushNotifier.
+      unsafeAllowEphemeralSigningSecret: true,
+      unsafeAllowQueuedWriteAsDelivered: true,
+      pushNotifier: async (m) => {
+        seen.push(m.content.length);
+      },
+    });
+    await ch.connect();
+    await ch.sendUnsolicited({ content: [{ kind: "text", text: "a" }] });
+    await ch.sendUnsolicited({ content: [{ kind: "text", text: "b" }] });
+    expect(seen).toEqual([1, 1]);
+    await ch.disconnect();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/channel-fallback (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/channel-fallback", () => {
+  test("wrapWithFallback preserves inner name + capabilities", async () => {
+    const { wrapWithFallback } = await import("@koi/channel-fallback");
+    const inner = {
+      name: "inner",
+      capabilities: {
+        text: true,
+        images: false,
+        files: false,
+        buttons: false,
+        audio: false,
+        video: false,
+        threads: false,
+        supportsA2ui: false,
+      },
+      connect: async () => {},
+      disconnect: async () => {},
+      send: async () => {},
+      onMessage: () => () => {},
+    };
+    const wrapped = wrapWithFallback(inner);
+    expect(wrapped.name).toBe("inner");
+    expect(wrapped.capabilities.text).toBe(true);
+  });
+
+  test("downgrades unsupported image block to text before delegating", async () => {
+    const { wrapWithFallback } = await import("@koi/channel-fallback");
+    const sent: OutboundMessage[] = [];
+    const inner: ChannelAdapter = {
+      name: "inner",
+      capabilities: {
+        text: true,
+        images: false,
+        files: false,
+        buttons: false,
+        audio: false,
+        video: false,
+        threads: false,
+        supportsA2ui: false,
+      },
+      connect: async () => {},
+      disconnect: async () => {},
+      send: async (m) => {
+        sent.push(m);
+      },
+      onMessage: () => () => {},
+    };
+    const wrapped = wrapWithFallback(inner, { urlPrefix: "https://cdn/" });
+    await wrapped.send({ content: [{ kind: "image", url: "x.png", alt: "diagram" }] });
+    const block = sent[0]?.content[0];
+    expect(block?.kind).toBe("text");
+    if (block?.kind === "text") {
+      expect(block.text).toBe("[image: diagram](https://cdn/x.png)");
+    }
   });
 });

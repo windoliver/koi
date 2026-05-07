@@ -215,4 +215,255 @@ describe("createInheritedChannel", () => {
     // Should not throw
     await proxy.sendStatus?.(status);
   });
+
+  test("forwards parent's sendUnsolicited extension method with attribution (round-40 medium)", async () => {
+    // Round-40 medium: prior version returned a plain ChannelAdapter that
+    // forwarded only send/onMessage/sendStatus, silently stripping
+    // adapter-specific extensions like MobileChannelAdapter.sendUnsolicited
+    // — child agents spawned onto a mobile parent lost every proactive
+    // live-delivery path. The proxy now forwards documented outbound
+    // extensions and applies the same attribution as send().
+    const captured: OutboundMessage[] = [];
+    const parent: ChannelAdapter & {
+      sendUnsolicited: (m: OutboundMessage) => Promise<void>;
+    } = {
+      name: "mobile-parent",
+      capabilities: CAPABILITIES,
+      connect: () => Promise.resolve(),
+      disconnect: () => Promise.resolve(),
+      send: () => Promise.resolve(),
+      onMessage: () => () => {},
+      sendUnsolicited: (m: OutboundMessage) => {
+        captured.push(m);
+        return Promise.resolve();
+      },
+    };
+    const childPid: ProcessId = {
+      id: agentId("child-id"),
+      name: "child",
+      type: "worker",
+      depth: 1,
+      parent: agentId("parent-1"),
+    };
+    // Round-53: sendUnsolicited is privileged — requires mode:"all".
+    const proxy = createInheritedChannel(parent, childPid, {
+      mode: "all",
+      attribution: "metadata",
+      propagateStatus: false,
+    }) as ChannelAdapter & {
+      sendUnsolicited?: (m: OutboundMessage) => Promise<void>;
+    };
+    expect(typeof proxy.sendUnsolicited).toBe("function");
+    await proxy.sendUnsolicited?.({ content: [{ kind: "text", text: "welcome" }] });
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.metadata?.["sender"]).toBe(childPid.id);
+    expect(captured[0]?.metadata?.["senderName"]).toBe("child");
+  });
+
+  test("sendUnsolicited requires mode:'all' — output-only is blocked (round-53 high)", async () => {
+    // Round-53 high: sendUnsolicited is the privileged escape hatch
+    // that targets the currently connected socket OR an explicit
+    // offline recipient via {recipient}. An output-only child must
+    // NOT be able to initiate proactive delivery on its own. Same
+    // gate as endCall: mode === "all".
+    let invocations = 0;
+    const parent: ChannelAdapter & {
+      sendUnsolicited: (m: OutboundMessage) => Promise<void>;
+    } = {
+      name: "mobile-parent",
+      capabilities: CAPABILITIES,
+      connect: () => Promise.resolve(),
+      disconnect: () => Promise.resolve(),
+      send: () => Promise.resolve(),
+      onMessage: () => () => {},
+      sendUnsolicited: () => {
+        invocations++;
+        return Promise.resolve();
+      },
+    };
+    const childPid: ProcessId = {
+      id: agentId("child-id"),
+      name: "child",
+      type: "worker",
+      depth: 1,
+      parent: agentId("parent-1"),
+    };
+    const outputOnlyProxy = createInheritedChannel(parent, childPid, {
+      mode: "output-only",
+      attribution: "metadata",
+      propagateStatus: false,
+    }) as ChannelAdapter & {
+      sendUnsolicited?: (m: OutboundMessage) => Promise<void>;
+    };
+    await outputOnlyProxy.sendUnsolicited?.({ content: [{ kind: "text", text: "hi" }] });
+    expect(invocations).toBe(0);
+  });
+
+  test("forwards sendUnsolicited's optional opts (e.g. {recipient}) to parent (round-42 high)", async () => {
+    // Round-42 high: prior proxy forwarded sendUnsolicited as
+    // (message) => Promise<void>, silently dropping the {recipient} opt
+    // mobile adapters use to safely route offline / mismatched-live sends.
+    const seenOpts: Array<unknown> = [];
+    const parent: ChannelAdapter & {
+      sendUnsolicited: (m: OutboundMessage, opts?: unknown) => Promise<void>;
+    } = {
+      name: "mobile-parent",
+      capabilities: CAPABILITIES,
+      connect: () => Promise.resolve(),
+      disconnect: () => Promise.resolve(),
+      send: () => Promise.resolve(),
+      onMessage: () => () => {},
+      sendUnsolicited: (_m: OutboundMessage, opts?: unknown) => {
+        seenOpts.push(opts);
+        return Promise.resolve();
+      },
+    };
+    const childPid: ProcessId = {
+      id: agentId("child-id"),
+      name: "child",
+      type: "worker",
+      depth: 1,
+      parent: agentId("parent-1"),
+    };
+    const proxy = createInheritedChannel(parent, childPid, {
+      mode: "all",
+      attribution: "metadata",
+      propagateStatus: false,
+    }) as ChannelAdapter & {
+      sendUnsolicited?: (m: OutboundMessage, opts?: unknown) => Promise<void>;
+    };
+    await proxy.sendUnsolicited?.(
+      { content: [{ kind: "text", text: "welcome" }] },
+      { recipient: "device-alice" },
+    );
+    expect(seenOpts).toEqual([{ recipient: "device-alice" }]);
+  });
+
+  test("endCall requires mode:'all' — output-only and none cannot terminate parent call (round-50/51 high)", async () => {
+    // Round-50: endCall mutates parent adapter state (fences all turns
+    // for that session, terminating the parent's voice call). A child
+    // given mode:"none" MUST NOT be able to mutate the parent.
+    // Round-51 tightening: endCall is STRONGER than ordinary outbound
+    // (it hangs up / poisons a live call) — so even output-only must
+    // not be able to invoke it. Required: mode === "all".
+    let endCallInvocations = 0;
+    const makeParent = (): ChannelAdapter & {
+      endCall: (s: string) => void;
+      currentCallEpoch: () => number;
+    } => ({
+      name: "voice-parent",
+      capabilities: CAPABILITIES,
+      connect: () => Promise.resolve(),
+      disconnect: () => Promise.resolve(),
+      send: () => Promise.resolve(),
+      onMessage: () => () => {},
+      endCall: (_s: string) => {
+        endCallInvocations++;
+      },
+      currentCallEpoch: () => 0,
+    });
+    const childPid: ProcessId = {
+      id: agentId("child-id"),
+      name: "child",
+      type: "worker",
+      depth: 1,
+      parent: agentId("parent-1"),
+    };
+    type ProxyShape = ChannelAdapter & {
+      endCall?: (s: string) => void;
+      currentCallEpoch?: () => number;
+    };
+    const noneParent = makeParent();
+    const noneProxy = createInheritedChannel(noneParent, childPid, {
+      mode: "none",
+      attribution: "metadata",
+      propagateStatus: false,
+    }) as ProxyShape;
+    noneProxy.endCall?.("default");
+    expect(endCallInvocations).toBe(0);
+    const outputOnlyParent = makeParent();
+    const outputOnlyProxy = createInheritedChannel(outputOnlyParent, childPid, {
+      mode: "output-only",
+      attribution: "metadata",
+      propagateStatus: false,
+    }) as ProxyShape;
+    outputOnlyProxy.endCall?.("default");
+    expect(endCallInvocations).toBe(0);
+    // mode:"all" — endCall reaches parent.
+    const allParent = makeParent();
+    const allProxy = createInheritedChannel(allParent, childPid, {
+      mode: "all",
+      attribution: "metadata",
+      propagateStatus: false,
+    }) as ProxyShape;
+    allProxy.endCall?.("default");
+    expect(endCallInvocations).toBe(1);
+    // currentCallEpoch (read-only) still works for all modes.
+    expect(noneProxy.currentCallEpoch?.()).toBe(0);
+    expect(outputOnlyProxy.currentCallEpoch?.()).toBe(0);
+  });
+
+  test("forwards voice pure helpers stampForCurrentCall + currentCallEpoch (round-44 high)", async () => {
+    // Round-44 high: a child agent inheriting a VoiceChannelAdapter must be
+    // able to mint a current-epoch tag for server-initiated outbound after
+    // reconnect — without these helpers the post-reconnect fence rejects
+    // every such send. Pure pass-through (no attribution): `stampForCurrentCall`
+    // returns a tagged outbound; `currentCallEpoch` returns a number.
+    let stampCalls = 0;
+    let epochCalls = 0;
+    const parent: ChannelAdapter & {
+      stampForCurrentCall: (m: OutboundMessage) => OutboundMessage;
+      currentCallEpoch: () => number;
+    } = {
+      name: "voice-parent",
+      capabilities: CAPABILITIES,
+      connect: () => Promise.resolve(),
+      disconnect: () => Promise.resolve(),
+      send: () => Promise.resolve(),
+      onMessage: () => () => {},
+      stampForCurrentCall: (m: OutboundMessage) => {
+        stampCalls++;
+        return { ...m, metadata: { ...(m.metadata ?? {}), voiceCallEpoch: 7 } };
+      },
+      currentCallEpoch: () => {
+        epochCalls++;
+        return 7;
+      },
+    };
+    const childPid: ProcessId = {
+      id: agentId("child-id"),
+      name: "child",
+      type: "worker",
+      depth: 1,
+      parent: agentId("parent-1"),
+    };
+    const proxy = createInheritedChannel(parent, childPid) as ChannelAdapter & {
+      stampForCurrentCall?: (m: OutboundMessage) => OutboundMessage;
+      currentCallEpoch?: () => number;
+    };
+    expect(typeof proxy.stampForCurrentCall).toBe("function");
+    expect(typeof proxy.currentCallEpoch).toBe("function");
+    const stamped = proxy.stampForCurrentCall?.({ content: [{ kind: "text", text: "hi" }] });
+    expect(stamped?.metadata?.["voiceCallEpoch"]).toBe(7);
+    expect(stampCalls).toBe(1);
+    expect(proxy.currentCallEpoch?.()).toBe(7);
+    expect(epochCalls).toBe(1);
+  });
+
+  test("does not synthesize sendUnsolicited when parent does not provide it (round-40 medium)", async () => {
+    // Only forward extensions the parent actually provides — never invent
+    // a method that would silently no-op.
+    const parent = createMockParentChannel();
+    const childPid: ProcessId = {
+      id: agentId("child-id"),
+      name: "child",
+      type: "worker",
+      depth: 1,
+      parent: agentId("parent-1"),
+    };
+    const proxy = createInheritedChannel(parent, childPid) as ChannelAdapter & {
+      sendUnsolicited?: unknown;
+    };
+    expect(proxy.sendUnsolicited).toBeUndefined();
+  });
 });
