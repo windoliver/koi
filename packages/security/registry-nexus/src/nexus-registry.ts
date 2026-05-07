@@ -327,6 +327,21 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
           generation: entry.status.generation,
           reason: entry.status.reason ?? { kind: "assembly_complete" },
         });
+      } else {
+        // Phase unchanged but other mutable fields may have shifted (a
+        // remote patch from another node updated metadata or priority).
+        // Watchers must learn about these so caches/UIs don't keep
+        // serving stale priority/skills.
+        const priorityChanged = existing.priority !== entry.priority;
+        const metadataChanged =
+          JSON.stringify(existing.metadata) !== JSON.stringify(entry.metadata);
+        if (priorityChanged || metadataChanged) {
+          const fields: PatchableRegistryFields = {
+            ...(priorityChanged ? { priority: entry.priority } : {}),
+            ...(metadataChanged ? { metadata: entry.metadata } : {}),
+          };
+          notify({ kind: "patched", agentId: id, fields, entry });
+        }
       }
     }
 
