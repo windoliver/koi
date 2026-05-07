@@ -585,7 +585,7 @@ describe("boot helpers (#1401)", () => {
     // Abort BEFORE the version read resolves
     backend.abortInFlightSync();
     // Now release the late reply
-    releaseVersion!(okResult(VERSION_JSON));
+    releaseVersion?.(okResult(VERSION_JSON));
     await backend.ready;
     expect(backend.isCentralizedPolicyActive()).toBe(false);
     backend.dispose();
@@ -609,7 +609,7 @@ describe("boot helpers (#1401)", () => {
       syncIntervalMs: 0,
     });
     backend.dispose();
-    releaseVersion!(okResult(VERSION_JSON));
+    releaseVersion?.(okResult(VERSION_JSON));
     await backend.ready;
     expect(backend.isCentralizedPolicyActive()).toBe(false);
   });

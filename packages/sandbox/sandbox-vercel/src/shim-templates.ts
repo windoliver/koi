@@ -82,7 +82,9 @@ export default {
     const timestampSec = Math.floor(Date.now() / 1000);
     const bodyHash = await sha256B64(handlerBytes);
     const url = new URL(env.KOI_HANDLER_URL);
-    const canonical = ["POST", url.pathname, "invoke", requestId, nonce, String(timestampSec), bodyHash].join("\\n");
+    // Canonical tuple: [METHOD, path, operationId, requestId, nonce, timestampSec, sha256(body)].
+    // Identical to buildCanonicalSigningString() exported from pair-keys — drift here is auth bypass.
+    const canonical = ["POST", url.pathname, operationId, requestId, nonce, String(timestampSec), bodyHash].join("\\n");
     const sig = await sign(env.KOI_PAIR_SIGNING_KEY_PEM, canonical);
     let handlerResp;
     try {
@@ -181,7 +183,9 @@ export default {
     const bodyText = await req.text();
     const url = new URL(req.url);
     const bodyHash = await sha256B64(new TextEncoder().encode(bodyText));
-    const canonical = ["POST", url.pathname, "invoke", requestId, nonce, String(ts), bodyHash].join("\\n");
+    // Canonical tuple matches buildCanonicalSigningString() exactly:
+    // [METHOD, path, operationId, requestId, nonce, timestampSec, sha256(body)].
+    const canonical = ["POST", url.pathname, opId, requestId, nonce, String(ts), bodyHash].join("\\n");
     const ok = await verify(globalThis.KOI_PAIR_VERIFY_KEY_PEM ?? process.env.KOI_PAIR_VERIFY_KEY_PEM, canonical, sig);
     if (!ok) {
       return new Response(JSON.stringify({ error: "SIGNATURE_INVALID" }), { status: 401, headers: { "X-Koi-Result-Kind": "shim-error", "X-Koi-Shim-Error-Code": "SIGNATURE_INVALID" } });

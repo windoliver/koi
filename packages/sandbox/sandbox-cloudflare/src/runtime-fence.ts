@@ -19,6 +19,12 @@ import { RUNTIME_FENCE_TARGETS, RUNTIME_FENCE_TOP_LEVEL_IDENTIFIERS } from "@koi
 const FENCE_FUNCTION_NAME = "__koiInstallRuntimeFence";
 
 const buildOverwriteBlock = (): string => {
+  // Note: defineProperty is wrapped in try/catch so a non-configurable host
+  // built-in does not abort the entire install. Failures are NOT silently
+  // ignored — they're recorded into __failures, and the verification block
+  // below re-probes every target post-install. If anything reachable
+  // remains, the preamble throws and the worker fails closed (its module
+  // initialization aborts before the handler can run).
   const topLevelLines = RUNTIME_FENCE_TOP_LEVEL_IDENTIFIERS.map((name) => {
     return [
       `  try {`,
@@ -26,14 +32,9 @@ const buildOverwriteBlock = (): string => {
       `      configurable: false, enumerable: false,`,
       `      get() { throw new Error("RUNTIME_FENCE: globalThis." + ${JSON.stringify(name)} + " is not allowed in class-A handlers"); },`,
       `    });`,
-      `  } catch (_e) { /* already non-configurable on this runtime — earlier defineProperty stuck */ }`,
+      `  } catch (_e) { __failures.push(${JSON.stringify(name)}); }`,
     ].join("\n");
   });
-  // Member-chain forms (e.g. `WebAssembly.instantiate`, `navigator.sendBeacon`).
-  // Both `globalThis.WebAssembly.instantiate` and `globalThis["WebAssembly"]["instantiate"]`
-  // resolve through the same underlying property — overwriting the property on
-  // the parent object closes the computed-access bypass that overwriting only
-  // top-level identifiers would leave open.
   const memberLines = RUNTIME_FENCE_TARGETS.filter((t) => t.includes(".")).map((target) => {
     const dot = target.indexOf(".");
     const parent = target.slice(0, dot);
@@ -47,10 +48,33 @@ const buildOverwriteBlock = (): string => {
       `        get() { throw new Error("RUNTIME_FENCE: " + ${JSON.stringify(target)} + " is not allowed in class-A handlers"); },`,
       `      });`,
       `    }`,
-      `  } catch (_e) { /* parent missing or property non-configurable — fence may be incomplete on this runtime */ }`,
+      `  } catch (_e) { __failures.push(${JSON.stringify(target)}); }`,
     ].join("\n");
   });
   return [...topLevelLines, ...memberLines].join("\n");
+};
+
+const buildVerifyBlock = (): string => {
+  // Post-install probe: read each target through the live globalThis. A
+  // successful read of a forbidden identifier means the throwing accessor
+  // never took hold (host built-in was non-configurable, or some prior
+  // wrapper shadowed our defineProperty). In that case we throw to abort
+  // worker initialization — fail closed, never fail open.
+  const probes: string[] = [];
+  for (const name of RUNTIME_FENCE_TOP_LEVEL_IDENTIFIERS) {
+    probes.push(
+      `  try { var __v = globalThis[${JSON.stringify(name)}]; if (typeof __v !== "undefined") __reachable.push(${JSON.stringify(name)}); } catch (_e) { /* throwing accessor — good */ }`,
+    );
+  }
+  for (const target of RUNTIME_FENCE_TARGETS.filter((t) => t.includes("."))) {
+    const dot = target.indexOf(".");
+    const parent = target.slice(0, dot);
+    const child = target.slice(dot + 1);
+    probes.push(
+      `  try { var __p2 = globalThis[${JSON.stringify(parent)}]; if (__p2 && typeof __p2 === "object") { var __v2 = __p2[${JSON.stringify(child)}]; if (typeof __v2 !== "undefined") __reachable.push(${JSON.stringify(target)}); } } catch (_e) { /* throwing accessor — good */ }`,
+    );
+  }
+  return probes.join("\n");
 };
 
 /**
@@ -65,7 +89,19 @@ export const RUNTIME_FENCE_PREAMBLE_SOURCE: string = [
   `  return function () {`,
   `    if (installed) return;`,
   `    installed = true;`,
+  `    var __failures = [];`,
+  `    var __reachable = [];`,
   buildOverwriteBlock(),
+  // Post-install verification — every defineProperty failure or remaining-
+  // reachable target aborts initialization. The handler cannot run if any
+  // forbidden global is still callable.
+  buildVerifyBlock(),
+  `    if (__reachable.length > 0) {`,
+  `      throw new Error("RUNTIME_FENCE_INSTALL_FAILED: forbidden globals still reachable: " + __reachable.join(", "));`,
+  `    }`,
+  `    if (__failures.length > 0) {`,
+  `      throw new Error("RUNTIME_FENCE_INSTALL_FAILED: defineProperty failed for: " + __failures.join(", "));`,
+  `    }`,
   `  };`,
   `})();`,
   `${FENCE_FUNCTION_NAME}();`,

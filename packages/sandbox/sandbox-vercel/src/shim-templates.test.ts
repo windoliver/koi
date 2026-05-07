@@ -32,6 +32,16 @@ describe("shim-templates", () => {
     expect(HANDLER_RUNNER_SHIM_SOURCE).toContain("loadHandler");
   });
 
+  it("gateway and handler runner bind the same canonical tuple as buildCanonicalSigningString", () => {
+    // Both must use [METHOD, path, operationId, requestId, nonce, timestampSec, bodyHash].
+    // The third slot is operationId (NOT a hardcoded literal like "invoke") — otherwise
+    // helpers and verifier disagree and signatures fail at runtime.
+    expect(GATEWAY_SHIM_SOURCE).toContain('["POST", url.pathname, operationId,');
+    expect(HANDLER_RUNNER_SHIM_SOURCE).toContain('["POST", url.pathname, opId,');
+    expect(GATEWAY_SHIM_SOURCE).not.toContain('"POST", url.pathname, "invoke",');
+    expect(HANDLER_RUNNER_SHIM_SOURCE).not.toContain('"POST", url.pathname, "invoke",');
+  });
+
   it("handler runner enforces a timestamp skew tolerance", () => {
     expect(HANDLER_RUNNER_SHIM_SOURCE).toContain("SKEW_TOLERANCE_SEC");
     expect(HANDLER_RUNNER_SHIM_SOURCE).toContain("STALE_REQUEST");

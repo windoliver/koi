@@ -138,9 +138,9 @@ describe("@koi/channel-slack — Socket Mode", () => {
       threadId: "C1:1700000000.000100",
     });
     expect(web.calls).toHaveLength(1);
-    expect(web.calls[0]?.args["channel"]).toBe("C1");
-    expect(web.calls[0]?.args["thread_ts"]).toBe("1700000000.000100");
-    expect(web.calls[0]?.args["text"]).toBe("reply");
+    expect(web.calls[0]?.args.channel).toBe("C1");
+    expect(web.calls[0]?.args.thread_ts).toBe("1700000000.000100");
+    expect(web.calls[0]?.args.text).toBe("reply");
     await adapter.disconnect();
   });
 
@@ -158,8 +158,8 @@ describe("@koi/channel-slack — Socket Mode", () => {
       content: [{ kind: "text", text: "channel-only" }],
       threadId: "C1:1700000000.000100",
     });
-    expect(web.calls[0]?.args["channel"]).toBe("C1");
-    expect(web.calls[0]?.args["thread_ts"]).toBeUndefined();
+    expect(web.calls[0]?.args.channel).toBe("C1");
+    expect(web.calls[0]?.args.thread_ts).toBeUndefined();
     await adapter.disconnect();
   });
 
@@ -343,8 +343,8 @@ describe("@koi/channel-slack — Socket Mode", () => {
     });
     await adapter.connect();
     await adapter.send({ content: [{ kind: "text", text: "proactive notice" }] });
-    expect(web.calls[0]?.args["channel"]).toBe("C-PROACTIVE");
-    expect(web.calls[0]?.args["thread_ts"]).toBeUndefined();
+    expect(web.calls[0]?.args.channel).toBe("C-PROACTIVE");
+    expect(web.calls[0]?.args.thread_ts).toBeUndefined();
     await adapter.disconnect();
   });
 
@@ -1074,7 +1074,7 @@ describe("@koi/channel-slack — HTTP Events mode", () => {
     });
     await adapter.connect();
     const ts = String(Math.floor(Date.now() / 1000));
-    const body = "payload=" + encodeURIComponent('{"type":"view_submission","user":{"id":"U1"}}');
+    const body = `payload=${encodeURIComponent('{"type":"view_submission","user":{"id":"U1"}}')}`;
     const req = new Request("http://x", {
       method: "POST",
       headers: {
@@ -1106,7 +1106,7 @@ describe("@koi/channel-slack — HTTP Events mode", () => {
     // and 200-ack to keep Slack's 3s modal contract.
     await adapter.connect();
     const ts = String(Math.floor(Date.now() / 1000));
-    const body = "payload=" + encodeURIComponent('{"type":"view_submission","user":{"id":"U1"}}');
+    const body = `payload=${encodeURIComponent('{"type":"view_submission","user":{"id":"U1"}}')}`;
     const req = new Request("http://x", {
       method: "POST",
       headers: {
@@ -1134,7 +1134,7 @@ describe("@koi/channel-slack — HTTP Events mode", () => {
     adapter.onMessage(async () => {});
     await adapter.connect();
     const ts = String(Math.floor(Date.now() / 1000));
-    const body = "payload=" + encodeURIComponent('{"type":"view_submission","user":{"id":"U1"}}');
+    const body = `payload=${encodeURIComponent('{"type":"view_submission","user":{"id":"U1"}}')}`;
     const req = new Request("http://x", {
       method: "POST",
       headers: {
@@ -1164,7 +1164,7 @@ describe("@koi/channel-slack — HTTP Events mode", () => {
     adapter.onMessage(async () => {});
     await adapter.connect();
     const ts = String(Math.floor(Date.now() / 1000));
-    const body = "payload=" + encodeURIComponent('{"type":"view_submission","user":{"id":"U1"}}');
+    const body = `payload=${encodeURIComponent('{"type":"view_submission","user":{"id":"U1"}}')}`;
     const req = new Request("http://x", {
       method: "POST",
       headers: {
@@ -1191,7 +1191,7 @@ describe("@koi/channel-slack — HTTP Events mode", () => {
     adapter.onMessage(async () => {});
     await adapter.connect();
     const ts = String(Math.floor(Date.now() / 1000));
-    const body = "payload=" + encodeURIComponent("{not json");
+    const body = `payload=${encodeURIComponent("{not json")}`;
     const req = new Request("http://x", {
       method: "POST",
       headers: {

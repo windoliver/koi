@@ -31,7 +31,7 @@ describe("createInProcessSpawnChildFn", () => {
     const spawnedIds: string[] = [];
     const fn = createInProcessSpawnChildFn({
       registry,
-      spawn: async (parentId, childSpec, manifest) => {
+      spawn: async (parentId, childSpec, _manifest) => {
         const id = agentId(`spawn-${childSpec.name}`);
         registry.register({
           agentId: id,

@@ -166,7 +166,7 @@ describe("wireSupervision integration (3b-5a)", () => {
     // Crash child "a"
     const aLive = childrenByName(registry, "a");
     expect(aLive.length).toBe(1);
-    crashChild(registry, aLive[0]!.agentId);
+    crashChild(registry, aLive[0]?.agentId);
 
     // Sweep re-enqueues the supervisor so the reconciler observes the
     // terminated child. Event-driven watch events only enqueue the crashed
@@ -189,7 +189,7 @@ describe("wireSupervision integration (3b-5a)", () => {
 
     const bLive = childrenByName(registry, "b");
     expect(bLive.length).toBe(1);
-    crashChild(registry, bLive[0]!.agentId);
+    crashChild(registry, bLive[0]?.agentId);
 
     // Sweep re-enqueues the supervisor so the reconciler observes the
     // terminated child.
@@ -212,7 +212,7 @@ describe("wireSupervision integration (3b-5a)", () => {
 
     const bLive = childrenByName(registry, "b");
     expect(bLive.length).toBe(1);
-    crashChild(registry, bLive[0]!.agentId);
+    crashChild(registry, bLive[0]?.agentId);
 
     // Sweep re-enqueues the supervisor so the reconciler observes the
     // terminated child.
@@ -237,13 +237,13 @@ describe("wireSupervision integration (3b-5a)", () => {
     // maxRestarts=1, so the 2nd crash escalates.
     const first = childrenByName(registry, "worker");
     expect(first.length).toBe(1);
-    crashChild(registry, first[0]!.agentId);
+    crashChild(registry, first[0]?.agentId);
     wire.reconcileRunner.sweep();
     await new Promise((r) => setTimeout(r, RECONCILE_WAIT_MS));
 
     const second = childrenByName(registry, "worker");
     expect(second.length).toBe(1);
-    crashChild(registry, second[0]!.agentId);
+    crashChild(registry, second[0]?.agentId);
     wire.reconcileRunner.sweep();
     await new Promise((r) => setTimeout(r, RECONCILE_WAIT_MS));
 

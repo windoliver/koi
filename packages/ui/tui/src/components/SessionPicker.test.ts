@@ -149,7 +149,7 @@ describe("getSessionPeekLines", () => {
 
   test("CRLF at cap boundary: normalized length governs ellipsis, not raw length", () => {
     // raw length = 66 (64 + "\r\n"), normalized = "a"×64 + "  " = 66 chars — no ellipsis
-    const preview = "a".repeat(64) + "\r\n";
+    const preview = `${"a".repeat(64)}\r\n`;
     const lines = getSessionPeekLines(makeSession({ preview }));
     expect((lines[2] ?? "").endsWith("…")).toBe(false);
     expect((lines[2] ?? "").length).toBeLessThanOrEqual(66);
@@ -157,7 +157,7 @@ describe("getSessionPeekLines", () => {
 
   test("CRLF pushes normalized over cap: ellipsis appended, total ≤ 66", () => {
     // raw = 68 (65 + "\r\n" + "b"), normalized = "a"×65 + " " + "b" = 67 chars > 66 cap
-    const preview = "a".repeat(65) + "\r\n" + "b";
+    const preview = `${"a".repeat(65)}\r\nb`;
     const lines = getSessionPeekLines(makeSession({ preview }));
     expect((lines[2] ?? "").endsWith("…")).toBe(true);
     expect((lines[2] ?? "").length).toBeLessThanOrEqual(66);

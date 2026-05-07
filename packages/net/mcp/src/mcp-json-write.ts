@@ -121,7 +121,7 @@ async function readMcpJsonRaw(
       // into a more corrupted state. Fail closed and leave the file
       // untouched so the user can repair it.
       const root = parsed as Record<string, unknown>;
-      const mcpServers = root["mcpServers"];
+      const mcpServers = root.mcpServers;
       if (mcpServers !== undefined) {
         if (mcpServers === null || typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
           return {

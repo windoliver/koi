@@ -26,8 +26,43 @@ export type EdgeIntegrityVerification = "cached" | "strict" | "async";
  * Outcome of `EdgeFunctionInstance.destroy()`. Spec calls for "cancellation
  * honesty": destroy() reports whether the underlying provider artifact was
  * actually torn down, not just whether the local handle was released.
+ *
+ * Structured union — operators must be able to distinguish a clean teardown
+ * from a leaked artifact (orphaned provider deployment that may incur cost),
+ * an indeterminate remote delete (network failed mid-call; provider state
+ * unknown), or an in-flight invoke that may still execute remotely after
+ * `destroy()` returned. The string union (`"destroyed"` etc.) is preserved
+ * inside `kind` so `switch` exhaustiveness is unchanged.
  */
-export type EdgeDestroyOutcome = "destroyed" | "already-destroyed" | "detached-only";
+export type EdgeDestroyOutcome =
+  | { readonly kind: "destroyed"; readonly providerArtifactId?: string }
+  | {
+      readonly kind: "already-destroyed";
+      readonly providerArtifactId?: string;
+    }
+  | {
+      readonly kind: "detached-only";
+      readonly reason: string;
+      readonly providerArtifactId?: string;
+    }
+  | {
+      /** Provider artifact remained allocated; operator must reconcile to avoid orphan-cost. */
+      readonly kind: "leaked";
+      readonly providerArtifactId: string;
+      readonly reason: string;
+    }
+  | {
+      /** Remote teardown call failed mid-flight; provider state is unknown. */
+      readonly kind: "uncertain";
+      readonly providerArtifactId?: string;
+      readonly reason: string;
+    }
+  | {
+      /** A concurrent invoke() may still execute remotely after destroy() returned. */
+      readonly kind: "in-flight";
+      readonly providerArtifactId?: string;
+      readonly inFlightRequestIds: readonly string[];
+    };
 
 /**
  * Inbound envelope for a single `invoke()` attempt against a deployed edge
