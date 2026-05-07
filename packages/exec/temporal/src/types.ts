@@ -9,37 +9,31 @@ export interface AgentWorkflowConfig {
   readonly maxStopRetries?: number | undefined;
 }
 
-// Serializable-safe payload derived from EngineInput for embedding in Temporal schedules.
-// Non-durable fields from EngineInputBase (callHandlers, signal, correlationIds) are
-// stripped at the scheduling boundary. maxStopRetries IS preserved — it changes agent
-// runtime behavior and silently dropping it would cause stop-gated agents to terminate
-// earlier than the caller requested.
-type ScheduledInputBase = { readonly maxStopRetries?: number | undefined };
-export type ScheduledInputPayload =
-  | (ScheduledInputBase & { readonly kind: "text"; readonly text: string })
-  | (ScheduledInputBase & {
-      readonly kind: "messages";
-      readonly messages: readonly InboundMessage[];
-    })
-  | (ScheduledInputBase & {
-      readonly kind: "resume";
-      readonly state: { readonly engineId: string; readonly data: unknown };
-    });
-
-// Args for workflows started by a cron schedule (spawn mode).
-// sessionId is intentionally absent — each Temporal execution provides its own
-// workflow execution ID as the session namespace, preventing cross-run state collision.
-// input is a serializable ScheduledInputPayload (not a raw EngineInput) — callHandlers
-// and AbortSignal are stripped before schedule creation.
-export interface ScheduledSpawnArgs {
-  readonly agentId: AgentId;
-  readonly stateRefs: AgentStateRefs;
-  readonly input: ScheduledInputPayload;
-}
-
 export interface AgentStateRefs {
   readonly lastTurnId: string | undefined;
   readonly turnsProcessed: number;
+}
+
+export interface AgentTurnInput {
+  readonly agentId: AgentId;
+  readonly sessionId: SessionId;
+  readonly message: IncomingMessage;
+  readonly stateRefs: AgentStateRefs;
+  readonly gatewayUrl: string | undefined;
+  readonly nexusApiKey?: string | undefined;
+  readonly delegationId?: string | undefined;
+}
+
+export interface SpawnChildRequest {
+  readonly childAgentId: AgentId;
+  readonly childConfig: Omit<WorkerWorkflowConfig, "agentId" | "sessionId" | "parentAgentId">;
+}
+
+export interface AgentTurnResult {
+  readonly turnId: string;
+  readonly blocks: readonly ContentBlock[];
+  readonly updatedStateRefs: AgentStateRefs;
+  readonly spawnChild: SpawnChildRequest | undefined;
 }
 
 export interface IncomingMessage {
@@ -51,6 +45,35 @@ export interface IncomingMessage {
   readonly metadata?: Record<string, unknown> | undefined;
   readonly pinned?: boolean | undefined;
   readonly resumeState?: unknown | undefined;
+}
+
+type ScheduledInputBase = { readonly maxStopRetries?: number | undefined };
+
+export type ScheduledInputPayload =
+  | (ScheduledInputBase & { readonly kind: "text"; readonly text: string })
+  | (ScheduledInputBase & {
+      readonly kind: "messages";
+      readonly messages: readonly InboundMessage[];
+    })
+  | (ScheduledInputBase & {
+      readonly kind: "resume";
+      readonly state: { readonly engineId: string; readonly data: unknown };
+    });
+
+export interface ScheduledSpawnArgs {
+  readonly agentId: AgentId;
+  readonly stateRefs: AgentStateRefs;
+  readonly input: ScheduledInputPayload;
+}
+
+export interface WorkerWorkflowConfig {
+  readonly agentId: AgentId;
+  readonly sessionId: SessionId;
+  readonly parentAgentId: AgentId;
+  readonly stateRefs: AgentStateRefs;
+  readonly initialMessage?: IncomingMessage | undefined;
+  readonly nexusApiKey?: string | undefined;
+  readonly delegationId?: string | undefined;
 }
 
 export interface TemporalConfig {

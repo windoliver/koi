@@ -34,14 +34,17 @@ export {
 } from "./temporal-spawn-ledger.js";
 export type {
   AgentStateRefs,
+  AgentTurnInput,
+  AgentTurnResult,
   AgentWorkflowConfig,
   IncomingMessage,
   ScheduledInputPayload,
   ScheduledSpawnArgs,
+  SpawnChildRequest,
   TemporalConfig,
+  WorkerWorkflowConfig,
 } from "./types.js";
 export { DEFAULT_TEMPORAL_CONFIG } from "./types.js";
-
 export {
   createTemporalWorker,
   type NativeConnectionLike,
@@ -51,3 +54,18 @@ export {
   type WorkerHandle,
   type WorkerLike,
 } from "./worker-factory.js";
+export type {
+  AgentActivityStatus,
+  MessageSignalPayload,
+  PendingCountQueryResult,
+  ShutdownSignalPayload,
+  StateQueryResult,
+  StatusQueryResult,
+} from "./workflows/signals.js";
+export {
+  MESSAGE_SIGNAL_NAME,
+  PENDING_COUNT_QUERY_NAME,
+  SHUTDOWN_SIGNAL_NAME,
+  STATE_QUERY_NAME,
+  STATUS_QUERY_NAME,
+} from "./workflows/signals.js";
