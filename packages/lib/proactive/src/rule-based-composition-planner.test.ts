@@ -303,4 +303,91 @@ describe("createRuleBasedCompositionPlanner", () => {
     expect(plan.estimatedCost).toBe(1);
     expect(plan.requiresApproval).toBe(false);
   });
+
+  test("plans recovery spawn for dead_letter task terminals", async () => {
+    const planner = createRuleBasedCompositionPlanner();
+    const trigger: CompositionTrigger = {
+      id: "task-dl-1",
+      source: "schedule",
+      confidence: 1,
+      moment: {
+        kind: "task_terminal",
+        taskId: taskId("task-dl-1"),
+        outcome: "dead_letter",
+      },
+      suggestedCapabilities: ["spawn_agent"],
+      context: {},
+      emittedAt: 1,
+    };
+
+    const plan = await planner.plan(trigger, {
+      tools: [],
+      agents: [agentDefinition("recovery")],
+      schedules: [],
+    });
+
+    expect(plan.steps).toEqual([
+      {
+        kind: "spawn_agent",
+        agentType: "recovery",
+        input: {
+          kind: "text",
+          text: "Analyze failed scheduled task task-dl-1 and propose recovery.",
+        },
+        delivery: DEFAULT_DELIVERY_POLICY,
+      },
+    ]);
+  });
+
+  test("failed task without recovery agent emits no spawn (capability gating)", async () => {
+    const planner = createRuleBasedCompositionPlanner();
+    const trigger: CompositionTrigger = {
+      id: "task-no-rec",
+      source: "schedule",
+      confidence: 1,
+      moment: {
+        kind: "task_terminal",
+        taskId: taskId("task-no-rec"),
+        outcome: "failed",
+      },
+      suggestedCapabilities: ["spawn_agent"],
+      context: {},
+      emittedAt: 1,
+    };
+
+    const plan = await planner.plan(trigger, {
+      tools: [],
+      agents: [],
+      schedules: [],
+    });
+
+    expect(plan.steps).toEqual([]);
+    expect(plan.requiresApproval).toBe(true);
+  });
+
+  test("frontier change without researcher agent emits no spawn (capability gating)", async () => {
+    const planner = createRuleBasedCompositionPlanner();
+    const trigger: CompositionTrigger = {
+      id: "frontier-no-res",
+      source: "anomaly",
+      confidence: 1,
+      moment: {
+        kind: "frontier_changed",
+        metric: "retrieval_quality",
+        improvement: 0.3,
+      },
+      suggestedCapabilities: ["spawn_agent"],
+      context: {},
+      emittedAt: 1,
+    };
+
+    const plan = await planner.plan(trigger, {
+      tools: [],
+      agents: [],
+      schedules: [],
+    });
+
+    expect(plan.steps).toEqual([]);
+    expect(plan.requiresApproval).toBe(true);
+  });
 });

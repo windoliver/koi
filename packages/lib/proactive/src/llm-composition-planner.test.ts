@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { type AgentDefinition, type CompositionTrigger, DEFAULT_DELIVERY_POLICY } from "@koi/core";
+import {
+  type AgentDefinition,
+  agentId,
+  type CompositionTrigger,
+  DEFAULT_DELIVERY_POLICY,
+} from "@koi/core";
 import { createLlmCompositionPlanner } from "./llm-composition-planner.js";
 import { createRuleBasedCompositionPlanner } from "./rule-based-composition-planner.js";
 
@@ -417,6 +422,178 @@ describe("createLlmCompositionPlanner", () => {
       },
     ]);
     expect(plan.requiresApproval).toBe(true);
+  });
+
+  test("round-trips tool_call step kind", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "tc-1",
+            steps: [
+              {
+                kind: "tool_call",
+                toolName: "search",
+                input: { query: "needle" },
+              },
+            ],
+            estimatedCost: 2,
+          });
+        },
+      },
+    });
+
+    const trigger: CompositionTrigger = {
+      id: "tc-1",
+      source: "external",
+      confidence: 1,
+      moment: { kind: "external_event", source: "slack", eventType: "mention" },
+      suggestedCapabilities: ["tool_call"],
+      context: {},
+      emittedAt: 1,
+    };
+
+    const plan = await planner.plan(trigger, { tools: [], agents: [], schedules: [] });
+    expect(plan.steps).toEqual([
+      { kind: "tool_call", toolName: "search", input: { query: "needle" } },
+    ]);
+  });
+
+  test("round-trips submit_task step kind", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "st-1",
+            steps: [
+              {
+                kind: "submit_task",
+                agentId: "agent-42",
+                mode: "dispatch",
+                input: { kind: "text", text: "process queue" },
+                taskOptions: { priority: 5, timeoutMs: 30000 },
+              },
+            ],
+            estimatedCost: 3,
+          });
+        },
+      },
+    });
+
+    const expectedAgentId = agentId("agent-42");
+    const trigger: CompositionTrigger = {
+      id: "st-1",
+      source: "external",
+      confidence: 1,
+      moment: { kind: "external_event", source: "slack", eventType: "mention" },
+      suggestedCapabilities: ["submit_task"],
+      context: {},
+      emittedAt: 1,
+    };
+
+    const plan = await planner.plan(trigger, { tools: [], agents: [], schedules: [] });
+    expect(plan.steps).toEqual([
+      {
+        kind: "submit_task",
+        agentId: expectedAgentId,
+        mode: "dispatch",
+        input: { kind: "text", text: "process queue" },
+        taskOptions: { priority: 5, timeoutMs: 30000 },
+      },
+    ]);
+  });
+
+  test("round-trips create_schedule step kind", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "cs-1",
+            steps: [
+              {
+                kind: "create_schedule",
+                expression: "0 9 * * *",
+                agentId: "agent-1",
+                mode: "spawn",
+                input: { kind: "text", text: "daily standup" },
+                timezone: "America/Los_Angeles",
+              },
+            ],
+            estimatedCost: 3,
+          });
+        },
+      },
+    });
+
+    const trigger: CompositionTrigger = {
+      id: "cs-1",
+      source: "external",
+      confidence: 1,
+      moment: { kind: "external_event", source: "cron", eventType: "setup" },
+      suggestedCapabilities: ["create_schedule"],
+      context: {},
+      emittedAt: 1,
+    };
+
+    const plan = await planner.plan(trigger, { tools: [], agents: [], schedules: [] });
+    expect(plan.steps).toEqual([
+      {
+        kind: "create_schedule",
+        expression: "0 9 * * *",
+        agentId: agentId("agent-1"),
+        mode: "spawn",
+        input: { kind: "text", text: "daily standup" },
+        timezone: "America/Los_Angeles",
+      },
+    ]);
+  });
+
+  test("round-trips forge_skill step kind", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "fs-1",
+            steps: [
+              {
+                kind: "forge_skill",
+                demand: {
+                  id: "demand-1",
+                  kind: "forge_demand",
+                  trigger: { kind: "capability_gap", requiredCapability: "csv-parse" },
+                  confidence: 0.9,
+                  suggestedBrickKind: "skill",
+                  context: {
+                    failureCount: 3,
+                    failedToolCalls: ["read_file:csv"],
+                    taskDescription: "parse quarterly report",
+                  },
+                  emittedAt: 100,
+                },
+              },
+            ],
+            estimatedCost: 4,
+          });
+        },
+      },
+    });
+
+    const trigger: CompositionTrigger = {
+      id: "fs-1",
+      source: "forge_demand",
+      confidence: 1,
+      moment: { kind: "capability_gap", missing: "csv-parse" },
+      suggestedCapabilities: ["forge_skill"],
+      context: {},
+      emittedAt: 100,
+    };
+
+    const plan = await planner.plan(trigger, { tools: [], agents: [], schedules: [] });
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]).toMatchObject({
+      kind: "forge_skill",
+      demand: { id: "demand-1", suggestedBrickKind: "skill" },
+    });
   });
 
   test("local classify logic errors are not silently replaced with fallback output", async () => {

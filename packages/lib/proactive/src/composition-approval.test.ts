@@ -57,4 +57,49 @@ describe("computeCompositionApproval", () => {
       ),
     ).toBe(true);
   });
+
+  test("confidence equal to threshold does NOT require approval (boundary: < not <=)", () => {
+    expect(
+      computeCompositionApproval(
+        { ...trigger, confidence: 0.5 },
+        1,
+        {
+          confidenceThreshold: 0.5,
+          maxEstimatedCost: 10,
+          requireApprovalOnNovelty: false,
+        },
+        { isNovel: false },
+      ),
+    ).toBe(false);
+  });
+
+  test("estimated cost equal to budget does NOT require approval (boundary: > not >=)", () => {
+    expect(
+      computeCompositionApproval(
+        trigger,
+        10,
+        {
+          confidenceThreshold: 0.5,
+          maxEstimatedCost: 10,
+          requireApprovalOnNovelty: false,
+        },
+        { isNovel: false },
+      ),
+    ).toBe(false);
+  });
+
+  test("novelty gate is suppressed when requireApprovalOnNovelty is false", () => {
+    expect(
+      computeCompositionApproval(
+        trigger,
+        1,
+        {
+          confidenceThreshold: 0.5,
+          maxEstimatedCost: 10,
+          requireApprovalOnNovelty: false,
+        },
+        { isNovel: true },
+      ),
+    ).toBe(false);
+  });
 });
