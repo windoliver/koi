@@ -39,9 +39,8 @@ describe("isBelowOsc52Limit", () => {
 });
 
 describe("readClipboardImage", () => {
-  test("returns null on unsupported platform when tool is missing", async () => {
-    // Always catches errors and returns null — safe to call without platform tools.
-    const result = await readClipboardImage();
+  test("returns null on unsupported platform", async () => {
+    const result = await readClipboardImage({ platform: "freebsd" });
     expect(result).toBeNull();
   });
 });

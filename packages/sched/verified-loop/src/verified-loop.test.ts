@@ -777,6 +777,12 @@ describe("VerifiedLoop.run", () => {
   test("stop() aborts a running iteration", async () => {
     await writePrd({ items: [{ id: "a", description: "Task A", done: false }] });
 
+    let markIterationStarted: (() => void) | undefined;
+    const iterationStarted = new Promise<void>((resolve) => {
+      markIterationStarted = resolve;
+    });
+    let runnerTimer: ReturnType<typeof setTimeout> | undefined;
+
     const loop = createVerifiedLoop(
       makeConfig({
         maxIterations: 2,
@@ -784,19 +790,25 @@ describe("VerifiedLoop.run", () => {
           [Symbol.asyncIterator]: () => ({
             next: () =>
               new Promise((resolve) => {
-                setTimeout(() => resolve({ done: true, value: undefined }), 5_000);
+                markIterationStarted?.();
+                runnerTimer = setTimeout(() => resolve({ done: true, value: undefined }), 5_000);
               }),
             // Cooperative cancellation required by the contract.
-            return: async () => ({ done: true, value: undefined }),
+            return: async () => {
+              if (runnerTimer !== undefined) clearTimeout(runnerTimer);
+              return { done: true, value: undefined };
+            },
           }),
         }),
         verify: passGate(),
       }),
     );
 
-    setTimeout(() => loop.stop(), 50);
+    const runPromise = loop.run();
+    await iterationStarted;
+    loop.stop();
 
-    const result = await loop.run();
+    const result = await runPromise;
     expect(result.durationMs).toBeLessThan(3_000);
   }, 10_000);
 

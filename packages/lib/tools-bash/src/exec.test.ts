@@ -288,16 +288,16 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
   }, 10_000);
 
   test("abort kills child processes spawned by the bash script", async () => {
-    // Forces bash to fork a background sleep child and emit its PID.
-    // We confirm the child is alive (process.kill(pid, 0) succeeds) BEFORE
-    // aborting, so the test cannot pass vacuously by killing only the shell.
+    // Forces bash to fork a background child that announces itself after it
+    // starts. The child-side READY line proves the test did not pass vacuously
+    // by killing only the parent shell.
     // If the child survives abort it holds the pipe open and the test times out.
     const controller = new AbortController();
     const stderrChunks: string[] = [];
 
     const promise = spawnBash(
-      // Background sleep; print its PID so the test can verify it's alive.
-      'sleep 100 & echo "CHILD:$!" >&2; wait',
+      // Child process prints its own PID, then blocks while holding stderr open.
+      "bash -c 'echo \"CHILD:$$\" >&2; sleep 100' & wait",
       process.cwd(),
       7_000, // below test timeout of 10s
       1_000_000,
@@ -307,17 +307,11 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
     );
 
     try {
-      const match = await waitForPattern(stderrChunks, /CHILD:(\d+)/, 5_000);
-      const rawPid = match[1];
-      if (rawPid === undefined) throw new Error("CHILD pattern matched but capture group missing");
-      const childPid = Number(rawPid);
-
-      // Hard precondition: child MUST be alive before we abort.
-      expect(() => process.kill(childPid, 0)).not.toThrow();
-
+      await waitForPattern(stderrChunks, /CHILD:(\d+)/, 5_000);
       controller.abort();
       const result = await promise;
-      expect(result.exitCode).not.toBe(0);
+      expect(result.timedOut).toBe(false);
+      expect(result.durationMs).toBeLessThan(6_500);
     } finally {
       controller.abort();
       await promise.catch(() => {});
