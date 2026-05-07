@@ -9,6 +9,7 @@ import type {
   SchedulerEvent,
   TaskFilter,
   TaskId,
+  TaskQueueBackend,
   TaskStore,
 } from "@koi/core";
 import { agentId, DEFAULT_SCHEDULER_CONFIG } from "@koi/core";
@@ -83,6 +84,54 @@ function createDeferredRunningStore(
       tasks.clear();
     },
   };
+}
+
+function createFakeDistributedQueue(tasks: readonly ScheduledTask[] = []) {
+  const queued = [...tasks];
+  const claimed: string[] = [];
+  const acked: string[] = [];
+  const nacked: string[] = [];
+  const tickClaims = new Set<string>();
+
+  const queueBackend: TaskQueueBackend = {
+    async enqueue(task) {
+      queued.push(task);
+      return task.id;
+    },
+    async cancel(taskId) {
+      const index = queued.findIndex((task) => task.id === taskId);
+      if (index === -1) return false;
+      queued.splice(index, 1);
+      return true;
+    },
+    async status(taskId) {
+      return queued.find((task) => task.id === taskId)?.status;
+    },
+    async claim(nodeId, limit = 1) {
+      const claimedTasks = queued.splice(0, limit);
+      for (const task of claimedTasks) {
+        claimed.push(`${nodeId}:${String(task.id)}`);
+      }
+      return claimedTasks;
+    },
+    async ack(taskId) {
+      acked.push(String(taskId));
+      return true;
+    },
+    async nack(taskId) {
+      nacked.push(String(taskId));
+      return true;
+    },
+    async tick(scheduleId, nodeId) {
+      const key = `${String(scheduleId)}:${nodeId}`;
+      if (tickClaims.size > 0) return false;
+      tickClaims.add(key);
+      return true;
+    },
+    async [Symbol.asyncDispose]() {},
+  };
+
+  return { queueBackend, queued, claimed, acked, nacked, tickClaims };
 }
 
 describe("createScheduler", () => {
@@ -381,5 +430,65 @@ describe("createScheduler", () => {
     const afterRestore = await s2.querySchedules(aid);
     expect(afterRestore.find((s: CronSchedule) => s.id === sid)?.paused).toBe(true);
     await s2[Symbol.asyncDispose]();
+  });
+
+  it("claims distributed tasks from queue backend and acknowledges completion", async () => {
+    const claimedTask: ScheduledTask = {
+      id: "task_claimed" as TaskId,
+      agentId: aid,
+      input,
+      mode: "spawn",
+      priority: 1,
+      status: "pending",
+      createdAt: 0,
+      retries: 0,
+      maxRetries: 1,
+    };
+    const store = createSqliteTaskStore(makeDb());
+    await store.save(claimedTask);
+    const distributed = createFakeDistributedQueue([claimedTask]);
+    const dispatched: TaskId[] = [];
+
+    const scheduler = createScheduler(
+      { ...DEFAULT_SCHEDULER_CONFIG, pollIntervalMs: 1 },
+      store,
+      async (_agentId, _input, _mode) => {
+        dispatched.push(claimedTask.id);
+      },
+      undefined,
+      undefined,
+      { queueBackend: distributed.queueBackend, nodeId: "node-a" },
+    );
+
+    // Real-time poll on SYSTEM_CLOCK; allow at least one interval tick.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(dispatched).toEqual([claimedTask.id]);
+    expect(distributed.claimed).toEqual([`node-a:${String(claimedTask.id)}`]);
+    expect(distributed.acked).toEqual([String(claimedTask.id)]);
+
+    await scheduler[Symbol.asyncDispose]();
+    await store[Symbol.asyncDispose]();
+  });
+
+  it("uses queueBackend.tick to dedupe cron execution across nodes", async () => {
+    const distributed = createFakeDistributedQueue();
+    const scheduler = createScheduler(
+      { ...DEFAULT_SCHEDULER_CONFIG, pollIntervalMs: 60_000 },
+      createSqliteTaskStore(makeDb()),
+      async () => {},
+      undefined,
+      createSqliteScheduleStore(makeDb()),
+      { queueBackend: distributed.queueBackend, nodeId: "node-a" },
+    );
+
+    const sid = await scheduler.schedule("* * * * *", aid, input, "spawn");
+    const tickAllowed = await distributed.queueBackend.tick?.(sid, "node-a");
+    const tickRejected = await distributed.queueBackend.tick?.(sid, "node-b");
+
+    expect(tickAllowed).toBe(true);
+    expect(tickRejected).toBe(false);
+
+    await scheduler[Symbol.asyncDispose]();
   });
 });

@@ -14,7 +14,7 @@ Koi's Nexus integration is spread across 13+ independent L2 packages, each requi
 | `@koi/permissions-nexus` | L2 | Global | ReBAC permission checks |
 | `@koi/audit-nexus` | L2 | Global | Buffered audit event sink |
 | `@koi/search-nexus` | L2 | Global | Full-text search backend |
-| `@koi/scheduler-nexus` | L2 | Global | Task + schedule + queue stores |
+| `@koi/scheduler-nexus` | L2 | Global | Task + schedule + queue stores. Provides Nexus-backed `TaskStore`, `ScheduleStore`, and distributed `TaskQueueBackend` primitives for the scheduler stack; local deployments remain on the SQLite scheduler path unless this package is explicitly wired in. |
 | `@koi/pay-nexus` | L2 | Global | Token usage ledger |
 | `@koi/name-service-nexus` | L2 | Global | Human-readable agent names |
 | `@koi/nexus-store` | L2 | Agent | Forge, events, session, memory, snapshots |

@@ -14311,6 +14311,135 @@ describe("Golden: @koi/scheduler-provider", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Golden: @koi/harness-scheduler
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/harness-scheduler", () => {
+  test("resumes a suspended harness and reports scheduler progress", async () => {
+    const { createHarnessScheduler } = await import("@koi/harness-scheduler");
+
+    let phase = "suspended";
+    const resumed: unknown[] = [];
+    const scheduler = createHarnessScheduler({
+      harness: {
+        status: () => ({ phase }),
+        resume: async () => {
+          phase = "completed";
+          return { ok: true, value: { resumed: true } };
+        },
+      },
+      pollIntervalMs: 1,
+      delay: async () => {},
+      onResumed: async (value) => {
+        resumed.push(value);
+      },
+    });
+
+    scheduler.start();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(scheduler.status().totalResumes).toBe(1);
+    expect(scheduler.status().lastError).toBeUndefined();
+    expect(resumed).toEqual([{ resumed: true }]);
+
+    await scheduler.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/scheduler-nexus
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/scheduler-nexus", () => {
+  test("creates Nexus scheduler backends with distributed queue methods", async () => {
+    const { createNexusSchedulerBackends } = await import("@koi/scheduler-nexus");
+
+    const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/api/nfs/")) {
+        const method = decodeURIComponent(url.split("/api/nfs/")[1] ?? "");
+        switch (method) {
+          case "scheduler.claim":
+            return new Response(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: 1,
+                result: {
+                  tasks: [
+                    {
+                      id: "task-1",
+                      agent_id: "agent-1",
+                      input: { kind: "text", text: "hello" },
+                      mode: "spawn",
+                      priority: 5,
+                      status: "pending",
+                      created_at: 1_000,
+                      retries: 0,
+                      max_retries: 3,
+                    },
+                  ],
+                },
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            );
+          case "scheduler.ack":
+            return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { ok: true } }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          case "scheduler.tick":
+            return new Response(
+              JSON.stringify({ jsonrpc: "2.0", id: 1, result: { claimed: true } }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            );
+          case "scheduler.task.query":
+            return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tasks: [] } }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          case "scheduler.schedule.list":
+            return new Response(
+              JSON.stringify({ jsonrpc: "2.0", id: 1, result: { schedules: [] } }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            );
+          default:
+            return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+        }
+      }
+
+      if (url.endsWith("/api/v2/scheduler/submit")) {
+        return new Response(JSON.stringify({ id: "task-1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ cancelled: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof globalThis.fetch;
+
+    const backends = createNexusSchedulerBackends({
+      baseUrl: "http://nexus.test",
+      fetch,
+      visibilityTimeoutMs: 30_000,
+    });
+
+    expect(typeof backends.taskStore.save).toBe("function");
+    expect(typeof backends.scheduleStore.saveSchedule).toBe("function");
+    expect(typeof backends.queueBackend.enqueue).toBe("function");
+    expect(await backends.queueBackend.claim?.("node-a", 1)).toHaveLength(1);
+    expect(await backends.queueBackend.ack?.("task-1" as never)).toBe(true);
+    expect(await backends.queueBackend.tick?.("schedule-1" as never, "node-a")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/gateway — transport infrastructure, standalone API tests
 // (No cassette/LLM needed: gateway lives below the agent-loop tool surface)
 // ---------------------------------------------------------------------------

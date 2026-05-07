@@ -313,3 +313,13 @@ L2  @koi/harness-scheduler <─────────────────�
     ~ SchedulableHarness is structural (duck-typed), not imported
     ~ package.json: { "dependencies": { "@koi/core": "workspace:*" } }
 ```
+
+## Wiring (issue #1390)
+
+Wired into `@koi/runtime` so consumers can import `createHarnessScheduler`
+without separately depending on this package. The runtime exposes it as part
+of the scheduler family alongside `@koi/scheduler`, `@koi/scheduler-nexus`,
+and `@koi/scheduler-provider`. Golden-replay coverage in
+`packages/meta/runtime/src/__tests__/golden-replay.test.ts`
+(`Golden: @koi/harness-scheduler`) exercises start → resume → status without
+an LLM, validating the `totalResumes` counter and error reporting.
