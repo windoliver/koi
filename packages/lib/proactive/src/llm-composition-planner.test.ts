@@ -164,7 +164,7 @@ describe("createLlmCompositionPlanner", () => {
       triggerId: "event-1",
       steps: [],
       estimatedCost: 0,
-      requiresApproval: true,
+      requiresApproval: false,
     });
   });
 
@@ -206,7 +206,7 @@ describe("createLlmCompositionPlanner", () => {
       triggerId: "event-2",
       steps: [],
       estimatedCost: 0,
-      requiresApproval: true,
+      requiresApproval: false,
     });
   });
 
@@ -248,8 +248,75 @@ describe("createLlmCompositionPlanner", () => {
       triggerId: "event-3",
       steps: [],
       estimatedCost: 0,
-      requiresApproval: true,
+      requiresApproval: false,
     });
+  });
+
+  test("fallback plans are reclassified with the outer llm approval policy", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return "{bad json";
+        },
+      },
+      approvalPolicy: {
+        confidenceThreshold: 0,
+        maxEstimatedCost: 100,
+        requireApprovalOnNovelty: true,
+      },
+      classifyNovelty(): boolean {
+        return true;
+      },
+      fallbackToRulePlanner: createRuleBasedCompositionPlanner({
+        approvalPolicy: {
+          confidenceThreshold: 0,
+          maxEstimatedCost: 100,
+          requireApprovalOnNovelty: false,
+        },
+      }),
+    });
+
+    const trigger: CompositionTrigger = {
+      id: "gov-novel-1",
+      source: "governance",
+      confidence: 1,
+      moment: {
+        kind: "threshold_crossed",
+        sensor: "error_rate",
+        value: 0.5,
+        limit: 0.2,
+        direction: "above",
+      },
+      suggestedCapabilities: ["spawn_agent", "notify_user"],
+      context: {},
+      emittedAt: 1,
+    };
+
+    const plan = await planner.plan(trigger, {
+      tools: [],
+      agents: [agentDefinition("diagnostic")],
+      schedules: [],
+    });
+
+    expect(plan.steps).toEqual([
+      {
+        kind: "spawn_agent",
+        agentType: "diagnostic",
+        input: {
+          kind: "text",
+          text: "Investigate elevated error_rate and summarize root causes.",
+        },
+        delivery: DEFAULT_DELIVERY_POLICY,
+      },
+      {
+        kind: "notify_user",
+        channel: "inbox",
+        message: "Error rate crossed its configured threshold.",
+        priority: "high",
+      },
+    ]);
+    expect(plan.estimatedCost).toBe(6);
+    expect(plan.requiresApproval).toBe(true);
   });
 
   test("rejects nested invalid message input that previously slipped through", async () => {

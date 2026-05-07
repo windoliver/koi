@@ -92,6 +92,7 @@ function metricShiftFromAnomaly(
     case "token_spike":
       return { metric: "output_tokens", improvement: anomaly.mean - anomaly.outputTokens };
     case "goal_drift":
+      if (anomaly.driftScore < 0) return undefined;
       return { metric: "goal_alignment", improvement: -anomaly.driftScore };
     case "tool_rate_exceeded":
       return { metric: "tool_rate", improvement: anomaly.threshold - anomaly.callsPerTurn };

@@ -297,6 +297,24 @@ describe("mapSystemSignalToCompositionTrigger", () => {
     });
   });
 
+  test("ignores synthetic goal-drift sentinels", () => {
+    const signal = {
+      kind: "anomaly",
+      anomaly: {
+        kind: "goal_drift",
+        sessionId: "session-1" as never,
+        agentId: "agent-3" as never,
+        timestamp: 92,
+        turnIndex: 6,
+        driftScore: -1,
+        threshold: 0.6,
+        objectives: ["triage issues"],
+      },
+    } as const satisfies SystemSignal;
+
+    expect(mapSystemSignalToCompositionTrigger(signal)).toBeUndefined();
+  });
+
   test("ignores non-metric anomalies in the first pass", () => {
     const signal = {
       kind: "anomaly",

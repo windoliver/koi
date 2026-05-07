@@ -326,6 +326,20 @@ function parseAdapterResponse(
   }
 }
 
+function withComputedApproval(
+  plan: Omit<CompositionPlan, "requiresApproval">,
+  trigger: CompositionTrigger,
+  approvalPolicy: CompositionApprovalPolicy,
+  isNovel: boolean,
+): CompositionPlan {
+  return {
+    ...plan,
+    requiresApproval: computeCompositionApproval(trigger, plan.estimatedCost, approvalPolicy, {
+      isNovel,
+    }),
+  };
+}
+
 export function createLlmCompositionPlanner(
   config: LlmCompositionPlannerConfig,
 ): CompositionPlanner {
@@ -334,28 +348,20 @@ export function createLlmCompositionPlanner(
 
   return {
     async plan(trigger, capabilities): Promise<CompositionPlan> {
+      const isNovel = classifyNovelty(trigger);
       let parsed: Omit<CompositionPlan, "requiresApproval">;
       try {
         const raw = await config.adapter.plan({ trigger, capabilities });
         parsed = parseAdapterResponse(raw, trigger);
       } catch (error) {
         if (config.fallbackToRulePlanner !== undefined && error instanceof AdapterPlanParseError) {
-          return config.fallbackToRulePlanner.plan(trigger, capabilities);
+          const fallbackPlan = await config.fallbackToRulePlanner.plan(trigger, capabilities);
+          return withComputedApproval(fallbackPlan, trigger, approvalPolicy, isNovel);
         }
         throw error;
       }
 
-      return {
-        ...parsed,
-        requiresApproval: computeCompositionApproval(
-          trigger,
-          parsed.estimatedCost,
-          approvalPolicy,
-          {
-            isNovel: classifyNovelty(trigger),
-          },
-        ),
-      };
+      return withComputedApproval(parsed, trigger, approvalPolicy, isNovel);
     },
   };
 }
