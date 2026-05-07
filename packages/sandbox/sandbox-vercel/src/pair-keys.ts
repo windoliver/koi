@@ -48,13 +48,14 @@ export const generatePairKeypair = async (): Promise<PairKeypair> => {
   };
 };
 
-const pemToBytes = (pem: string): Uint8Array => {
+const pemToBytes = (pem: string): Uint8Array<ArrayBuffer> => {
   const body = pem
     .replace(/-----BEGIN [^-]+-----/, "")
     .replace(/-----END [^-]+-----/, "")
     .replace(/\s+/g, "");
   const bin = globalThis.atob(body);
-  const out = new Uint8Array(bin.length);
+  const ab = new ArrayBuffer(bin.length);
+  const out = new Uint8Array(ab);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 };
@@ -123,7 +124,8 @@ export const verifyRequest = async (
     ["verify"],
   );
   const bin = globalThis.atob(signatureB64);
-  const sig = new Uint8Array(bin.length);
+  const sigBuf = new ArrayBuffer(bin.length);
+  const sig = new Uint8Array(sigBuf);
   for (let i = 0; i < bin.length; i++) sig[i] = bin.charCodeAt(i);
   return subtle.verify("Ed25519", key, sig, new TextEncoder().encode(canonical));
 };
