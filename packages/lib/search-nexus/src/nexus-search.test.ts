@@ -154,6 +154,34 @@ describe("createNexusSearch", () => {
     expect(calls).toBe(1);
   });
 
+  test("index error context records partial-progress on mid-batch failure", async () => {
+    let calls = 0;
+    transport.stub("search_index", async () => {
+      calls++;
+      if (calls === 1) return { ok: true, value: undefined };
+      return {
+        ok: false,
+        error: { code: "EXTERNAL", message: "second batch failed", retryable: true },
+      };
+    });
+
+    const search = createNexusSearch({ transport, maxBatchSize: 2 });
+    const result = await search.index([
+      { id: "1", content: "a" },
+      { id: "2", content: "b" },
+      { id: "3", content: "c" },
+      { id: "4", content: "d" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.context?.committedCount).toBe(2);
+      expect(result.error.context?.failedBatchStart).toBe(2);
+      expect(result.error.context?.failedBatchEnd).toBe(4);
+      expect(result.error.context?.totalCount).toBe(4);
+      expect(result.error.context?.retryHint).toContain("idempotent");
+    }
+  });
+
   test("remove with empty array is a no-op", async () => {
     const search = createNexusSearch({ transport });
     const result = await search.remove([]);

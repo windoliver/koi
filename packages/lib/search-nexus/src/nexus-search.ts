@@ -82,6 +82,19 @@ export function createNexusSearch<T = unknown>(config: NexusSearchConfig): Searc
     return { ok: true, value: page };
   }
 
+  /**
+   * Bulk-index documents in batches of at most `maxBatchSize`.
+   *
+   * Partial-failure semantics: `search_index` is required to be **idempotent
+   * by document id** — re-sending a document with the same id replaces the
+   * existing entry rather than duplicating it. This means callers can safely
+   * retry the entire input on a partial failure without producing drift.
+   *
+   * On failure, the returned KoiError context records how many documents
+   * were already committed, the failed-batch range, and the total input
+   * size, so callers can decide whether to retry the whole call (idempotent)
+   * or just the failed slice.
+   */
   async function index(documents: readonly IndexDocument<T>[]): Promise<Result<void, KoiError>> {
     if (documents.length === 0) return { ok: true, value: undefined };
 
@@ -91,7 +104,23 @@ export function createNexusSearch<T = unknown>(config: NexusSearchConfig): Searc
         index: indexName,
         documents: batch,
       });
-      if (!result.ok) return result;
+      if (!result.ok) {
+        return {
+          ok: false,
+          error: {
+            ...result.error,
+            context: {
+              ...(result.error.context ?? {}),
+              committedCount: i,
+              failedBatchStart: i,
+              failedBatchEnd: i + batch.length,
+              totalCount: documents.length,
+              retryHint:
+                "search_index is idempotent by document id; retrying the full input is safe",
+            },
+          },
+        };
+      }
     }
 
     return { ok: true, value: undefined };

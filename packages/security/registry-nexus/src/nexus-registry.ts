@@ -130,6 +130,15 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   // let: disposed flag to gate background work
   let disposed = false;
+  // let: broken flag — set when poll detects an unrecoverable overflow.
+  // Once broken, all operations throw rather than returning a partial mirror.
+  let broken: string | undefined;
+
+  function assertHealthy(): void {
+    if (broken !== undefined) {
+      throw new Error(`registry-nexus is broken: ${broken}`);
+    }
+  }
 
   const notify = listeners.notify;
 
@@ -155,11 +164,17 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
 
     for (const nexusAgent of listResult.value) {
       const detail = await nexusGetAgent(transport, nexusAgent.agent_id);
-      if (detail.ok) {
-        const entry = mapNexusAgentToEntry(detail.value);
-        projection.set(entry.agentId, entry);
-        nexusGens.set(entry.agentId, detail.value.generation ?? 0);
+      if (!detail.ok) {
+        // Fail closed: starting up with a partial mirror would silently
+        // hide live agents until poll happens to repair them.
+        throw new Error(
+          `Failed to hydrate agent ${nexusAgent.agent_id} during warmup: ${detail.error.message}`,
+          { cause: detail.error },
+        );
       }
+      const entry = mapNexusAgentToEntry(detail.value);
+      projection.set(entry.agentId, entry);
+      nexusGens.set(entry.agentId, detail.value.generation ?? 0);
     }
   }
 
@@ -184,10 +199,16 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       if (!detail.ok) continue;
 
       if (projection.size >= maxEntries && existing === undefined) {
-        console.warn(
-          `[registry-nexus] capacity exceeded (${String(maxEntries)}); skipping new remote agent ${nexusAgent.agent_id} — local projection is now a partial mirror`,
-        );
-        continue;
+        // Fail closed: a partial mirror would silently hide live remote
+        // agents from list()/lookup() forever. Mark broken so callers
+        // see an error instead of an incomplete view.
+        broken = `poll observed remote agent ${nexusAgent.agent_id} but projection is at capacity (${String(maxEntries)}); raise maxEntries or scale out`;
+        console.error(`[registry-nexus] ${broken}`);
+        if (pollTimer !== undefined) {
+          clearInterval(pollTimer);
+          pollTimer = undefined;
+        }
+        return;
       }
 
       const entry = mapNexusAgentToEntry(detail.value);
@@ -218,6 +239,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
   }
 
   async function register(entry: RegistryEntry): Promise<RegistryEntry> {
+    assertHealthy();
     // Fail closed if the local projection is at capacity — registering
     // remotely without a local mirror would silently desync state and
     // hide the agent from list()/lookup() until eviction.
@@ -322,6 +344,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
   }
 
   async function deregister(id: AgentId): Promise<boolean> {
+    assertHealthy();
     const existed = projection.has(id);
     if (!existed) return false;
 
@@ -341,10 +364,12 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
   }
 
   function lookup(id: AgentId): RegistryEntry | undefined {
+    assertHealthy();
     return projection.get(id);
   }
 
   function list(filter?: RegistryFilter, _v?: VisibilityContext): readonly RegistryEntry[] {
+    assertHealthy();
     const entries = [...projection.values()];
     if (filter === undefined) return entries;
     return entries.filter((e) => matchesFilter(e, filter));
@@ -356,6 +381,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     expectedGeneration: number,
     reason: TransitionReason,
   ): Promise<Result<RegistryEntry, KoiError>> {
+    assertHealthy();
     const current = projection.get(id);
     if (current === undefined) {
       return {
@@ -496,6 +522,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     id: AgentId,
     fields: PatchableRegistryFields,
   ): Promise<Result<RegistryEntry, KoiError>> {
+    assertHealthy();
     const current = projection.get(id);
     if (current === undefined) {
       return {

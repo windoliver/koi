@@ -93,6 +93,18 @@ describe("createNexusRegistry — startup", () => {
     );
   });
 
+  test("fails closed when get_agent fails during warmup hydration", async () => {
+    transport.stub("list_agents", async () => ({
+      ok: true,
+      value: [{ agent_id: "a1", state: "CONNECTED", generation: 0 }],
+    }));
+    transport.stub("get_agent", async () => ({
+      ok: false,
+      error: { code: "EXTERNAL", message: "hydrate failed", retryable: true },
+    }));
+    await expect(createNexusRegistry({ transport, pollIntervalMs: 0 })).rejects.toThrow(/hydrate/);
+  });
+
   test("fails closed when remote agent count exceeds maxEntries during warmup", async () => {
     transport.stub("list_agents", async () => ({
       ok: true,
@@ -430,6 +442,44 @@ describe("createNexusRegistry — transition partial failure", () => {
 });
 
 describe("createNexusRegistry — capacity", () => {
+  test("poll marks registry broken when remote overflow is observed", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({
+      transport,
+      pollIntervalMs: 5,
+      maxEntries: 1,
+    });
+    await registry.register(makeEntry("a1"));
+
+    // After registration completes, swap list_agents to surface a second
+    // remote agent. Poll should detect overflow, set the broken flag, and
+    // stop the timer rather than serve a partial mirror.
+    transport.stub("list_agents", async () => ({
+      ok: true,
+      value: [
+        { agent_id: "a1", state: "CONNECTED", generation: 0 },
+        { agent_id: "a2", state: "CONNECTED", generation: 0 },
+      ],
+    }));
+    transport.stub("get_agent", async () => ({
+      ok: true,
+      value: {
+        agent_id: "a2",
+        state: "CONNECTED",
+        generation: 0,
+        metadata: {},
+      },
+    }));
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(() => registry.list()).toThrow(/broken/);
+    expect(() => registry.lookup(agentId("a1"))).toThrow(/broken/);
+    await registry[Symbol.asyncDispose]();
+  });
+
   test("register fails closed when projection is at capacity", async () => {
     const transport = createMockTransport();
     stubEmptyList(transport);
