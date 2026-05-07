@@ -67,15 +67,22 @@ export default {
     try { handlerResp = await env.HANDLER_RUNNER.fetch(handlerReq); } catch (e) { return respond(503, { error: "HANDLER_UNREACHABLE", cause: String(e && e.message) }, "shim-error", { "X-Koi-Shim-Error-Code": "HANDLER_UNREACHABLE" }); }
     const outcome = handlerResp.headers.get(HEADER_OUTCOME) || "success";
     const respBody = await handlerResp.text();
+    // Store the DECODED handler value in the DO. The dedupe contract requires
+    // identical host-visible output between first execution and a cached
+    // replay; persisting the raw text would re-stringify on replay (claim.result
+    // would arrive as a JSON-encoded string and respond() would JSON.stringify
+    // it again). Decoding here means both paths feed the same shape into respond().
+    var parsedResult; try { parsedResult = JSON.parse(respBody || "null"); } catch (_e) { parsedResult = respBody; }
+    var parsedError; try { parsedError = JSON.parse(respBody || "null"); } catch (_e) { parsedError = respBody; }
     const ttlExpiresAtMs = dedupeExpiresAtMs + 3_600_000;
     if (outcome === "failed-permanent") {
-      const failOk = await stub.fetch("https://do/fail", { method: "POST", body: JSON.stringify({ operationId, requestId, dedupeFingerprint, error: respBody, ttlExpiresAtMs }) }).then((r) => r.json());
+      const failOk = await stub.fetch("https://do/fail", { method: "POST", body: JSON.stringify({ operationId, requestId, dedupeFingerprint, error: parsedError, ttlExpiresAtMs }) }).then((r) => r.json());
       if (!failOk.committed) return respond(503, { error: "OWNERSHIP_LOST" }, "shim-error", { "X-Koi-Shim-Error-Code": "OWNERSHIP_LOST" });
-      return respond(200, { error: respBody }, "failed-permanent");
+      return respond(200, { error: parsedError }, "failed-permanent");
     }
-    const completeOk = await stub.fetch("https://do/complete", { method: "POST", body: JSON.stringify({ operationId, requestId, dedupeFingerprint, result: respBody, statusCode: 200, ttlExpiresAtMs }) }).then((r) => r.json());
+    const completeOk = await stub.fetch("https://do/complete", { method: "POST", body: JSON.stringify({ operationId, requestId, dedupeFingerprint, result: parsedResult, statusCode: 200, ttlExpiresAtMs }) }).then((r) => r.json());
     if (!completeOk.committed) return respond(503, { error: "DEDUPE_PERSISTENCE_FAILED" }, "shim-error", { "X-Koi-Shim-Error-Code": "DEDUPE_PERSISTENCE_FAILED" });
-    return respond(200, JSON.parse(respBody || "null"), "success");
+    return respond(200, parsedResult, "success");
   },
 };
 `;

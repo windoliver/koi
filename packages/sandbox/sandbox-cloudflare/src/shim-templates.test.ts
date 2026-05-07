@@ -23,6 +23,15 @@ describe("GATEWAY_SHIM_SOURCE", () => {
     expect(GATEWAY_SHIM_SOURCE).toContain('"failed-permanent"');
   });
 
+  it("persists decoded handler results so cached replay matches fresh execution", () => {
+    // The DO must hold the parsed JSON value. If we stored raw text
+    // (`result: respBody`), claim.result on replay would be a string and
+    // respond() would JSON.stringify it again, double-encoding the cache hit.
+    expect(GATEWAY_SHIM_SOURCE).toContain("result: parsedResult");
+    expect(GATEWAY_SHIM_SOURCE).toContain("respond(200, parsedResult,");
+    expect(GATEWAY_SHIM_SOURCE).not.toContain("result: respBody");
+  });
+
   it("parses as ESM via Bun.Transpiler without throwing", () => {
     expect(() =>
       new Bun.Transpiler({ loader: "js" }).transformSync(GATEWAY_SHIM_SOURCE),

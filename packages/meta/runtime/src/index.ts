@@ -146,7 +146,12 @@ export type {
   SshTarget,
 } from "@koi/sandbox-ssh";
 export { createSshAdapter, defaultSshClientFactory } from "@koi/sandbox-ssh";
-// In-process WASM executor (issue #1377). Package-local `WasmExecutor` contract — NOT `SandboxExecutor`.
+// In-process WASM executor types only (issue #1377). The `createWasmExecutor`
+// factory is intentionally NOT re-exported here: the in-process implementation
+// runs the guest synchronously and cannot preempt a runaway export, so it is
+// not a safe default for untrusted WASM. Trusted callers import the factory
+// directly from `@koi/sandbox-wasm`. A future Worker-thread-backed executor
+// will be the default once preemption is available.
 export type {
   WasmCall,
   WasmError,
@@ -155,7 +160,6 @@ export type {
   WasmExecutor,
   WasmResult,
 } from "@koi/sandbox-wasm";
-export { createWasmExecutor } from "@koi/sandbox-wasm";
 // Activity-based stream timeouts (#1638)
 export type {
   ActivityTerminationReason,
