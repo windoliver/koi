@@ -222,6 +222,28 @@ export class KoiDedupeDO {
     });
   }
 
+  /**
+   * Ownership-checked transient release. Mirrors `RELEASE_LUA` from the spec:
+   * the gateway calls this on transient handler failures so the next caller
+   * can immediately re-run instead of waiting for lease expiry. Releases ONLY
+   * if the calling requestId still owns the claim — a late release from a
+   * stale claimer is a no-op so concurrent takeover paths cannot collide.
+   */
+  async release(req: {
+    operationId: string;
+    requestId: string;
+  }): Promise<{ released: boolean; reason?: string }> {
+    return this.#storage.transaction(async (s) => {
+      const claim = await s.get<ClaimRecord>(KEY_CLAIM);
+      if (claim === undefined) return { released: false, reason: "NO_CLAIM" };
+      if (claim.claimer !== req.requestId) {
+        return { released: false, reason: "OWNERSHIP_LOST" };
+      }
+      await s.delete([KEY_CLAIM]);
+      return { released: true };
+    });
+  }
+
   async waitForTerminal(req: WaitForTerminalRequest): Promise<WaitOutcome> {
     const start = this.#clock.nowMs();
     const pollMs = req.pollIntervalMs ?? 1_000;

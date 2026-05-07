@@ -210,6 +210,32 @@ export default {
     if (!ok) {
       return new Response(JSON.stringify({ error: "SIGNATURE_INVALID" }), { status: 401, headers: { "X-Koi-Result-Kind": "shim-error", "X-Koi-Shim-Error-Code": "SIGNATURE_INVALID" } });
     }
+    // Anti-replay: burn the nonce in pair-scoped KV with SET NX EX. A captured
+    // signed request can otherwise be replayed within the SKEW_TOLERANCE_SEC
+    // window. The nonce-burn KV is provisioned to Worker B alongside the
+    // verify key (separate, scoped credential — NOT the full dedupe KV token).
+    // KOI_PAIR_NONCE_KV_URL + KOI_PAIR_NONCE_KV_TOKEN must be set; absence
+    // disables anti-replay and is allowed only for unit-test contexts.
+    const nonceKvUrl = (globalThis.KOI_PAIR_NONCE_KV_URL ?? process.env.KOI_PAIR_NONCE_KV_URL);
+    const nonceKvToken = (globalThis.KOI_PAIR_NONCE_KV_TOKEN ?? process.env.KOI_PAIR_NONCE_KV_TOKEN);
+    if (nonceKvUrl && nonceKvToken) {
+      const burnTtlSec = SKEW_TOLERANCE_SEC * 2;
+      const nonceKey = "koi:nonce:" + nonce;
+      let burnOk = false;
+      try {
+        const burnResp = await fetch(nonceKvUrl + "/set/" + encodeURIComponent(nonceKey) + "/1?NX&EX=" + burnTtlSec, {
+          method: "POST",
+          headers: { authorization: "Bearer " + nonceKvToken },
+        });
+        if (burnResp.ok) {
+          const j = await burnResp.json();
+          burnOk = j && (j.result === "OK" || j.result === 1 || j.result === "1");
+        }
+      } catch (_e) { burnOk = false; }
+      if (!burnOk) {
+        return new Response(JSON.stringify({ error: "NONCE_REPLAY" }), { status: 401, headers: { "X-Koi-Result-Kind": "shim-error", "X-Koi-Shim-Error-Code": "NONCE_REPLAY" } });
+      }
+    }
     let body;
     try { body = JSON.parse(bodyText); } catch (_e) { return new Response(JSON.stringify({ error: "INVALID_BODY" }), { status: 400 }); }
     const { payload, operationId, requestId: rid } = body || {};

@@ -52,6 +52,14 @@ describe("shim-templates", () => {
     expect(GATEWAY_SHIM_SOURCE).toContain("HANDLER_TRANSIENT");
   });
 
+  it("handler runner burns nonces in pair-scoped KV to prevent replay within the skew window", () => {
+    expect(HANDLER_RUNNER_SHIM_SOURCE).toContain("KOI_PAIR_NONCE_KV_URL");
+    expect(HANDLER_RUNNER_SHIM_SOURCE).toContain("KOI_PAIR_NONCE_KV_TOKEN");
+    expect(HANDLER_RUNNER_SHIM_SOURCE).toContain("NONCE_REPLAY");
+    // SET-NX form ensures atomic burn semantics.
+    expect(HANDLER_RUNNER_SHIM_SOURCE).toContain("NX&EX=");
+  });
+
   it("handler runner enforces a timestamp skew tolerance", () => {
     expect(HANDLER_RUNNER_SHIM_SOURCE).toContain("SKEW_TOLERANCE_SEC");
     expect(HANDLER_RUNNER_SHIM_SOURCE).toContain("STALE_REQUEST");

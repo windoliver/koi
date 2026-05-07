@@ -260,6 +260,18 @@ describe("KoiDedupeDO — waitForTerminal", () => {
     expect(w.kind).toBe("operation-id-conflict");
   });
 
+  it("release() drops the claim for the owner and rejects non-owners", async () => {
+    await doInst.claim(claimReq({ requestId: "owner" }));
+    const wrongOwner = await doInst.release({ operationId: "op-1", requestId: "imposter" });
+    expect(wrongOwner.released).toBe(false);
+    expect(wrongOwner.reason).toBe("OWNERSHIP_LOST");
+    const ok = await doInst.release({ operationId: "op-1", requestId: "owner" });
+    expect(ok.released).toBe(true);
+    // After release, next claim is fresh.
+    const next = await doInst.claim(claimReq({ requestId: "next" }));
+    expect(next.status).toBe("fresh");
+  });
+
   it("returns 'claim-expired' when the original owner's lease elapsed without writing a terminal", async () => {
     // Inject a clock-advancing sleep so the loop progresses deterministically.
     const advancingSleep = async (ms: number): Promise<void> => {

@@ -5751,26 +5751,28 @@ type EdgeIntegrityVerification = "cached" | "strict" | "async";
  */
 type EdgeDestroyOutcome = {
     readonly kind: "destroyed-clean";
-    readonly providerArtifactId?: string;
+    /** Provider artifacts that were successfully torn down (gateway + handler-runner for paired adapters). */
+    readonly providerArtifacts?: readonly string[];
 } | {
     readonly kind: "destroyed-local-remote-leaked";
-    readonly providerArtifactId: string;
+    /** Artifacts that remained allocated. Multiple entries when a paired adapter (gateway + handler-runner) failed teardown. */
+    readonly providerArtifacts: readonly string[];
     readonly reason: string;
 } | {
     readonly kind: "destroyed-local-remote-uncertain";
-    readonly providerArtifactId?: string;
+    readonly providerArtifacts?: readonly string[];
     readonly reason: string;
 } | {
     readonly kind: "destroyed-local-remote-indeterminate";
-    readonly providerArtifactId?: string;
+    readonly providerArtifacts?: readonly string[];
     readonly inFlightRequestIds: readonly string[];
 } | {
     readonly kind: "already-destroyed";
-    readonly providerArtifactId?: string;
+    readonly providerArtifacts?: readonly string[];
 } | {
     readonly kind: "detached-only";
     readonly reason: string;
-    readonly providerArtifactId?: string;
+    readonly providerArtifacts?: readonly string[];
 };
 /**
  * Inbound envelope for a single \`invoke()\` attempt against a deployed edge

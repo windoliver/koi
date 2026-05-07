@@ -104,7 +104,11 @@ export default {
     // shim error. Caching this as success would replay bogus output for
     // every later retry of the same operationId.
     if (handlerResp.status !== 200 || outcome !== "success") {
-      try { await stub.fetch("https://do/release", { method: "POST", body: JSON.stringify({ operationId, requestId }) }); } catch (_e) { /* best-effort */ }
+      // Explicit ownership-checked release so the next caller can re-run
+      // immediately instead of waiting for lease expiry. The DO's release()
+      // is no-op when this requestId no longer owns the claim, so a racing
+      // takeover by another waiter remains safe.
+      try { await stub.fetch("https://do/release", { method: "POST", body: JSON.stringify({ operationId, requestId }) }).then((r) => r.json()); } catch (_e) { /* best-effort: lease expiry recovers */ }
       return respond(503, { error: "HANDLER_TRANSIENT", status: handlerResp.status, outcome }, "shim-error", { "X-Koi-Shim-Error-Code": "HANDLER_TRANSIENT" });
     }
     const completeOk = await stub.fetch("https://do/complete", { method: "POST", body: JSON.stringify({ operationId, requestId, dedupeFingerprint, result: parsedResult, statusCode: 200, ttlExpiresAtMs }) }).then((r) => r.json());
