@@ -381,7 +381,7 @@ describe("createNexusRegistry — transition partial failure", () => {
     await registry[Symbol.asyncDispose]();
   });
 
-  test("drops local projection when refetch also fails", async () => {
+  test("preserves stale projection when bounded reconcile retries all fail", async () => {
     const transport = createMockTransport();
     stubEmptyList(transport);
     stubRegisterFlow(transport, "a1");
@@ -397,16 +397,58 @@ describe("createNexusRegistry — transition partial failure", () => {
       error: { code: "EXTERNAL", message: "refetch failed", retryable: true },
     }));
 
-    const events: string[] = [];
-    registry.watch((e) => events.push(e.kind));
+    const result = await registry.transition(agentId("a1"), "waiting", 0, {
+      kind: "awaiting_response",
+    });
+    expect(result.ok).toBe(false);
+    // After bounded retries fail, keep the entry rather than orphaning a
+    // live Nexus agent in the pollIntervalMs:0 configuration. Nexus is
+    // still authoritative; subsequent successful ops will resync.
+    const stale = await Promise.resolve(registry.lookup(agentId("a1")));
+    expect(stale).toBeDefined();
+    expect(stale?.status.phase).toBe("running");
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("recovers via bounded retry when first refetch fails but second succeeds", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    await registry.register(makeEntry("a1"));
+
+    transport.stub("update_agent_metadata", async () => ({
+      ok: false,
+      error: { code: "EXTERNAL", message: "metadata write failed", retryable: true },
+    }));
+    let getCalls = 0;
+    transport.stub("get_agent", async () => {
+      getCalls += 1;
+      if (getCalls === 1) {
+        return { ok: false, error: { code: "EXTERNAL", message: "blip", retryable: true } };
+      }
+      return {
+        ok: true,
+        value: {
+          agent_id: "a1",
+          state: "IDLE",
+          generation: 1,
+          metadata: {
+            agentType: "worker",
+            registeredAt: 1_700_000_000_000,
+            priority: 10,
+          },
+        },
+      };
+    });
 
     const result = await registry.transition(agentId("a1"), "waiting", 0, {
       kind: "awaiting_response",
     });
     expect(result.ok).toBe(false);
-    // Local projection dropped — caller sees NOT_FOUND instead of stale state.
-    expect(await Promise.resolve(registry.lookup(agentId("a1")))).toBeUndefined();
-    expect(events).toContain("deregistered");
+    expect(getCalls).toBeGreaterThanOrEqual(2);
+    const after = await Promise.resolve(registry.lookup(agentId("a1")));
+    expect(after?.status.phase).toBe("waiting");
     await registry[Symbol.asyncDispose]();
   });
 
@@ -540,6 +582,34 @@ describe("createNexusRegistry — capacity", () => {
 
     stubRegisterFlow(transport, "a2");
     await expect(registry.register(makeEntry("a2"))).rejects.toThrow(/capacity/);
+    await registry[Symbol.asyncDispose]();
+  });
+});
+
+describe("createNexusRegistry — reserved metadata keys", () => {
+  test("rejects patch that overwrites adapter-owned keys", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    await registry.register(makeEntry("a1"));
+
+    for (const key of [
+      "koi:status",
+      "koi:terminated",
+      "agentType",
+      "registeredAt",
+      "parentId",
+      "spawner",
+      "groupId",
+    ]) {
+      const result = await registry.patch(agentId("a1"), { metadata: { [key]: "evil" } });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("VALIDATION");
+        expect(result.error.message).toContain(key);
+      }
+    }
     await registry[Symbol.asyncDispose]();
   });
 });

@@ -40,6 +40,26 @@ import {
 } from "./nexus-rpc.js";
 import { decodeKoiStatus, encodeKoiStatus, mapKoiToNexus, mapNexusToKoi } from "./state-mapping.js";
 
+/**
+ * Metadata keys owned by the registry adapter. Callers must not overwrite
+ * these via patch() — they encode lifecycle and identity that the adapter
+ * treats as authoritative when re-hydrating from Nexus, and accepting
+ * caller writes would let `metadata.koi:terminated = true` (or a forged
+ * agentType/parentId/etc.) cross the user-data → registry-state trust
+ * boundary on the next refetch.
+ */
+const RESERVED_METADATA_KEYS: ReadonlySet<string> = new Set([
+  "koi:status",
+  "koi:terminated",
+  "agentType",
+  "registeredAt",
+  "priority",
+  "parentId",
+  "spawner",
+  "groupId",
+  "zoneId",
+]);
+
 function mapNexusAgentToEntry(agent: NexusAgent): RegistryEntry {
   const metadata = agent.metadata ?? {};
   const koiStatus = decodeKoiStatus(metadata);
@@ -541,32 +561,39 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       // cannot actually represent without the missing metadata flag
       // (notably: terminated requires `koi:terminated=true` to round-trip
       // through the lossy SUSPENDED state).
-      const refetch = await nexusGetAgent(transport, id);
-      if (refetch.ok) {
-        const reconciled = mapNexusAgentToEntry(refetch.value);
-        projection.set(id, reconciled);
-        nexusGens.set(id, refetch.value.generation ?? currentNexusGen);
-        if (reconciled.status.phase !== current.status.phase) {
-          notify({
-            kind: "transitioned",
-            agentId: id,
-            from: current.status.phase,
-            to: reconciled.status.phase,
-            generation: reconciled.status.generation,
-            reason,
-          });
+      // Bounded retry: dropping the entry on a single transient failure
+      // would orphan the live Nexus agent when polling is disabled.
+      const RECONCILE_ATTEMPTS = 3;
+      for (let attempt = 0; attempt < RECONCILE_ATTEMPTS; attempt++) {
+        if (attempt > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 50 * 2 ** (attempt - 1)));
         }
-        return { ok: false, error: updateResult.error };
+        const refetch = await nexusGetAgent(transport, id);
+        if (refetch.ok) {
+          const reconciled = mapNexusAgentToEntry(refetch.value);
+          projection.set(id, reconciled);
+          nexusGens.set(id, refetch.value.generation ?? currentNexusGen);
+          if (reconciled.status.phase !== current.status.phase) {
+            notify({
+              kind: "transitioned",
+              agentId: id,
+              from: current.status.phase,
+              to: reconciled.status.phase,
+              generation: reconciled.status.generation,
+              reason,
+            });
+          }
+          return { ok: false, error: updateResult.error };
+        }
       }
-      // refetch also failed — drop the entry from the local projection so
-      // callers see NOT_FOUND instead of stale pre-transition state. Nexus
-      // remains the source of truth; the next successful poll/refetch will
-      // re-mirror the agent.
-      projection.delete(id);
-      nexusGens.delete(id);
-      notify({ kind: "deregistered", agentId: id });
+      // All retries exhausted. Mark the entry stale rather than dropping
+      // it: a transient outage shouldn't make a still-live Nexus agent
+      // permanently invisible to this process when polling is disabled.
+      // The local copy is preserved so lookup/patch/deregister can still
+      // find the entry; subsequent successful operations or polls will
+      // resync the lifecycle metadata.
       console.warn(
-        `[registry-nexus] dropped local projection of ${id}: agent_transition committed but reconciliation refetch failed (${updateResult.error.message}); Nexus remains authoritative`,
+        `[registry-nexus] reconcile failed for ${id} after ${String(RECONCILE_ATTEMPTS)} attempts (last error: ${updateResult.error.message}); preserving stale local projection — Nexus remains authoritative for phase`,
       );
       return { ok: false, error: updateResult.error };
     }
@@ -609,6 +636,20 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
           retryable: false,
         },
       };
+    }
+
+    if (fields.metadata !== undefined) {
+      const reserved = Object.keys(fields.metadata).filter((k) => RESERVED_METADATA_KEYS.has(k));
+      if (reserved.length > 0) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: `patch({ metadata }) cannot overwrite registry-owned keys: ${reserved.join(", ")}`,
+            retryable: false,
+          },
+        };
+      }
     }
 
     if (fields.zoneId !== undefined) {
