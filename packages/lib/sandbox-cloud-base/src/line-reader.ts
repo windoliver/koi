@@ -31,36 +31,70 @@ export async function* createLineReader(
   const reader = stream.getReader();
   let buffer = "";
   let totalBytes = 0;
+  let dropping = false;
+
+  function appendLine(line: string): { readonly stop: boolean } {
+    const remainingBytes = maxTotalBytes - totalBytes;
+    if (remainingBytes <= 0) {
+      return { stop: true };
+    }
+
+    const cappedLine = clampPrefix(line, maxLineBytes);
+    const output = clampPrefix(cappedLine, remainingBytes);
+    const outputBytes = encoder.encode(output).byteLength;
+    if (outputBytes === 0) {
+      return { stop: true };
+    }
+
+    const cappedBytes = encoder.encode(cappedLine).byteLength;
+    totalBytes += outputBytes;
+    return { stop: outputBytes < cappedBytes };
+  }
 
   try {
     while (true) {
-      const newlineIndex = buffer.indexOf("\n");
-      if (newlineIndex !== -1) {
-        const rawLine = buffer.slice(0, newlineIndex).replace(/\r$/, "");
-        buffer = buffer.slice(newlineIndex + 1);
-        const line = clampPrefix(rawLine, maxLineBytes);
-        totalBytes += encoder.encode(line).byteLength;
-        if (totalBytes > maxTotalBytes) {
-          return;
-        }
-        yield line;
-        continue;
-      }
-
       const { value, done } = await reader.read();
       if (done) {
-        const tail = clampPrefix(buffer.replace(/\r$/, ""), maxLineBytes);
-        const remainingBytes = maxTotalBytes - totalBytes;
-        if (tail.length > 0 && remainingBytes > 0) {
-          const tailBytes = encoder.encode(tail).byteLength;
-          yield tailBytes <= remainingBytes ? tail : clampPrefix(tail, remainingBytes);
+        if (!dropping) {
+          const tail = clampPrefix(buffer.replace(/\r$/, ""), maxLineBytes);
+          if (tail.length > 0) {
+            const { stop } = appendLine(tail);
+            if (stop) {
+              return;
+            }
+          }
         }
         return;
       }
 
       buffer += decoder.decode(value, { stream: true });
-      if (buffer.length > maxLineBytes) {
-        buffer = clampPrefix(buffer, maxLineBytes);
+
+      while (true) {
+        const newlineIndex = buffer.indexOf("\n");
+        if (newlineIndex === -1) {
+          break;
+        }
+
+        if (dropping) {
+          buffer = buffer.slice(newlineIndex + 1);
+          dropping = false;
+          continue;
+        }
+
+        const rawLine = buffer.slice(0, newlineIndex).replace(/\r$/, "");
+        buffer = buffer.slice(newlineIndex + 1);
+
+        const { stop } = appendLine(rawLine);
+        if (stop) {
+          return;
+        }
+      }
+
+      if (!dropping && encoder.encode(buffer).byteLength > maxLineBytes) {
+        dropping = true;
+        buffer = "";
+      } else if (dropping) {
+        buffer = "";
       }
     }
   } finally {

@@ -48,6 +48,11 @@ export function createCachedBridge<TLease extends CachedBridgeLease>(
 
   async function dispose(): Promise<void> {
     disposed = true;
+    const currentInflight = inflight;
+    if (currentInflight !== undefined) {
+      await currentInflight.catch(() => undefined);
+    }
+
     const currentLease = lease;
     lease = undefined;
     inflight = undefined;
