@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { AgentId, SessionId } from "@koi/core";
 import type { AgentStatus, MetricPoint, SessionSummary, WsEvent } from "@koi/dashboard-types";
-import type { Server, ServerWebSocket } from "bun";
+import type { Server } from "bun";
 import { createDashboardClient, type DashboardClient } from "../client.js";
 
 const asAgentId = (s: string): AgentId => s as AgentId;
@@ -9,8 +9,8 @@ const asSessionId = (s: string): SessionId => s as SessionId;
 
 /**
  * Integration coverage for what unit tests cannot prove: the SDK's URL
- * construction, query-string encoding, fetch wiring, and WebSocket lifecycle
- * survive a real (in-process) HTTP+WS server. Unit tests cover envelope
+ * construction, query-string encoding, fetch wiring, and SSE lifecycle
+ * survive a real (in-process) HTTP+SSE server. Unit tests cover envelope
  * shape, retry classification, and guard semantics.
  */
 
@@ -45,24 +45,22 @@ interface TestServer {
   readonly server: Server<unknown>;
   readonly url: string;
   readonly capturedQueries: string[];
-  pushTo(ws: ServerWebSocket<unknown>, event: WsEvent): void;
-  closeAllSockets(): void;
+  pushTo(stream: ReadableStreamDefaultController<Uint8Array>, event: WsEvent): void;
+  closeStream(stream: ReadableStreamDefaultController<Uint8Array>): void;
+  closeAllStreams(): void;
 }
 
 let env: TestServer;
 let client: DashboardClient;
-const sockets = new Set<ServerWebSocket<unknown>>();
+const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
 const capturedQueries: string[] = [];
+const encoder = new TextEncoder();
 
 beforeAll(() => {
   const server = Bun.serve({
     port: 0,
-    fetch(req, srv): Response | undefined {
+    fetch(req, _server): Response | undefined {
       const url = new URL(req.url);
-      if (url.pathname === "/api/ws") {
-        if (srv.upgrade(req)) return undefined;
-        return new Response("upgrade failed", { status: 400 });
-      }
       if (url.pathname === "/api/agents") {
         return Response.json({ ok: true, value: [wellFormedAgent("a1"), wellFormedAgent("a2")] });
       }
@@ -78,20 +76,40 @@ beforeAll(() => {
         capturedQueries.push(url.search);
         return Response.json({ ok: true, value: [wellFormedMetric] });
       }
+      if (url.pathname === "/api/events") {
+        let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+        const stream = new ReadableStream<Uint8Array>({
+          start(nextController) {
+            controller = nextController;
+            streams.add(nextController);
+            nextController.enqueue(encoder.encode(": connected\n\n"));
+          },
+          cancel() {
+            if (controller !== undefined) streams.delete(controller);
+          },
+        });
+        return new Response(stream, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+            "cache-control": "no-cache, no-transform",
+          },
+        });
+      }
       if (url.pathname.startsWith("/api/traces/")) {
         return Response.json({ ok: true });
       }
       return new Response("not found", { status: 404 });
     },
     websocket: {
-      open(ws): void {
-        sockets.add(ws);
+      open(): void {
+        // unused in SSE coverage
       },
-      close(ws): void {
-        sockets.delete(ws);
+      close(): void {
+        // unused in SSE coverage
       },
-      message(_ws, _msg): void {
-        // Server simply records subscribes; per-test pushes drive event delivery.
+      message(): void {
+        // unused in SSE coverage
       },
     },
   });
@@ -99,17 +117,32 @@ beforeAll(() => {
     server,
     url: `http://localhost:${server.port}`,
     capturedQueries,
-    pushTo: (ws, event): void => {
-      ws.send(JSON.stringify(event));
+    pushTo: (stream, event): void => {
+      stream.enqueue(
+        encoder.encode(
+          `event: batch\ndata: ${JSON.stringify({ seq: 1, timestampMs: Date.now(), events: [event] })}\n\n`,
+        ),
+      );
     },
-    closeAllSockets: (): void => {
-      for (const ws of sockets) ws.close();
+    closeStream: (stream): void => {
+      try {
+        stream.close();
+      } finally {
+        streams.delete(stream);
+      }
+    },
+    closeAllStreams: (): void => {
+      for (const stream of [...streams]) {
+        env.closeStream(stream);
+      }
+      streams.clear();
     },
   };
   client = createDashboardClient({ baseUrl: env.url });
 });
 
 afterAll(() => {
+  env.closeAllStreams();
   env.server.stop(true);
 });
 
@@ -166,34 +199,43 @@ describe("HTTP integration", () => {
   });
 });
 
-describe("WebSocket integration", () => {
+describe("SSE integration", () => {
   test("subscribe receives a server-pushed agent-status event", async () => {
     const events: WsEvent[] = [];
     const dispose = client.subscribe(["agent-status"], { onEvent: (e) => events.push(e) });
-    // Wait until our server registered the open socket, then push a frame.
-    await waitFor(() => sockets.size === 1, 1000);
-    const [ws] = [...sockets];
-    if (ws === undefined) throw new Error("no socket");
-    env.pushTo(ws, { v: 1, kind: "agent-status", status: wellFormedAgent("a1") });
+    await waitFor(() => streams.size === 1, 1000);
+    const [stream] = [...streams];
+    if (stream === undefined) throw new Error("no stream");
+    env.pushTo(stream, { v: 1, kind: "agent-status", status: wellFormedAgent("a1") });
     await waitFor(() => events.length === 1, 1000);
     expect(events[0]?.kind).toBe("agent-status");
     dispose();
-    await waitFor(() => sockets.size === 0, 1000);
+    await waitFor(() => streams.size === 0, 1000);
   });
 
   test("malformed frames are silently dropped (forward compat)", async () => {
     const events: WsEvent[] = [];
     const dispose = client.subscribe(["metric"], { onEvent: (e) => events.push(e) });
-    await waitFor(() => sockets.size === 1, 1000);
-    const [ws] = [...sockets];
-    if (ws === undefined) throw new Error("no socket");
-    ws.send("not json");
-    ws.send(JSON.stringify({ v: 2, kind: "metric" })); // wrong protocol version
-    ws.send(JSON.stringify({ v: 1, kind: "metric", points: [wellFormedMetric] }));
+    await waitFor(() => streams.size === 1, 1000);
+    const [stream] = [...streams];
+    if (stream === undefined) throw new Error("no stream");
+    stream.enqueue(encoder.encode("event: batch\ndata: not json\n\n"));
+    stream.enqueue(
+      encoder.encode(
+        `event: batch\ndata: ${JSON.stringify({
+          seq: 1,
+          timestampMs: Date.now(),
+          events: [
+            { v: 2, kind: "metric" },
+            { v: 1, kind: "metric", points: [wellFormedMetric] },
+          ],
+        })}\n\n`,
+      ),
+    );
     await waitFor(() => events.length === 1, 1000);
     expect(events).toHaveLength(1);
     dispose();
-    await waitFor(() => sockets.size === 0, 1000);
+    await waitFor(() => streams.size === 0, 1000);
   });
 
   test("remote close fires onClose exactly once", async () => {
@@ -204,10 +246,10 @@ describe("WebSocket integration", () => {
         closes += 1;
       },
     });
-    await waitFor(() => sockets.size === 1, 1000);
-    const [ws] = [...sockets];
-    if (ws === undefined) throw new Error("no socket");
-    ws.close();
+    await waitFor(() => streams.size === 1, 1000);
+    const [stream] = [...streams];
+    if (stream === undefined) throw new Error("no stream");
+    env.closeStream(stream);
     await waitFor(() => closes === 1, 1000);
     expect(closes).toBe(1);
     dispose();
@@ -221,9 +263,9 @@ describe("WebSocket integration", () => {
         closes += 1;
       },
     });
-    await waitFor(() => sockets.size === 1, 1000);
+    await waitFor(() => streams.size === 1, 1000);
     dispose();
-    await waitFor(() => sockets.size === 0, 1000);
+    await waitFor(() => streams.size === 0, 1000);
     // Give the event loop a couple of ticks to surface any spurious close.
     await new Promise((r) => setTimeout(r, 20));
     expect(closes).toBe(0);

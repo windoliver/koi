@@ -79,4 +79,23 @@ describe("createDashboardClient", () => {
     await client.getTrace("turn/with slash");
     expect(calls[0]).toBe("http://h:1/api/traces/turn%2Fwith%20slash");
   });
+
+  test("subscribe targets /api/events and encodes topics in the query string", async () => {
+    const calls: string[] = [];
+    const fetchImpl = async (url: string): Promise<Response> => {
+      calls.push(url);
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    };
+    const client = createDashboardClient({ baseUrl: "http://h:1/", fetch: fetchImpl });
+    const dispose = client.subscribe(["metric", "trace"], { onEvent: () => undefined });
+    expect(calls[0]).toBe("http://h:1/api/events?topics=metric%2Ctrace");
+    dispose();
+  });
 });
