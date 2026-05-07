@@ -2085,6 +2085,15 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/security/registry-nexus": {
+      "name": "@koi/registry-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/event-delivery": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+    },
     "packages/security/skill-scanner": {
       "name": "@koi/skill-scanner",
       "version": "0.0.0",
@@ -2805,6 +2814,8 @@
     "@koi/query-engine": ["@koi/query-engine@workspace:packages/lib/query-engine"],
 
     "@koi/redaction": ["@koi/redaction@workspace:packages/security/redaction"],
+
+    "@koi/registry-nexus": ["@koi/registry-nexus@workspace:packages/security/registry-nexus"],
 
     "@koi/replay": ["@koi/replay@workspace:packages/lib/replay"],
 
