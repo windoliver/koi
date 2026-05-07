@@ -381,7 +381,7 @@ describe("createNexusRegistry — transition partial failure", () => {
     await registry[Symbol.asyncDispose]();
   });
 
-  test("preserves stale projection when bounded reconcile retries all fail", async () => {
+  test("tombstones entry when bounded reconcile retries all fail (lookup blocked, transition rejected)", async () => {
     const transport = createMockTransport();
     stubEmptyList(transport);
     stubRegisterFlow(transport, "a1");
@@ -401,12 +401,20 @@ describe("createNexusRegistry — transition partial failure", () => {
       kind: "awaiting_response",
     });
     expect(result.ok).toBe(false);
-    // After bounded retries fail, keep the entry rather than orphaning a
-    // live Nexus agent in the pollIntervalMs:0 configuration. Nexus is
-    // still authoritative; subsequent successful ops will resync.
-    const stale = await Promise.resolve(registry.lookup(agentId("a1")));
-    expect(stale).toBeDefined();
-    expect(stale?.status.phase).toBe("running");
+
+    // Reads are blocked — phase-based scheduling must not act on known-
+    // stale state.
+    expect(registry.lookup(agentId("a1"))).toBeUndefined();
+    const listed = await Promise.resolve(registry.list());
+    expect(listed.length).toBe(0);
+
+    // Mutating ops fail closed with a retryable error.
+    const retryT = await registry.transition(agentId("a1"), "running", 1, { kind: "completed" });
+    expect(retryT.ok).toBe(false);
+    if (!retryT.ok) {
+      expect(retryT.error.message).toContain("tombstoned");
+      expect(retryT.error.retryable).toBe(true);
+    }
     await registry[Symbol.asyncDispose]();
   });
 
@@ -609,6 +617,44 @@ describe("createNexusRegistry — reserved metadata keys", () => {
         expect(result.error.code).toBe("VALIDATION");
         expect(result.error.message).toContain(key);
       }
+    }
+    await registry[Symbol.asyncDispose]();
+  });
+});
+
+describe("createNexusRegistry — visibility fail-closed", () => {
+  test("list throws when VisibilityContext is supplied", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    expect(() => registry.list(undefined, { callerId: agentId("caller-1") })).toThrow(
+      /createVisibilityFilter/,
+    );
+    await registry[Symbol.asyncDispose]();
+  });
+});
+
+describe("createNexusRegistry — patch priority sync", () => {
+  test("priority patch updates local metadata mirror to match Nexus payload", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    await registry.register(makeEntry("a1"));
+
+    let lastPriority: unknown;
+    transport.stub("update_agent_metadata", async (params) => {
+      lastPriority = (params.metadata as Record<string, unknown>).priority;
+      return { ok: true, value: { agent_id: "a1", state: "CONNECTED", generation: 5 } };
+    });
+
+    const result = await registry.patch(agentId("a1"), { priority: 42 });
+    expect(result.ok).toBe(true);
+    expect(lastPriority).toBe(42);
+    if (result.ok) {
+      expect(result.value.priority).toBe(42);
+      // Local metadata mirror must also reflect the patched priority.
+      expect(result.value.metadata.priority).toBe(42);
     }
     await registry[Symbol.asyncDispose]();
   });

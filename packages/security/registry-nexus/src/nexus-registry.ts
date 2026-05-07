@@ -158,6 +158,12 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
   // mirror becomes unboundedly stale.
   let consecutivePollFailures = 0;
   const MAX_POLL_FAILURES = 5;
+  // Per-entry tombstones for agents whose phase is known to be stale
+  // (transition committed remotely, reconciliation refetch failed). Reads
+  // and mutating ops fail closed on these IDs until a successful refetch
+  // resyncs the projection — phase-based scheduling/cleanup must not act
+  // on a value the registry knows is wrong.
+  const stale = new Set<AgentId>();
 
   function assertHealthy(): void {
     if (broken !== undefined) {
@@ -266,6 +272,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       const entry = mapNexusAgentToEntry(detail.value);
       projection.set(id, entry);
       nexusGens.set(id, detail.value.generation ?? 0);
+      stale.delete(id);
 
       if (existing === undefined) {
         notify({ kind: "registered", entry });
@@ -461,12 +468,22 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
 
   function lookup(id: AgentId): RegistryEntry | undefined {
     assertHealthy();
+    if (stale.has(id)) return undefined;
     return projection.get(id);
   }
 
-  function list(filter?: RegistryFilter, _v?: VisibilityContext): readonly RegistryEntry[] {
+  function list(filter?: RegistryFilter, visibility?: VisibilityContext): readonly RegistryEntry[] {
     assertHealthy();
-    const entries = [...projection.values()];
+    if (visibility !== undefined) {
+      // This adapter does not enforce permission scoping. Wrap the registry
+      // in createVisibilityFilter (or equivalent) to enforce VisibilityContext
+      // before reaching this layer. Failing closed prevents callers from
+      // believing visibility was applied when it was silently ignored.
+      throw new Error(
+        "registry-nexus does not enforce VisibilityContext directly — wrap with createVisibilityFilter",
+      );
+    }
+    const entries = [...projection.values()].filter((e) => !stale.has(e.agentId));
     if (filter === undefined) return entries;
     return entries.filter((e) => matchesFilter(e, filter));
   }
@@ -478,6 +495,16 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     reason: TransitionReason,
   ): Promise<Result<RegistryEntry, KoiError>> {
     assertHealthy();
+    if (stale.has(id)) {
+      return {
+        ok: false,
+        error: {
+          code: "EXTERNAL",
+          message: `Agent ${id} is in a tombstoned reconcile-pending state; refetch from Nexus must succeed before phase transitions can resume`,
+          retryable: true,
+        },
+      };
+    }
     const current = projection.get(id);
     if (current === undefined) {
       return {
@@ -573,6 +600,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
           const reconciled = mapNexusAgentToEntry(refetch.value);
           projection.set(id, reconciled);
           nexusGens.set(id, refetch.value.generation ?? currentNexusGen);
+          stale.delete(id);
           if (reconciled.status.phase !== current.status.phase) {
             notify({
               kind: "transitioned",
@@ -586,14 +614,13 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
           return { ok: false, error: updateResult.error };
         }
       }
-      // All retries exhausted. Mark the entry stale rather than dropping
-      // it: a transient outage shouldn't make a still-live Nexus agent
-      // permanently invisible to this process when polling is disabled.
-      // The local copy is preserved so lookup/patch/deregister can still
-      // find the entry; subsequent successful operations or polls will
-      // resync the lifecycle metadata.
+      // All retries exhausted. Tombstone the entry: keep it for
+      // deregister/recovery, but block lookup/list/mutating reads so
+      // callers don't act on the known-stale phase. A successful poll or
+      // subsequent transition will clear the tombstone.
+      stale.add(id);
       console.warn(
-        `[registry-nexus] reconcile failed for ${id} after ${String(RECONCILE_ATTEMPTS)} attempts (last error: ${updateResult.error.message}); preserving stale local projection — Nexus remains authoritative for phase`,
+        `[registry-nexus] reconcile failed for ${id} after ${String(RECONCILE_ATTEMPTS)} attempts (last error: ${updateResult.error.message}); tombstoning local projection — reads return undefined until Nexus refetch succeeds`,
       );
       return { ok: false, error: updateResult.error };
     }
@@ -626,6 +653,16 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     fields: PatchableRegistryFields,
   ): Promise<Result<RegistryEntry, KoiError>> {
     assertHealthy();
+    if (stale.has(id)) {
+      return {
+        ok: false,
+        error: {
+          code: "EXTERNAL",
+          message: `Agent ${id} is in a tombstoned reconcile-pending state; refetch must succeed before patches can resume`,
+          retryable: true,
+        },
+      };
+    }
     const current = projection.get(id);
     if (current === undefined) {
       return {
@@ -668,17 +705,18 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       };
     }
 
-    const updated: RegistryEntry = {
-      ...current,
-      ...(fields.priority !== undefined ? { priority: fields.priority } : {}),
-      ...(fields.metadata !== undefined
-        ? { metadata: { ...current.metadata, ...fields.metadata } }
-        : {}),
-    };
-
     const nexusMeta: Record<string, unknown> = { ...current.metadata };
     if (fields.priority !== undefined) nexusMeta.priority = fields.priority;
     if (fields.metadata !== undefined) Object.assign(nexusMeta, fields.metadata);
+
+    // Local metadata mirror MUST match the outbound Nexus payload — the
+    // adapter rebuilds outbound metadata from `current.metadata` on later
+    // writes, so any divergence here will get re-sent and clobber Nexus.
+    const updated: RegistryEntry = {
+      ...current,
+      ...(fields.priority !== undefined ? { priority: fields.priority } : {}),
+      metadata: nexusMeta,
+    };
 
     const updateResult = await nexusUpdateMetadata(transport, id, nexusMeta);
     if (!updateResult.ok) {
