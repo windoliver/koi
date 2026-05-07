@@ -1356,6 +1356,7 @@
         "@koi/runtime": "workspace:*",
         "@koi/sandbox-os": "workspace:*",
         "@koi/scheduler": "workspace:*",
+        "@koi/scheduler-nexus": "workspace:*",
         "@koi/scheduler-provider": "workspace:*",
         "@koi/secure-storage": "workspace:*",
         "@koi/session": "workspace:*",
@@ -1495,6 +1496,7 @@
         "@koi/governance-security": "workspace:*",
         "@koi/handoff": "workspace:*",
         "@koi/harness": "workspace:*",
+        "@koi/harness-scheduler": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
         "@koi/ipc-local": "workspace:*",
@@ -1561,6 +1563,7 @@
         "@koi/sandbox-router": "workspace:*",
         "@koi/sandbox-ssh": "workspace:*",
         "@koi/scheduler": "workspace:*",
+        "@koi/scheduler-nexus": "workspace:*",
         "@koi/scheduler-provider": "workspace:*",
         "@koi/scratchpad-local": "workspace:*",
         "@koi/session": "workspace:*",
@@ -1866,12 +1869,27 @@
         "@types/ssh2": "1.15.5",
       },
     },
+    "packages/sched/harness-scheduler": {
+      "name": "@koi/harness-scheduler",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/sched/scheduler": {
       "name": "@koi/scheduler",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
         "croner": "9.0.0",
+      },
+    },
+    "packages/sched/scheduler-nexus": {
+      "name": "@koi/scheduler-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
       },
     },
     "packages/sched/scheduler-provider": {
@@ -2629,6 +2647,8 @@
 
     "@koi/harness": ["@koi/harness@workspace:packages/lib/harness"],
 
+    "@koi/harness-scheduler": ["@koi/harness-scheduler@workspace:packages/sched/harness-scheduler"],
+
     "@koi/harness-search": ["@koi/harness-search@workspace:packages/lib/harness-search"],
 
     "@koi/harness-synth": ["@koi/harness-synth@workspace:packages/lib/harness-synth"],
@@ -2788,6 +2808,8 @@
     "@koi/sandbox-ssh": ["@koi/sandbox-ssh@workspace:packages/sandbox/sandbox-ssh"],
 
     "@koi/scheduler": ["@koi/scheduler@workspace:packages/sched/scheduler"],
+
+    "@koi/scheduler-nexus": ["@koi/scheduler-nexus@workspace:packages/sched/scheduler-nexus"],
 
     "@koi/scheduler-provider": ["@koi/scheduler-provider@workspace:packages/sched/scheduler-provider"],
 

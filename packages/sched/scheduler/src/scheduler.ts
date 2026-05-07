@@ -25,6 +25,7 @@ import type {
   TaskHistoryFilter,
   TaskId,
   TaskOptions,
+  TaskQueueBackend,
   TaskRunRecord,
   TaskScheduler,
   TaskStore,
@@ -39,6 +40,12 @@ import { createSemaphore } from "./semaphore.js";
 import type { RunStore } from "./sqlite-store.js";
 import { createPeriodicTimer } from "./timer.js";
 import type { TaskDispatcher } from "./types.js";
+
+interface SchedulerExecutionOptions {
+  readonly nodeId?: string | undefined;
+  readonly queueBackend?: TaskQueueBackend | undefined;
+  readonly runStore?: RunStore | undefined;
+}
 
 // ---------------------------------------------------------------------------
 // ID generators
@@ -76,8 +83,13 @@ export function createScheduler(
   dispatcher: TaskDispatcher,
   clock: Clock = SYSTEM_CLOCK,
   scheduleStore?: ScheduleStore | undefined,
-  runStore?: RunStore | undefined,
+  runStoreOrOptions?: RunStore | SchedulerExecutionOptions | undefined,
+  maybeOptions?: SchedulerExecutionOptions | undefined,
 ): TaskScheduler {
+  const executionOptions = resolveSchedulerExecutionOptions(runStoreOrOptions, maybeOptions);
+  const queueBackend = executionOptions.queueBackend;
+  const runStore = executionOptions.runStore;
+  const nodeId = executionOptions.nodeId ?? "scheduler";
   const heap = createHeap<ScheduledTask>(taskComparator);
   const semaphore = createSemaphore(config.maxConcurrent);
   const listeners = new Set<(event: SchedulerEvent) => void>();
@@ -90,6 +102,7 @@ export function createScheduler(
   let completedCount = 0;
   let failedCount = 0;
   let deadLetteredCount = 0;
+  let claimInFlight = false;
 
   // -------------------------------------------------------------------------
   // Event emission
@@ -114,29 +127,31 @@ export function createScheduler(
     initDone = true;
 
     const tasks = await store.loadPending();
-    for (const task of tasks) {
-      if (task.status === "running") {
-        if (task.retries < task.maxRetries) {
-          const recovered: ScheduledTask = {
-            ...task,
-            status: "pending",
-            retries: task.retries + 1,
-          };
-          await store.updateStatus(task.id, "pending", { retries: recovered.retries });
-          heap.insert(recovered);
-          emit({ kind: "task:recovered", taskId: task.id, retriesUsed: recovered.retries });
+    if (queueBackend?.claim === undefined) {
+      for (const task of tasks) {
+        if (task.status === "running") {
+          if (task.retries < task.maxRetries) {
+            const recovered: ScheduledTask = {
+              ...task,
+              status: "pending",
+              retries: task.retries + 1,
+            };
+            await store.updateStatus(task.id, "pending", { retries: recovered.retries });
+            heap.insert(recovered);
+            emit({ kind: "task:recovered", taskId: task.id, retriesUsed: recovered.retries });
+          } else {
+            await store.updateStatus(task.id, "dead_letter");
+            deadLetteredCount++;
+            const err: KoiError = {
+              code: "INTERNAL",
+              message: "Max retries exceeded on crash recovery",
+              retryable: false,
+            };
+            emit({ kind: "task:dead_letter", taskId: task.id, error: err });
+          }
         } else {
-          await store.updateStatus(task.id, "dead_letter");
-          deadLetteredCount++;
-          const err: KoiError = {
-            code: "INTERNAL",
-            message: "Max retries exceeded on crash recovery",
-            retryable: false,
-          };
-          emit({ kind: "task:dead_letter", taskId: task.id, error: err });
+          heap.insert(task);
         }
-      } else {
-        heap.insert(task);
       }
     }
 
@@ -159,6 +174,10 @@ export function createScheduler(
   function registerCron(sched: CronSchedule): void {
     const cronOptions = sched.timezone !== undefined ? { timezone: sched.timezone } : undefined;
     const job = new Cron(sched.expression, cronOptions, async () => {
+      if (queueBackend?.tick !== undefined) {
+        const claimed = await queueBackend.tick(sched.id, nodeId);
+        if (!claimed) return;
+      }
       await enqueueTask(sched.agentId, sched.input, sched.mode, sched.taskOptions);
     });
     cronJobs.set(sched.id, job);
@@ -196,7 +215,11 @@ export function createScheduler(
     };
 
     await store.save(task);
-    heap.insert(task);
+    if (queueBackend !== undefined) {
+      await queueBackend.enqueue(task, options?.idempotencyKey);
+    } else {
+      heap.insert(task);
+    }
     emit({ kind: "task:submitted", task });
     poll();
     return id;
@@ -206,7 +229,10 @@ export function createScheduler(
   // Dispatch a single task
   // -------------------------------------------------------------------------
 
-  async function dispatchTask(task: ScheduledTask): Promise<void> {
+  async function dispatchTask(
+    task: ScheduledTask,
+    claimedFromQueue: boolean = false,
+  ): Promise<void> {
     const startedAt = clock.now();
     const controller = new AbortController();
     // let: timeout handle needs to be cleared on both paths
@@ -239,6 +265,9 @@ export function createScheduler(
       if (timeoutHandle !== undefined) globalThis.clearTimeout(timeoutHandle);
       const completedAt = clock.now();
       await store.updateStatus(task.id, "completed", { completedAt });
+      if (claimedFromQueue && queueBackend?.ack !== undefined) {
+        await queueBackend.ack(task.id, undefined);
+      }
       completedCount++;
 
       runStore?.saveRun({
@@ -294,8 +323,14 @@ export function createScheduler(
           lastError: koiError,
         };
         await store.save(retried);
-        heap.insert(retried);
-        poll();
+        if (claimedFromQueue && queueBackend?.nack !== undefined) {
+          await queueBackend.nack(task.id, koiError.message);
+        } else if (queueBackend !== undefined) {
+          await queueBackend.enqueue(retried, String(task.id));
+        } else {
+          heap.insert(retried);
+          poll();
+        }
 
         runStore?.saveRun({
           taskId: task.id,
@@ -322,6 +357,10 @@ export function createScheduler(
   // -------------------------------------------------------------------------
 
   function poll(): void {
+    if (queueBackend?.claim !== undefined) {
+      void pollDistributed();
+      return;
+    }
     const now = clock.now();
     while (true) {
       const task = heap.peek();
@@ -330,6 +369,25 @@ export function createScheduler(
       if (!semaphore.tryAcquire()) break;
       heap.extractMin();
       void dispatchTask(task);
+    }
+  }
+
+  async function pollDistributed(): Promise<void> {
+    if (disposed || claimInFlight) return;
+    claimInFlight = true;
+    try {
+      while (!disposed) {
+        const available = semaphore.available();
+        if (available <= 0) break;
+        const claimedTasks = await queueBackend!.claim!(nodeId, available);
+        if (claimedTasks.length === 0) break;
+        for (const task of claimedTasks) {
+          if (!semaphore.tryAcquire()) break;
+          void dispatchTask(task, true);
+        }
+      }
+    } finally {
+      claimInFlight = false;
     }
   }
 
@@ -362,6 +420,14 @@ export function createScheduler(
         await store.remove(id);
         emit({ kind: "task:cancelled", taskId: id });
         return true;
+      }
+      if (queueBackend !== undefined) {
+        const cancelled = await queueBackend.cancel(id);
+        if (cancelled) {
+          await store.remove(id);
+          emit({ kind: "task:cancelled", taskId: id });
+          return true;
+        }
       }
       return false;
     },
@@ -496,4 +562,45 @@ export function createScheduler(
       cronMeta.clear();
     },
   };
+}
+
+function isRunStore(value: unknown): value is RunStore {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "saveRun" in value &&
+    typeof (value as { saveRun?: unknown }).saveRun === "function" &&
+    "queryRuns" in value &&
+    typeof (value as { queryRuns?: unknown }).queryRuns === "function"
+  );
+}
+
+function isSchedulerExecutionOptions(value: unknown): value is SchedulerExecutionOptions {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    ("queueBackend" in value || "nodeId" in value || "runStore" in value)
+  );
+}
+
+function resolveSchedulerExecutionOptions(
+  runStoreOrOptions: RunStore | SchedulerExecutionOptions | undefined,
+  maybeOptions: SchedulerExecutionOptions | undefined,
+): SchedulerExecutionOptions {
+  if (maybeOptions !== undefined) {
+    return {
+      ...(isRunStore(runStoreOrOptions) ? { runStore: runStoreOrOptions } : {}),
+      ...maybeOptions,
+    };
+  }
+
+  if (isRunStore(runStoreOrOptions)) {
+    return { runStore: runStoreOrOptions };
+  }
+
+  if (isSchedulerExecutionOptions(runStoreOrOptions)) {
+    return runStoreOrOptions;
+  }
+
+  return {};
 }
