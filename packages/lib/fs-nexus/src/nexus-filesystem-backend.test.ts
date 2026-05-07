@@ -5,6 +5,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { FileSystemBackend } from "@koi/core";
 import { runFileSystemBackendContractTests } from "./contract-tests.js";
 import { createNexusFileSystem } from "./nexus-filesystem-backend.js";
 import { createFakeNexusTransport } from "./test-helpers.js";
@@ -122,7 +123,10 @@ describe("NexusFileSystem specifics", () => {
 
   test("semanticSearch delegates to semantic_search RPC", async () => {
     const transport = createFakeNexusTransport();
-    const backend = createNexusFileSystem({ url: "http://fake", transport }) as {
+    const backend = createNexusFileSystem({
+      url: "http://fake",
+      transport,
+    }) as FileSystemBackend & {
       readonly semanticSearch?: (
         query: string,
         options?: {
@@ -165,7 +169,10 @@ describe("NexusFileSystem specifics", () => {
 
   test("semanticSearch accepts wrapped HTTP RPC responses", async () => {
     const transport = createFakeNexusTransport();
-    const backend = createNexusFileSystem({ url: "http://fake", transport }) as {
+    const backend = createNexusFileSystem({
+      url: "http://fake",
+      transport,
+    }) as FileSystemBackend & {
       readonly semanticSearch?: (query: string) => Promise<
         | {
             readonly ok: true;
