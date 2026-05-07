@@ -33,22 +33,27 @@ export async function* createLineReader(
   let totalBytes = 0;
   let dropping = false;
 
-  function appendLine(line: string): { readonly stop: boolean } {
+  function emitLine(line: string): {
+    readonly emitted: string | undefined;
+    readonly stop: boolean;
+  } {
     const remainingBytes = maxTotalBytes - totalBytes;
     if (remainingBytes <= 0) {
-      return { stop: true };
+      return { emitted: undefined, stop: true };
     }
 
     const cappedLine = clampPrefix(line, maxLineBytes);
     const output = clampPrefix(cappedLine, remainingBytes);
     const outputBytes = encoder.encode(output).byteLength;
-    if (outputBytes === 0) {
-      return { stop: true };
+    if (outputBytes === 0 && line.length > 0) {
+      return { emitted: undefined, stop: true };
     }
 
-    const cappedBytes = encoder.encode(cappedLine).byteLength;
     totalBytes += outputBytes;
-    return { stop: outputBytes < cappedBytes };
+    return {
+      emitted: output,
+      stop: totalBytes >= maxTotalBytes,
+    };
   }
 
   try {
@@ -58,7 +63,10 @@ export async function* createLineReader(
         if (!dropping) {
           const tail = clampPrefix(buffer.replace(/\r$/, ""), maxLineBytes);
           if (tail.length > 0) {
-            const { stop } = appendLine(tail);
+            const { emitted, stop } = emitLine(tail);
+            if (emitted !== undefined) {
+              yield emitted;
+            }
             if (stop) {
               return;
             }
@@ -84,7 +92,10 @@ export async function* createLineReader(
         const rawLine = buffer.slice(0, newlineIndex).replace(/\r$/, "");
         buffer = buffer.slice(newlineIndex + 1);
 
-        const { stop } = appendLine(rawLine);
+        const { emitted, stop } = emitLine(rawLine);
+        if (emitted !== undefined) {
+          yield emitted;
+        }
         if (stop) {
           return;
         }
