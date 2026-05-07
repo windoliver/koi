@@ -130,9 +130,14 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   // let: disposed flag to gate background work
   let disposed = false;
-  // let: broken flag — set when poll detects an unrecoverable overflow.
-  // Once broken, all operations throw rather than returning a partial mirror.
+  // let: broken flag — set when poll detects an unrecoverable overflow
+  // or repeated sync failures. Once broken, all operations throw rather
+  // than returning a partial / stale mirror.
   let broken: string | undefined;
+  // let: consecutive poll failures — used to fail closed before the
+  // mirror becomes unboundedly stale.
+  let consecutivePollFailures = 0;
+  const MAX_POLL_FAILURES = 5;
 
   function assertHealthy(): void {
     if (broken !== undefined) {
@@ -178,13 +183,34 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     }
   }
 
+  function recordPollFailure(reason: string, err: KoiError): void {
+    consecutivePollFailures += 1;
+    console.warn(
+      `[registry-nexus] poll failure (${String(consecutivePollFailures)}/${String(MAX_POLL_FAILURES)}): ${reason}: ${err.message}`,
+    );
+    if (consecutivePollFailures >= MAX_POLL_FAILURES) {
+      broken = `poll failed ${String(MAX_POLL_FAILURES)} consecutive times — last error: ${err.message}`;
+      console.error(`[registry-nexus] ${broken}`);
+      if (pollTimer !== undefined) {
+        clearInterval(pollTimer);
+        pollTimer = undefined;
+      }
+    }
+  }
+
   async function poll(): Promise<void> {
     if (disposed) return;
 
     const listResult = await nexusListAgents(transport, config.zoneId);
-    if (!listResult.ok) return;
+    if (!listResult.ok) {
+      recordPollFailure("list_agents", listResult.error);
+      return;
+    }
 
     const remoteIds = new Set<string>();
+    // let: tracks per-agent get_agent failures within this tick; one failure
+    // doesn't trip the broken flag, but we still surface visibility.
+    let perTickGetFailures = 0;
 
     for (const nexusAgent of listResult.value) {
       remoteIds.add(nexusAgent.agent_id);
@@ -196,7 +222,13 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       if (localNexusGen === remoteGen && existing !== undefined) continue;
 
       const detail = await nexusGetAgent(transport, nexusAgent.agent_id);
-      if (!detail.ok) continue;
+      if (!detail.ok) {
+        perTickGetFailures += 1;
+        console.warn(
+          `[registry-nexus] poll get_agent ${nexusAgent.agent_id} failed: ${detail.error.message}`,
+        );
+        continue;
+      }
 
       if (projection.size >= maxEntries && existing === undefined) {
         // Fail closed: a partial mirror would silently hide live remote
@@ -235,6 +267,19 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
         nexusGens.delete(id);
         notify({ kind: "deregistered", agentId: id });
       }
+    }
+
+    if (perTickGetFailures === 0) {
+      // List succeeded and every observed agent hydrated cleanly — reset
+      // the rolling counter so transient blips don't add up.
+      consecutivePollFailures = 0;
+    } else if (perTickGetFailures > 0 && perTickGetFailures === listResult.value.length) {
+      // Every per-agent fetch failed — treat as a list-equivalent failure.
+      recordPollFailure("all get_agent calls failed", {
+        code: "EXTERNAL",
+        message: "all per-agent fetches failed",
+        retryable: true,
+      });
     }
   }
 
@@ -330,12 +375,43 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
         : currentNexusGen;
     }
 
-    // Store the same merged metadata blob locally that we sent to Nexus,
-    // so subsequent patch()/transition() round-trips don't drop identity
-    // fields (agentType, registeredAt, parent/spawner/group) or lifecycle
+    // Canonicalize the post-transition Koi phase. Nexus only carries
+    // CONNECTED/IDLE/SUSPENDED, so caller-supplied phases like "created"
+    // (→ CONNECTED → "running") and "idle" (→ IDLE → "waiting") are
+    // collapsed by the round-trip mapping. Storing the original phase
+    // would leave the local mirror disagreeing with Nexus indefinitely
+    // (the poll generation short-circuit prevents repair). Force the
+    // mirror to the canonical post-transition phase and rewrite the
+    // koi:status metadata so subsequent reads see consistent state.
+    const canonicalPhase = mapNexusToKoi(targetNexusState, merged);
+    const canonicalStatus: AgentStatus = { ...entry.status, phase: canonicalPhase };
+    const canonicalMerged: Record<string, unknown> = {
+      ...merged,
+      ...encodeKoiStatus(canonicalStatus),
+    };
+
+    if (canonicalPhase !== entry.status.phase) {
+      // Rewrite the lifecycle metadata so Nexus reflects the canonical
+      // phase too — otherwise the next poll/refetch would re-hydrate from
+      // stale koi:status and the generation short-circuit would prevent
+      // repair. Best-effort: if this rewrite fails, keep the canonical
+      // local view (Nexus state is already the source of truth for phase).
+      const rewriteResult = await nexusUpdateMetadata(transport, entry.agentId, canonicalMerged);
+      if (rewriteResult.ok && rewriteResult.value.generation !== undefined) {
+        currentNexusGen = rewriteResult.value.generation;
+      }
+    }
+
+    // Store the merged metadata blob locally so subsequent
+    // patch()/transition() round-trips don't drop identity fields
+    // (agentType, registeredAt, parent/spawner/group) or lifecycle
     // markers (koi:status, koi:terminated) when rebuilding the outbound
     // metadata from `current.metadata`.
-    const stored: RegistryEntry = { ...entry, metadata: merged };
+    const stored: RegistryEntry = {
+      ...entry,
+      status: canonicalStatus,
+      metadata: canonicalMerged,
+    };
     projection.set(entry.agentId, stored);
     nexusGens.set(entry.agentId, currentNexusGen);
 

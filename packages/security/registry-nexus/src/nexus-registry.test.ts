@@ -147,6 +147,35 @@ describe("createNexusRegistry — register", () => {
     expect(events).toContain("registered");
   });
 
+  test("canonicalizes lossy phases (created → running) on register", async () => {
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    const result = await registry.register(
+      makeEntry("a1", {
+        status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: 1 },
+      }),
+    );
+    // "created" maps to Nexus CONNECTED, which maps back to "running".
+    // Storing the original "created" phase would leave the mirror
+    // permanently disagreeing with Nexus.
+    expect(result.status.phase).toBe("running");
+    const stored = await Promise.resolve(registry.lookup(agentId("a1")));
+    expect(stored?.status.phase).toBe("running");
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("canonicalizes lossy phases (idle → waiting) on register", async () => {
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    const result = await registry.register(
+      makeEntry("a1", {
+        status: { phase: "idle", generation: 0, conditions: [], lastTransitionAt: 1 },
+      }),
+    );
+    expect(result.status.phase).toBe("waiting");
+    await registry[Symbol.asyncDispose]();
+  });
+
   test("propagates register failure as thrown error", async () => {
     transport.stub("register_agent", async () => ({
       ok: false,
@@ -477,6 +506,24 @@ describe("createNexusRegistry — capacity", () => {
 
     expect(() => registry.list()).toThrow(/broken/);
     expect(() => registry.lookup(agentId("a1"))).toThrow(/broken/);
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("repeated poll list_agents failures mark registry broken", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 5 });
+
+    // Make every subsequent list_agents fail
+    transport.stub("list_agents", async () => ({
+      ok: false,
+      error: { code: "EXTERNAL", message: "transport down", retryable: true },
+    }));
+
+    // Wait long enough for >5 poll ticks at 5ms cadence
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(() => registry.list()).toThrow(/broken|consecutive/);
     await registry[Symbol.asyncDispose]();
   });
 
