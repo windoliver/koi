@@ -22,22 +22,32 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentId, AgentManifest, RegistryEntry } from "@koi/core";
-import { agentId } from "@koi/core";
-import {
-  createDispatchingSpawnChildFn,
-  createInProcessSpawnChildFn,
-  wireSupervision,
-} from "@koi/engine";
-import { createInMemoryRegistry } from "@koi/engine-reconcile";
+import type {
+  AgentId,
+  AgentManifest,
+  KoiError,
+  PatchableRegistryFields,
+  ProcessDescriptor,
+  ProcessState,
+  RegistryEntry,
+  RegistryEvent,
+  RegistryFilter,
+  Result,
+  TransitionReason,
+  VisibilityContext,
+  WorkerEvent,
+} from "@koi/core";
+import { agentId, workerId } from "@koi/core";
 import { attachAgentRegistry } from "../agent-registry-bridge.js";
 import { createSupervisor } from "../create-supervisor.js";
 import { createDaemonSpawnChildFn } from "../daemon-spawn-child-fn.js";
 import { createFileSessionRegistry } from "../file-session-registry.js";
 import { attachRegistry } from "../registry-supervisor-bridge.js";
+import { createTmuxBackend } from "../tmux-backend.js";
 import { createFakeBackend } from "./fake-backend.js";
 
 let dir: string;
+const E2E = process.env.RUN_E2E === "1" || process.env.RUN_E2E === "true";
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "koi-3b5c-integration-"));
 });
@@ -47,6 +57,53 @@ afterEach(async () => {
 
 const RECONCILE_WAIT_MS = 350;
 const BRIDGE_EVENT_WAIT_MS = 100;
+
+interface SyncRegistryLike {
+  readonly deregister: (agentId: AgentId) => boolean | Promise<boolean>;
+  readonly lookup: (
+    agentId: AgentId,
+  ) => RegistryEntry | undefined | Promise<RegistryEntry | undefined>;
+  register(entry: {
+    readonly agentId: AgentId;
+    readonly status: RegistryEntry["status"];
+    readonly agentType: string;
+    readonly metadata: Record<string, unknown>;
+    readonly registeredAt: number;
+    readonly priority: number;
+  }): RegistryEntry | Promise<RegistryEntry>;
+  list(
+    filter?: RegistryFilter,
+    visibility?: VisibilityContext,
+  ): readonly RegistryEntry[] | Promise<readonly RegistryEntry[]>;
+  readonly transition: (
+    agentId: AgentId,
+    targetPhase: ProcessState,
+    expectedGeneration: number,
+    reason: TransitionReason,
+  ) => Result<RegistryEntry, KoiError> | Promise<Result<RegistryEntry, KoiError>>;
+  readonly patch: (
+    agentId: AgentId,
+    fields: PatchableRegistryFields,
+  ) => Result<RegistryEntry, KoiError> | Promise<Result<RegistryEntry, KoiError>>;
+  readonly watch: (listener: (event: RegistryEvent) => void) => () => void;
+  readonly descriptor?: (
+    agentId: AgentId,
+  ) => ProcessDescriptor | undefined | Promise<ProcessDescriptor | undefined>;
+  readonly [Symbol.asyncDispose]: () => Promise<void>;
+}
+
+interface EngineModule {
+  readonly createDispatchingSpawnChildFn: (...args: unknown[]) => unknown;
+  readonly createInProcessSpawnChildFn: (...args: unknown[]) => unknown;
+  readonly wireSupervision: (...args: unknown[]) => {
+    readonly reconcileRunner: { sweep(): void };
+    [Symbol.asyncDispose](): Promise<void>;
+  };
+}
+
+interface EngineReconcileModule {
+  readonly createInMemoryRegistry: () => SyncRegistryLike;
+}
 
 const SUPERVISOR_MANIFEST: AgentManifest = {
   name: "subprocess-supervisor",
@@ -60,10 +117,7 @@ const SUPERVISOR_MANIFEST: AgentManifest = {
   },
 };
 
-function registerSupervisor(
-  registry: ReturnType<typeof createInMemoryRegistry>,
-  id: AgentId,
-): RegistryEntry {
+function registerSupervisor(registry: SyncRegistryLike, id: AgentId): RegistryEntry {
   const entry = registry.register({
     agentId: id,
     status: {
@@ -82,17 +136,76 @@ function registerSupervisor(
   return entry;
 }
 
-function liveChildrenOf(
-  registry: ReturnType<typeof createInMemoryRegistry>,
-  parentId: AgentId,
-): readonly RegistryEntry[] {
+function liveChildrenOf(registry: SyncRegistryLike, parentId: AgentId): readonly RegistryEntry[] {
   const all = registry.list();
   if (all instanceof Promise) throw new Error("sync list expected");
-  return all.filter((e) => e.parentId === parentId && e.status.phase !== "terminated");
+  return all.filter((entry: RegistryEntry) => {
+    return entry.parentId === parentId && entry.status.phase !== "terminated";
+  });
+}
+
+async function loadEngineModules(): Promise<{
+  readonly engine: EngineModule;
+  readonly reconcile: EngineReconcileModule;
+}> {
+  const dispatchUrl = new URL(
+    "../../../../kernel/engine/src/dispatching-spawn-child-fn.ts",
+    import.meta.url,
+  );
+  const inProcessUrl = new URL(
+    "../../../../kernel/engine/src/in-process-spawn-child-fn.ts",
+    import.meta.url,
+  );
+  const wireUrl = new URL("../../../../kernel/engine/src/wire-supervision.ts", import.meta.url);
+  const reconcileUrl = new URL(
+    "../../../../kernel/engine-reconcile/src/registry.ts",
+    import.meta.url,
+  );
+  const [dispatching, inProcess, wire, reconcile] = await Promise.all([
+    import(dispatchUrl.pathname),
+    import(inProcessUrl.pathname),
+    import(wireUrl.pathname),
+    import(reconcileUrl.pathname),
+  ]);
+  return {
+    engine: {
+      createDispatchingSpawnChildFn: (
+        dispatching as {
+          createDispatchingSpawnChildFn: EngineModule["createDispatchingSpawnChildFn"];
+        }
+      ).createDispatchingSpawnChildFn,
+      createInProcessSpawnChildFn: (
+        inProcess as { createInProcessSpawnChildFn: EngineModule["createInProcessSpawnChildFn"] }
+      ).createInProcessSpawnChildFn,
+      wireSupervision: (wire as { wireSupervision: EngineModule["wireSupervision"] })
+        .wireSupervision,
+    },
+    reconcile: reconcile as unknown as EngineReconcileModule,
+  };
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await Bun.sleep(25);
+  }
+  return predicate();
 }
 
 describe("subprocess supervision end-to-end (3b-5c)", () => {
   test("wireSupervision spawns subprocess children via the daemon adapter", async () => {
+    const { engine, reconcile } = await loadEngineModules();
+    const createDispatchingSpawnChildFn = engine.createDispatchingSpawnChildFn as (
+      args: unknown,
+    ) => unknown;
+    const createInProcessSpawnChildFn = engine.createInProcessSpawnChildFn as (
+      args: unknown,
+    ) => unknown;
+    const wireSupervision = engine.wireSupervision as (args: unknown) => {
+      readonly reconcileRunner: { sweep(): void };
+      [Symbol.asyncDispose](): Promise<void>;
+    };
     const { backend } = createFakeBackend("subprocess");
     const supResult = createSupervisor({
       maxWorkers: 4,
@@ -103,7 +216,7 @@ describe("subprocess supervision end-to-end (3b-5c)", () => {
     const supervisor = supResult.value;
 
     const sessionRegistry = createFileSessionRegistry({ dir });
-    const agentRegistry = createInMemoryRegistry();
+    const agentRegistry = reconcile.createInMemoryRegistry();
     const registryBridge = attachRegistry({ supervisor, registry: sessionRegistry });
     const agentBridge = attachAgentRegistry({
       supervisor,
@@ -174,6 +287,17 @@ describe("subprocess supervision end-to-end (3b-5c)", () => {
   }, 10_000);
 
   test("supervisor restarts a crashed subprocess child", async () => {
+    const { engine, reconcile } = await loadEngineModules();
+    const createDispatchingSpawnChildFn = engine.createDispatchingSpawnChildFn as (
+      args: unknown,
+    ) => unknown;
+    const createInProcessSpawnChildFn = engine.createInProcessSpawnChildFn as (
+      args: unknown,
+    ) => unknown;
+    const wireSupervision = engine.wireSupervision as (args: unknown) => {
+      readonly reconcileRunner: { sweep(): void };
+      [Symbol.asyncDispose](): Promise<void>;
+    };
     const { backend, crash } = createFakeBackend("subprocess");
     const supResult = createSupervisor({
       maxWorkers: 4,
@@ -191,7 +315,7 @@ describe("subprocess supervision end-to-end (3b-5c)", () => {
     const supervisor = supResult.value;
 
     const sessionRegistry = createFileSessionRegistry({ dir });
-    const agentRegistry = createInMemoryRegistry();
+    const agentRegistry = reconcile.createInMemoryRegistry();
     const registryBridge = attachRegistry({ supervisor, registry: sessionRegistry });
     const agentBridge = attachAgentRegistry({ supervisor, agentRegistry });
 
@@ -259,4 +383,49 @@ describe("subprocess supervision end-to-end (3b-5c)", () => {
     await agentBridge.close();
     await supervisor.shutdown("test-done");
   }, 15_000);
+
+  test.skipIf(!E2E)(
+    "tmux backend spawns a worker pane and reports liveness",
+    async () => {
+      const backend = createTmuxBackend({
+        cwd: dir,
+        pollIntervalMs: 25,
+      });
+
+      expect(await backend.isAvailable()).toBe(true);
+
+      const wid = workerId("tmux-e2e-worker");
+      const seen: WorkerEvent["kind"][] = [];
+      const watchDone = (async () => {
+        for await (const ev of backend.watch(wid)) {
+          seen.push(ev.kind);
+          if (ev.kind === "exited" || ev.kind === "crashed") break;
+        }
+      })();
+
+      const spawned = await backend.spawn({
+        workerId: wid,
+        agentId: agentId("tmux.e2e.agent"),
+        command: ["bash", "-lc", "sleep 30"],
+        cwd: dir,
+      });
+
+      expect(spawned.ok).toBe(true);
+      if (!spawned.ok) return;
+      expect(spawned.value.backendKind).toBe("tmux");
+      expect(spawned.value.tmuxSessionName).toMatch(/-daemon-workers$/);
+      expect(spawned.value.tmuxWindowTarget).toContain(`${spawned.value.tmuxSessionName}:`);
+      expect(spawned.value.tmuxPaneId).toMatch(/^%/);
+      expect(await backend.isAlive(wid)).toBe(true);
+      expect(await waitFor(() => seen.includes("started"), 2_000)).toBe(true);
+
+      const stopped = await backend.terminate(wid, "test-complete");
+      expect(stopped.ok).toBe(true);
+      await watchDone;
+
+      expect(seen).toContain("exited");
+      expect(await backend.isAlive(wid)).toBe(false);
+    },
+    15_000,
+  );
 });

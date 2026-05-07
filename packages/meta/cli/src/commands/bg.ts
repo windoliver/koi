@@ -20,6 +20,19 @@ import type { CliFlags } from "../args.js";
 import { isBgFlags } from "../args.js";
 import { ExitCode } from "../types.js";
 
+interface RunTmuxResult {
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+const ATTACHED_BACKEND_ENV = "KOI_BG_ATTACHED_BACKEND";
+const ATTACHED_WORKER_ENV = "KOI_BG_ATTACHED_WORKER_ID";
+const ATTACHED_SESSION_ENV = "KOI_BG_ATTACHED_SESSION_NAME";
+const ATTACHED_BACKEND_OPTION = "@koi_bg_attached_backend";
+const ATTACHED_WORKER_OPTION = "@koi_bg_attached_worker_id";
+const ATTACHED_SESSION_OPTION = "@koi_bg_attached_session_name";
+
 // ---------------------------------------------------------------------------
 // Command entry
 // ---------------------------------------------------------------------------
@@ -41,7 +54,7 @@ export async function run(flags: CliFlags): Promise<ExitCode> {
     case "attach":
       return runAttach(registry, flags.workerId);
     case "detach":
-      return runDetach();
+      return runDetach(registry);
   }
 }
 
@@ -72,6 +85,172 @@ function formatDuration(ms: number): string {
   if (h < 24) return `${h}h`;
   const d = Math.floor(h / 24);
   return `${d}d`;
+}
+
+function hasTmuxAttachMetadata(
+  record: BackgroundSessionRecord,
+): record is BackgroundSessionRecord & {
+  readonly tmuxSessionName: string;
+  readonly tmuxWindowTarget: string;
+  readonly tmuxPaneId: string;
+} {
+  return (
+    typeof record.tmuxSessionName === "string" &&
+    record.tmuxSessionName.length > 0 &&
+    typeof record.tmuxWindowTarget === "string" &&
+    record.tmuxWindowTarget.length > 0 &&
+    typeof record.tmuxPaneId === "string" &&
+    record.tmuxPaneId.length > 0
+  );
+}
+
+function isInsideTmux(env: NodeJS.ProcessEnv = process.env): boolean {
+  const tmux = env.TMUX;
+  return typeof tmux === "string" && tmux.length > 0;
+}
+
+async function runTmux(args: readonly string[]): Promise<RunTmuxResult> {
+  const proc = Bun.spawn(["tmux", ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [code, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  return {
+    code,
+    stdout: stdout.trim(),
+    stderr: stderr.trim(),
+  };
+}
+
+async function dispatchTmuxAttachSession(sessionName: string): Promise<number> {
+  const proc = Bun.spawn(["tmux", "attach-session", "-t", sessionName], {
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  return await proc.exited;
+}
+
+async function bestEffortUpdateStatus(
+  registry: ReturnType<typeof createFileSessionRegistry>,
+  record: BackgroundSessionRecord,
+  status: BackgroundSessionRecord["status"],
+): Promise<BackgroundSessionRecord | undefined> {
+  const result = await registry.update(record.workerId, {
+    status,
+    expectedVersion: record.version ?? 0,
+    expectedPid: record.pid,
+  });
+  return result.ok ? result.value : undefined;
+}
+
+async function bestEffortRestoreStatus(
+  registry: ReturnType<typeof createFileSessionRegistry>,
+  record: BackgroundSessionRecord,
+  updated: BackgroundSessionRecord | undefined,
+): Promise<void> {
+  if (updated === undefined) return;
+  await registry.update(record.workerId, {
+    status: record.status,
+    expectedVersion: updated.version ?? 0,
+    expectedPid: record.pid,
+  });
+}
+
+async function writeTmuxAttachContract(
+  paneId: string,
+  sessionName: string,
+  id: string,
+): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
+  const vars = [
+    [ATTACHED_BACKEND_OPTION, "tmux"],
+    [ATTACHED_WORKER_OPTION, id],
+    [ATTACHED_SESSION_OPTION, sessionName],
+  ] as const;
+  for (const [key, value] of vars) {
+    const result = await runTmux(["set-option", "-p", "-t", paneId, key, value]);
+    if (result.code !== 0) {
+      return {
+        ok: false,
+        message:
+          result.stderr.length > 0
+            ? result.stderr
+            : `tmux set-option failed for ${key} (exit ${String(result.code)})`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+async function readTmuxPaneOption(paneId: string, name: string): Promise<string | undefined> {
+  const result = await runTmux(["show-options", "-p", "-t", paneId, "-v", name]);
+  if (result.code !== 0 || result.stdout.length === 0) return undefined;
+  return result.stdout;
+}
+
+async function readCurrentTmuxPaneId(): Promise<string | undefined> {
+  const result = await runTmux(["display-message", "-p", "#{pane_id}"]);
+  if (result.code !== 0 || result.stdout.length === 0) return undefined;
+  return result.stdout;
+}
+
+async function focusTmuxTarget(
+  id: string,
+  record: BackgroundSessionRecord & {
+    readonly tmuxWindowTarget: string;
+    readonly tmuxPaneId: string;
+  },
+): Promise<ExitCode | undefined> {
+  const windowResult = await runTmux(["select-window", "-t", record.tmuxWindowTarget]);
+  if (windowResult.code !== 0) {
+    process.stderr.write(
+      `Session ${id}: tmux select-window failed: ${windowResult.stderr || `exit ${String(windowResult.code)}`}\n`,
+    );
+    return ExitCode.FAILURE;
+  }
+  const paneResult = await runTmux(["select-pane", "-t", record.tmuxPaneId]);
+  if (paneResult.code !== 0) {
+    process.stderr.write(
+      `Session ${id}: tmux select-pane failed: ${paneResult.stderr || `exit ${String(paneResult.code)}`}\n`,
+    );
+    return ExitCode.FAILURE;
+  }
+  return undefined;
+}
+
+async function resolveTmuxDetachContext(): Promise<
+  | {
+      readonly workerId: string;
+      readonly sessionName: string | undefined;
+    }
+  | undefined
+> {
+  if (isInsideTmux()) {
+    const paneId = await readCurrentTmuxPaneId();
+    if (paneId !== undefined) {
+      const [backend, workerId, sessionName] = await Promise.all([
+        readTmuxPaneOption(paneId, ATTACHED_BACKEND_OPTION),
+        readTmuxPaneOption(paneId, ATTACHED_WORKER_OPTION),
+        readTmuxPaneOption(paneId, ATTACHED_SESSION_OPTION),
+      ]);
+      if (backend === "tmux" && workerId !== undefined && workerId.length > 0) {
+        return { workerId, sessionName };
+      }
+    }
+    return undefined;
+  }
+
+  const envBackend = process.env[ATTACHED_BACKEND_ENV];
+  const envWorkerId = process.env[ATTACHED_WORKER_ENV];
+  const envSessionName = process.env[ATTACHED_SESSION_ENV];
+  if (envBackend === "tmux" && envWorkerId !== undefined && envWorkerId.length > 0) {
+    return { workerId: envWorkerId, sessionName: envSessionName };
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -615,23 +794,108 @@ async function runAttach(
     );
     return runLogs(registry, id, true);
   }
-  // Other backends (tmux/remote) implement true attach in follow-up
-  // phases; for now we also fall back to log-following.
-  process.stderr.write(
-    `Attach for backend '${record.backendKind}' is not yet implemented; streaming logs.\n`,
-  );
-  return runLogs(registry, id, true);
+  if (record.backendKind !== "tmux") {
+    // Other backends (remote/etc.) still fall back to logs until they
+    // grow a first-class attach contract.
+    process.stderr.write(
+      `Attach for backend '${record.backendKind}' is not yet implemented; streaming logs.\n`,
+    );
+    return runLogs(registry, id, true);
+  }
+  if (!hasTmuxAttachMetadata(record)) {
+    process.stderr.write(`Session ${id} is missing persisted tmux metadata required for attach.\n`);
+    return ExitCode.FAILURE;
+  }
+
+  const contract = await writeTmuxAttachContract(record.tmuxPaneId, record.tmuxSessionName, id);
+  if (!contract.ok) {
+    process.stderr.write(
+      `Session ${id}: failed to configure tmux attach contract: ${contract.message}\n`,
+    );
+    return ExitCode.FAILURE;
+  }
+
+  if (isInsideTmux()) {
+    const switchResult = await runTmux(["switch-client", "-t", record.tmuxSessionName]);
+    if (switchResult.code !== 0) {
+      process.stderr.write(
+        `Session ${id}: tmux switch-client failed: ${switchResult.stderr || `exit ${String(switchResult.code)}`}\n`,
+      );
+      return ExitCode.FAILURE;
+    }
+    const focusResult = await focusTmuxTarget(id, record);
+    if (focusResult !== undefined) return focusResult;
+    await bestEffortUpdateStatus(registry, record, "running");
+  } else {
+    const focusResult = await focusTmuxTarget(id, record);
+    if (focusResult !== undefined) return focusResult;
+    const runningRecord = await bestEffortUpdateStatus(registry, record, "running");
+    let code: number;
+    try {
+      code = await dispatchTmuxAttachSession(record.tmuxSessionName);
+    } catch (error) {
+      await bestEffortRestoreStatus(registry, record, runningRecord);
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(
+        `Session ${id}: tmux attach-session -t ${record.tmuxSessionName} failed: ${message}\n`,
+      );
+      return ExitCode.FAILURE;
+    }
+    if (code !== 0) {
+      await bestEffortRestoreStatus(registry, record, runningRecord);
+      process.stderr.write(
+        `Session ${id}: tmux attach-session -t ${record.tmuxSessionName} failed with exit ${String(code)}.\n`,
+      );
+      return ExitCode.FAILURE;
+    }
+  }
+  return ExitCode.OK;
 }
 
 // ---------------------------------------------------------------------------
-// `detach` — placeholder (tmux backend owns this flow)
+// `detach` — informational for subprocess; real flow for tmux attach path
 // ---------------------------------------------------------------------------
 
-function runDetach(): Promise<ExitCode> {
-  process.stderr.write(
-    "koi bg detach is handled interactively by the attach client; the subprocess backend has no detachable session.\n",
-  );
-  return Promise.resolve(ExitCode.OK);
+async function runDetach(
+  registry: ReturnType<typeof createFileSessionRegistry>,
+): Promise<ExitCode> {
+  const context = await resolveTmuxDetachContext();
+  if (context === undefined) {
+    if (isInsideTmux()) {
+      process.stderr.write(
+        "koi bg detach could not resolve the attached worker from the current tmux pane. Re-attach via `koi bg attach` and retry.\n",
+      );
+      return ExitCode.FAILURE;
+    }
+    process.stderr.write(
+      "koi bg detach is handled interactively by the attach client; the subprocess backend has no detachable session.\n",
+    );
+    return ExitCode.OK;
+  }
+  if (!isInsideTmux()) {
+    process.stderr.write("koi bg detach must run from an attached tmux client.\n");
+    return ExitCode.FAILURE;
+  }
+
+  const record = await lookup(registry, context.workerId);
+  if (record === undefined) return ExitCode.FAILURE;
+  if (record.backendKind !== "tmux") {
+    process.stderr.write(
+      "koi bg detach is handled interactively by the attach client; the subprocess backend has no detachable session.\n",
+    );
+    return ExitCode.OK;
+  }
+
+  const result = await runTmux(["detach-client"]);
+  if (result.code !== 0) {
+    process.stderr.write(
+      `Session ${context.workerId}: tmux detach-client failed: ${result.stderr || `exit ${String(result.code)}`}\n`,
+    );
+    return ExitCode.FAILURE;
+  }
+
+  await bestEffortUpdateStatus(registry, record, "detached");
+  return ExitCode.OK;
 }
 
 // ---------------------------------------------------------------------------

@@ -46,6 +46,120 @@ describe("createFileSessionRegistry", () => {
     expect(all[0]).toEqual({ ...record, version: 1 });
   });
 
+  it("round-trips tmux metadata for tmux-backed records", async () => {
+    const reg = createFileSessionRegistry({ dir });
+    const record = makeRecord({
+      backendKind: "tmux",
+      tmuxSessionName: "koi-w-1",
+      tmuxWindowTarget: "koi-w-1:0",
+      tmuxPaneId: "%12",
+    });
+    const res = await reg.register(record);
+    expect(res.ok).toBe(true);
+
+    const fetched = await reg.get(record.workerId);
+    expect(fetched).toEqual({ ...record, version: 1 });
+
+    const all = await reg.list();
+    expect(all).toHaveLength(1);
+    expect(all[0]).toEqual({ ...record, version: 1 });
+  });
+
+  it("updates tmux metadata and preserves unchanged tmux fields", async () => {
+    const reg = createFileSessionRegistry({ dir });
+    const record = makeRecord({
+      backendKind: "tmux",
+      tmuxSessionName: "koi-w-1",
+      tmuxWindowTarget: "koi-w-1:0",
+      tmuxPaneId: "%12",
+    });
+    await reg.register(record);
+
+    const updated = await reg.update(record.workerId, {
+      status: "exited",
+      endedAt: 1_700_000_001_000,
+      tmuxWindowTarget: "koi-w-1:1",
+      tmuxPaneId: "%13",
+    });
+    expect(updated.ok).toBe(true);
+    if (updated.ok) {
+      expect(updated.value.status).toBe("exited");
+      expect(updated.value.endedAt).toBe(1_700_000_001_000);
+      expect(updated.value.tmuxSessionName).toBe("koi-w-1");
+      expect(updated.value.tmuxWindowTarget).toBe("koi-w-1:1");
+      expect(updated.value.tmuxPaneId).toBe("%13");
+    }
+
+    const fetched = await reg.get(record.workerId);
+    expect(fetched?.tmuxSessionName).toBe("koi-w-1");
+    expect(fetched?.tmuxWindowTarget).toBe("koi-w-1:1");
+    expect(fetched?.tmuxPaneId).toBe("%13");
+
+    const all = await reg.list();
+    expect(all[0]?.tmuxSessionName).toBe("koi-w-1");
+    expect(all[0]?.tmuxWindowTarget).toBe("koi-w-1:1");
+    expect(all[0]?.tmuxPaneId).toBe("%13");
+  });
+
+  it("rejects invalid tmux metadata during update", async () => {
+    const reg = createFileSessionRegistry({ dir });
+    const record = makeRecord({
+      backendKind: "tmux",
+      tmuxSessionName: "koi-w-1",
+      tmuxWindowTarget: "koi-w-1:0",
+      tmuxPaneId: "%12",
+    });
+    await reg.register(record);
+
+    const res = await reg.update(record.workerId, {
+      tmuxPaneId: "",
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe("VALIDATION");
+  });
+
+  it("updates older records that were created without tmux fields", async () => {
+    const reg = createFileSessionRegistry({ dir });
+    const legacyRecord = {
+      workerId: workerId("w-legacy"),
+      agentId: agentId("researcher"),
+      pid: 1234,
+      status: "running",
+      startedAt: 1_700_000_000_000,
+      logPath: "/tmp/logs/w-legacy.log",
+      command: ["bun", "run", "worker.ts"],
+      backendKind: "subprocess",
+      version: 1,
+    };
+    await Bun.write(join(dir, "w-legacy.json"), JSON.stringify(legacyRecord, null, 2));
+
+    const updated = await reg.update(workerId("w-legacy"), {
+      status: "exited",
+      endedAt: 1_700_000_001_000,
+      exitCode: 0,
+    });
+    expect(updated.ok).toBe(true);
+    if (updated.ok) {
+      expect(updated.value.status).toBe("exited");
+      expect(updated.value.endedAt).toBe(1_700_000_001_000);
+      expect(updated.value.exitCode).toBe(0);
+      expect(updated.value.tmuxSessionName).toBeUndefined();
+      expect(updated.value.tmuxWindowTarget).toBeUndefined();
+      expect(updated.value.tmuxPaneId).toBeUndefined();
+    }
+
+    const fetched = await reg.get(workerId("w-legacy"));
+    expect(fetched?.tmuxSessionName).toBeUndefined();
+    expect(fetched?.tmuxWindowTarget).toBeUndefined();
+    expect(fetched?.tmuxPaneId).toBeUndefined();
+
+    const all = await reg.list();
+    expect(all).toHaveLength(1);
+    expect(all[0]?.tmuxSessionName).toBeUndefined();
+    expect(all[0]?.tmuxWindowTarget).toBeUndefined();
+    expect(all[0]?.tmuxPaneId).toBeUndefined();
+  });
+
   it("rejects duplicate registration", async () => {
     const reg = createFileSessionRegistry({ dir });
     const record = makeRecord();

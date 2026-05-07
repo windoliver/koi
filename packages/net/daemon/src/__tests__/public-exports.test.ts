@@ -5,6 +5,7 @@ import {
   createFileSessionRegistry,
   createSubprocessBackend,
   createSupervisor,
+  createTmuxBackend,
   registerSignalHandlers,
 } from "../index.js";
 
@@ -15,6 +16,7 @@ describe("@koi/daemon public exports", () => {
   it("exports every documented entry point", () => {
     expect(typeof createSupervisor).toBe("function");
     expect(typeof createSubprocessBackend).toBe("function");
+    expect(typeof createTmuxBackend).toBe("function");
     expect(typeof registerSignalHandlers).toBe("function");
     expect(typeof computeBackoff).toBe("function");
     expect(typeof createFileSessionRegistry).toBe("function");
