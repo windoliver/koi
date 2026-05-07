@@ -66,6 +66,19 @@ function isErr(
   return !r.ok;
 }
 
+type SemanticSearchTestResult = Result<
+  {
+    readonly results: readonly {
+      readonly path: string;
+      readonly snippet: string;
+      readonly score: number;
+      readonly lineStart?: number;
+    }[];
+    readonly warning?: string;
+  },
+  KoiError
+>;
+
 // ---------------------------------------------------------------------------
 // compileFileSystemScope
 // ---------------------------------------------------------------------------
@@ -412,13 +425,15 @@ describe("createScopedFileSystem", () => {
     });
 
     test("filters out-of-scope semantic search results", async () => {
-      const inner = {
+      const inner: FileSystemBackend & {
+        readonly semanticSearch: (query: string) => Promise<SemanticSearchTestResult>;
+      } = {
         name: "inner",
-        read: () => ({ ok: true, value: { content: "", path: "", size: 0 } }),
-        write: () => ({ ok: true, value: { path: "", bytesWritten: 0 } }),
-        edit: () => ({ ok: true, value: { path: "", hunksApplied: 0 } }),
-        list: () => ({ ok: true, value: { entries: [], truncated: false } }),
-        search: () => ({ ok: true, value: { matches: [], truncated: false } }),
+        read: () => ({ ok: true as const, value: { content: "", path: "", size: 0 } }),
+        write: () => ({ ok: true as const, value: { path: "", bytesWritten: 0 } }),
+        edit: () => ({ ok: true as const, value: { path: "", hunksApplied: 0 } }),
+        list: () => ({ ok: true as const, value: { entries: [], truncated: false } }),
+        search: () => ({ ok: true as const, value: { matches: [], truncated: false } }),
         semanticSearch: async () => ({
           ok: true as const,
           value: {
@@ -430,24 +445,12 @@ describe("createScopedFileSystem", () => {
           },
         }),
       };
-      const scoped = createScopedFileSystem(inner, { root: "/workspace/src", mode: "ro" }) as
-        | FileSystemBackend
-        | {
-            readonly semanticSearch?: (query: string) => Promise<
-              Result<
-                {
-                  readonly results: readonly {
-                    readonly path: string;
-                    readonly snippet: string;
-                    readonly score: number;
-                    readonly lineStart?: number;
-                  }[];
-                  readonly warning?: string;
-                },
-                KoiError
-              >
-            >;
-          };
+      const scoped = createScopedFileSystem(inner, {
+        root: "/workspace/src",
+        mode: "ro",
+      }) as FileSystemBackend & {
+        readonly semanticSearch?: (query: string) => Promise<SemanticSearchTestResult>;
+      };
       expect(typeof scoped.semanticSearch).toBe("function");
       const result = await scoped.semanticSearch?.("foo");
       expect(result).toHaveProperty("ok", true);
