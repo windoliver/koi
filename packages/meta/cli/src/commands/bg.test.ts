@@ -67,27 +67,13 @@ function makeSpawnResult(
 
 function withMockedPsFingerprint(
   fingerprint: string,
-): (
-  argv: string[],
-  options?: Bun.SpawnOptions.OptionsObject<
-    string,
-    Bun.SpawnOptions.Writable,
-    Bun.SpawnOptions.Readable
-  >,
-) => ReturnType<typeof Bun.spawn> {
+): (argv: string[]) => ReturnType<typeof Bun.spawn> {
   const realSpawn = Bun.spawn;
-  return (
-    argv: string[],
-    options?: Bun.SpawnOptions.OptionsObject<
-      string,
-      Bun.SpawnOptions.Writable,
-      Bun.SpawnOptions.Readable
-    >,
-  ) => {
+  return (argv: string[]) => {
     if (argv[0] === "ps" && argv[1] === "-p") {
       return makeSpawnResult(0, `${fingerprint}\n`);
     }
-    return realSpawn(argv, options);
+    return realSpawn(argv);
   };
 }
 
@@ -340,6 +326,7 @@ describe("bg kill", () => {
       stderr: "ignore",
     });
     const spawnSpy = spyOn(Bun, "spawn").mockImplementation(
+      // @ts-expect-error — test stub: spawn mock satisfies one overload
       withMockedPsFingerprint("Mon Jan  1 00:00:00 2024"),
     );
     try {
@@ -500,6 +487,7 @@ describe("bg attach", () => {
 
     const spawnCalls: string[][] = [];
     let resolveAttach: ((code: number) => void) | undefined;
+    // @ts-expect-error — test stub: spawn mock satisfies one overload
     const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
       spawnCalls.push([...argv]);
       if (argv[0] === "tmux" && argv[1] === "attach-session") {
@@ -578,6 +566,7 @@ describe("bg attach", () => {
     process.env.TMUX = "/tmp/tmux-1000/default,456,0";
 
     const spawnCalls: string[][] = [];
+    // @ts-expect-error — test stub: spawn mock satisfies one overload
     const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
       spawnCalls.push([...argv]);
       return makeSpawnResult(0);
@@ -621,6 +610,7 @@ describe("bg attach", () => {
     delete process.env.TMUX;
 
     const spawnCalls: string[][] = [];
+    // @ts-expect-error — test stub: spawn mock satisfies one overload
     const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
       spawnCalls.push([...argv]);
       if (argv[0] === "tmux" && argv[1] === "attach-session") {
@@ -661,6 +651,7 @@ describe("bg attach", () => {
     delete process.env.TMUX;
 
     const spawnCalls: string[][] = [];
+    // @ts-expect-error — test stub: spawn mock satisfies one overload
     const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
       spawnCalls.push([...argv]);
       if (argv[0] === "tmux" && argv[1] === "attach-session") {
@@ -749,6 +740,7 @@ describe("bg detach", () => {
     delete process.env.KOI_BG_ATTACHED_SESSION_NAME;
 
     const spawnCalls: string[][] = [];
+    // @ts-expect-error — test stub: spawn mock satisfies one overload
     const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
       spawnCalls.push([...argv]);
       if (
@@ -826,6 +818,7 @@ describe("bg detach", () => {
     delete process.env.KOI_BG_ATTACHED_SESSION_NAME;
 
     const spawnCalls: string[][] = [];
+    // @ts-expect-error — test stub: spawn mock satisfies one overload
     const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
       spawnCalls.push([...argv]);
       if (
@@ -919,6 +912,7 @@ describe("bg detach", () => {
     delete process.env.KOI_BG_ATTACHED_WORKER_ID;
     delete process.env.KOI_BG_ATTACHED_SESSION_NAME;
 
+    // @ts-expect-error — test stub: spawn mock satisfies one overload
     const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
       if (
         argv[0] === "tmux" &&
@@ -1006,6 +1000,7 @@ describe("bg detach", () => {
     process.env.KOI_BG_ATTACHED_SESSION_NAME = "alpha-daemon-workers";
 
     const spawnCalls: string[][] = [];
+    // @ts-expect-error — test stub: spawn mock satisfies one overload
     const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
       spawnCalls.push([...argv]);
       if (
@@ -1096,6 +1091,7 @@ describe("bg detach", () => {
     process.env.KOI_BG_ATTACHED_SESSION_NAME = "alpha-daemon-workers";
 
     const spawnCalls: string[][] = [];
+    // @ts-expect-error — test stub: spawn mock satisfies one overload
     const spawnSpy = spyOn(Bun, "spawn").mockImplementation((argv: string[]) => {
       spawnCalls.push([...argv]);
       if (
