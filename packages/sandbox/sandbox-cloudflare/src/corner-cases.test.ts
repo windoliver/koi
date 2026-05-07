@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
 
-import { createCloudflareAdapter } from "./adapter.js";
+import { EXPERIMENTAL_createCloudflareAdapter } from "./adapter.js";
+
+const optIn = { iAcceptUnstableContract: true } as const;
+const createCloudflareAdapter = (cfg: Parameters<typeof EXPERIMENTAL_createCloudflareAdapter>[0]) =>
+  EXPERIMENTAL_createCloudflareAdapter(cfg, optIn);
+
 import { computeDedupeFingerprint } from "./dedupe-fingerprint.js";
 import { scanModuleGraphForFenceViolations } from "./fence-scan.js";
 import { jcsCanonicalise } from "./jcs.js";

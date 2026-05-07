@@ -1,4 +1,5 @@
-export { createVercelAdapter, VERCEL_ADAPTER_VERSION } from "./adapter.js";
+export type { ExperimentalAdapterFlag } from "./adapter.js";
+export { EXPERIMENTAL_createVercelAdapter, VERCEL_ADAPTER_VERSION } from "./adapter.js";
 export type { MockKvHandle } from "./kv-mock.js";
 export { createMockKv } from "./kv-mock.js";
 export type {

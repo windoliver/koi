@@ -285,10 +285,20 @@ export class KoiDedupeDO {
         };
       }
       const terminal = await s.get<TerminalRecord>(KEY_TERMINAL);
-      if (terminal === undefined) return null;
-      return terminal.kind === "completed"
-        ? { kind: "completed", result: terminal.result }
-        : { kind: "failed-permanent", error: terminal.error };
+      if (terminal !== undefined) {
+        return terminal.kind === "completed"
+          ? { kind: "completed", result: terminal.result }
+          : { kind: "failed-permanent", error: terminal.error };
+      }
+      // No terminal yet — but if the claim has expired the original owner
+      // has crashed or stalled. Surface `claim-expired` so the gateway can
+      // re-issue claim() to take over instead of sitting idle until timeout.
+      const claim = await s.get<ClaimRecord>(KEY_CLAIM);
+      if (claim !== undefined && claim.leaseUntil < now) {
+        await s.delete([KEY_CLAIM]);
+        return { kind: "claim-expired", previousClaimer: claim.claimer };
+      }
+      return null;
     });
   }
 

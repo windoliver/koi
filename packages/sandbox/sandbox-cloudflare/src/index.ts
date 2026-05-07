@@ -1,4 +1,8 @@
-export { CLOUDFLARE_ADAPTER_VERSION, createCloudflareAdapter } from "./adapter.js";
+export type { ExperimentalAdapterFlag } from "./adapter.js";
+export {
+  CLOUDFLARE_ADAPTER_VERSION,
+  EXPERIMENTAL_createCloudflareAdapter,
+} from "./adapter.js";
 export { KoiDedupeDO } from "./dedupe-do-class.js";
 export type { MockStorageHandle } from "./dedupe-do-mock-storage.js";
 export { createMockDoStorage } from "./dedupe-do-mock-storage.js";

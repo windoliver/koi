@@ -64,6 +64,12 @@ export type WaitOutcome =
   | { readonly kind: "failed-permanent"; readonly error: unknown }
   | { readonly kind: "operation-expired"; readonly originalDedupeExpiresAtMs: number }
   | { readonly kind: "operation-id-conflict"; readonly storedFingerprint: string }
+  /**
+   * Original claimer's lease expired without writing a terminal record. The
+   * gateway should re-issue claim() to take over instead of waiting further;
+   * the next claim() call will see no live owner and return `fresh`.
+   */
+  | { readonly kind: "claim-expired"; readonly previousClaimer: string }
   | { readonly kind: "timeout" };
 
 /** Stored ledger row — write-once at first claim, immutable thereafter. */

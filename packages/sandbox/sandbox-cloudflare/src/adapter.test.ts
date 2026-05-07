@@ -2,7 +2,12 @@ import { describe, expect, it } from "bun:test";
 
 import type { SandboxProfile } from "@koi/core";
 
-import { createCloudflareAdapter } from "./adapter.js";
+import { EXPERIMENTAL_createCloudflareAdapter } from "./adapter.js";
+
+const optIn = { iAcceptUnstableContract: true } as const;
+const createCloudflareAdapter = (cfg: Parameters<typeof EXPERIMENTAL_createCloudflareAdapter>[0]) =>
+  EXPERIMENTAL_createCloudflareAdapter(cfg, optIn);
+
 import type { CloudflareAdapterConfig } from "./types.js";
 
 const validConfig: CloudflareAdapterConfig = {
@@ -51,6 +56,13 @@ describe("createCloudflareAdapter", () => {
     if (!adapter.ok) throw new Error("setup");
     const result = await adapter.value.create({ code: "", profile, workloadClass: "A" });
     expect(result.ok).toBe(false);
+  });
+
+  it("rejects when called without the experimental opt-in flag", () => {
+    const r = EXPERIMENTAL_createCloudflareAdapter(validConfig);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.context?.subcode).toBe("EXPERIMENTAL_OPT_IN_REQUIRED");
   });
 
   it("returns UNAVAILABLE for valid create() in this skeleton commit", async () => {

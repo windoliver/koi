@@ -28,7 +28,29 @@ const hasWasmMagic = (bytes: Uint8Array): boolean => {
   return true;
 };
 
+/**
+ * Bounded module cache (process-global). Compiled `WebAssembly.Module`
+ * objects hold native memory, so an unbounded cache is a memory-DoS vector
+ * for any caller that can submit many distinct modules. Cap eviction is
+ * insertion-order — the first key inserted is the first evicted, which is a
+ * good-enough approximation of LRU for the steady-state pattern of this
+ * package (a small set of recurring modules dominates a long tail of unique
+ * ones; the long tail is what we want to evict).
+ */
+const MODULE_CACHE_MAX_ENTRIES = 64;
 const moduleCache = new Map<string, WebAssembly.Module>();
+const cacheTouch = (key: string, mod: WebAssembly.Module): void => {
+  if (moduleCache.has(key)) {
+    moduleCache.delete(key);
+    moduleCache.set(key, mod);
+    return;
+  }
+  if (moduleCache.size >= MODULE_CACHE_MAX_ENTRIES) {
+    const oldest = moduleCache.keys().next().value;
+    if (oldest !== undefined) moduleCache.delete(oldest);
+  }
+  moduleCache.set(key, mod);
+};
 
 const sha256Hex = async (bytes: Uint8Array): Promise<string> => {
   const ab = new ArrayBuffer(bytes.byteLength);
@@ -62,6 +84,19 @@ export const createWasmExecutor = (): WasmExecutor => {
   ): Promise<Result<WasmResult, WasmError>> => {
     const startedAtMs = Date.now();
 
+    if (options?.timeoutMs !== undefined && options.timeoutMs > 0) {
+      // The synchronous in-process executor cannot preempt a runaway export.
+      // Accepting `timeoutMs` from untrusted callers would be a footgun: the
+      // option suggests preemption that the host cannot deliver. Reject up
+      // front; callers that need a hard deadline must use a Worker-thread
+      // executor (not yet shipped). Trusted callers that explicitly accept
+      // the no-preemption contract can pass `timeoutMs: 0` to opt out.
+      return fail(
+        "TIMEOUT",
+        "in-process WasmExecutor cannot preempt synchronous exports; do not pass timeoutMs from untrusted code",
+        startedAtMs,
+      );
+    }
     if (!hasWasmMagic(moduleBytes)) {
       return fail(
         "INVALID_BYTES",
@@ -123,7 +158,7 @@ export const createWasmExecutor = (): WasmExecutor => {
       } catch (cause) {
         return fail("VALIDATION", "WebAssembly.compile failed", startedAtMs, cause);
       }
-      moduleCache.set(cacheKey, mod);
+      cacheTouch(cacheKey, mod);
     }
 
     // If the module imports memory and the caller didn't already supply that

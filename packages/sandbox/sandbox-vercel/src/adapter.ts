@@ -32,9 +32,24 @@ const koiError = (
     ? { code, message, retryable: false }
     : { code, message, retryable: false, context };
 
-export const createVercelAdapter = (
+export interface ExperimentalAdapterFlag {
+  readonly iAcceptUnstableContract: true;
+}
+
+export const EXPERIMENTAL_createVercelAdapter = (
   config: VercelAdapterConfig,
+  experimental?: ExperimentalAdapterFlag,
 ): Result<EdgeFunctionAdapter, KoiError> => {
+  if (experimental?.iAcceptUnstableContract !== true) {
+    return {
+      ok: false,
+      error: koiError(
+        "INVALID_CONFIG",
+        "EXPERIMENTAL_createVercelAdapter requires { iAcceptUnstableContract: true } — package is design-only in v1",
+        { subcode: "EXPERIMENTAL_OPT_IN_REQUIRED" },
+      ),
+    };
+  }
   const validated = validateVercelAdapterConfig(config);
   if (!validated.ok) return validated;
 

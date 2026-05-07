@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
 
-import { createVercelAdapter, VERCEL_ADAPTER_VERSION } from "./adapter.js";
+import { EXPERIMENTAL_createVercelAdapter, VERCEL_ADAPTER_VERSION } from "./adapter.js";
+
+const optIn = { iAcceptUnstableContract: true } as const;
+const createVercelAdapter = (cfg: Parameters<typeof EXPERIMENTAL_createVercelAdapter>[0]) =>
+  EXPERIMENTAL_createVercelAdapter(cfg, optIn);
+
 import type { VercelAdapterConfig } from "./types.js";
 
 const base: VercelAdapterConfig = {
@@ -10,6 +15,13 @@ const base: VercelAdapterConfig = {
 };
 
 describe("createVercelAdapter", () => {
+  it("rejects when called without the experimental opt-in flag", () => {
+    const r = EXPERIMENTAL_createVercelAdapter(base);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.context?.subcode).toBe("EXPERIMENTAL_OPT_IN_REQUIRED");
+  });
+
   it("returns an adapter for a valid config", () => {
     const r = createVercelAdapter(base);
     expect(r.ok).toBe(true);

@@ -90,6 +90,15 @@ describe("executor — wasm resource enforcement", () => {
     });
   });
 
+  it("rejects timeoutMs > 0 (untrusted callers must not assume preemption)", async () => {
+    const exec = createWasmExecutor();
+    const r = await exec.execute(HEADER, { export: "x", args: [] }, { timeoutMs: 1_000 });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe("TIMEOUT");
+    expect(r.error.message).toContain("preempt");
+  });
+
   it("rejects maxMemoryPages when no memory is imported", async () => {
     // A trivially valid module with no memory at all.
     const exec = createWasmExecutor();

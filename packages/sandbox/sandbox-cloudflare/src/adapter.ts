@@ -1,14 +1,16 @@
 /**
- * `createCloudflareAdapter` — skeleton entry point.
+ * `EXPERIMENTAL_createCloudflareAdapter` — skeleton entry point.
  *
  * v1 admits ONLY `workloadClass: "A"` (side-effect-free handlers). Other values
  * are rejected with `INVALID_CONFIG` subcode `WORKLOAD_CLASS_NOT_SUPPORTED`.
  *
- * The full deploy/invoke flow (two-worker shim, DO claim/wait protocol,
- * attestation, integrity verification) lands in follow-up commits — this
- * commit ships only the contract surface, config validation, and the
- * host-side response mapper plus their unit tests, so the contract is
- * available for downstream wiring.
+ * The deploy/invoke flow is NOT yet implemented — every otherwise-valid
+ * `create()` returns `UNAVAILABLE / ADAPTER_NOT_IMPLEMENTED`. The factory is
+ * exported under an `EXPERIMENTAL_` prefix and gated behind an explicit
+ * `experimental: { iAcceptUnstableContract: true }` opt-in to make the
+ * design-only nature impossible to miss at the call site. The factory
+ * itself fails fast (`INVALID_CONFIG / EXPERIMENTAL_OPT_IN_REQUIRED`) when
+ * the flag is absent, so a careless wire-up cannot ship.
  */
 
 import type {
@@ -33,9 +35,24 @@ const koiError = (
     ? { code, message, retryable: false }
     : { code, message, retryable: false, context };
 
-export const createCloudflareAdapter = (
+export interface ExperimentalAdapterFlag {
+  readonly iAcceptUnstableContract: true;
+}
+
+export const EXPERIMENTAL_createCloudflareAdapter = (
   config: CloudflareAdapterConfig,
+  experimental?: ExperimentalAdapterFlag,
 ): Result<EdgeFunctionAdapter, KoiError> => {
+  if (experimental?.iAcceptUnstableContract !== true) {
+    return {
+      ok: false,
+      error: koiError(
+        "INVALID_CONFIG",
+        "EXPERIMENTAL_createCloudflareAdapter requires { iAcceptUnstableContract: true } — the deploy path is not implemented yet",
+        { subcode: "EXPERIMENTAL_OPT_IN_REQUIRED" },
+      ),
+    };
+  }
   const validated = validateCloudflareAdapterConfig(config);
   if (!validated.ok) return validated;
 

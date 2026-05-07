@@ -260,6 +260,37 @@ describe("KoiDedupeDO — waitForTerminal", () => {
     expect(w.kind).toBe("operation-id-conflict");
   });
 
+  it("returns 'claim-expired' when the original owner's lease elapsed without writing a terminal", async () => {
+    // Inject a clock-advancing sleep so the loop progresses deterministically.
+    const advancingSleep = async (ms: number): Promise<void> => {
+      clock.advance(ms);
+    };
+    const local = new KoiDedupeDO({
+      storage,
+      clock,
+      config: { leaseDurationMs: 15_000 },
+      sleep: advancingSleep,
+    });
+    await local.claim(claimReq({ requestId: "owner-A" }));
+    // Push the clock past the lease but well before the dedupe expiry — this
+    // is the "owner crashed mid-flight" scenario.
+    clock.advance(20_000);
+    const w = await local.waitForTerminal({
+      operationId: "op-1",
+      requestId: "waiter-B",
+      requestExpiryClaim: 1_000_000 + 60_000,
+      timeoutMs: 5_000,
+      pollIntervalMs: 10,
+    });
+    expect(w.kind).toBe("claim-expired");
+    if (w.kind !== "claim-expired") return;
+    expect(w.previousClaimer).toBe("owner-A");
+    // After takeover, the next claim() returns `fresh` so the waiter can
+    // re-issue and become the new owner.
+    const next = await local.claim(claimReq({ requestId: "waiter-B" }));
+    expect(next.status).toBe("fresh");
+  });
+
   it("returns 'timeout' if no terminal record arrives within timeoutMs", async () => {
     // Inject a clock-advancing sleep so the loop terminates deterministically
     // without depending on wall-clock time.

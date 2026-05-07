@@ -16709,14 +16709,17 @@ describe("Golden: @koi/sandbox-wasm", () => {
 // ---------------------------------------------------------------------------
 
 describe("Golden: @koi/sandbox-cloudflare", () => {
-  test("createCloudflareAdapter rejects empty ownerId at config validation", async () => {
-    const { createCloudflareAdapter } = await import("@koi/sandbox-cloudflare");
-    const r = createCloudflareAdapter({
-      accountId: "acct",
-      apiToken: "tok",
-      ownerId: "",
-      dedupeDurableObjectNamespaceId: "ns-1",
-    });
+  test("EXPERIMENTAL_createCloudflareAdapter rejects empty ownerId at config validation", async () => {
+    const { EXPERIMENTAL_createCloudflareAdapter } = await import("@koi/sandbox-cloudflare");
+    const r = EXPERIMENTAL_createCloudflareAdapter(
+      {
+        accountId: "acct",
+        apiToken: "tok",
+        ownerId: "",
+        dedupeDurableObjectNamespaceId: "ns-1",
+      },
+      { iAcceptUnstableContract: true },
+    );
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error.code).toBe("INVALID_CONFIG");
