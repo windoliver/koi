@@ -1878,6 +1878,13 @@
         "@types/ssh2": "1.15.5",
       },
     },
+    "packages/sandbox/sandbox-vercel": {
+      "name": "@koi/sandbox-vercel",
+      "version": "0.0.1-design-only",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/sandbox/sandbox-wasm": {
       "name": "@koi/sandbox-wasm",
       "version": "0.1.0",
@@ -2824,6 +2831,8 @@
     "@koi/sandbox-router": ["@koi/sandbox-router@workspace:packages/sandbox/sandbox-router"],
 
     "@koi/sandbox-ssh": ["@koi/sandbox-ssh@workspace:packages/sandbox/sandbox-ssh"],
+
+    "@koi/sandbox-vercel": ["@koi/sandbox-vercel@workspace:packages/sandbox/sandbox-vercel"],
 
     "@koi/sandbox-wasm": ["@koi/sandbox-wasm@workspace:packages/sandbox/sandbox-wasm"],
 
