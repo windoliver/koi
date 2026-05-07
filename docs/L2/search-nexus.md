@@ -1,6 +1,10 @@
 # @koi/search-nexus — Nexus Search REST Adapter
 
-REST adapter that implements `Retriever` and `Indexer` against the Nexus search API v2. A single `createNexusSearch()` factory returns a composite with search, indexing, health checks, stats, and reindexing — all with automatic retry and batch chunking.
+**Layer:** L2
+**Package:** `packages/lib/search-nexus`
+**Issue:** #1407
+
+REST adapter that implements `Retriever` and `Indexer` (from `@koi/core/search-backend`) against the Nexus search RPC. A single `createNexusSearch()` factory returns a composite `SearchBackend` with retrieve, index, and remove paths.
 
 ---
 

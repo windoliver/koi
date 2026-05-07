@@ -1046,6 +1046,14 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/search-nexus": {
+      "name": "@koi/search-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+    },
     "packages/lib/secure-storage": {
       "name": "@koi/secure-storage",
       "version": "0.0.0",
@@ -2854,6 +2862,8 @@
     "@koi/scheduler-provider": ["@koi/scheduler-provider@workspace:packages/sched/scheduler-provider"],
 
     "@koi/scratchpad-local": ["@koi/scratchpad-local@workspace:packages/lib/scratchpad-local"],
+
+    "@koi/search-nexus": ["@koi/search-nexus@workspace:packages/lib/search-nexus"],
 
     "@koi/secure-storage": ["@koi/secure-storage@workspace:packages/lib/secure-storage"],
 
