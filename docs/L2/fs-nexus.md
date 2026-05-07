@@ -47,6 +47,8 @@ AFTER: agents can read/write remote Nexus filesystems
 
 **`KOI_FS_NEXUS_DEBUG=1` logging:** Set this env var to emit step-by-step `[fs-nexus]` lines to stderr in the `read()` path — logs the full path sent to Nexus, the raw response shape, and the decoded character count. Useful for diagnosing content-decode issues without adding ad-hoc console calls.
 
+**Semantic search (#1319):** `createNexusFileSystem(...)` now exposes an optional `semanticSearch(query, options)` method that delegates to the Nexus `semantic_search` RPC. Returns `NexusSemanticSearchResponse` (`results[]` + optional `warning`). When the caller passes `scope` or `minScore`, the backend over-fetches with **additive headroom** (`requestedLimit + min(requestedLimit*4, 800)`) so client-side filtering cannot starve in-scope matches sitting just below the server's top-N; if the server returns the full over-fetch window AND filtered results fall short of the requested limit, a `warning` is emitted so callers do not treat short results as authoritative.
+
 ---
 
 ## Layer & Dependencies
