@@ -92,6 +92,20 @@ describe("createNexusRegistry — startup", () => {
       /connection refused/,
     );
   });
+
+  test("fails closed when remote agent count exceeds maxEntries during warmup", async () => {
+    transport.stub("list_agents", async () => ({
+      ok: true,
+      value: [
+        { agent_id: "a1", state: "CONNECTED", generation: 0 },
+        { agent_id: "a2", state: "CONNECTED", generation: 0 },
+        { agent_id: "a3", state: "CONNECTED", generation: 0 },
+      ],
+    }));
+    await expect(
+      createNexusRegistry({ transport, pollIntervalMs: 0, maxEntries: 2 }),
+    ).rejects.toThrow(/maxEntries/);
+  });
 });
 
 describe("createNexusRegistry — register", () => {
@@ -111,7 +125,13 @@ describe("createNexusRegistry — register", () => {
     const result = await registry.register(entry);
 
     expect(result.agentId).toBe(agentId("a1"));
-    expect(registry.lookup(agentId("a1"))).toEqual(entry);
+    const stored = await Promise.resolve(registry.lookup(agentId("a1")));
+    expect(stored?.agentId).toBe(agentId("a1"));
+    // Stored entry mirrors the merged outbound blob, including lifecycle
+    // and identity markers — this lets patch() round-trip without dropping
+    // koi:status, agentType, registeredAt, etc.
+    expect(stored?.metadata["koi:status"]).toBeDefined();
+    expect(stored?.metadata.agentType).toBe("worker");
     expect(events).toContain("registered");
   });
 
@@ -320,7 +340,7 @@ describe("createNexusRegistry — transition partial failure", () => {
     await registry[Symbol.asyncDispose]();
   });
 
-  test("preserves local projection when refetch also fails", async () => {
+  test("drops local projection when refetch also fails", async () => {
     const transport = createMockTransport();
     stubEmptyList(transport);
     stubRegisterFlow(transport, "a1");
@@ -336,13 +356,16 @@ describe("createNexusRegistry — transition partial failure", () => {
       error: { code: "EXTERNAL", message: "refetch failed", retryable: true },
     }));
 
+    const events: string[] = [];
+    registry.watch((e) => events.push(e.kind));
+
     const result = await registry.transition(agentId("a1"), "waiting", 0, {
       kind: "awaiting_response",
     });
     expect(result.ok).toBe(false);
-    // No reconciliation possible — keep last-known state rather than guess.
-    const after = await Promise.resolve(registry.lookup(agentId("a1")));
-    expect(after?.status.phase).toBe("running");
+    // Local projection dropped — caller sees NOT_FOUND instead of stale state.
+    expect(await Promise.resolve(registry.lookup(agentId("a1")))).toBeUndefined();
+    expect(events).toContain("deregistered");
     await registry[Symbol.asyncDispose]();
   });
 
@@ -441,6 +464,32 @@ describe("createNexusRegistry — patch metadata merge", () => {
       expect(result.value.metadata.added).toBe("new");
       expect(result.value.metadata.role).toBe("captain");
     }
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("patch outbound metadata preserves lifecycle markers from register", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    await registry.register(makeEntry("a1", { parentId: agentId("p1") }));
+
+    // Capture what patch() sends to update_agent_metadata
+    let patchedMetadata: Readonly<Record<string, unknown>> | undefined;
+    transport.stub("update_agent_metadata", async (params) => {
+      patchedMetadata = params.metadata as Readonly<Record<string, unknown>>;
+      return { ok: true, value: { agent_id: "a1", state: "CONNECTED", generation: 100 } };
+    });
+
+    const result = await registry.patch(agentId("a1"), { metadata: { added: "new" } });
+    expect(result.ok).toBe(true);
+    expect(patchedMetadata).toBeDefined();
+    // The outbound blob must include lifecycle and identity markers, not
+    // just the user's patch payload.
+    expect(patchedMetadata?.["koi:status"]).toBeDefined();
+    expect(patchedMetadata?.agentType).toBe("worker");
+    expect(patchedMetadata?.parentId).toBe("p1");
+    expect(patchedMetadata?.added).toBe("new");
     await registry[Symbol.asyncDispose]();
   });
 });

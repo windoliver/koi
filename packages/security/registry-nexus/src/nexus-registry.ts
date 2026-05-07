@@ -144,11 +144,16 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       );
     }
 
+    if (listResult.value.length > maxEntries) {
+      throw new Error(
+        `Nexus reports ${String(listResult.value.length)} agents but maxEntries=${String(maxEntries)}; refuse to start with a partial mirror`,
+      );
+    }
+
     projection.clear();
     nexusGens.clear();
 
     for (const nexusAgent of listResult.value) {
-      if (projection.size >= maxEntries) break;
       const detail = await nexusGetAgent(transport, nexusAgent.agent_id);
       if (detail.ok) {
         const entry = mapNexusAgentToEntry(detail.value);
@@ -178,7 +183,12 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       const detail = await nexusGetAgent(transport, nexusAgent.agent_id);
       if (!detail.ok) continue;
 
-      if (projection.size >= maxEntries && existing === undefined) continue;
+      if (projection.size >= maxEntries && existing === undefined) {
+        console.warn(
+          `[registry-nexus] capacity exceeded (${String(maxEntries)}); skipping new remote agent ${nexusAgent.agent_id} — local projection is now a partial mirror`,
+        );
+        continue;
+      }
 
       const entry = mapNexusAgentToEntry(detail.value);
       projection.set(id, entry);
@@ -298,11 +308,17 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
         : currentNexusGen;
     }
 
-    projection.set(entry.agentId, entry);
+    // Store the same merged metadata blob locally that we sent to Nexus,
+    // so subsequent patch()/transition() round-trips don't drop identity
+    // fields (agentType, registeredAt, parent/spawner/group) or lifecycle
+    // markers (koi:status, koi:terminated) when rebuilding the outbound
+    // metadata from `current.metadata`.
+    const stored: RegistryEntry = { ...entry, metadata: merged };
+    projection.set(entry.agentId, stored);
     nexusGens.set(entry.agentId, currentNexusGen);
 
-    notify({ kind: "registered", entry });
-    return entry;
+    notify({ kind: "registered", entry: stored });
+    return stored;
   }
 
   async function deregister(id: AgentId): Promise<boolean> {
@@ -440,7 +456,16 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
         }
         return { ok: false, error: updateResult.error };
       }
-      // refetch also failed — preserve current projection rather than guess
+      // refetch also failed — drop the entry from the local projection so
+      // callers see NOT_FOUND instead of stale pre-transition state. Nexus
+      // remains the source of truth; the next successful poll/refetch will
+      // re-mirror the agent.
+      projection.delete(id);
+      nexusGens.delete(id);
+      notify({ kind: "deregistered", agentId: id });
+      console.warn(
+        `[registry-nexus] dropped local projection of ${id}: agent_transition committed but reconciliation refetch failed (${updateResult.error.message}); Nexus remains authoritative`,
+      );
       return { ok: false, error: updateResult.error };
     }
 
