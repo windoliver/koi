@@ -1,6 +1,6 @@
 {
   "name": "@koi/sandbox-vercel",
-  "description": "Vercel Functions EdgeFunctionAdapter — durable per-(ownerId, operationId) dedupe via Vercel KV (DESIGN-ONLY in v1, NOT wired into @koi/runtime)",
+  "description": "Vercel Functions EdgeFunctionAdapter (DESIGN-ONLY in v1) — KV-backed dedupe per (ownerId, operationId).",
   "version": "0.0.1-design-only",
   "private": true,
   "koi": {

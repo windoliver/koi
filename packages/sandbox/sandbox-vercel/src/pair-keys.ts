@@ -35,10 +35,11 @@ const wrapPem = (label: string, b64: string): string => {
 
 /** Generate a fresh Ed25519 keypair as PEM strings. Used at create() time. */
 export const generatePairKeypair = async (): Promise<PairKeypair> => {
-  const pair = (await subtle.generateKey({ name: "Ed25519" }, true, [
-    "sign",
-    "verify",
-  ])) as CryptoKeyPair;
+  const pair = (await subtle.generateKey(
+    { name: "Ed25519" } as unknown as Parameters<typeof subtle.generateKey>[0],
+    true,
+    ["sign", "verify"],
+  )) as unknown as CryptoKeyPair;
   const spki = await subtle.exportKey("spki", pair.publicKey);
   const pkcs8 = await subtle.exportKey("pkcs8", pair.privateKey);
   return {
@@ -100,7 +101,7 @@ export const signRequest = async (signingKeyPem: string, canonical: string): Pro
   const key = await subtle.importKey(
     "pkcs8",
     pemToBytes(signingKeyPem),
-    { name: "Ed25519" },
+    { name: "Ed25519" } as unknown as Parameters<typeof subtle.importKey>[2],
     false,
     ["sign"],
   );
@@ -114,9 +115,13 @@ export const verifyRequest = async (
   canonical: string,
   signatureB64: string,
 ): Promise<boolean> => {
-  const key = await subtle.importKey("spki", pemToBytes(verifyKeyPem), { name: "Ed25519" }, false, [
-    "verify",
-  ]);
+  const key = await subtle.importKey(
+    "spki",
+    pemToBytes(verifyKeyPem),
+    { name: "Ed25519" } as unknown as Parameters<typeof subtle.importKey>[2],
+    false,
+    ["verify"],
+  );
   const bin = globalThis.atob(signatureB64);
   const sig = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) sig[i] = bin.charCodeAt(i);
