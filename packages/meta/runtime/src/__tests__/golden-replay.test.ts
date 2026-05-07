@@ -26,6 +26,7 @@ import { createS3BlobStore } from "@koi/artifacts-s3";
 import { runBlobStoreContract } from "@koi/blob-cas/contract";
 import type {
   Agent,
+  ChannelAdapter,
   ChannelStatus,
   EngineAdapter,
   EngineEvent,
@@ -38,6 +39,7 @@ import type {
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  OutboundMessage,
   SkillComponent,
   ToolCallId,
   ToolRequest,
@@ -17665,4 +17667,3 @@ describe("Golden: @koi/channel-fallback", () => {
     }
   });
 });
-
