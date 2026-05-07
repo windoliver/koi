@@ -92,6 +92,8 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
   const transport = config.transport;
   const maxEntries = config.maxEntries ?? DEFAULT_NEXUS_REGISTRY_CONFIG.maxEntries;
   const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_NEXUS_REGISTRY_CONFIG.pollIntervalMs;
+  const startupTimeoutMs =
+    config.startupTimeoutMs ?? DEFAULT_NEXUS_REGISTRY_CONFIG.startupTimeoutMs;
 
   const projection = new Map<AgentId, RegistryEntry>();
   /** Nexus-side generation per agent — separate from Koi generation. */
@@ -259,7 +261,15 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     const existed = projection.has(id);
     if (!existed) return false;
 
-    await nexusDeleteAgent(transport, id);
+    const deleteResult = await nexusDeleteAgent(transport, id);
+    if (!deleteResult.ok) {
+      // Nexus is the source of truth — if delete failed there, do not
+      // drop local state. Otherwise local would believe the agent is gone
+      // while Nexus still has it (split-brain) until the next poll.
+      throw new Error(`Failed to delete agent ${id} from Nexus: ${deleteResult.error.message}`, {
+        cause: deleteResult.error,
+      });
+    }
     projection.delete(id);
     nexusGens.delete(id);
     notify({ kind: "deregistered", agentId: id });
@@ -351,6 +361,21 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     });
 
     if (!updateResult.ok) {
+      // The remote phase HAS already advanced via agent_transition. Reflect that
+      // in the projection so callers see consistent state instead of the stale
+      // pre-transition phase. The richer Koi status (generation, conditions,
+      // reason) may not be persisted in Nexus metadata until the next poll
+      // cycle re-reads the authoritative record.
+      const updated: RegistryEntry = { ...current, status: newStatus };
+      projection.set(id, updated);
+      notify({
+        kind: "transitioned",
+        agentId: id,
+        from: current.status.phase,
+        to: targetPhase,
+        generation: newStatus.generation,
+        reason,
+      });
       return { ok: false, error: updateResult.error };
     }
 
@@ -392,7 +417,9 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     const updated: RegistryEntry = {
       ...current,
       ...(fields.priority !== undefined ? { priority: fields.priority } : {}),
-      ...(fields.metadata !== undefined ? { metadata: fields.metadata } : {}),
+      ...(fields.metadata !== undefined
+        ? { metadata: { ...current.metadata, ...fields.metadata } }
+        : {}),
       ...(fields.zoneId !== undefined ? { zoneId: fields.zoneId } : {}),
     };
 
@@ -440,7 +467,17 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     nexusGens.clear();
   }
 
-  await loadProjection();
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(`createNexusRegistry warmup timed out after ${String(startupTimeoutMs)}ms`));
+    }, startupTimeoutMs);
+  });
+  try {
+    await Promise.race([loadProjection(), timeoutPromise]);
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+  }
 
   if (pollIntervalMs > 0) {
     pollTimer = setInterval(() => {

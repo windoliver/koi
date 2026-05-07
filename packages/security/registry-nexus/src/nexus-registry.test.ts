@@ -255,6 +255,79 @@ describe("createNexusRegistry — deregister", () => {
     expect(await registry.deregister(agentId("missing"))).toBe(false);
     await registry[Symbol.asyncDispose]();
   });
+
+  test("preserves local state when Nexus delete fails", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    transport.stub("delete_agent", async () => ({
+      ok: false,
+      error: { code: "PERMISSION", message: "denied", retryable: false },
+    }));
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    await registry.register(makeEntry("a1"));
+
+    await expect(registry.deregister(agentId("a1"))).rejects.toThrow(/denied/);
+    expect(registry.lookup(agentId("a1"))).toBeDefined();
+    await registry[Symbol.asyncDispose]();
+  });
+});
+
+describe("createNexusRegistry — transition partial failure", () => {
+  test("reconciles local projection when metadata update fails after phase commit", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    await registry.register(makeEntry("a1"));
+
+    // Phase transition still succeeds, but the follow-up metadata update fails
+    transport.stub("update_agent_metadata", async () => ({
+      ok: false,
+      error: { code: "EXTERNAL", message: "metadata write failed", retryable: true },
+    }));
+
+    const result = await registry.transition(agentId("a1"), "waiting", 0, {
+      kind: "awaiting_response",
+    });
+    expect(result.ok).toBe(false);
+    // Local projection MUST reflect the new phase since Nexus already committed it
+    const after = await Promise.resolve(registry.lookup(agentId("a1")));
+    expect(after?.status.phase).toBe("waiting");
+    expect(after?.status.generation).toBe(1);
+    await registry[Symbol.asyncDispose]();
+  });
+});
+
+describe("createNexusRegistry — patch metadata merge", () => {
+  test("merges fields.metadata with existing metadata locally", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    await registry.register(makeEntry("a1", { metadata: { existing: "keep", role: "worker" } }));
+
+    const result = await registry.patch(agentId("a1"), {
+      metadata: { added: "new", role: "captain" },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.metadata.existing).toBe("keep");
+      expect(result.value.metadata.added).toBe("new");
+      expect(result.value.metadata.role).toBe("captain");
+    }
+    await registry[Symbol.asyncDispose]();
+  });
+});
+
+describe("createNexusRegistry — startup timeout", () => {
+  test("aborts construction when warmup hangs", async () => {
+    const transport = createMockTransport();
+    transport.stub("list_agents", () => new Promise(() => {}));
+    await expect(
+      createNexusRegistry({ transport, pollIntervalMs: 0, startupTimeoutMs: 50 }),
+    ).rejects.toThrow(/timed out/);
+  });
 });
 
 describe("createNexusRegistry — watch unsubscribe", () => {
