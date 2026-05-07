@@ -30,10 +30,17 @@ export function validateNexusSearchConfig(
   }
 
   const maxBatchSize = config.maxBatchSize ?? DEFAULT_NEXUS_SEARCH_CONFIG.maxBatchSize;
-  if (maxBatchSize <= 0) {
+  // Reject NaN, Infinity, fractional values, and non-positive — bad
+  // input here turns index() into a silent no-op (NaN slice/loop) or
+  // breaks batch boundaries.
+  if (!Number.isInteger(maxBatchSize) || maxBatchSize <= 0) {
     return {
       ok: false,
-      error: { code: "VALIDATION", message: "maxBatchSize must be positive", retryable: false },
+      error: {
+        code: "VALIDATION",
+        message: "maxBatchSize must be a positive integer",
+        retryable: false,
+      },
     };
   }
 

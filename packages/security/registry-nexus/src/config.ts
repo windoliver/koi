@@ -30,13 +30,17 @@ export const DEFAULT_NEXUS_REGISTRY_CONFIG = {
 export function validateNexusRegistryConfig(
   config: NexusRegistryConfig,
 ): Result<NexusRegistryConfig, KoiError> {
+  // Reject NaN/Infinity/fractional numeric config — these silently
+  // disable safety limits (e.g. NaN maxEntries makes capacity checks
+  // always-false, NaN pollIntervalMs spins the loop, NaN
+  // startupTimeoutMs collapses the timeout).
   const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_NEXUS_REGISTRY_CONFIG.pollIntervalMs;
-  if (pollIntervalMs < 0) {
+  if (!Number.isInteger(pollIntervalMs) || pollIntervalMs < 0) {
     return {
       ok: false,
       error: {
         code: "VALIDATION",
-        message: "pollIntervalMs must be non-negative",
+        message: "pollIntervalMs must be a non-negative integer",
         retryable: false,
       },
     };
@@ -44,22 +48,26 @@ export function validateNexusRegistryConfig(
 
   const startupTimeoutMs =
     config.startupTimeoutMs ?? DEFAULT_NEXUS_REGISTRY_CONFIG.startupTimeoutMs;
-  if (startupTimeoutMs <= 0) {
+  if (!Number.isInteger(startupTimeoutMs) || startupTimeoutMs <= 0) {
     return {
       ok: false,
       error: {
         code: "VALIDATION",
-        message: "startupTimeoutMs must be positive",
+        message: "startupTimeoutMs must be a positive integer",
         retryable: false,
       },
     };
   }
 
   const maxEntries = config.maxEntries ?? DEFAULT_NEXUS_REGISTRY_CONFIG.maxEntries;
-  if (maxEntries <= 0) {
+  if (!Number.isInteger(maxEntries) || maxEntries <= 0) {
     return {
       ok: false,
-      error: { code: "VALIDATION", message: "maxEntries must be positive", retryable: false },
+      error: {
+        code: "VALIDATION",
+        message: "maxEntries must be a positive integer",
+        retryable: false,
+      },
     };
   }
 

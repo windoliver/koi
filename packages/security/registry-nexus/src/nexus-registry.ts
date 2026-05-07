@@ -332,6 +332,8 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       if (!remoteIds.has(id)) {
         projection.delete(id);
         nexusGens.delete(id);
+        stale.delete(id);
+        perAgentGetFailures.delete(id);
         notify({ kind: "deregistered", agentId: id });
       }
     }
@@ -502,6 +504,10 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     };
     projection.set(entry.agentId, stored);
     nexusGens.set(entry.agentId, currentNexusGen);
+    // Clear all per-ID failure state — re-registering a previously
+    // tombstoned ID with a fresh agent must not stay invisible.
+    stale.delete(entry.agentId);
+    perAgentGetFailures.delete(entry.agentId);
 
     notify({ kind: "registered", entry: stored });
     return stored;
@@ -523,6 +529,8 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     }
     projection.delete(id);
     nexusGens.delete(id);
+    stale.delete(id);
+    perAgentGetFailures.delete(id);
     notify({ kind: "deregistered", agentId: id });
     return true;
   }

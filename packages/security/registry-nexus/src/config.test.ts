@@ -34,6 +34,43 @@ describe("validateNexusRegistryConfig", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("rejects NaN pollIntervalMs", () => {
+    const result = validateNexusRegistryConfig({
+      transport: dummyTransport,
+      pollIntervalMs: Number.NaN,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects Infinity pollIntervalMs", () => {
+    const result = validateNexusRegistryConfig({
+      transport: dummyTransport,
+      pollIntervalMs: Number.POSITIVE_INFINITY,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects fractional pollIntervalMs", () => {
+    const result = validateNexusRegistryConfig({ transport: dummyTransport, pollIntervalMs: 1.5 });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects NaN maxEntries", () => {
+    const result = validateNexusRegistryConfig({
+      transport: dummyTransport,
+      maxEntries: Number.NaN,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects NaN startupTimeoutMs", () => {
+    const result = validateNexusRegistryConfig({
+      transport: dummyTransport,
+      startupTimeoutMs: Number.NaN,
+    });
+    expect(result.ok).toBe(false);
+  });
+
   test("DEFAULT_NEXUS_REGISTRY_CONFIG exposes sane defaults", () => {
     expect(DEFAULT_NEXUS_REGISTRY_CONFIG.pollIntervalMs).toBe(10_000);
     expect(DEFAULT_NEXUS_REGISTRY_CONFIG.startupTimeoutMs).toBe(30_000);

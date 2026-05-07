@@ -594,6 +594,38 @@ describe("createNexusRegistry — transition partial failure", () => {
   });
 });
 
+describe("createNexusRegistry — id reuse after tombstone", () => {
+  test("re-registering a tombstoned id clears stale state and restores reads", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    await registry.register(makeEntry("a1"));
+
+    // Force tombstone via failing transition + failing reconcile.
+    transport.stub("update_agent_metadata", async () => ({
+      ok: false,
+      error: { code: "EXTERNAL", message: "fail", retryable: true },
+    }));
+    transport.stub("get_agent", async () => ({
+      ok: false,
+      error: { code: "EXTERNAL", message: "fail", retryable: true },
+    }));
+    await registry.transition(agentId("a1"), "waiting", 0, { kind: "awaiting_response" });
+    expect(registry.lookup(agentId("a1"))).toBeUndefined();
+
+    // Deregister + re-register the same id. Must work despite tombstone.
+    transport.stub("delete_agent", async () => ({ ok: true, value: undefined }));
+    await registry.deregister(agentId("a1"));
+    stubRegisterFlow(transport, "a1");
+    await registry.register(makeEntry("a1"));
+
+    const stored = await Promise.resolve(registry.lookup(agentId("a1")));
+    expect(stored).toBeDefined();
+    await registry[Symbol.asyncDispose]();
+  });
+});
+
 describe("createNexusRegistry — capacity", () => {
   test("poll marks registry broken when remote overflow is observed", async () => {
     const transport = createMockTransport();
