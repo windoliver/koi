@@ -759,7 +759,12 @@ jobs:
         # fences). Splitting would force closure-private brands through
         # public seams and scatter the round-39..55 boundary invariants
         # across modules that must share lifecycle scope.
-        run: bun run check:complexity --max-violations 776
+        # +2 from tmux worker backend (#1870): tmux-backend.ts is a single
+        # closure-private state machine (session lifecycle, fingerprint
+        # tracking, registry sync, kill quarantine) — splitting it would
+        # leak the per-session generation fence and ps-fingerprint cache
+        # through public seams.
+        run: bun run check:complexity --max-violations 778
 
       - name: Check TUI single-writer output policy
         run: bun run check:tui-single-writer
