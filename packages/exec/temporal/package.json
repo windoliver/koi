@@ -11,7 +11,8 @@
     }
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@temporalio/activity": "1.16.1"
   },
   "devDependencies": {
     "@temporalio/client": "^1.11.0",

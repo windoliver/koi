@@ -9,6 +9,11 @@
  */
 
 export {
+  type ActivityDeps,
+  createActivities,
+  type GatewayStreamFrame,
+} from "./activities/agent-activity.js";
+export {
   type ApplicationFailurePayload,
   mapKoiErrorToApplicationFailure,
   mapTemporalError,

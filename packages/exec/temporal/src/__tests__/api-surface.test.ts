@@ -11,6 +11,7 @@ test("public api surface includes temporal signal/query exports", () => {
     "SHUTDOWN_SIGNAL_NAME",
     "STATE_QUERY_NAME",
     "STATUS_QUERY_NAME",
+    "createActivities",
     "createTemporalHealthMonitor",
     "createTemporalScheduler",
     "createTemporalSpawnLedger",
