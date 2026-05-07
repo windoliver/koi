@@ -163,6 +163,34 @@ describe("NexusFileSystem specifics", () => {
     }
   });
 
+  test("semanticSearch accepts wrapped HTTP RPC responses", async () => {
+    const transport = createFakeNexusTransport();
+    const backend = createNexusFileSystem({ url: "http://fake", transport }) as {
+      readonly semanticSearch?: (query: string) => Promise<
+        | {
+            readonly ok: true;
+            readonly value: {
+              readonly results: readonly {
+                readonly path: string;
+                readonly snippet: string;
+                readonly score: number;
+                readonly lineStart: number;
+                readonly lineEnd: number;
+              }[];
+            };
+          }
+        | { readonly ok: false }
+      >;
+    };
+
+    await backend.write("/semantic/http-shape.ts", "semantic transport shape");
+    const result = await backend.semanticSearch?.("transport shape");
+    expect(result?.ok).toBe(true);
+    if (result?.ok) {
+      expect(result.value.results[0]?.path).toContain("http-shape.ts");
+    }
+  });
+
   test("list returns structured entries with kind", async () => {
     const transport = createFakeNexusTransport();
     const backend = createNexusFileSystem({ url: "http://fake", transport });

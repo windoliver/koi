@@ -550,7 +550,7 @@ async def dispatch(fs, method, params):
             limit=limit,
             search_mode=search_mode,
         )
-        return results
+        return {"results": results}
 
     if method == "delete":
         await fs.delete(path)

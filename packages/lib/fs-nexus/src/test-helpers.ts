@@ -322,7 +322,7 @@ export function createFakeNexusTransport(options?: FakeTransportOptions): NexusT
           });
         }
 
-        return { ok: true, value: results as T };
+        return { ok: true, value: { results } as T };
       }
 
       case "delete": {

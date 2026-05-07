@@ -118,6 +118,16 @@ interface NexusSemanticSearchMatch {
   readonly line_end?: number;
 }
 
+interface NexusSemanticSearchRpcResponse {
+  readonly results: readonly NexusSemanticSearchMatch[];
+}
+
+function extractSemanticSearchMatches(
+  value: readonly NexusSemanticSearchMatch[] | NexusSemanticSearchRpcResponse,
+): readonly NexusSemanticSearchMatch[] {
+  return "results" in value ? value.results : value;
+}
+
 // ---------------------------------------------------------------------------
 // Config extension (allows injecting transport for testing)
 // ---------------------------------------------------------------------------
@@ -489,7 +499,9 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
     },
   ): Promise<Result<NexusSemanticSearchResponse, KoiError>> {
     const searchBase = basePath.startsWith("/") ? basePath : `/${basePath}`;
-    const result = await transport.call<readonly NexusSemanticSearchMatch[]>("semantic_search", {
+    const result = await transport.call<
+      readonly NexusSemanticSearchMatch[] | NexusSemanticSearchRpcResponse
+    >("semantic_search", {
       query,
       path: searchBase,
       limit: options?.maxResults ?? 10,
@@ -499,16 +511,17 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
 
     const scopePattern = options?.scope;
     const minScore = options?.minScore ?? 0;
-    const mapped = result.value
-      .map((entry) => ({
+    const rawResults = extractSemanticSearchMatches(result.value);
+    const mapped = rawResults
+      .map((entry: NexusSemanticSearchMatch) => ({
         path: stripBasePath(basePath, entry.path),
         snippet: entry.chunk_text,
         score: entry.score,
         lineStart: entry.line_start ?? 1,
         lineEnd: entry.line_end ?? entry.line_start ?? 1,
       }))
-      .filter((entry) => entry.score >= minScore)
-      .filter((entry) => {
+      .filter((entry: NexusSemanticSearchResult) => entry.score >= minScore)
+      .filter((entry: NexusSemanticSearchResult) => {
         if (scopePattern === undefined) return true;
         return simpleGlobMatch(entry.path, scopePattern);
       });

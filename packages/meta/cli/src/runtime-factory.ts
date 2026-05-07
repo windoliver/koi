@@ -258,6 +258,7 @@ export const TUI_ALLOW_RULES: readonly SourcedRule[] = [
   { pattern: "Glob", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "Grep", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "ToolSearch", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "fs_semantic_search", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "task_get", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "task_list", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "task_output", action: "invoke", effect: "allow", source: "policy" },
