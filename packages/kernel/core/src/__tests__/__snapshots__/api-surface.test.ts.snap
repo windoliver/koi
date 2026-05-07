@@ -42,6 +42,7 @@ export { RUNTIME_FENCE_TARGETS, RUNTIME_FENCE_TOP_LEVEL_IDENTIFIERS } from './ch
 export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance, SandboxInstanceState, SandboxProcessHandle, SandboxSpawnOptions, SandboxStdinPipe } from './chunk-HASH.js';
 export { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult } from './chunk-HASH.js';
 export { FilesystemPolicy, NetworkPolicy, NexusFuseMount, ResourceLimits, SandboxProfile, SandboxSshTarget } from './chunk-HASH.js';
+export { DEFAULT_SEARCH_LIMIT, IndexDocument, Indexer, Retriever, SearchBackend, SearchFilter, SearchPage, SearchQuery, SearchResult, SearchScore } from './chunk-HASH.js';
 export { RISK_ANALYSIS_UNKNOWN, RISK_LEVEL_ORDER, RiskAnalysis, RiskFinding, RiskLevel, SecurityAnalyzer } from './chunk-HASH.js';
 export { OutboundWebhookConfig, WebhookComponent, WebhookDeliveryStatus, WebhookEndpointHealth, WebhookEventKind, WebhookPayload, WebhookSummary } from './webhook.js';
 
@@ -6163,6 +6164,110 @@ import './webhook.js';
 import './zone.js';
 import './chunk-HASH.js';
 import './memory.js';
+"
+`;
+
+exports[`@koi/core API surface ./search-backend has stable type surface 1`] = `
+"import { Result, KoiError } from './errors.js';
+import './common.js';
+
+/**
+ * Search backend — pluggable index-search and retrieval contracts.
+ *
+ * Models the read (Retriever) and write (Indexer) paths for a full-text /
+ * keyword index. Pure types only — no runtime code.
+ *
+ * Distinct from skill-registry's \`SkillSearchQuery\` (catalog filter) and
+ * filesystem-backend's \`FileSearchOptions\` (grep-style file search).
+ *
+ * Pluggable backends include nexus-backed REST search, SQLite FTS5, and
+ * in-memory implementations.
+ */
+
+/** Relevance score normalized to [0, 1]. */
+type SearchScore = number;
+/**
+ * Composable filter tree applied to indexed metadata.
+ *
+ * Backends that cannot express the full grammar should reject queries with
+ * a \`KoiError\` rather than silently dropping clauses.
+ */
+type SearchFilter = {
+    readonly kind: "eq";
+    readonly field: string;
+    readonly value: unknown;
+} | {
+    readonly kind: "ne";
+    readonly field: string;
+    readonly value: unknown;
+} | {
+    readonly kind: "gt";
+    readonly field: string;
+    readonly value: number;
+} | {
+    readonly kind: "lt";
+    readonly field: string;
+    readonly value: number;
+} | {
+    readonly kind: "in";
+    readonly field: string;
+    readonly values: readonly unknown[];
+} | {
+    readonly kind: "and";
+    readonly filters: readonly SearchFilter[];
+} | {
+    readonly kind: "or";
+    readonly filters: readonly SearchFilter[];
+} | {
+    readonly kind: "not";
+    readonly filter: SearchFilter;
+};
+interface SearchQuery {
+    readonly text: string;
+    readonly filter?: SearchFilter;
+    readonly limit: number;
+    /** Opaque cursor for the next page. undefined = first page. */
+    readonly cursor?: string;
+    /** Drop results below this score. */
+    readonly minScore?: SearchScore;
+}
+interface SearchResult<T = unknown> {
+    readonly id: string;
+    readonly score: SearchScore;
+    readonly content: string;
+    readonly metadata: Readonly<Record<string, unknown>>;
+    /** Backend-supplied origin (e.g., index name, table). */
+    readonly source: string;
+    readonly data?: T;
+}
+interface SearchPage<T = unknown> {
+    readonly results: readonly SearchResult<T>[];
+    /** Total matching documents. Optional — some backends can't count cheaply. */
+    readonly total?: number;
+    /** Opaque cursor for the next page. undefined = no more pages. */
+    readonly cursor?: string;
+    readonly hasMore: boolean;
+}
+interface IndexDocument<T = unknown> {
+    readonly id: string;
+    readonly content: string;
+    readonly metadata?: Readonly<Record<string, unknown>>;
+    readonly data?: T;
+}
+interface Retriever<T = unknown> {
+    readonly retrieve: (query: SearchQuery) => Promise<Result<SearchPage<T>, KoiError>>;
+}
+interface Indexer<T = unknown> {
+    readonly index: (documents: readonly IndexDocument<T>[]) => Promise<Result<void, KoiError>>;
+    readonly remove: (ids: readonly string[]) => Promise<Result<void, KoiError>>;
+}
+/** Full search backend that supports both reading and writing. */
+interface SearchBackend<T = unknown> extends Retriever<T>, Indexer<T> {
+}
+/** Default page size when callers omit \`limit\`. */
+declare const DEFAULT_SEARCH_LIMIT: 25;
+
+export { DEFAULT_SEARCH_LIMIT, type IndexDocument, type Indexer, type Retriever, type SearchBackend, type SearchFilter, type SearchPage, type SearchQuery, type SearchResult, type SearchScore };
 "
 `;
 

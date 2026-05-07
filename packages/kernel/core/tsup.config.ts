@@ -44,6 +44,7 @@ export default defineConfig({
     "src/permission-backend.ts",
     "src/sandbox-profile.ts",
     "src/skill-registry.ts",
+    "src/search-backend.ts",
     "src/version-index.ts",
     "src/version-types.ts",
     "src/run-report.ts",
