@@ -68,16 +68,12 @@ export function createFsSemanticSearchTool(config: FsSemanticSearchToolConfig): 
       if (typeof query !== "string" || query.trim() === "") {
         return { error: "query must be a non-empty string" };
       }
-
       const result = await search(query.trim(), {
         ...(typeof args.scope === "string" && args.scope.length > 0 ? { scope: args.scope } : {}),
         ...(typeof args.maxResults === "number" ? { maxResults: args.maxResults } : {}),
         ...(typeof args.minScore === "number" ? { minScore: args.minScore } : {}),
       });
-      if (!result.ok) {
-        return { error: "Semantic search failed" };
-      }
-      return result.value;
+      return result.ok ? result.value : { error: "Semantic search failed" };
     },
   };
 }
