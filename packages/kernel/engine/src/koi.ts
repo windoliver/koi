@@ -2693,6 +2693,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       return currentRunIdRef;
     },
     conflicts,
+    edgeAdapters: options.edgeAdapters ?? {},
 
     run(input: EngineInput): RunHandle {
       if (poisoned) {

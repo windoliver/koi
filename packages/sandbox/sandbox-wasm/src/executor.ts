@@ -71,10 +71,11 @@ const sha256Hex = async (bytes: Uint8Array): Promise<string> => {
  * Compiled modules are cached internally keyed by SHA-256 of validated bytes;
  * cache is package-private and never exposed.
  *
- * Timeout note: WASM exports are synchronous in JS; a `timeoutMs` option is
- * accepted for API parity but cannot preempt a runaway export inside the host
- * isolate. Callers requiring hard preemption must run the executor inside a
- * Worker thread. v1 documents this limitation; a future package may add it.
+ * Timeout note: WASM exports are synchronous in JS; this in-process executor
+ * cannot preempt a runaway export. `timeoutMs` is honored as ADVISORY: the
+ * call still runs to completion, but a post-hoc elapsed-time check surfaces
+ * `TIMEOUT` so callers detect overruns. Hard preemption needs a Worker-thread
+ * executor (not yet shipped). Untrusted modules should not run on this path.
  */
 export const createWasmExecutor = (): WasmExecutor => {
   const execute = async (
@@ -84,19 +85,15 @@ export const createWasmExecutor = (): WasmExecutor => {
   ): Promise<Result<WasmResult, WasmError>> => {
     const startedAtMs = Date.now();
 
-    if (options?.timeoutMs !== undefined && options.timeoutMs > 0) {
-      // The synchronous in-process executor cannot preempt a runaway export.
-      // Accepting `timeoutMs` from untrusted callers would be a footgun: the
-      // option suggests preemption that the host cannot deliver. Reject up
-      // front; callers that need a hard deadline must use a Worker-thread
-      // executor (not yet shipped). Trusted callers that explicitly accept
-      // the no-preemption contract can pass `timeoutMs: 0` to opt out.
-      return fail(
-        "TIMEOUT",
-        "in-process WasmExecutor cannot preempt synchronous exports; do not pass timeoutMs from untrusted code",
-        startedAtMs,
-      );
-    }
+    // `timeoutMs` is ADVISORY for this synchronous executor: the in-process
+    // implementation cannot preempt a runaway WASM export. We honor the field
+    // as a post-hoc deadline check (after the export returns we compare elapsed
+    // time and surface TIMEOUT if exceeded) so callers can detect overruns,
+    // but no hard preemption is provided. A future Worker-thread executor will
+    // upgrade this to true preemption. Untrusted modules should not run on
+    // this executor.
+    const advisoryTimeoutMs =
+      options?.timeoutMs !== undefined && options.timeoutMs > 0 ? options.timeoutMs : undefined;
     if (!hasWasmMagic(moduleBytes)) {
       return fail(
         "INVALID_BYTES",
@@ -240,9 +237,19 @@ export const createWasmExecutor = (): WasmExecutor => {
     try {
       const fn = exported as (...args: readonly unknown[]) => unknown;
       const output = fn(...call.args);
+      const elapsed = Date.now() - startedAtMs;
+      // Advisory deadline check — synchronous executor cannot preempt mid-call,
+      // but it can surface TIMEOUT post-hoc so callers detect runaway exports.
+      if (advisoryTimeoutMs !== undefined && elapsed > advisoryTimeoutMs) {
+        return fail(
+          "TIMEOUT",
+          `export "${call.export}" took ${elapsed}ms, exceeding advisory timeoutMs=${advisoryTimeoutMs}`,
+          startedAtMs,
+        );
+      }
       return {
         ok: true,
-        value: { output, durationMs: Date.now() - startedAtMs },
+        value: { output, durationMs: elapsed },
       };
     } catch (cause) {
       return fail("TRAP", "WebAssembly trap during execution", startedAtMs, cause);

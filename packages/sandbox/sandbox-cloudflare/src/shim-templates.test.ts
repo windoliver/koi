@@ -23,6 +23,14 @@ describe("GATEWAY_SHIM_SOURCE", () => {
     expect(GATEWAY_SHIM_SOURCE).toContain('"failed-permanent"');
   });
 
+  it("handles claim-expired by re-claiming (takeover) and operation-id-conflict by 409", () => {
+    expect(GATEWAY_SHIM_SOURCE).toContain('"claim-expired"');
+    expect(GATEWAY_SHIM_SOURCE).toContain("takeoverHops");
+    expect(GATEWAY_SHIM_SOURCE).toContain('"operation-id-conflict"');
+    // Takeover loop must be bounded.
+    expect(GATEWAY_SHIM_SOURCE).toContain("takeoverHops < 3");
+  });
+
   it("does NOT cache transient handler responses as success (release-claim path)", () => {
     // The gateway must require status===200 AND outcome==="success" before
     // calling /complete. A transient handler exception (503, outcome=transient)

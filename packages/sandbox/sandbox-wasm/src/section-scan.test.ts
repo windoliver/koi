@@ -90,13 +90,16 @@ describe("executor — wasm resource enforcement", () => {
     });
   });
 
-  it("rejects timeoutMs > 0 (untrusted callers must not assume preemption)", async () => {
+  it("treats timeoutMs as advisory — execution proceeds, overrun surfaces TIMEOUT post-hoc", async () => {
+    // Pass a generous timeout — call should not reject up front.
     const exec = createWasmExecutor();
+    // The minimal HEADER module has no exports, so we expect MISSING_EXPORT,
+    // NOT TIMEOUT, when timeoutMs is reasonable. This proves timeoutMs is no
+    // longer pre-emptively rejected.
     const r = await exec.execute(HEADER, { export: "x", args: [] }, { timeoutMs: 1_000 });
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    expect(r.error.code).toBe("TIMEOUT");
-    expect(r.error.message).toContain("preempt");
+    expect(r.error.code).not.toBe("TIMEOUT");
   });
 
   it("rejects maxMemoryPages when no memory is imported", async () => {

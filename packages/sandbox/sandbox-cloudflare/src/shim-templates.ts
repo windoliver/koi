@@ -54,12 +54,35 @@ export default {
     if (claim.status === "completed") return respond(200, claim.result, "success");
     if (claim.status === "failed-permanent") return respond(200, { error: claim.error }, "failed-permanent");
     if (claim.status === "in-progress") {
-      const wait = await stub.fetch("https://do/waitForTerminal", { method: "POST", body: JSON.stringify({ operationId, requestId, dedupeExpiresAtMs, timeoutMs: SHIM_POLL_DEADLINE_MS }) }).then((r) => r.json());
-      if (wait.kind === "completed") return respond(200, wait.result, "success");
-      if (wait.kind === "failed-permanent") return respond(200, { error: wait.error }, "failed-permanent");
-      if (wait.kind === "operation-expired") return respond(410, { error: "OPERATION_EXPIRED", dedupeExpiresAtMs }, "operation-expired");
-      if (wait.kind === "timeout") return respond(504, { error: "TIMEOUT" }, "timeout");
-      return respond(503, { error: "WAITER_PROTOCOL_BUG" }, "shim-error", { "X-Koi-Shim-Error-Code": "WAITER_PROTOCOL_BUG" });
+      // Bounded retry budget for claim-expired takeover. The DO surfaces
+      // claim-expired when the original owner's lease elapsed without writing
+      // a terminal record; the gateway re-issues claim() to take over. Cap at
+      // 3 hops so a pathological multi-crash sequence cannot loop forever
+      // inside the request budget.
+      let takeoverHops = 0;
+      while (true) {
+        const wait = await stub.fetch("https://do/waitForTerminal", { method: "POST", body: JSON.stringify({ operationId, requestId, dedupeExpiresAtMs, timeoutMs: SHIM_POLL_DEADLINE_MS }) }).then((r) => r.json());
+        if (wait.kind === "completed") return respond(200, wait.result, "success");
+        if (wait.kind === "failed-permanent") return respond(200, { error: wait.error }, "failed-permanent");
+        if (wait.kind === "operation-expired") return respond(410, { error: "OPERATION_EXPIRED", dedupeExpiresAtMs }, "operation-expired");
+        if (wait.kind === "operation-id-conflict") return respond(409, { error: "OPERATION_ID_CONFLICT", storedFingerprint: wait.storedFingerprint }, "operation-id-conflict");
+        if (wait.kind === "timeout") return respond(504, { error: "TIMEOUT" }, "timeout");
+        if (wait.kind === "claim-expired" && takeoverHops < 3) {
+          takeoverHops++;
+          // Re-issue claim — the stale lease has been deleted, so this
+          // caller becomes the new owner and runs the handler. Fall through
+          // to the fresh-owner path below by breaking out with a re-claim.
+          const reclaim = await stub.fetch("https://do/claim", { method: "POST", body: JSON.stringify({ operationId, requestId, dedupeFingerprint, dedupeExpiresAtMs }) }).then((r) => r.json());
+          if (reclaim.status === "fresh") { Object.assign(claim, reclaim); break; }
+          if (reclaim.status === "completed") return respond(200, reclaim.result, "success");
+          if (reclaim.status === "failed-permanent") return respond(200, { error: reclaim.error }, "failed-permanent");
+          if (reclaim.status === "fingerprint-conflict") return respond(409, { error: "OPERATION_ID_CONFLICT", storedFingerprint: reclaim.storedFingerprint }, "operation-id-conflict");
+          if (reclaim.status === "operation-expired") return respond(410, { error: "OPERATION_EXPIRED", dedupeExpiresAtMs }, "operation-expired");
+          // Another waiter beat us to the new lease — fall back to waiting again.
+          continue;
+        }
+        return respond(503, { error: "WAITER_PROTOCOL_BUG", kind: wait && wait.kind }, "shim-error", { "X-Koi-Shim-Error-Code": "WAITER_PROTOCOL_BUG" });
+      }
     }
     // claim.status === "fresh" — invoke handler runner via Service Binding.
     const handlerReq = new Request("https://handler/invoke", { method: "POST", body: JSON.stringify({ payload, operationId, requestId }) });
