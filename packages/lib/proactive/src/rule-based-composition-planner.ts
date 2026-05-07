@@ -84,6 +84,107 @@ function isRepresentableSkillForgeDemand(
   return demand;
 }
 
+function stepsForCapabilityGap(trigger: CompositionTrigger): readonly CompositionStep[] {
+  const forgeDemand = isRepresentableSkillForgeDemand(trigger);
+  return forgeDemand === undefined ? [] : [{ kind: "forge_skill", demand: forgeDemand }];
+}
+
+function stepsForThresholdCrossed(
+  trigger: CompositionTrigger,
+  capabilities: CompositionCapabilities,
+): readonly CompositionStep[] {
+  if (
+    trigger.moment.kind !== "threshold_crossed" ||
+    trigger.moment.sensor !== "error_rate" ||
+    trigger.moment.direction !== "above"
+  ) {
+    return [];
+  }
+  const steps: CompositionStep[] = [];
+  if (hasAgentType(capabilities, "diagnostic")) {
+    steps.push({
+      kind: "spawn_agent",
+      agentType: "diagnostic",
+      input: {
+        kind: "text",
+        text: "Investigate elevated error_rate and summarize root causes.",
+      },
+      delivery: DEFAULT_DELIVERY_POLICY,
+    });
+  }
+  steps.push({
+    kind: "notify_user",
+    channel: "inbox",
+    message: "Error rate crossed its configured threshold.",
+    priority: "high",
+  });
+  return steps;
+}
+
+function stepsForTaskTerminal(
+  trigger: CompositionTrigger,
+  capabilities: CompositionCapabilities,
+): readonly CompositionStep[] {
+  if (trigger.moment.kind !== "task_terminal") return [];
+  const { outcome, taskId } = trigger.moment;
+  if (
+    (outcome !== "failed" && outcome !== "dead_letter") ||
+    !hasAgentType(capabilities, "recovery")
+  ) {
+    return [];
+  }
+  return [
+    {
+      kind: "spawn_agent",
+      agentType: "recovery",
+      input: {
+        kind: "text",
+        text: `Analyze failed scheduled task ${String(taskId)} and propose recovery.`,
+      },
+      delivery: DEFAULT_DELIVERY_POLICY,
+    },
+  ];
+}
+
+function stepsForFrontierChanged(
+  trigger: CompositionTrigger,
+  capabilities: CompositionCapabilities,
+): readonly CompositionStep[] {
+  if (trigger.moment.kind !== "frontier_changed" || !hasAgentType(capabilities, "researcher")) {
+    return [];
+  }
+  return [
+    {
+      kind: "spawn_agent",
+      agentType: "researcher",
+      input: {
+        kind: "text",
+        text: `Investigate frontier change in ${trigger.moment.metric}.`,
+      },
+      delivery: { kind: "deferred" },
+    },
+  ];
+}
+
+function stepsForTrigger(
+  trigger: CompositionTrigger,
+  capabilities: CompositionCapabilities,
+): readonly CompositionStep[] {
+  switch (trigger.moment.kind) {
+    case "capability_gap":
+      return stepsForCapabilityGap(trigger);
+    case "threshold_crossed":
+      return stepsForThresholdCrossed(trigger, capabilities);
+    case "task_terminal":
+      return stepsForTaskTerminal(trigger, capabilities);
+    case "frontier_changed":
+      return stepsForFrontierChanged(trigger, capabilities);
+    case "pattern_matched":
+    case "external_event":
+      return [];
+  }
+}
+
 export function createRuleBasedCompositionPlanner(
   config: RuleBasedCompositionPlannerConfig = {},
 ): CompositionPlanner {
@@ -92,73 +193,8 @@ export function createRuleBasedCompositionPlanner(
 
   return {
     async plan(trigger, capabilities): Promise<CompositionPlan> {
-      const steps: CompositionStep[] = [];
-
-      switch (trigger.moment.kind) {
-        case "capability_gap": {
-          const forgeDemand = isRepresentableSkillForgeDemand(trigger);
-          if (forgeDemand !== undefined) {
-            steps.push({ kind: "forge_skill", demand: forgeDemand });
-          }
-          break;
-        }
-        case "threshold_crossed":
-          if (trigger.moment.sensor === "error_rate" && trigger.moment.direction === "above") {
-            if (hasAgentType(capabilities, "diagnostic")) {
-              steps.push({
-                kind: "spawn_agent",
-                agentType: "diagnostic",
-                input: {
-                  kind: "text",
-                  text: "Investigate elevated error_rate and summarize root causes.",
-                },
-                delivery: DEFAULT_DELIVERY_POLICY,
-              });
-            }
-            steps.push({
-              kind: "notify_user",
-              channel: "inbox",
-              message: "Error rate crossed its configured threshold.",
-              priority: "high",
-            });
-          }
-          break;
-        case "task_terminal":
-          if (
-            (trigger.moment.outcome === "failed" || trigger.moment.outcome === "dead_letter") &&
-            hasAgentType(capabilities, "recovery")
-          ) {
-            steps.push({
-              kind: "spawn_agent",
-              agentType: "recovery",
-              input: {
-                kind: "text",
-                text: `Analyze failed scheduled task ${String(trigger.moment.taskId)} and propose recovery.`,
-              },
-              delivery: DEFAULT_DELIVERY_POLICY,
-            });
-          }
-          break;
-        case "frontier_changed":
-          if (hasAgentType(capabilities, "researcher")) {
-            steps.push({
-              kind: "spawn_agent",
-              agentType: "researcher",
-              input: {
-                kind: "text",
-                text: `Investigate frontier change in ${trigger.moment.metric}.`,
-              },
-              delivery: { kind: "deferred" },
-            });
-          }
-          break;
-        case "pattern_matched":
-        case "external_event":
-          break;
-      }
-
+      const steps = stepsForTrigger(trigger, capabilities);
       const estimatedCost = estimateCost(steps);
-
       return {
         triggerId: trigger.id,
         steps,
