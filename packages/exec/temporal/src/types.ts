@@ -4,6 +4,7 @@ export interface AgentWorkflowConfig {
   readonly agentId: AgentId;
   readonly sessionId: SessionId;
   readonly stateRefs: AgentStateRefs;
+  readonly gatewayUrl?: string | undefined;
   readonly initialMessage?: IncomingMessage | undefined;
   readonly initialMessages?: readonly IncomingMessage[] | undefined;
   readonly maxStopRetries?: number | undefined;
@@ -71,6 +72,7 @@ export interface WorkerWorkflowConfig {
   readonly sessionId: SessionId;
   readonly parentAgentId: AgentId;
   readonly stateRefs: AgentStateRefs;
+  readonly gatewayUrl?: string | undefined;
   readonly initialMessage?: IncomingMessage | undefined;
   readonly nexusApiKey?: string | undefined;
   readonly delegationId?: string | undefined;
