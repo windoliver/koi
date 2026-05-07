@@ -9,6 +9,7 @@ import type { FileSystemBackend } from "@koi/core";
 import { runFileSystemBackendContractTests } from "./contract-tests.js";
 import { createNexusFileSystem } from "./nexus-filesystem-backend.js";
 import { createFakeNexusTransport } from "./test-helpers.js";
+import type { NexusTransport } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Contract tests — proves NexusFileSystem satisfies FileSystemBackend
@@ -195,6 +196,129 @@ describe("NexusFileSystem specifics", () => {
     expect(result?.ok).toBe(true);
     if (result?.ok) {
       expect(result.value.results[0]?.path).toContain("http-shape.ts");
+    }
+  });
+
+  test("semanticSearch over-fetches so scope filter cannot drop in-scope matches", async () => {
+    const transport = createFakeNexusTransport();
+    const backend = createNexusFileSystem({
+      url: "http://fake",
+      transport,
+    }) as FileSystemBackend & {
+      readonly semanticSearch?: (
+        query: string,
+        options?: {
+          readonly scope?: string;
+          readonly maxResults?: number;
+          readonly minScore?: number;
+        },
+      ) => Promise<
+        | {
+            readonly ok: true;
+            readonly value: {
+              readonly results: readonly { readonly path: string }[];
+              readonly warning?: string;
+            };
+          }
+        | { readonly ok: false }
+      >;
+    };
+
+    // 8 out-of-scope files containing the query come first by insertion
+    // order, then 2 in-scope files. With pre-fix behaviour fetchLimit=2
+    // would slice off both in-scope hits before the client-side scope
+    // filter ever saw them.
+    for (let i = 0; i < 8; i++) {
+      await backend.write(`/other/file-${i}.ts`, "needle in haystack");
+    }
+    await backend.write("/scoped/a.ts", "needle in scoped a");
+    await backend.write("/scoped/b.ts", "needle in scoped b");
+
+    const result = await backend.semanticSearch?.("needle", {
+      scope: "scoped/**",
+      maxResults: 2,
+    });
+    expect(result?.ok).toBe(true);
+    if (result?.ok) {
+      expect(result.value.results.map((r) => r.path).sort()).toEqual([
+        "/scoped/a.ts",
+        "/scoped/b.ts",
+      ]);
+    }
+  });
+
+  test("semanticSearch keeps over-fetch headroom even when maxResults exceeds the cap", async () => {
+    // Regression: previous formula collapsed `fetchLimit` back to
+    // `requestedLimit` once `requestedLimit*FACTOR` exceeded the cap, so
+    // a leading run of out-of-scope hits could starve all in-scope ones.
+    let observedLimit: number | undefined;
+    type SemanticSearchOptions = {
+      readonly scope?: string;
+      readonly maxResults?: number;
+      readonly minScore?: number;
+    };
+    type SemanticSearchOk = {
+      readonly ok: true;
+      readonly value: { readonly results: readonly unknown[]; readonly warning?: string };
+    };
+    const transport: NexusTransport = {
+      call: async <T>(method: string, params?: Record<string, unknown>) => {
+        if (method === "semantic_search") {
+          observedLimit = params?.limit as number | undefined;
+          return { ok: true, value: { results: [] } as T };
+        }
+        return { ok: true, value: undefined as T };
+      },
+      close: () => {},
+      subscribe: () => () => {},
+      submitAuthCode: () => {},
+    };
+    const backend = createNexusFileSystem({
+      url: "http://fake",
+      transport,
+    }) as FileSystemBackend & {
+      readonly semanticSearch?: (
+        query: string,
+        options?: SemanticSearchOptions,
+      ) => Promise<SemanticSearchOk | { readonly ok: false }>;
+    };
+    await backend.semanticSearch?.("needle", { scope: "any/**", maxResults: 300 });
+    expect(observedLimit).toBeGreaterThan(300);
+  });
+
+  test("semanticSearch never under-fetches when caller's maxResults exceeds the over-fetch cap", async () => {
+    const transport = createFakeNexusTransport();
+    const backend = createNexusFileSystem({
+      url: "http://fake",
+      transport,
+    }) as FileSystemBackend & {
+      readonly semanticSearch?: (
+        query: string,
+        options?: {
+          readonly scope?: string;
+          readonly maxResults?: number;
+        },
+      ) => Promise<
+        | {
+            readonly ok: true;
+            readonly value: { readonly results: readonly { readonly path: string }[] };
+          }
+        | { readonly ok: false }
+      >;
+    };
+    // Seed 250 in-scope files. Caller asks for 250 with scope active; cap
+    // (200) must NOT clip the request, otherwise the contract is silently
+    // broken on large repos.
+    for (let i = 0; i < 250; i++) {
+      await backend.write(`/big/f${i}.ts`, "needle text");
+    }
+    const result = await backend.semanticSearch?.("needle", {
+      scope: "big/**",
+      maxResults: 250,
+    });
+    expect(result?.ok).toBe(true);
+    if (result?.ok) {
+      expect(result.value.results.length).toBe(250);
     }
   });
 

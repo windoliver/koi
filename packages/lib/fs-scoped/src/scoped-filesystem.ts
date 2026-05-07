@@ -140,17 +140,39 @@ function hasSemanticSearch(backend: FileSystemBackend): backend is FileSystemBac
 function applySemanticFilter(
   result: Result<SemanticSearchResponse, KoiError>,
   compiled: CompiledFileSystemScope,
+  requestedLimit: number,
+  fetchLimit: number,
 ): Result<SemanticSearchResponse, KoiError> {
   if (!result.ok) return result;
+  const raw = result.value.results;
+  // Wrapper enforces only the *root* scope. Caller-supplied `scope`/
+  // `minScore` are passed through to the inner backend, which may honor
+  // them natively (more accurate ranking) or fall back to client-side
+  // filtering (handled inside its own implementation).
+  const filtered = raw.filter((entry) => {
+    const resolved = resolve(entry.path);
+    return resolved === compiled.root || resolved.startsWith(compiled.rootWithSep);
+  });
+  const truncated = filtered.slice(0, requestedLimit);
+
+  // If the inner backend returned the full over-fetch window AND we still
+  // can't satisfy the caller's requested limit, the scope filter may have
+  // hidden valid in-scope matches sitting beyond the window. Surface this
+  // so callers don't treat a short result as authoritative.
+  const innerHitCap = raw.length >= fetchLimit;
+  const incomplete = innerHitCap && truncated.length < requestedLimit;
+  const inheritedWarning = result.value.warning;
+  const scopeWarning = incomplete
+    ? `semantic_search may be incomplete: scoped-filesystem post-filtered the inner backend's top ${fetchLimit} hits and dropped matches outside the scope root. Tighten the query or raise maxResults.`
+    : undefined;
+  const warning =
+    inheritedWarning !== undefined && scopeWarning !== undefined
+      ? `${inheritedWarning} ${scopeWarning}`
+      : (inheritedWarning ?? scopeWarning);
+
   return {
     ok: true,
-    value: {
-      ...result.value,
-      results: result.value.results.filter((entry) => {
-        const resolved = resolve(entry.path);
-        return resolved === compiled.root || resolved.startsWith(compiled.rootWithSep);
-      }),
-    },
+    value: warning !== undefined ? { results: truncated, warning } : { results: truncated },
   };
 }
 
@@ -165,10 +187,24 @@ export function createScopedFileSystem(
   const compiled = compileFileSystemScope(scope);
   const semanticSearch = hasSemanticSearch(backend)
     ? (query: string, options?: Parameters<SemanticSearchFn>[1]) => {
-        const raw = backend.semanticSearch(query, options);
-        return raw instanceof Promise
-          ? raw.then((r) => applySemanticFilter(r, compiled))
-          : applySemanticFilter(raw, compiled);
+        const requestedLimit = options?.maxResults ?? 10;
+        // Modest additive headroom so out-of-root matches at the top of
+        // the inner backend's ranking don't starve in-root matches sitting
+        // just below the cutoff. Kept additive (and small) so backends
+        // that already over-fetch when scope/minScore are set don't see
+        // a multiplicative blow-up of the inner fetch window.
+        const OUTER_HEADROOM_CAP = 100;
+        const headroom = Math.min(requestedLimit * 2, OUTER_HEADROOM_CAP);
+        const fetchLimit = requestedLimit + headroom;
+        // Preserve the caller's scope/minScore — backends are allowed to
+        // honor them natively for better ranking. The wrapper applies its
+        // own root-scope filter on top.
+        const inner = backend.semanticSearch(query, { ...options, maxResults: fetchLimit });
+        const finish = (
+          r: Result<SemanticSearchResponse, KoiError>,
+        ): Result<SemanticSearchResponse, KoiError> =>
+          applySemanticFilter(r, compiled, requestedLimit, fetchLimit);
+        return inner instanceof Promise ? inner.then(finish) : finish(inner);
       }
     : undefined;
 

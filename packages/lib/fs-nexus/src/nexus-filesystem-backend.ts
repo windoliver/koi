@@ -499,20 +499,39 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
     },
   ): Promise<Result<NexusSemanticSearchResponse, KoiError>> {
     const searchBase = basePath.startsWith("/") ? basePath : `/${basePath}`;
+    const requestedLimit = options?.maxResults ?? 10;
+    const scopePattern = options?.scope;
+    const minScore = options?.minScore ?? 0;
+
+    // Scope and minScore are enforced client-side. Over-fetch when either is
+    // active so post-filter does not silently drop valid in-scope hits that
+    // sat below the server's top-N. Cap the over-fetch to bound RPC cost.
+    const needsLocalFilter = scopePattern !== undefined || minScore > 0;
+    const OVER_FETCH_FACTOR = 5;
+    const OVER_FETCH_CAP = 200;
+    // Headroom is *additive*: requestedLimit + capped extra. The previous
+    // multiplicative form collapsed back to requestedLimit whenever
+    // requestedLimit*FACTOR exceeded the cap, so a `maxResults=300` query
+    // with active scope/minScore filtering got zero over-fetch budget and
+    // a leading run of out-of-scope hits could starve every in-scope match.
+    const headroomCap = (OVER_FETCH_FACTOR - 1) * OVER_FETCH_CAP;
+    const headroom = needsLocalFilter
+      ? Math.min(requestedLimit * (OVER_FETCH_FACTOR - 1), headroomCap)
+      : 0;
+    const fetchLimit = requestedLimit + headroom;
+
     const result = await transport.call<
       readonly NexusSemanticSearchMatch[] | NexusSemanticSearchRpcResponse
     >("semantic_search", {
       query,
       path: searchBase,
-      limit: options?.maxResults ?? 10,
+      limit: fetchLimit,
       search_mode: "hybrid",
     });
     if (!result.ok) return result;
 
-    const scopePattern = options?.scope;
-    const minScore = options?.minScore ?? 0;
     const rawResults = extractSemanticSearchMatches(result.value);
-    const mapped = rawResults
+    const filtered = rawResults
       .map((entry: NexusSemanticSearchMatch) => ({
         path: stripBasePath(basePath, entry.path),
         snippet: entry.chunk_text,
@@ -526,7 +545,26 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
         return simpleGlobMatch(entry.path, scopePattern);
       });
 
-    return { ok: true, value: { results: mapped } };
+    const truncatedToLimit = filtered.slice(0, requestedLimit);
+
+    // Warn when local filtering may have hidden valid matches: the server
+    // returned the full over-fetch window AND we still fell short of the
+    // caller's requested limit. Without this signal an empty/short result
+    // set is indistinguishable from "no matches".
+    const serverHitFetchCap = rawResults.length >= fetchLimit;
+    const incomplete =
+      needsLocalFilter && serverHitFetchCap && truncatedToLimit.length < requestedLimit;
+    const warning = incomplete
+      ? `semantic_search may be incomplete: client-side scope/minScore filtering ran on the server's top ${fetchLimit} hits and dropped matches. Tighten the scope or raise maxResults to widen the window.`
+      : undefined;
+
+    return {
+      ok: true,
+      value:
+        warning !== undefined
+          ? { results: truncatedToLimit, warning }
+          : { results: truncatedToLimit },
+    };
   }
 
   async function del(path: string): Promise<Result<FileDeleteResult, KoiError>> {

@@ -459,6 +459,159 @@ describe("createScopedFileSystem", () => {
       expect(result.value.results[0]?.path).toBe("/workspace/src/foo.ts");
       expect(result.value.warning).toBe("indexed subset");
     });
+
+    test("over-fetches inner backend so out-of-root top hits cannot starve in-root matches", async () => {
+      let observedLimit: number | undefined;
+      // Top 3 hits are outside the wrapper's root; 2 in-root hits sit
+      // beyond the caller's requested limit. Pre-fix the inner backend
+      // would have been asked for only `maxResults` records and the
+      // root filter would have returned 0 in-root matches.
+      const inner: FileSystemBackend & {
+        readonly semanticSearch: (
+          query: string,
+          options?: { readonly maxResults?: number },
+        ) => Promise<SemanticSearchTestResult>;
+      } = {
+        name: "inner",
+        read: () => ({ ok: true as const, value: { content: "", path: "", size: 0 } }),
+        write: () => ({ ok: true as const, value: { path: "", bytesWritten: 0 } }),
+        edit: () => ({ ok: true as const, value: { path: "", hunksApplied: 0 } }),
+        list: () => ({ ok: true as const, value: { entries: [], truncated: false } }),
+        search: () => ({ ok: true as const, value: { matches: [], truncated: false } }),
+        semanticSearch: async (_query, options) => {
+          observedLimit = options?.maxResults;
+          const all = [
+            ...Array.from({ length: 3 }, (_, i) => ({
+              path: `/workspace/other/o${i}.ts`,
+              snippet: "x",
+              score: 0.9,
+              lineStart: 1,
+            })),
+            { path: "/workspace/src/a.ts", snippet: "x", score: 0.8, lineStart: 1 },
+            { path: "/workspace/src/b.ts", snippet: "x", score: 0.7, lineStart: 1 },
+          ];
+          const limit = options?.maxResults ?? 10;
+          return {
+            ok: true as const,
+            value: { results: all.slice(0, limit) },
+          };
+        },
+      };
+      const scoped = createScopedFileSystem(inner, {
+        root: "/workspace/src",
+        mode: "ro",
+      }) as FileSystemBackend & {
+        readonly semanticSearch?: (
+          query: string,
+          options?: { readonly maxResults?: number },
+        ) => Promise<SemanticSearchTestResult>;
+      };
+      const result = await scoped.semanticSearch?.("x", { maxResults: 2 });
+      expect(observedLimit).toBeGreaterThan(2);
+      expect(result?.ok).toBe(true);
+      if (result?.ok) {
+        expect(result.value.results.map((r) => r.path).sort()).toEqual([
+          "/workspace/src/a.ts",
+          "/workspace/src/b.ts",
+        ]);
+      }
+    });
+
+    test("preserves caller-supplied scope and minScore for backends that honor them natively", async () => {
+      // Generic backends are allowed to implement scope/minScore for
+      // accurate server-side ranking. The wrapper must pass them through
+      // unchanged so it does not regress those backends to top-N filtering.
+      let observed:
+        | { readonly maxResults?: number; readonly scope?: string; readonly minScore?: number }
+        | undefined;
+      const inner: FileSystemBackend & {
+        readonly semanticSearch: (
+          query: string,
+          options?: {
+            readonly maxResults?: number;
+            readonly scope?: string;
+            readonly minScore?: number;
+          },
+        ) => Promise<SemanticSearchTestResult>;
+      } = {
+        name: "inner",
+        read: () => ({ ok: true as const, value: { content: "", path: "", size: 0 } }),
+        write: () => ({ ok: true as const, value: { path: "", bytesWritten: 0 } }),
+        edit: () => ({ ok: true as const, value: { path: "", hunksApplied: 0 } }),
+        list: () => ({ ok: true as const, value: { entries: [], truncated: false } }),
+        search: () => ({ ok: true as const, value: { matches: [], truncated: false } }),
+        semanticSearch: async (_query, options) => {
+          observed = options;
+          return { ok: true as const, value: { results: [] } };
+        },
+      };
+      const scoped = createScopedFileSystem(inner, {
+        root: "/workspace/src",
+        mode: "ro",
+      }) as FileSystemBackend & {
+        readonly semanticSearch?: (
+          query: string,
+          options?: {
+            readonly maxResults?: number;
+            readonly scope?: string;
+            readonly minScore?: number;
+          },
+        ) => Promise<SemanticSearchTestResult>;
+      };
+      await scoped.semanticSearch?.("x", { maxResults: 5, scope: "**/*.ts", minScore: 0.5 });
+      expect(observed?.scope).toBe("**/*.ts");
+      expect(observed?.minScore).toBe(0.5);
+      // Headroom is additive and small; total stays bounded.
+      expect(observed?.maxResults).toBeGreaterThanOrEqual(5);
+      expect(observed?.maxResults).toBeLessThanOrEqual(5 + 100);
+    });
+
+    test("emits warning when inner backend caps the over-fetch window and scope drops matches", async () => {
+      const inner: FileSystemBackend & {
+        readonly semanticSearch: (
+          query: string,
+          options?: { readonly maxResults?: number },
+        ) => Promise<SemanticSearchTestResult>;
+      } = {
+        name: "inner",
+        read: () => ({ ok: true as const, value: { content: "", path: "", size: 0 } }),
+        write: () => ({ ok: true as const, value: { path: "", bytesWritten: 0 } }),
+        edit: () => ({ ok: true as const, value: { path: "", hunksApplied: 0 } }),
+        list: () => ({ ok: true as const, value: { entries: [], truncated: false } }),
+        search: () => ({ ok: true as const, value: { matches: [], truncated: false } }),
+        // Returns exactly `maxResults` rows, all out of scope. That signals
+        // the inner backend hit our over-fetch cap and may have more.
+        semanticSearch: async (_query, options) => {
+          const limit = options?.maxResults ?? 10;
+          return {
+            ok: true as const,
+            value: {
+              results: Array.from({ length: limit }, (_, i) => ({
+                path: `/workspace/other/${i}.ts`,
+                snippet: "x",
+                score: 0.5,
+                lineStart: 1,
+              })),
+            },
+          };
+        },
+      };
+      const scoped = createScopedFileSystem(inner, {
+        root: "/workspace/src",
+        mode: "ro",
+      }) as FileSystemBackend & {
+        readonly semanticSearch?: (
+          query: string,
+          options?: { readonly maxResults?: number },
+        ) => Promise<SemanticSearchTestResult>;
+      };
+      const result = await scoped.semanticSearch?.("x", { maxResults: 5 });
+      expect(result?.ok).toBe(true);
+      if (result?.ok) {
+        expect(result.value.results).toHaveLength(0);
+        expect(result.value.warning).toContain("incomplete");
+      }
+    });
   });
 
   // ---------------------------------------------------------------------------

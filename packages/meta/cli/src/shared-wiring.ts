@@ -69,6 +69,8 @@ import {
 } from "@koi/session";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import {
+  BUILTIN_SEARCH_OPERATIONS,
+  type BuiltinSearchOperation,
   createBuiltinSearchProvider,
   createCredentialPathGuard,
   createFsEditTool,
@@ -1381,11 +1383,29 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
   const includeFs = config.includeFilesystemTools ?? true;
   const includeWeb = config.includeWebFetch ?? true;
   const fs = config.filesystemBackend ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
-  const providers: ComponentProvider[] = [
-    createBuiltinSearchProvider(
-      hasSemanticSearch(fs) ? { cwd, semanticSearch: fs.semanticSearch } : { cwd },
-    ),
-  ];
+  const ops = config.filesystemOperations;
+  const wantRead = ops === undefined || ops.includes("read");
+  const wantWrite = ops === undefined || ops.includes("write");
+  const wantEdit = ops === undefined || ops.includes("edit");
+  // fs_semantic_search is a read-capable tool (returns paths + content
+  // snippets). Gate it on read permission (`wantRead`) plus backend
+  // capability — a runtime that explicitly drops `read` from
+  // `filesystemOperations` cannot still expose repository contents through
+  // semantic search. Decoupled from `includeFilesystemTools` so hosts that
+  // suppress raw fs_read/write/edit while keeping builtin search keep it.
+  const exposeSemantic = wantRead && hasSemanticSearch(fs);
+  // Grep reads file *contents*, not just paths — a host that drops `read`
+  // from `filesystemOperations` has explicitly disabled repository reads,
+  // so omit it from builtin-search to keep that boundary honest. Glob and
+  // ToolSearch only enumerate paths/tool names, no content reads, so they
+  // remain regardless.
+  const builtinSearchOps: readonly BuiltinSearchOperation[] = wantRead
+    ? BUILTIN_SEARCH_OPERATIONS
+    : BUILTIN_SEARCH_OPERATIONS.filter((op) => op !== "Grep");
+  const builtinSearchConfig = exposeSemantic
+    ? { cwd, semanticSearch: fs.semanticSearch, operations: builtinSearchOps }
+    : { cwd, operations: builtinSearchOps };
+  const providers: ComponentProvider[] = [createBuiltinSearchProvider(builtinSearchConfig)];
 
   if (includeFs) {
     // allowExternalPaths: the runtime has a real permission middleware
@@ -1403,10 +1423,8 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
     // the `FileSystemConfig` contract's `["read"]` default at the host
     // level before calling into this builder, so by the time we see
     // `filesystemOperations` here it is already the resolved gate.
-    const ops = config.filesystemOperations;
-    const wantRead = ops === undefined || ops.includes("read");
-    const wantWrite = ops === undefined || ops.includes("write");
-    const wantEdit = ops === undefined || ops.includes("edit");
+    // (`wantRead`/`wantWrite`/`wantEdit` computed above for semantic-search
+    // gating; reused here.)
     if (wantRead) {
       providers.push(
         createSingleToolProvider({
