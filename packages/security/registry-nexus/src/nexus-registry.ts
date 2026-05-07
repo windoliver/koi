@@ -886,6 +886,35 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
           },
         };
       }
+      // Ambiguous failure: a transport/server error after the metadata
+      // RPC may have committed remotely while losing the response. The
+      // local mirror would otherwise silently diverge and the next
+      // patch would build from stale state. Mirror transition()'s
+      // reconcile-or-tombstone behavior: bounded refetch + tombstone on
+      // exhaustion.
+      const RECONCILE_ATTEMPTS = 3;
+      for (let attempt = 0; attempt < RECONCILE_ATTEMPTS; attempt++) {
+        if (attempt > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 50 * 2 ** (attempt - 1)));
+        }
+        const refetch = await nexusGetAgent(transport, id);
+        if (refetch.ok) {
+          let reconciled: RegistryEntry;
+          try {
+            reconciled = mapNexusAgentToEntry(refetch.value);
+          } catch {
+            continue;
+          }
+          projection.set(id, reconciled);
+          nexusGens.set(id, refetch.value.generation ?? nexusGens.get(id) ?? 0);
+          stale.delete(id);
+          return { ok: false, error: updateResult.error };
+        }
+      }
+      stale.add(id);
+      console.warn(
+        `[registry-nexus] patch reconcile failed for ${id} after ${String(RECONCILE_ATTEMPTS)} attempts; tombstoning local projection — Nexus remains authoritative`,
+      );
       return { ok: false, error: updateResult.error };
     }
 

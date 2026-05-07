@@ -909,6 +909,67 @@ describe("createNexusRegistry — metadata CAS", () => {
   });
 });
 
+describe("createNexusRegistry — patch ambiguous failure", () => {
+  test("tombstones entry after bounded reconcile retries fail", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    await registry.register(makeEntry("a1"));
+
+    transport.stub("update_agent_metadata", async () => ({
+      ok: false,
+      error: { code: "EXTERNAL", message: "transport timeout", retryable: true },
+    }));
+    transport.stub("get_agent", async () => ({
+      ok: false,
+      error: { code: "EXTERNAL", message: "refetch failed", retryable: true },
+    }));
+
+    const result = await registry.patch(agentId("a1"), { metadata: { x: "y" } });
+    expect(result.ok).toBe(false);
+    // Reads blocked until refetch succeeds — caller cannot act on
+    // potentially-divergent local mirror.
+    expect(registry.lookup(agentId("a1"))).toBeUndefined();
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("reconciles from refetch when metadata write commits but response is lost", async () => {
+    const transport = createMockTransport();
+    stubEmptyList(transport);
+    stubRegisterFlow(transport, "a1");
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    await registry.register(makeEntry("a1"));
+
+    transport.stub("update_agent_metadata", async () => ({
+      ok: false,
+      error: { code: "EXTERNAL", message: "response lost", retryable: true },
+    }));
+    // Refetch reveals the patch was committed remotely.
+    transport.stub("get_agent", async () => ({
+      ok: true,
+      value: {
+        agent_id: "a1",
+        state: "CONNECTED",
+        generation: 5,
+        metadata: {
+          agentType: "worker",
+          priority: 10,
+          registeredAt: 1_700_000_000_000,
+          x: "y",
+        },
+      },
+    }));
+
+    const result = await registry.patch(agentId("a1"), { metadata: { x: "y" } });
+    expect(result.ok).toBe(false);
+    // Entry visible; reflects committed remote state.
+    const after = await Promise.resolve(registry.lookup(agentId("a1")));
+    expect(after?.metadata.x).toBe("y");
+    await registry[Symbol.asyncDispose]();
+  });
+});
+
 describe("createNexusRegistry — patch metadata merge", () => {
   test("merges fields.metadata with existing metadata locally", async () => {
     const transport = createMockTransport();
