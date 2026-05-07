@@ -15960,6 +15960,124 @@ describe("Golden: @koi/audit-sink-nexus", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Golden: @koi/registry-nexus (standalone — no LLM required)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/registry-nexus", () => {
+  test("createNexusRegistry warms projection from list_agents", async () => {
+    const { createNexusRegistry } = await import("@koi/registry-nexus");
+
+    const calls: string[] = [];
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async (method: string) => {
+        calls.push(method);
+        if (method === "list_agents") {
+          return {
+            ok: true,
+            value: [{ agent_id: "a-golden", state: "CONNECTED", generation: 0 }],
+          };
+        }
+        if (method === "get_agent") {
+          return {
+            ok: true,
+            value: {
+              agent_id: "a-golden",
+              state: "CONNECTED",
+              generation: 0,
+              metadata: { agentType: "worker", priority: 10, registeredAt: 1 },
+            },
+          };
+        }
+        return { ok: true, value: undefined };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const registry = await createNexusRegistry({ transport, pollIntervalMs: 0 });
+    expect(calls).toContain("list_agents");
+    expect(calls).toContain("get_agent");
+    const all = await registry.list();
+    expect(all.length).toBe(1);
+    expect(String(all[0]?.agentId)).toBe("a-golden");
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("validateNexusRegistryConfig rejects negative pollIntervalMs", async () => {
+    const { validateNexusRegistryConfig } = await import("@koi/registry-nexus");
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async () => ({
+        ok: true,
+        value: undefined,
+      })) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+    const result = validateNexusRegistryConfig({ transport, pollIntervalMs: -1 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/search-nexus (standalone — no LLM required)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/search-nexus", () => {
+  test("retrieve maps Nexus hits into SearchPage", async () => {
+    const { createNexusSearch } = await import("@koi/search-nexus");
+
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async (method: string) => {
+        if (method === "search_retrieve") {
+          return {
+            ok: true,
+            value: {
+              hits: [{ id: "doc-golden", score: 0.95, content: "hello", metadata: { tag: "g" } }],
+              total: 1,
+            },
+          };
+        }
+        return { ok: true, value: undefined };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const search = createNexusSearch({ transport, indexName: "g-idx" });
+    const result = await search.retrieve({ text: "hello", limit: 5 });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.results.length).toBe(1);
+      expect(result.value.results[0]?.id).toBe("doc-golden");
+      expect(result.value.results[0]?.source).toBe("g-idx");
+      expect(result.value.hasMore).toBe(false);
+    }
+  });
+
+  test("index batches and propagates first failure", async () => {
+    const { createNexusSearch } = await import("@koi/search-nexus");
+
+    let calls = 0;
+    const transport: import("@koi/nexus-client").NexusTransport = {
+      call: (async () => {
+        calls++;
+        return {
+          ok: false,
+          error: { code: "EXTERNAL" as const, message: "fail", retryable: true },
+        };
+      }) as import("@koi/nexus-client").NexusTransport["call"],
+      close: () => {},
+    };
+
+    const search = createNexusSearch({ transport, maxBatchSize: 1 });
+    const result = await search.index([
+      { id: "1", content: "a" },
+      { id: "2", content: "b" },
+    ]);
+    expect(result.ok).toBe(false);
+    expect(calls).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/nexus-delegation (standalone — no LLM required)
 // ---------------------------------------------------------------------------
 
