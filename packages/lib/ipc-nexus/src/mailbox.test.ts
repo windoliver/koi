@@ -13,8 +13,8 @@ function createFallbackMailbox(owner = agentId("agent-a")): MailboxComponent {
     readonly createdAt: string;
     readonly ttlSeconds?: number | undefined;
     readonly type: string;
-    readonly payload: Record<string, never>;
-    readonly metadata?: Record<string, never> | undefined;
+    readonly payload: Readonly<Record<string, unknown>>;
+    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
   }[] = [];
 
   return {
@@ -195,6 +195,177 @@ describe("createNexusMailbox", () => {
     const filtered = await mailbox.list({ kind: "request", from: agentId("agent-b") });
     expect(filtered).toHaveLength(1);
     expect(filtered[0]?.type).toBe("review");
+  });
+
+  test("handler that throws does not kill subsequent dispatch", async () => {
+    const { createNexusMailbox } = await import("./index.js");
+
+    let listCalls = 0;
+    const transport = createHealthyTransport(async <T>(method: string) => {
+      if (method === "ipc.list") {
+        listCalls += 1;
+        const id = `msg-throw-${listCalls}`;
+        return {
+          ok: true,
+          value: {
+            messages: [
+              {
+                id,
+                from: "agent-b",
+                to: "agent-a",
+                kind: "event",
+                type: "status",
+                payload: {},
+                createdAt: "2026-05-06T00:00:00.000Z",
+              },
+            ],
+          } as T,
+        };
+      }
+      return { ok: false, error: { code: "EXTERNAL", message: "x", retryable: false } };
+    });
+
+    const mailbox = await createNexusMailbox({
+      agentId: agentId("agent-a"),
+      transport,
+      pollIntervalMs: 5,
+    });
+
+    const seen: string[] = [];
+    let firstCall = true;
+    const unsubscribe = mailbox.onMessage((m) => {
+      seen.push(m.id as string);
+      if (firstCall) {
+        firstCall = false;
+        throw new Error("handler boom");
+      }
+    });
+
+    await Bun.sleep(40);
+    unsubscribe();
+
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    expect(seen[0]).toBe("msg-throw-1");
+  });
+
+  test("degraded mode is sticky — does not recover on transport recovery", async () => {
+    const { createNexusMailbox } = await import("./index.js");
+
+    let sendShouldFail = true;
+    const fallback = createFallbackMailbox();
+    const mailbox = await createNexusMailbox({
+      agentId: agentId("agent-a"),
+      transport: createHealthyTransport(async <T>(method: string) => {
+        if (method === "ipc.send" && sendShouldFail) {
+          return { ok: false, error: { code: "EXTERNAL", message: "down", retryable: false } };
+        }
+        if (method === "ipc.send") {
+          return {
+            ok: true,
+            value: {
+              id: "nexus-recovered",
+              from: "agent-a",
+              to: "agent-a",
+              kind: "event",
+              type: "noop",
+              payload: {},
+              createdAt: "2026-05-06T00:00:00.000Z",
+            } as T,
+          };
+        }
+        return { ok: true, value: { messages: [] } as T };
+      }),
+      fallback,
+    });
+
+    const first = await mailbox.send({
+      from: agentId("agent-a"),
+      to: agentId("agent-a"),
+      kind: "event",
+      type: "noop",
+      payload: {},
+    });
+    expect(first.ok).toBe(true);
+
+    sendShouldFail = false;
+    const second = await mailbox.send({
+      from: agentId("agent-a"),
+      to: agentId("agent-a"),
+      kind: "event",
+      type: "noop",
+      payload: {},
+    });
+    expect(second.ok).toBe(true);
+    if (second.ok) {
+      expect((second.value.id as string).startsWith("fallback-")).toBe(true);
+    }
+  });
+
+  test("dedupes a message even when multiple polls observe it concurrently", async () => {
+    const { createNexusMailbox } = await import("./index.js");
+
+    const transport = createHealthyTransport(async <T>(method: string) => {
+      if (method === "ipc.list") {
+        return {
+          ok: true,
+          value: {
+            messages: [
+              {
+                id: "msg-dup",
+                from: "agent-b",
+                to: "agent-a",
+                kind: "event",
+                type: "status",
+                payload: {},
+                createdAt: "2026-05-06T00:00:00.000Z",
+              },
+            ],
+          } as T,
+        };
+      }
+      return { ok: false, error: { code: "EXTERNAL", message: "x", retryable: false } };
+    });
+
+    const mailbox = await createNexusMailbox({
+      agentId: agentId("agent-a"),
+      transport,
+      pollIntervalMs: 5,
+    });
+
+    const seen: string[] = [];
+    const unsubscribe = mailbox.onMessage((m) => {
+      seen.push(m.id as string);
+    });
+
+    await Bun.sleep(40);
+    unsubscribe();
+
+    const dupCount = seen.filter((id) => id === "msg-dup").length;
+    expect(dupCount).toBe(1);
+  });
+
+  test("send failure surfaces error when no fallback is configured", async () => {
+    const { createNexusMailbox } = await import("./index.js");
+
+    const mailbox = await createNexusMailbox({
+      agentId: agentId("agent-a"),
+      transport: createHealthyTransport(async (method) => {
+        if (method === "ipc.send") {
+          return { ok: false, error: { code: "EXTERNAL", message: "down", retryable: false } };
+        }
+        return { ok: false, error: { code: "EXTERNAL", message: "x", retryable: false } };
+      }),
+    });
+
+    const result = await mailbox.send({
+      from: agentId("agent-a"),
+      to: agentId("agent-a"),
+      kind: "event",
+      type: "noop",
+      payload: {},
+    });
+
+    expect(result.ok).toBe(false);
   });
 
   test("falls back on send failure after startup health passes", async () => {

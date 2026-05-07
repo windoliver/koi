@@ -20,5 +20,8 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/nexus-client": "workspace:*"
+  },
+  "koi": {
+    "optional": true
   }
 }

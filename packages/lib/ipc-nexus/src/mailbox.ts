@@ -29,7 +29,12 @@ export async function createNexusMailbox(config: NexusMailboxConfig): Promise<Ma
   async function dispatchMessages(messages: readonly AgentMessage[]): Promise<void> {
     for (const message of messages) {
       for (const handler of handlers) {
-        await handler(message);
+        try {
+          await handler(message);
+        } catch {
+          // Handler errors must not kill the polling loop; the next message
+          // and the next handler still need to be delivered.
+        }
       }
     }
   }
