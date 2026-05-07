@@ -3,6 +3,9 @@
   "description": "Shared bridge and hosted-sandbox helpers for cloud-backed execution",
   "version": "0.0.0",
   "private": true,
+  "koi": {
+    "optional": true
+  },
   "type": "module",
   "exports": {
     ".": {
