@@ -65,8 +65,47 @@ function parseOptions(argv: readonly string[]): Options {
  * Estimate function lengths by tracking braces after function/method declarations.
  * Returns violations for functions exceeding the limit.
  */
+/**
+ * Replace the contents of every backtick template literal with blank lines, so
+ * the line-based function scanner doesn't flag JS code embedded inside string
+ * templates (e.g. shim-template source strings). Preserves line count to keep
+ * downstream line numbers accurate.
+ */
+function blankBacktickStrings(content: string): string {
+  let out = "";
+  let inBacktick = false;
+  let i = 0;
+  while (i < content.length) {
+    const ch = content[i];
+    if (!inBacktick) {
+      if (ch === "`") {
+        inBacktick = true;
+        out += "`";
+      } else {
+        out += ch;
+      }
+      i++;
+      continue;
+    }
+    // Inside backtick: emit only newlines (preserve line count) and the closing backtick.
+    if (ch === "\\" && i + 1 < content.length) {
+      i += 2;
+      continue;
+    }
+    if (ch === "`") {
+      inBacktick = false;
+      out += "`";
+      i++;
+      continue;
+    }
+    if (ch === "\n") out += "\n";
+    i++;
+  }
+  return out;
+}
+
 function checkFunctionLengths(filePath: string, content: string): readonly Violation[] {
-  const lines = content.split("\n");
+  const lines = blankBacktickStrings(content).split("\n");
   const violations: Violation[] = [];
 
   // Match function declarations, arrow functions assigned to const/let, and method definitions.

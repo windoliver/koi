@@ -22,17 +22,17 @@ function makeAuth(): GatewayAuthenticator {
 }
 
 function makeTransport(): Transport & { readonly stop: () => void } {
-  let handler: TransportHandler | undefined;
+  let _handler: TransportHandler | undefined;
   return {
     listen: async (_port, h) => {
-      handler = h;
+      _handler = h;
     },
     close: () => {
-      handler = undefined;
+      _handler = undefined;
     },
     connections: () => 0,
     stop: () => {
-      handler = undefined;
+      _handler = undefined;
     },
   };
 }

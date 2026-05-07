@@ -141,6 +141,14 @@
       "types": "./dist/adapter-capabilities.d.ts",
       "import": "./dist/adapter-capabilities.js"
     },
+    "./edge-function-adapter": {
+      "types": "./dist/edge-function-adapter.d.ts",
+      "import": "./dist/edge-function-adapter.js"
+    },
+    "./runtime-fence-targets": {
+      "types": "./dist/runtime-fence-targets.d.ts",
+      "import": "./dist/runtime-fence-targets.js"
+    },
     "./sandbox-adapter": {
       "types": "./dist/sandbox-adapter.d.ts",
       "import": "./dist/sandbox-adapter.js"

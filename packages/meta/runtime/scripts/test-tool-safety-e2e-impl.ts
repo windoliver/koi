@@ -103,7 +103,7 @@ async function runScenario(args: {
   readonly prompt: string;
 }): Promise<RunResult> {
   const tool = args.throwMsg.length === 0 ? null : makeTool(args.toolName, args.throwMsg);
-  if (!tool || !tool.ok) throw new Error(`buildTool failed`);
+  if (!tool?.ok) throw new Error(`buildTool failed`);
   const builtTool = tool.value;
 
   const trajDir = `/tmp/koi-tool-safety-e2e-${args.name}-${Date.now()}`;

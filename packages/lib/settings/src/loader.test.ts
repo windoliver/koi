@@ -276,7 +276,7 @@ describe("loadSettings", () => {
     const koiDir = join(tmpDir, ".koi");
     mkdirSync(koiDir, { recursive: true });
     // BOM-prefixed JSON — JSON.parse rejects it
-    writeFileSync(join(koiDir, "settings.json"), "﻿" + JSON.stringify({ permissions: {} }));
+    writeFileSync(join(koiDir, "settings.json"), `﻿${JSON.stringify({ permissions: {} })}`);
     const result = await loadSettings({
       cwd: tmpDir,
       homeDir: join(tmpDir, "nohome"),

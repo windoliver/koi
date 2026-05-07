@@ -1556,12 +1556,14 @@
         "@koi/replay": "workspace:*",
         "@koi/rlm-stack": "workspace:*",
         "@koi/rules-loader": "workspace:*",
+        "@koi/sandbox-cloudflare": "workspace:*",
         "@koi/sandbox-conformance": "workspace:*",
         "@koi/sandbox-docker": "workspace:*",
         "@koi/sandbox-executor": "workspace:*",
         "@koi/sandbox-os": "workspace:*",
         "@koi/sandbox-router": "workspace:*",
         "@koi/sandbox-ssh": "workspace:*",
+        "@koi/sandbox-wasm": "workspace:*",
         "@koi/scheduler": "workspace:*",
         "@koi/scheduler-nexus": "workspace:*",
         "@koi/scheduler-provider": "workspace:*",
@@ -1802,6 +1804,13 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/sandbox/sandbox-cloudflare": {
+      "name": "@koi/sandbox-cloudflare",
+      "version": "0.1.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/sandbox/sandbox-conformance": {
       "name": "@koi/sandbox-conformance",
       "version": "0.1.0",
@@ -1867,6 +1876,20 @@
       "devDependencies": {
         "@koi/sandbox-conformance": "workspace:*",
         "@types/ssh2": "1.15.5",
+      },
+    },
+    "packages/sandbox/sandbox-vercel": {
+      "name": "@koi/sandbox-vercel",
+      "version": "0.0.1-design-only",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/sandbox/sandbox-wasm": {
+      "name": "@koi/sandbox-wasm",
+      "version": "0.1.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
     "packages/sched/harness-scheduler": {
@@ -2791,6 +2814,8 @@
 
     "@koi/runtime": ["@koi/runtime@workspace:packages/meta/runtime"],
 
+    "@koi/sandbox-cloudflare": ["@koi/sandbox-cloudflare@workspace:packages/sandbox/sandbox-cloudflare"],
+
     "@koi/sandbox-conformance": ["@koi/sandbox-conformance@workspace:packages/sandbox/sandbox-conformance"],
 
     "@koi/sandbox-daytona": ["@koi/sandbox-daytona@workspace:packages/sandbox/sandbox-daytona"],
@@ -2806,6 +2831,10 @@
     "@koi/sandbox-router": ["@koi/sandbox-router@workspace:packages/sandbox/sandbox-router"],
 
     "@koi/sandbox-ssh": ["@koi/sandbox-ssh@workspace:packages/sandbox/sandbox-ssh"],
+
+    "@koi/sandbox-vercel": ["@koi/sandbox-vercel@workspace:packages/sandbox/sandbox-vercel"],
+
+    "@koi/sandbox-wasm": ["@koi/sandbox-wasm@workspace:packages/sandbox/sandbox-wasm"],
 
     "@koi/scheduler": ["@koi/scheduler@workspace:packages/sched/scheduler"],
 

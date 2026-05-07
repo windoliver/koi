@@ -131,6 +131,15 @@ export interface CreateKoiOptions {
    * not affect the active engine or history.
    */
   readonly onContextEngineSwap?: (event: import("@koi/core").ContextEngineSwapEvent) => void;
+  /**
+   * Edge function adapters keyed by name (e.g. `"cloudflare"`, `"vercel"`).
+   * The runtime exposes them through `runtime.edgeAdapters[name]` so hosts
+   * can dispatch class-A edge workloads through a typed registry instead of
+   * out-of-band wiring. Adapters are L2 packages (`@koi/sandbox-cloudflare`,
+   * `@koi/sandbox-vercel`); the engine never imports them — hosts pass the
+   * already-constructed adapter values here.
+   */
+  readonly edgeAdapters?: Readonly<Record<string, import("@koi/core").EdgeFunctionAdapter>>;
   /** Iteration guard limits. Defaults to DEFAULT_ITERATION_LIMITS. */
   readonly limits?: Partial<IterationLimits>;
   /** Loop detection configuration. Defaults to DEFAULT_LOOP_DETECTION. Set to false to disable. */
@@ -300,6 +309,13 @@ export interface KoiRuntime {
   readonly currentRunId: RunId | undefined;
   /** Component key conflicts detected during assembly. Empty when no keys collide. */
   readonly conflicts: readonly AssemblyConflict[];
+  /**
+   * Edge function adapters registered via `createKoi({ edgeAdapters })`.
+   * Keys are adapter names (`"cloudflare"`, `"vercel"`, …). Absent when no
+   * adapters were registered. Hosts dispatch class-A edge workloads through
+   * this registry; the engine itself does not call into them.
+   */
+  readonly edgeAdapters?: Readonly<Record<string, import("@koi/core").EdgeFunctionAdapter>>;
   /** Run the agent with the given input. Returns a {@link RunHandle} — an async
    *  iterable of engine events that also carries a run-scoped `.interrupt()` and
    *  the `runId` assigned to this invocation. Use the handle's `.interrupt()`

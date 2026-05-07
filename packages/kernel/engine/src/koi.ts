@@ -2044,10 +2044,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               // eviction, checkpoint) is released. Mark as stopBlocked
               // because EOF without a real `done` is an interrupted
               // terminal path, not a successful turn.
-              if (
-                contextEngineSwapController !== undefined &&
-                contextEngineSwapController.hasActivePin()
-              ) {
+              if (contextEngineSwapController?.hasActivePin()) {
                 for (const pinnedTurnId of contextEngineSwapController.pinnedTurnIds()) {
                   const pinnedEngine = contextEngineSwapController.current(pinnedTurnId);
                   if (pinnedEngine.onAfterTurn !== undefined) {
@@ -2696,6 +2693,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       return currentRunIdRef;
     },
     conflicts,
+    edgeAdapters: options.edgeAdapters ?? {},
 
     run(input: EngineInput): RunHandle {
       if (poisoned) {

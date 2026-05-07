@@ -114,6 +114,21 @@ export {
   createReplayContext,
   loadCassette,
 } from "@koi/replay";
+// Cloudflare edge function adapter (issue #1377) — stable helper/contract
+// surface only. The experimental factory (`EXPERIMENTAL_createCloudflareAdapter`)
+// is NOT re-exported here because its `create()` path is design-only and the
+// renamed factory deliberately requires opting in at the package import site.
+// The helpers below (config validator, JCS canonicaliser, fingerprint,
+// shim-response mapper) and the config type are stable building blocks
+// callers need today, so they ship under the stable runtime root.
+// `@koi/sandbox-vercel` is fully design-only and is not exported.
+export type { CloudflareAdapterConfig } from "@koi/sandbox-cloudflare";
+export {
+  computeDedupeFingerprint,
+  jcsCanonicalise,
+  mapShimResponse,
+  validateCloudflareAdapterConfig,
+} from "@koi/sandbox-cloudflare";
 // Sandbox router (multi-backend executor — issue #1641)
 export type {
   BuildDecisionInput,
@@ -133,6 +148,20 @@ export type {
   SshTarget,
 } from "@koi/sandbox-ssh";
 export { createSshAdapter, defaultSshClientFactory } from "@koi/sandbox-ssh";
+// In-process WASM executor types only (issue #1377). The `createWasmExecutor`
+// factory is intentionally NOT re-exported here: the in-process implementation
+// runs the guest synchronously and cannot preempt a runaway export, so it is
+// not a safe default for untrusted WASM. Trusted callers import the factory
+// directly from `@koi/sandbox-wasm`. A future Worker-thread-backed executor
+// will be the default once preemption is available.
+export type {
+  WasmCall,
+  WasmError,
+  WasmErrorCode,
+  WasmExecuteOptions,
+  WasmExecutor,
+  WasmResult,
+} from "@koi/sandbox-wasm";
 // Activity-based stream timeouts (#1638)
 export type {
   ActivityTerminationReason,

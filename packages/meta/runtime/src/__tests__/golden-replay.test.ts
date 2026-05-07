@@ -16668,6 +16668,95 @@ describe("Golden: @koi/agent-procfs", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Standalone golden queries: @koi/sandbox-wasm (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/sandbox-wasm", () => {
+  // Hand-assembled (i32, i32) -> i32 add module — same fixture used by the
+  // package's own unit tests. Inlined here so this golden does not depend on
+  // any package-internal helpers.
+  const ADD_MODULE_BYTES = new Uint8Array([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01,
+    0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x07, 0x01, 0x03, 0x61, 0x64, 0x64, 0x00, 0x00, 0x0a, 0x09,
+    0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6a, 0x0b,
+  ]);
+
+  test("createWasmExecutor executes a real WASM export and returns its value", async () => {
+    const { createWasmExecutor } = await import("@koi/sandbox-wasm");
+    const executor = createWasmExecutor();
+    const result = await executor.execute(ADD_MODULE_BYTES, { export: "add", args: [7, 35] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.output).toBe(42);
+    expect(result.value.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  test("createWasmExecutor rejects non-WASM bytes with INVALID_BYTES", async () => {
+    const { createWasmExecutor } = await import("@koi/sandbox-wasm");
+    const executor = createWasmExecutor();
+    const result = await executor.execute(new Uint8Array([1, 2, 3, 4]), {
+      export: "add",
+      args: [],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("INVALID_BYTES");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Standalone golden queries: @koi/sandbox-cloudflare (3 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/sandbox-cloudflare", () => {
+  test("EXPERIMENTAL_createCloudflareAdapter rejects empty ownerId at config validation", async () => {
+    const { EXPERIMENTAL_createCloudflareAdapter } = await import("@koi/sandbox-cloudflare");
+    const r = EXPERIMENTAL_createCloudflareAdapter(
+      {
+        accountId: "acct",
+        apiToken: "tok",
+        ownerId: "",
+        dedupeDurableObjectNamespaceId: "ns-1",
+      },
+      { iAcceptUnstableContract: true },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe("INVALID_CONFIG");
+  });
+
+  test("computeDedupeFingerprint is JCS-stable across object-key orderings", async () => {
+    const { computeDedupeFingerprint } = await import("@koi/sandbox-cloudflare");
+    const a = await computeDedupeFingerprint("acme", { foo: 1, bar: 2 });
+    const b = await computeDedupeFingerprint("acme", { bar: 2, foo: 1 });
+    expect(a).toBe(b);
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("mapShimResponse maps the spec's host-side contract surface", async () => {
+    const { mapShimResponse } = await import("@koi/sandbox-cloudflare");
+    const ok = mapShimResponse({
+      status: 200,
+      resultKind: "success",
+      shimErrorCode: null,
+      body: { v: 1 },
+      durationMs: 1,
+    });
+    expect(ok.ok).toBe(true);
+    const expired = mapShimResponse({
+      status: 410,
+      resultKind: "operation-expired",
+      shimErrorCode: null,
+      body: { dedupeExpiresAtMs: 100 },
+      durationMs: 1,
+    });
+    expect(expired.ok).toBe(false);
+    if (expired.ok) return;
+    expect(expired.error.context?.subcode).toBe("OPERATION_EXPIRED");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/agent-discovery (2 queries)
 //
 // Standalone — no cassette replay. Validates createDiscoveryProvider attaches
