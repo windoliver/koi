@@ -13,6 +13,16 @@
  */
 
 import type { AnomalyDetail, AnomalySignal } from "./agent-anomaly.js";
+import type { AgentDefinition } from "./agent-definition.js";
+import type {
+  CompositionCapabilities,
+  CompositionMoment,
+  CompositionPlan,
+  CompositionPlanner,
+  CompositionStep,
+  CompositionTrigger,
+} from "./composition-planner.js";
+import type { AgentId } from "./ecs.js";
 import type { ForgeDemandSignal } from "./forge-demand.js";
 import type { SchedulerEvent } from "./scheduler.js";
 import type {
@@ -159,3 +169,104 @@ void _subsetCheck;
 type _IsStrictlyNarrow = SchedulerEvent extends CompositionSchedulerEvent ? false : true;
 const _strictCheck: _IsStrictlyNarrow = true;
 void _strictCheck;
+
+// ---------------------------------------------------------------------------
+// 7. Composition planning contracts
+// ---------------------------------------------------------------------------
+
+// CompositionMoment.kind must be accessible for discriminant narrowing.
+type _MomentKindCheck = CompositionMoment["kind"];
+const _momentKindCheck: _MomentKindCheck = "task_terminal";
+void _momentKindCheck;
+
+// Concrete trigger must satisfy the structural contract.
+const _triggerConformance: CompositionTrigger = {
+  id: "trigger-1",
+  source: "governance",
+  confidence: 0.8,
+  moment: { kind: "capability_gap", missing: "diagnostic-agent" },
+  suggestedCapabilities: ["spawn_agent"],
+  context: {},
+  emittedAt: 1,
+};
+void _triggerConformance;
+
+// CompositionCapabilities should describe declarative spawnable agent definitions.
+type _AgentsAreDefinitions = CompositionCapabilities["agents"] extends readonly AgentDefinition[]
+  ? true
+  : false;
+const _agentsShapeCheck: _AgentsAreDefinitions = true;
+void _agentsShapeCheck;
+
+const _capabilitiesConformance: CompositionCapabilities = {
+  tools: [],
+  agents: [
+    {
+      agentType: "researcher",
+      whenToUse: "Deep research on complex topics",
+      source: "built-in",
+      manifest: { name: "researcher", version: "1.0.0", model: { name: "sonnet" } },
+      name: "researcher",
+      description: "Deep research on complex topics",
+    },
+  ],
+  schedules: [],
+};
+void _capabilitiesConformance;
+
+// Spawn-related step variant should preserve the delivery contract and engine input.
+type _SpawnStep = Extract<CompositionStep, { kind: "spawn_agent" }>;
+const _spawnStepConformance: _SpawnStep = {
+  kind: "spawn_agent",
+  agentType: "researcher",
+  input: { kind: "text", text: "spawn a helper agent" },
+  delivery: { kind: "streaming" },
+};
+void _spawnStepConformance;
+
+// Task submission should include scheduler mode and task options.
+type _SubmitTaskStep = Extract<CompositionStep, { kind: "submit_task" }>;
+const _submitTaskStepConformance: _SubmitTaskStep = {
+  kind: "submit_task",
+  agentId: "agent-1" as AgentId,
+  mode: "dispatch",
+  input: { kind: "text", text: "queue follow-up work" },
+  taskOptions: { delayMs: 25, priority: 2, maxRetries: 3 },
+};
+void _submitTaskStepConformance;
+
+// Schedule creation should carry scheduler mode, timezone, and task options.
+type _CreateScheduleStep = Extract<CompositionStep, { kind: "create_schedule" }>;
+const _createScheduleStepConformance: _CreateScheduleStep = {
+  kind: "create_schedule",
+  expression: "0 9 * * 1-5",
+  agentId: "agent-2" as AgentId,
+  mode: "spawn",
+  input: { kind: "text", text: "morning check-in" },
+  timezone: "America/Los_Angeles",
+  taskOptions: { priority: 1, maxRetries: 1 },
+};
+void _createScheduleStepConformance;
+
+// Planner must return a valid plan containing a notify_user step.
+const _plannerConformance: CompositionPlanner = {
+  async plan(
+    trigger: CompositionTrigger,
+    _capabilities: CompositionCapabilities,
+  ): Promise<CompositionPlan> {
+    const step: CompositionStep = {
+      kind: "notify_user",
+      channel: "inbox",
+      message: trigger.id,
+      priority: "normal",
+    };
+
+    return {
+      triggerId: trigger.id,
+      steps: [step],
+      estimatedCost: 0,
+      requiresApproval: false,
+    };
+  },
+};
+void _plannerConformance;

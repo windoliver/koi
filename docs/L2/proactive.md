@@ -244,6 +244,100 @@ Tests use a stub `SchedulerComponent` whose `submit`, `schedule`, `unschedule`, 
 Per project convention, tests are colocated (`*.test.ts` next to `*.ts`).
 Coverage target: 80 % lines/functions/statements (project default).
 
+## Composition planner (issue #1299)
+
+The package additionally exposes a planning layer that turns observed
+`SystemSignal`s into `CompositionPlan` values. Execution stays out of scope
+— this layer ends at plan generation + approval classification. The
+composition tools (`sleep` / `schedule_cron` / etc.) and the planner are
+independent surfaces that share `@koi/proactive` only because both are
+"proactive" autonomy primitives.
+
+### Public API
+
+```typescript
+mapSystemSignalToCompositionTrigger(signal: SystemSignal): CompositionTrigger | undefined
+
+createRuleBasedCompositionPlanner(config?: RuleBasedCompositionPlannerConfig): CompositionPlanner
+createLlmCompositionPlanner(config: LlmCompositionPlannerConfig): CompositionPlanner
+
+computeCompositionApproval(
+  trigger: CompositionTrigger,
+  estimatedCost: number,
+  policy: CompositionApprovalPolicy,
+  context: CompositionApprovalContext,
+): boolean
+```
+
+All `Composition*` types live in `@koi/core` (L0). This package contributes
+only behavior — there are no new L0 types here.
+
+### Signal → trigger mapping
+
+`mapSystemSignalToCompositionTrigger` is exhaustive over `SystemSignal.kind`:
+
+| Signal kind | Resulting `CompositionMoment` | Notes |
+|---|---|---|
+| `governance` | `threshold_crossed` | `error_rate` adds `spawn_agent` + `notify_user` capability hints |
+| `forge_demand` | `capability_gap` | `missing` derived from inner `ForgeTrigger`; signal preserved in `context.forgeDemand` |
+| `schedule` | `task_terminal` | outcome ∈ `completed`/`failed`/`dead_letter`/`cancelled`; only `failed`/`dead_letter` carry follow-up capability hints |
+| `anomaly` (metric-shift kinds) | `frontier_changed` | `error_spike`, `model_latency_anomaly`, `token_spike`, positive `goal_drift`, `tool_rate_exceeded` |
+| `anomaly` (other), `vfs`, `agent_lifecycle`, `compaction` | `undefined` | not yet mapped — kept silent rather than emitting noisy triggers |
+
+### Rule-based planner
+
+Deterministic planner driven by `trigger.moment.kind`. Capability gating
+is mandatory — the planner reads `CompositionCapabilities.agents` and
+**never emits a `spawn_agent` step for an agent type that is not
+present**. The fallback when an agent type is missing is either a
+non-spawn step (`notify_user` for `error_rate`) or an empty plan
+(`requiresApproval = true` because zero-step plans always require
+human review).
+
+| Moment | Step(s) emitted (when capable) | Behavior when capability missing |
+|---|---|---|
+| `capability_gap` w/ `forge_demand{ suggestedBrickKind: "skill" }` | `forge_skill` | empty plan → approval required |
+| `threshold_crossed` (`error_rate`, `direction: "above"`) | `spawn_agent("diagnostic")` + `notify_user` (high) | `notify_user` only |
+| `task_terminal` (`failed` / `dead_letter`) | `spawn_agent("recovery")` | empty plan → approval required |
+| `task_terminal` (`completed` / `cancelled`) | none | `cancelled` is an explicit no-op — queue cancellation never began work |
+| `frontier_changed` | `spawn_agent("researcher", deferred)` | empty plan → approval required |
+| `pattern_matched`, `external_event` | none | requires explicit human-driven plan |
+
+`forge_skill` only fires for `suggestedBrickKind === "skill"`. Other forge
+demand kinds (tool / agent / middleware / channel / composite) yield an
+empty plan rather than a misleading `forge_skill` step.
+
+### LLM planner
+
+Wraps a `CompositionPlannerAdapter` (anything that maps
+`{ trigger, capabilities }` → JSON string). The output is parsed against a
+strict Zod schema covering every `CompositionStep` variant — `tool_call`,
+`spawn_agent`, `submit_task`, `create_schedule`, `forge_skill`,
+`notify_user`. Schema mismatch, malformed JSON, trigger-id mismatch, and
+non-finite / negative `estimatedCost` all raise `AdapterPlanParseError`.
+
+If `fallbackToRulePlanner` is configured, parse errors fall through to
+the rule planner and the resulting plan is then **reclassified** under
+the LLM planner's own `approvalPolicy` (so a rule-planner fallback
+inherits the LLM-side novelty / confidence gates). Local errors raised
+inside `classifyNovelty` are not silenced — they surface to the caller.
+
+### Approval policy
+
+`computeCompositionApproval` returns `true` (approval required) when **any**
+of these hold:
+
+- `trigger.confidence < policy.confidenceThreshold` — strict less-than:
+  equal-to-threshold does **not** require approval.
+- `estimatedCost > policy.maxEstimatedCost` — strict greater-than:
+  equal-to-budget does **not** require approval.
+- `policy.requireApprovalOnNovelty && context.isNovel`.
+
+Default policy: `{ confidenceThreshold: 0.5, maxEstimatedCost: 10,
+requireApprovalOnNovelty: true }`. The rule planner additionally
+short-circuits to `requiresApproval: true` whenever it produces a
+zero-step plan, so the runtime never executes an empty plan silently.
+
 ## Future Phases (out of scope here)
 
 Phase 3a tracker (this issue): sleep / wake / cron tools.
@@ -253,7 +347,7 @@ Phase 3a tracker (this issue): sleep / wake / cron tools.
 | 3a (now) | #1195 | This package — sleep + cron |
 | 3a | #1297 | `SystemSignal` L0 contract |
 | 3a | #1298 | System signal adapters |
-| 3a | #1299 | `CompositionTrigger` + `CompositionPlanner` |
+| 3a (now) | #1299 | `CompositionTrigger` + `CompositionPlanner` (rule + LLM) — landed in this package |
 | 3a | #1300 | `CompositionExecutor` + governance gate |
 | 3-4 | #1301 | Proactive delivery + temporal durability |
 
