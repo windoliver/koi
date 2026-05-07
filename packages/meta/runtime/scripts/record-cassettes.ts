@@ -670,9 +670,9 @@ function createForgeToolSet(): {
 // where forge tools are part of the descriptor list but not invoked).
 const initialForgeSet = createForgeToolSet();
 const _forgeToolTool = initialForgeSet.forgeToolTool;
-const forgeMiddlewareTool = initialForgeSet.forgeMiddlewareTool;
-const forgeListTool = initialForgeSet.forgeListTool;
-const forgeInspectTool = initialForgeSet.forgeInspectTool;
+const _forgeMiddlewareTool = initialForgeSet.forgeMiddlewareTool;
+const _forgeListTool = initialForgeSet.forgeListTool;
+const _forgeInspectTool = initialForgeSet.forgeInspectTool;
 
 // ---------------------------------------------------------------------------
 // Memory tools (backed by @koi/memory-tools with in-memory backend)

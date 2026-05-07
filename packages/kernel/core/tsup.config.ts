@@ -37,6 +37,8 @@ export default defineConfig({
     "src/brick-store.ts",
     "src/filesystem-backend.ts",
     "src/adapter-capabilities.ts",
+    "src/edge-function-adapter.ts",
+    "src/runtime-fence-targets.ts",
     "src/sandbox-adapter.ts",
     "src/sandbox-executor.ts",
     "src/permission-backend.ts",

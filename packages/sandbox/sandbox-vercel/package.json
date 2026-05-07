@@ -1,0 +1,27 @@
+{
+  "name": "@koi/sandbox-vercel",
+  "description": "Vercel Functions EdgeFunctionAdapter (DESIGN-ONLY in v1) — KV-backed dedupe per (ownerId, operationId).",
+  "version": "0.0.1-design-only",
+  "private": true,
+  "koi": {
+    "optional": true,
+    "designOnly": true
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
+  "devDependencies": {}
+}

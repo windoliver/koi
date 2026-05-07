@@ -20,6 +20,7 @@ export { CONTEXT_ENGINE, ContextEngine, ContextEngineIdentity, ContextEngineSwap
 export { AgentCostBreakdown, BudgetTracker, CostBreakdown, CostCalculator, CostEntry, CostTokenBreakdown, ModelCostBreakdown, ProviderCostBreakdown, ToolCostBreakdown, UsageInfo, formatCost, formatTokens } from './chunk-HASH.js';
 export { BackgroundSessionEvent, BackgroundSessionRecord, BackgroundSessionRegistry, BackgroundSessionStatus, BackgroundSessionUpdate, DEFAULT_HEARTBEAT_CONFIG, DEFAULT_WORKER_RESTART_POLICY, HeartbeatConfig, SUPERVISOR_HEALTH_STATUS, Supervisor, SupervisorConfig, SupervisorHealth, SupervisorHealthMetrics, SupervisorHealthStatus, WorkerBackend, WorkerBackendKind, WorkerEvent, WorkerHandle, WorkerHealth, WorkerId, WorkerRestartPolicy, WorkerSpawnRequest, validateBackgroundSessionRecord, validateSupervisorConfig, workerId } from './daemon.js';
 export { Breakpoint, BreakpointId, BreakpointOptions, BreakpointPredicate, ComponentMetadata, ComponentSnapshot, DEFAULT_DEBUG_BUFFER_SIZE, DEFAULT_INSPECT_LIMIT, DebugEvent, DebugObserver, DebugSession, DebugSessionId, DebugSnapshot, DebugState, InspectComponentOptions, StepOptions, breakpointId, debugSessionId } from './debug.js';
+export { EdgeDestroyOutcome, EdgeFunctionAdapter, EdgeFunctionCreateConfig, EdgeFunctionInstance, EdgeIntegrityVerification, EdgeInvokeRequest, EdgeInvokeResult, EdgeWorkloadClass } from './chunk-HASH.js';
 export { ElicitationOption, ElicitationQuestion, ElicitationResult } from './elicitation.js';
 export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, EventEnvelope, EventInput, ReadOptions, ReadResult, SubscribeOptions, SubscriptionHandle } from './chunk-HASH.js';
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
@@ -37,6 +38,7 @@ export { Resolver, SourceBundle, SourceLanguage } from './resolver.js';
 export { RetrySignal, RetrySignalBroker, RetrySignalReader, RetrySignalWriter } from './chunk-HASH.js';
 export { DecisionSignal, DecisionSignalKind, RichContent, RichStepMetrics, RichTrajectoryStep, RichTrajectoryStore, TrajectoryDocumentStore } from './chunk-HASH.js';
 export { ActionEntry, IssueEntry, ReportStore, ReportSummary, RunCost, RunDuration, RunReport } from './chunk-HASH.js';
+export { RUNTIME_FENCE_TARGETS, RUNTIME_FENCE_TOP_LEVEL_IDENTIFIERS } from './chunk-HASH.js';
 export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance, SandboxInstanceState, SandboxProcessHandle, SandboxSpawnOptions, SandboxStdinPipe } from './chunk-HASH.js';
 export { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult } from './chunk-HASH.js';
 export { FilesystemPolicy, NetworkPolicy, NexusFuseMount, ResourceLimits, SandboxProfile, SandboxSshTarget } from './chunk-HASH.js';
@@ -5701,6 +5703,161 @@ interface CapabilityRequirements {
 }
 
 export type { AdapterCapabilities, AdapterCapability, BackendDescriptor, BackendState, CapabilityRequirements };
+"
+`;
+
+exports[`@koi/core API surface ./edge-function-adapter has stable type surface 1`] = `
+"import { Result, KoiError } from './errors.js';
+import { SandboxProfile } from './chunk-HASH.js';
+import './common.js';
+import './chunk-HASH.js';
+
+/**
+ * Edge function adapter contract — package-local L2 contract for JS-only edge runtimes.
+ *
+ * Distinct from \`SandboxAdapter\` (which is a process/\`exec\`-shaped contract).
+ * Cloudflare Workers and Vercel Edge Functions execute JavaScript with no
+ * argv/exit-code/shell model, so they implement THIS contract instead.
+ *
+ * v1 admits ONLY \`workloadClass: "A"\` (side-effect-free handlers). The dedupe
+ * store caches outputs for caller convenience; class-A re-execution under the
+ * documented partial-failure paths is intrinsically harmless.
+ *
+ * See \`docs/superpowers/specs/2026-05-05-edge-sandboxes-design.md\` for the
+ * full normative contract.
+ */
+
+/** Workload classification carried on adapter create config (NOT on \`SandboxProfile\`). */
+type EdgeWorkloadClass = "A";
+/** Integrity verification mode for edge-adapter gateway attestation. */
+type EdgeIntegrityVerification = "cached" | "strict" | "async";
+/**
+ * Outcome of \`EdgeFunctionInstance.destroy()\`. Spec calls for "cancellation
+ * honesty": destroy() reports whether the underlying provider artifact was
+ * actually torn down, not just whether the local handle was released. Kind
+ * names match the normative design doc verbatim:
+ *
+ *   - \`destroyed-clean\`: local handle released AND provider artifact deleted.
+ *   - \`destroyed-local-remote-leaked\`: local handle released, provider
+ *     artifact remained allocated. Operator must reconcile to avoid
+ *     orphan-cost.
+ *   - \`destroyed-local-remote-uncertain\`: remote teardown call failed mid-
+ *     flight; provider state is unknown.
+ *   - \`destroyed-local-remote-indeterminate\`: best-effort teardown completed
+ *     locally with a known in-flight invoke that may still execute remotely.
+ *   - \`already-destroyed\`: prior destroy() already cleared the artifact.
+ *   - \`detached-only\`: local handle released without attempting remote
+ *     teardown (e.g. attached to an external lifecycle).
+ */
+type EdgeDestroyOutcome = {
+    readonly kind: "destroyed-clean";
+    /** Provider artifacts that were successfully torn down (gateway + handler-runner for paired adapters). */
+    readonly providerArtifacts?: readonly string[];
+} | {
+    readonly kind: "destroyed-local-remote-leaked";
+    /** Artifacts that remained allocated. Multiple entries when a paired adapter (gateway + handler-runner) failed teardown. */
+    readonly providerArtifacts: readonly string[];
+    readonly reason: string;
+} | {
+    readonly kind: "destroyed-local-remote-uncertain";
+    readonly providerArtifacts?: readonly string[];
+    readonly reason: string;
+} | {
+    readonly kind: "destroyed-local-remote-indeterminate";
+    readonly providerArtifacts?: readonly string[];
+    readonly inFlightRequestIds: readonly string[];
+} | {
+    readonly kind: "already-destroyed";
+    readonly providerArtifacts?: readonly string[];
+} | {
+    readonly kind: "detached-only";
+    readonly reason: string;
+    readonly providerArtifacts?: readonly string[];
+};
+/**
+ * Inbound envelope for a single \`invoke()\` attempt against a deployed edge
+ * function. \`operationId\` is the durable dedupe key; \`requestId\` is the
+ * per-attempt nonce used only for shim-side dedupe.
+ */
+interface EdgeInvokeRequest {
+    readonly payload: unknown;
+    /** Caller-owned, stable for the full logical operation, persists across destroy/recreate. */
+    readonly operationId: string;
+    /** UUIDv4 per network attempt. Used ONLY for shim-side per-isolate dedupe. */
+    readonly requestId: string;
+    /**
+     * Caller-supplied retry-horizon expiry (Unix ms). After this timestamp,
+     * retries of the same \`operationId\` are REJECTED with \`OPERATION_EXPIRED\`.
+     * Hard cap: 30 days from the moment of first claim.
+     */
+    readonly dedupeExpiresAtMs: number;
+    /**
+     * Caller waiter budget. Default 30_000 ms; max 30_000 ms. NOT capped by
+     * \`profile.resources.timeoutMs\` — waiter and handler budgets are distinct.
+     */
+    readonly waiterTimeoutMs?: number;
+    readonly signal?: AbortSignal;
+}
+/** Successful response body from a deployed edge function. */
+interface EdgeInvokeResult {
+    readonly output: unknown;
+    readonly durationMs: number;
+    readonly truncated?: boolean;
+}
+/** A deployed edge-function instance bound to one piece of operator code. */
+interface EdgeFunctionInstance {
+    readonly invoke: (req: EdgeInvokeRequest) => Promise<Result<EdgeInvokeResult, KoiError>>;
+    readonly destroy: () => Promise<Result<EdgeDestroyOutcome, KoiError>>;
+}
+/** Configuration accepted by \`EdgeFunctionAdapter.create\`. */
+interface EdgeFunctionCreateConfig {
+    readonly code: string;
+    readonly profile: SandboxProfile;
+    /**
+     * REQUIRED. Workload classification. v1 supports ONLY \`"A"\`; other values
+     * are rejected at construction with \`WORKLOAD_CLASS_NOT_SUPPORTED\`.
+     */
+    readonly workloadClass: EdgeWorkloadClass;
+}
+/**
+ * Backend that creates \`EdgeFunctionInstance\` deployments from operator code.
+ * Each provider (Cloudflare, Vercel) is an independent L2 package.
+ */
+interface EdgeFunctionAdapter {
+    readonly name: string;
+    readonly version: string;
+    readonly create: (config: EdgeFunctionCreateConfig) => Promise<Result<EdgeFunctionInstance, KoiError>>;
+}
+
+export type { EdgeDestroyOutcome, EdgeFunctionAdapter, EdgeFunctionCreateConfig, EdgeFunctionInstance, EdgeIntegrityVerification, EdgeInvokeRequest, EdgeInvokeResult, EdgeWorkloadClass };
+"
+`;
+
+exports[`@koi/core API surface ./runtime-fence-targets has stable type surface 1`] = `
+"/**
+ * Runtime-fence target catalogue — the list of provider-mutable globals that
+ * a class-A edge handler is forbidden to reach. Used by:
+ *
+ *   - The edge-adapter shim's runtime fence (installed before operator code runs).
+ *   - The edge-adapter's recursive AST scan over the operator module graph.
+ *   - The CI gate that asserts the catalogue and the fence are in sync.
+ *
+ * v1 class A = side-effect-free. Any path that can reach the network, persistent
+ * storage, another isolate, or arbitrary WASM compilation is NOT class A.
+ *
+ * Adding a target here is a normative-contract change — the spec section
+ * "Class-A workload restriction" must be updated atomically.
+ */
+/** Top-level globals (and member chains) banned in class-A handler code. */
+declare const RUNTIME_FENCE_TARGETS: readonly string[];
+/**
+ * Identifier-only top-level forms of the targets above. The AST scan rejects
+ * any reference to one of these names in operator-authored modules; the
+ * runtime fence overwrites them with throwing accessors.
+ */
+declare const RUNTIME_FENCE_TOP_LEVEL_IDENTIFIERS: readonly string[];
+
+export { RUNTIME_FENCE_TARGETS, RUNTIME_FENCE_TOP_LEVEL_IDENTIFIERS };
 "
 `;
 
