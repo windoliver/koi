@@ -825,7 +825,7 @@ export async function resolveFileSystemAsync(
             // newly-introduced path that overlays a protected root, attempt
             // rollback and fail closed.
             if (result.value.pathUnknown === true || result.value.path === "") {
-              if (protectedRoots.length > 0 && transport.listMounts !== undefined) {
+              if (transport.listMounts !== undefined) {
                 const listed = await transport.listMounts();
                 if (!listed.ok) {
                   // Cannot verify safety. The bridge committed *something* and
@@ -857,7 +857,17 @@ export async function resolveFileSystemAsync(
                   };
                 }
                 const candidates = listed.value.filter((p) => !preMounts.has(p));
-                const offending = candidates.filter((p) => isPathProtectedByMount(p));
+                // Two ways a candidate is "offending":
+                // (1) it overlays a protected root (active backend / scope /
+                //     glob-static-prefix), or
+                // (2) it overlaps an existing live mount in the pre-mutation
+                //     snapshot — required even when protectedRoots is empty
+                //     so namespace-root sessions still reject silent shadow
+                //     mounts onto already-approved paths.
+                const offending = candidates.filter(
+                  (p) =>
+                    isPathProtectedByMount(p) || overlapsExistingMount(p, preMounts) !== undefined,
+                );
                 if (offending.length > 0) {
                   const rollbackErrors: string[] = [];
                   if (innerRemove !== undefined) {

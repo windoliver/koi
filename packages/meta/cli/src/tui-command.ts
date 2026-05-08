@@ -2719,7 +2719,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const runtimeReady =
     runtimeMode === "remote"
       ? (async (): Promise<void> => {
-          const remoteToken = process.env["KOI_GATEWAY_TOKEN"];
+          const remoteToken = process.env.KOI_GATEWAY_TOKEN;
           if (remoteToken === undefined || remoteToken.length === 0) {
             store.dispatch({
               kind: "add_info",
@@ -6457,6 +6457,23 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 if (!liveAtRefresh.has(described.value.path)) return;
                 const currentLive = nexusFilesystemTransport?.mounts ?? [];
                 if (!currentLive.includes(described.value.path)) return;
+                // Path-keyed dedup across manifest and runtime: if the path
+                // already appears in the startup-seeded manifest, update the
+                // manifest entry in place rather than calling addRuntime,
+                // which would create a duplicate (one in <mounted_connectors>
+                // and one in <runtime_mounted_connectors>) and misclassify a
+                // static manifest mount as runtime-added.
+                const snapshot = mountDescriptionsState.getSnapshot();
+                const manifestIdx = snapshot.manifest.findIndex(
+                  (e) => e.path === described.value.path,
+                );
+                if (manifestIdx !== -1) {
+                  const updated = snapshot.manifest.map((e, i) =>
+                    i === manifestIdx ? described.value : e,
+                  );
+                  mountDescriptionsState.setManifest(updated);
+                  return;
+                }
                 mountDescriptionsState.addRuntime(described.value);
               }),
             );
