@@ -8,9 +8,9 @@ import type {
   PlaybookProposal,
   PlaybookProposalStore,
   PlaybookSection,
+  PromotionThresholds,
   StructuredPlaybook,
   StructuredPlaybookStore,
-  PromotionThresholds,
 } from "@koi/ace-types";
 
 export interface PromotionGateDeps {
@@ -56,11 +56,12 @@ function nextBulletId(playbook: StructuredPlaybook): string {
   return `str-${String(maxId + 1).padStart(5, "0")}`;
 }
 
-function findSection(playbook: StructuredPlaybook, sectionName: string): PlaybookSection | undefined {
+function findSection(
+  playbook: StructuredPlaybook,
+  sectionName: string,
+): PlaybookSection | undefined {
   const normalized = normalizeSectionKey(sectionName);
-  return playbook.sections.find(
-    (section) => normalizeSectionKey(section.name) === normalized,
-  );
+  return playbook.sections.find((section) => normalizeSectionKey(section.name) === normalized);
 }
 
 function ensureSection(playbook: StructuredPlaybook, sectionName: string): PlaybookSection {
@@ -115,9 +116,9 @@ function readNumberMetric(
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function asMetricRecord(metrics: PlaybookEvaluation["metrics"] | null | undefined):
-  | Readonly<Record<string, unknown>>
-  | undefined {
+function asMetricRecord(
+  metrics: PlaybookEvaluation["metrics"] | null | undefined,
+): Readonly<Record<string, unknown>> | undefined {
   if (metrics === null || metrics === undefined) return undefined;
   if (typeof metrics !== "object") return undefined;
   return metrics as Readonly<Record<string, unknown>>;
@@ -373,7 +374,9 @@ export async function rollbackPromotion(
   }
 
   if (targetVersion >= current.version) {
-    throw new Error("ACE promotion gate: rollback targetVersion must be older than the current head");
+    throw new Error(
+      "ACE promotion gate: rollback targetVersion must be older than the current head",
+    );
   }
 
   const target = await deps.structuredStore.getVersion(proposal.playbookId, targetVersion);

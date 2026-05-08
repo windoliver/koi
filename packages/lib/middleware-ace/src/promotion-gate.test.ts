@@ -4,9 +4,9 @@ import type {
   PlaybookEvaluation,
   PlaybookProposal,
   PlaybookProposalStore,
+  PromotionThresholds,
   StructuredPlaybook,
   StructuredPlaybookStore,
-  PromotionThresholds,
 } from "@koi/ace-types";
 
 import {
@@ -90,9 +90,7 @@ const structuredPlaybook: StructuredPlaybook = {
   version: 1,
 };
 
-function createStructuredPlaybook(
-  overrides: Partial<StructuredPlaybook> = {},
-): StructuredPlaybook {
+function createStructuredPlaybook(overrides: Partial<StructuredPlaybook> = {}): StructuredPlaybook {
   const cloned = structuredClone(structuredPlaybook) as StructuredPlaybook;
   return {
     ...cloned,
@@ -103,11 +101,14 @@ function createStructuredPlaybook(
   };
 }
 
-function createStructuredStore(seed?: StructuredPlaybook): StructuredPlaybookStore {
+function createStructuredStore(
+  ...seedArg: [] | [StructuredPlaybook | undefined]
+): StructuredPlaybookStore {
   const latestById = new Map<string, StructuredPlaybook>();
-  if (arguments.length === 0) {
+  if (seedArg.length === 0) {
     latestById.set(structuredPlaybook.id, createStructuredPlaybook());
-  } else if (seed !== undefined) {
+  } else if (seedArg[0] !== undefined) {
+    const seed = seedArg[0];
     latestById.set(seed.id, seed);
   }
 
@@ -131,11 +132,14 @@ function createStructuredStore(seed?: StructuredPlaybook): StructuredPlaybookSto
   };
 }
 
-function createStructuredStoreWithoutLineage(seed?: StructuredPlaybook): StructuredPlaybookStore {
+function createStructuredStoreWithoutLineage(
+  ...seedArg: [] | [StructuredPlaybook | undefined]
+): StructuredPlaybookStore {
   const latestById = new Map<string, StructuredPlaybook>();
-  if (arguments.length === 0) {
+  if (seedArg.length === 0) {
     latestById.set(structuredPlaybook.id, createStructuredPlaybook());
-  } else if (seed !== undefined) {
+  } else if (seedArg[0] !== undefined) {
+    const seed = seedArg[0];
     latestById.set(seed.id, seed);
   }
 
@@ -186,12 +190,6 @@ function evaluation(
     id: "evaluation-1",
     proposalId: "proposal-1",
     verdict: "promote",
-    metrics: {
-      helpfulRate: 0.7,
-      harmfulRate: 0.1,
-      trials: 5,
-      tokenDelta: 10,
-    },
     evaluatedAt: 2,
     ...overrides,
     metrics: {
@@ -212,9 +210,9 @@ describe("evaluatePromotion", () => {
   });
 
   test("throws when evaluation id is empty", async () => {
-    await expect(
-      evaluatePromotion(proposal, evaluation({ id: "" }), thresholds),
-    ).rejects.toThrow(/evaluation\.id/i);
+    await expect(evaluatePromotion(proposal, evaluation({ id: "" }), thresholds)).rejects.toThrow(
+      /evaluation\.id/i,
+    );
   });
 
   test("throws when evaluation proposal id mismatches", async () => {
@@ -225,21 +223,13 @@ describe("evaluatePromotion", () => {
 
   test("returns reject for a reject verdict", async () => {
     await expect(
-      evaluatePromotion(
-        proposal,
-        evaluation({ verdict: "reject" }),
-        thresholds,
-      ),
+      evaluatePromotion(proposal, evaluation({ verdict: "reject" }), thresholds),
     ).resolves.toBe("reject");
   });
 
   test("returns rollback for a rollback verdict", async () => {
     await expect(
-      evaluatePromotion(
-        proposal,
-        evaluation({ verdict: "rollback" }),
-        thresholds,
-      ),
+      evaluatePromotion(proposal, evaluation({ verdict: "rollback" }), thresholds),
     ).resolves.toBe("rollback");
   });
 
@@ -260,7 +250,9 @@ describe("evaluatePromotion", () => {
     await expect(
       evaluatePromotion(
         proposal,
-        evaluation({ metrics: { helpfulRate: undefined as unknown as number, harmfulRate: 0.1, trials: 5 } }),
+        evaluation({
+          metrics: { helpfulRate: undefined as unknown as number, harmfulRate: 0.1, trials: 5 },
+        }),
         thresholds,
       ),
     ).resolves.toBe("reject");
@@ -314,11 +306,11 @@ describe("evaluatePromotion", () => {
 
   test("returns reject when thresholds are non-finite", async () => {
     await expect(
-      evaluatePromotion(
-        proposal,
-        evaluation(),
-        { minHelpfulRate: Number.NaN, maxHarmfulRate: 0.2, minTrials: 5 },
-      ),
+      evaluatePromotion(proposal, evaluation(), {
+        minHelpfulRate: Number.NaN,
+        maxHarmfulRate: 0.2,
+        minTrials: 5,
+      }),
     ).resolves.toBe("reject");
   });
 
@@ -333,13 +325,7 @@ describe("evaluatePromotion", () => {
   });
 
   test("returns promote when promote verdict meets thresholds", async () => {
-    await expect(
-      evaluatePromotion(
-        proposal,
-        evaluation(),
-        thresholds,
-      ),
-    ).resolves.toBe("promote");
+    await expect(evaluatePromotion(proposal, evaluation(), thresholds)).resolves.toBe("promote");
   });
 
   test("returns promote at exact threshold boundaries", async () => {
@@ -356,11 +342,10 @@ describe("evaluatePromotion", () => {
 
   test("returns reject when token delta exceeds the configured maximum", async () => {
     await expect(
-      evaluatePromotion(
-        proposal,
-        evaluation({ metrics: { tokenDelta: 11 } }),
-        { ...thresholds, maxTokenDelta: 10 },
-      ),
+      evaluatePromotion(proposal, evaluation({ metrics: { tokenDelta: 11 } }), {
+        ...thresholds,
+        maxTokenDelta: 10,
+      }),
     ).resolves.toBe("reject");
   });
 
@@ -466,10 +451,13 @@ describe("applyProposalOperations", () => {
       ...structuredPlaybook,
       sections: [
         {
-          ...structuredPlaybook.sections[0]!,
-          bullets: [structuredPlaybook.sections[0]!.bullets[0]!],
+          ...(structuredPlaybook.sections[0] as StructuredPlaybook["sections"][number]),
+          bullets: [
+            (structuredPlaybook.sections[0] as StructuredPlaybook["sections"][number])
+              .bullets[0] as StructuredPlaybook["sections"][number]["bullets"][number],
+          ],
         },
-        structuredPlaybook.sections[1]!,
+        structuredPlaybook.sections[1] as StructuredPlaybook["sections"][number],
       ],
     };
     const proposalWithPrune: PlaybookProposal = {
@@ -742,8 +730,9 @@ describe("rollbackPromotion", () => {
       [target.version, target],
     ]);
     const store: StructuredPlaybookStore = {
-      get: async (id) => (id === current.id ? (structuredClone(current) as StructuredPlaybook) : undefined),
-      list: async () => [(structuredClone(current) as StructuredPlaybook)],
+      get: async (id) =>
+        id === current.id ? (structuredClone(current) as StructuredPlaybook) : undefined,
+      list: async () => [structuredClone(current) as StructuredPlaybook],
       save: async (playbook) => {
         versions.set(playbook.version, structuredClone(playbook) as StructuredPlaybook);
       },
@@ -751,7 +740,9 @@ describe("rollbackPromotion", () => {
       getVersion: async (id, version) => {
         if (id !== current.id) return undefined;
         const snapshot = versions.get(version);
-        return snapshot !== undefined ? (structuredClone(snapshot) as StructuredPlaybook) : undefined;
+        return snapshot !== undefined
+          ? (structuredClone(snapshot) as StructuredPlaybook)
+          : undefined;
       },
     };
     const proposalStore = createProposalStore();
@@ -800,7 +791,10 @@ describe("rollbackPromotion", () => {
   test("throws when rollback evaluation proposal id does not match the proposal", async () => {
     await expect(
       rollbackPromotion(
-        { structuredStore: createStructuredStore(createStructuredPlaybook({ version: 2 })), clock: () => 500 },
+        {
+          structuredStore: createStructuredStore(createStructuredPlaybook({ version: 2 })),
+          clock: () => 500,
+        },
         createProposal({ baseVersion: 2 }),
         1,
         evaluation({ proposalId: "other-proposal", verdict: "rollback" }),
@@ -811,7 +805,10 @@ describe("rollbackPromotion", () => {
   test("throws when rollback evaluation verdict is not rollback", async () => {
     await expect(
       rollbackPromotion(
-        { structuredStore: createStructuredStore(createStructuredPlaybook({ version: 2 })), clock: () => 500 },
+        {
+          structuredStore: createStructuredStore(createStructuredPlaybook({ version: 2 })),
+          clock: () => 500,
+        },
         createProposal({ baseVersion: 2 }),
         1,
         evaluation({ verdict: "promote" }),
@@ -835,7 +832,10 @@ describe("rollbackPromotion", () => {
   test("throws when rollback target version is not older than the current head", async () => {
     await expect(
       rollbackPromotion(
-        { structuredStore: createStructuredStore(createStructuredPlaybook({ version: 2 })), clock: () => 500 },
+        {
+          structuredStore: createStructuredStore(createStructuredPlaybook({ version: 2 })),
+          clock: () => 500,
+        },
         createProposal({ baseVersion: 2 }),
         2,
         evaluation({ verdict: "rollback" }),

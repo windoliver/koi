@@ -16,12 +16,6 @@ export {
 } from "./in-memory-store.js";
 export type { SelectOptions } from "./injector.js";
 export { formatActivePlaybooksMessage, selectPlaybooks } from "./injector.js";
-export { computeCurationScore, computeRecencyFactor } from "./scoring.js";
-export type { CurateOptions, CurationScorer, StatsByIdentifier } from "./stats-aggregator.js";
-export {
-  aggregateTrajectoryStats,
-  curateTrajectorySummary,
-} from "./stats-aggregator.js";
 export type { PromotionDecision, PromotionGateDeps } from "./promotion-gate.js";
 export {
   applyProposalOperations,
@@ -29,3 +23,9 @@ export {
   evaluatePromotion,
   rollbackPromotion,
 } from "./promotion-gate.js";
+export { computeCurationScore, computeRecencyFactor } from "./scoring.js";
+export type { CurateOptions, CurationScorer, StatsByIdentifier } from "./stats-aggregator.js";
+export {
+  aggregateTrajectoryStats,
+  curateTrajectorySummary,
+} from "./stats-aggregator.js";
