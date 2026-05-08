@@ -1,7 +1,7 @@
-import type { KoiMiddleware } from "@koi/core";
+import type { ForgeDemandSignal } from "@koi/core";
+import type { PolicyCacheHandle } from "../../../lib/middleware-policy-cache/src/index.js";
 import {
   type AutoHarnessConfig,
-  type AutoHarnessPolicyCacheHandle,
   type AutoHarnessStack,
   type AutoHarnessSynthesisResult,
   DEFAULT_MAX_SYNTHESES_PER_SESSION,
@@ -18,19 +18,25 @@ function resolveMaxSynthesesPerSession(value: number | undefined): number {
 }
 
 export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessStack {
-  const policyCacheMiddleware: KoiMiddleware = {
+  const policyCacheMiddleware = {
     name: "policy-cache",
     phase: "intercept",
     priority: 50,
     describeCapabilities: () => undefined,
-  };
-  const policyCacheHandle: AutoHarnessPolicyCacheHandle = {
+  } as const;
+  const policyCacheHandle: PolicyCacheHandle = {
     middleware: policyCacheMiddleware,
+    register: () => ({ ok: true as const, value: undefined }),
+    evict: () => {},
+    size: () => 0,
+    dispose: () => {},
   };
   const maxSynthesesPerSession = resolveMaxSynthesesPerSession(config.maxSynthesesPerSession);
   let synthesesThisSession = 0;
 
-  const synthesizeHarness = async (): Promise<AutoHarnessSynthesisResult> => {
+  const synthesizeHarness = async (
+    _signal: ForgeDemandSignal,
+  ): Promise<AutoHarnessSynthesisResult> => {
     if (synthesesThisSession >= maxSynthesesPerSession) {
       return null;
     }
