@@ -89,6 +89,16 @@ export function createNexusStructuredPlaybookStore(
         // updates by silently overwriting a higher version. Idempotent
         // re-save of the exact current head is permitted so retries after
         // a successful write but failed ack do not wedge.
+        //
+        // CONCURRENCY LIMITATION: The read-then-write below is only atomic
+        // within a single process via withPlaybookLock. Two processes
+        // sharing the same Nexus backend can still race: both read version
+        // N, both write N+1, last write wins. Fully closing this requires
+        // server-side conditional writes (If-Match / version CAS) on the
+        // Nexus transport, which is not yet exposed by writeJson. Until
+        // then, callers that need strict cross-process correctness must
+        // either funnel writes through a single process or use the sqlite
+        // adapter (which has DB-level transactional CAS).
         const currentRead = await readJson<StructuredPlaybook>(transport, path(playbook.id));
         if (!currentRead.ok) throw new Error(currentRead.error.message);
         const current = currentRead.value;

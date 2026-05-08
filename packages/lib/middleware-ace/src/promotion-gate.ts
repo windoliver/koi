@@ -309,6 +309,24 @@ export async function commitPromotion(
     };
   }
 
+  // Idempotent-retry detection: if the current head's provenance already
+  // names this proposal+evaluation, a previous call already committed and
+  // the caller is retrying after a lost ack. Return the prior success
+  // instead of throwing on the version-advanced check below.
+  if (
+    current.provenance?.proposalId === proposal.id &&
+    current.provenance.evaluationId === evaluation.id
+  ) {
+    return {
+      outcome: "promoted",
+      playbookId: proposal.playbookId,
+      proposalId: proposal.id,
+      evaluationId: evaluation.id,
+      fromVersion: proposal.baseVersion,
+      toVersion: current.version,
+    };
+  }
+
   // Promote path requires the head to still equal baseVersion: otherwise the
   // proposed operations were computed against a stale snapshot and applying
   // them is unsafe.
@@ -378,6 +396,23 @@ export async function rollbackPromotion(
   const current = await deps.structuredStore.get(proposal.playbookId);
   if (current === undefined) {
     throw new Error(`ACE promotion gate: structured playbook not found: ${proposal.playbookId}`);
+  }
+
+  // Idempotent-retry detection: if the current head's provenance already
+  // names this proposal+evaluation, a previous rollback already committed
+  // and the caller is retrying after a lost ack. Return the prior success.
+  if (
+    current.provenance?.proposalId === proposal.id &&
+    current.provenance.evaluationId === evaluation.id
+  ) {
+    return {
+      outcome: "rolled_back",
+      playbookId: proposal.playbookId,
+      proposalId: proposal.id,
+      evaluationId: evaluation.id,
+      fromVersion: proposal.baseVersion,
+      toVersion: current.version,
+    };
   }
 
   if (current.version !== proposal.baseVersion) {
