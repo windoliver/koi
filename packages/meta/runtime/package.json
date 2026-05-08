@@ -176,9 +176,11 @@
     "@koi/tools-web": "workspace:*",
     "@koi/url-safety": "workspace:*",
     "@koi/validation": "workspace:*",
+    "@koi/scratchpad-conformance": "workspace:*",
     "@koi/scratchpad-local": "workspace:*",
     "@koi/scratchpad-nexus": "workspace:*",
     "@koi/workspace": "workspace:*",
+    "@koi/workspace-conformance": "workspace:*",
     "@koi/workspace-nexus": "workspace:*",
     "zod": "4.3.6"
   },

@@ -19,5 +19,8 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/git-utils": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/workspace-conformance": "workspace:*"
   }
 }

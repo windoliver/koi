@@ -313,7 +313,11 @@ export async function createNexusScratchpad(
       return result;
     },
     flush: async () => {
-      tracker.clear();
+      // No pending writes to commit — every write is an immediate RPC.
+      // Must NOT reset the change tracker here: a caller that writes then
+      // calls flush() is not asking to wipe its event baseline, and doing
+      // so silently suppresses the next poll's deltas (the new state
+      // becomes the prime baseline). Matches scratchpad-local's no-op.
     },
     onChange: (handler) => {
       // When transitioning from 0 → 1 subscribers, reset the tracker so

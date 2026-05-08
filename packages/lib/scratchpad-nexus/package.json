@@ -21,6 +21,9 @@
     "@koi/core": "workspace:*",
     "@koi/nexus-client": "workspace:*"
   },
+  "devDependencies": {
+    "@koi/scratchpad-conformance": "workspace:*"
+  },
   "koi": {
     "optional": true
   }

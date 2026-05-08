@@ -8,6 +8,7 @@
   "references": [
     { "path": "../../kernel/core" },
     { "path": "../nexus-client" },
-    { "path": "../workspace" }
+    { "path": "../workspace" },
+    { "path": "../workspace-conformance" }
   ]
 }

@@ -166,9 +166,11 @@
     { "path": "../../security/audit-sink-ndjson" },
     { "path": "../../security/violation-store-sqlite" },
     { "path": "../../lib/validation" },
+    { "path": "../../lib/scratchpad-conformance" },
     { "path": "../../lib/scratchpad-local" },
     { "path": "../../lib/scratchpad-nexus" },
     { "path": "../../lib/workspace" },
+    { "path": "../../lib/workspace-conformance" },
     { "path": "../../lib/workspace-nexus" },
     { "path": "../../lib/hash" }
   ]

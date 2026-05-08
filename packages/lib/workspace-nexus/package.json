@@ -22,6 +22,9 @@
     "@koi/nexus-client": "workspace:*",
     "@koi/workspace": "workspace:*"
   },
+  "devDependencies": {
+    "@koi/workspace-conformance": "workspace:*"
+  },
   "koi": {
     "optional": true
   }
