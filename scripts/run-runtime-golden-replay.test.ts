@@ -7,12 +7,36 @@ import {
   buildCommands,
   type CommandSpec,
   createNoCoverageBunfig,
+  defaultRepoRoot,
   resolveExitStatus,
   runCommands,
   runRuntimeGoldenReplay,
   signalExitCode,
   spawnCommand,
 } from "./run-runtime-golden-replay.js";
+
+describe("defaultRepoRoot", () => {
+  test("resolves to the repo root from the script location, independent of cwd", () => {
+    const repoRoot = defaultRepoRoot();
+
+    expect(existsSync(join(repoRoot, "package.json"))).toBe(true);
+    expect(existsSync(join(repoRoot, "scripts", "run-runtime-golden-replay.ts"))).toBe(true);
+    expect(
+      existsSync(join(repoRoot, "packages/meta/runtime/src/__tests__/golden-replay.test.ts")),
+    ).toBe(true);
+  });
+
+  test("returns the same path regardless of process.cwd()", () => {
+    const fromHere = defaultRepoRoot();
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(dirname(originalCwd));
+      expect(defaultRepoRoot()).toBe(fromHere);
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+});
 
 describe("createNoCoverageBunfig", () => {
   test("writes a bunfig.toml that disables coverage", () => {

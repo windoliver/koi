@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { constants as osConstants, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const GOLDEN_REPLAY_PATH = "packages/meta/runtime/src/__tests__/golden-replay.test.ts";
 const NO_COVERAGE_BUNFIG = `[test]
@@ -50,6 +51,11 @@ export function buildCommands(
   ];
 }
 
+export function defaultRepoRoot(): string {
+  const scriptDir = dirname(fileURLToPath(import.meta.url));
+  return resolve(scriptDir, "..");
+}
+
 export function spawnCommand(command: CommandSpec): SpawnResult {
   const result = Bun.spawnSync({
     cmd: [...command.cmd],
@@ -95,7 +101,7 @@ export function runCommands(
 
 export function runRuntimeGoldenReplay(
   extraArgs: readonly string[],
-  repoRoot: string = resolve(process.cwd()),
+  repoRoot: string = defaultRepoRoot(),
   createBunfig: () => string = createNoCoverageBunfig,
   removeBunfig: (bunfigPath: string) => void = (bunfigPath: string): void => {
     rmSync(join(bunfigPath, ".."), { force: true, recursive: true });
