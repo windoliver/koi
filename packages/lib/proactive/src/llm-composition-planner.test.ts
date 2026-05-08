@@ -133,6 +133,37 @@ describe("createLlmCompositionPlanner", () => {
     expect(plan.requiresApproval).toBe(false);
   });
 
+  test("empty LLM plan forces requiresApproval=true (executor rejects empty non-approval)", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "trigger-empty",
+            triggerEmittedAt: 1,
+            steps: [],
+            estimatedCost: 0,
+          });
+        },
+      },
+    });
+
+    const plan = await planner.plan(
+      {
+        id: "trigger-empty",
+        source: "test",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 1,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    expect(plan.steps).toHaveLength(0);
+    expect(plan.requiresApproval).toBe(true);
+  });
+
   test("LLM step ordering is normalized so unsupported steps come last", async () => {
     const planner = createLlmCompositionPlanner({
       adapter: {
@@ -215,7 +246,7 @@ describe("createLlmCompositionPlanner", () => {
       triggerEmittedAt: 1,
       steps: [],
       estimatedCost: 0,
-      requiresApproval: false,
+      requiresApproval: true,
     });
   });
 
@@ -259,7 +290,7 @@ describe("createLlmCompositionPlanner", () => {
       triggerEmittedAt: 1,
       steps: [],
       estimatedCost: 0,
-      requiresApproval: false,
+      requiresApproval: true,
     });
   });
 
@@ -303,7 +334,7 @@ describe("createLlmCompositionPlanner", () => {
       triggerEmittedAt: 1,
       steps: [],
       estimatedCost: 0,
-      requiresApproval: false,
+      requiresApproval: true,
     });
   });
 

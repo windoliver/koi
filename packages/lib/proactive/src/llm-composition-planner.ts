@@ -356,6 +356,15 @@ function withComputedApproval(
   approvalPolicy: CompositionApprovalPolicy,
   isNovel: boolean,
 ): CompositionPlan {
+  // Empty plans are forced through the approval path. The executor rejects
+  // zero-step non-approval plans as INVALID_PLAN, so without this guard an
+  // adapter response with `steps: []` (or a fallback path that returns
+  // none) would planner-as-executable but fail deterministically at run.
+  // Routing to approval lets a human/policy decide what to do instead of
+  // surfacing as a planner/executor mismatch.
+  if (plan.steps.length === 0) {
+    return { ...plan, requiresApproval: true };
+  }
   return {
     ...plan,
     requiresApproval: computeCompositionApproval(trigger, plan.estimatedCost, approvalPolicy, {
