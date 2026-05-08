@@ -226,13 +226,41 @@ describe("createNexusScratchpad", () => {
     expect(writeCalls).toBe(0);
   });
 
-  test("does NOT swap to a local store on a failed startup health probe", async () => {
+  test("hands the raw fallback to the caller when the startup health probe fails", async () => {
     const { createNexusScratchpad } = await import("./index.js");
 
-    // Returning a local fallback when the generic probe fails would let
-    // this instance read/write only the local store while other
-    // participants kept hitting Nexus, producing silent divergence and
-    // effective data loss for the caller. Errors propagate instead.
+    // Startup-only escape hatch: when an operator wires a local
+    // fallback and the initial probe fails, the fallback becomes the
+    // sole authority for the lifetime of this instance. Runtime RPC
+    // failures still surface — they NEVER cause an authority swap.
+    const scratchpad = await createNexusScratchpad({
+      groupId: agentGroupId("group-a"),
+      authorId: agentId("agent-a"),
+      fallback: createFallbackScratchpad(),
+      transport: {
+        kind: "http",
+        call: async <T>(): Promise<Result<T, KoiError>> => ({
+          ok: false,
+          error: { code: "EXTERNAL", message: "down", retryable: false },
+        }),
+        health: async () => ({
+          ok: false,
+          error: { code: "EXTERNAL", message: "down", retryable: false },
+        }),
+        close: () => {},
+      },
+    });
+
+    const result = await scratchpad.write({
+      path: scratchpadPath("fallback.txt"),
+      content: "ok",
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("without a fallback, a failed health probe leaves Nexus as the authority and surfaces errors", async () => {
+    const { createNexusScratchpad } = await import("./index.js");
+
     const scratchpad = await createNexusScratchpad({
       groupId: agentGroupId("group-a"),
       authorId: agentId("agent-a"),

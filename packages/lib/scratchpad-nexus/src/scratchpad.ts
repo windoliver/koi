@@ -128,14 +128,18 @@ export async function createNexusScratchpad(
   const pageSize = config.pageSize ?? DEFAULT_PAGE_SIZE;
   const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
 
-  // Nexus is always the authority. We deliberately do NOT swap to a
-  // fallback on a failed startup health probe: a generic probe failure
-  // is not proof that Nexus has lost this group's scratchpad state.
-  // Returning a local fallback in that window would let this instance
-  // read/write only the local store while other participants continue
-  // hitting Nexus, producing silent divergence and effective data loss
-  // from the caller's perspective. Operators who want a no-Nexus
-  // environment construct scratchpad-local directly.
+  // Startup-only escape hatch: when the operator wires a local fallback
+  // and the initial health probe fails, hand the caller the raw
+  // fallback as the sole authority for the lifetime of this instance.
+  // Runtime RPC failures must NEVER swap authorities, since the two
+  // backends do not share state — silently rerouting reads/writes
+  // would fork the source of truth and produce effective data loss
+  // for the caller.
+  if (config.fallback !== undefined && config.transport.health !== undefined) {
+    const health = await config.transport.health();
+    if (!health.ok) return config.fallback;
+  }
+
   const client = createNexusScratchpadClient(config.transport, prefix);
   const tracker = createChangeTracker(groupId);
 

@@ -1,3 +1,4 @@
+import type { WorkspaceBackend } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
 
 export interface NexusWorkspaceServerCapabilities {
@@ -12,6 +13,15 @@ export interface NexusWorkspaceBackendConfig {
   readonly transport: NexusTransport;
   readonly methodPrefix?: string | undefined;
   readonly basePath?: string | undefined;
+  /**
+   * Optional local backend used as a startup-only escape hatch when the
+   * configured Nexus transport fails its initial health probe. Once
+   * `createNexusWorkspaceBackend()` returns, the chosen authority is
+   * fixed for the lifetime of the instance — runtime RPC failures are
+   * NEVER routed to the fallback, since the two backends do not share
+   * state and silently rerouting would orphan live Nexus survivors.
+   */
+  readonly fallback?: WorkspaceBackend | undefined;
   /**
    * Optional hooks the connected Nexus server is known to implement.
    * Defaults to ON: the workspace provider depends on these hooks

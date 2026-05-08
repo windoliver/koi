@@ -28,13 +28,18 @@ export async function createNexusWorkspaceBackend(
 ): Promise<WorkspaceBackend> {
   const prefix = config.methodPrefix ?? DEFAULT_PREFIX;
 
-  // Nexus is always the authority. We deliberately do NOT swap to a
-  // fallback on a failed startup health probe: that decision happens
-  // before any workspace-specific reconciliation, so a transient or
-  // narrower probe failure could hide live Nexus-owned workspaces from
-  // discovery/dispose and lead the provider to allocate duplicates.
-  // Operators who need a no-Nexus environment construct the local
-  // backend directly.
+  // Startup-only escape hatch: when the operator wires a local fallback
+  // and the initial health probe fails, hand the caller the raw
+  // fallback as the sole authority for everything it manages — Nexus is
+  // never touched again from this instance. We use this carefully:
+  // runtime RPC failures must NEVER swap authorities, since the two
+  // backends do not share state and silent rerouting would orphan live
+  // Nexus survivors and create duplicates after the next restart.
+  if (config.fallback !== undefined && config.transport.health !== undefined) {
+    const health = await config.transport.health();
+    if (!health.ok) return config.fallback;
+  }
+
   const client = createNexusWorkspaceBackendClient(config.transport, prefix);
 
   // Optional hooks default to ON because the workspace provider depends

@@ -93,14 +93,40 @@ describe("createNexusWorkspaceBackend", () => {
     }
   });
 
-  test("does NOT swap to a fallback on a failed startup health probe", async () => {
+  test("hands the raw fallback to the caller when the startup health probe fails", async () => {
     const { createNexusWorkspaceBackend } = await import("./index.js");
 
-    // A failed generic health probe is not proof that Nexus has lost
-    // any specific workspace. Returning a local fallback authority
-    // could orphan live Nexus survivors and cause the provider to
-    // duplicate-allocate. Operators run scratchpad-local/workspace-local
-    // directly when they want a no-Nexus environment.
+    // Startup-only escape hatch: when an operator wires a local
+    // fallback and the initial probe fails, the fallback becomes the
+    // sole authority for the lifetime of this instance. Runtime RPC
+    // failures still surface — they NEVER cause an authority swap.
+    const backend = await createNexusWorkspaceBackend({
+      fallback: createFallbackBackend(),
+      transport: {
+        kind: "http",
+        call: async <T>(): Promise<Result<T, KoiError>> => ({
+          ok: false,
+          error: { code: "EXTERNAL", message: "down", retryable: false },
+        }),
+        health: async () => ({
+          ok: false,
+          error: { code: "EXTERNAL", message: "down", retryable: false },
+        }),
+        close: () => {},
+      },
+    });
+
+    const created = await backend.create(agentId("agent-a"), {
+      cleanupPolicy: "on_success",
+      cleanupTimeoutMs: 5_000,
+    });
+    expect(created.ok).toBe(true);
+    if (created.ok) expect(created.value.id).toBe(workspaceId("fallback-ws"));
+  });
+
+  test("without a fallback, a failed health probe leaves Nexus as the authority and surfaces errors", async () => {
+    const { createNexusWorkspaceBackend } = await import("./index.js");
+
     const backend = await createNexusWorkspaceBackend({
       transport: {
         kind: "http",
@@ -116,8 +142,6 @@ describe("createNexusWorkspaceBackend", () => {
       },
     });
 
-    // Calls go to Nexus and surface the transport failure rather than
-    // silently succeeding against an unrelated authority.
     const created = await backend.create(agentId("agent-a"), {
       cleanupPolicy: "on_success",
       cleanupTimeoutMs: 5_000,
