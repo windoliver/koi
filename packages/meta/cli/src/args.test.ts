@@ -4,6 +4,7 @@ import {
   detectGlobalFlags,
   isDeployFlags,
   isDoctorFlags,
+  isGatewayUpFlags,
   isInitFlags,
   isKnownCommand,
   isLogsFlags,
@@ -288,6 +289,50 @@ describe("parseArgs", () => {
     });
   });
 
+  describe("gateway-up", () => {
+    test("parses default gateway-up flags", () => {
+      const flags = withLogFormat(undefined, () => asFlags(isGatewayUpFlags, ["gateway-up"]));
+      expect(flags).toMatchObject({
+        command: "gateway-up",
+        port: undefined,
+        nexusUrl: undefined,
+        nexusApiKey: undefined,
+        instanceId: undefined,
+        logFormat: "text",
+        help: false,
+        version: false,
+      });
+    });
+
+    test("parses explicit gateway-up options", () => {
+      const flags = asFlags(isGatewayUpFlags, [
+        "gateway-up",
+        "--port",
+        "19500",
+        "--nexus-url",
+        "http://127.0.0.1:4515",
+        "--nexus-api-key",
+        "secret",
+        "--instance-id",
+        "gw-a",
+        "--log-format",
+        "json",
+      ]);
+      expect(flags).toMatchObject({
+        command: "gateway-up",
+        port: 19500,
+        nexusUrl: "http://127.0.0.1:4515",
+        nexusApiKey: "secret",
+        instanceId: "gw-a",
+        logFormat: "json",
+      });
+    });
+
+    test("rejects an out-of-range port", () => {
+      expect(() => parseArgs(["gateway-up", "--port", "70000"])).toThrow(/port/i);
+    });
+  });
+
   describe("global flags with subcommand", () => {
     test("--help flag propagates through command parse", () => {
       expect(asFlags(isStartFlags, ["start", "--help"]).help).toBe(true);
@@ -520,6 +565,7 @@ describe("parseArgs", () => {
         "init",
         "start",
         "serve",
+        "gateway-up",
         "tui",
         "sessions",
         "logs",
