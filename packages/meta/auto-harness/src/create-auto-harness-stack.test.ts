@@ -563,10 +563,104 @@ describe("createAutoHarnessStack", () => {
 
     const result = await stack.synthesizeHarness(makeSignal());
 
-    expect(result).toBeNull();
+    // Deployment side effects are committed before register runs; reporting
+    // a register failure as a deployment failure would lead callers to retry
+    // and duplicate the live activation.
+    expect(result).toBe(artifact);
     expect(errors).toHaveLength(1);
     expect(errors[0]?.stage).toBe("register-policy");
     expect(errors[0]?.message).toBe("verifier rejected");
-    expect(events.some((e) => e.kind === "deployment.succeeded")).toBe(false);
+    expect(events.some((e) => e.kind === "deployment.succeeded")).toBe(true);
+  });
+
+  test("dedupes concurrent syntheses for the same signal id", async () => {
+    let generateCalls = 0;
+    let resolveGate: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      resolveGate = resolve;
+    });
+    const events: AutoHarnessEvent[] = [];
+    const artifact = makeArtifact();
+    const stack = createAutoHarnessStack({
+      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      generate: async () => {
+        generateCalls += 1;
+        await gate;
+        return "candidate-code";
+      },
+      verifyCandidate: async () => ({ ok: true, artifact }),
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async () => ({ ok: true }),
+      onEvent: (event) => events.push(event),
+    });
+
+    const signal = makeSignal();
+    const first = stack.synthesizeHarness(signal);
+    // Second call while first is still in-flight must short-circuit with a
+    // synthesis.skipped event keyed by the same signal id.
+    const second = await stack.synthesizeHarness(signal);
+    expect(second).toBeNull();
+    expect(
+      events.some((e) => e.kind === "synthesis.skipped" && e.message.includes("already in flight")),
+    ).toBe(true);
+
+    resolveGate?.();
+    const firstResult = await first;
+    expect(firstResult).toBe(artifact);
+    expect(generateCalls).toBe(1);
+  });
+
+  test("persists the verified artifact via forgeStore.save before policy / approval / deploy", async () => {
+    const saved: BrickArtifact[] = [];
+    let policyCalls = 0;
+    const artifact = makeArtifact();
+    const stack = createAutoHarnessStack({
+      forgeStore: {
+        save: async (brick: BrickArtifact) => {
+          saved.push(brick);
+          return { ok: true as const, value: undefined };
+        },
+      } as never,
+      generate: async () => "candidate-code",
+      verifyCandidate: async () => ({ ok: true, artifact }),
+      evaluatePolicy: async () => {
+        policyCalls += 1;
+        // Save must have happened before any further pipeline stage runs.
+        expect(saved).toContain(artifact);
+        return { ok: true, action: "allow" };
+      },
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async () => ({ ok: true }),
+    });
+
+    await stack.synthesizeHarness(makeSignal());
+
+    expect(saved).toEqual([artifact]);
+    expect(policyCalls).toBe(1);
+  });
+
+  test("reports forgeStore.save failures but does not block the pipeline", async () => {
+    const errors: AutoHarnessError[] = [];
+    const artifact = makeArtifact();
+    const stack = createAutoHarnessStack({
+      forgeStore: {
+        save: async () => ({
+          ok: false as const,
+          error: { code: "IO_ERROR", message: "disk full", retryable: true },
+        }),
+      } as never,
+      generate: async () => "candidate-code",
+      verifyCandidate: async () => ({ ok: true, artifact }),
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async () => ({ ok: true }),
+      onError: (error) => errors.push(error),
+    });
+
+    const result = await stack.synthesizeHarness(makeSignal());
+
+    expect(result).toBe(artifact);
+    expect(errors.some((e) => e.message.includes("forgeStore.save failed"))).toBe(true);
   });
 });

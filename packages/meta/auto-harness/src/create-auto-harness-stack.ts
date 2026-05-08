@@ -69,9 +69,25 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     config.onError?.(error);
   };
 
+  // Re-entrancy guard: forge-demand can emit the same signal multiple times
+  // under load (cooldown re-fire, concurrent traffic). Without serialization,
+  // duplicate pipelines run for the same failure — wasting model calls,
+  // duplicating approval prompts, and racing deploy side effects. The
+  // in-flight set keys on `signal.id`; the runtime's wrapper invokes us
+  // fire-and-forget per emission, so this is the canonical chokepoint.
+  const inFlightSignalIds = new Set<string>();
+
   const synthesizeHarness = async (
     signal: ForgeDemandSignal,
   ): Promise<AutoHarnessSynthesisResult> => {
+    if (inFlightSignalIds.has(signal.id)) {
+      emitEvent({
+        kind: "synthesis.skipped",
+        signalId: signal.id,
+        message: "synthesis already in flight for this signal",
+      });
+      return null;
+    }
     if (synthesesThisSession >= maxSynthesesPerSession) {
       emitEvent({
         kind: "synthesis.skipped",
@@ -80,9 +96,17 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       });
       return null;
     }
+    inFlightSignalIds.add(signal.id);
     synthesesThisSession += 1;
     emitEvent({ kind: "synthesis.started", signalId: signal.id });
+    try {
+      return await runPipeline(signal);
+    } finally {
+      inFlightSignalIds.delete(signal.id);
+    }
+  };
 
+  const runPipeline = async (signal: ForgeDemandSignal): Promise<AutoHarnessSynthesisResult> => {
     let code: string;
     try {
       code = await config.generate(formatGeneratePrompt(signal));
@@ -109,6 +133,29 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     }
 
     const artifact = verification.artifact;
+
+    // Persist the verified artifact before any policy / approval / deploy
+    // decisions. From this point on the candidate is durable: operators can
+    // inspect or retry it even after policy block, approval denial, deploy
+    // error, or process restart. Save failures degrade audit but do not
+    // block the pipeline — the in-memory candidate is still actionable.
+    try {
+      const saveResult = await config.forgeStore.save(artifact);
+      if (!saveResult.ok) {
+        reportError({
+          stage: "verify",
+          message: `forgeStore.save failed: ${saveResult.error.message}`,
+          koiError: saveResult.error,
+        });
+      }
+    } catch (cause: unknown) {
+      reportError({
+        stage: "verify",
+        message: "forgeStore.save threw",
+        cause,
+      });
+    }
+
     const policy = await runStageOrReport(
       () => config.evaluatePolicy(artifact, signal),
       { stage: "evaluate-policy", message: "evaluatePolicy failed" },
@@ -166,6 +213,17 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       return null;
     }
 
+    // Deployment side effects are now committed; emit success BEFORE
+    // attempting the cache write. Policy-cache registration is a follow-on
+    // optimization (short-circuit dispatch) — its failure must not be
+    // reported as a deployment failure, otherwise callers would treat a
+    // live artifact as missing and retry/duplicate the activation.
+    emitEvent({
+      kind: "deployment.succeeded",
+      signalId: signal.id,
+      artifactId: artifact.id,
+    });
+
     if (deployment.policyEntry !== undefined) {
       try {
         const result = policyCacheHandle.register(deployment.policyEntry);
@@ -174,7 +232,6 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
             stage: "register-policy",
             message: result.error.message,
           });
-          return null;
         }
       } catch (cause: unknown) {
         reportError({
@@ -182,15 +239,9 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
           message: "policy-cache register threw",
           cause,
         });
-        return null;
       }
     }
 
-    emitEvent({
-      kind: "deployment.succeeded",
-      signalId: signal.id,
-      artifactId: artifact.id,
-    });
     return artifact;
   };
 
