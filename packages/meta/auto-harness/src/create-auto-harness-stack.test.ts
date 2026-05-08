@@ -1,14 +1,38 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type { BrickArtifact, ForgeDemandSignal, StoreChangeNotifier } from "@koi/core";
-import type {} from "./index.js";
-import {
-  type AutoHarnessDeployResult,
-  type AutoHarnessError,
-  type AutoHarnessEvent,
-  type AutoHarnessPolicyResult,
-  type AutoHarnessVerificationResult,
-  createAutoHarnessStack,
+import type {
+  AutoHarnessDeployResult,
+  AutoHarnessEvent,
+  AutoHarnessPolicyResult,
+  AutoHarnessVerificationResult,
 } from "./index.js";
+import type { AutoHarnessError } from "./types.js";
+
+mock.module("@koi/middleware-policy-cache", () => ({
+  createPolicyCacheMiddleware: (config?: {
+    readonly notifier?: StoreChangeNotifier | undefined;
+  }) => {
+    const unsubscribe = config?.notifier?.subscribe(() => {});
+    const middleware = {
+      name: "policy-cache",
+      phase: "intercept",
+      priority: 50,
+      describeCapabilities: () => undefined,
+    } as const;
+
+    return {
+      middleware,
+      register: (_entry: unknown) => ({ ok: true as const, value: undefined }),
+      evict: (_brickId: string) => {},
+      size: () => 0,
+      dispose: () => {
+        unsubscribe?.();
+      },
+    };
+  },
+}));
+
+const { createAutoHarnessStack } = await import("./index.js");
 
 const makeNotifier = (): StoreChangeNotifier => ({
   notify: () => {},
@@ -38,11 +62,21 @@ const makeArtifact = (): BrickArtifact =>
 
 describe("createAutoHarnessStack", () => {
   test("returns policy-cache middleware, synthesis callback, and session controls", () => {
+    let subscribed = 0;
+    let unsubscribed = 0;
     const stack = createAutoHarnessStack({
       forgeStore: {
         save: async () => ({ ok: true as const, value: undefined }),
       } as never,
-      notifier: makeNotifier(),
+      notifier: {
+        notify: () => {},
+        subscribe: () => {
+          subscribed += 1;
+          return () => {
+            unsubscribed += 1;
+          };
+        },
+      },
       generate: async () => "export function createMiddleware() {}",
       verifyCandidate: async (_signal, _code): Promise<AutoHarnessVerificationResult> => ({
         ok: true,
@@ -60,11 +94,11 @@ describe("createAutoHarnessStack", () => {
 
     expect(stack.policyCacheMiddleware.name).toBe("policy-cache");
     expect(stack.policyCacheHandle.middleware).toBe(stack.policyCacheMiddleware);
-    expect(stack.policyCacheHandle.register()).toEqual({ ok: true, value: undefined });
+    expect(subscribed).toBe(1);
     expect(stack.policyCacheHandle.size()).toBe(0);
     expect(stack.policyCacheHandle.evict("brick-1" as never)).toBeUndefined();
-    expect(stack.policyCacheHandle.dispose()).toBeUndefined();
-    expect(stack.policyCacheMiddleware.describeCapabilities({} as never)).toBeUndefined();
+    stack.policyCacheHandle.dispose();
+    expect(unsubscribed).toBe(1);
     expect(typeof stack.synthesizeHarness).toBe("function");
     expect(typeof stack.resetSession).toBe("function");
     expect(stack.maxSynthesesPerSession).toBeGreaterThan(0);

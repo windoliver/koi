@@ -7,6 +7,7 @@ export { createAutoHarnessStack } from "./create-auto-harness-stack.js";
 export type {
   AutoHarnessConfig,
   AutoHarnessDeployResult,
+  AutoHarnessError,
   AutoHarnessEvent,
   AutoHarnessPolicyResult,
   AutoHarnessStack,

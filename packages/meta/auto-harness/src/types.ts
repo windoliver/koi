@@ -37,7 +37,7 @@ export interface AutoHarnessVerificationResult {
 
 export interface AutoHarnessPolicyResult {
   readonly ok: boolean;
-  readonly action: "allow" | "block" | "review";
+  readonly action: "allow" | "block";
   readonly reason?: string;
   readonly error?: AutoHarnessError;
 }
@@ -48,19 +48,42 @@ export interface AutoHarnessDeployResult {
   readonly error?: AutoHarnessError;
 }
 
-export interface AutoHarnessEvent {
-  readonly kind:
-    | "synthesis.started"
-    | "synthesis.skipped"
-    | "verification.failed"
-    | "policy.blocked"
-    | "approval.denied"
-    | "deployment.succeeded"
-    | "session.reset";
-  readonly signalId?: string;
-  readonly artifactId?: string;
-  readonly message?: string;
-}
+export type AutoHarnessEvent =
+  | {
+      readonly kind: "synthesis.started";
+      readonly signalId: string;
+    }
+  | {
+      readonly kind: "synthesis.skipped";
+      readonly signalId: string;
+      readonly message: string;
+    }
+  | {
+      readonly kind: "verification.failed";
+      readonly signalId: string;
+      readonly message: string;
+    }
+  | {
+      readonly kind: "policy.blocked";
+      readonly signalId: string;
+      readonly artifactId: string;
+      readonly message: string;
+    }
+  | {
+      readonly kind: "approval.denied";
+      readonly signalId: string;
+      readonly artifactId: string;
+      readonly message: string;
+    }
+  | {
+      readonly kind: "deployment.succeeded";
+      readonly signalId: string;
+      readonly artifactId: string;
+    }
+  | {
+      readonly kind: "session.reset";
+      readonly message: string;
+    };
 
 export type AutoHarnessGenerate = (prompt: string) => Promise<string>;
 
