@@ -33,7 +33,7 @@ describe("createDashboardClient", () => {
     expect(calls[0]).toBe("http://h:1/api/agents/agent-1");
   });
 
-  test("getMetrics encodes names, range, and tags", async () => {
+  test("getMetrics encodes only the filters the dashboard-api parser honors", async () => {
     const calls: string[] = [];
     const fetchImpl = async (url: string): Promise<Response> => {
       calls.push(url);
@@ -48,13 +48,17 @@ describe("createDashboardClient", () => {
       limit: 50,
     });
     const url = calls[0] ?? "";
+    // Server only honors first `name`, `since`, and `limit`. Multi-name + `to`
+    // + `tag` filtering must happen client-side; sending them would mislead
+    // operators into thinking the filter was enforced.
     expect(url.startsWith("http://h:1/api/metrics?")).toBe(true);
     expect(url).toContain("name=cpu");
-    expect(url).toContain("name=rss");
-    expect(url).toContain("from=1000");
-    expect(url).toContain("to=2000");
+    expect(url).toContain("since=1000");
     expect(url).toContain("limit=50");
-    expect(url).toContain("tag=agent%3Da1");
+    expect(url).not.toContain("name=rss");
+    expect(url).not.toContain("from=");
+    expect(url).not.toContain("to=");
+    expect(url).not.toContain("tag=");
   });
 
   test("listAgents rejects ok:true with a malformed payload (per-endpoint validation)", async () => {

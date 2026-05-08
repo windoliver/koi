@@ -177,13 +177,15 @@ describe("HTTP integration", () => {
     expect(r.ok).toBe(true);
     expect(capturedQueries.length).toBe(1);
     const [q = ""] = capturedQueries;
+    // Server only honors first `name`, `since`, and `limit` — keep the encoded
+    // query string aligned with what the parser actually consumes.
     expect(q).toContain("name=cpu");
-    expect(q).toContain("name=mem");
-    expect(q).toContain("from=100");
-    expect(q).toContain("to=200");
+    expect(q).toContain("since=100");
     expect(q).toContain("limit=50");
-    expect(q).toContain("tag=env%3Dprod");
-    expect(q).toContain("tag=region%3Dus");
+    expect(q).not.toContain("name=mem");
+    expect(q).not.toContain("from=");
+    expect(q).not.toContain("to=");
+    expect(q).not.toContain("tag=");
   });
 
   test("getTrace returns undefined for ok:true with no value (optional payload)", async () => {

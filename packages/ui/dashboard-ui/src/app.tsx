@@ -123,6 +123,7 @@ export async function fetchSessionMetrics(
   sessionId: string,
   nowMs: number = Date.now(),
 ): Promise<readonly Parameters<typeof mapMetricPoints>[0][number][] | null> {
+  const fromMs = Math.max(0, nowMs - 30 * 60_000);
   const responses = await Promise.all(
     SESSION_METRIC_NAMES.map((name) => client.getMetrics(createMetricQuery(name, nowMs))),
   );
@@ -132,9 +133,13 @@ export async function fetchSessionMetrics(
     if (!response.ok) continue;
     anyOk = true;
     for (const point of response.value) {
-      // Server-side tag filtering is not implemented; filter client-side so this
-      // panel is genuinely per-session rather than silently mixing global samples.
-      if (point.tags?.sessionId === sessionId) collected.push(point);
+      // Hard-filter client-side because the dashboard-api parser ignores `to` and
+      // `tag`; only `since` (the lower bound) is enforced server-side. Without
+      // these guards the panel could merge old or cross-session samples as if
+      // they were current per-session data.
+      if (point.tags?.sessionId !== sessionId) continue;
+      if (point.timestampMs < fromMs || point.timestampMs > nowMs) continue;
+      collected.push(point);
     }
   }
   if (!anyOk) return null;
@@ -180,7 +185,22 @@ export function DashboardView({
 
           <div className="dashboard-grid">
             <MetricsPanel metrics={state.selectedSession?.metrics ?? []} />
-            <TraceViewer trace={state.selectedAgentTrace} />
+            <TraceViewer
+              trace={
+                // Trace events have no sessionId, so we cannot prove a trace belongs
+                // to the selected session when an agent has multiple sessions.
+                // Suppress the trace contents in that case to avoid showing one
+                // session's metrics next to another session's trace.
+                state.selectedAgentId &&
+                (state.sessionsByAgentId[state.selectedAgentId]?.length ?? 0) <= 1
+                  ? state.selectedAgentTrace
+                  : []
+              }
+              ambiguous={
+                state.selectedAgentId !== null &&
+                (state.sessionsByAgentId[state.selectedAgentId]?.length ?? 0) > 1
+              }
+            />
           </div>
         </section>
       </div>

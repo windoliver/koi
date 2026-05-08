@@ -134,13 +134,15 @@ function stripTrailingSlash(url: string): string {
 
 function encodeMetricQuery(query: MetricQuery): string {
   const params = new URLSearchParams();
-  for (const name of query.names) params.append("name", name);
-  params.set("from", String(query.fromMs));
-  params.set("to", String(query.toMs));
+  // The dashboard-api parser only accepts a single `name` plus `since`/`limit`.
+  // Send the lower bound as `since` (which the server actually honors) and the
+  // first name verbatim. Additional names and tag/`to` filters are ignored
+  // server-side; callers wanting multi-name or tag scoping must fan out and
+  // filter client-side.
+  const firstName = query.names[0];
+  if (firstName !== undefined) params.set("name", firstName);
+  params.set("since", String(query.fromMs));
   if (query.limit !== undefined) params.set("limit", String(query.limit));
-  if (query.tags) {
-    for (const [k, v] of Object.entries(query.tags)) params.append("tag", `${k}=${v}`);
-  }
   return params.toString();
 }
 
