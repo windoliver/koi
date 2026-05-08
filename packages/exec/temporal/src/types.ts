@@ -2,7 +2,13 @@ import type { AgentId, ContentBlock, InboundMessage, SessionId } from "@koi/core
 
 export interface AgentWorkflowConfig {
   readonly agentId: AgentId;
-  readonly sessionId: SessionId;
+  /**
+   * Session identity for this workflow execution. When omitted (the default
+   * for scheduled spawns), the workflow synthesizes a per-execution identity
+   * from `workflowInfo().workflowId` + `runId` so each cron firing gets an
+   * independent session-scoped state namespace.
+   */
+  readonly sessionId?: SessionId | undefined;
   readonly stateRefs: AgentStateRefs;
   readonly gatewayUrl?: string | undefined;
   readonly initialMessage?: IncomingMessage | undefined;
@@ -25,11 +31,40 @@ export interface AgentTurnInput {
   readonly maxStopRetries?: number | undefined;
   readonly nexusApiKey?: string | undefined;
   readonly delegationId?: string | undefined;
+  /**
+   * Spawn-request constraints carried from the parent. The activity passes
+   * these into createEngineInput so the child engine enforces the same
+   * trust/cost boundary the in-process spawn path applies.
+   */
+  readonly maxTurns?: number | undefined;
+  readonly maxTokens?: number | undefined;
+  readonly nonInteractive?: boolean | undefined;
+  readonly toolAllowlist?: readonly string[] | undefined;
+  readonly toolDenylist?: readonly string[] | undefined;
+  readonly fork?: boolean | undefined;
+  readonly allowNestedSpawn?: boolean | undefined;
 }
 
 export interface SpawnChildRequest {
   readonly childAgentId: AgentId;
   readonly childConfig: Omit<WorkerWorkflowConfig, "agentId" | "sessionId" | "parentAgentId">;
+  /**
+   * Constraints carried from the originating SpawnRequest. The child workflow
+   * enforces these to preserve trust-boundary and cost-control guarantees that
+   * the in-process spawn path applies. Optional fields default to the parent
+   * agent's manifest configuration.
+   */
+  readonly constraints?:
+    | {
+        readonly maxTurns?: number | undefined;
+        readonly maxTokens?: number | undefined;
+        readonly nonInteractive?: boolean | undefined;
+        readonly toolAllowlist?: readonly string[] | undefined;
+        readonly toolDenylist?: readonly string[] | undefined;
+        readonly fork?: boolean | undefined;
+        readonly allowNestedSpawn?: boolean | undefined;
+      }
+    | undefined;
 }
 
 export interface AgentTurnResult {
@@ -79,6 +114,14 @@ export interface WorkerWorkflowConfig {
   readonly maxStopRetries?: number | undefined;
   readonly nexusApiKey?: string | undefined;
   readonly delegationId?: string | undefined;
+  /** Spawn-request constraints enforced by the child workflow runtime. */
+  readonly maxTurns?: number | undefined;
+  readonly maxTokens?: number | undefined;
+  readonly nonInteractive?: boolean | undefined;
+  readonly toolAllowlist?: readonly string[] | undefined;
+  readonly toolDenylist?: readonly string[] | undefined;
+  readonly fork?: boolean | undefined;
+  readonly allowNestedSpawn?: boolean | undefined;
 }
 
 export interface TemporalConfig {

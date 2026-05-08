@@ -1797,6 +1797,12 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         // definition is byte-for-byte identical to the persisted local metadata.
         // Using the original scheduledPayload risks split-brain if the caller mutates
         // the input after schedule() is called or a client wrapper serializes lazily.
+        // Pass the schedule id as the *base* sessionId. The workflow appends
+        // workflowInfo().workflowId at runtime so each cron firing gets a
+        // distinct, externally-observable session identity (Temporal Schedules
+        // mint a per-firing workflowId visible via `client.schedule.getHandle`),
+        // while callers can still correlate runs back to the schedule via this
+        // base id.
         const spawnArgs: AgentWorkflowConfig = {
           agentId,
           sessionId: sessionId(id),

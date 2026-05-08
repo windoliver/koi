@@ -285,7 +285,7 @@ describe.skipIf(SKIP)("Restored workflow integration (real Temporal)", () => {
 
       expect(activityCalls[0]).toEqual({
         agentId: workflowConfig.agentId,
-        sessionId: workflowConfig.sessionId,
+        sessionId: workflowConfig.sessionId as AgentTurnInput["sessionId"],
         message: initialMessage,
         stateRefs: workflowConfig.stateRefs,
         gatewayUrl: "ws://workflow-gateway",
