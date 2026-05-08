@@ -196,6 +196,7 @@ describe("createKoiRuntime — assembly", () => {
       approvalHandler: async () => ({ kind: "deny", reason: "no" }),
       autoHarness: {
         forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+        policyVerifier: (() => async () => ({ ok: true as const, value: undefined })) as never,
         generate: async () => "candidate-code",
         verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-5" } as never }),
         evaluatePolicy: async () => ({ ok: true, action: "allow" }),
@@ -215,26 +216,23 @@ describe("createKoiRuntime — assembly", () => {
     expect(deployed).toBe(false);
   });
 
-  test("replaces caller-supplied policy-cache with the stack-owned instance", async () => {
+  test("rejects caller-supplied policy-cache when autoHarness is enabled", async () => {
     const providedPolicyCache = { name: "policy-cache" } as KoiMiddleware;
 
-    runtimeHandle = await createKoiRuntime({
-      ...makeConfig(),
-      extraMiddleware: [providedPolicyCache],
-      autoHarness: {
-        forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
-        generate: async () => "candidate-code",
-        verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-6" } as never }),
-        evaluatePolicy: async () => ({ ok: true, action: "allow" }),
-        deployCandidate: async () => ({ ok: true }),
-      },
-    });
-
-    expect(runtimeHandle.autoHarness).toBeDefined();
-    // Single source of truth: caller's policy-cache is dropped so registrations
-    // and dispatch agree. The auto-harness handle exposes the stack-owned mw.
-    expect(runtimeHandle.autoHarness?.middleware).not.toBe(providedPolicyCache);
-    expect(runtimeHandle.autoHarness?.middleware.name).toBe("policy-cache");
+    await expect(
+      createKoiRuntime({
+        ...makeConfig(),
+        extraMiddleware: [providedPolicyCache],
+        autoHarness: {
+          forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+          policyVerifier: (() => async () => ({ ok: true as const, value: undefined })) as never,
+          generate: async () => "candidate-code",
+          verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-6" } as never }),
+          evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+          deployCandidate: async () => ({ ok: true }),
+        },
+      }),
+    ).rejects.toThrow(/policy-cache/);
   });
 
   test("returns a mutable transcript array", async () => {
