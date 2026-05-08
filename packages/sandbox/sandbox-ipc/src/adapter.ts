@@ -137,6 +137,23 @@ export function bridgeToExecutor(
       | { readonly ok: true; readonly value: SandboxResult }
       | { readonly ok: false; readonly error: SandboxError }
     > {
+      // Reject ExecutionContext fields the IPC adapter does not yet plumb
+      // through end-to-end. The adapter wraps `code` as a function body via
+      // `new Function`, so module-style entries and workspace-rooted execution
+      // are not supported. Failing fast is safer than silently dropping them.
+      if (context?.entryPath !== undefined || context?.workspacePath !== undefined) {
+        return {
+          ok: false,
+          error: {
+            code: "CRASH",
+            message:
+              "sandbox-ipc bridgeToExecutor does not support ExecutionContext.entryPath or " +
+              "ExecutionContext.workspacePath. Use @koi/sandbox-executor for module-source execution.",
+            durationMs: 0,
+          },
+        };
+      }
+
       let bridge: SandboxBridge | undefined;
       let mappedResult:
         | { readonly ok: true; readonly value: SandboxResult }

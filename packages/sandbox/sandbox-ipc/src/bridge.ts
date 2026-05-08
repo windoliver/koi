@@ -249,14 +249,43 @@ function detectSetsid(): string | null {
   return detectedSetsidPath ?? null;
 }
 
+const DEFAULT_ENV_ALLOWLIST: readonly string[] = [
+  "PATH",
+  "HOME",
+  "USER",
+  "TMPDIR",
+  "LANG",
+  "LC_ALL",
+];
+
+function buildScrubbedEnv(allowlist: readonly string[]): Record<string, string> {
+  const scrubbed: Record<string, string> = {};
+  for (const key of allowlist) {
+    const value = process.env[key];
+    if (typeof value === "string") {
+      scrubbed[key] = value;
+    }
+  }
+  return scrubbed;
+}
+
 function defaultSpawnFn(
   command: readonly string[],
   options: {
     readonly serialization: "advanced" | "json";
+    readonly env?: Readonly<Record<string, string>>;
+    readonly processGroupIsolation?: "required" | "best-effort";
   },
 ): IpcProcess {
   const messageHandlers: Array<(message: unknown) => void> = [];
   const setsidPath = detectSetsid();
+  const isolationPolicy = options.processGroupIsolation ?? "required";
+  if (setsidPath === null && isolationPolicy === "required") {
+    throw new Error(
+      "sandbox-ipc: process-group isolation is required but `setsid` is not available on this host. " +
+        "Install `setsid` (util-linux) or set BridgeConfig.processGroupIsolation = \"best-effort\" to opt out.",
+    );
+  }
   const useGroup = setsidPath !== null;
   const spawnArgv: string[] = useGroup ? [setsidPath, "-w", ...command] : [...command];
 
@@ -265,6 +294,7 @@ function defaultSpawnFn(
     stdout: "pipe",
     stderr: "pipe",
     serialization: options.serialization,
+    env: { ...(options.env ?? {}) },
     ipc(message: unknown) {
       for (const handler of messageHandlers) {
         handler(message);
@@ -361,6 +391,8 @@ export async function createSandboxBridge(
     try {
       proc = spawnFn([builtCommand.value.executable, ...builtCommand.value.args], {
         serialization,
+        env: buildScrubbedEnv(config.envAllowlist ?? DEFAULT_ENV_ALLOWLIST),
+        processGroupIsolation: config.processGroupIsolation ?? "required",
       });
     } catch (error) {
       return {

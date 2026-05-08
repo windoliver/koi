@@ -22,6 +22,10 @@ function createIntegrationConfig(
     serialization: "advanced",
     graceMs: 100,
     maxResultBytes: 16_384,
+    // Integration tests run on dev hosts that may not have `setsid`. Tests
+    // exercise the IPC happy paths, not descendant teardown, so opt out of
+    // the fail-closed default explicitly.
+    processGroupIsolation: "best-effort",
     ...overrides,
   };
 }

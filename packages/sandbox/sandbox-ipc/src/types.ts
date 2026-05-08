@@ -55,6 +55,22 @@ export interface BridgeConfig {
   readonly serialization?: "advanced" | "json";
   readonly graceMs?: number;
   readonly maxResultBytes?: number;
+  /**
+   * Process-group isolation policy for the default spawn implementation. When
+   * "required" (default), the bridge refuses to spawn workers if descendant
+   * teardown via process-group kill is not available on the host (e.g.,
+   * `setsid` missing). When "best-effort", the bridge spawns directly and
+   * only kills the direct worker — appropriate for trusted code or test
+   * harnesses that inject their own spawn function.
+   */
+  readonly processGroupIsolation?: "required" | "best-effort";
+  /**
+   * Optional environment-variable allowlist for the default spawn
+   * implementation. Untrusted workers receive only the variables listed here
+   * (intersected with the host environment). When omitted, a minimal default
+   * (PATH, HOME, USER, TMPDIR, LANG, LC_ALL) is used.
+   */
+  readonly envAllowlist?: readonly string[];
 }
 
 export interface BridgeExecOptions {
@@ -109,6 +125,8 @@ export type SpawnFn = (
   command: readonly string[],
   options: {
     readonly serialization: "advanced" | "json";
+    readonly env?: Readonly<Record<string, string>>;
+    readonly processGroupIsolation?: "required" | "best-effort";
   },
 ) => IpcProcess;
 

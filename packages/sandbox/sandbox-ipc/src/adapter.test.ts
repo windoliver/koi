@@ -25,6 +25,9 @@ function validBridgeConfig(): BridgeConfig {
     serialization: "advanced",
     graceMs: 25,
     maxResultBytes: 16_384,
+    // Adapter tests target the IPC happy/failure paths, not descendant
+    // teardown. Opt out of fail-closed setsid checks for portability.
+    processGroupIsolation: "best-effort",
   };
 }
 
