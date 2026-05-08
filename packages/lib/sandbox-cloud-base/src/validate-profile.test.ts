@@ -46,15 +46,9 @@ describe("validate-profile", () => {
       network: true,
       resources: true,
       details: [
-        "network.allow=false",
-        "filesystem.defaultReadAccess=closed",
-        "filesystem.allowRead",
-        "filesystem.denyRead",
-        "filesystem.allowWrite",
-        "filesystem.denyWrite",
-        "resources.maxMemoryMb",
-        "resources.maxPids",
-        "resources.maxOpenFiles",
+        "filesystem restrictions or Nexus mounts",
+        "network deny (allow=false)",
+        "resource limits (maxMemoryMb/maxPids/maxOpenFiles)",
       ],
     });
   });
@@ -64,13 +58,16 @@ describe("validate-profile", () => {
       filesystem: false,
       network: true,
       resources: true,
-      details: ["network.allow=false", "resources.maxMemoryMb"],
+      details: [
+        "network deny (allow=false)",
+        "resource limits (maxMemoryMb/maxPids/maxOpenFiles)",
+      ],
     });
 
-    expect(message).toContain("sandbox-e2b");
-    expect(message).toContain("network.allow=false");
-    expect(message).toContain("resources.maxMemoryMb");
-    expect(message).toContain("@koi/sandbox-docker");
-    expect(message).toContain("@koi/sandbox-os");
+    expect(message).toBe(
+      "sandbox-e2b cannot enforce the following SandboxProfile policies: " +
+        "network deny (allow=false), resource limits (maxMemoryMb/maxPids/maxOpenFiles). " +
+        "Use @koi/sandbox-docker or @koi/sandbox-os for policy enforcement, or relax the profile to proceed.",
+    );
   });
 });
