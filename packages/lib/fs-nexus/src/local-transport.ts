@@ -590,8 +590,14 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     });
     if (!result.ok) return result;
     // Optimistic cache update only — see addMount() above for why we don't
-    // refresh via list_mounts here.
-    mounts = mounts.filter((m) => m !== path);
+    // refresh via list_mounts here. The bridge resolves the authoritative
+    // removed path (canonicalized) and returns it in `result.value.path`,
+    // because the caller-supplied `path` may be a non-canonical form
+    // (trailing slash, missing leading slash). Filter the cache by BOTH
+    // the canonical and the raw values so a stale entry can't survive a
+    // successful unmount when the two differ.
+    const canonicalRemoved = result.value.path;
+    mounts = mounts.filter((m) => m !== path && m !== canonicalRemoved);
     return result;
   }
 

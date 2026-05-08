@@ -2202,6 +2202,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // dead root, so /unmount must refuse it. Undefined = namespace-root mode
   // (no fixed root), in which case any mount can be unmounted safely.
   let backendActiveRoot: string | undefined;
+  // The effective disclosure scope for this session — canonicalized
+  // protected/scope roots derived from manifest scope, glob static prefixes,
+  // and the active backend root. Used to pre-filter live mount paths before
+  // issuing describeMount RPCs so a scoped session does not trigger backend
+  // metadata reads (and possible OAuth prompts) for sibling/tenant mounts
+  // that the prompt allowlist would have dropped anyway.
+  let sessionScopePaths: readonly string[] | undefined;
 
   // Single OAuthChannel — shared by nexus and MCP. Created unconditionally so
   // nav:mcp-auth and MCP onAuthNeeded always have a renderer regardless of whether
@@ -2227,6 +2234,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Apply the session disclosure scope so all subsequent /mount and
     // /mounts updates filter sibling mounts the same way startup-seed did.
     mountDescriptionsState.setScope(fsResolved.effectiveScopePaths);
+    sessionScopePaths = fsResolved.effectiveScopePaths;
     mountDescriptionsState.setManifest(fsResolved.mountDescriptions);
     // If `fsResolved.operations` is set, it overrides the manifest-derived ops
     // (the two should agree, but resolveFileSystemAsync is authoritative).
@@ -6386,8 +6394,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               return;
             }
-            mountDescriptionsState.remove(path);
-            dispatchNotice(store, "unmount-info", `[Unmounted ${sanitizeConnectorText(path)}]`);
+            // Use the bridge's authoritative removed path: the operator
+            // may have typed a non-canonical form ("/foo/bar/" vs the live
+            // mount "/foo/bar"), and the bridge's list_mounts diff returns
+            // the canonical identifier. Removing by raw `path` from
+            // mountDescriptionsState would leave a stale entry behind.
+            const removedPath =
+              result.value.path !== undefined && result.value.path.length > 0
+                ? result.value.path
+                : path;
+            mountDescriptionsState.remove(removedPath);
+            dispatchNotice(
+              store,
+              "unmount-info",
+              `[Unmounted ${sanitizeConnectorText(removedPath)}]`,
+            );
           })();
           break;
         case "system:mounts":
@@ -6447,8 +6468,41 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             // refresh has dropped it. Snapshot the live set we're enriching
             // so callbacks can skip re-adding stale paths.
             const liveAtRefresh = new Set(livePaths);
-            void Promise.allSettled(
-              livePaths.map(async (path) => {
+            // Scope guard (security): describeMount on the local bridge walks
+            // through to inner backends to call generate_readme(), bypassing
+            // the scoped-fs wrapper. Pre-filter livePaths against the session
+            // disclosure scope so a scoped session never triggers metadata
+            // reads (or OAuth prompts) for sibling/tenant mounts that the
+            // prompt allowlist would have dropped anyway.
+            const scopeFilter = sessionScopePaths;
+            const scopeAllows = (path: string): boolean => {
+              if (scopeFilter === undefined || scopeFilter.length === 0) return true;
+              return scopeFilter.some(
+                (scopePath) =>
+                  path === scopePath ||
+                  path.startsWith(`${scopePath}/`) ||
+                  scopePath.startsWith(`${path}/`),
+              );
+            };
+            const eligible = livePaths.filter(scopeAllows);
+            // Drop already-described paths so /mounts spam doesn't re-issue
+            // metadata RPCs against connectors we already enriched. Bounds
+            // the worst-case work per /mounts press to "new mounts only".
+            const describedSnapshot = mountDescriptionsState.getSnapshot();
+            const alreadyDescribed = new Set(
+              [...describedSnapshot.manifest, ...describedSnapshot.runtime]
+                .filter((e) => e.description !== undefined && e.description.length > 0)
+                .map((e) => e.path),
+            );
+            const toEnrich = eligible.filter((p) => !alreadyDescribed.has(p));
+            // Single-flight bridge: every RPC shares one serialized callQueue.
+            // If we issued describeMount for every mount in parallel via
+            // Promise.allSettled, foreground user RPCs (reads, writes, /mount,
+            // auth) would queue behind N enrichments. Run sequentially so at
+            // most one enrichment is queued at a time and user input
+            // interleaves naturally between mounts.
+            void (async (): Promise<void> => {
+              for (const path of toEnrich) {
                 const described = await enrich(path);
                 if (!described.ok) return;
                 // Reject results whose path was removed (out of band or by a
@@ -6472,11 +6526,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                     i === manifestIdx ? described.value : e,
                   );
                   mountDescriptionsState.setManifest(updated);
-                  return;
+                  continue;
                 }
                 mountDescriptionsState.addRuntime(described.value);
-              }),
-            );
+              }
+            })();
           })();
           break;
         case "system:governance-reset":
