@@ -418,6 +418,7 @@ export async function createSandboxBridge(
             input,
             timeoutMs: requestTimeoutMs,
             nonce: executeNonce,
+            maxResultBytes,
           });
           return;
         }

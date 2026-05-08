@@ -37,3 +37,39 @@ sandbox implementations.
 - bridge errors are translated into `SandboxError` codes at the adapter edge
 - `bridgeToExecutor()` reuses `createSandboxBridge()` rather than forking a
   second execution path
+
+## Contract scope and limitations
+
+`bridgeToExecutor()` is **not** a drop-in replacement for the existing
+`@koi/sandbox-executor` subprocess executor. It deliberately narrows the
+contract:
+
+- **Code shape.** The adapter wraps `code` as a function body and runs it via
+  `new Function("input", code)` inside the worker. Module source with
+  `export default ...` is therefore not supported here. Migration of callers
+  that pass module source must rewrite the source into a function-body shape
+  (or use the existing subprocess executor) before pointing at this adapter.
+- **ExecutionContext fields.** The bridge enforces `BridgeConfig.profile` as
+  the upper bound on filesystem and network permissions. Per-call context can
+  only narrow it (`networkAllowed: false`, tighter `resourceLimits`). The
+  bridge does not append `workspacePath`/`entryPath` into the profile and the
+  current `SandboxCommand` carries no `cwd`/`env`, so callers that depend on
+  workspace-rooted execution or per-call environment variables must encode
+  those concerns in `BridgeConfig.profile` and `BridgeConfig.buildCommand`.
+- **Result size cap.** `BridgeExecOptions.maxResultBytes` is enforced by both
+  the worker (pre-send) and the host (post-parse). The worker check fails fast
+  with a `RESULT_TOO_LARGE`-style error frame; the host check is the
+  authoritative final gate.
+
+Parity work for the wider executor surface (module source, full
+`ExecutionContext` plumbing through `SandboxCommand`) is tracked separately;
+this package intentionally ships the narrower bridge first.
+
+## Trust boundary
+
+The host generates a per-call random nonce, sends it inside the `execute`
+frame, and rejects worker terminal frames whose nonce does not match. The
+worker captures the nonce, then seals its IPC channel
+(`process.send`/`process.disconnect` overridden, `message` listeners removed)
+before invoking untrusted code. Sealing-plus-nonce makes it infeasible for
+worker payloads to forge a `result`/`error` frame on the host channel.

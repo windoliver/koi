@@ -128,6 +128,7 @@ describe("createSandboxBridge", () => {
           input: { value: 41 },
           timeoutMs: 25,
           nonce: expect.any(String),
+          maxResultBytes: 1_024,
         });
 
         const nonce = (message as { nonce: string }).nonce;

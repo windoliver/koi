@@ -50,8 +50,28 @@ function validateExecuteMessage(value) {
   if (typeof record.nonce !== "string" || record.nonce.length === 0) {
     return "Execute message nonce must be a non-empty string";
   }
+  if (
+    record.maxResultBytes !== undefined &&
+    (typeof record.maxResultBytes !== "number" ||
+      !Number.isFinite(record.maxResultBytes) ||
+      record.maxResultBytes <= 0)
+  ) {
+    return "Execute message maxResultBytes must be a positive number when provided";
+  }
 
   return record;
+}
+
+function approximateResultBytes(value) {
+  try {
+    const serialized = JSON.stringify(value === undefined ? null : value);
+    if (typeof serialized !== "string") {
+      return undefined;
+    }
+    return Buffer.byteLength(serialized, "utf8");
+  } catch (_error) {
+    return undefined;
+  }
 }
 
 function classifyThrownError(message) {
@@ -127,6 +147,26 @@ process.on("message", async (raw) => {
 
     settled = true;
     clearTimeout(timeoutHandle);
+
+    const cap = message.maxResultBytes;
+    if (typeof cap === "number" && cap > 0) {
+      const approximate = approximateResultBytes(output);
+      if (approximate !== undefined && approximate > cap) {
+        send({
+          kind: "error",
+          code: "CRASH",
+          message:
+            "Worker rejected result: approximate size " +
+            String(approximate) +
+            " bytes exceeds maxResultBytes " +
+            String(cap),
+          durationMs: performance.now() - startedAt,
+        });
+        process.exit(1);
+        return;
+      }
+    }
+
     send({
       kind: "result",
       output,
