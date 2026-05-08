@@ -1,6 +1,6 @@
 # @koi/dashboard — Web UI for Managing Agents, Skills, and Channels
 
-Live web dashboard at `localhost:<port>/dashboard` for non-developer users to monitor and manage Koi agents without touching YAML or CLI. Ships as three packages: `@koi/dashboard-types` (shared contracts), `@koi/dashboard-api` (HTTP + SSE server), and `@koi/dashboard-ui` (React SPA). Embeds into any `Bun.serve()` via a single `createDashboardHandler()` call — no separate process needed.
+Live web dashboard at `localhost:<port>/dashboard` for non-developer users to monitor and manage Koi agents without touching YAML or CLI. Ships as three packages: `@koi/dashboard-types` (shared contracts), `@koi/dashboard-api` (REST + SSE server), and `@koi/dashboard-ui` (single-shell React SPA MVP for this phase). Embeds into any `Bun.serve()` via a single `createDashboardHandler()` call — no separate process needed.
 
 ---
 
@@ -32,7 +32,7 @@ The dashboard provides a real-time agent status grid with SSE-based live updates
 ├──────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  @koi/dashboard-ui  (L2)                                         │
-│  React SPA: agent grid, SSE client, Zustand stores              │
+│  Single-shell React SPA MVP: agent grid, SSE client, Zustand stores │
 │  Depends on: @koi/dashboard-types only                           │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
@@ -484,7 +484,7 @@ Data sources:
 | Aspect | Koi Dashboard | OpenClaw Control UI | NanoClaw |
 |--------|--------------|--------------------|----|
 | Framework | React 19 + shadcn | Vite + Lit | None |
-| Transport | SSE (100ms batch) | WebSocket RPC | N/A |
+| Transport | SSE (100ms batch) | REST + SSE | N/A |
 | Serving | Embedded handler | Embedded in Gateway | No dashboard |
 | Data access | Injected adapter | Hardwired to Gateway | "Ask Claude" |
 | Type safety | Discriminated unions | Runtime validation | N/A |

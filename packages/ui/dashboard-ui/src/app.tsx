@@ -1,0 +1,408 @@
+import type { ReactElement } from "react";
+import { useEffect, useReducer, useRef } from "react";
+import { AgentList } from "./components/agent-list.js";
+import { ErrorState } from "./components/error-state.js";
+import { LoadingState } from "./components/loading-state.js";
+import { MetricsPanel } from "./components/metrics-panel.js";
+import { SessionDetail } from "./components/session-detail.js";
+import { TraceViewer } from "./components/trace-viewer.js";
+import {
+  applyDashboardEvent,
+  createEmptyDashboardViewModel,
+  mapAgentSnapshot,
+  mapMetricPoints,
+  mapSessionSnapshot,
+  mapTraceView,
+  type DashboardEvent,
+  type DashboardSnapshot,
+  type DashboardViewModel,
+} from "./lib/state.js";
+
+interface PageOf<T> {
+  readonly items: readonly T[];
+  readonly nextCursor?: string | undefined;
+}
+
+export interface DashboardClient {
+  listAgents(query?: { readonly cursor?: string; readonly limit?: number }): Promise<
+    | { readonly ok: true; readonly value: PageOf<Parameters<typeof mapAgentSnapshot>[0]> }
+    | { readonly ok: false; readonly error: { readonly message?: string | undefined } }
+  >;
+  getAgent(id: string): Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: { readonly message?: string | undefined } }>;
+  listSessions(query?: { readonly cursor?: string; readonly limit?: number }): Promise<
+    | { readonly ok: true; readonly value: PageOf<Parameters<typeof mapSessionSnapshot>[0]> }
+    | { readonly ok: false; readonly error: { readonly message?: string | undefined } }
+  >;
+  getMetrics(query: {
+    readonly names: readonly string[];
+    readonly fromMs: number;
+    readonly toMs: number;
+    readonly tags: Readonly<Record<string, string>>;
+    readonly limit?: number;
+  }): Promise<
+    | { readonly ok: true; readonly value: readonly Parameters<typeof mapMetricPoints>[0][number][] }
+    | { readonly ok: false; readonly error: { readonly message?: string | undefined } }
+  >;
+  getTrace(turnId: string): Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: { readonly message?: string | undefined } }>;
+  listTraces?(query?: {
+    readonly agentId?: string;
+    readonly sinceMs?: number;
+    readonly limit?: number;
+    readonly cursor?: string;
+  }): Promise<
+    | {
+        readonly ok: true;
+        readonly value: PageOf<Parameters<typeof mapTraceView>[0]>;
+      }
+    | { readonly ok: false; readonly error: { readonly message?: string | undefined } }
+  >;
+  subscribe(
+    topics: readonly ["agent-status", "session-summary", "metric", "trace"] | readonly string[],
+    handlers: {
+      readonly onEvent: (event:
+        | { readonly kind: "agent-status"; readonly status: Parameters<typeof mapAgentSnapshot>[0] }
+        | {
+            readonly kind: "session-summary";
+            readonly session: Parameters<typeof mapSessionSnapshot>[0];
+          }
+        | { readonly kind: "metric"; readonly points: readonly Parameters<typeof mapMetricPoints>[0][number][] }
+        | { readonly kind: "trace"; readonly trace: Parameters<typeof mapTraceView>[0] }) => void;
+      readonly onError?: (error: { readonly message?: string | undefined }) => void;
+      readonly onClose?: () => void;
+    },
+  ): () => void;
+}
+
+function getErrorMessage(error: { readonly message?: string | undefined } | unknown, fallback: string): string {
+  if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string") {
+    return error.message;
+  }
+  return fallback;
+}
+
+const SESSION_METRIC_NAMES = ["token_usage", "latency_ms", "tool_calls"] as const;
+
+// dashboard-api caps `limit` at MAX_LIMIT (200) and the in-memory adapter has no
+// newest-first ordering guarantee. Use the server's documented max so a busy
+// session reliably surfaces the latest available samples in the 30-minute window;
+// `mergeMetrics` then takes the highest-timestamp sample per label.
+const SESSION_METRIC_LIMIT = 200;
+function createMetricQuery(
+  name: string,
+  sessionId: string,
+  nowMs: number,
+): {
+  readonly names: readonly string[];
+  readonly fromMs: number;
+  readonly toMs: number;
+  readonly tags: Readonly<Record<string, string>>;
+  readonly limit: number;
+} {
+  return {
+    names: [name],
+    fromMs: Math.max(0, nowMs - 30 * 60_000),
+    toMs: nowMs,
+    tags: { sessionId },
+    limit: SESSION_METRIC_LIMIT,
+  };
+}
+
+// Cap pagination so a misbehaving backend with broken cursor termination cannot
+// pin the bootstrap loop forever. Tuned well above any realistic operator fleet.
+const MAX_PAGINATION_PAGES = 50;
+
+async function drainPagedList<T>(
+  fetchPage: (cursor: string | undefined) => Promise<
+    | { readonly ok: true; readonly value: PageOf<T> }
+    | { readonly ok: false; readonly error: { readonly message?: string | undefined } }
+  >,
+  resourceLabel: string,
+): Promise<readonly T[]> {
+  const collected: T[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_PAGINATION_PAGES; page += 1) {
+    const result = await fetchPage(cursor);
+    if (!result.ok) {
+      throw new Error(
+        `Unable to load ${resourceLabel}: ${getErrorMessage(result.error, "Unknown error")}`,
+      );
+    }
+    for (const item of result.value.items) collected.push(item);
+    if (!result.value.nextCursor) return collected;
+    cursor = result.value.nextCursor;
+  }
+  // Pagination cap reached: surface what we have rather than spinning forever.
+  // Operators can refresh; the next live SSE event will fill any tail entries.
+  return collected;
+}
+
+export async function loadDashboardSnapshot(
+  client: DashboardClient,
+  options?: { readonly nowMs?: number },
+): Promise<DashboardSnapshot> {
+  const nowMs = options?.nowMs ?? Date.now();
+  const [agents, sessions] = await Promise.all([
+    drainPagedList(
+      (cursor) => client.listAgents(cursor !== undefined ? { cursor } : {}),
+      "agents",
+    ),
+    drainPagedList(
+      (cursor) => client.listSessions(cursor !== undefined ? { cursor } : {}),
+      "sessions",
+    ),
+  ]);
+
+  return {
+    generatedAt: new Date(nowMs).toISOString(),
+    agents: agents.map((agent) => mapAgentSnapshot(agent)),
+    sessions: sessions.map((session) => mapSessionSnapshot(session, nowMs)),
+  };
+}
+
+export async function fetchSessionMetrics(
+  client: DashboardClient,
+  sessionId: string,
+  nowMs: number = Date.now(),
+): Promise<readonly Parameters<typeof mapMetricPoints>[0][number][] | null> {
+  const fromMs = Math.max(0, nowMs - 30 * 60_000);
+  const responses = await Promise.all(
+    SESSION_METRIC_NAMES.map((name) =>
+      client.getMetrics(createMetricQuery(name, sessionId, nowMs)),
+    ),
+  );
+  // Fail closed on partial failure: returning a half-populated metric set would
+  // hide backend errors behind cards that look healthy. Callers see null and
+  // surface a degraded-state indicator rather than rendering misleading numbers.
+  for (const response of responses) {
+    if (!response.ok) return null;
+  }
+  const collected: Parameters<typeof mapMetricPoints>[0][number][] = [];
+  for (const response of responses) {
+    if (!response.ok) continue;
+    for (const point of response.value) {
+      if (point.tags?.sessionId !== sessionId) continue;
+      if (point.timestampMs < fromMs || point.timestampMs > nowMs) continue;
+      collected.push(point);
+    }
+  }
+  return collected;
+}
+
+export function DashboardView({
+  state,
+  dispatch,
+}: {
+  state: DashboardViewModel;
+  dispatch: (event: DashboardEvent) => void;
+}): ReactElement {
+  return (
+    <main className="dashboard-shell">
+      <section className="dashboard-hero" aria-label="Dashboard shell">
+        <div>
+          <p className="dashboard-eyebrow">Dashboard UI</p>
+          <h1>Koi Dashboard</h1>
+          <p className="dashboard-copy">
+            Live fleet snapshot with incremental updates from the dashboard service.
+          </p>
+        </div>
+      </section>
+
+      {state.errorMessage ? <ErrorState message={state.errorMessage} /> : null}
+      {state.isLoading ? <LoadingState /> : null}
+
+      <div className="dashboard-layout">
+        <AgentList
+          agents={state.agents}
+          generatedAt={state.generatedAt}
+          selectedAgentId={state.selectedAgentId}
+          onSelect={(agentId) => dispatch({ type: "agent.selected", agentId })}
+        />
+
+        <section className="dashboard-main">
+          <SessionDetail
+            selectedSession={state.selectedSession}
+            visibleSessions={state.visibleSessions}
+            onSelectSession={(sessionId) => dispatch({ type: "session.selected", sessionId })}
+          />
+
+          <div className="dashboard-grid">
+            <MetricsPanel metrics={state.selectedSession?.metrics ?? []} />
+            {/*
+              Server traces don't carry a sessionId, so the trace pane is
+              agent-scoped (latest turn for selected agent), not session-scoped.
+              The TraceViewer header makes that explicit; we keep it visible for
+              multi-session agents because a busy agent is exactly when an
+              operator most needs trace data.
+            */}
+            <TraceViewer trace={state.selectedAgentTrace} />
+          </div>
+        </section>
+      </div>
+    </main>
+  );
+}
+
+type LiveEvent = Parameters<Parameters<DashboardClient["subscribe"]>[1]["onEvent"]>[0];
+
+function dispatchLiveEvent(
+  dispatch: (event: DashboardEvent) => void,
+  event: LiveEvent,
+): void {
+  switch (event.kind) {
+    case "agent-status":
+      dispatch({ type: "agent.status.received", status: event.status });
+      return;
+    case "session-summary":
+      dispatch({ type: "session.summary.received", session: event.session });
+      return;
+    case "metric":
+      dispatch({ type: "metric.received", points: event.points });
+      return;
+    case "trace":
+      dispatch({ type: "trace.received", trace: event.trace });
+      return;
+  }
+}
+
+export function DashboardApp({
+  client,
+}: {
+  client: DashboardClient;
+}): ReactElement {
+  const [state, dispatch] = useReducer(applyDashboardEvent, undefined, createEmptyDashboardViewModel);
+  const clientRef = useRef<DashboardClient>(client);
+  clientRef.current = client;
+  const selectedSessionId = state.selectedSessionId;
+
+  useEffect(() => {
+    let disposed = false;
+    let snapshotApplied = false;
+    const buffer: LiveEvent[] = [];
+    dispatch({ type: "loading.set", isLoading: true });
+    dispatch({ type: "error.set", message: null });
+
+    // Subscribe FIRST so events emitted during the snapshot fetch window are buffered
+    // and replayed after the snapshot is applied. This eliminates the bootstrap race
+    // where live transitions arriving before subscribe() would be lost permanently.
+    let unsubscribe = clientRef.current.subscribe(
+      ["agent-status", "session-summary", "metric", "trace"],
+      {
+        onEvent: (event) => {
+          if (disposed) return;
+          if (!snapshotApplied) {
+            buffer.push(event);
+            return;
+          }
+          dispatchLiveEvent(dispatch, event);
+        },
+        onClose: () => {
+          if (disposed) return;
+          dispatch({ type: "error.set", message: "Live dashboard stream disconnected." });
+        },
+        onError: (error) => {
+          if (disposed) return;
+          dispatch({
+            type: "error.set",
+            message: getErrorMessage(error, "Live dashboard stream disconnected."),
+          });
+        },
+      },
+    );
+
+    void (async () => {
+      try {
+        const snapshot = await loadDashboardSnapshot(clientRef.current);
+        if (disposed) return;
+        dispatch({ type: "snapshot.loaded", snapshot });
+        snapshotApplied = true;
+        // Replay any events that arrived during snapshot loading. Live events take
+        // precedence over snapshot data because they are strictly newer.
+        for (const buffered of buffer) {
+          if (disposed) return;
+          dispatchLiveEvent(dispatch, buffered);
+        }
+        buffer.length = 0;
+
+        // Hydrate the trace cache from server history so the trace pane is populated
+        // immediately after page load instead of waiting for the next live trace
+        // event. Best-effort: skip silently if the SDK lacks listTraces or the call
+        // fails (older servers may not implement /api/traces listing).
+        const listTraces = clientRef.current.listTraces;
+        if (listTraces) {
+          // The dashboard-api /traces list endpoint has no documented ordering
+          // guarantee, so we pull a bounded number of pages per agent and let
+          // the trace.received reducer's monotonic startedAtMs check pick the
+          // newest turn. Cursor is followed up to MAX_PAGINATION_PAGES so larger
+          // agents do not silently truncate their trace history.
+          await Promise.all(
+            snapshot.agents.map(async (agent) => {
+              let cursor: string | undefined;
+              for (let page = 0; page < MAX_PAGINATION_PAGES; page += 1) {
+                if (disposed) return;
+                const result = await listTraces.call(clientRef.current, {
+                  agentId: agent.id,
+                  limit: 50,
+                  ...(cursor !== undefined ? { cursor } : {}),
+                });
+                if (disposed || !result.ok) return;
+                for (const trace of result.value.items) {
+                  dispatch({ type: "trace.received", trace });
+                }
+                if (!result.value.nextCursor) return;
+                cursor = result.value.nextCursor;
+              }
+            }),
+          );
+        }
+      } catch (error: unknown) {
+        if (disposed) return;
+        dispatch({
+          type: "error.set",
+          message: error instanceof Error ? error.message : "Unable to load dashboard data.",
+        });
+        // Snapshot failed: drop the buffered events and tear down the SSE
+        // subscription so a degraded backend cannot turn the page into an
+        // unbounded event sink. The UI surfaces the error and waits for a reload.
+        buffer.length = 0;
+        unsubscribe();
+        unsubscribe = () => {};
+      } finally {
+        if (!disposed) {
+          dispatch({ type: "loading.set", isLoading: false });
+        }
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, []);
+
+  // Hydrate metrics for the currently selected session whenever it changes, so
+  // sessions other than the first also get historical detail data.
+  useEffect(() => {
+    if (!selectedSessionId) return undefined;
+    let cancelled = false;
+    void (async () => {
+      const points = await fetchSessionMetrics(clientRef.current, selectedSessionId);
+      if (cancelled) return;
+      if (points === null) {
+        // fetchSessionMetrics fails closed if any per-name request fails; surface
+        // it so operators don't read partial numbers as healthy state.
+        dispatch({
+          type: "error.set",
+          message: "Session metrics partially unavailable — backend request failed.",
+        });
+        return;
+      }
+      if (points.length === 0) return;
+      dispatch({ type: "metric.received", points });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSessionId]);
+
+  return <DashboardView state={state} dispatch={dispatch} />;
+}

@@ -1,6 +1,6 @@
 {
   "name": "@koi/dashboard-client",
-  "description": "Typed HTTP + WebSocket client SDK for the Koi dashboard API",
+  "description": "Typed HTTP + SSE client SDK for the Koi dashboard API",
   "version": "0.0.0",
   "private": true,
   "type": "module",

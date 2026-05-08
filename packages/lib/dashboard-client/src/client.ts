@@ -3,6 +3,7 @@ import type {
   AgentStatus,
   MetricPoint,
   MetricQuery,
+  Page,
   SessionSummary,
   TraceView,
   WsTopic,
@@ -14,37 +15,84 @@ import {
   isSessionSummary,
   isTraceView,
 } from "@koi/dashboard-types";
-
-const isAgentStatusList = (x: unknown): x is readonly AgentStatus[] =>
-  isReadonlyArrayOf(x, isAgentStatus);
-const isSessionSummaryList = (x: unknown): x is readonly SessionSummary[] =>
-  isReadonlyArrayOf(x, isSessionSummary);
-const isMetricPointList = (x: unknown): x is readonly MetricPoint[] =>
-  isReadonlyArrayOf(x, isMetricPointValue);
-
 import { type FetchLike, getJson } from "./http.js";
 import {
+  createFetchSseAdapter,
   openSubscription,
+  type SseAdapter,
   type SubscriptionHandlers,
   type Unsubscribe,
   type WsFactory,
 } from "./subscribe.js";
+
+// dashboard-api wraps metric responses in { points: [...] } (unique among list
+// endpoints). Accept both shapes so the SDK works against the real server and
+// the existing array-shape mocks in older test fixtures.
+const isMetricPointEnvelope = (
+  x: unknown,
+): x is readonly MetricPoint[] | { readonly points: readonly MetricPoint[] } => {
+  if (isReadonlyArrayOf(x, isMetricPointValue)) return true;
+  if (typeof x !== "object" || x === null) return false;
+  const obj = x as { readonly points?: unknown };
+  return isReadonlyArrayOf(obj.points, isMetricPointValue);
+};
+const unwrapMetricList = (
+  v: readonly MetricPoint[] | { readonly points: readonly MetricPoint[] },
+): readonly MetricPoint[] => {
+  if (Array.isArray(v)) return v as readonly MetricPoint[];
+  return (v as { readonly points: readonly MetricPoint[] }).points;
+};
+
+function isPageOf<T>(itemGuard: (x: unknown) => x is T) {
+  return (x: unknown): x is Page<T> => {
+    if (typeof x !== "object" || x === null) return false;
+    const obj = x as { readonly items?: unknown; readonly nextCursor?: unknown };
+    if (!isReadonlyArrayOf(obj.items, itemGuard)) return false;
+    if (obj.nextCursor !== undefined && typeof obj.nextCursor !== "string") return false;
+    return true;
+  };
+}
+const isAgentStatusPage = isPageOf(isAgentStatus);
+const isSessionSummaryPage = isPageOf(isSessionSummary);
+const isTraceViewPage = isPageOf(isTraceView);
+
+export interface ListQuery {
+  readonly limit?: number;
+  readonly cursor?: string;
+}
+
+export interface AgentListQuery extends ListQuery {
+  readonly state?: string;
+}
+
+export interface SessionListQuery extends ListQuery {
+  readonly agentId?: AgentId;
+  readonly status?: string;
+}
+
+export interface TraceListQuery extends ListQuery {
+  readonly agentId?: AgentId;
+  readonly sinceMs?: number;
+}
 
 export interface DashboardClientConfig {
   /** Base URL of the dashboard API (e.g. `http://localhost:3100`). No trailing slash. */
   readonly baseUrl: string;
   /** Optional fetch implementation; defaults to `globalThis.fetch`. */
   readonly fetch?: FetchLike;
-  /** Optional WebSocket factory; defaults to a `globalThis.WebSocket` adapter. */
+  /** Optional injectable SSE adapter. Defaults to the built-in fetch-backed adapter. */
+  readonly sse?: SseAdapter;
+  /** @deprecated Legacy field preserved for source compatibility. Ignored by the SSE client. */
   readonly webSocket?: WsFactory;
 }
 
 export interface DashboardClient {
-  listAgents(): Promise<Result<readonly AgentStatus[]>>;
+  listAgents(query?: AgentListQuery): Promise<Result<Page<AgentStatus>>>;
   getAgent(id: AgentId): Promise<Result<AgentStatus | undefined>>;
-  listSessions(): Promise<Result<readonly SessionSummary[]>>;
+  listSessions(query?: SessionListQuery): Promise<Result<Page<SessionSummary>>>;
   getMetrics(query: MetricQuery): Promise<Result<readonly MetricPoint[]>>;
   getTrace(turnId: string): Promise<Result<TraceView | undefined>>;
+  listTraces(query?: TraceListQuery): Promise<Result<Page<TraceView>>>;
   subscribe(topics: readonly WsTopic[], handlers: SubscriptionHandlers): Unsubscribe;
 }
 
@@ -53,43 +101,46 @@ export interface DashboardClient {
  */
 export function createDashboardClient(config: DashboardClientConfig): DashboardClient {
   const fetchImpl = config.fetch ?? defaultFetch();
-  const wsFactory = config.webSocket ?? defaultWsFactory();
+  const sseAdapter = config.sse ?? createFetchSseAdapter(fetchImpl);
   const baseUrl = stripTrailingSlash(config.baseUrl);
 
   return {
-    listAgents: (): Promise<Result<readonly AgentStatus[]>> =>
-      getJson<readonly AgentStatus[]>(fetchImpl, `${baseUrl}/api/agents`, {
-        validate: isAgentStatusList,
-      }),
-
-    getAgent: (id): Promise<Result<AgentStatus | undefined>> =>
+    listAgents: (query) =>
+      getJson<Page<AgentStatus>>(
+        fetchImpl,
+        listUrl(baseUrl, "agents", encodeAgentListQuery(query)),
+        { validate: isAgentStatusPage },
+      ),
+    getAgent: (id) =>
       getJson<AgentStatus | undefined>(
         fetchImpl,
         `${baseUrl}/api/agents/${encodeURIComponent(id)}`,
-        { allowUndefinedValue: true, validate: isAgentStatus },
+        {
+          allowUndefinedValue: true,
+          validate: isAgentStatus,
+        },
       ),
-
-    listSessions: (): Promise<Result<readonly SessionSummary[]>> =>
-      getJson<readonly SessionSummary[]>(fetchImpl, `${baseUrl}/api/sessions`, {
-        validate: isSessionSummaryList,
-      }),
-
-    getMetrics: (query): Promise<Result<readonly MetricPoint[]>> =>
-      getJson<readonly MetricPoint[]>(
+    listSessions: (query) =>
+      getJson<Page<SessionSummary>>(
         fetchImpl,
-        `${baseUrl}/api/metrics?${encodeMetricQuery(query)}`,
-        { validate: isMetricPointList },
+        listUrl(baseUrl, "sessions", encodeSessionListQuery(query)),
+        { validate: isSessionSummaryPage },
       ),
-
-    getTrace: (turnId): Promise<Result<TraceView | undefined>> =>
+    getMetrics: (query) => fetchMetricsFanOut(fetchImpl, baseUrl, query),
+    getTrace: (turnId) =>
       getJson<TraceView | undefined>(
         fetchImpl,
         `${baseUrl}/api/traces/${encodeURIComponent(turnId)}`,
-        { allowUndefinedValue: true, validate: isTraceView },
+        {
+          allowUndefinedValue: true,
+          validate: isTraceView,
+        },
       ),
-
-    subscribe: (topics, handlers): Unsubscribe =>
-      openSubscription(wsFactory, `${toWsUrl(baseUrl)}/api/ws`, topics, handlers),
+    listTraces: (query) =>
+      getJson<Page<TraceView>>(fetchImpl, listUrl(baseUrl, "traces", encodeTraceListQuery(query)), {
+        validate: isTraceViewPage,
+      }),
+    subscribe: (topics, handlers) => openSubscription(sseAdapter, baseUrl, topics, handlers),
   };
 }
 
@@ -97,21 +148,96 @@ function stripTrailingSlash(url: string): string {
   return url.endsWith("/") ? url.slice(0, -1) : url;
 }
 
-function toWsUrl(httpUrl: string): string {
-  if (httpUrl.startsWith("https://")) return `wss://${httpUrl.slice("https://".length)}`;
-  if (httpUrl.startsWith("http://")) return `ws://${httpUrl.slice("http://".length)}`;
-  return httpUrl;
+function listUrl(baseUrl: string, path: string, qs: string): string {
+  return qs.length > 0 ? `${baseUrl}/api/${path}?${qs}` : `${baseUrl}/api/${path}`;
 }
 
-function encodeMetricQuery(query: MetricQuery): string {
-  const params = new URLSearchParams();
-  for (const name of query.names) params.append("name", name);
-  params.set("from", String(query.fromMs));
-  params.set("to", String(query.toMs));
-  if (query.limit !== undefined) params.set("limit", String(query.limit));
-  if (query.tags) {
-    for (const [k, v] of Object.entries(query.tags)) params.append("tag", `${k}=${v}`);
+async function fetchMetricsFanOut(
+  fetchImpl: FetchLike,
+  baseUrl: string,
+  query: MetricQuery,
+): Promise<Result<readonly MetricPoint[]>> {
+  // The dashboard-api parser only honors a single `name` plus `since`. Fan out
+  // one request per name and filter `toMs` + tag predicates client-side so the
+  // SDK's `MetricQuery` contract (multi-name, range, tags, limit) is honored
+  // for callers, regardless of the server's narrower parser.
+  const names = query.names.length > 0 ? query.names : [undefined];
+  const responses = await Promise.all(
+    names.map((name) =>
+      getJson<readonly MetricPoint[] | { readonly points: readonly MetricPoint[] }>(
+        fetchImpl,
+        `${baseUrl}/api/metrics?${encodeSingleNameQuery(query, name)}`,
+        { validate: isMetricPointEnvelope },
+      ),
+    ),
+  );
+  const collected: MetricPoint[] = [];
+  for (const response of responses) {
+    if (!response.ok) return response;
+    for (const point of unwrapMetricList(response.value)) {
+      if (point.timestampMs < query.fromMs || point.timestampMs > query.toMs) continue;
+      if (query.tags && !matchesTags(point.tags, query.tags)) continue;
+      collected.push(point);
+    }
   }
+  // Enforce the published `limit` across the merged set so callers get the
+  // bound they asked for even after fan-out. Sort newest-first so a small
+  // limit reliably returns the most recent samples.
+  collected.sort((left, right) => right.timestampMs - left.timestampMs);
+  const bounded =
+    query.limit !== undefined && collected.length > query.limit
+      ? collected.slice(0, query.limit)
+      : collected;
+  return { ok: true, value: bounded };
+}
+
+function encodeSingleNameQuery(query: MetricQuery, name: string | undefined): string {
+  // Don't forward `query.limit` to the server: the server applies the limit
+  // before any ordering, so passing it would truncate to the OLDEST N points
+  // per name. The fan-out below sorts newest-first across all names and then
+  // applies `query.limit` client-side, which is the contract callers expect.
+  const params = new URLSearchParams();
+  if (name !== undefined) params.set("name", name);
+  params.set("since", String(query.fromMs));
+  return params.toString();
+}
+
+function matchesTags(
+  pointTags: Readonly<Record<string, string>> | undefined,
+  predicate: Readonly<Record<string, string>>,
+): boolean {
+  for (const [key, value] of Object.entries(predicate)) {
+    if (pointTags?.[key] !== value) return false;
+  }
+  return true;
+}
+
+function encodeTraceListQuery(query: TraceListQuery | undefined): string {
+  if (!query) return "";
+  const params = new URLSearchParams();
+  if (query.agentId !== undefined) params.set("agentId", query.agentId);
+  if (query.sinceMs !== undefined) params.set("since", String(query.sinceMs));
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.cursor !== undefined) params.set("cursor", query.cursor);
+  return params.toString();
+}
+
+function encodeAgentListQuery(query: AgentListQuery | undefined): string {
+  if (!query) return "";
+  const params = new URLSearchParams();
+  if (query.state !== undefined) params.set("state", query.state);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.cursor !== undefined) params.set("cursor", query.cursor);
+  return params.toString();
+}
+
+function encodeSessionListQuery(query: SessionListQuery | undefined): string {
+  if (!query) return "";
+  const params = new URLSearchParams();
+  if (query.agentId !== undefined) params.set("agentId", query.agentId);
+  if (query.status !== undefined) params.set("status", query.status);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.cursor !== undefined) params.set("cursor", query.cursor);
   return params.toString();
 }
 
@@ -121,14 +247,4 @@ function defaultFetch(): FetchLike {
     throw new Error("globalThis.fetch is unavailable; pass `fetch` in DashboardClientConfig");
   }
   return f.bind(globalThis);
-}
-
-function defaultWsFactory(): WsFactory {
-  const Ctor = (globalThis as { WebSocket?: new (url: string) => WebSocket }).WebSocket;
-  if (Ctor === undefined) {
-    throw new Error(
-      "globalThis.WebSocket is unavailable; pass `webSocket` in DashboardClientConfig",
-    );
-  }
-  return (url): WebSocket => new Ctor(url);
 }
