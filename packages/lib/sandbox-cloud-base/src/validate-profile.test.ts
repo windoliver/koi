@@ -53,6 +53,32 @@ describe("validate-profile", () => {
     });
   });
 
+  test("detects nexus mounts as a filesystem restriction", () => {
+    const unsupported = detectUnsupportedProfileFields({
+      filesystem: {
+        defaultReadAccess: "open",
+      },
+      network: {
+        allow: true,
+      },
+      resources: {},
+      nexusMounts: [
+        {
+          nexusUrl: "https://nexus.example.com",
+          apiKey: "test-key",
+          mountPath: "/mnt/nexus",
+        },
+      ],
+    });
+
+    expect(unsupported).toEqual({
+      filesystem: true,
+      network: false,
+      resources: false,
+      details: ["filesystem restrictions or Nexus mounts"],
+    });
+  });
+
   test("adapter-specific fail-closed guidance includes the adapter name and detail", () => {
     const message = formatUnsupportedProfileError("sandbox-e2b", {
       filesystem: false,
