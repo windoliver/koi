@@ -486,14 +486,13 @@ describe("createAutoHarnessStack", () => {
       onError: (error) => errors.push(error),
     });
 
-    // First attempt fails at deploy and consumes the budget.
+    // First attempt fails at deploy (transient infrastructure failure).
+    // The budget is refunded so a degraded dependency cannot permanently
+    // disable self-healing for the session — a healthy retry can run.
     await expect(stack.synthesizeHarness(makeSignal())).resolves.toBeNull();
-    // Second attempt is gated out — failed attempts count, so the budget is
-    // already exhausted. This bounds runaway regeneration on persistent
-    // bad signals or unavailable dependencies.
     await expect(stack.synthesizeHarness(makeSignal())).resolves.toBeNull();
-    expect(deploymentAttempts).toBe(1);
-    expect(errors).toHaveLength(1);
+    expect(deploymentAttempts).toBe(2);
+    expect(errors).toHaveLength(2);
     expect(errors[0]?.stage).toBe("deploy");
     expect(errors[0]?.message).toBe("deploy failed");
   });
@@ -520,7 +519,8 @@ describe("createAutoHarnessStack", () => {
         policyEntry: {
           brickId: artifact.id,
           toolId: "search",
-          scope: "global" as const,
+          scope: "agent" as const,
+          agentId: "agent-test",
           execute: () => ({ action: "allow" as const }),
         },
       }),
@@ -603,7 +603,8 @@ describe("createAutoHarnessStack", () => {
     const policyEntry = {
       brickId: "brick-policy-1",
       toolId: "search",
-      scope: "global" as const,
+      scope: "agent" as const,
+      agentId: "agent-test",
       execute: () => ({ action: "allow" as const }),
     };
     const stack = createAutoHarnessStack({
@@ -658,7 +659,8 @@ describe("createAutoHarnessStack", () => {
         policyEntry: {
           brickId: "brick-policy-2",
           toolId: "search",
-          scope: "global" as const,
+          scope: "agent" as const,
+          agentId: "agent-test",
           execute: () => ({ action: "allow" as const }),
         },
       }),

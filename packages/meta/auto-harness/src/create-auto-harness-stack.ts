@@ -289,6 +289,13 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       // round 8 finding).
       if (outcome.kind !== "transient") {
         state.completedTriggers.add(triggerKey);
+      } else {
+        // Refund the budget for transient infrastructure failures so a few
+        // generator/verifier/store outages cannot permanently exhaust the
+        // session cap and disable self-healing for the rest of the session
+        // (R5 round 9 finding). The counter never goes below zero — it was
+        // incremented before the pipeline started.
+        state.count = Math.max(0, state.count - 1);
       }
       return outcome.artifact;
     } finally {
@@ -441,39 +448,48 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     // harness is still pending. Treat its absence as deploy-infrastructure
     // failure (transient) so the host can fix the deploy contract and
     // retry. (R5 round 8 finding.)
+    // After deployCandidate reports success the live side effects are
+    // committed. Downstream bookkeeping failures (missing authoritative
+    // artifact, post-deploy save failure, register failure) MUST NOT
+    // re-classify as transient — a retry would invoke deployCandidate
+    // again and duplicate activation, promotion, or other non-idempotent
+    // side effects. Mark non_retriable instead so the trigger stops
+    // re-emitting; operators reconcile via the surfaced error rather than
+    // re-deploy (R5 round 9 finding).
     if (deployment.artifact === undefined) {
       reportError({
         stage: "deploy",
         message:
           "deployCandidate returned ok without an authoritative artifact; " +
-          "post-deploy state cannot be persisted",
+          "live deploy may have committed but the post-deploy record cannot " +
+          "be persisted. Manual reconciliation required.",
       });
-      return transient();
+      return nonRetriable();
     }
     const deployedArtifact = deployment.artifact;
 
-    // Persist the deployed artifact BEFORE emitting deployment.succeeded.
-    // The durable store must reflect the live activation: restart/recovery
-    // and rollback paths trust the store as the source of truth for what is
-    // actually live. A best-effort save would let observers see a draft
-    // forever after the harness is already serving traffic.
     try {
       const saveResult = await config.forgeStore.save(deployedArtifact);
       if (!saveResult.ok) {
         reportError({
           stage: "deploy",
-          message: `forgeStore.save (post-deploy) failed: ${saveResult.error.message}`,
+          message:
+            `forgeStore.save (post-deploy) failed: ${saveResult.error.message}. ` +
+            "Live deploy committed but durable record is stale; manual " +
+            "reconciliation required.",
           koiError: saveResult.error,
         });
-        return transient();
+        return nonRetriable();
       }
     } catch (cause: unknown) {
       reportError({
         stage: "deploy",
-        message: "forgeStore.save (post-deploy) threw",
+        message:
+          "forgeStore.save (post-deploy) threw. Live deploy committed but " +
+          "durable record is stale; manual reconciliation required.",
         cause,
       });
-      return transient();
+      return nonRetriable();
     }
 
     // Deployment side effects are now committed AND durably recorded; emit
@@ -493,9 +509,39 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     // succeeded. The middleware still short-circuits via its own miss path;
     // not populating the cache simply means no fast-path optimization until
     // the host wires a verifier.
-    if (deployment.policyEntry !== undefined && config.policyVerifier !== undefined) {
+    // Validate policy-entry scope before registering. The auto-harness path
+    // is session-scoped; a buggy or compromised deployCandidate could
+    // otherwise hand back a `global` entry, escalating enforcement from
+    // "fix this session's tool failure" into "change enforcement for all
+    // traffic". By default, reject `global` scope and require the entry
+    // to carry an `agentId`. Hosts that genuinely need global registration
+    // must use a separately authorized path (R5 round 9 finding).
+    const entry = deployment.policyEntry;
+    if (entry !== undefined && entry.scope !== "agent") {
+      reportError({
+        stage: "register-policy",
+        message:
+          `auto-harness refused to register policyEntry with scope=${entry.scope}. ` +
+          "Only `agent`-scoped entries are permitted via the demand-driven " +
+          "pipeline; `global` registrations would escalate enforcement " +
+          "outside the authorizing session and must use an explicit, " +
+          "separately authorized path.",
+      });
+      return { kind: "success", artifact: deployedArtifact };
+    }
+    if (entry !== undefined && (entry.agentId === undefined || entry.agentId === "")) {
+      reportError({
+        stage: "register-policy",
+        message:
+          "auto-harness refused to register policyEntry with no agentId; " +
+          "agent-scoped entries must identify the owning agent so cache " +
+          "lookups cannot match other agents' traffic.",
+      });
+      return { kind: "success", artifact: deployedArtifact };
+    }
+    if (entry !== undefined && config.policyVerifier !== undefined) {
       try {
-        const result = policyCacheHandle.register(deployment.policyEntry);
+        const result = policyCacheHandle.register(entry);
         if (!result.ok) {
           reportError({
             stage: "register-policy",
