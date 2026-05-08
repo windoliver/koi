@@ -15,7 +15,10 @@ import type {
 
 export interface PromotionGateDeps {
   readonly structuredStore: StructuredPlaybookStore;
-  readonly proposalStore?: PlaybookProposalStore;
+  // Required for any mutating path so every committed head has a durable
+  // proposal/evaluation lineage record. evaluatePromotion() is pure and does
+  // not need this dep; commit/rollback do, and fail closed when missing.
+  readonly proposalStore: PlaybookProposalStore;
   readonly clock?: () => number;
 }
 
@@ -292,9 +295,13 @@ export async function commitPromotion(
 
   const gateDecision = await evaluatePromotion(proposal, evaluation, thresholds);
   if (gateDecision !== "promote") {
-    if (deps.proposalStore !== undefined) {
-      await deps.proposalStore.recordEvaluation(evaluation);
-    }
+    // Real proposal stores enforce a proposal -> evaluation foreign key
+    // (sqlite) or existence check (nexus), so the proposal must be persisted
+    // before the evaluation. recordProposal is idempotent on byte-identical
+    // retries so calling it here is safe regardless of whether the caller
+    // already wrote it.
+    await deps.proposalStore.recordProposal(proposal);
+    await deps.proposalStore.recordEvaluation(evaluation);
 
     return {
       outcome: "rejected",
@@ -320,15 +327,16 @@ export async function commitPromotion(
     },
   };
 
-  // Store implementations are responsible for rejecting stale/equal
-  // conflicting writes (for example via version monotonicity checks), so this
-  // path only prepares the next versioned snapshot and relies on save() to
-  // enforce the final concurrency gate.
-  await deps.structuredStore.save(next);
+  // Audit-first ordering: persist the proposal AND evaluation BEFORE advancing
+  // the head so any visible commit always has a recorded lineage. If save()
+  // fails the head stays at baseVersion and a retry is safe — both
+  // recordProposal and recordEvaluation are idempotent on byte-identical
+  // payloads. Store implementations are responsible for rejecting stale/equal
+  // conflicting writes via version monotonicity checks.
+  await deps.proposalStore.recordProposal(proposal);
+  await deps.proposalStore.recordEvaluation(evaluation);
 
-  if (deps.proposalStore !== undefined) {
-    await deps.proposalStore.recordEvaluation(evaluation);
-  }
+  await deps.structuredStore.save(next);
 
   return {
     outcome: "promoted",
@@ -399,11 +407,14 @@ export async function rollbackPromotion(
     },
   };
 
-  await deps.structuredStore.save(restored);
+  // Audit-first ordering: same rationale as commitPromotion above. Persist
+  // the proposal first to satisfy proposal -> evaluation FK / existence
+  // requirements in sqlite/nexus adapters; both calls are idempotent on
+  // byte-identical retries.
+  await deps.proposalStore.recordProposal(proposal);
+  await deps.proposalStore.recordEvaluation(evaluation);
 
-  if (deps.proposalStore !== undefined) {
-    await deps.proposalStore.recordEvaluation(evaluation);
-  }
+  await deps.structuredStore.save(restored);
 
   return {
     outcome: "rolled_back",

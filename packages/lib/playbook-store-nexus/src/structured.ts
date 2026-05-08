@@ -66,6 +66,30 @@ export function createNexusStructuredPlaybookStore(
       // Acquire the per-playbook lock shared with recordProposal to serialise
       // in-process save + baseVersion-check interleaving. See playbook-locks.ts.
       await withPlaybookLock(scope, playbook.id, async () => {
+        // Enforce monotonic version semantics required by the
+        // StructuredPlaybookStore contract (matches sqlite implementation):
+        // reject below-head replays so concurrent promotions cannot lose
+        // updates by silently overwriting a higher version. Idempotent
+        // re-save of the exact current head is permitted so retries after
+        // a successful write but failed ack do not wedge.
+        const currentRead = await readJson<StructuredPlaybook>(transport, path(playbook.id));
+        if (!currentRead.ok) throw new Error(currentRead.error.message);
+        const current = currentRead.value;
+        if (current !== undefined) {
+          if (playbook.version < current.version) {
+            throw new Error(
+              `playbook ${playbook.id} cannot save version ${String(playbook.version)} below current version ${String(current.version)}`,
+            );
+          }
+          if (
+            playbook.version === current.version &&
+            JSON.stringify(playbook) !== JSON.stringify(current)
+          ) {
+            throw new Error(
+              `playbook ${playbook.id} cannot save divergent content at current version ${String(current.version)}`,
+            );
+          }
+        }
         const r = await writeJson(transport, path(playbook.id), playbook);
         if (!r.ok) throw new Error(r.error.message);
       });

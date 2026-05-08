@@ -638,7 +638,7 @@ describe("commitPromotion", () => {
     expect(proposalStore.recordedEvaluations).toEqual([evaluation({ verdict: "rollback" })]);
   });
 
-  test("returns the saved promoted version even when evaluation recording fails afterwards", async () => {
+  test("audit-first: skips head save when evaluation recording fails", async () => {
     const store = createStructuredStore();
     const proposalWithAdd = createProposal({
       baseVersion: 1,
@@ -658,19 +658,13 @@ describe("commitPromotion", () => {
       ),
     ).rejects.toThrow(/evaluation write failed/i);
 
+    // Audit-first ordering: evaluation recording happens before save, so a
+    // failing recordEvaluation must leave the head untouched.
     const saved = await store.get("playbook-1");
-    expect(saved?.version).toBe(2);
-    expect(saved?.updatedAt).toBe(500);
-    expect(saved?.sections[0]?.bullets[2]?.content).toBe("newly promoted insight");
-    expect(saved?.provenance).toEqual({
-      sourceTrajectoryRange: proposal.sourceTrajectoryRange,
-      proposalId: "proposal-1",
-      evaluationId: "evaluation-1",
-      committedAt: 500,
-    });
+    expect(saved?.version).toBe(1);
   });
 
-  test("does not record the evaluation when saving the promoted version fails", async () => {
+  test("audit-first: records the evaluation before save fails so retries are recoverable", async () => {
     const proposalStore = createProposalStore();
     const proposalWithAdd = createProposal({
       baseVersion: 1,
@@ -690,13 +684,21 @@ describe("commitPromotion", () => {
       ),
     ).rejects.toThrow(/save failed/i);
 
-    expect(proposalStore.recordedEvaluations).toEqual([]);
+    // Audit-first ordering: the evaluation IS persisted before the head save
+    // is attempted. A retry with byte-identical evaluation payload is the
+    // documented recovery path (recordEvaluation is idempotent on
+    // (id, proposalId, verdict)).
+    expect(proposalStore.recordedEvaluations).toEqual([evaluation()]);
   });
 
   test("throws when the structured playbook does not exist", async () => {
     await expect(
       commitPromotion(
-        { structuredStore: createStructuredStore(undefined), clock: () => 500 },
+        {
+          structuredStore: createStructuredStore(undefined),
+          proposalStore: createProposalStore(),
+          clock: () => 500,
+        },
         createProposal({ baseVersion: 1 }),
         evaluation(),
         thresholds,
@@ -709,7 +711,7 @@ describe("commitPromotion", () => {
 
     await expect(
       commitPromotion(
-        { structuredStore: store, clock: () => 500 },
+        { structuredStore: store, proposalStore: createProposalStore(), clock: () => 500 },
         createProposal({ baseVersion: 1 }),
         evaluation(),
         thresholds,
@@ -835,7 +837,11 @@ describe("rollbackPromotion", () => {
   test("throws when the structured store does not support lineage lookups", async () => {
     await expect(
       rollbackPromotion(
-        { structuredStore: createStructuredStoreWithoutLineage(), clock: () => 500 },
+        {
+          structuredStore: createStructuredStoreWithoutLineage(),
+          proposalStore: createProposalStore(),
+          clock: () => 500,
+        },
         createProposal({ baseVersion: 1 }),
         0,
         evaluation({ verdict: "rollback" }),
@@ -848,6 +854,7 @@ describe("rollbackPromotion", () => {
       rollbackPromotion(
         {
           structuredStore: createStructuredStore(createStructuredPlaybook({ version: 2 })),
+          proposalStore: createProposalStore(),
           clock: () => 500,
         },
         createProposal({ baseVersion: 2 }),
@@ -862,6 +869,7 @@ describe("rollbackPromotion", () => {
       rollbackPromotion(
         {
           structuredStore: createStructuredStore(createStructuredPlaybook({ version: 2 })),
+          proposalStore: createProposalStore(),
           clock: () => 500,
         },
         createProposal({ baseVersion: 2 }),
@@ -876,7 +884,7 @@ describe("rollbackPromotion", () => {
 
     await expect(
       rollbackPromotion(
-        { structuredStore: store, clock: () => 500 },
+        { structuredStore: store, proposalStore: createProposalStore(), clock: () => 500 },
         createProposal({ baseVersion: 2 }),
         2,
         evaluation({ verdict: "rollback" }),
@@ -889,6 +897,7 @@ describe("rollbackPromotion", () => {
       rollbackPromotion(
         {
           structuredStore: createStructuredStore(createStructuredPlaybook({ version: 2 })),
+          proposalStore: createProposalStore(),
           clock: () => 500,
         },
         createProposal({ baseVersion: 2 }),
@@ -898,7 +907,7 @@ describe("rollbackPromotion", () => {
     ).rejects.toThrow(/older than the current head/i);
   });
 
-  test("does not record the evaluation when saving the rollback head fails", async () => {
+  test("audit-first: records the rollback evaluation before save fails so retries are recoverable", async () => {
     const proposalStore = createProposalStore();
     const current = createStructuredPlaybook({ version: 2 });
     const previous = createStructuredPlaybook({ version: 1 });
@@ -929,6 +938,9 @@ describe("rollbackPromotion", () => {
       ),
     ).rejects.toThrow(/rollback save failed/i);
 
-    expect(proposalStore.recordedEvaluations).toEqual([]);
+    // Audit-first ordering: the rollback evaluation IS recorded before save
+    // is attempted, so a retry with byte-identical evaluation is the
+    // recovery path (recordEvaluation idempotent on (id, proposalId, verdict)).
+    expect(proposalStore.recordedEvaluations).toEqual([evaluation({ verdict: "rollback" })]);
   });
 });
