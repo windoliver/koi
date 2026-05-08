@@ -729,6 +729,20 @@ async def dispatch(fs, method, params):
         # resulting path when `at` was not specified. If list_mounts fails
         # before mutation, fall back to an empty snapshot — the actual
         # mutation can still proceed and we'll handle missing diff below.
+        # Trust-boundary enforcement: resolve add_mount against the scoped
+        # filesystem wrapper ONLY. Walking through to fs.backend / fs._backend /
+        # fs.facade would let a scoped session reach raw backend mount logic
+        # and add mounts outside its visible namespace. The wrapper either
+        # implements add_mount/mount (scope is applied inside it) or it does
+        # not (fail closed). Callers that need raw backend mutations must do
+        # so outside the scoped boundary.
+        scoped_add = getattr(fs, "add_mount", None)
+        scoped_mount = getattr(fs, "mount", None)
+        if not callable(scoped_add) and not callable(scoped_mount):
+            raise ValueError(
+                "add_mount refused: scoped filesystem does not expose add_mount/mount; "
+                "raw backend mount mutations are not reachable through this session"
+            )
         # Use scope-aware listing for the pre-mutation snapshot so the
         # diff that resolves the committed path stays inside the scope
         # boundary (and matches what the runtime guard sees).
@@ -737,14 +751,22 @@ async def dispatch(fs, method, params):
             before = set(before_listed) if before_listed is not None else set()
         except Exception:
             before = set()
-        targets = _mount_targets(fs)
         if at is None:
-            await _call_first(targets, ("add_mount", "mount"), uri)
+            if callable(scoped_add):
+                await _maybe_await(scoped_add(uri))
+            else:
+                await _maybe_await(scoped_mount(uri))
         else:
-            try:
-                await _call_first(targets, ("add_mount",), uri, at=at)
-            except NotImplementedError:
-                await _call_first(targets, ("mount",), uri, at)
+            if callable(scoped_add):
+                try:
+                    await _maybe_await(scoped_add(uri, at=at))
+                except NotImplementedError:
+                    if callable(scoped_mount):
+                        await _maybe_await(scoped_mount(uri, at))
+                    else:
+                        raise
+            else:
+                await _maybe_await(scoped_mount(uri, at))
         # The mount has now been committed. Everything below here is
         # post-commit enrichment and MUST NOT raise — surfacing an error
         # would trick callers into retrying a non-idempotent mutation that
@@ -820,7 +842,22 @@ async def dispatch(fs, method, params):
         # be a non-canonical form (trailing slash, missing leading slash);
         # echoing it verbatim would let client caches drift from list_mounts.
         before = set(scoped_live)
-        await _call_first(_mount_targets(fs), ("remove_mount", "unmount"), mount_path)
+        # Trust-boundary enforcement: route the actual removal through the
+        # scoped wrapper ONLY. Walking through to inner backends via
+        # _mount_targets would bypass scope filtering on the mutation path
+        # (the visibility check above would still pass, but the mutation
+        # itself would land on raw backend state).
+        scoped_remove = getattr(fs, "remove_mount", None)
+        scoped_unmount = getattr(fs, "unmount", None)
+        if callable(scoped_remove):
+            await _maybe_await(scoped_remove(mount_path))
+        elif callable(scoped_unmount):
+            await _maybe_await(scoped_unmount(mount_path))
+        else:
+            raise ValueError(
+                "remove_mount refused: scoped filesystem does not expose remove_mount/unmount; "
+                "raw backend mount mutations are not reachable through this session"
+            )
         # Resolve the actual path that disappeared. If exactly one mount was
         # removed, return its authoritative form; otherwise fall back to the
         # caller-supplied path (best effort — the cache update on the TS

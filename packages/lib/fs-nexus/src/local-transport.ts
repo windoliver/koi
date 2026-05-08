@@ -16,6 +16,7 @@
 
 import { fileURLToPath } from "node:url";
 import type { KoiError, Result } from "@koi/core";
+import { RETRYABLE_DEFAULTS } from "@koi/core";
 import { mapNexusError } from "./errors.js";
 import type {
   BridgeNotification,
@@ -141,6 +142,14 @@ interface PendingRequest {
 // Notification type guard — spec-correct per JSON-RPC 2.0.
 // id: null is a valid *response* (parse error); only absent `id` is a notification.
 // ---------------------------------------------------------------------------
+
+function canonicalizeForOverlap(value: string): string {
+  if (value.length === 0) return value;
+  const withSlash = value.startsWith("/") ? value : `/${value}`;
+  return withSlash.endsWith("/") && withSlash.length > 1
+    ? withSlash.replace(/\/+$/, "")
+    : withSlash;
+}
 
 function isNotification(msg: unknown): msg is BridgeNotification {
   return (
@@ -561,6 +570,35 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     uri: string,
     at?: string | undefined,
   ): Promise<Result<MountDescription, KoiError>> {
+    // Defense-in-depth overlap check (independent of any caller-side
+    // wrapper). The resolver wraps this transport with protected-root
+    // checks for runtime trust boundaries, but raw consumers of
+    // createLocalTransport would otherwise have a wide-open addMount.
+    // Refuse `at` values that overlap a path already in the cache —
+    // canonicalize first so trailing/leading-slash drift can't bypass
+    // the check. The bridge does its own scope-aware list_mounts diff
+    // post-commit; this guard catches the obvious pre-commit collisions.
+    if (typeof at === "string") {
+      const canonAt = canonicalizeForOverlap(at);
+      for (const existing of mounts) {
+        const canonExisting = canonicalizeForOverlap(existing);
+        if (canonExisting.length === 0) continue;
+        if (
+          canonAt === canonExisting ||
+          canonAt.startsWith(`${canonExisting}/`) ||
+          canonExisting.startsWith(`${canonAt}/`)
+        ) {
+          return {
+            ok: false,
+            error: {
+              code: "VALIDATION",
+              message: `Cannot mount at ${at}: overlaps existing live mount ${existing}; remove the existing mount first or choose a non-overlapping path.`,
+              retryable: RETRYABLE_DEFAULTS.VALIDATION,
+            },
+          };
+        }
+      }
+    }
     const result = await call<MountDescription>("add_mount", {
       uri,
       ...(at !== undefined ? { at } : {}),
