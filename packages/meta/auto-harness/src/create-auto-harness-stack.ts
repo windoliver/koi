@@ -2,6 +2,8 @@ import type { ForgeDemandSignal } from "@koi/core";
 import type { PolicyCacheHandle } from "@koi/middleware-policy-cache";
 import {
   type AutoHarnessConfig,
+  type AutoHarnessError,
+  type AutoHarnessEvent,
   type AutoHarnessStack,
   type AutoHarnessSynthesisResult,
   DEFAULT_MAX_SYNTHESES_PER_SESSION,
@@ -34,13 +36,33 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
   const maxSynthesesPerSession = resolveMaxSynthesesPerSession(config.maxSynthesesPerSession);
   let synthesesThisSession = 0;
 
+  const emitEvent = (event: AutoHarnessEvent): void => {
+    config.onEvent?.(event);
+  };
+
+  const reportError = (error: AutoHarnessError): void => {
+    config.onError?.(error);
+  };
+
   const synthesizeHarness = async (
-    _signal: ForgeDemandSignal,
+    signal: ForgeDemandSignal,
   ): Promise<AutoHarnessSynthesisResult> => {
+    emitEvent({ type: "synthesis-started", signal, stage: "generate" });
     if (synthesesThisSession >= maxSynthesesPerSession) {
+      emitEvent({
+        type: "synthesis-skipped",
+        signal,
+        stage: "generate",
+        message: "session synthesis cap reached",
+      });
       return null;
     }
     synthesesThisSession += 1;
+    void config
+      .generate("export function createMiddleware() {}")
+      .catch((cause: unknown) =>
+        reportError({ stage: "generate", message: "generate failed", cause }),
+      );
     return null;
   };
 
@@ -50,6 +72,7 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     synthesizeHarness,
     resetSession: () => {
       synthesesThisSession = 0;
+      emitEvent({ type: "session-reset", message: "session synthesis state cleared" });
     },
     maxSynthesesPerSession,
   };

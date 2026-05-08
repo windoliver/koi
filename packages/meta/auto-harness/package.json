@@ -21,6 +21,11 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
+    "@koi/forge-policy": "workspace:*",
+    "@koi/forge-verifier": "workspace:*",
+    "@koi/harness-search": "workspace:*",
+    "@koi/harness-synth": "workspace:*",
+    "@koi/hash": "workspace:*",
     "@koi/middleware-policy-cache": "workspace:*"
   }
 }

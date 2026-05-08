@@ -14,15 +14,6 @@ import type { PolicyCacheHandle } from "@koi/middleware-policy-cache";
 
 export const DEFAULT_MAX_SYNTHESES_PER_SESSION = 3;
 
-export type AutoHarnessGenerate = (prompt: string) => Promise<string>;
-
-export interface AutoHarnessRefinementFailure {
-  readonly toolName: string;
-  readonly errorCode: string;
-  readonly errorMessage: string;
-  readonly parameters: Readonly<Record<string, unknown>>;
-}
-
 export type AutoHarnessStage =
   | "generate"
   | "verify"
@@ -30,48 +21,68 @@ export type AutoHarnessStage =
   | "request-deployment-approval"
   | "deploy";
 
-export interface AutoHarnessStageError {
+export interface AutoHarnessError {
   readonly stage: AutoHarnessStage;
   readonly message: string;
   readonly cause?: unknown;
   readonly koiError?: KoiError;
 }
 
-export type AutoHarnessVerifyCandidate = (candidateSource: string) => Promise<
-  | {
-      readonly ok: true;
-      readonly artifact: BrickArtifact | null;
-    }
-  | {
-      readonly ok: false;
-      readonly error: AutoHarnessStageError;
-    }
->;
+export interface AutoHarnessVerificationResult {
+  readonly ok: boolean;
+  readonly artifact: BrickArtifact | null;
+  readonly error?: AutoHarnessError;
+}
 
-export type AutoHarnessEvaluatePolicy = (artifact: BrickArtifact) => Promise<
-  | {
-      readonly ok: true;
-      readonly action: "allow" | "deny" | "review";
-      readonly reason?: string;
-    }
-  | {
-      readonly ok: false;
-      readonly error: AutoHarnessStageError;
-    }
->;
+export interface AutoHarnessPolicyResult {
+  readonly ok: boolean;
+  readonly action: "allow" | "deny" | "review";
+  readonly reason?: string;
+  readonly error?: AutoHarnessError;
+}
 
-export type AutoHarnessRequestDeploymentApproval = (artifact: BrickArtifact) => Promise<boolean>;
+export interface AutoHarnessDeployResult {
+  readonly ok: boolean;
+  readonly artifact?: BrickArtifact;
+  readonly error?: AutoHarnessError;
+}
 
-export type AutoHarnessDeployCandidate = (artifact: BrickArtifact) => Promise<
-  | {
-      readonly ok: true;
-      readonly artifact?: BrickArtifact;
-    }
-  | {
-      readonly ok: false;
-      readonly error: AutoHarnessStageError;
-    }
->;
+export interface AutoHarnessEvent {
+  readonly type:
+    | "synthesis-started"
+    | "synthesis-skipped"
+    | "verification-completed"
+    | "policy-evaluated"
+    | "deployment-requested"
+    | "deployment-completed"
+    | "session-reset";
+  readonly signal?: ForgeDemandSignal;
+  readonly artifact?: BrickArtifact | null;
+  readonly stage?: AutoHarnessStage;
+  readonly message?: string;
+}
+
+export type AutoHarnessGenerate = (prompt: string) => Promise<string>;
+
+export type AutoHarnessVerifyCandidate = (
+  signal: ForgeDemandSignal,
+  code: string,
+) => Promise<AutoHarnessVerificationResult>;
+
+export type AutoHarnessEvaluatePolicy = (
+  artifact: BrickArtifact,
+  signal: ForgeDemandSignal,
+) => Promise<AutoHarnessPolicyResult>;
+
+export type AutoHarnessRequestDeploymentApproval = (
+  artifact: BrickArtifact,
+  signal: ForgeDemandSignal,
+) => Promise<boolean>;
+
+export type AutoHarnessDeployCandidate = (
+  artifact: BrickArtifact,
+  signal: ForgeDemandSignal,
+) => Promise<AutoHarnessDeployResult>;
 
 export type AutoHarnessSynthesisResult = BrickArtifact | null;
 
@@ -87,7 +98,11 @@ export interface AutoHarnessConfig {
   readonly evaluatePolicy: AutoHarnessEvaluatePolicy;
   readonly requestDeploymentApproval: AutoHarnessRequestDeploymentApproval;
   readonly deployCandidate: AutoHarnessDeployCandidate;
+  readonly maxIterations?: number;
   readonly maxSynthesesPerSession?: number;
+  readonly enableRefinement?: boolean;
+  readonly onEvent?: ((event: AutoHarnessEvent) => void) | undefined;
+  readonly onError?: ((error: AutoHarnessError) => void) | undefined;
 }
 
 export interface AutoHarnessStack {

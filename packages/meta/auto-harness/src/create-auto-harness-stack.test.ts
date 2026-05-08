@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { BrickArtifact, ForgeDemandSignal, StoreChangeNotifier } from "@koi/core";
 import { createAutoHarnessStack } from "./create-auto-harness-stack.js";
-import { DEFAULT_MAX_SYNTHESES_PER_SESSION } from "./types.js";
+import type {
+  AutoHarnessDeployResult,
+  AutoHarnessEvent,
+  AutoHarnessPolicyResult,
+  AutoHarnessVerificationResult,
+} from "./types.js";
 
 const makeNotifier = (): StoreChangeNotifier => ({
   notify: () => {},
@@ -37,10 +42,18 @@ describe("createAutoHarnessStack", () => {
       } as never,
       notifier: makeNotifier(),
       generate: async () => "export function createMiddleware() {}",
-      verifyCandidate: async () => ({ ok: true as const, artifact: makeArtifact() }),
-      evaluatePolicy: async () => ({ ok: true as const, action: "allow" }),
+      verifyCandidate: async (_signal, _code): Promise<AutoHarnessVerificationResult> => ({
+        ok: true,
+        artifact: makeArtifact(),
+      }),
+      evaluatePolicy: async (_artifact, _signal): Promise<AutoHarnessPolicyResult> => ({
+        ok: true,
+        action: "allow",
+      }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async () => ({ ok: true as const }),
+      deployCandidate: async (_artifact, _signal): Promise<AutoHarnessDeployResult> => ({
+        ok: true,
+      }),
     });
 
     expect(stack.policyCacheMiddleware.name).toBe("policy-cache");
@@ -68,27 +81,45 @@ describe("createAutoHarnessStack", () => {
         save: async () => ({ ok: true as const, value: undefined }),
       } as never,
       generate: async () => "export function createMiddleware() {}",
-      verifyCandidate: async () => ({ ok: true as const, artifact: makeArtifact() }),
-      evaluatePolicy: async () => ({ ok: true as const, action: "allow" }),
+      verifyCandidate: async (_signal, _code): Promise<AutoHarnessVerificationResult> => ({
+        ok: true,
+        artifact: makeArtifact(),
+      }),
+      evaluatePolicy: async (_artifact, _signal): Promise<AutoHarnessPolicyResult> => ({
+        ok: true,
+        action: "allow",
+      }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async () => ({ ok: true as const }),
+      deployCandidate: async (_artifact, _signal): Promise<AutoHarnessDeployResult> => ({
+        ok: true,
+      }),
     });
 
-    expect(stack.maxSynthesesPerSession).toBe(DEFAULT_MAX_SYNTHESES_PER_SESSION);
+    expect(stack.maxSynthesesPerSession).toBe(3);
     await expect(stack.synthesizeHarness(makeSignal())).resolves.toBeNull();
   });
 
-  test("resetSession reopens the per-session synthesis counter for synthesizeHarness(signal)", async () => {
+  test("resetSession reopens the per-session synthesis counter and emits events", async () => {
+    const events: AutoHarnessEvent[] = [];
     const stack = createAutoHarnessStack({
       forgeStore: {
         save: async () => ({ ok: true as const, value: undefined }),
       } as never,
       notifier: makeNotifier(),
       generate: async () => "export function createMiddleware() {}",
-      verifyCandidate: async () => ({ ok: true as const, artifact: makeArtifact() }),
-      evaluatePolicy: async () => ({ ok: true as const, action: "allow" }),
+      verifyCandidate: async (_signal, _code): Promise<AutoHarnessVerificationResult> => ({
+        ok: true,
+        artifact: makeArtifact(),
+      }),
+      evaluatePolicy: async (_artifact, _signal): Promise<AutoHarnessPolicyResult> => ({
+        ok: true,
+        action: "allow",
+      }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async () => ({ ok: true as const }),
+      deployCandidate: async (_artifact, _signal): Promise<AutoHarnessDeployResult> => ({
+        ok: true,
+      }),
+      onEvent: (event) => events.push(event),
     });
 
     const signal = makeSignal();
@@ -98,6 +129,7 @@ describe("createAutoHarnessStack", () => {
     await expect(stack.synthesizeHarness(signal)).resolves.toBeNull();
     stack.resetSession();
     await expect(stack.synthesizeHarness(signal)).resolves.toBeNull();
+    expect(events.some((event) => event.type === "session-reset")).toBe(true);
   });
 
   test("rejects non-positive maxSynthesesPerSession", () => {
@@ -108,10 +140,18 @@ describe("createAutoHarnessStack", () => {
         } as never,
         notifier: makeNotifier(),
         generate: async () => "export function createMiddleware() {}",
-        verifyCandidate: async () => ({ ok: true as const, artifact: makeArtifact() }),
-        evaluatePolicy: async () => ({ ok: true as const, action: "allow" }),
+        verifyCandidate: async (_signal, _code): Promise<AutoHarnessVerificationResult> => ({
+          ok: true,
+          artifact: makeArtifact(),
+        }),
+        evaluatePolicy: async (_artifact, _signal): Promise<AutoHarnessPolicyResult> => ({
+          ok: true,
+          action: "allow",
+        }),
         requestDeploymentApproval: async () => true,
-        deployCandidate: async () => ({ ok: true as const }),
+        deployCandidate: async (_artifact, _signal): Promise<AutoHarnessDeployResult> => ({
+          ok: true,
+        }),
         maxSynthesesPerSession: 0,
       }),
     ).toThrow(/maxSynthesesPerSession/);

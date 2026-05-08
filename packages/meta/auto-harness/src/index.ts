@@ -6,16 +6,9 @@
 export { createAutoHarnessStack } from "./create-auto-harness-stack.js";
 export type {
   AutoHarnessConfig,
-  AutoHarnessDeployCandidate,
-  AutoHarnessEvaluatePolicy,
-  AutoHarnessGenerate,
-  AutoHarnessRefinementFailure,
-  AutoHarnessRequestDeploymentApproval,
+  AutoHarnessDeployResult,
+  AutoHarnessEvent,
+  AutoHarnessPolicyResult,
   AutoHarnessStack,
-  AutoHarnessStage,
-  AutoHarnessStageError,
-  AutoHarnessSynthesisResult,
-  AutoHarnessSynthesizeHarness,
-  AutoHarnessVerifyCandidate,
+  AutoHarnessVerificationResult,
 } from "./types.js";
-export { DEFAULT_MAX_SYNTHESES_PER_SESSION } from "./types.js";
