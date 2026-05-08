@@ -1,16 +1,17 @@
-import type { ScheduledInputPayload, ScheduledTaskWorkflowArgs } from "../types.js";
+import type { ScheduledTaskWorkflowArgs } from "../types.js";
 
 export interface ScheduledTaskActivityDeps {
-  readonly buildExecution: (input: ScheduledTaskWorkflowArgs) => Promise<{
-    readonly mode: "spawn" | "dispatch";
-    readonly input: ScheduledInputPayload;
-  }>;
+  readonly spawn: (input: ScheduledTaskWorkflowArgs) => Promise<string>;
+  readonly dispatch: (input: ScheduledTaskWorkflowArgs) => Promise<void>;
 }
 
 export function createScheduledTaskActivities(deps: ScheduledTaskActivityDeps) {
   return {
-    async runScheduledTask(input: ScheduledTaskWorkflowArgs) {
-      return deps.buildExecution(input);
+    async startAgentExecution(input: ScheduledTaskWorkflowArgs) {
+      return deps.spawn(input);
+    },
+    async dispatchToAgent(input: ScheduledTaskWorkflowArgs) {
+      await deps.dispatch(input);
     },
   };
 }

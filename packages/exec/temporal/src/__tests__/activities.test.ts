@@ -46,29 +46,36 @@ describe("activity factories", () => {
       runOperation: async () => serializableValue,
     });
 
-    const result = await activities.runRetriedOperation({ operation: "runScheduledTask", payload: {} });
+    const result = await activities.runRetriedOperation({
+      operation: "runScheduledTask",
+      payload: {},
+    });
     expect(result).toEqual({ kind: "succeeded", value: serializableValue });
     expect(result.kind === "succeeded" ? result.value : null).not.toBe(serializableValue);
   });
 
   test("scheduled task activity returns the built execution", async () => {
     const activities = createScheduledTaskActivities({
-      buildExecution: async (input) => ({
-        mode: input.mode,
-        input: input.input,
-      }),
+      dispatch: async () => undefined,
+      spawn: async () => "wf-123",
     });
 
     await expect(
-      activities.runScheduledTask({
+      activities.startAgentExecution({
+        mode: "spawn",
+        agentId: "agent-1" as never,
+        stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+        input: { kind: "text", text: "hello" },
+      }),
+    ).resolves.toBe("wf-123");
+
+    await expect(
+      activities.dispatchToAgent({
         mode: "dispatch",
         agentId: "agent-1" as never,
         stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
         input: { kind: "text", text: "hello" },
       }),
-    ).resolves.toEqual({
-      mode: "dispatch",
-      input: { kind: "text", text: "hello" },
-    });
+    ).resolves.toBeUndefined();
   });
 });
