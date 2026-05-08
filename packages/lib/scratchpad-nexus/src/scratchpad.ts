@@ -9,7 +9,7 @@ import type {
   ScratchpadWriteInput,
   ScratchpadWriteResult,
 } from "@koi/core";
-import { scratchpadPath } from "@koi/core";
+import { SCRATCHPAD_DEFAULTS, scratchpadPath } from "@koi/core";
 import { createChangeTracker } from "./change-tracker.js";
 import { createNexusScratchpadClient } from "./client.js";
 import { mapEntry, mapSummaries } from "./map-entry.js";
@@ -27,6 +27,51 @@ const MAX_PAGES_PER_DRAIN = 1024;
 
 type ChangeHandler = (event: ScratchpadChangeEvent) => void;
 
+// Mirror scratchpad-local's input validation so untrusted user paths/TTLs
+// never cross the RPC boundary. ScratchpadPath is a structural brand (an
+// identity cast), so callers can still construct values that bypass type
+// checks; we re-validate at the trust boundary regardless.
+function validatePath(path: ScratchpadPath): KoiError | null {
+  const value = path as string;
+  if (!value || value.length === 0) {
+    return { code: "VALIDATION", message: "Scratchpad path must not be empty", retryable: false };
+  }
+  if (value.startsWith("/")) {
+    return {
+      code: "VALIDATION",
+      message: "Scratchpad path must not start with '/'",
+      retryable: false,
+    };
+  }
+  if (value.includes("..")) {
+    return {
+      code: "VALIDATION",
+      message: "Scratchpad path must not contain '..'",
+      retryable: false,
+    };
+  }
+  if (value.length > SCRATCHPAD_DEFAULTS.MAX_PATH_LENGTH) {
+    return {
+      code: "VALIDATION",
+      message: `Scratchpad path exceeds max length of ${SCRATCHPAD_DEFAULTS.MAX_PATH_LENGTH}`,
+      retryable: false,
+    };
+  }
+  return null;
+}
+
+function validateTtl(ttlSeconds: number | undefined): KoiError | null {
+  if (ttlSeconds === undefined) return null;
+  if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+    return {
+      code: "VALIDATION",
+      message: "ttlSeconds must be a finite positive number",
+      retryable: false,
+    };
+  }
+  return null;
+}
+
 export async function createNexusScratchpad(
   config: NexusScratchpadConfig,
 ): Promise<ScratchpadComponent> {
@@ -35,7 +80,6 @@ export async function createNexusScratchpad(
   const authorId = config.authorId as string;
   const pageSize = config.pageSize ?? DEFAULT_PAGE_SIZE;
   const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-  const serverSupportsPagination = config.serverSupportsPagination ?? false;
 
   // The up-front health probe is the ONLY failover boundary. Once we have
   // returned the Nexus-routed component below, runtime RPC failures must
@@ -75,7 +119,6 @@ export async function createNexusScratchpad(
       // interval, rather than tearing down the storage authority.
       const accumulated: ScratchpadEntrySummary[] = [];
       let cursor: string | undefined;
-      let lastPageSize = 0;
       const seenCursors = new Set<string>();
       let pageCount = 0;
       do {
@@ -88,17 +131,19 @@ export async function createNexusScratchpad(
         if (summaries.length === 0 && listed.value.nextCursor !== undefined) return;
         accumulated.push(...summaries);
         cursor = listed.value.nextCursor;
-        lastPageSize = summaries.length;
         pageCount += 1;
       } while (cursor !== undefined);
 
-      // Treat the snapshot as exhaustive only when we either (a) have an
-      // explicit capability declaration that the server honors `nextCursor`,
-      // or (b) the terminal page came back below `pageSize` so it cannot
-      // possibly be hiding more entries on a later page. Default-off, so
-      // legacy servers don't trigger spurious deletion events.
-      const complete = serverSupportsPagination || lastPageSize < pageSize;
-      for (const event of tracker.nextEvents(accumulated, { complete })) {
+      // Successful drain: the server returned no continuation cursor on
+      // the terminal page, so the snapshot is exhaustive. The previous
+      // `lastPageSize < pageSize` heuristic silently suppressed delete
+      // synthesis whenever the group size happened to be an exact
+      // multiple of `pageSize` — a legitimate paginated server would
+      // return an empty terminal page (or no `nextCursor`) and we would
+      // never emit deletion events. Trusting the cursor contract
+      // restores correctness; legacy servers that ignore `nextCursor`
+      // entirely are out of scope (use scratchpad-local instead).
+      for (const event of tracker.nextEvents(accumulated, { complete: true })) {
         for (const handler of subscribers) handler(event);
       }
     } finally {
@@ -117,6 +162,10 @@ export async function createNexusScratchpad(
     write: async (
       input: ScratchpadWriteInput,
     ): Promise<Result<ScratchpadWriteResult, KoiError>> => {
+      const pathErr = validatePath(input.path);
+      if (pathErr !== null) return { ok: false, error: pathErr };
+      const ttlErr = validateTtl(input.ttlSeconds);
+      if (ttlErr !== null) return { ok: false, error: ttlErr };
       const result = await client.write(groupId, authorId, input);
       if (result.ok) {
         return {
@@ -131,6 +180,8 @@ export async function createNexusScratchpad(
       return result;
     },
     read: async (path: ScratchpadPath) => {
+      const pathErr = validatePath(path);
+      if (pathErr !== null) return { ok: false, error: pathErr };
       const result = await client.read(groupId, path as string);
       if (result.ok) return { ok: true, value: mapEntry(result.value.entry) };
       return result;
@@ -180,6 +231,8 @@ export async function createNexusScratchpad(
       return accumulated;
     },
     delete: async (path: ScratchpadPath) => {
+      const pathErr = validatePath(path);
+      if (pathErr !== null) return { ok: false, error: pathErr };
       const result = await client.delete(groupId, authorId, path as string);
       return result;
     },

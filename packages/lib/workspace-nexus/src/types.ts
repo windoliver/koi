@@ -16,10 +16,11 @@ export interface NexusWorkspaceBackendConfig {
   readonly basePath?: string | undefined;
   /**
    * Optional hooks the connected Nexus server is known to implement.
-   * Hooks not listed here are NOT advertised to callers, even if a fallback
-   * could honor them — this prevents attach/cleanup from hard-failing
-   * against an older or partially upgraded Nexus server. Defaults to all
-   * hooks supported when omitted (matches a fully-upgraded server).
+   * Defaults to OFF: hooks not explicitly listed here are NOT advertised,
+   * because the provider treats method presence as a capability signal
+   * and would attempt RPCs that an older server cannot answer — turning a
+   * mixed-version rollout into a hard outage. Operators flip individual
+   * bits to `true` once they have confirmed server support.
    */
   readonly serverCapabilities?: NexusWorkspaceServerCapabilities;
 }

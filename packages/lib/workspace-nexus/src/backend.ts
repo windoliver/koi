@@ -46,28 +46,24 @@ export async function createNexusWorkspaceBackend(
 
   const client = createNexusWorkspaceBackendClient(config.transport, prefix);
 
-  // Optional hooks are exposed when the connected Nexus server is known to
-  // implement them, regardless of whether any configured fallback also
-  // implements them. Gating exposure on fallback capability would silently
-  // disable Nexus crash-survivor discovery (`findByAgentId`) and
-  // attestation hooks whenever a minimal fallback is configured, making
-  // the provider miss live Nexus survivors after a restart and create
-  // duplicate workspaces. If a hook later fails at runtime we fail closed
-  // on that operation — better a loud per-call error than hiding the
-  // capability up front.
+  // Optional hooks are opt-in via explicit `serverCapabilities`. The
+  // default is OFF: advertising these hooks against an older Nexus server
+  // that lacks the corresponding RPCs would make `attach()` fail (the
+  // workspace provider eagerly calls `findByAgentId` when present),
+  // turning a routine mixed-version rollout into a hard outage for
+  // workspace provisioning. Operators who know their server supports a
+  // hook flip its capability bit explicitly.
   //
-  //   - serverCapabilities omitted → assume a fully-upgraded server.
-  //   - Hook listed as `false` (or absent) in serverCapabilities → omit.
+  //   - serverCapabilities omitted → expose nothing optional.
+  //   - Hook listed `true` in serverCapabilities → expose.
+  //   - Hook listed `false` or absent in serverCapabilities → omit.
   type OptionalHook =
     | "findByAgentId"
     | "attestSetupComplete"
     | "verifySetupComplete"
     | "invalidateSetupComplete"
     | "exists";
-  const exposeHook = (key: OptionalHook): boolean => {
-    if (config.serverCapabilities === undefined) return true;
-    return config.serverCapabilities[key] === true;
-  };
+  const exposeHook = (key: OptionalHook): boolean => config.serverCapabilities?.[key] === true;
 
   return {
     name: "workspace-nexus",

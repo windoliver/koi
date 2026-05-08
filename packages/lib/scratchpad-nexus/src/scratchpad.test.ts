@@ -529,56 +529,14 @@ describe("createChangeTracker", () => {
     ]);
   });
 
-  test("does not synthesize false deletes against legacy servers that ignore nextCursor", async () => {
+  test("trusts an absent nextCursor as authoritative even at exact-page-multiple snapshots", async () => {
     const { createNexusScratchpad } = await import("./index.js");
 
-    // Legacy server: ignores cursor field, always returns first page only,
-    // never sets nextCursor. With the default `serverSupportsPagination: false`
-    // we must not announce the missing entries as deletions just because they
-    // fell off the first page.
-    const PAGE_SIZE = 2;
-    const scratchpad = await createNexusScratchpad({
-      groupId: agentGroupId("group-a"),
-      authorId: agentId("agent-a"),
-      pollIntervalMs: 5,
-      pageSize: PAGE_SIZE,
-      transport: createHealthyTransport(async <T>(method: string): Promise<Result<T, KoiError>> => {
-        if (method !== "scratchpad.list") {
-          return {
-            ok: false,
-            error: { code: "EXTERNAL", message: "unexpected", retryable: false },
-          };
-        }
-        const baseEntry = (path: string) => ({
-          path,
-          generation: 1,
-          groupId: "group-a",
-          authorId: "agent-a",
-          createdAt: "2026-05-07T00:00:00.000Z",
-          updatedAt: "2026-05-07T00:00:00.000Z",
-          sizeBytes: 1,
-        });
-        // Always returns exactly pageSize entries; legacy server hides the rest.
-        return {
-          ok: true,
-          value: { entries: [baseEntry("a.txt"), baseEntry("b.txt")] } as T,
-        };
-      }),
-    });
-
-    const events: ScratchpadChangeEvent[] = [];
-    const unsubscribe = scratchpad.onChange((event) => events.push(event));
-    await Bun.sleep(40);
-    unsubscribe();
-
-    // Writes for a.txt/b.txt are fine on the first poll; subsequent polls
-    // observe the same entries with the same generation, so no further events.
-    expect(events.every((event) => event.kind === "written")).toBe(true);
-  });
-
-  test("trusts nextCursor exhaustiveness when serverSupportsPagination is opted in", async () => {
-    const { createNexusScratchpad } = await import("./index.js");
-
+    // Previously the adapter required `lastPageSize < pageSize` to treat
+    // a snapshot as exhaustive — so a group containing exactly pageSize
+    // entries never produced delete events. The cursor contract is the
+    // source of truth: when the server returns no `nextCursor` after a
+    // successful drain, the snapshot IS authoritative.
     const PAGE_SIZE = 2;
     let snapshotIndex = 0;
     const scratchpad = await createNexusScratchpad({
@@ -586,7 +544,6 @@ describe("createChangeTracker", () => {
       authorId: agentId("agent-a"),
       pollIntervalMs: 5,
       pageSize: PAGE_SIZE,
-      serverSupportsPagination: true,
       transport: createHealthyTransport(async <T>(method: string): Promise<Result<T, KoiError>> => {
         if (method !== "scratchpad.list") {
           return {
@@ -604,9 +561,6 @@ describe("createChangeTracker", () => {
           updatedAt: "2026-05-07T00:00:00.000Z",
           sizeBytes: 1,
         });
-        // Both snapshots are exactly pageSize entries with no nextCursor; the
-        // opt-in flag tells us to trust that as exhaustive, so when b.txt drops
-        // on snapshot 2 the tracker must emit a delete event.
         if (snapshotIndex === 1) {
           return {
             ok: true,
