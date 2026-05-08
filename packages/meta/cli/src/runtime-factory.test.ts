@@ -197,6 +197,7 @@ describe("createKoiRuntime — assembly", () => {
       autoHarness: {
         forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
         policyVerifier: (() => async () => ({ ok: true as const, value: undefined })) as never,
+        notifier: { notify: () => {}, subscribe: () => () => {} },
         generate: async () => "candidate-code",
         verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-5" } as never }),
         evaluatePolicy: async () => ({ ok: true, action: "allow" }),

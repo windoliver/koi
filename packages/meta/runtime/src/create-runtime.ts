@@ -325,9 +325,16 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   let autoHarnessStack: ReturnType<typeof createAutoHarnessStack> | undefined;
   // Per-session ownership map for routing forge-demand signals to the
   // session-scoped handle that owns them. Cleared via `resetSession(id)`
-  // and on full disposal — entries would otherwise accumulate forever
-  // across session rotations and slow each demand lookup.
+  // and on full disposal. Bounded with a generous FIFO cap so a host
+  // that forgets to call `resetSession` cannot leak entries indefinitely
+  // or drive O(n) ownership lookups against an unbounded map. Hitting
+  // the cap is a host-discipline failure — the warn surfaces it instead
+  // of failing silently. The cap is intentionally generous (1024) so
+  // healthy short-session hosts never trip it; long-running multi-tenant
+  // hosts MUST wire `resetSession` rather than relying on FIFO eviction.
+  const AUTO_HARNESS_SESSION_CAP = 1024;
   const autoHarnessSessionEntries = new Map<string, AutoHarnessSessionEntry>();
+  let autoHarnessSessionCapWarned = false;
 
   try {
     const baseMiddleware: readonly KoiMiddleware[] = [
@@ -537,13 +544,30 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                   sessionId: sessionContext.sessionId,
                   scoped,
                 });
-                // Hosts MUST call `runtime.autoHarness.resetSession(id)` on
-                // session end. We deliberately do not evict by insertion
-                // order — that would discard live sessions and silently
-                // collapse per-session isolation back to the global bucket.
-                // Long-lived per-stream-sessionId hosts that ignore this
-                // contract will leak entries; that is a host bug to surface
-                // via observability, not a runtime workaround.
+                // Bounded retention: when a host forgets to call
+                // `resetSession(id)`, evict the oldest entry by insertion
+                // order to keep ownership lookups O(cap) and prevent
+                // unbounded memory growth. Warn once so the failure mode is
+                // observable — silent FIFO would let a long-lived host
+                // collapse per-session isolation back to the global bucket
+                // without notice. The cap is generous enough that healthy
+                // short-session hosts never reach it.
+                if (autoHarnessSessionEntries.size > AUTO_HARNESS_SESSION_CAP) {
+                  const oldestKey = autoHarnessSessionEntries.keys().next().value;
+                  if (oldestKey !== undefined) {
+                    autoHarnessSessionEntries.delete(oldestKey);
+                  }
+                  if (!autoHarnessSessionCapWarned) {
+                    autoHarnessSessionCapWarned = true;
+                    console.warn(
+                      `[auto-harness] session ownership map exceeded ${AUTO_HARNESS_SESSION_CAP} entries — ` +
+                        "evicting oldest by insertion order. Wire " +
+                        "`runtime.autoHarness.resetSession(sessionId)` on " +
+                        "session end to prevent silent collapse of per-session " +
+                        "isolation back to the global bucket.",
+                    );
+                  }
+                }
                 // Preserve caller callback's return value: forge-demand
                 // treats a returned Promise as load-bearing — async
                 // rejection keeps the session unready and triggers retry on
@@ -629,6 +653,24 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
             "re-triggering synthesis. Supply " +
             "`autoHarness.policyVerifier` (e.g., a function backed by your " +
             "host's verified-set or a permissive verifier in test).",
+        );
+      }
+      // Require an invalidation source whenever auto-harness can register
+      // policy-cache entries. Without a `StoreChangeNotifier`, a promoted
+      // allow/deny outlives the brick that produced it: subsequent
+      // updated/removed/quarantined events have no path into the cache, so
+      // stale authorization state short-circuits live traffic until the
+      // process restarts. This is a trust-boundary regression, not a perf
+      // optimization miss (R5 round 5 finding).
+      if (config.autoHarness?.notifier === undefined) {
+        throw new Error(
+          "createRuntime: `autoHarness.notifier` (StoreChangeNotifier) is " +
+            "required when autoHarness is enabled. Deployed policy-cache " +
+            "entries can outlive their backing brick if the cache has no " +
+            "invalidation source, leaving stale allow/deny decisions in " +
+            "place after the brick is updated, removed, or quarantined. " +
+            "Supply a notifier wired to your forge store's lifecycle " +
+            "events.",
         );
       }
       // No caller-supplied `policy-cache` to drop; the stack-owned instance

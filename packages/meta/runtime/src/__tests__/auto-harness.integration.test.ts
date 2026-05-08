@@ -44,6 +44,7 @@ describe("createRuntime autoHarness wiring", () => {
         requestApproval: async () => ({ kind: "allow" }),
         autoHarness: {
           forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+          notifier: { notify: () => {}, subscribe: () => () => {} },
           generate: async () => "candidate-code",
           verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-x" } as never }),
           evaluatePolicy: async () => ({ ok: true, action: "allow" }),
@@ -51,6 +52,22 @@ describe("createRuntime autoHarness wiring", () => {
         },
       }),
     ).toThrow(/`autoHarness\.policyVerifier` is required/);
+  });
+
+  test("rejects autoHarness without notifier (cache cannot be invalidated)", () => {
+    expect(() =>
+      createRuntime({
+        requestApproval: async () => ({ kind: "allow" }),
+        autoHarness: {
+          forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+          policyVerifier: permissiveVerifier,
+          generate: async () => "candidate-code",
+          verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-x" } as never }),
+          evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+          deployCandidate: async () => ({ ok: true }),
+        },
+      }),
+    ).toThrow(/`autoHarness\.notifier`.*required/);
   });
 
   test("exposes the autoHarness handle on stub adapters without composing intercept middleware", () => {
@@ -64,6 +81,7 @@ describe("createRuntime autoHarness wiring", () => {
       autoHarness: {
         forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
         policyVerifier: permissiveVerifier,
+        notifier: { notify: () => {}, subscribe: () => () => {} },
         generate: async () => "candidate-code",
         verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-1" } as never }),
         evaluatePolicy: async () => ({ ok: true, action: "allow" }),
@@ -83,6 +101,7 @@ describe("createRuntime autoHarness wiring", () => {
       autoHarness: {
         forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
         policyVerifier: permissiveVerifier,
+        notifier: { notify: () => {}, subscribe: () => () => {} },
         generate: async () => "candidate-code",
         verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-2" } as never }),
         evaluatePolicy: async () => ({ ok: true, action: "allow" }),
