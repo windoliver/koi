@@ -191,7 +191,19 @@ export async function createNexusScratchpad(
       // restores correctness; legacy servers that ignore `nextCursor`
       // entirely are out of scope (use scratchpad-local instead).
       for (const event of tracker.nextEvents(accumulated, { complete: true })) {
-        for (const handler of subscribers) handler(event);
+        // Isolate each subscriber: a throwing handler must NOT abort
+        // delivery to the others or drop events for the next round.
+        // `tracker.nextEvents()` has already advanced the seen-state,
+        // so a thrown handler that takes down the loop would silently
+        // lose events permanently. Matches scratchpad-local's
+        // observer-exception swallowing.
+        for (const handler of subscribers) {
+          try {
+            handler(event);
+          } catch {
+            // Subscriber failure must not affect peers or future delivery.
+          }
+        }
       }
     } finally {
       state.polling = false;
@@ -304,6 +316,14 @@ export async function createNexusScratchpad(
       tracker.clear();
     },
     onChange: (handler) => {
+      // When transitioning from 0 → 1 subscribers, reset the tracker so
+      // the new watcher establishes a fresh baseline from the next poll
+      // and never receives changes that happened during the
+      // unsubscribed gap. Without this, the shared tracker would still
+      // hold the snapshot from the previous subscription session and
+      // synthesize stale write/delete events for the new watcher —
+      // duplicating downstream work on reconnect.
+      if (subscribers.size === 0) tracker.clear();
       subscribers.add(handler);
       ensurePolling();
       void poll();
