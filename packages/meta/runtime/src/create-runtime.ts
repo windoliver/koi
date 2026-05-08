@@ -123,27 +123,6 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   const rawAdapter = resolveAdapter(config.adapter);
   const channel = resolveChannel(config.channel);
   const { middleware: resolvedMiddleware, stubInstances } = resolveMiddleware(config.middleware);
-  const autoHarnessStack =
-    config.autoHarness !== undefined
-      ? createAutoHarnessStack({
-          ...config.autoHarness,
-          requestDeploymentApproval: async (artifact, signal) => {
-            const decision = await config.requestApproval?.({
-              toolId: "auto-harness:deploy-candidate",
-              input: {
-                artifactId: artifact.id,
-                signalId: signal.id,
-              },
-              reason: "Approve deployment of an auto-generated harness candidate.",
-              metadata: {
-                artifactId: artifact.id,
-                signalId: signal.id,
-              },
-            });
-            return decision?.kind === "allow" || decision?.kind === "always-allow";
-          },
-        })
-      : undefined;
 
   // Prepend session transcript middleware when transcriptDir is configured.
   // Observe-phase, priority 200 — runs after event-trace (priority 100) so
@@ -262,6 +241,8 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   let lspCleanedUp = false;
   let checkpointCleanedUp = false;
   let filesystemCleanedUp = false;
+  let autoHarnessCleanedUp = false;
+  let autoHarnessStack: ReturnType<typeof createAutoHarnessStack> | undefined;
 
   try {
     const baseMiddleware: readonly KoiMiddleware[] = [
@@ -445,12 +426,31 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
             forgeDemandHandle.middleware,
           ]
         : baseWithAce;
+    autoHarnessStack =
+      config.autoHarness !== undefined
+        ? createAutoHarnessStack({
+            ...config.autoHarness,
+            requestDeploymentApproval: async (artifact, signal) => {
+              const decision = await config.requestApproval?.({
+                toolId: "auto-harness:deploy-candidate",
+                input: {
+                  artifactId: artifact.id,
+                  signalId: signal.id,
+                },
+                reason: "Approve deployment of an auto-generated harness candidate.",
+                metadata: {
+                  artifactId: artifact.id,
+                  signalId: signal.id,
+                },
+              });
+              return decision?.kind === "allow" || decision?.kind === "always-allow";
+            },
+          })
+        : undefined;
+    const hasPolicyCache = new Set(baseWithForgeDemand.map((mw) => mw.name)).has("policy-cache");
     const baseWithAutoHarness: readonly KoiMiddleware[] =
-      autoHarnessStack !== undefined
-        ? [
-            ...baseWithForgeDemand.filter((mw) => mw.name !== "policy-cache"),
-            autoHarnessStack.policyCacheMiddleware,
-          ]
+      autoHarnessStack !== undefined && !hasPolicyCache
+        ? [...baseWithForgeDemand, autoHarnessStack.policyCacheMiddleware]
         : baseWithForgeDemand;
 
     // Install exfiltration guard by default when: (1) not explicitly disabled,
@@ -1354,6 +1354,12 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                 auditCleanedUp = true;
               })()
             : Promise.resolve(),
+          autoHarnessStack !== undefined && !autoHarnessCleanedUp
+            ? (async () => {
+                autoHarnessStack.policyCacheHandle.dispose();
+                autoHarnessCleanedUp = true;
+              })()
+            : Promise.resolve(),
           checkpointStore !== undefined && !checkpointCleanedUp
             ? (async () => {
                 checkpointStore.close();
@@ -1396,6 +1402,14 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       auditHandle.close().catch(() => {
         // best-effort cleanup during createRuntime error path
       });
+    }
+    if (autoHarnessStack !== undefined && !autoHarnessCleanedUp) {
+      try {
+        autoHarnessStack.policyCacheHandle.dispose();
+        autoHarnessCleanedUp = true;
+      } catch {
+        // best-effort cleanup during createRuntime error path
+      }
     }
     if (checkpointStore !== undefined && !checkpointCleanedUp) {
       try {
