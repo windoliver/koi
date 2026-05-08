@@ -16,9 +16,22 @@ declare module "@koi/middleware-policy-cache" {
     readonly notifier?: import("@koi/core").StoreChangeNotifier | undefined;
   }): PolicyCacheHandle;
 
+  export type PolicyEntry = {
+    readonly toolId: string;
+    readonly brickId: string;
+    readonly execute: (input: Record<string, unknown>) => unknown;
+    readonly generation?: number;
+    readonly scope: "agent" | "global";
+    readonly agentId?: string;
+  };
+
   export interface PolicyCacheHandle {
     readonly middleware: KoiMiddleware;
-    readonly register: (entry: unknown) => { readonly ok: true; readonly value: undefined };
+    readonly register: (
+      entry: PolicyEntry,
+    ) =>
+      | { readonly ok: true; readonly value: undefined }
+      | { readonly ok: false; readonly error: { readonly message: string } };
     readonly evict: (brickId: string) => void;
     readonly size: () => number;
     readonly dispose: () => void;

@@ -219,7 +219,7 @@ describe("createAutoHarnessStack", () => {
       },
     });
 
-    const result = await stack.synthesizeHarness({ id: "sig-1" } as never);
+    const result = await stack.synthesizeHarness({ ...makeSignal(), id: "sig-1" });
     expect(result).toBeNull();
     expect(verifyCalls).toBe(1);
     expect(policyCalls).toBe(0);
@@ -258,7 +258,7 @@ describe("createAutoHarnessStack", () => {
       },
     });
 
-    const result = await stack.synthesizeHarness({ id: "sig-2" } as never);
+    const result = await stack.synthesizeHarness({ ...makeSignal(), id: "sig-2" });
     expect(result).toBeNull();
     expect(verifyCalls).toBe(1);
     expect(policyCalls).toBe(1);
@@ -293,7 +293,7 @@ describe("createAutoHarnessStack", () => {
       },
     });
 
-    const result = await stack.synthesizeHarness({ id: "sig-3" } as never);
+    const result = await stack.synthesizeHarness({ ...makeSignal(), id: "sig-3" });
     expect(result).toBeNull();
     expect(verifyCalls).toBe(1);
     expect(policyCalls).toBe(1);
@@ -398,5 +398,116 @@ describe("createAutoHarnessStack", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]?.stage).toBe("deploy");
     expect(errors[0]?.message).toBe("deploy failed");
+  });
+
+  test("derives the generation prompt from the demand signal", async () => {
+    const prompts: string[] = [];
+    const stack = createAutoHarnessStack({
+      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      generate: async (prompt) => {
+        prompts.push(prompt);
+        return "candidate-code";
+      },
+      verifyCandidate: async () => ({ ok: false, artifact: null, reason: "stop" }),
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async () => ({ ok: true }),
+    });
+
+    await stack.synthesizeHarness(makeSignal());
+
+    expect(prompts).toHaveLength(1);
+    const prompt = prompts[0] ?? "";
+    expect(prompt).toContain("middleware");
+    expect(prompt).toContain("repeated_failure");
+    expect(prompt).toContain("search: timeout");
+    expect(prompt).toContain("demand-1");
+    expect(prompt).not.toBe("export function createMiddleware() {}");
+  });
+
+  test("registers the deployed policy entry with the policy cache on success", async () => {
+    const registered: unknown[] = [];
+    const artifact = makeArtifact();
+    const policyEntry = {
+      brickId: "brick-policy-1",
+      toolId: "search",
+      scope: "global" as const,
+      execute: () => ({ action: "allow" as const }),
+    };
+    const stack = createAutoHarnessStack({
+      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      generate: async () => "candidate-code",
+      verifyCandidate: async () => ({ ok: true, artifact }),
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async () => ({ ok: true, artifact, policyEntry }),
+    });
+
+    const handle = stack.policyCacheHandle as unknown as {
+      register: (
+        entry: unknown,
+      ) =>
+        | { readonly ok: true; readonly value: undefined }
+        | { readonly ok: false; readonly error: { readonly message: string } };
+    };
+    const originalRegister = handle.register;
+    handle.register = (entry) => {
+      registered.push(entry);
+      return { ok: true as const, value: undefined };
+    };
+
+    try {
+      const result = await stack.synthesizeHarness(makeSignal());
+      expect(result).toBe(artifact);
+      expect(registered).toHaveLength(1);
+      expect(registered[0]).toBe(policyEntry);
+    } finally {
+      handle.register = originalRegister;
+    }
+  });
+
+  test("reports policy-cache register failures and aborts deployment success", async () => {
+    const errors: AutoHarnessError[] = [];
+    const events: AutoHarnessEvent[] = [];
+    const artifact = makeArtifact();
+    const stack = createAutoHarnessStack({
+      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      generate: async () => "candidate-code",
+      verifyCandidate: async () => ({ ok: true, artifact }),
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async () => ({
+        ok: true,
+        artifact,
+        policyEntry: {
+          brickId: "brick-policy-2",
+          toolId: "search",
+          scope: "global" as const,
+          execute: () => ({ action: "allow" as const }),
+        },
+      }),
+      onError: (error) => errors.push(error),
+      onEvent: (event) => events.push(event),
+    });
+
+    const handle = stack.policyCacheHandle as unknown as {
+      register: (
+        entry: unknown,
+      ) =>
+        | { readonly ok: true; readonly value: undefined }
+        | { readonly ok: false; readonly error: { readonly message: string } };
+    };
+    handle.register = () => ({
+      ok: false as const,
+      error: { message: "verifier rejected" },
+    });
+
+    const result = await stack.synthesizeHarness(makeSignal());
+
+    expect(result).toBeNull();
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.stage).toBe("register-policy");
+    expect(errors[0]?.message).toBe("verifier rejected");
+    expect(events.some((e) => e.kind === "deployment.succeeded")).toBe(false);
   });
 });

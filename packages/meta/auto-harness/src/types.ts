@@ -10,7 +10,7 @@ import type {
   KoiMiddleware,
   StoreChangeNotifier,
 } from "@koi/core";
-import type { PolicyCacheHandle } from "@koi/middleware-policy-cache";
+import type { PolicyCacheHandle, PolicyEntry } from "@koi/middleware-policy-cache";
 
 export const DEFAULT_MAX_SYNTHESES_PER_SESSION = 3;
 
@@ -19,7 +19,8 @@ export type AutoHarnessStage =
   | "verify"
   | "evaluate-policy"
   | "request-deployment-approval"
-  | "deploy";
+  | "deploy"
+  | "register-policy";
 
 export interface AutoHarnessError {
   readonly stage: AutoHarnessStage;
@@ -45,6 +46,13 @@ export interface AutoHarnessPolicyResult {
 export interface AutoHarnessDeployResult {
   readonly ok: boolean;
   readonly artifact?: BrickArtifact;
+  /**
+   * Verified policy entry to register with the attached `policy-cache`
+   * middleware after a successful deployment. When omitted the deployed
+   * artifact is invisible to short-circuit lookups; supply it whenever the
+   * deploy step has access to the verified policy executor.
+   */
+  readonly policyEntry?: PolicyEntry;
   readonly error?: AutoHarnessError;
 }
 

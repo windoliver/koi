@@ -1,5 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { createRuntime } from "../create-runtime.js";
+import type { ForgeDemandSignal } from "@koi/core";
+import { createRuntime, wrapOnDemandWithAutoHarness } from "../create-runtime.js";
+
+const makeDemandSignal = (id: string): ForgeDemandSignal =>
+  ({
+    id,
+    kind: "forge_demand",
+    trigger: { kind: "repeated_failure", toolName: "search", count: 3 },
+    confidence: 0.9,
+    suggestedBrickKind: "middleware",
+    context: {
+      failureCount: 3,
+      failedToolCalls: ["search: timeout"],
+    },
+    emittedAt: 1_700_000_000_000,
+  }) as ForgeDemandSignal;
 
 describe("createRuntime autoHarness wiring", () => {
   test("preserves caller-supplied policy-cache middleware", () => {
@@ -58,5 +73,61 @@ describe("createRuntime autoHarness wiring", () => {
     const result = await runtime.autoHarness?.synthesizeHarness({ id: "sig-4" } as never);
     expect(result).toBeNull();
     expect(deployed).toBe(false);
+  });
+});
+
+describe("wrapOnDemandWithAutoHarness", () => {
+  test("forwards to caller's onDemand and drives synthesizeHarness", async () => {
+    const callerCalls: string[] = [];
+    const synthesizeCalls: string[] = [];
+
+    const wrapped = wrapOnDemandWithAutoHarness(
+      (signal) => {
+        callerCalls.push(signal.id);
+      },
+      {
+        synthesizeHarness: async (signal) => {
+          synthesizeCalls.push(signal.id);
+          return null;
+        },
+      },
+    );
+
+    wrapped(makeDemandSignal("auto-1"));
+    // synthesizeHarness is invoked async; let microtasks settle.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(callerCalls).toEqual(["auto-1"]);
+    expect(synthesizeCalls).toEqual(["auto-1"]);
+  });
+
+  test("invokes synthesizeHarness when caller's onDemand is undefined", async () => {
+    const synthesizeCalls: string[] = [];
+
+    const wrapped = wrapOnDemandWithAutoHarness(undefined, {
+      synthesizeHarness: async (signal) => {
+        synthesizeCalls.push(signal.id);
+        return null;
+      },
+    });
+
+    wrapped(makeDemandSignal("auto-2"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(synthesizeCalls).toEqual(["auto-2"]);
+  });
+
+  test("swallows synthesizeHarness rejections", async () => {
+    const wrapped = wrapOnDemandWithAutoHarness(undefined, {
+      synthesizeHarness: async () => {
+        throw new Error("kaboom");
+      },
+    });
+
+    expect(() => wrapped(makeDemandSignal("auto-3"))).not.toThrow();
+    await Promise.resolve();
+    await Promise.resolve();
   });
 });

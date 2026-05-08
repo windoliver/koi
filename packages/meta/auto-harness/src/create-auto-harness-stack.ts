@@ -9,6 +9,22 @@ import {
   DEFAULT_MAX_SYNTHESES_PER_SESSION,
 } from "./types.js";
 
+function formatGeneratePrompt(signal: ForgeDemandSignal): string {
+  const failed =
+    signal.context.failedToolCalls.length > 0
+      ? signal.context.failedToolCalls.join(", ")
+      : "(none)";
+  const task = signal.context.taskDescription ?? "(unspecified)";
+  return [
+    `Generate a koi middleware harness for brick kind ${signal.suggestedBrickKind}.`,
+    `Trigger: ${signal.trigger.kind} (signal ${signal.id}, confidence ${signal.confidence.toFixed(2)}).`,
+    `Failed tool calls: ${failed}.`,
+    `Failure count this session: ${signal.context.failureCount}.`,
+    `Task: ${task}.`,
+    "Export `createMiddleware()` returning a KoiMiddleware that addresses the failure mode above.",
+  ].join("\n");
+}
+
 function resolveMaxSynthesesPerSession(value: number | undefined): number {
   if (value === undefined) return DEFAULT_MAX_SYNTHESES_PER_SESSION;
   if (!Number.isInteger(value) || value <= 0) {
@@ -63,7 +79,7 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
 
     let code: string;
     try {
-      code = await config.generate("export function createMiddleware() {}");
+      code = await config.generate(formatGeneratePrompt(signal));
     } catch (cause: unknown) {
       reportError({ stage: "generate", message: "generate failed", cause });
       return null;
@@ -142,6 +158,26 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
         koiError: deployment.error?.koiError,
       });
       return null;
+    }
+
+    if (deployment.policyEntry !== undefined) {
+      try {
+        const result = policyCacheHandle.register(deployment.policyEntry);
+        if (!result.ok) {
+          reportError({
+            stage: "register-policy",
+            message: result.error.message,
+          });
+          return null;
+        }
+      } catch (cause: unknown) {
+        reportError({
+          stage: "register-policy",
+          message: "policy-cache register threw",
+          cause,
+        });
+        return null;
+      }
     }
 
     synthesesThisSession += 1;

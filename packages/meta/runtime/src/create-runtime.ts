@@ -16,6 +16,7 @@ import type {
   EngineEvent,
   EngineInput,
   FileSystemBackend,
+  ForgeDemandSignal,
   JsonObject,
   KoiMiddleware,
   ModelChunk,
@@ -113,6 +114,28 @@ const DEFAULT_AGENT_NAME = "koi-runtime";
  * 5. Apply stream timeout enforcement
  * 6. Return RuntimeHandle with store exposed
  */
+/**
+ * Wrap a caller-supplied `onDemand` callback so each demand signal is also
+ * fed into the auto-harness pipeline. The caller's callback runs first; the
+ * auto-harness `synthesizeHarness` call is fire-and-forget — stage errors are
+ * surfaced via the auto-harness `onError`/`onEvent` callbacks.
+ *
+ * Exported for unit testing. The runtime composes this internally when both
+ * `forgeDemand` and `autoHarness` are configured.
+ */
+export function wrapOnDemandWithAutoHarness(
+  callerOnDemand: ((signal: ForgeDemandSignal) => void) | undefined,
+  stack: { readonly synthesizeHarness: (signal: ForgeDemandSignal) => Promise<unknown> },
+): (signal: ForgeDemandSignal) => void {
+  return (signal: ForgeDemandSignal): void => {
+    callerOnDemand?.(signal);
+    void stack.synthesizeHarness(signal).catch(() => {
+      // synthesizeHarness is internally guarded; this catch only exists to
+      // silence unhandled-rejection warnings.
+    });
+  };
+}
+
 export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   // Clock factory: creates a per-stream monotonic clock so concurrent sessions
   // don't push each other's timestamps into the future (see #1558).
@@ -324,6 +347,28 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     // healthTracker. Without auto-wiring, latency detection stays dormant
     // and we warn loudly so callers do not mistake "no signal" for
     // "no degradation".
+    autoHarnessStack =
+      config.autoHarness !== undefined
+        ? createAutoHarnessStack({
+            ...config.autoHarness,
+            requestDeploymentApproval: async (artifact, signal) => {
+              const decision = await config.requestApproval?.({
+                toolId: "auto-harness:deploy-candidate",
+                input: {
+                  artifactId: artifact.id,
+                  signalId: signal.id,
+                },
+                reason: "Approve deployment of an auto-generated harness candidate.",
+                metadata: {
+                  artifactId: artifact.id,
+                  signalId: signal.id,
+                },
+              });
+              return decision?.kind === "allow" || decision?.kind === "always-allow";
+            },
+          })
+        : undefined;
+
     let forgeDemandHandle: ReturnType<typeof createForgeDemandDetector> | undefined;
     if (config.forgeDemand !== undefined) {
       const validated = validateForgeDemandConfig(config.forgeDemand);
@@ -399,10 +444,25 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       })();
       const autoHealthHandle =
         baseForgeConfig.healthTracker === undefined ? installedFeedbackLoopHandle : undefined;
-      const finalForgeConfig =
+      const baseConfigWithHealth =
         autoHealthHandle !== undefined
           ? { ...baseForgeConfig, healthTracker: autoHealthHandle }
           : baseForgeConfig;
+      // When auto-harness is also configured, splice synthesizeHarness into
+      // onDemand so detected demand signals automatically drive the
+      // verify→policy→approval→deploy pipeline. Caller's onDemand still runs;
+      // synthesis is fire-and-forget — failures surface via the auto-harness
+      // onError/onEvent callbacks, not by interrupting demand observation.
+      const finalForgeConfig =
+        autoHarnessStack !== undefined
+          ? {
+              ...baseConfigWithHealth,
+              onDemand: wrapOnDemandWithAutoHarness(
+                baseConfigWithHealth.onDemand,
+                autoHarnessStack,
+              ),
+            }
+          : baseConfigWithHealth;
       if (finalForgeConfig.healthTracker === undefined) {
         console.warn(
           "[forge-demand] performance_degradation trigger is dormant: " +
@@ -426,27 +486,6 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
             forgeDemandHandle.middleware,
           ]
         : baseWithAce;
-    autoHarnessStack =
-      config.autoHarness !== undefined
-        ? createAutoHarnessStack({
-            ...config.autoHarness,
-            requestDeploymentApproval: async (artifact, signal) => {
-              const decision = await config.requestApproval?.({
-                toolId: "auto-harness:deploy-candidate",
-                input: {
-                  artifactId: artifact.id,
-                  signalId: signal.id,
-                },
-                reason: "Approve deployment of an auto-generated harness candidate.",
-                metadata: {
-                  artifactId: artifact.id,
-                  signalId: signal.id,
-                },
-              });
-              return decision?.kind === "allow" || decision?.kind === "always-allow";
-            },
-          })
-        : undefined;
     const hasPolicyCache = new Set(baseWithForgeDemand.map((mw) => mw.name)).has("policy-cache");
     const baseWithAutoHarness: readonly KoiMiddleware[] =
       autoHarnessStack !== undefined && !hasPolicyCache
