@@ -190,19 +190,29 @@ describe("createKoiRuntime — assembly", () => {
   });
 
   test("passes autoHarness config through to createRuntime and preserves approval gating", async () => {
+    let deployed = false;
     runtimeHandle = await createKoiRuntime({
       ...makeConfig(),
+      approvalHandler: async () => ({ kind: "deny", reason: "no" }),
       autoHarness: {
         forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
         generate: async () => "candidate-code",
         verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-5" } as never }),
         evaluatePolicy: async () => ({ ok: true, action: "allow" }),
-        deployCandidate: async () => ({ ok: true }),
+        deployCandidate: async () => {
+          deployed = true;
+          return { ok: true };
+        },
       },
     });
 
     expect(runtimeHandle.autoHarness).toBeDefined();
     expect(typeof runtimeHandle.autoHarness?.synthesizeHarness).toBe("function");
+    expect(runtimeHandle.autoHarness?.middleware.name).toBe("policy-cache");
+
+    const result = await runtimeHandle.autoHarness?.synthesizeHarness({ id: "sig-5" } as never);
+    expect(result).toBeNull();
+    expect(deployed).toBe(false);
   });
 
   test("returns a mutable transcript array", async () => {
