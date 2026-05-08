@@ -1,11 +1,8 @@
 {
   "name": "@koi/sandbox-ipc",
-  "description": "Shared IPC protocol and error helpers for sandbox worker coordination",
-  "version": "0.0.0",
+  "description": "Structured host-worker IPC bridge for sandboxed code execution",
+  "version": "0.1.0",
   "private": true,
-  "koi": {
-    "optional": true
-  },
   "type": "module",
   "exports": {
     ".": {
@@ -24,4 +21,3 @@
     "@koi/sandbox-cloud-base": "workspace:*"
   }
 }
-
