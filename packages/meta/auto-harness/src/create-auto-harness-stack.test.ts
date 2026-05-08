@@ -154,15 +154,65 @@ describe("createAutoHarnessStack", () => {
       onEvent: (event) => events.push(event),
     });
 
-    const signal = makeSignal();
-    await expect(stack.synthesizeHarness(signal)).resolves.toEqual(artifact);
-    await expect(stack.synthesizeHarness(signal)).resolves.toEqual(artifact);
-    await expect(stack.synthesizeHarness(signal)).resolves.toEqual(artifact);
-    await expect(stack.synthesizeHarness(signal)).resolves.toBeNull();
+    // Use distinct triggers per call so completedTriggers dedup doesn't
+    // suppress repeats — this test exercises the per-session budget cap,
+    // not trigger-replay suppression (covered separately).
+    const makeUniqueSignal = (toolName: string): ForgeDemandSignal =>
+      ({
+        ...makeSignal(),
+        trigger: { kind: "repeated_failure", toolName, count: 3 },
+      }) as ForgeDemandSignal;
+    await expect(stack.synthesizeHarness(makeUniqueSignal("tool-a"))).resolves.toEqual(artifact);
+    await expect(stack.synthesizeHarness(makeUniqueSignal("tool-b"))).resolves.toEqual(artifact);
+    await expect(stack.synthesizeHarness(makeUniqueSignal("tool-c"))).resolves.toEqual(artifact);
+    await expect(stack.synthesizeHarness(makeUniqueSignal("tool-d"))).resolves.toBeNull();
     stack.resetSession();
-    await expect(stack.synthesizeHarness(signal)).resolves.toEqual(artifact);
+    await expect(stack.synthesizeHarness(makeUniqueSignal("tool-e"))).resolves.toEqual(artifact);
     expect(events.some((event) => event.kind === "session.reset")).toBe(true);
     expect(events.some((event) => event.kind === "deployment.succeeded")).toBe(true);
+  });
+
+  test("suppresses sequential replays of the same trigger until resetSession", async () => {
+    const generated: string[] = [];
+    const events: AutoHarnessEvent[] = [];
+    const stack = createAutoHarnessStack({
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+      } as never,
+      notifier: makeNotifier(),
+      generate: async (prompt) => {
+        generated.push(prompt);
+        return "export function createMiddleware() {}";
+      },
+      verifyCandidate: async (): Promise<AutoHarnessVerificationResult> => ({
+        ok: true,
+        artifact: makeArtifact(),
+      }),
+      evaluatePolicy: async (): Promise<AutoHarnessPolicyResult> => ({
+        ok: true,
+        action: "allow",
+      }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async (): Promise<AutoHarnessDeployResult> => ({ ok: true }),
+      onEvent: (event) => events.push(event),
+    });
+
+    const signal = makeSignal();
+    await stack.synthesizeHarness(signal);
+    await stack.synthesizeHarness(signal);
+    await stack.synthesizeHarness(signal);
+
+    expect(generated).toHaveLength(1);
+    const skipReasons = events
+      .filter(
+        (e): e is AutoHarnessEvent & { readonly message: string } => e.kind === "synthesis.skipped",
+      )
+      .map((e) => e.message);
+    expect(skipReasons.filter((m) => m.includes("already processed"))).toHaveLength(2);
+
+    stack.resetSession();
+    await stack.synthesizeHarness(signal);
+    expect(generated).toHaveLength(2);
   });
 
   test("rejects non-positive maxSynthesesPerSession", () => {
@@ -413,6 +463,7 @@ describe("createAutoHarnessStack", () => {
     const verifierCalls: unknown[] = [];
     const stack = createAutoHarnessStack({
       forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      notifier: makeNotifier(),
       generate: async () => "candidate-code",
       verifyCandidate: async () => ({ ok: true, artifact: makeArtifact() }),
       evaluatePolicy: async () => ({ ok: true, action: "allow" }),
@@ -452,10 +503,25 @@ describe("createAutoHarnessStack", () => {
       maxSynthesesPerSession: 2,
     });
 
-    await stack.synthesizeHarness(makeSignal());
-    await stack.synthesizeHarness(makeSignal());
+    // Use distinct triggers so completedTriggers dedup doesn't mask the
+    // budget cap — this test exercises budget consumption on terminal
+    // failures, not trigger-replay suppression.
+    const sigA = {
+      ...makeSignal(),
+      trigger: { kind: "repeated_failure", toolName: "a", count: 1 },
+    } as ForgeDemandSignal;
+    const sigB = {
+      ...makeSignal(),
+      trigger: { kind: "repeated_failure", toolName: "b", count: 1 },
+    } as ForgeDemandSignal;
+    const sigC = {
+      ...makeSignal(),
+      trigger: { kind: "repeated_failure", toolName: "c", count: 1 },
+    } as ForgeDemandSignal;
+    await stack.synthesizeHarness(sigA);
+    await stack.synthesizeHarness(sigB);
     // Third call is gated out — both prior failed attempts consumed budget.
-    await stack.synthesizeHarness(makeSignal());
+    await stack.synthesizeHarness(sigC);
 
     expect(generateCalls).toBe(2);
   });
@@ -497,6 +563,7 @@ describe("createAutoHarnessStack", () => {
     const stack = createAutoHarnessStack({
       forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
       policyVerifier: (() => async () => ({ ok: true as const, value: undefined })) as never,
+      notifier: makeNotifier(),
       generate: async () => "candidate-code",
       verifyCandidate: async () => ({ ok: true, artifact }),
       evaluatePolicy: async () => ({ ok: true, action: "allow" }),
@@ -534,6 +601,7 @@ describe("createAutoHarnessStack", () => {
     const stack = createAutoHarnessStack({
       forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
       policyVerifier: (() => async () => ({ ok: true as const, value: undefined })) as never,
+      notifier: makeNotifier(),
       generate: async () => "candidate-code",
       verifyCandidate: async () => ({ ok: true, artifact }),
       evaluatePolicy: async () => ({ ok: true, action: "allow" }),
@@ -632,15 +700,24 @@ describe("createAutoHarnessStack", () => {
       maxSynthesesPerSession: 2,
     });
 
+    // Use distinct triggers so completedTriggers dedup doesn't mask the
+    // per-session budget cap — this test exercises tenant isolation, not
+    // trigger-replay suppression.
+    const sigFor = (toolName: string): ForgeDemandSignal =>
+      ({
+        ...makeSignal(),
+        trigger: { kind: "repeated_failure", toolName, count: 1 },
+      }) as ForgeDemandSignal;
+
     // Session A consumes its own budget.
-    await stack.synthesizeHarness(makeSignal(), { sessionId: "session-A" });
-    await stack.synthesizeHarness(makeSignal(), { sessionId: "session-A" });
+    await stack.synthesizeHarness(sigFor("a1"), { sessionId: "session-A" });
+    await stack.synthesizeHarness(sigFor("a2"), { sessionId: "session-A" });
     // Session A is exhausted; further calls under A skip.
-    const aThird = await stack.synthesizeHarness(makeSignal(), { sessionId: "session-A" });
+    const aThird = await stack.synthesizeHarness(sigFor("a3"), { sessionId: "session-A" });
     expect(aThird).toBeNull();
 
     // Session B has its own fresh budget.
-    const bFirst = await stack.synthesizeHarness(makeSignal(), { sessionId: "session-B" });
+    const bFirst = await stack.synthesizeHarness(sigFor("b1"), { sessionId: "session-B" });
     expect(bFirst).not.toBeNull();
     expect(generateCalls).toBe(3);
   });

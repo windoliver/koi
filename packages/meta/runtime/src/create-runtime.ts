@@ -536,10 +536,21 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                 autoHarnessStack,
                 () => Array.from(autoHarnessSessionEntries.values()),
               ),
-              onSessionAttached: (
+              onSessionAttached: async (
                 sessionContext: SessionContext,
                 scoped: import("@koi/forge-demand").SessionScopedForgeDemandHandle,
-              ): void | Promise<void> => {
+              ): Promise<void> => {
+                // Run the caller's `onSessionAttached` FIRST. Only record
+                // ownership of the scoped handle after the host accepts the
+                // session. If the host throws or rejects, the session never
+                // became "attached" — recording ownership beforehand would
+                // let `wrapOnDemandWithAutoHarness` resolve, dismiss, and
+                // run synthesis for a session the host never owned, burning
+                // budget and triggering deploy side effects the real owner
+                // never observed (R5 round 6 finding).
+                if (baseConfigWithHealth.onSessionAttached !== undefined) {
+                  await baseConfigWithHealth.onSessionAttached(sessionContext, scoped);
+                }
                 autoHarnessSessionEntries.set(sessionContext.sessionId, {
                   sessionId: sessionContext.sessionId,
                   scoped,
@@ -568,16 +579,6 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                     );
                   }
                 }
-                // Preserve caller callback's return value: forge-demand
-                // treats a returned Promise as load-bearing — async
-                // rejection keeps the session unready and triggers retry on
-                // later traffic. Swallowing the rejection would let
-                // signals accumulate while the host has no dismiss path.
-                // Synchronous throws are surfaced by re-throwing.
-                if (baseConfigWithHealth.onSessionAttached === undefined) {
-                  return undefined;
-                }
-                return baseConfigWithHealth.onSessionAttached(sessionContext, scoped);
               },
             }
           : baseConfigWithHealth;

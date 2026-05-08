@@ -152,6 +152,23 @@ async function runStageOrReport<T>(
 }
 
 export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessStack {
+  // Fail closed when policy-cache registration is enabled but no
+  // invalidation source is wired. With a `policyVerifier` configured,
+  // successful deployments register `policyEntry` objects into the cache;
+  // without a `StoreChangeNotifier`, those entries are immortal — brick
+  // updates, removals, and quarantines have no path into the cache, so
+  // stale allow/deny decisions short-circuit live traffic until the
+  // process restarts (R5 round 6 finding).
+  if (config.policyVerifier !== undefined && config.notifier === undefined) {
+    throw new Error(
+      "@koi/auto-harness: `notifier` (StoreChangeNotifier) is required when " +
+        "`policyVerifier` is configured. Deployed policy-cache entries can " +
+        "outlive their backing brick if the cache has no invalidation source, " +
+        "leaving stale allow/deny decisions in place after the brick is " +
+        "updated, removed, or quarantined. Supply a notifier wired to the " +
+        "forge store's lifecycle events.",
+    );
+  }
   const policyCacheHandle = createPolicyCacheMiddleware({
     notifier: config.notifier,
     ...(config.policyVerifier !== undefined && { verifier: config.policyVerifier }),
@@ -167,12 +184,23 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
   interface SessionState {
     count: number;
     inFlightTriggers: Set<string>;
+    // Persistent post-completion gate. After a pipeline finishes (success
+    // OR terminal failure) we keep the trigger identity here so the same
+    // root-cause signal cannot replay sequentially through verify→policy→
+    // approval→deploy and produce duplicate draft records, repeated
+    // approval prompts, and non-idempotent deploy side effects (R5 round 6
+    // finding). Cleared on `resetSession(id)` — hosts are expected to
+    // reset on legitimate session boundaries (cycleSession, host config
+    // change). When a host wants to retry a previously-handled trigger
+    // (e.g. the failure mode actually changed), it must reset the
+    // session.
+    completedTriggers: Set<string>;
   }
   const sessionState = new Map<string, SessionState>();
   const getOrCreateSession = (id: string): SessionState => {
     let s = sessionState.get(id);
     if (s === undefined) {
-      s = { count: 0, inFlightTriggers: new Set() };
+      s = { count: 0, inFlightTriggers: new Set(), completedTriggers: new Set() };
       sessionState.set(id, s);
     }
     return s;
@@ -217,6 +245,20 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       safeDismiss();
       return null;
     }
+    if (state.completedTriggers.has(triggerKey)) {
+      // Sequential replay of the same root-cause trigger after a prior
+      // pipeline already ran to terminal outcome. Suppress and dismiss so
+      // forge-demand cooldown re-fires don't spawn duplicate
+      // verify/policy/approval/deploy cycles for one failure mode. Hosts
+      // that want to re-handle this trigger must call resetSession(id).
+      emitEvent({
+        kind: "synthesis.skipped",
+        signalId: signal.id,
+        message: `trigger ${triggerKey} already processed this session`,
+      });
+      safeDismiss();
+      return null;
+    }
     if (state.count >= maxSynthesesPerSession) {
       emitEvent({
         kind: "synthesis.skipped",
@@ -241,6 +283,9 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       return result;
     } finally {
       state.inFlightTriggers.delete(triggerKey);
+      // Record completion so identical sequential replays of this trigger
+      // are suppressed until the host explicitly resets the session.
+      state.completedTriggers.add(triggerKey);
     }
   };
 
