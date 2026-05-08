@@ -112,51 +112,66 @@ describe("createNexusWorkspaceBackend", () => {
     if (created.ok) expect(created.value.id).toBe(workspaceId("fallback-ws"));
   });
 
-  test("degraded mode is sticky after runtime failure", async () => {
+  test("isHealthy on a Nexus-owned workspace does not reroute disposal of *other* workspaces", async () => {
     const { createNexusWorkspaceBackend } = await import("./index.js");
 
-    let createShouldFail = true;
+    let nexusDisposeCalls = 0;
+    let fallbackDisposeCalls = 0;
+    const fallback: WorkspaceBackend = {
+      ...createFallbackBackend(),
+      dispose: async () => {
+        fallbackDisposeCalls += 1;
+        return { ok: true, value: undefined };
+      },
+    };
+
     const backend = await createNexusWorkspaceBackend({
-      fallback: createFallbackBackend(),
+      fallback,
       transport: createHealthyTransport(async <T>(method: string): Promise<Result<T, KoiError>> => {
-        if (method === "workspace.create" && createShouldFail) {
-          createShouldFail = false;
+        if (method === "workspace.create") {
           return {
-            ok: false,
-            error: { code: "EXTERNAL", message: "down", retryable: false },
+            ok: true,
+            value: {
+              workspace: {
+                id: "nexus-ws-1",
+                path: "/tmp/nexus-1",
+                createdAt: 1,
+                metadata: {},
+              },
+            } as T,
           };
         }
+        if (method === "workspace.health") {
+          return {
+            ok: false,
+            error: { code: "EXTERNAL", message: "transient", retryable: true },
+          };
+        }
+        if (method === "workspace.dispose") {
+          nexusDisposeCalls += 1;
+          return { ok: true, value: { ok: true } as T };
+        }
         return {
-          ok: true,
-          value: {
-            workspace: {
-              id: "ws-ignored",
-              path: "/tmp/ws-ignored",
-              createdAt: 1,
-              metadata: {},
-            },
-          } as T,
+          ok: false,
+          error: { code: "EXTERNAL", message: `unexpected ${method}`, retryable: false },
         };
       }),
     });
 
-    const first = await backend.create(agentId("agent-a"), {
+    const created = await backend.create(agentId("agent-a"), {
       cleanupPolicy: "on_success",
       cleanupTimeoutMs: 5_000,
     });
-    expect(first.ok).toBe(true);
-    if (first.ok) {
-      expect(first.value.id).toBe(workspaceId("fallback-ws"));
-    }
-
-    const second = await backend.create(agentId("agent-a"), {
-      cleanupPolicy: "on_success",
-      cleanupTimeoutMs: 5_000,
-    });
-    expect(second.ok).toBe(true);
-    if (second.ok) {
-      expect(second.value.id).toBe(workspaceId("fallback-ws"));
-    }
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    // Transient health failure on this Nexus-owned workspace must NOT change
+    // the routing for it or for any other workspace — disposal still goes
+    // to Nexus, the backend that actually owns it.
+    expect(await backend.isHealthy(created.value.id)).toBe(false);
+    const disposed = await backend.dispose(created.value.id);
+    expect(disposed.ok).toBe(true);
+    expect(nexusDisposeCalls).toBe(1);
+    expect(fallbackDisposeCalls).toBe(0);
   });
 
   test("forwards workspace recovery hooks through Nexus and normalizes payloads", async () => {
@@ -241,18 +256,13 @@ describe("createNexusWorkspaceBackend", () => {
     expect(calls[4]?.params).toEqual({ workspaceId: workspaceId("ws-1") });
   });
 
-  test("authoritative reads fail closed on transient Nexus failures even when the fallback implements them", async () => {
+  test("verifySetupComplete and exists fail closed on transient Nexus failures for Nexus-owned workspaces", async () => {
     const { createNexusWorkspaceBackend } = await import("./index.js");
 
-    let fallbackFindCalls = 0;
     let fallbackVerifyCalls = 0;
     let fallbackExistsCalls = 0;
     const fallback: WorkspaceBackend = {
       ...createFallbackBackend(),
-      findByAgentId: async () => {
-        fallbackFindCalls += 1;
-        return [];
-      },
       verifySetupComplete: async () => {
         fallbackVerifyCalls += 1;
         return false;
@@ -273,13 +283,12 @@ describe("createNexusWorkspaceBackend", () => {
       ),
     });
 
-    // While Nexus is the authority, a transient read failure must not silently
+    // ws-1 is unknown to the owner map → conservatively treated as
+    // Nexus-owned. A transient Nexus read failure for it must not silently
     // route to fallback: an empty/false fallback answer for a Nexus-owned
-    // workspace would let the provider create duplicates or dispose still-live
-    // workspaces. Read hooks only consult fallback once `degraded` has been
-    // pinned by a lifecycle op (create/dispose/isHealthy).
+    // workspace would let the provider create duplicates or dispose still-
+    // live workspaces.
     for (const call of [
-      () => backend.findByAgentId?.(agentId("agent-a")),
       () => backend.verifySetupComplete?.(workspaceId("ws-1")),
       () => backend.exists?.(workspaceId("ws-1")),
     ]) {
@@ -291,12 +300,11 @@ describe("createNexusWorkspaceBackend", () => {
       }
       expect(caught).toBeInstanceOf(Error);
     }
-    expect(fallbackFindCalls).toBe(0);
     expect(fallbackVerifyCalls).toBe(0);
     expect(fallbackExistsCalls).toBe(0);
   });
 
-  test("authoritative reads use fallback once a lifecycle op has pinned ownership to it", async () => {
+  test("when Nexus health probe fails at construction, the raw fallback is returned as the sole authority", async () => {
     const { createNexusWorkspaceBackend } = await import("./index.js");
 
     let fallbackVerifyCalls = 0;
@@ -308,29 +316,28 @@ describe("createNexusWorkspaceBackend", () => {
       },
     };
 
+    // The up-front health probe is the ONLY failover boundary. When it
+    // fails, callers are handed the fallback directly and Nexus is never
+    // touched again — there is no per-call create-time failover that could
+    // cause double-creates.
     const backend = await createNexusWorkspaceBackend({
       fallback,
-      transport: createHealthyTransport(async <T>(method: string): Promise<Result<T, KoiError>> => {
-        if (method === "workspace.create") {
-          return {
-            ok: false,
-            error: { code: "EXTERNAL", message: "create down", retryable: false },
-          };
-        }
-        return {
+      transport: {
+        kind: "http",
+        call: async <T>(): Promise<Result<T, KoiError>> => ({
           ok: false,
-          error: { code: "EXTERNAL", message: `nexus down: ${method}`, retryable: false },
-        };
-      }),
+          error: { code: "EXTERNAL", message: "nexus down", retryable: false },
+        }),
+        health: async () => ({
+          ok: false,
+          error: { code: "EXTERNAL", message: "down", retryable: false },
+        }),
+        close: () => {},
+      },
     });
 
-    // Pin ownership to fallback via a lifecycle op.
-    await backend.create(agentId("agent-a"), {
-      cleanupPolicy: "on_success",
-      cleanupTimeoutMs: 5_000,
-    });
-    // Now the read hook can authoritatively use fallback state.
-    expect(await backend.verifySetupComplete?.(workspaceId("fallback-ws"))).toBe(true);
+    expect(backend).toBe(fallback);
+    expect(await backend.verifySetupComplete?.(workspaceId("any"))).toBe(true);
     expect(fallbackVerifyCalls).toBe(1);
   });
 
@@ -390,12 +397,12 @@ describe("createNexusWorkspaceBackend", () => {
     const { createNexusWorkspaceBackend } = await import("./index.js");
 
     let createCalls = 0;
-    const fallback: WorkspaceBackend = {
-      ...createFallbackBackend(),
-      findByAgentId: async () => [],
-    };
+    // Fallback has no findByAgentId, so the hook can only succeed via Nexus
+    // and reflects whatever Nexus says. The crucial property under test is
+    // that even after a discovery hiccup, create() still hits Nexus on the
+    // next attempt — there is no global degrade flag to flip.
     const backend = await createNexusWorkspaceBackend({
-      fallback,
+      fallback: createFallbackBackend(),
       transport: createHealthyTransport(async <T>(method: string): Promise<Result<T, KoiError>> => {
         if (method === "workspace.findByAgentId") {
           return {
@@ -424,16 +431,10 @@ describe("createNexusWorkspaceBackend", () => {
       }),
     });
 
-    // The hook fails closed rather than fabricating a fallback survivor list.
-    let caught: unknown;
-    try {
-      await backend.findByAgentId?.(agentId("agent-a"));
-    } catch (error: unknown) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(Error);
-
-    // Subsequent lifecycle ops must still consult Nexus, not the fallback.
+    // Discovery hook is omitted (fallback lacks findByAgentId, so capability
+    // is honestly absent). What matters is that a discovery failure on a
+    // separate code path does not flip a global flag — create() still hits
+    // Nexus. Per-workspace ownership means there is no global degrade.
     const created = await backend.create(agentId("agent-a"), {
       cleanupPolicy: "on_success",
       cleanupTimeoutMs: 5_000,
@@ -504,56 +505,50 @@ describe("createNexusWorkspaceBackend", () => {
     expect(fallbackInvalidateCalls).toBe(0);
   });
 
-  test("after create() degrades, attest and verify both pin to the fallback backend", async () => {
+  test("create() fails closed on Nexus error to avoid duplicate-workspace risk", async () => {
     const { createNexusWorkspaceBackend } = await import("./index.js");
 
-    let attestedFallback = 0;
-    let verifiedFallback = 0;
+    let fallbackCreateCalls = 0;
     const fallback: WorkspaceBackend = {
       ...createFallbackBackend(),
-      attestSetupComplete: async () => {
-        attestedFallback += 1;
-      },
-      verifySetupComplete: async () => {
-        verifiedFallback += 1;
-        return true;
+      create: async () => {
+        fallbackCreateCalls += 1;
+        return {
+          ok: true,
+          value: {
+            id: workspaceId("fallback-ws"),
+            path: "/tmp/fallback-ws",
+            createdAt: 1,
+            metadata: {},
+          },
+        };
       },
     };
 
+    // Nexus health probe succeeds at construction (so we wrap Nexus), but
+    // the actual create() call fails. The adapter must NOT silently create a
+    // duplicate on fallback: a transport failure is ambiguous (Nexus may
+    // have committed and only lost the response). Surfacing the error
+    // preserves the provider's single-workspace-per-agent invariant.
     const backend = await createNexusWorkspaceBackend({
       fallback,
       transport: createHealthyTransport(async <T>(method: string): Promise<Result<T, KoiError>> => {
         if (method === "workspace.create") {
           return {
             ok: false,
-            error: { code: "EXTERNAL", message: "create down", retryable: false },
+            error: { code: "EXTERNAL", message: "nexus create down", retryable: false },
           };
         }
-        return {
-          ok: false,
-          error: {
-            code: "EXTERNAL",
-            message: `nexus should not be called after degrade: ${method}`,
-            retryable: false,
-          },
-        };
+        return { ok: true, value: { ok: true } as T };
       }),
     });
 
-    // First create() fails on Nexus → backend flips to degraded, returns fallback workspace.
     const created = await backend.create(agentId("agent-a"), {
       cleanupPolicy: "on_success",
       cleanupTimeoutMs: 5_000,
     });
-    expect(created.ok).toBe(true);
-
-    // Both attest (write) and verify (read) must now land on fallback so setup
-    // state stays internally consistent for the fallback-owned workspace.
-    await backend.attestSetupComplete?.(workspaceId("fallback-ws"));
-    expect(await backend.verifySetupComplete?.(workspaceId("fallback-ws"))).toBe(true);
-
-    expect(attestedFallback).toBe(1);
-    expect(verifiedFallback).toBe(1);
+    expect(created.ok).toBe(false);
+    expect(fallbackCreateCalls).toBe(0);
   });
 
   test("attestation/invalidation hooks are omitted when the fallback cannot replicate them", async () => {
@@ -590,6 +585,148 @@ describe("createNexusWorkspaceBackend", () => {
     expect(backend.invalidateSetupComplete).toBeDefined();
     expect(backend.verifySetupComplete).toBeDefined();
     expect(backend.exists).toBeDefined();
+  });
+
+  test("optional hooks listed as unsupported in serverCapabilities are omitted even when fallback would honor them", async () => {
+    const { createNexusWorkspaceBackend } = await import("./index.js");
+
+    // Capability negotiation is honest about the connected Nexus server.
+    // The workspace provider treats hook presence as a capability signal,
+    // so advertising findByAgentId/exists/etc. against a server that does
+    // not implement them would turn attach/cleanup into hard failures.
+    const backend = await createNexusWorkspaceBackend({
+      fallback: {
+        ...createFallbackBackend(),
+        findByAgentId: async () => [],
+        exists: async () => true,
+      },
+      transport: createHealthyTransport(
+        async <T>(): Promise<Result<T, KoiError>> => ({
+          ok: true,
+          value: { ok: true } as T,
+        }),
+      ),
+      serverCapabilities: {
+        findByAgentId: false,
+        exists: false,
+      },
+    });
+
+    expect(backend.findByAgentId).toBeUndefined();
+    expect(backend.exists).toBeUndefined();
+  });
+
+  test("dispose() does not reroute to fallback before degrade so cleanup stays authoritative", async () => {
+    const { createNexusWorkspaceBackend } = await import("./index.js");
+
+    let fallbackDisposeCalls = 0;
+    const fallback: WorkspaceBackend = {
+      ...createFallbackBackend(),
+      dispose: async () => {
+        fallbackDisposeCalls += 1;
+        return { ok: true, value: undefined };
+      },
+    };
+
+    const backend = await createNexusWorkspaceBackend({
+      fallback,
+      transport: createHealthyTransport(
+        async <T>(): Promise<Result<T, KoiError>> => ({
+          ok: false,
+          error: { code: "EXTERNAL", message: "dispose down", retryable: false },
+        }),
+      ),
+    });
+
+    const result = await backend.dispose(workspaceId("ws-1"));
+    // The Nexus-owned workspace must not be reported as disposed via an
+    // unrelated fallback; surface the actual error.
+    expect(result.ok).toBe(false);
+    expect(fallbackDisposeCalls).toBe(0);
+  });
+
+  test("findByAgentId fails closed when Nexus discovery errors (does not substitute fallback)", async () => {
+    const { createNexusWorkspaceBackend } = await import("./index.js");
+
+    let fallbackFindCalls = 0;
+    const fallback: WorkspaceBackend = {
+      ...createFallbackBackend(),
+      findByAgentId: async () => {
+        fallbackFindCalls += 1;
+        return [
+          {
+            id: workspaceId("fallback-survivor"),
+            path: "/tmp/fallback-survivor",
+            createdAt: 7,
+            metadata: {},
+          },
+        ];
+      },
+    };
+
+    const backend = await createNexusWorkspaceBackend({
+      fallback,
+      transport: createHealthyTransport(
+        async <T>(): Promise<Result<T, KoiError>> => ({
+          ok: false,
+          error: { code: "EXTERNAL", message: "nexus down", retryable: false },
+        }),
+      ),
+    });
+
+    // Substituting fallback discovery is unsafe: the fallback inventory is
+    // incomplete for Nexus-owned workspaces, so returning it as the answer
+    // would let the provider's single-workspace cleanup destroy a valid
+    // Nexus workspace it could not see, or create duplicates because a live
+    // Nexus survivor was missing from the fallback's view. Fail closed.
+    let caught: unknown;
+    try {
+      await backend.findByAgentId?.(agentId("agent-a"));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/failed to find workspaces/);
+    expect(fallbackFindCalls).toBe(0);
+  });
+
+  test("findByAgentId does not let an unhealthy fallback veto a successful Nexus discovery", async () => {
+    const { createNexusWorkspaceBackend } = await import("./index.js");
+
+    const fallback: WorkspaceBackend = {
+      ...createFallbackBackend(),
+      findByAgentId: async () => {
+        throw new Error("fallback discovery exploded");
+      },
+    };
+
+    const backend = await createNexusWorkspaceBackend({
+      fallback,
+      transport: createHealthyTransport(async <T>(method: string): Promise<Result<T, KoiError>> => {
+        if (method === "workspace.findByAgentId") {
+          return {
+            ok: true,
+            value: {
+              workspaces: [
+                {
+                  id: "nexus-survivor",
+                  path: "/tmp/nexus-survivor",
+                  createdAt: 1,
+                  metadata: {},
+                },
+              ],
+            } as T,
+          };
+        }
+        return {
+          ok: false,
+          error: { code: "EXTERNAL", message: `unexpected ${method}`, retryable: false },
+        };
+      }),
+    });
+
+    const found = await backend.findByAgentId?.(agentId("agent-a"));
+    expect(found?.map((info) => info.id)).toEqual([workspaceId("nexus-survivor")]);
   });
 
   test("findByAgentId returns survivors sorted newest-first regardless of remote order", async () => {

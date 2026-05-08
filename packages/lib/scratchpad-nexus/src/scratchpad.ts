@@ -35,7 +35,7 @@ export async function createNexusScratchpad(
   const authorId = config.authorId as string;
   const pageSize = config.pageSize ?? DEFAULT_PAGE_SIZE;
   const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-  const serverSupportsPagination = config.serverSupportsPagination ?? true;
+  const serverSupportsPagination = config.serverSupportsPagination ?? false;
 
   if (config.transport.health !== undefined) {
     const health = await config.transport.health();
@@ -230,7 +230,10 @@ export async function createNexusScratchpad(
             degradeToFallback();
             return await config.fallback.list(filter);
           }
-          return [];
+          // No fallback: surface the transport failure. Returning `[]` would
+          // collapse a Nexus outage into a legitimate empty state and let
+          // callers perform destructive cleanup based on a false absence.
+          throw new Error("Nexus scratchpad list failed", { cause: result.error });
         }
         const summaries = mapSummaries(result.value);
         if (summaries.length === 0 && result.value.nextCursor !== undefined) {

@@ -28,6 +28,15 @@ export async function createNexusWorkspaceBackend(
 ): Promise<WorkspaceBackend> {
   const prefix = config.methodPrefix ?? DEFAULT_PREFIX;
 
+  // Up-front health probe is the ONLY failover boundary. If Nexus is down at
+  // construction time and a fallback is configured, we hand the caller the
+  // raw fallback backend — that backend is then the sole authority for every
+  // workspace it manages, with no Nexus involvement and no ownership
+  // ambiguity. Once we return the Nexus-routed backend below, every
+  // subsequent op goes to Nexus: per-call create-time failover would risk
+  // double-creating a workspace (Nexus committed but lost the response →
+  // fallback also creates) and would let a fallback's incomplete inventory
+  // hide live Nexus workspaces from discovery and cleanup.
   if (config.transport.health !== undefined) {
     const health = await config.transport.health();
     if (!health.ok && config.fallback !== undefined) {
@@ -36,99 +45,77 @@ export async function createNexusWorkspaceBackend(
   }
 
   const client = createNexusWorkspaceBackendClient(config.transport, prefix);
-  let degraded = false;
 
-  // Optional hooks are only exposed when both modes can honor them. Callers
-  // (e.g. the workspace provider) treat method presence as a capability
-  // signal; advertising a hook that throws once we degrade because the
-  // fallback can't satisfy it would be a contract break that turns
-  // recoverable flows into runtime failures during crash recovery. Policy:
-  //   - No fallback configured → expose every hook (Nexus is sole authority).
-  //   - Fallback configured AND fallback implements the hook → expose it.
-  //   - Fallback configured AND fallback lacks the hook → omit it.
-  const fallbackHas = (
-    key: keyof Pick<
-      WorkspaceBackend,
-      | "findByAgentId"
-      | "attestSetupComplete"
-      | "verifySetupComplete"
-      | "invalidateSetupComplete"
-      | "exists"
-    >,
-  ): boolean => config.fallback === undefined || config.fallback[key] !== undefined;
+  // Optional hooks are exposed only when BOTH the connected Nexus server is
+  // known to implement them AND any configured fallback can also honor them.
+  // Callers (e.g. the workspace provider) treat method presence as a
+  // capability signal — advertising a hook the server cannot answer would
+  // turn attach/cleanup into a hard failure against an older or partially
+  // upgraded Nexus server, while advertising one a fallback cannot honor
+  // would break recovery flows after the up-front health-probe degrade.
+  // Policy:
+  //   - serverCapabilities omitted → assume a fully-upgraded server.
+  //   - Hook listed as `false` (or absent) in serverCapabilities → omit.
+  //   - Fallback configured AND lacks the hook → omit.
+  type OptionalHook =
+    | "findByAgentId"
+    | "attestSetupComplete"
+    | "verifySetupComplete"
+    | "invalidateSetupComplete"
+    | "exists";
+  const serverSupports = (key: OptionalHook): boolean => {
+    if (config.serverCapabilities === undefined) return true;
+    return config.serverCapabilities[key] === true;
+  };
+  const fallbackHas = (key: OptionalHook): boolean =>
+    config.fallback === undefined || config.fallback[key] !== undefined;
+  const exposeHook = (key: OptionalHook): boolean => serverSupports(key) && fallbackHas(key);
 
   return {
     name: "workspace-nexus",
     isSandboxed: false,
     create: async (agentId: AgentId, resolved: ResolvedWorkspaceConfig) => {
-      if (degraded && config.fallback !== undefined) {
-        return config.fallback.create(agentId, resolved);
-      }
+      // create() does NOT fall back on a Nexus error: a transport failure is
+      // ambiguous (Nexus may have committed the workspace and only lost the
+      // response). Creating a second workspace on fallback in that case
+      // would violate the provider's single-workspace-per-agent invariant
+      // and leave one live workspace untracked.
       const result = await client.create(agentId, resolved);
-      if (!result.ok) {
-        if (config.fallback === undefined) return result;
-        degraded = true;
-        return config.fallback.create(agentId, resolved);
-      }
-      return {
-        ok: true,
-        value: mapWorkspace(result.value.workspace),
-      };
-    },
-    dispose: async (wsId: WorkspaceId) => {
-      if (degraded && config.fallback !== undefined) {
-        return config.fallback.dispose(wsId);
-      }
-      const result = await client.dispose(wsId);
-      if (!result.ok) {
-        if (config.fallback === undefined) return result;
-        degraded = true;
-        return config.fallback.dispose(wsId);
-      }
+      if (result.ok) return { ok: true, value: mapWorkspace(result.value.workspace) };
       return result;
     },
+    dispose: async (wsId: WorkspaceId) => client.dispose(wsId),
     isHealthy: async (wsId: WorkspaceId) => {
-      if (degraded && config.fallback !== undefined) {
-        return config.fallback.isHealthy(wsId);
-      }
       const result = await client.health(wsId);
-      if (!result.ok) {
-        if (config.fallback === undefined) return false;
-        degraded = true;
-        return config.fallback.isHealthy(wsId);
-      }
-      return result.value.healthy;
+      if (result.ok) return result.value.healthy;
+      return false;
     },
-    ...(fallbackHas("findByAgentId")
+    ...(exposeHook("findByAgentId")
       ? {
           findByAgentId: async (agentId: AgentId): Promise<readonly WorkspaceInfo[]> => {
-            // Fallback discovery is only authoritative once a lifecycle op has
-            // pinned ownership to it. A first read failure must NOT auto-route
-            // to fallback: the fallback only knows its own inventory, so an
-            // empty answer for a Nexus-owned workspace would let the provider
-            // create a duplicate while the original is still live.
-            if (degraded && config.fallback?.findByAgentId !== undefined) {
-              const fallbackRecords = (await config.fallback.findByAgentId(agentId)) ?? [];
-              return [...fallbackRecords].sort((a, b) => b.createdAt - a.createdAt);
-            }
-            const result = await client.findByAgentId(agentId);
-            if (result.ok) {
-              return result.value.map(mapWorkspace).toSorted((a, b) => b.createdAt - a.createdAt);
+            // Nexus is the sole discovery authority. We do NOT substitute
+            // fallback survivors when Nexus errors: an unsandboxed
+            // fallback's inventory is incomplete for Nexus-owned workspaces,
+            // so returning it as the answer would let the provider's
+            // single-workspace cleanup destroy a valid Nexus workspace it
+            // could not see, or create duplicates because a live Nexus
+            // survivor was missing from the fallback's view. Fail closed.
+            const nexusResult = await client.findByAgentId(agentId);
+            if (nexusResult.ok) {
+              return [...nexusResult.value.map(mapWorkspace)].sort(
+                (a, b) => b.createdAt - a.createdAt,
+              );
             }
             throw new Error(
               `Workspace backend failed to find workspaces for agent ${String(agentId)}`,
-              { cause: result.error },
+              { cause: nexusResult.error },
             );
           },
         }
       : {}),
-    ...(fallbackHas("attestSetupComplete")
+    ...(exposeHook("attestSetupComplete")
       ? {
           attestSetupComplete: async (wsId: WorkspaceId): Promise<void> => {
-            if (degraded && config.fallback?.attestSetupComplete !== undefined) {
-              await config.fallback.attestSetupComplete(wsId);
-              return;
-            }
             const result = await client.attestSetupComplete(wsId);
             if (result.ok) return;
             throw new Error(`Workspace backend failed to attest setup completion for ${wsId}`, {
@@ -137,13 +124,9 @@ export async function createNexusWorkspaceBackend(
           },
         }
       : {}),
-    ...(fallbackHas("invalidateSetupComplete")
+    ...(exposeHook("invalidateSetupComplete")
       ? {
           invalidateSetupComplete: async (wsId: WorkspaceId): Promise<void> => {
-            if (degraded && config.fallback?.invalidateSetupComplete !== undefined) {
-              await config.fallback.invalidateSetupComplete(wsId);
-              return;
-            }
             const result = await client.invalidateSetupComplete(wsId);
             if (result.ok) return;
             throw new Error(`Workspace backend failed to invalidate setup completion for ${wsId}`, {
@@ -152,16 +135,9 @@ export async function createNexusWorkspaceBackend(
           },
         }
       : {}),
-    ...(fallbackHas("verifySetupComplete")
+    ...(exposeHook("verifySetupComplete")
       ? {
           verifySetupComplete: async (wsId: WorkspaceId): Promise<boolean> => {
-            // Authoritative read: a first Nexus read failure must not return
-            // a fallback "false" for a Nexus-owned workspace — that would
-            // trick the provider into disposing or recreating a still-live
-            // workspace. Only consult fallback once ownership is pinned.
-            if (degraded && config.fallback?.verifySetupComplete !== undefined) {
-              return (await config.fallback.verifySetupComplete(wsId)) ?? false;
-            }
             const result = await client.verifySetupComplete(wsId);
             if (result.ok) return result.value;
             throw new Error(`Workspace backend failed to verify setup completion for ${wsId}`, {
@@ -170,13 +146,9 @@ export async function createNexusWorkspaceBackend(
           },
         }
       : {}),
-    ...(fallbackHas("exists")
+    ...(exposeHook("exists")
       ? {
           exists: async (wsId: WorkspaceId): Promise<boolean> => {
-            // Same fail-closed policy as `verifySetupComplete`.
-            if (degraded && config.fallback?.exists !== undefined) {
-              return (await config.fallback.exists(wsId)) ?? false;
-            }
             const result = await client.exists(wsId);
             if (result.ok) return result.value;
             throw new Error(`Workspace backend failed to check existence for ${wsId}`, {

@@ -621,6 +621,36 @@ describe("createChangeTracker", () => {
     expect(deleted).toContain("b.txt");
   });
 
+  test("scratchpad.list throws on transport failure rather than masking outage as empty", async () => {
+    const { createNexusScratchpad } = await import("./index.js");
+
+    const scratchpad = await createNexusScratchpad({
+      groupId: agentGroupId("group-a"),
+      authorId: agentId("agent-a"),
+      transport: createHealthyTransport(async <T>(method: string): Promise<Result<T, KoiError>> => {
+        if (method === "scratchpad.list") {
+          return {
+            ok: false,
+            error: { code: "EXTERNAL", message: "list down", retryable: false },
+          };
+        }
+        return {
+          ok: false,
+          error: { code: "EXTERNAL", message: `unexpected ${method}`, retryable: false },
+        };
+      }),
+    });
+
+    let caught: unknown;
+    try {
+      await scratchpad.list();
+    } catch (error: unknown) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/Nexus scratchpad list failed/);
+  });
+
   test("scratchpad.list throws when the server returns a repeating pagination cursor", async () => {
     const { createNexusScratchpad } = await import("./index.js");
 
