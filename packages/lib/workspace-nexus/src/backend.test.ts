@@ -425,7 +425,35 @@ describe("createNexusWorkspaceBackend", () => {
     expect(backend.exists).toBeDefined();
   });
 
-  test("isSandboxed is true so the provider reuses Nexus survivors instead of recreating them", async () => {
+  test("isSandboxed is false when any attestation/existence hook is opted out", async () => {
+    const { createNexusWorkspaceBackend } = await import("./index.js");
+
+    // Sandboxed semantics let the provider trust backend-native
+    // attestation; if a hook is missing it would otherwise fall back
+    // to a host-local marker file, which is unsafe for a remote
+    // Nexus-owned workspace. Degrade to unsandboxed so the provider
+    // stays on the dispose-and-recreate path.
+    const backend = await createNexusWorkspaceBackend({
+      serverCapabilities: {
+        findByAgentId: true,
+        attestSetupComplete: true,
+        verifySetupComplete: false, // operator says server lacks this
+        invalidateSetupComplete: true,
+        exists: true,
+      },
+      transport: createHealthyTransport(
+        async <T>(): Promise<Result<T, KoiError>> => ({
+          ok: true,
+          value: { ok: true } as T,
+        }),
+      ),
+    });
+
+    expect(backend.isSandboxed).toBe(false);
+    expect(backend.verifySetupComplete).toBeUndefined();
+  });
+
+  test("isSandboxed is true when all attestation/existence hooks are available", async () => {
     const { createNexusWorkspaceBackend } = await import("./index.js");
 
     // Nexus-managed workspaces are durable server-side resources, NOT

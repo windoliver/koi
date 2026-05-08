@@ -63,16 +63,25 @@ export async function createNexusWorkspaceBackend(
     | "exists";
   const exposeHook = (key: OptionalHook): boolean => config.serverCapabilities?.[key] !== false;
 
+  // `isSandboxed=true` lets the workspace provider trust backend-native
+  // attestation/existence hooks for survivor recovery instead of falling
+  // back to a host-local `.setup-ok` marker file. We can only honor
+  // that contract when ALL attestation/existence/discovery hooks are
+  // actually exposed — if an operator opts any of them out, the
+  // provider would otherwise trust a local marker file for a remote
+  // workspace, which is wrong for a Nexus-owned resource. Degrade to
+  // unsandboxed in that case so the provider stays on the
+  // dispose-and-recreate path it already handles correctly.
+  const sandboxedRecoveryReady =
+    exposeHook("findByAgentId") &&
+    exposeHook("attestSetupComplete") &&
+    exposeHook("verifySetupComplete") &&
+    exposeHook("invalidateSetupComplete") &&
+    exposeHook("exists");
+
   return {
     name: "workspace-nexus",
-    // Nexus-managed workspaces are durable, server-side resources
-    // backed by their own trust boundary — they are NOT in-process
-    // ephemeral state. Marking the backend sandboxed lets
-    // `createWorkspaceProvider()` reuse survivors after a restart
-    // instead of forcing dispose-and-recreate, which would tear down
-    // the very state that `cleanupPolicy="never"` is supposed to
-    // preserve.
-    isSandboxed: true,
+    isSandboxed: sandboxedRecoveryReady,
     create: async (agentId: AgentId, resolved: ResolvedWorkspaceConfig) => {
       // create() does NOT fall back on a Nexus error: a transport failure is
       // ambiguous (Nexus may have committed the workspace and only lost the
