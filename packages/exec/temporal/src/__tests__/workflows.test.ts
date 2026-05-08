@@ -1,43 +1,53 @@
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import type {
-  AgentWorkflowConfig,
-  RetryWorkflowArgs,
-  RetryWorkflowResult,
-  ScheduledTaskWorkflowArgs,
-  ScheduledTaskWorkflowResult,
-} from "../index.js";
-import * as temporal from "../index.js";
+
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+const PACKAGE_ROOT = join(TEST_DIR, "..", "..");
+const FIXTURE = join(TEST_DIR, "fixtures", "workflows-boundary.ts");
+const AMBIENT = join(TEST_DIR, "fixtures", "workflows-boundary.ambient.d.ts");
+
+function runTypecheckFixture() {
+  return spawnSync(
+    "bunx",
+    [
+      "tsc",
+      "--noEmit",
+      "--ignoreConfig",
+      "--pretty",
+      "false",
+      "--target",
+      "ES2022",
+      "--module",
+      "ESNext",
+      "--moduleResolution",
+      "bundler",
+      "--lib",
+      "ES2022,DOM,ESNext.Disposable",
+      "--noImplicitAny",
+      "false",
+      "--noImplicitReturns",
+      "false",
+      "--strict",
+      "false",
+      "--strictNullChecks",
+      "false",
+      FIXTURE,
+      AMBIENT,
+    ],
+    {
+      cwd: PACKAGE_ROOT,
+      encoding: "utf8",
+    },
+  );
+}
 
 describe("temporal workflow public surface", () => {
-  test("exports Koi-owned workflow type names", () => {
-    expect(typeof temporal.DEFAULT_TEMPORAL_CONFIG).toBe("object");
-  });
+  test("exports Koi-owned workflow type names through the package boundary", () => {
+    const result = runTypecheckFixture();
 
-  test("workflow argument shapes are structurally usable without SDK imports", () => {
-    const agentConfig: AgentWorkflowConfig = {
-      agentId: "agent-1" as AgentWorkflowConfig["agentId"],
-      sessionId: "session-1" as AgentWorkflowConfig["sessionId"],
-      stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
-    };
-    const scheduled: ScheduledTaskWorkflowArgs = {
-      mode: "dispatch",
-      agentId: agentConfig.agentId,
-      stateRefs: agentConfig.stateRefs,
-      input: { kind: "text", text: "hello" },
-    };
-    const retryArgs: RetryWorkflowArgs = {
-      operation: "runAgentTurn",
-      attempt: 0,
-      maxAttempts: 3,
-      backoffMs: 250,
-      payload: { agentId: agentConfig.agentId },
-    };
-    const scheduledResult: ScheduledTaskWorkflowResult = { kind: "dispatched" };
-    const retryResult: RetryWorkflowResult = { kind: "succeeded", attempts: 1, value: {} };
-
-    expect(scheduled.mode).toBe("dispatch");
-    expect(retryArgs.maxAttempts).toBe(3);
-    expect(scheduledResult.kind).toBe("dispatched");
-    expect(retryResult.kind).toBe("succeeded");
-  });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+  }, 30_000);
 });
