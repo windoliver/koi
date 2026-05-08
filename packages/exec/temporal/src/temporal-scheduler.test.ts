@@ -73,12 +73,12 @@ describe("submit", () => {
     expect(client.workflow.start).toHaveBeenCalledTimes(1);
   });
 
-  test("scheduler defaults scheduled task workflow type for spawn mode", async () => {
+  test("scheduler defaults agent workflow type for direct spawn mode", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler({ client, taskQueue: "test-queue" });
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
     const startArgs = (client.workflow.start as ReturnType<typeof mock>).mock.calls[0] as [string];
-    expect(startArgs[0]).toBe("scheduledTaskWorkflow");
+    expect(startArgs[0]).toBe("agentWorkflow");
   });
 
   test("signals the workflow with message", async () => {
@@ -281,8 +281,11 @@ describe("dispatch mode", () => {
     const scheduler = createTemporalScheduler({ client, taskQueue: "test-queue" });
     await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn");
     const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
-    const opts = createArgs?.[1] as { action: { workflowType: string } };
+    const opts = createArgs?.[1] as {
+      action: { workflowType: string; args: readonly [{ mode: string }] };
+    };
     expect(opts.action.workflowType).toBe("scheduledTaskWorkflow");
+    expect(opts.action.args[0].mode).toBe("spawn");
   });
 });
 

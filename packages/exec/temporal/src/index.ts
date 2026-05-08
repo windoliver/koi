@@ -61,6 +61,7 @@ export { DEFAULT_TEMPORAL_CONFIG } from "./types.js";
 export {
   createWorkerBundle,
   createTemporalWorker,
+  createTemporalWorkerFromBundle,
   type NativeConnectionLike,
   type WorkerBundle,
   type WorkerAndConnection,

@@ -193,3 +193,13 @@ export async function createTemporalWorker(
     },
   };
 }
+
+export function createTemporalWorkerFromBundle(
+  config: WorkerConfig,
+  bundle: WorkerBundle,
+  createWorkerFn: (
+    params: WorkerCreateParams,
+  ) => Promise<WorkerAndConnection> = defaultCreateWorker,
+): Promise<WorkerHandle> {
+  return createTemporalWorker(config, bundle.activities, bundle.workflowsPath, createWorkerFn);
+}

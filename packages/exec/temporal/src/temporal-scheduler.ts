@@ -12,6 +12,7 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname } from "node:path";
+import { AGENT_WORKFLOW_NAME, SCHEDULED_TASK_WORKFLOW_NAME } from "./workflows/index.js";
 import type {
   AgentId,
   CronSchedule,
@@ -29,7 +30,7 @@ import type {
   TaskRunRecord,
   TaskScheduler,
 } from "@koi/core";
-import type { IncomingMessage, ScheduledInputPayload, ScheduledSpawnArgs } from "./types.js";
+import type { IncomingMessage, ScheduledInputPayload, ScheduledTaskWorkflowArgs } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Durable state persistence (used when config.dbPath is set)
@@ -85,8 +86,6 @@ interface PersistedState {
 // Prevents false "live" detection when the OS reuses a PID from a crashed process:
 // a new process has a different token, so the old (pid, token) pair never matches.
 const PROCESS_SESSION_TOKEN = crypto.randomUUID();
-const DEFAULT_SCHEDULED_TASK_WORKFLOW_TYPE = "scheduledTaskWorkflow";
-
 const VALID_TASK_STATUSES = new Set<string>([
   "pending",
   "running",
@@ -1267,7 +1266,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       let targetWorkflowId: string = id;
       try {
         if (mode === "spawn") {
-          const workflowType = config.workflowType ?? DEFAULT_SCHEDULED_TASK_WORKFLOW_TYPE;
+          const workflowType = config.workflowType ?? AGENT_WORKFLOW_NAME;
           const handle = await config.client.workflow.start(workflowType, {
             taskQueue: config.taskQueue,
             workflowId: id,
@@ -1820,12 +1819,13 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       //   with recurring schedule-fired inputs.
       let scheduleAction: Record<string, unknown>;
       if (mode === "spawn") {
-        const workflowType = config.workflowType ?? DEFAULT_SCHEDULED_TASK_WORKFLOW_TYPE;
+        const workflowType = config.workflowType ?? SCHEDULED_TASK_WORKFLOW_NAME;
         // Use snapshotPayload (the already-cloned/validated copy) so the remote schedule
         // definition is byte-for-byte identical to the persisted local metadata.
         // Using the original scheduledPayload risks split-brain if the caller mutates
         // the input after schedule() is called or a client wrapper serializes lazily.
-        const spawnArgs: ScheduledSpawnArgs = {
+        const spawnArgs: ScheduledTaskWorkflowArgs = {
+          mode: "spawn",
           agentId,
           stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
           input: snapshotPayload,
