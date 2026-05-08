@@ -22,6 +22,7 @@ export const COMMAND_LOADERS: Readonly<Record<KnownCommand, () => Promise<unknow
   init: () => import("./commands/init.js"),
   start: () => import("./commands/start.js"),
   serve: () => import("./commands/serve.js"),
+  "gateway-up": () => import("./commands/gateway-up.js"),
   tui: () => import("./commands/tui.js"),
   sessions: () => import("./commands/sessions.js"),
   logs: () => import("./commands/logs.js"),

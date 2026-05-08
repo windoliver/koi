@@ -79,6 +79,20 @@ Options:
   -h, --help                       Show this help
 `;
 
+const gatewayUpHelp = `koi gateway-up — Start the loopback gateway stack
+
+Usage:
+  koi gateway-up [options]
+
+Options:
+      --port <n>               WebSocket port (default 19500)
+      --nexus-url <url>        Optional Nexus base URL
+      --nexus-api-key <key>    Nexus API key (required with --nexus-url)
+      --instance-id <id>       Gateway instance id
+      --log-format <text|json> Output format
+  -h, --help                   Show this help
+`;
+
 const tuiHelp = `koi tui — Interactive terminal console
 
 Usage:
@@ -257,6 +271,7 @@ export const COMMAND_HELP: Readonly<Record<KnownCommand, string>> = {
   init: initHelp,
   start: startHelp,
   serve: serveHelp,
+  "gateway-up": gatewayUpHelp,
   tui: tuiHelp,
   sessions: sessionsHelp,
   logs: logsHelp,
