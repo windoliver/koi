@@ -30,6 +30,14 @@ import {
 } from "../index.js";
 import { MESSAGES_SIGNAL_NAME } from "../workflows/signals.js";
 
+type NativeConnectionType = Awaited<
+  ReturnType<typeof import("@temporalio/worker").NativeConnection.connect>
+>;
+type WorkerType = Awaited<ReturnType<typeof import("@temporalio/worker").Worker.create>>;
+type ClientConnectionType = Awaited<
+  ReturnType<typeof import("@temporalio/client").Connection.connect>
+>;
+
 const SKIP = process.env.TEMPORAL_INTEGRATION !== "true";
 const REAL_WORKFLOW_PATH = new URL("../workflows/agent-workflow.ts", import.meta.url).pathname;
 type WorkflowAgentId = AgentWorkflowConfig["agentId"];
@@ -165,6 +173,9 @@ async function makeRealClient() {
         pause: async () => {},
         unpause: async () => {},
         delete: async () => {},
+        getHandle: (scheduleId: string) => ({
+          describe: async () => temporalClient.schedule.getHandle(scheduleId).describe(),
+        }),
       },
     },
     _conn: conn,
@@ -226,10 +237,10 @@ describe.skipIf(SKIP)("Restored workflow integration (real Temporal)", () => {
       gatewayUrl: "ws://workflow-gateway",
     };
     const activityCalls: AgentTurnInput[] = [];
-    let nativeConn: InstanceType<typeof NativeConnection> | undefined;
-    let worker: InstanceType<typeof Worker> | undefined;
+    let nativeConn: NativeConnectionType | undefined;
+    let worker: WorkerType | undefined;
     let workerPromise: Promise<void> | undefined;
-    let clientConn: InstanceType<typeof Connection> | undefined;
+    let clientConn: ClientConnectionType | undefined;
 
     try {
       nativeConn = await NativeConnection.connect({ address: "localhost:7233" });
@@ -334,10 +345,10 @@ describe.skipIf(SKIP)("Restored workflow integration (real Temporal)", () => {
       nexusApiKey: "nexus-secret",
       delegationId: "delegation-42",
     };
-    let nativeConn: InstanceType<typeof NativeConnection> | undefined;
-    let worker: InstanceType<typeof Worker> | undefined;
+    let nativeConn: NativeConnectionType | undefined;
+    let worker: WorkerType | undefined;
     let workerPromise: Promise<void> | undefined;
-    let clientConn: InstanceType<typeof Connection> | undefined;
+    let clientConn: ClientConnectionType | undefined;
 
     try {
       nativeConn = await NativeConnection.connect({ address: "localhost:7233" });
@@ -446,8 +457,8 @@ describe.skipIf(SKIP)("Scheduler integration (real Temporal)", () => {
       await new Promise((r) => setTimeout(r, 300));
 
       // Poll: task starts in live map; once completed it moves to history
-      let tasks: Array<{ readonly status?: string }> = [];
-      let hist: Array<{ readonly status?: string }> = [];
+      let tasks: readonly { readonly status?: string }[] = [];
+      let hist: readonly { readonly status?: string }[] = [];
       for (let i = 0; i < 14; i++) {
         tasks = await scheduler.query({});
         hist = await scheduler.history({});
@@ -734,7 +745,9 @@ describe("Corner cases (no server required)", () => {
       client: {
         workflow: {
           start: async () => ({ workflowId: "x" }),
+          signal: async () => {},
           cancel: async () => {},
+          getResult: async () => undefined,
           // no describe → describe-absent path
         },
         schedule: {
@@ -742,9 +755,11 @@ describe("Corner cases (no server required)", () => {
           pause: async () => {},
           unpause: async () => {},
           delete: async () => {},
+          getHandle: () => ({ describe: async () => ({}) }),
         },
       },
       taskQueue: "q",
+      workflowType: "agentWorkflow",
     });
 
     await expect(scheduler.cancel("never-submitted" as never)).resolves.toBe(false);
@@ -759,19 +774,24 @@ describe("Corner cases (no server required)", () => {
         start: async (_wfType: string, opts: Record<string, unknown>) => ({
           workflowId: (opts.workflowId as string) ?? "wf-1",
         }),
+        signal: async () => {},
         cancel: async () => {},
         getResult: async () => undefined,
-        list: async () => [],
       },
       schedule: {
         create: async () => {},
         pause: async () => {},
         unpause: async () => {},
         delete: async () => {},
+        getHandle: () => ({ describe: async () => ({}) }),
       },
     };
 
-    const scheduler = createTemporalScheduler({ client, taskQueue: "stats-queue" });
+    const scheduler = createTemporalScheduler({
+      client,
+      taskQueue: "stats-queue",
+      workflowType: "agentWorkflow",
+    });
     const id = await scheduler.submit(agent, { kind: "text", text: "t" }, "spawn");
 
     const initialStats = scheduler.stats();
@@ -800,19 +820,24 @@ describe("Corner cases (no server required)", () => {
         start: async (_wfType: string, opts: Record<string, unknown>) => ({
           workflowId: (opts.workflowId as string) ?? "wf-watch",
         }),
+        signal: async () => {},
         cancel: async () => {},
         getResult: async () => undefined,
-        list: async () => [],
       },
       schedule: {
         create: async () => {},
         pause: async () => {},
         unpause: async () => {},
         delete: async () => {},
+        getHandle: () => ({ describe: async () => ({}) }),
       },
     };
 
-    const scheduler = createTemporalScheduler({ client, taskQueue: "watch-q" });
+    const scheduler = createTemporalScheduler({
+      client,
+      taskQueue: "watch-q",
+      workflowType: "agentWorkflow",
+    });
 
     const events: string[] = [];
     const unsubscribe = scheduler.watch((event: { readonly kind: string }) => {
@@ -839,17 +864,20 @@ describe("Corner cases (no server required)", () => {
       client: {
         workflow: {
           start: async () => ({ workflowId: "x" }),
+          signal: async () => {},
           cancel: async () => {},
-          list: async () => [],
+          getResult: async () => undefined,
         },
         schedule: {
           create: async () => {},
           pause: async () => {},
           unpause: async () => {},
           delete: async () => {},
+          getHandle: () => ({ describe: async () => ({}) }),
         },
       },
       taskQueue: "q",
+      workflowType: "agentWorkflow",
     });
 
     await expect(scheduler[Symbol.asyncDispose]()).resolves.toBeUndefined();

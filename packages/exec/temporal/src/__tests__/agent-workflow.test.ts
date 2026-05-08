@@ -225,8 +225,8 @@ describe("agent workflow module", () => {
       });
       expect(runAgentTurn).toHaveBeenCalledTimes(2);
       expect(runAgentTurn.mock.calls[1]?.[0]).toEqual({
-        agentId: "child-9",
-        sessionId: "session-9",
+        agentId: "child-9" as AgentTurnInput["agentId"],
+        sessionId: "session-9" as AgentTurnInput["sessionId"],
         message: {
           id: "worker-init:child-9",
           senderId: "parent-9",

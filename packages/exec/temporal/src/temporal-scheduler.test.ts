@@ -667,7 +667,9 @@ describe("schedule / unschedule", () => {
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn");
     const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
-    const opts = createArgs?.[1] as { action: { args: readonly [Record<string, unknown>] } };
+    const opts = createArgs?.[1] as {
+      action: { workflowId: string; args: readonly [Record<string, unknown>] };
+    };
     const wfConfig = opts.action.args[0];
     expect(wfConfig.sessionId).toBe(opts.action.workflowId);
   });

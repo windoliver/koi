@@ -1,12 +1,17 @@
 import { describe, expect, mock, test } from "bun:test";
+import type { AgentId } from "@koi/core";
+import type { ActivityDeps } from "../activities/agent-activity.js";
 import { createActivities } from "../activities/agent-activity.js";
 import { createActivities as createActivitiesFromIndex } from "../index.js";
 
 describe("createActivities", () => {
   test("collects text deltas and streams them to the gateway", async () => {
-    const sendGatewayFrame = mock(async () => {});
-    const getCreateKoiOptions = mock(async () => ({ manifest: {}, adapter: {} }));
-    const getOrCreate = mock(async () => ({
+    const sendGatewayFrame = mock<ActivityDeps["sendGatewayFrame"]>(async () => {});
+    const getCreateKoiOptions = mock<ActivityDeps["getCreateKoiOptions"]>(async () => ({
+      manifest: {},
+      adapter: {},
+    }));
+    const getOrCreate = mock<ActivityDeps["engineCache"]["getOrCreate"]>(async () => ({
       run: async function* () {
         yield { kind: "text_delta", delta: "Hello " };
         yield { kind: "text_delta", delta: "world" };
@@ -38,7 +43,7 @@ describe("createActivities", () => {
     expect(getOrCreate).toHaveBeenCalledTimes(1);
     expect(getCreateKoiOptions).toHaveBeenCalledTimes(1);
     expect(getCreateKoiOptions.mock.calls[0]?.[0]).toEqual({
-      agentId: "agent-1",
+      agentId: "agent-1" as AgentId,
       delegationId: undefined,
       nexusApiKey: undefined,
     });
@@ -90,7 +95,7 @@ describe("createActivities", () => {
     });
 
     expect(result.spawnChild).toEqual({
-      childAgentId: "child-1",
+      childAgentId: "child-1" as AgentId,
       childConfig: {
         stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
       },
@@ -135,7 +140,10 @@ describe("createActivities", () => {
     const previous = process.env.NEXUS_API_KEY;
     process.env.NEXUS_API_KEY = "outer-sentinel";
 
-    const getCreateKoiOptions = mock(async () => ({ manifest: {}, adapter: {} }));
+    const getCreateKoiOptions = mock<ActivityDeps["getCreateKoiOptions"]>(async () => ({
+      manifest: {},
+      adapter: {},
+    }));
     const { runAgentTurn } = createActivities({
       engineCache: {
         getOrCreate: async () => ({
@@ -166,7 +174,7 @@ describe("createActivities", () => {
 
       expect(process.env.NEXUS_API_KEY).toBe("outer-sentinel");
       expect(getCreateKoiOptions.mock.calls[0]?.[0]).toEqual({
-        agentId: "agent-1",
+        agentId: "agent-1" as AgentId,
         delegationId: undefined,
         nexusApiKey: "per-turn-secret",
       });
@@ -180,7 +188,7 @@ describe("createActivities", () => {
   });
 
   test("uses credential-aware cache keys for distinct per-turn identity scope", async () => {
-    const getOrCreate = mock(async () => ({
+    const getOrCreate = mock<ActivityDeps["engineCache"]["getOrCreate"]>(async () => ({
       run: async function* () {
         yield { kind: "done" };
       },
