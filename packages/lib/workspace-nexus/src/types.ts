@@ -1,5 +1,5 @@
-import type { WorkspaceBackend } from "../../../kernel/core/src/index.ts";
-import type { NexusTransport } from "../../../lib/nexus-client/src/index.ts";
+import type { WorkspaceBackend } from "@koi/core";
+import type { NexusTransport } from "@koi/nexus-client";
 
 export interface NexusWorkspaceBackendConfig {
   readonly transport: NexusTransport;

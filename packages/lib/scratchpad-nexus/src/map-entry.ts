@@ -1,10 +1,10 @@
 import {
   agentGroupId,
   agentId,
-  scratchpadPath,
   type ScratchpadEntry,
   type ScratchpadEntrySummary,
-} from "../../../kernel/core/src/index.js";
+  scratchpadPath,
+} from "@koi/core";
 import type { NexusScratchpadEntryRecord, NexusScratchpadListResponse } from "./types.js";
 
 export function mapEntry(record: NexusScratchpadEntryRecord): ScratchpadEntry {
@@ -16,7 +16,9 @@ export function mapEntry(record: NexusScratchpadEntryRecord): ScratchpadEntry {
   };
 }
 
-export function mapSummaries(response: NexusScratchpadListResponse): readonly ScratchpadEntrySummary[] {
+export function mapSummaries(
+  response: NexusScratchpadListResponse,
+): readonly ScratchpadEntrySummary[] {
   return response.entries.map((entry) => ({
     ...entry,
     path: scratchpadPath(entry.path),

@@ -7,10 +7,10 @@ import type {
   ScratchpadPath,
   ScratchpadWriteInput,
   ScratchpadWriteResult,
-} from "../../../kernel/core/src/index.js";
-import { scratchpadPath } from "../../../kernel/core/src/index.js";
-import { createNexusScratchpadClient } from "./client.js";
+} from "@koi/core";
+import { scratchpadPath } from "@koi/core";
 import { createChangeTracker } from "./change-tracker.js";
+import { createNexusScratchpadClient } from "./client.js";
 import { mapEntry, mapSummaries } from "./map-entry.js";
 import type { NexusScratchpadConfig } from "./types.js";
 
@@ -18,7 +18,9 @@ const DEFAULT_PREFIX = "scratchpad";
 const DEFAULT_PAGE_SIZE = 100;
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 
-export async function createNexusScratchpad(config: NexusScratchpadConfig): Promise<ScratchpadComponent> {
+export async function createNexusScratchpad(
+  config: NexusScratchpadConfig,
+): Promise<ScratchpadComponent> {
   const prefix = config.methodPrefix ?? DEFAULT_PREFIX;
   const groupId = config.groupId as string;
   const authorId = config.authorId as string;
@@ -75,7 +77,9 @@ export async function createNexusScratchpad(config: NexusScratchpadConfig): Prom
   }
 
   return {
-    write: async (input: ScratchpadWriteInput): Promise<Result<ScratchpadWriteResult, KoiError>> => {
+    write: async (
+      input: ScratchpadWriteInput,
+    ): Promise<Result<ScratchpadWriteResult, KoiError>> => {
       if (state.degraded && config.fallback !== undefined) {
         return await config.fallback.write(input);
       }

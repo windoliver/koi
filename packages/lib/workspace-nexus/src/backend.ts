@@ -6,7 +6,7 @@ import type {
   WorkspaceBackend,
   WorkspaceId,
   WorkspaceInfo,
-} from "../../../kernel/core/src/index.ts";
+} from "@koi/core";
 import { createNexusWorkspaceBackendClient } from "./client.js";
 import type { NexusWorkspaceBackendConfig, NexusWorkspaceRecord } from "./types.js";
 

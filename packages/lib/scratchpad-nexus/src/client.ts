@@ -1,10 +1,5 @@
-import type {
-  KoiError,
-  Result,
-  ScratchpadFilter,
-  ScratchpadWriteInput,
-} from "../../../kernel/core/src/index.js";
-import type { NexusTransport } from "../../../lib/nexus-client/src/index.js";
+import type { KoiError, Result, ScratchpadFilter, ScratchpadWriteInput } from "@koi/core";
+import type { NexusTransport } from "@koi/nexus-client";
 import type {
   NexusScratchpadListResponse,
   NexusScratchpadReadResponse,

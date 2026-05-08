@@ -1,12 +1,6 @@
-import type {
-  AgentId,
-  KoiError,
-  ResolvedWorkspaceConfig,
-  Result,
-  WorkspaceId,
-} from "../../../kernel/core/src/index.ts";
-import { internal } from "../../../kernel/core/src/index.ts";
-import type { NexusTransport } from "../../../lib/nexus-client/src/index.ts";
+import type { AgentId, KoiError, ResolvedWorkspaceConfig, Result, WorkspaceId } from "@koi/core";
+import { internal } from "@koi/core";
+import type { NexusTransport } from "@koi/nexus-client";
 import type {
   NexusWorkspaceCreateResponse,
   NexusWorkspaceExistsResponse,
@@ -22,9 +16,7 @@ export interface NexusWorkspaceBackendClient {
     config: ResolvedWorkspaceConfig,
   ) => Promise<Result<NexusWorkspaceCreateResponse, KoiError>>;
   readonly dispose: (wsId: WorkspaceId) => Promise<Result<void, KoiError>>;
-  readonly health: (
-    wsId: WorkspaceId,
-  ) => Promise<Result<NexusWorkspaceHealthResponse, KoiError>>;
+  readonly health: (wsId: WorkspaceId) => Promise<Result<NexusWorkspaceHealthResponse, KoiError>>;
   readonly findByAgentId: (
     agentId: AgentId,
   ) => Promise<Result<ReadonlyArray<NexusWorkspaceRecord>, KoiError>>;
@@ -34,9 +26,7 @@ export interface NexusWorkspaceBackendClient {
   readonly exists: (wsId: WorkspaceId) => Promise<Result<boolean, KoiError>>;
 }
 
-function normalizeWorkspaceList(
-  value: unknown,
-): ReadonlyArray<NexusWorkspaceRecord> | undefined {
+function normalizeWorkspaceList(value: unknown): ReadonlyArray<NexusWorkspaceRecord> | undefined {
   if (Array.isArray(value)) return value;
   if (typeof value === "object" && value !== null) {
     const workspaces = (value as { readonly workspaces?: unknown }).workspaces;
@@ -61,7 +51,10 @@ export function createNexusWorkspaceBackendClient(
   transport: NexusTransport,
   prefix: string,
 ): NexusWorkspaceBackendClient {
-  async function callVoid(method: string, params: Record<string, unknown>): Promise<Result<void, KoiError>> {
+  async function callVoid(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<Result<void, KoiError>> {
     const result = await transport.call<{ readonly ok: true }>(method, params);
     if (!result.ok) return result;
     return { ok: true, value: undefined };
@@ -85,7 +78,10 @@ export function createNexusWorkspaceBackendClient(
       if (workspaces === undefined) {
         return {
           ok: false,
-          error: internal(`Invalid workspace discovery payload for agent ${String(agentId)}`, result.value),
+          error: internal(
+            `Invalid workspace discovery payload for agent ${String(agentId)}`,
+            result.value,
+          ),
         };
       }
       return { ok: true, value: workspaces };
@@ -101,7 +97,10 @@ export function createNexusWorkspaceBackendClient(
       if (setupComplete === undefined) {
         return {
           ok: false,
-          error: internal(`Invalid setup-complete verification payload for workspace ${String(wsId)}`, result.value),
+          error: internal(
+            `Invalid setup-complete verification payload for workspace ${String(wsId)}`,
+            result.value,
+          ),
         };
       }
       return { ok: true, value: setupComplete };
@@ -118,7 +117,10 @@ export function createNexusWorkspaceBackendClient(
       if (exists === undefined) {
         return {
           ok: false,
-          error: internal(`Invalid workspace existence payload for workspace ${String(wsId)}`, result.value),
+          error: internal(
+            `Invalid workspace existence payload for workspace ${String(wsId)}`,
+            result.value,
+          ),
         };
       }
       return { ok: true, value: exists };

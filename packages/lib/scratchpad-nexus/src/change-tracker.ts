@@ -1,7 +1,9 @@
-import type { ScratchpadChangeEvent, ScratchpadEntrySummary } from "../../../kernel/core/src/index.js";
+import type { ScratchpadChangeEvent, ScratchpadEntrySummary } from "@koi/core";
 
 export interface ChangeTracker {
-  readonly nextEvents: (entries: readonly ScratchpadEntrySummary[]) => readonly ScratchpadChangeEvent[];
+  readonly nextEvents: (
+    entries: readonly ScratchpadEntrySummary[],
+  ) => readonly ScratchpadChangeEvent[];
   readonly clear: () => void;
 }
 

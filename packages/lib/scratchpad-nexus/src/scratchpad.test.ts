@@ -1,17 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type {
-  AgentGroupId,
-  AgentId,
   KoiError,
   Result,
   ScratchpadComponent,
   ScratchpadEntry,
   ScratchpadEntrySummary,
-  ScratchpadWriteInput,
   ScratchpadWriteResult,
-} from "../../../kernel/core/src/index.js";
-import { agentGroupId, agentId, scratchpadPath } from "../../../kernel/core/src/index.js";
-import type { NexusTransport } from "../../../lib/nexus-client/src/index.js";
+} from "@koi/core";
+import { agentGroupId, agentId, scratchpadPath } from "@koi/core";
+import type { NexusTransport } from "@koi/nexus-client";
 
 function createHealthyTransport(call: NexusTransport["call"]): NexusTransport {
   return {

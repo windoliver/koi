@@ -4,8 +4,8 @@ import type {
   ScratchpadComponent,
   ScratchpadEntry,
   ScratchpadEntrySummary,
-} from "../../../kernel/core/src/index.js";
-import type { NexusTransport } from "../../../lib/nexus-client/src/index.js";
+} from "@koi/core";
+import type { NexusTransport } from "@koi/nexus-client";
 
 export interface NexusScratchpadConfig {
   readonly groupId: AgentGroupId;

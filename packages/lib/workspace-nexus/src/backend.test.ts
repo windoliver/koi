@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { KoiError, Result, WorkspaceBackend } from "../../../kernel/core/src/index.ts";
-import type { AgentId, WorkspaceId } from "../../../kernel/core/src/index.ts";
-import type { NexusTransport } from "../../../lib/nexus-client/src/index.ts";
+import type { AgentId, KoiError, Result, WorkspaceBackend, WorkspaceId } from "@koi/core";
+import type { NexusTransport } from "@koi/nexus-client";
 
 function createHealthyTransport(call: NexusTransport["call"]): NexusTransport {
   return {
@@ -66,7 +65,10 @@ describe("createNexusWorkspaceBackend", () => {
         if (method === "workspace.health") {
           return { ok: true, value: { healthy: true } as T };
         }
-        return { ok: false, error: { code: "EXTERNAL", message: `unexpected ${method}`, retryable: false } };
+        return {
+          ok: false,
+          error: { code: "EXTERNAL", message: `unexpected ${method}`, retryable: false },
+        };
       }),
     });
 
@@ -162,53 +164,55 @@ describe("createNexusWorkspaceBackend", () => {
 
     const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
     const backend = await createNexusWorkspaceBackend({
-      transport: createHealthyTransport(async <T>(
-        method: string,
-        params: Record<string, unknown>,
-      ): Promise<Result<T, KoiError>> => {
-        calls.push({ method, params });
-        if (method === "workspace.findByAgentId") {
+      transport: createHealthyTransport(
+        async <T>(
+          method: string,
+          params: Record<string, unknown>,
+        ): Promise<Result<T, KoiError>> => {
+          calls.push({ method, params });
+          if (method === "workspace.findByAgentId") {
+            return {
+              ok: true,
+              value: {
+                workspaces: [
+                  {
+                    id: "ws-1",
+                    path: "/tmp/ws-1",
+                    createdAt: 1,
+                    metadata: { source: "nexus" },
+                  },
+                  {
+                    id: "ws-2",
+                    path: "/tmp/ws-2",
+                    createdAt: 2,
+                    metadata: {},
+                  },
+                ],
+              } as T,
+            };
+          }
+          if (method === "workspace.attestSetupComplete") {
+            return { ok: true, value: { ok: true } as T };
+          }
+          if (method === "workspace.verifySetupComplete") {
+            return { ok: true, value: { setupComplete: true } as T };
+          }
+          if (method === "workspace.invalidateSetupComplete") {
+            return { ok: true, value: { ok: true } as T };
+          }
+          if (method === "workspace.exists") {
+            return { ok: true, value: { exists: false } as T };
+          }
           return {
-            ok: true,
-            value: {
-              workspaces: [
-                {
-                  id: "ws-1",
-                  path: "/tmp/ws-1",
-                  createdAt: 1,
-                  metadata: { source: "nexus" },
-                },
-                {
-                  id: "ws-2",
-                  path: "/tmp/ws-2",
-                  createdAt: 2,
-                  metadata: {},
-                },
-              ],
-            } as T,
+            ok: false,
+            error: {
+              code: "EXTERNAL",
+              message: `unexpected ${method}`,
+              retryable: false,
+            },
           };
-        }
-        if (method === "workspace.attestSetupComplete") {
-          return { ok: true, value: { ok: true } as T };
-        }
-        if (method === "workspace.verifySetupComplete") {
-          return { ok: true, value: { setupComplete: true } as T };
-        }
-        if (method === "workspace.invalidateSetupComplete") {
-          return { ok: true, value: { ok: true } as T };
-        }
-        if (method === "workspace.exists") {
-          return { ok: true, value: { exists: false } as T };
-        }
-        return {
-          ok: false,
-          error: {
-            code: "EXTERNAL",
-            message: `unexpected ${method}`,
-            retryable: false,
-          },
-        };
-      }),
+        },
+      ),
     });
 
     const found = await backend.findByAgentId?.(agentId("agent-a"));
@@ -302,11 +306,12 @@ describe("createNexusWorkspaceBackend", () => {
         }
         return {
           ok: true,
-          value: method === "workspace.exists"
-            ? ({ exists: false } as T)
-            : (method === "workspace.verifySetupComplete"
-              ? ({ setupComplete: false } as T)
-              : ({ ok: true } as T)),
+          value:
+            method === "workspace.exists"
+              ? ({ exists: false } as T)
+              : method === "workspace.verifySetupComplete"
+                ? ({ setupComplete: false } as T)
+                : ({ ok: true } as T),
         };
       }),
     });
