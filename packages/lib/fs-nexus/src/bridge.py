@@ -677,12 +677,19 @@ async def dispatch(fs, method, params):
         return {"created": True}
 
     if method == "list_mounts":
-        # Use _call_first so wrapped backends that only expose list_mounts on
-        # `fs.backend` / `fs._backend` / `fs.facade` are still discovered. The
-        # mutation RPCs (add/remove) already do this; list_mounts must too,
-        # otherwise /mounts and add_mount path discovery degrade silently.
-        mounts = await _call_first(_mount_targets(fs), ("list_mounts",))
-        return {"mounts": mounts}
+        # Trust-boundary enforcement: list_mounts is exposed via JSON-RPC and
+        # any scoped client could otherwise enumerate sibling/tenant mounts
+        # by reading the raw inner backend. Use _list_mounts_scoped which
+        # calls fs.list_mounts() ONLY (never walks to inner backends). If
+        # the scoped wrapper does not expose list_mounts, fail closed — we
+        # cannot prove the result respects scope.
+        scoped_live = await _list_mounts_scoped(fs)
+        if scoped_live is None:
+            raise ValueError(
+                "list_mounts refused: scoped filesystem does not expose list_mounts; "
+                "cannot return a scope-respecting mount list"
+            )
+        return {"mounts": list(scoped_live)}
 
     if method == "describe_mount":
         mount_path = params.get("path")
@@ -722,8 +729,12 @@ async def dispatch(fs, method, params):
         # resulting path when `at` was not specified. If list_mounts fails
         # before mutation, fall back to an empty snapshot — the actual
         # mutation can still proceed and we'll handle missing diff below.
+        # Use scope-aware listing for the pre-mutation snapshot so the
+        # diff that resolves the committed path stays inside the scope
+        # boundary (and matches what the runtime guard sees).
         try:
-            before = set(await _call_first(_mount_targets(fs), ("list_mounts",)))
+            before_listed = await _list_mounts_scoped(fs)
+            before = set(before_listed) if before_listed is not None else set()
         except Exception:
             before = set()
         targets = _mount_targets(fs)
@@ -750,7 +761,8 @@ async def dispatch(fs, method, params):
         # middleware's strict path allowlist might drop the entry entirely.
         resolved_path: str | None = None
         try:
-            after = list(await _call_first(_mount_targets(fs), ("list_mounts",)))
+            after_listed = await _list_mounts_scoped(fs)
+            after = list(after_listed) if after_listed is not None else []
             new_mounts = [mount for mount in after if mount not in before]
             if len(new_mounts) == 1:
                 resolved_path = new_mounts[0]

@@ -279,6 +279,16 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
       if (mountPoint.includes("..")) {
         throw new Error("mountPoint must not contain '..'");
       }
+      // Slash-only values (e.g. "/", "///") would normalize to "" via the
+      // strip-leading/trailing-slash step below and silently become the
+      // namespace-root opt-in. That is a config-typo path into Nexus-root
+      // routing — operators must opt in by passing the literal "" only.
+      // Reject slash-only mountPoint explicitly here.
+      if (/^\/+$/.test(mountPoint)) {
+        throw new Error(
+          "mountPoint must not be slash-only (e.g. '/', '///'); pass an explicit \"\" to opt into namespace-root semantics or a non-empty path.",
+        );
+      }
     }
   }
 
