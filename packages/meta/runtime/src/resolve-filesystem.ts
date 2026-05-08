@@ -550,11 +550,43 @@ export async function resolveFileSystemAsync(
         : scope !== undefined
           ? createScopedFileSystem(nexusWrapped, scope)
           : nexusWrapped;
+    // Wrap the transport so any caller of removeMount (TUI handler, future
+    // tools, programmatic use) is structurally prevented from unmounting the
+    // backend's active root. The backend root is fixed at construction time
+    // and unmounting it would strand the session — defense-in-depth beyond
+    // the TUI-level guard.
+    const guardedTransport: import("@koi/fs-nexus").NexusTransport =
+      ((): import("@koi/fs-nexus").NexusTransport => {
+        if (inferredMountPoint === undefined || transport.removeMount === undefined) {
+          return transport;
+        }
+        const innerRemove = transport.removeMount;
+        const activeRoot = inferredMountPoint;
+        return {
+          ...transport,
+          removeMount: async (path) => {
+            if (path === activeRoot) {
+              return {
+                ok: false,
+                error: {
+                  code: "VALIDATION",
+                  message: `Cannot unmount ${path}: it is the active backend root for this session and removing it would strand the filesystem on a dead mount.`,
+                  retryable: RETRYABLE_DEFAULTS.VALIDATION,
+                },
+              };
+            }
+            return innerRemove(path);
+          },
+          get mounts(): readonly string[] {
+            return transport.mounts ?? [];
+          },
+        };
+      })();
     return {
       backend,
       operations,
       mountDescriptions: seedManifestMountDescriptions(transport),
-      transport,
+      transport: guardedTransport,
       runtimeMountMutationsSupported: mutationsSupported,
       backendActiveRoot: inferredMountPoint,
     };

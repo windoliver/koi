@@ -705,11 +705,17 @@ async def dispatch(fs, method, params):
             except Exception:
                 resolved_path = None
         if resolved_path is None:
-            # Best-effort fallback: derive a connector hint from the URI scheme
-            # so callers still get a stable success payload. The mount IS live
-            # in the bridge; the path discovery just failed.
+            # Mutation IS committed but the bridge cannot determine the new
+            # path. Returning the source URI as `path` would let callers treat
+            # it as canonical and call /unmount on a non-path. Surface the
+            # partial state explicitly so callers can prompt the user to run
+            # list_mounts and recover.
             scheme = uri.split("://", 1)[0] if "://" in uri else "unknown"
-            return {"path": uri, "connector": scheme}
+            return {
+                "path": "",
+                "connector": scheme,
+                "pathUnknown": True,
+            }
         try:
             return await _describe_mount(fs, resolved_path)
         except Exception:

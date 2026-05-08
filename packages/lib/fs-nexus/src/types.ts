@@ -21,6 +21,15 @@ export interface MountDescription {
   readonly connector: string;
   readonly description?: string | undefined;
   readonly readme?: string | undefined;
+  /**
+   * Set to `true` only by add_mount when the mutation committed but the bridge
+   * could not determine the resulting mount path (e.g. list_mounts diff was
+   * empty or ambiguous after the mutation). When this flag is set, `path` is
+   * empty and callers MUST NOT treat it as canonical — surface the partial
+   * state and prompt a refresh via list_mounts. Never persist or echo the
+   * empty path back as a mount identifier.
+   */
+  readonly pathUnknown?: boolean | undefined;
 }
 
 export interface NexusFileSystemConfig {
@@ -144,9 +153,7 @@ export interface NexusTransport {
   /** Mount points discovered during startup (local transport only). */
   readonly mounts?: readonly string[] | undefined;
   /** Describe a mount path, including connector metadata when available. */
-  readonly describeMount?: (
-    path: string,
-  ) => Promise<Result<MountDescription, KoiError>>;
+  readonly describeMount?: (path: string) => Promise<Result<MountDescription, KoiError>>;
   /** Add a mount dynamically at runtime when supported by the backend. */
   readonly addMount?: (
     uri: string,

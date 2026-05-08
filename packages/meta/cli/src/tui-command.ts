@@ -6259,6 +6259,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               return;
             }
+            // pathUnknown: bridge committed the mount but couldn't isolate the
+            // resulting path. Don't treat the empty path as canonical (would
+            // make /unmount and state tracking incorrect); surface partial
+            // state and prompt the operator to refresh via /mounts.
+            if (result.value.pathUnknown === true || result.value.path === "") {
+              dispatchNotice(
+                store,
+                "mount-info",
+                `[Mounted ${parsed.value.uri} but path discovery failed; run /mounts to refresh]`,
+              );
+              return;
+            }
             mountDescriptionsState.addRuntime(result.value);
             dispatchNotice(
               store,
