@@ -1,12 +1,88 @@
 /**
- * Pure promotion-gate evaluation for ACE proposal/evaluation pairs.
+ * Pure promotion-gate evaluation and structured playbook operation application.
  */
 
 import type {
+  PlaybookBullet,
   PlaybookEvaluation,
   PlaybookProposal,
+  PlaybookSection,
+  StructuredPlaybook,
   PromotionThresholds,
 } from "@koi/ace-types";
+
+function slugifySectionName(section: string): string {
+  const slug = section
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug.length > 0 ? slug : "section";
+}
+
+function normalizeSectionKey(sectionName: string): string {
+  return slugifySectionName(sectionName);
+}
+
+function nextBulletId(playbook: StructuredPlaybook): string {
+  let maxId = 0;
+  for (const section of playbook.sections) {
+    for (const bullet of section.bullets) {
+      const match = /^str-(\d+)$/.exec(bullet.id);
+      if (match === null) continue;
+      const parsed = Number(match[1]);
+      if (Number.isFinite(parsed) && parsed > maxId) {
+        maxId = parsed;
+      }
+    }
+  }
+  return `str-${String(maxId + 1).padStart(5, "0")}`;
+}
+
+function findSection(playbook: StructuredPlaybook, sectionName: string): PlaybookSection | undefined {
+  const normalized = normalizeSectionKey(sectionName);
+  return playbook.sections.find(
+    (section) => normalizeSectionKey(section.name) === normalized,
+  );
+}
+
+function ensureSection(playbook: StructuredPlaybook, sectionName: string): PlaybookSection {
+  const found = findSection(playbook, sectionName);
+  if (found !== undefined) return found;
+
+  const created: PlaybookSection = {
+    name: sectionName,
+    slug: slugifySectionName(sectionName),
+    bullets: [],
+  };
+  (playbook.sections as PlaybookSection[]).push(created);
+  return created;
+}
+
+function findBulletLocation(
+  playbook: StructuredPlaybook,
+  bulletId: string,
+): { readonly sectionIndex: number; readonly bulletIndex: number } | undefined {
+  for (let sectionIndex = 0; sectionIndex < playbook.sections.length; sectionIndex++) {
+    const section = playbook.sections[sectionIndex];
+    if (section === undefined) continue;
+    const bulletIndex = section.bullets.findIndex((bullet) => bullet.id === bulletId);
+    if (bulletIndex !== -1) {
+      return { sectionIndex, bulletIndex };
+    }
+  }
+  return undefined;
+}
+
+function removeBulletAt(
+  playbook: StructuredPlaybook,
+  sectionIndex: number,
+  bulletIndex: number,
+): void {
+  const section = playbook.sections[sectionIndex];
+  if (section === undefined) return;
+  (section.bullets as PlaybookBullet[]).splice(bulletIndex, 1);
+}
 
 function assertNonEmptyId(value: string, label: string): void {
   if (value.trim().length === 0) {
@@ -42,6 +118,77 @@ function areValidThresholds(thresholds: PromotionThresholds): boolean {
     return false;
   }
   return true;
+}
+
+export function applyProposalOperations(
+  playbook: StructuredPlaybook,
+  proposal: PlaybookProposal,
+  now: number,
+): StructuredPlaybook {
+  const next = structuredClone(playbook) as StructuredPlaybook;
+
+  for (const operation of proposal.operations) {
+    switch (operation.kind) {
+      case "add": {
+        const section = ensureSection(next, operation.section);
+        const bullet: PlaybookBullet = {
+          id: nextBulletId(next),
+          content: operation.content,
+          helpful: 0,
+          harmful: 0,
+          createdAt: now,
+          updatedAt: now,
+        };
+        (section.bullets as PlaybookBullet[]).push(bullet);
+        break;
+      }
+      case "merge": {
+        if (operation.bulletIds[0] === operation.bulletIds[1]) {
+          throw new Error("merge operation cannot target the same bullet twice");
+        }
+
+        const first = findBulletLocation(next, operation.bulletIds[0]);
+        const second = findBulletLocation(next, operation.bulletIds[1]);
+        if (first === undefined || second === undefined) {
+          throw new Error(
+            `merge operation missing bullet ${first === undefined ? operation.bulletIds[0] : operation.bulletIds[1]}`,
+          );
+        }
+
+        const firstSection = next.sections[first.sectionIndex];
+        const secondSection = next.sections[second.sectionIndex];
+        if (firstSection === undefined || secondSection === undefined) {
+          throw new Error("merge operation missing bullet");
+        }
+
+        const firstBullet = firstSection.bullets[first.bulletIndex];
+        const secondBullet = secondSection.bullets[second.bulletIndex];
+        if (firstBullet === undefined || secondBullet === undefined) {
+          throw new Error("merge operation missing bullet");
+        }
+
+        (firstSection.bullets as PlaybookBullet[])[first.bulletIndex] = {
+          ...firstBullet,
+          content: operation.content,
+          helpful: firstBullet.helpful + secondBullet.helpful,
+          harmful: firstBullet.harmful + secondBullet.harmful,
+          updatedAt: now,
+        };
+        removeBulletAt(next, second.sectionIndex, second.bulletIndex);
+        break;
+      }
+      case "prune": {
+        const location = findBulletLocation(next, operation.bulletId);
+        if (location === undefined) {
+          throw new Error(`prune operation missing bullet ${operation.bulletId}`);
+        }
+        removeBulletAt(next, location.sectionIndex, location.bulletIndex);
+        break;
+      }
+    }
+  }
+
+  return next;
 }
 
 export async function evaluatePromotion(

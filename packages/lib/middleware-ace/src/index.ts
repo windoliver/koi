@@ -22,4 +22,4 @@ export {
   aggregateTrajectoryStats,
   curateTrajectorySummary,
 } from "./stats-aggregator.js";
-export { evaluatePromotion } from "./promotion-gate.js";
+export { applyProposalOperations, evaluatePromotion } from "./promotion-gate.js";
