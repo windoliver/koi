@@ -138,9 +138,9 @@ export function bridgeToExecutor(
       | { readonly ok: false; readonly error: SandboxError }
     > {
       // Reject ExecutionContext fields the IPC adapter does not yet plumb
-      // through end-to-end. The adapter wraps `code` as a function body via
-      // `new Function`, so module-style entries and workspace-rooted execution
-      // are not supported. Failing fast is safer than silently dropping them.
+      // through end-to-end. The adapter wraps `code` as an async function
+      // body, so module-style entries and workspace-rooted execution are not
+      // supported. Failing fast is safer than silently dropping them.
       if (context?.entryPath !== undefined || context?.workspacePath !== undefined) {
         return {
           ok: false,
@@ -149,6 +149,23 @@ export function bridgeToExecutor(
             message:
               "sandbox-ipc bridgeToExecutor does not support ExecutionContext.entryPath or " +
               "ExecutionContext.workspacePath. Use @koi/sandbox-executor for module-source execution.",
+            durationMs: 0,
+          },
+        };
+      }
+
+      // Reject module-style source up front. The adapter runs `code` via an
+      // AsyncFunction body, which cannot accept top-level `import` or
+      // `export` statements. Failing here gives the caller a clear pointer
+      // to the right executor instead of an opaque worker CRASH.
+      if (/^\s*(?:export\s|import\s)/m.test(code)) {
+        return {
+          ok: false,
+          error: {
+            code: "CRASH",
+            message:
+              "sandbox-ipc bridgeToExecutor expects an async function body, not module source. " +
+              "Detected top-level `import`/`export`. Use @koi/sandbox-executor for module execution.",
             durationMs: 0,
           },
         };

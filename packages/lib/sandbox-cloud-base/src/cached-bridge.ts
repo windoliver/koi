@@ -166,11 +166,23 @@ export function createCachedBridge<
     return acquired.lease;
   }
 
+  function refreshExpiry(target: Slot<TLease>): void {
+    if (target.pendingDispose) {
+      return;
+    }
+    target.expiresAt = Date.now() + Math.max(0, config.ttlMs);
+  }
+
   async function execute(input: TInput): Promise<TOutput> {
     const acquired = await acquireSlot();
     acquired.activeCount += 1;
     try {
-      return await acquired.lease.execute(input);
+      const value = await acquired.lease.execute(input);
+      // Idle-TTL semantics: refresh the expiry on each successful use so
+      // hot bridges aren't recycled mid-traffic. TTL applies only to
+      // inactivity, not absolute lifetime.
+      refreshExpiry(acquired);
+      return value;
     } finally {
       acquired.activeCount -= 1;
       notifyDrained(acquired);

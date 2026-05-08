@@ -148,8 +148,11 @@ process.on("message", async (raw) => {
   }, message.timeoutMs);
 
   try {
-    const fn = new Function("input", message.code);
-    const output = await Promise.resolve(fn(message.input));
+    // Use AsyncFunction so user code can use \`await\` directly without an
+    // explicit \`(async () => { ... })()\` wrapper.
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    const fn = new AsyncFunction("input", message.code);
+    const output = await fn(message.input);
 
     if (settled) {
       return;

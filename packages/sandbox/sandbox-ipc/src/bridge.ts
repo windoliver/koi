@@ -378,9 +378,14 @@ export async function createSandboxBridge(
     const builtCommand = config.buildCommand(executionProfile, "bun", ["run", workerPath]);
 
     if (!builtCommand.ok) {
+      // Preserve permission/policy denials surfaced by the command builder so
+      // the adapter can map them to a non-retryable PERMISSION result instead
+      // of a generic CRASH. Other error codes still flow as SPAWN_FAILED.
+      const cause = builtCommand.error;
+      const ipcCode: IpcErrorCode = cause.code === "PERMISSION" ? "PERMISSION" : "SPAWN_FAILED";
       return {
         ok: false,
-        error: createIpcError("SPAWN_FAILED", builtCommand.error.message),
+        error: createIpcError(ipcCode, cause.message),
       };
     }
 
