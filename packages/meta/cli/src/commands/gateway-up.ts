@@ -34,9 +34,9 @@ export async function run(flags: GatewayUpFlags): Promise<ExitCodeValue> {
     const started = await launcher.start({
       port: flags.port ?? DEFAULT_PORT,
       hostname: "127.0.0.1",
-      nexusUrl: flags.nexusUrl,
-      nexusApiKey: flags.nexusApiKey,
-      instanceId: flags.instanceId,
+      ...(flags.nexusUrl !== undefined ? { nexusUrl: flags.nexusUrl } : {}),
+      ...(flags.nexusApiKey !== undefined ? { nexusApiKey: flags.nexusApiKey } : {}),
+      ...(flags.instanceId !== undefined ? { instanceId: flags.instanceId } : {}),
     });
 
     writeStarted(flags, started.started);
