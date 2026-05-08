@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { DashboardApp } from "../app.js";
+import { DashboardView, loadDashboardSnapshot, type DashboardClient } from "../app.js";
 import { EmptyState } from "../components/empty-state.js";
 import { ErrorState } from "../components/error-state.js";
 import { LoadingState } from "../components/loading-state.js";
@@ -9,18 +9,75 @@ import { SessionDetail } from "../components/session-detail.js";
 import { TraceViewer } from "../components/trace-viewer.js";
 import { demoDashboardData } from "../lib/demo-data.js";
 import { formatDuration, formatRelativeMinutes, formatTimestamp } from "../lib/format.js";
-import { createDashboardViewModel } from "../lib/state.js";
+import { applyDashboardEvent, createDashboardViewModel, createEmptyDashboardViewModel } from "../lib/state.js";
+
+function createFakeDashboardClient(): DashboardClient {
+  return {
+    listAgents: async () => ({
+      ok: true,
+      value: [
+        {
+          agentId: "agent-orchid" as never,
+          name: "Orchid",
+          state: "running",
+          agentType: "copilot",
+          model: "gpt-5.4",
+          channels: ["local"],
+          turns: 12,
+          tokenCount: 148_000,
+          startedAt: Date.parse("2026-05-07T21:30:00.000Z"),
+          lastActivityAt: Date.parse("2026-05-07T22:14:42.000Z"),
+          childCount: 0,
+        },
+      ],
+    }),
+    getAgent: async () => ({ ok: true, value: undefined }),
+    listSessions: async () => ({
+      ok: true,
+      value: [
+        {
+          sessionId: "session-orchid-2" as never,
+          agentId: "agent-orchid" as never,
+          status: "active",
+          turns: 8,
+          inputTokens: 1024,
+          outputTokens: 256,
+          costUsd: 1.25,
+          startedAt: Date.parse("2026-05-07T21:56:00.000Z"),
+        },
+      ],
+    }),
+    getMetrics: async () => ({
+      ok: true,
+      value: [
+        {
+          name: "token_usage",
+          value: 148000,
+          timestampMs: Date.parse("2026-05-07T22:14:40.000Z"),
+          tags: { sessionId: "session-orchid-2" },
+        },
+      ],
+    }),
+    getTrace: async () => ({ ok: true, value: undefined }),
+    subscribe: () => () => undefined,
+  };
+}
 
 describe("DashboardApp", () => {
-  test("renders the demo-driven MVP shell", () => {
-    const markup = renderToStaticMarkup(<DashboardApp />);
+  test("loads snapshot data from the injected client and renders it", async () => {
+    const snapshot = await loadDashboardSnapshot(createFakeDashboardClient(), {
+      nowMs: Date.parse("2026-05-07T22:15:00.000Z"),
+    });
+    const state = createDashboardViewModel(snapshot);
+    const markup = renderToStaticMarkup(<DashboardView state={state} dispatch={() => undefined} />);
 
     expect(markup).toContain("Koi Dashboard");
     expect(markup).toContain("Agents");
     expect(markup).toContain("Session detail");
     expect(markup).toContain("Trace");
-    expect(markup).toContain("Automation guardrail review");
-    expect(markup).toContain("Token usage");
+    expect(markup).toContain("Orchid");
+    expect(markup).toContain("session-orchid-2");
+    expect(markup).toContain("Token Usage");
   });
 
   test("renders local empty, error, and loading states", () => {
@@ -79,5 +136,32 @@ describe("DashboardApp", () => {
 
     expect(markup).toContain("Dashboard shell smoke pass");
     expect(markup).toContain("Automation guardrail review");
+  });
+
+  test("applies a live metric event and updates the rendered UI", async () => {
+    const snapshot = await loadDashboardSnapshot(createFakeDashboardClient(), {
+      nowMs: Date.parse("2026-05-07T22:15:00.000Z"),
+    });
+    const hydratedState = applyDashboardEvent(createEmptyDashboardViewModel(), {
+      type: "snapshot.loaded",
+      snapshot,
+    });
+    const updatedState = applyDashboardEvent(hydratedState, {
+      type: "metric.received",
+      points: [
+        {
+          name: "latency_ms",
+          value: 1200,
+          timestampMs: Date.parse("2026-05-07T22:16:00.000Z"),
+          tags: { sessionId: "session-orchid-2" },
+        },
+      ],
+    });
+    const markup = renderToStaticMarkup(
+      <DashboardView state={updatedState} dispatch={() => undefined} />,
+    );
+
+    expect(markup).toContain("Latency Ms");
+    expect(markup).toContain("1,200");
   });
 });
