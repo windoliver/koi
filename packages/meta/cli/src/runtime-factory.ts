@@ -3697,8 +3697,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
 
     // --- Feedback-loop middleware (opt-in via config.feedbackLoop) ---
     // Model-response validation + tool-health tracking. No shutdown resources.
+    // Capture the handle so we can thread its healthHandle into the shared
+    // auto-harness runtime — without it, forge-demand's
+    // performance_degradation trigger stays dormant and a whole class of
+    // failures never reaches synthesizeHarness.
+    let feedbackLoopHandle: ReturnType<typeof createFeedbackLoopMiddleware> | undefined;
     if (config.feedbackLoop !== undefined) {
-      auditPresetExtras.push(createFeedbackLoopMiddleware(config.feedbackLoop));
+      feedbackLoopHandle = createFeedbackLoopMiddleware(config.feedbackLoop);
+      auditPresetExtras.push(feedbackLoopHandle);
     }
 
     // --- Pre-build shared GovernanceController so it is shared between:
@@ -4041,6 +4047,19 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           })
         : undefined;
 
+    // When forgeDemand is supplied without an explicit healthTracker, fall
+    // back to the host's own feedback-loop healthHandle so the
+    // performance_degradation trigger fires under live latency spikes.
+    // Without this, the shared runtime's auto-wire path cannot see the
+    // host's feedback-loop (it runs in a separate createRuntime instance).
+    const sharedForgeDemand =
+      config.forgeDemand !== undefined
+        ? feedbackLoopHandle?.healthHandle !== undefined &&
+          (config.forgeDemand as { readonly healthTracker?: unknown }).healthTracker === undefined
+          ? { ...config.forgeDemand, healthTracker: feedbackLoopHandle.healthHandle }
+          : config.forgeDemand
+        : undefined;
+
     sharedRuntimeHandle =
       config.autoHarness !== undefined
         ? createRuntime({
@@ -4049,7 +4068,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             // Threading forgeDemand here is what wires the runtime's
             // onDemand→synthesizeHarness path. Without it, the auto-harness
             // handle is exposed but demand signals never drive the pipeline.
-            ...(config.forgeDemand !== undefined ? { forgeDemand: config.forgeDemand } : {}),
+            ...(sharedForgeDemand !== undefined ? { forgeDemand: sharedForgeDemand } : {}),
           })
         : undefined;
     // When auto-harness is configured the stack-owned policy-cache is the
@@ -4124,6 +4143,23 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     enforceRequiredMiddleware(allMiddleware, {
       terminalCapable: config.terminalCapable ?? true,
     });
+    // Full-chain policy-cache uniqueness invariant. We've already dropped
+    // caller-supplied `policy-cache` from preset/extra middleware, but
+    // manifestMiddleware composes through a separate slot that the
+    // dropCallerPolicyCache filter doesn't see. If a manifest plugin
+    // contributed its own `policy-cache`, the live chain would split
+    // dispatch from auto-harness register() and silently mask promoted
+    // policies. Refuse to boot.
+    if (sharedRuntimeHandle?.autoHarness !== undefined) {
+      const policyCacheMws = allMiddleware.filter((mw) => mw.name === "policy-cache");
+      if (policyCacheMws.length > 1) {
+        throw new Error(
+          "auto-harness requires exactly one policy-cache middleware in the live chain; " +
+            `found ${policyCacheMws.length} (likely a manifest plugin contributed a duplicate). ` +
+            "Remove the duplicate or disable autoHarness.",
+        );
+      }
+    }
     // Wrap every middleware with the trace wrapper when the observability
     // stack is active (provides `trajectoryStore`). When the stack is
     // disabled via `config.stacks` (e.g. a CI runner opting for a

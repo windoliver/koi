@@ -537,20 +537,13 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                   sessionId: sessionContext.sessionId,
                   scoped,
                 });
-                // Defense-in-depth LRU cap: hosts that don't call
-                // resetSession on session end (long-lived per-stream
-                // sessionId runtimes) would otherwise grow this map
-                // unboundedly and slow each demand lookup. The cap is
-                // generous; CLI hosts call resetSession explicitly via
-                // the cycleSession path and rarely hit it.
-                const MAX_SESSION_ENTRIES = 256;
-                if (autoHarnessSessionEntries.size > MAX_SESSION_ENTRIES) {
-                  const oldestKey = autoHarnessSessionEntries.keys().next().value;
-                  if (oldestKey !== undefined) {
-                    autoHarnessSessionEntries.delete(oldestKey);
-                    autoHarnessStack?.resetSession(oldestKey);
-                  }
-                }
+                // Hosts MUST call `runtime.autoHarness.resetSession(id)` on
+                // session end. We deliberately do not evict by insertion
+                // order — that would discard live sessions and silently
+                // collapse per-session isolation back to the global bucket.
+                // Long-lived per-stream-sessionId hosts that ignore this
+                // contract will leak entries; that is a host bug to surface
+                // via observability, not a runtime workaround.
                 // Preserve caller callback's return value: forge-demand
                 // treats a returned Promise as load-bearing — async
                 // rejection keeps the session unready and triggers retry on
