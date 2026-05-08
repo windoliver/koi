@@ -93,6 +93,7 @@ test("public api surface includes temporal signal/query exports", () => {
     message: messageSignalPayload,
     stateRefs: stateQueryResult,
     gatewayUrl: undefined,
+    turnId: "session-1:0",
     maxStopRetries: 3,
     nexusApiKey: "api-key",
     delegationId: "delegation-1",

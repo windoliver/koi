@@ -28,6 +28,12 @@ export interface AgentTurnInput {
   readonly message: IncomingMessage;
   readonly stateRefs: AgentStateRefs;
   readonly gatewayUrl: string | undefined;
+  /**
+   * Stable turn identifier minted by the workflow. Survives Temporal activity
+   * retries so streamed gateway frames (turnId + frameIndex) form a usable
+   * idempotency key for downstream dedupe.
+   */
+  readonly turnId: string;
   readonly maxStopRetries?: number | undefined;
   readonly nexusApiKey?: string | undefined;
   readonly delegationId?: string | undefined;

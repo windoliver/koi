@@ -37,6 +37,7 @@ describe("createActivities", () => {
       message: { id: "m1", senderId: "u1", content: [], timestamp: Date.now() },
       stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
       gatewayUrl: "ws://gateway",
+      turnId: "test-turn",
     });
 
     expect(createEngineInput).toHaveBeenCalledTimes(1);
@@ -48,20 +49,26 @@ describe("createActivities", () => {
       nexusApiKey: undefined,
     });
     expect(sendGatewayFrame).toHaveBeenCalledTimes(2);
-    expect(sendGatewayFrame.mock.calls[0]).toEqual([
-      "agent-1",
-      { kind: "agent:text_delta", delta: "Hello ", sessionId: "session-1" },
-    ]);
-    expect(sendGatewayFrame.mock.calls[1]).toEqual([
-      "agent-1",
-      { kind: "agent:text_delta", delta: "world", sessionId: "session-1" },
-    ]);
+    expect(sendGatewayFrame.mock.calls[0]?.[0]).toBe("agent-1");
+    expect(sendGatewayFrame.mock.calls[0]?.[1]).toMatchObject({
+      kind: "agent:text_delta",
+      delta: "Hello ",
+      sessionId: "session-1",
+      frameIndex: 0,
+    });
+    expect(sendGatewayFrame.mock.calls[1]?.[0]).toBe("agent-1");
+    expect(sendGatewayFrame.mock.calls[1]?.[1]).toMatchObject({
+      kind: "agent:text_delta",
+      delta: "world",
+      sessionId: "session-1",
+      frameIndex: 1,
+    });
     expect(result.blocks).toEqual([
       { kind: "text", text: "Hello " },
       { kind: "text", text: "world" },
     ]);
     expect(result.updatedStateRefs.turnsProcessed).toBe(1);
-    expect(result.updatedStateRefs.lastTurnId).toContain("turn:");
+    expect(result.updatedStateRefs.lastTurnId).toBe("test-turn");
   });
 
   test("captures spawn_requested and returns spawnChild", async () => {
@@ -92,6 +99,7 @@ describe("createActivities", () => {
       message: { id: "m1", senderId: "u1", content: [], timestamp: Date.now() },
       stateRefs: { lastTurnId: undefined, turnsProcessed: 1 },
       gatewayUrl: undefined,
+      turnId: "test-turn",
     });
 
     expect(result.spawnChild).toEqual({
@@ -129,6 +137,7 @@ describe("createActivities", () => {
         message: { id: "m1", senderId: "u1", content: [], timestamp: Date.now() },
         stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
         gatewayUrl: undefined,
+        turnId: "test-turn",
       }),
     ).rejects.toMatchObject({
       name: "ApplicationFailure",
@@ -169,6 +178,7 @@ describe("createActivities", () => {
         message: { id: "m1", senderId: "u1", content: [], timestamp: Date.now() },
         stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
         gatewayUrl: undefined,
+        turnId: "test-turn",
         nexusApiKey: "per-turn-secret",
       });
 
@@ -219,6 +229,7 @@ describe("createActivities", () => {
       message: { id: "m1", senderId: "u1", content: [], timestamp: Date.now() },
       stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
       gatewayUrl: undefined,
+      turnId: "test-turn",
       nexusApiKey: "nexus-a",
       delegationId: "delegation-a",
     });
@@ -229,6 +240,7 @@ describe("createActivities", () => {
       message: { id: "m2", senderId: "u1", content: [], timestamp: Date.now() },
       stateRefs: { lastTurnId: undefined, turnsProcessed: 1 },
       gatewayUrl: undefined,
+      turnId: "test-turn",
       nexusApiKey: "nexus-b",
       delegationId: "delegation-b",
     });

@@ -289,6 +289,7 @@ describe.skipIf(SKIP)("Restored workflow integration (real Temporal)", () => {
         message: initialMessage,
         stateRefs: workflowConfig.stateRefs,
         gatewayUrl: "ws://workflow-gateway",
+        turnId: `${workflowConfig.sessionId}:0`,
       });
 
       const firstState = await waitFor(
@@ -402,6 +403,7 @@ describe.skipIf(SKIP)("Restored workflow integration (real Temporal)", () => {
           },
           stateRefs: workflowConfig.stateRefs,
           gatewayUrl: workflowConfig.gatewayUrl,
+          turnId: expect.any(String) as unknown as string,
           nexusApiKey: workflowConfig.nexusApiKey,
           delegationId: workflowConfig.delegationId,
         },

@@ -28,6 +28,13 @@ export interface GatewayStreamFrame {
   readonly kind: "agent:text_delta";
   readonly delta: string;
   readonly sessionId: string;
+  /**
+   * Stable turn identifier. Combined with `frameIndex` it forms an idempotency
+   * key consumers can use to dedupe replayed deltas when the activity retries.
+   */
+  readonly turnId: string;
+  /** Monotonically increasing index of this frame within `turnId`, starting at 0. */
+  readonly frameIndex: number;
 }
 
 export interface ActivityDeps {
@@ -56,10 +63,15 @@ export function createActivities(deps: ActivityDeps): {
 } {
   return {
     async runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
-      const turnId = `turn:${Date.now()}`;
+      // Use the workflow-supplied turnId verbatim. It is stable across
+      // Temporal activity retries, so gateway frames keyed on (turnId,
+      // frameIndex) remain a valid idempotency key when the activity reruns
+      // after a transient failure.
+      const turnId = input.turnId;
       const blocks: ContentBlock[] = [];
       let spawnChild: SpawnChildRequest | undefined;
       let eventCount = 0;
+      let frameIndex = 0;
       const heartbeatTimer = startHeartbeatTimer(() => {
         heartbeat({ turnId, eventCount, agentId: input.agentId });
       });
@@ -101,10 +113,17 @@ export function createActivities(deps: ActivityDeps): {
             blocks.push({ kind: "text", text: delta });
 
             if (input.gatewayUrl !== undefined) {
+              // Gateway delivery is the only place streamed assistant output
+              // surfaces to the user — `result.blocks` is not durably
+              // published downstream. Propagate failures so Temporal can
+              // retry the turn rather than silently completing with no
+              // visible output.
               await deps.sendGatewayFrame(input.agentId, {
                 kind: "agent:text_delta",
                 delta,
                 sessionId: input.sessionId,
+                turnId,
+                frameIndex: frameIndex++,
               });
             }
           } else if (record.kind === "spawn_requested") {

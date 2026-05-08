@@ -140,6 +140,10 @@ describe("agent workflow module", () => {
       startChild: async (workflowType: string, options: Record<string, unknown>) => {
         startChildCalls.push({ workflowType, options });
       },
+      workflowInfo: () => ({
+        workflowId: "wf-test",
+        runId: "run-test",
+      }),
     }));
 
     const originalNow = Date.now;
@@ -235,6 +239,7 @@ describe("agent workflow module", () => {
         },
         stateRefs: { lastTurnId: "prev-turn", turnsProcessed: 4 },
         gatewayUrl: "ws://worker-gateway",
+        turnId: "worker:session-9:child-9:4",
         nexusApiKey: "nexus-secret",
         delegationId: "delegation-9",
         maxStopRetries: 9,

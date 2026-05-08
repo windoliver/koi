@@ -96,11 +96,6 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
     enqueueScheduledInput(config.initialScheduledInput);
   }
 
-  // Signal handlers always enqueue, even after shutdownRequested flips true.
-  // Senders treat a successfully accepted signal as durable work; silently
-  // dropping post-shutdown signals would create a data-loss race with the
-  // scheduler/dispatch path. The drain loop only exits when the queue is
-  // empty, so any signal that wins the race is still processed.
   setHandler(messageSignal, (message: IncomingMessage) => {
     pendingMessages.push(message);
   });
@@ -111,16 +106,8 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
     enqueueScheduledInput(input);
   });
 
-  // Once shutdown is requested, snapshot the queue depth: only messages that
-  // were already accepted at shutdown time are eligible for drain. Subsequent
-  // signals are still enqueued (senders treat ACK as durable), but the loop
-  // ignores them so shutdown cannot be starved by continued traffic.
-  let shutdownDrainBudget = 0;
   setHandler(shutdownSignal, (_payload: ShutdownSignalPayload) => {
-    if (!shutdownRequested) {
-      shutdownDrainBudget = pendingMessages.length;
-      shutdownRequested = true;
-    }
+    shutdownRequested = true;
   });
 
   setHandler(stateQuery, () => stateRefs);
@@ -134,11 +121,7 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
   while (true) {
     await condition(() => pendingMessages.length > 0 || shutdownRequested);
 
-    // On shutdown, drain only the messages already queued when shutdown was
-    // requested (shutdownDrainBudget). Anything that arrives after shutdown is
-    // still ACKed by the signal handler but stays unprocessed in the workflow
-    // history — that prevents indefinite starvation from continuing traffic.
-    if (shutdownRequested && shutdownDrainBudget === 0) {
+    if (shutdownRequested) {
       break;
     }
 
@@ -146,12 +129,13 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
     if (message === undefined) {
       continue;
     }
-    if (shutdownRequested && shutdownDrainBudget > 0) {
-      shutdownDrainBudget--;
-    }
 
     processingTurn = true;
     let result: AgentTurnResult;
+    // Stable turnId derived from workflow identity + turn counter. Survives
+    // Temporal activity retries so streamed gateway frames keep a usable
+    // (turnId, frameIndex) idempotency key.
+    const turnId = `${effectiveSessionId}:${stateRefs.turnsProcessed}`;
     try {
       result = await runAgentTurn({
         agentId: config.agentId,
@@ -159,6 +143,7 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
         message,
         stateRefs,
         gatewayUrl: config.gatewayUrl,
+        turnId,
         maxStopRetries: config.maxStopRetries,
       });
     } finally {
@@ -198,12 +183,14 @@ export async function workerWorkflow(config: WorkerWorkflowConfig): Promise<Agen
       timestamp: Date.now(),
     } satisfies IncomingMessage);
 
+  const turnId = `worker:${config.sessionId}:${config.agentId}:${config.stateRefs.turnsProcessed}`;
   return runAgentTurn({
     agentId: config.agentId,
     sessionId: config.sessionId,
     message,
     stateRefs: config.stateRefs,
     gatewayUrl: config.gatewayUrl,
+    turnId,
     maxStopRetries: config.maxStopRetries,
     nexusApiKey: config.nexusApiKey,
     delegationId: config.delegationId,
