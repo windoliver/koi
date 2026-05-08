@@ -13,21 +13,22 @@ export type CommandSpec = {
 };
 
 export type SpawnResult = {
-  readonly exitCode: number;
+  readonly exitCode: number | null;
+  readonly signalCode?: string | null;
 };
 
 export type SpawnSync = (command: CommandSpec) => SpawnResult;
 
-export function createNoCoverageRunDir(): string {
-  const runDir = mkdtempSync(join(tmpdir(), "koi-runtime-golden-replay-"));
-  writeFileSync(join(runDir, "bunfig.toml"), NO_COVERAGE_BUNFIG);
-  writeFileSync(join(runDir, ".gitignore"), "*\n");
-  return runDir;
+export function createNoCoverageBunfig(): string {
+  const dir = mkdtempSync(join(tmpdir(), "koi-runtime-golden-replay-"));
+  const bunfigPath = join(dir, "bunfig.toml");
+  writeFileSync(bunfigPath, NO_COVERAGE_BUNFIG);
+  return bunfigPath;
 }
 
 export function buildCommands(
   repoRoot: string,
-  runDir: string,
+  bunfigPath: string,
   extraArgs: readonly string[],
 ): readonly CommandSpec[] {
   return [
@@ -36,20 +37,37 @@ export function buildCommands(
       cwd: repoRoot,
     },
     {
-      cmd: [process.execPath, "test", join(repoRoot, GOLDEN_REPLAY_PATH), ...extraArgs],
-      cwd: runDir,
+      cmd: [
+        process.execPath,
+        `--config=${bunfigPath}`,
+        "test",
+        join(repoRoot, GOLDEN_REPLAY_PATH),
+        ...extraArgs,
+      ],
+      cwd: repoRoot,
     },
   ];
 }
 
 export function spawnCommand(command: CommandSpec): SpawnResult {
-  return Bun.spawnSync({
+  const result = Bun.spawnSync({
     cmd: [...command.cmd],
     cwd: command.cwd,
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
   });
+  return { exitCode: result.exitCode, signalCode: result.signalCode ?? null };
+}
+
+export function resolveExitStatus(result: SpawnResult): number {
+  if (result.signalCode != null) {
+    return 128;
+  }
+  if (result.exitCode == null) {
+    return 1;
+  }
+  return result.exitCode;
 }
 
 export function runCommands(
@@ -58,26 +76,28 @@ export function runCommands(
 ): void {
   for (const command of commands) {
     const result = spawn(command);
-    if (result.exitCode !== 0) {
-      process.exit(result.exitCode);
+    const status = resolveExitStatus(result);
+    if (status !== 0) {
+      process.exit(status);
     }
   }
 }
 
 export function runRuntimeGoldenReplay(
   extraArgs: readonly string[],
-  repoRoot = resolve(process.cwd()),
-  createRunDir: () => string = createNoCoverageRunDir,
-  removeRunDir: (runDir: string) => void = (runDir) =>
-    rmSync(runDir, { force: true, recursive: true }),
+  repoRoot: string = resolve(process.cwd()),
+  createBunfig: () => string = createNoCoverageBunfig,
+  removeBunfig: (bunfigPath: string) => void = (bunfigPath: string): void => {
+    rmSync(join(bunfigPath, ".."), { force: true, recursive: true });
+  },
   spawn: SpawnSync = spawnCommand,
 ): void {
-  const runDir = createRunDir();
+  const bunfigPath = createBunfig();
 
   try {
-    runCommands(buildCommands(repoRoot, runDir, extraArgs), spawn);
+    runCommands(buildCommands(repoRoot, bunfigPath, extraArgs), spawn);
   } finally {
-    removeRunDir(runDir);
+    removeBunfig(bunfigPath);
   }
 }
 
