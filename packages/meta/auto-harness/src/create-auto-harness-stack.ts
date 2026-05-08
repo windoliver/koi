@@ -405,6 +405,40 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       return null;
     }
 
+    // Treat the deploy result as authoritative for the post-deploy artifact:
+    // deployCandidate is allowed to promote lifecycle, assign a deployed id,
+    // or attach metadata that only exists once the harness is live. The
+    // pre-deploy `draft` we saved is a recovery record, not the final state
+    // — emitting and returning that draft would let consumers believe the
+    // harness is still pending after live activation already happened (R5
+    // round 7 finding).
+    const deployedArtifact = deployment.artifact ?? artifact;
+
+    // Persist the deployed artifact so the durable record matches the live
+    // activation. forgeStore.save is the upsert path; failure here is a
+    // best-effort follow-up — the deployment side effects are already
+    // committed and policy entries below depend on the live state, not the
+    // store record. Surface the failure via reportError so operators can
+    // reconcile manually.
+    if (deployment.artifact !== undefined && deployment.artifact !== artifact) {
+      try {
+        const saveResult = await config.forgeStore.save(deployedArtifact);
+        if (!saveResult.ok) {
+          reportError({
+            stage: "deploy",
+            message: `forgeStore.save (post-deploy) failed: ${saveResult.error.message}`,
+            koiError: saveResult.error,
+          });
+        }
+      } catch (cause: unknown) {
+        reportError({
+          stage: "deploy",
+          message: "forgeStore.save (post-deploy) threw",
+          cause,
+        });
+      }
+    }
+
     // Deployment side effects are now committed; emit success BEFORE
     // attempting the cache write. Policy-cache registration is a follow-on
     // optimization (short-circuit dispatch) — its failure must not be
@@ -413,7 +447,7 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     emitEvent({
       kind: "deployment.succeeded",
       signalId: signal.id,
-      artifactId: artifact.id,
+      artifactId: deployedArtifact.id,
     });
 
     // Skip cache registration when no verifier is configured. Without a
@@ -440,7 +474,7 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       }
     }
 
-    return artifact;
+    return deployedArtifact;
   };
 
   return {

@@ -416,6 +416,48 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     // healthTracker. Without auto-wiring, latency detection stays dormant
     // and we warn loudly so callers do not mistake "no signal" for
     // "no degradation".
+    // Runtime-level autoHarness invariants. These run BEFORE the package
+    // constructor so the runtime owns its public error contract — otherwise
+    // a missing notifier/verifier surfaces as the L3 package error and
+    // hosts never see the runtime's specific guidance. The caller-policy-
+    // cache check moved here so it fires together with the verifier/notifier
+    // checks; `baseWithForgeDemand` isn't ready yet, but `resolvedMiddleware`
+    // contains everything the caller passed in via `config.middleware`.
+    if (config.autoHarness !== undefined) {
+      if (resolvedMiddleware.some((mw) => mw.name === "policy-cache")) {
+        throw new Error(
+          "createRuntime: cannot enable `autoHarness` while a caller-supplied " +
+            "`policy-cache` middleware is present in the chain. The auto-harness " +
+            "stack owns its own policy-cache; we cannot migrate verified entries " +
+            "from another instance, and dropping it would silently discard " +
+            "live allow/deny policies. Remove the caller-side policy-cache and " +
+            "let auto-harness install the stack-owned cache.",
+        );
+      }
+      if (config.autoHarness.policyVerifier === undefined) {
+        throw new Error(
+          "createRuntime: `autoHarness.policyVerifier` is required when " +
+            "autoHarness is enabled. Without a verifier the stack-owned " +
+            "`policy-cache` middleware is composed into the chain but cannot " +
+            "be populated — successful auto-harness deployments would never " +
+            "become cache hits, and the same failing traffic would keep " +
+            "re-triggering synthesis. Supply " +
+            "`autoHarness.policyVerifier` (e.g., a function backed by your " +
+            "host's verified-set or a permissive verifier in test).",
+        );
+      }
+      if (config.autoHarness.notifier === undefined) {
+        throw new Error(
+          "createRuntime: `autoHarness.notifier` (StoreChangeNotifier) is " +
+            "required when autoHarness is enabled. Deployed policy-cache " +
+            "entries can outlive their backing brick if the cache has no " +
+            "invalidation source, leaving stale allow/deny decisions in " +
+            "place after the brick is updated, removed, or quarantined. " +
+            "Supply a notifier wired to your forge store's lifecycle " +
+            "events.",
+        );
+      }
+    }
     autoHarnessStack =
       config.autoHarness !== undefined
         ? createAutoHarnessStack({
@@ -620,61 +662,10 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     const adapterHasTerminals = rawAdapter.terminals !== undefined;
     const baseWithAutoHarness: readonly KoiMiddleware[] = (() => {
       if (autoHarnessStack === undefined) return baseWithForgeDemand;
-      // Fail closed when the caller already composed a `policy-cache` instance:
-      // we cannot migrate its verified entries into the stack-owned cache, so
-      // silently dropping it would discard live allow/deny enforcement (R3
-      // round 3 finding). Hosts that want auto-harness must remove their own
-      // policy-cache and rely on the stack-owned one.
-      const callerHasPolicyCache = baseWithForgeDemand.some((mw) => mw.name === "policy-cache");
-      if (callerHasPolicyCache) {
-        throw new Error(
-          "createRuntime: cannot enable `autoHarness` while a caller-supplied " +
-            "`policy-cache` middleware is present in the chain. The auto-harness " +
-            "stack owns its own policy-cache; we cannot migrate verified entries " +
-            "from another instance, and dropping it would silently discard " +
-            "live allow/deny policies. Remove the caller-side policy-cache and " +
-            "let auto-harness install the stack-owned cache.",
-        );
-      }
-      // Auto-harness without a `policyVerifier` produces a live cache that is
-      // never populated (register() is skipped without a verifier). The chain
-      // still installs the middleware, so successful synthesis cannot
-      // short-circuit subsequent traffic — hot failures keep re-triggering
-      // synthesis instead of hitting the cache. Always require an explicit
-      // verifier when autoHarness is enabled — even on stub adapters, the
-      // stack handle is exposed to downstream composers (CLI/L3) that
-      // install the middleware in their real chain.
-      if (config.autoHarness?.policyVerifier === undefined) {
-        throw new Error(
-          "createRuntime: `autoHarness.policyVerifier` is required when " +
-            "autoHarness is enabled. Without a verifier the stack-owned " +
-            "`policy-cache` middleware is composed into the chain but cannot " +
-            "be populated — successful auto-harness deployments would never " +
-            "become cache hits, and the same failing traffic would keep " +
-            "re-triggering synthesis. Supply " +
-            "`autoHarness.policyVerifier` (e.g., a function backed by your " +
-            "host's verified-set or a permissive verifier in test).",
-        );
-      }
-      // Require an invalidation source whenever auto-harness can register
-      // policy-cache entries. Without a `StoreChangeNotifier`, a promoted
-      // allow/deny outlives the brick that produced it: subsequent
-      // updated/removed/quarantined events have no path into the cache, so
-      // stale authorization state short-circuits live traffic until the
-      // process restarts. This is a trust-boundary regression, not a perf
-      // optimization miss (R5 round 5 finding).
-      if (config.autoHarness?.notifier === undefined) {
-        throw new Error(
-          "createRuntime: `autoHarness.notifier` (StoreChangeNotifier) is " +
-            "required when autoHarness is enabled. Deployed policy-cache " +
-            "entries can outlive their backing brick if the cache has no " +
-            "invalidation source, leaving stale allow/deny decisions in " +
-            "place after the brick is updated, removed, or quarantined. " +
-            "Supply a notifier wired to your forge store's lifecycle " +
-            "events.",
-        );
-      }
-      // No caller-supplied `policy-cache` to drop; the stack-owned instance
+      // Runtime invariants (caller policy-cache, policyVerifier, notifier)
+      // were validated up front before constructing the stack — see the
+      // pre-construction guards in this function. Reaching this branch
+      // means the caller satisfied them and the stack-owned policy-cache
       // is the sole source of truth.
       const withoutCallerPolicyCache = baseWithForgeDemand;
       // Only compose the stack-owned policy-cache when the adapter can carry
