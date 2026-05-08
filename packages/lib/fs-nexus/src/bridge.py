@@ -669,6 +669,25 @@ async def dispatch(fs, method, params):
         mount_path = params.get("path")
         if not isinstance(mount_path, str) or len(mount_path) == 0:
           raise ValueError("describe_mount requires a non-empty string path")
+        # Enforce the trust boundary at the bridge: describe_mount must only
+        # operate on paths the backend authoritatively reports as live. The
+        # underlying _describe_mount walks fs.backend / fs._backend / fs.facade
+        # to invoke generate_readme(), bypassing scoped-fs wrappers, so any
+        # caller could otherwise request connector-controlled README content
+        # for sibling/tenant mounts outside their session's scope. Verify the
+        # path against list_mounts() before forwarding.
+        try:
+            live_mounts = await _call_first(_mount_targets(fs), ("list_mounts",))
+        except Exception as exc:
+            # If the backend cannot list mounts we cannot prove `mount_path`
+            # is in scope. Refuse rather than fail-open.
+            raise ValueError(
+                f"describe_mount cannot verify path {mount_path!r}: list_mounts failed ({exc})"
+            ) from exc
+        if mount_path not in live_mounts:
+            raise ValueError(
+                f"describe_mount refused: path {mount_path!r} is not a live mount"
+            )
         return await _describe_mount(fs, mount_path)
 
     if method == "add_mount":

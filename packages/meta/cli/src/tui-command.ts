@@ -2202,13 +2202,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // dead root, so /unmount must refuse it. Undefined = namespace-root mode
   // (no fixed root), in which case any mount can be unmounted safely.
   let backendActiveRoot: string | undefined;
-  // The effective disclosure scope for this session — canonicalized
-  // protected/scope roots derived from manifest scope, glob static prefixes,
-  // and the active backend root. Used to pre-filter live mount paths before
-  // issuing describeMount RPCs so a scoped session does not trigger backend
-  // metadata reads (and possible OAuth prompts) for sibling/tenant mounts
-  // that the prompt allowlist would have dropped anyway.
-  let sessionScopePaths: readonly string[] | undefined;
 
   // Single OAuthChannel — shared by nexus and MCP. Created unconditionally so
   // nav:mcp-auth and MCP onAuthNeeded always have a renderer regardless of whether
@@ -2234,7 +2227,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Apply the session disclosure scope so all subsequent /mount and
     // /mounts updates filter sibling mounts the same way startup-seed did.
     mountDescriptionsState.setScope(fsResolved.effectiveScopePaths);
-    sessionScopePaths = fsResolved.effectiveScopePaths;
     mountDescriptionsState.setManifest(fsResolved.mountDescriptions);
     // If `fsResolved.operations` is set, it overrides the manifest-derived ops
     // (the two should agree, but resolveFileSystemAsync is authoritative).
@@ -6459,78 +6451,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               }
             }
             printSnapshot();
-            // Background enrichment — don't await. Each describeMount is
-            // independent; one slow connector cannot block the others.
-            if (transport.describeMount === undefined) return;
-            const enrich = transport.describeMount;
-            // Race protection: an in-flight describeMount() result can land
-            // long after the user has /unmounted that path or another /mounts
-            // refresh has dropped it. Snapshot the live set we're enriching
-            // so callbacks can skip re-adding stale paths.
-            const liveAtRefresh = new Set(livePaths);
-            // Scope guard (security): describeMount on the local bridge walks
-            // through to inner backends to call generate_readme(), bypassing
-            // the scoped-fs wrapper. Pre-filter livePaths against the session
-            // disclosure scope so a scoped session never triggers metadata
-            // reads (or OAuth prompts) for sibling/tenant mounts that the
-            // prompt allowlist would have dropped anyway.
-            const scopeFilter = sessionScopePaths;
-            const scopeAllows = (path: string): boolean => {
-              if (scopeFilter === undefined || scopeFilter.length === 0) return true;
-              return scopeFilter.some(
-                (scopePath) =>
-                  path === scopePath ||
-                  path.startsWith(`${scopePath}/`) ||
-                  scopePath.startsWith(`${path}/`),
-              );
-            };
-            const eligible = livePaths.filter(scopeAllows);
-            // Drop already-described paths so /mounts spam doesn't re-issue
-            // metadata RPCs against connectors we already enriched. Bounds
-            // the worst-case work per /mounts press to "new mounts only".
-            const describedSnapshot = mountDescriptionsState.getSnapshot();
-            const alreadyDescribed = new Set(
-              [...describedSnapshot.manifest, ...describedSnapshot.runtime]
-                .filter((e) => e.description !== undefined && e.description.length > 0)
-                .map((e) => e.path),
-            );
-            const toEnrich = eligible.filter((p) => !alreadyDescribed.has(p));
-            // Single-flight bridge: every RPC shares one serialized callQueue.
-            // If we issued describeMount for every mount in parallel via
-            // Promise.allSettled, foreground user RPCs (reads, writes, /mount,
-            // auth) would queue behind N enrichments. Run sequentially so at
-            // most one enrichment is queued at a time and user input
-            // interleaves naturally between mounts.
-            void (async (): Promise<void> => {
-              for (const path of toEnrich) {
-                const described = await enrich(path);
-                if (!described.ok) return;
-                // Reject results whose path was removed (out of band or by a
-                // user /unmount) between dispatch and resolution. Without this
-                // check the enrichment would silently resurrect dead mounts.
-                if (!liveAtRefresh.has(described.value.path)) return;
-                const currentLive = nexusFilesystemTransport?.mounts ?? [];
-                if (!currentLive.includes(described.value.path)) return;
-                // Path-keyed dedup across manifest and runtime: if the path
-                // already appears in the startup-seeded manifest, update the
-                // manifest entry in place rather than calling addRuntime,
-                // which would create a duplicate (one in <mounted_connectors>
-                // and one in <runtime_mounted_connectors>) and misclassify a
-                // static manifest mount as runtime-added.
-                const snapshot = mountDescriptionsState.getSnapshot();
-                const manifestIdx = snapshot.manifest.findIndex(
-                  (e) => e.path === described.value.path,
-                );
-                if (manifestIdx !== -1) {
-                  const updated = snapshot.manifest.map((e, i) =>
-                    i === manifestIdx ? described.value : e,
-                  );
-                  mountDescriptionsState.setManifest(updated);
-                  continue;
-                }
-                mountDescriptionsState.addRuntime(described.value);
-              }
-            })();
+            // No describeMount enrichment from /mounts. The local bridge is
+            // single-flight: every RPC (reads, writes, /mount, auth) shares
+            // one serialized callQueue. A describeMount that hits OAuth or
+            // simply runs slow can either occupy the queue indefinitely
+            // (blocking foreground filesystem ops) or trip the per-call
+            // timeout that closes the bridge entirely — turning a cosmetic
+            // listing command into a session-killing failure mode. The
+            // operator-facing /mounts UI shows path + connector via the
+            // cheap fallbacks already populated above; README content is
+            // not used by the system prompt and is not worth the risk on
+            // the interactive transport. If a future feature needs it,
+            // it must run on a separate non-interactive transport.
           })();
           break;
         case "system:governance-reset":
