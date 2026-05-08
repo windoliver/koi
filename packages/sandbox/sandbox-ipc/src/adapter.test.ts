@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, expect, mock, test } from "bun:test";
+import { expect, test } from "bun:test";
 import type { SandboxExecutor } from "@koi/core/sandbox-executor";
-import * as sandboxIpc from "./index.js";
+import { bridgeToExecutor as createExecutor } from "./adapter.js";
 import type { SandboxBridge } from "./types.js";
 import type { BridgeConfig, CommandBuilder } from "./types.js";
 
@@ -29,16 +29,15 @@ function validBridgeConfig(): BridgeConfig {
   };
 }
 
-function bridgeToExecutor(config: BridgeConfig): SandboxExecutor {
-  return (
-    sandboxIpc as typeof sandboxIpc & {
-      bridgeToExecutor: (bridgeConfig: BridgeConfig) => SandboxExecutor;
-    }
-  ).bridgeToExecutor(config);
-}
+type CreateBridge = (
+  config: BridgeConfig,
+) => Promise<SandboxBridge> | SandboxBridge;
 
-async function importAdapter() {
-  return import(`./adapter.js?ts=${Date.now()}-${Math.random()}`);
+function bridgeToExecutor(config: BridgeConfig, createBridge?: CreateBridge): SandboxExecutor {
+  return createExecutor(
+    config,
+    createBridge === undefined ? undefined : { createBridge },
+  );
 }
 
 function makeMockBridge(overrides: Partial<SandboxBridge> = {}): SandboxBridge {
@@ -51,14 +50,6 @@ function makeMockBridge(overrides: Partial<SandboxBridge> = {}): SandboxBridge {
     ...overrides,
   };
 }
-
-beforeEach(() => {
-  mock.restore();
-});
-
-afterEach(() => {
-  mock.restore();
-});
 
 test("bridgeToExecutor adapts bridge failures into SandboxError results", async () => {
   const executor = bridgeToExecutor(validBridgeConfig());
@@ -142,13 +133,9 @@ test("bridgeToExecutor preserves array input semantics", async () => {
 });
 
 test("bridgeToExecutor maps non-IPC code exceptions into valid SandboxError results", async () => {
-  mock.module("./bridge.js", () => ({
-    createSandboxBridge: mock(async () => {
+  const executor = bridgeToExecutor(validBridgeConfig(), async () => {
       throw { code: "EACCES", message: "permission denied" };
-    }),
-  }));
-  const { bridgeToExecutor } = await importAdapter();
-  const executor = bridgeToExecutor(validBridgeConfig());
+    });
   const result = await executor.execute("return 1", {}, 500);
 
   expect(result.ok).toBe(false);
@@ -161,13 +148,9 @@ test("bridgeToExecutor maps non-IPC code exceptions into valid SandboxError resu
 });
 
 test("bridgeToExecutor maps bridge creation failures into SandboxError results", async () => {
-  mock.module("./bridge.js", () => ({
-    createSandboxBridge: mock(async () => {
+  const executor = bridgeToExecutor(validBridgeConfig(), async () => {
       throw new Error("bridge creation exploded");
-    }),
-  }));
-  const { bridgeToExecutor } = await importAdapter();
-  const executor = bridgeToExecutor(validBridgeConfig());
+    });
 
   await expect(executor.execute("return 1", {}, 500)).resolves.toMatchObject({
     ok: false,
@@ -180,17 +163,13 @@ test("bridgeToExecutor maps bridge creation failures into SandboxError results",
 });
 
 test("bridgeToExecutor maps bridge disposal failures into SandboxError results", async () => {
-  mock.module("./bridge.js", () => ({
-    createSandboxBridge: mock(async () =>
-      makeMockBridge({
-        dispose: async () => {
-          throw new Error("bridge disposal exploded");
-        },
-      }),
-    ),
-  }));
-  const { bridgeToExecutor } = await importAdapter();
-  const executor = bridgeToExecutor(validBridgeConfig());
+  const executor = bridgeToExecutor(validBridgeConfig(), async () =>
+    makeMockBridge({
+      dispose: async () => {
+        throw new Error("bridge disposal exploded");
+      },
+    }),
+  );
 
   await expect(executor.execute("return 1", {}, 500)).resolves.toMatchObject({
     ok: false,
@@ -203,21 +182,17 @@ test("bridgeToExecutor maps bridge disposal failures into SandboxError results",
 });
 
 test("bridgeToExecutor preserves an execution failure when dispose also fails", async () => {
-  mock.module("./bridge.js", () => ({
-    createSandboxBridge: mock(async () =>
-      makeMockBridge({
-        execute: async () => ({
-          ok: false,
-          error: { code: "TIMEOUT", message: "execution timed out", durationMs: 17 },
-        }),
-        dispose: async () => {
-          throw new Error("bridge disposal exploded");
-        },
+  const executor = bridgeToExecutor(validBridgeConfig(), async () =>
+    makeMockBridge({
+      execute: async () => ({
+        ok: false,
+        error: { code: "TIMEOUT", message: "execution timed out", durationMs: 17 },
       }),
-    ),
-  }));
-  const { bridgeToExecutor } = await importAdapter();
-  const executor = bridgeToExecutor(validBridgeConfig());
+      dispose: async () => {
+        throw new Error("bridge disposal exploded");
+      },
+    }),
+  );
   const result = await executor.execute("return 1", {}, 500);
 
   expect(result.ok).toBe(false);

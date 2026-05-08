@@ -117,7 +117,16 @@ function mapUnknownErrorToSandboxError(error: unknown): SandboxError {
   };
 }
 
-export function bridgeToExecutor(config: BridgeConfig): SandboxExecutor {
+interface BridgeToExecutorOptions {
+  readonly createBridge?: (config: BridgeConfig) => Promise<SandboxBridge> | SandboxBridge;
+}
+
+export function bridgeToExecutor(
+  config: BridgeConfig,
+  options?: BridgeToExecutorOptions,
+): SandboxExecutor {
+  const createBridge = options?.createBridge ?? createSandboxBridge;
+
   return {
     async execute(
       code: string,
@@ -135,7 +144,7 @@ export function bridgeToExecutor(config: BridgeConfig): SandboxExecutor {
         | undefined;
 
       try {
-        bridge = await createSandboxBridge(config);
+        bridge = await createBridge(config);
 
         const result = await bridge.execute(wrapExecutorCode(code), wrapExecutorInput(input), {
           timeoutMs,
