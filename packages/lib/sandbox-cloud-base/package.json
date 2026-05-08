@@ -1,7 +1,7 @@
 {
-  "name": "@koi/sandbox-e2b",
-  "description": "E2B hosted-cloud SandboxAdapter for remote microVM execution",
-  "version": "0.1.0",
+  "name": "@koi/sandbox-cloud-base",
+  "description": "Shared bridge and hosted-sandbox helpers for cloud-backed execution",
+  "version": "0.0.0",
   "private": true,
   "koi": {
     "optional": true
@@ -14,14 +14,12 @@
     }
   },
   "scripts": {
-    "build": "bun ../../../scripts/run-tsup.ts",
+    "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test"
   },
   "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/sandbox-cloud-base": "workspace:*"
-  },
-  "devDependencies": {}
+    "@koi/core": "workspace:*"
+  }
 }

@@ -4,10 +4,10 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 210 workspace packages
+- 212 workspace packages
 - 11 package families
-- 210 packages with local test files
-- 188 packages with dedicated package docs
+- 212 packages with local test files
+- 189 packages with dedicated package docs
 
 ## Family Summary
 
@@ -16,11 +16,11 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 2 | 12 | 2 |
 | kernel | 4 | 126 | 0 |
-| lib | 139 | 718 | 121 |
+| lib | 140 | 723 | 121 |
 | meta | 3 | 109 | 3 |
 | mm | 12 | 54 | 12 |
 | net | 10 | 91 | 10 |
-| sandbox | 11 | 58 | 11 |
+| sandbox | 12 | 65 | 12 |
 | sched | 5 | 22 | 5 |
 | security | 20 | 109 | 20 |
 | ui | 2 | 57 | 2 |
@@ -46,7 +46,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/engine-compose` (packages/kernel/engine-compose) - Middleware composition and guard factories for the Koi kernel. Tests: 7. Docs: -.
 - `@koi/engine-reconcile` (packages/kernel/engine-reconcile) - Reconciliation, supervision, and process management for the Koi kernel. Tests: 22. Docs: -.
 
-## lib (139)
+## lib (140)
 
 - `@koi/ace-types` (packages/lib/ace-types) - Shared domain types for ACE (Adaptive Continuous Enhancement) middleware and stores. Tests: 1. Docs: -.
 - `@koi/agent-discovery` (packages/lib/agent-discovery) - Runtime discovery of external coding agents (CLI, filesystem registry, MCP). Tests: 8. Docs: docs/L2/agent-discovery.md.
@@ -157,6 +157,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/query-engine` (packages/lib/query-engine) - Stream consumer that maps ModelChunk to EngineEvent with tool-call argument accumulation. Tests: 6. Docs: docs/L2/query-engine.md.
 - `@koi/replay` (packages/lib/replay) - Deterministic cassette recording and replay for Koi agent tests. Tests: 3. Docs: docs/L2/replay.md.
 - `@koi/rules-loader` (packages/lib/rules-loader) - Hierarchical project rules file discovery, loading, merging, and system prompt injection. Tests: 6. Docs: docs/L2/rules-loader.md.
+- `@koi/sandbox-cloud-base` (packages/lib/sandbox-cloud-base) - Shared bridge and hosted-sandbox helpers for cloud-backed execution. Tests: 5. Docs: -.
 - `@koi/scratchpad-local` (packages/lib/scratchpad-local) - In-memory ScratchpadComponent with CAS, TTL, and glob filtering. Tests: 1. Docs: docs/L2/scratchpad-local.md.
 - `@koi/search-nexus` (packages/lib/search-nexus) - Nexus-backed SearchBackend — Retriever + Indexer via Nexus search RPC. Tests: 3. Docs: docs/L2/search-nexus.md.
 - `@koi/secure-storage` (packages/lib/secure-storage) - OS keychain token storage with file-based locking for concurrent access. Tests: 3. Docs: -.
@@ -222,14 +223,15 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/mcp-server` (packages/net/mcp-server) - Expose agent tools and platform capabilities via Model Context Protocol. Tests: 3. Docs: docs/L2/mcp-server.md.
 - `@koi/nexus-sandbox` (packages/net/nexus-sandbox) - Spawn local nexus-ai-fs[sandbox] subprocess: zero external services, SQLite + LRU + BM25S. Tests: 4. Docs: docs/L2/nexus-sandbox.md.
 
-## sandbox (11)
+## sandbox (12)
 
 - `@koi/sandbox-cloudflare` (packages/sandbox/sandbox-cloudflare) - Cloudflare Workers EdgeFunctionAdapter — durable per-(ownerId, operationId) dedupe via Durable Objects. Tests: 11. Docs: docs/L2/sandbox-cloudflare.md.
 - `@koi/sandbox-conformance` (packages/sandbox/sandbox-conformance) - Shared bun:test conformance suite for SandboxAdapter implementations. Tests: 5. Docs: docs/L2/sandbox-conformance.md.
 - `@koi/sandbox-daytona` (packages/sandbox/sandbox-daytona) - Daytona hosted-cloud SandboxAdapter for managed workspace execution. Tests: 3. Docs: docs/L2/sandbox-daytona.md.
 - `@koi/sandbox-docker` (packages/sandbox/sandbox-docker) - Docker-backed SandboxAdapter for containerized command execution. Tests: 10. Docs: docs/L2/sandbox-docker.md.
-- `@koi/sandbox-e2b` (packages/sandbox/sandbox-e2b) - E2B hosted-cloud SandboxAdapter for remote microVM execution. Tests: 3. Docs: docs/L2/sandbox-e2b.md.
+- `@koi/sandbox-e2b` (packages/sandbox/sandbox-e2b) - E2B hosted-cloud SandboxAdapter for remote microVM execution. Tests: 4. Docs: docs/L2/sandbox-e2b.md.
 - `@koi/sandbox-executor` (packages/sandbox/sandbox-executor) - Subprocess-backed SandboxExecutor for isolated code execution. Tests: 2. Docs: docs/L2/sandbox-executor.md.
+- `@koi/sandbox-ipc` (packages/sandbox/sandbox-ipc) - Structured host-worker IPC bridge for sandboxed code execution. Tests: 6. Docs: docs/L2/sandbox-ipc.md.
 - `@koi/sandbox-os` (packages/sandbox/sandbox-os) - OS-level sandbox adapter with seatbelt and bubblewrap backends. Tests: 8. Docs: docs/L2/sandbox-os.md.
 - `@koi/sandbox-router` (packages/sandbox/sandbox-router) - Capability-based selection over SandboxAdapter instances with create-time fallback and lifecycle tracking. Tests: 3. Docs: docs/L2/sandbox-router.md.
 - `@koi/sandbox-ssh` (packages/sandbox/sandbox-ssh) - SSH-backed SandboxAdapter for remote command execution via ssh2. Tests: 3. Docs: docs/L2/sandbox-ssh.md.

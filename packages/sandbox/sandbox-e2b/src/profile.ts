@@ -1,4 +1,8 @@
 import type { SandboxProfile } from "@koi/core";
+import {
+  detectUnsupportedProfileFields as detectSharedUnsupportedProfileFields,
+  type UnsupportedProfileFields as SharedUnsupportedProfileFields,
+} from "@koi/sandbox-cloud-base";
 
 /** Fields the hosted E2B adapter cannot currently enforce remotely. */
 export interface UnsupportedProfileFields {
@@ -8,41 +12,18 @@ export interface UnsupportedProfileFields {
 /**
  * Detect profile fields this adapter cannot enforce on the hosted side.
  *
- * Returns `undefined` when the profile is fully supportable. Fail-closed: if
- * the caller asks for restrictive isolation we can't enforce remotely (e.g.,
- * `network.allow=false`, filesystem allow/deny lists, nexus mounts), we
- * surface the unsupported list so the caller knows policy was *not* applied.
- *
- * Provider-side enforcement of these fields lands with `@koi/sandbox-cloud-base`
- * (issue #1379); until then the adapter must refuse rather than silently
- * pretend to enforce them.
+ * Preserves the legacy sandbox-e2b helper contract while delegating the
+ * underlying hosted-policy detection to the shared cloud-base helper.
  */
 export function detectUnsupportedProfileFields(
   profile: SandboxProfile,
 ): UnsupportedProfileFields | undefined {
-  const fields: string[] = [];
+  const unsupported = detectSharedUnsupportedProfileFields(profile);
+  if (unsupported === undefined) return undefined;
 
-  if (profile.network.allow === false) fields.push("network.allow=false");
-
-  const fs = profile.filesystem;
-  if (fs.defaultReadAccess === "closed") fields.push("filesystem.defaultReadAccess=closed");
-  if (fs.allowRead !== undefined && fs.allowRead.length > 0) fields.push("filesystem.allowRead");
-  if (fs.denyRead !== undefined && fs.denyRead.length > 0) fields.push("filesystem.denyRead");
-  if (fs.allowWrite !== undefined && fs.allowWrite.length > 0) fields.push("filesystem.allowWrite");
-  if (fs.denyWrite !== undefined && fs.denyWrite.length > 0) fields.push("filesystem.denyWrite");
-
-  if (profile.nexusMounts !== undefined && profile.nexusMounts.length > 0) {
-    fields.push("nexusMounts");
-  }
-
-  // Resource-limit fields the hosted backend cannot enforce yet.
-  const r = profile.resources;
-  if (r.maxMemoryMb !== undefined) fields.push("resources.maxMemoryMb");
-  if (r.maxPids !== undefined) fields.push("resources.maxPids");
-  if (r.maxOpenFiles !== undefined) fields.push("resources.maxOpenFiles");
-
-  if (fields.length === 0) return undefined;
-  return { fields };
+  return {
+    fields: mapSharedUnsupportedFieldsToLegacyFields(profile, unsupported),
+  };
 }
 
 /** Profile defaults the adapter *can* honour and forwards to per-call exec. */
@@ -65,4 +46,52 @@ export function formatUnsupportedProfileError(unsupported: UnsupportedProfileFie
   return `sandbox-e2b cannot enforce profile fields: ${unsupported.fields.join(
     ", ",
   )}. The hosted backend has no provider-side hook for these yet (tracked in #1379). Refuse to provision rather than silently weakening isolation.`;
+}
+
+function mapSharedUnsupportedFieldsToLegacyFields(
+  profile: SandboxProfile,
+  unsupported: SharedUnsupportedProfileFields,
+): string[] {
+  const fields: string[] = [];
+
+  if (unsupported.network) {
+    fields.push("network.allow=false");
+  }
+
+  if (unsupported.filesystem) {
+    const filesystem = profile.filesystem;
+    if (filesystem.defaultReadAccess === "closed") {
+      fields.push("filesystem.defaultReadAccess=closed");
+    }
+    if (filesystem.allowRead !== undefined && filesystem.allowRead.length > 0) {
+      fields.push("filesystem.allowRead");
+    }
+    if (filesystem.denyRead !== undefined && filesystem.denyRead.length > 0) {
+      fields.push("filesystem.denyRead");
+    }
+    if (filesystem.allowWrite !== undefined && filesystem.allowWrite.length > 0) {
+      fields.push("filesystem.allowWrite");
+    }
+    if (filesystem.denyWrite !== undefined && filesystem.denyWrite.length > 0) {
+      fields.push("filesystem.denyWrite");
+    }
+    if (profile.nexusMounts !== undefined && profile.nexusMounts.length > 0) {
+      fields.push("nexusMounts");
+    }
+  }
+
+  if (unsupported.resources) {
+    const resources = profile.resources;
+    if (resources.maxMemoryMb !== undefined) {
+      fields.push("resources.maxMemoryMb");
+    }
+    if (resources.maxPids !== undefined) {
+      fields.push("resources.maxPids");
+    }
+    if (resources.maxOpenFiles !== undefined) {
+      fields.push("resources.maxOpenFiles");
+    }
+  }
+
+  return fields;
 }
