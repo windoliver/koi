@@ -424,7 +424,6 @@ export async function createSandboxBridge(
 
         settled = true;
         clearTimeout(timeoutHandle);
-        activeProcs.delete(proc);
 
         try {
           proc.kill(9);
@@ -432,7 +431,13 @@ export async function createSandboxBridge(
           // Best-effort cleanup: the worker may have exited already.
         }
 
-        resolve(result);
+        // Defer resolution until the worker has actually exited. This closes
+        // the race where a caller would see TIMEOUT/error and retry while the
+        // killed worker was still draining side effects.
+        void proc.exited.catch(() => undefined).finally(() => {
+          activeProcs.delete(proc);
+          resolve(result);
+        });
       };
 
       const timeoutHandle = setTimeout(() => {

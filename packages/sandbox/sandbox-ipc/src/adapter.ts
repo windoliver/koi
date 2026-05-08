@@ -194,7 +194,12 @@ export function bridgeToExecutor(
           try {
             await bridge.dispose();
           } catch (error) {
-            if (mappedResult === undefined || mappedResult.ok) {
+            // A disposal failure must not flip a completed execution into a
+            // failure: the user code already ran (and may have performed
+            // non-idempotent side effects), so an upstream retry would
+            // duplicate work. Only surface the cleanup error when execution
+            // produced no result at all.
+            if (mappedResult === undefined) {
               mappedResult = {
                 ok: false,
                 error: mapUnknownErrorToSandboxError(error),

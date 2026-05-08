@@ -159,23 +159,26 @@ test("bridgeToExecutor maps bridge creation failures into SandboxError results",
   });
 });
 
-test("bridgeToExecutor maps bridge disposal failures into SandboxError results", async () => {
+test("bridgeToExecutor preserves a successful execution when dispose fails", async () => {
+  // A disposal failure after a successful execute must not flip the result —
+  // user code already ran and may have side-effects. Cleanup errors are
+  // swallowed (and surfaced via telemetry, not the executor result).
   const executor = bridgeToExecutor(validBridgeConfig(), async () =>
     makeMockBridge({
+      execute: async () => ({
+        ok: true,
+        value: { output: 99, durationMs: 3, exitCode: 0 },
+      }),
       dispose: async () => {
         throw new Error("bridge disposal exploded");
       },
     }),
   );
 
-  await expect(executor.execute("return 1", {}, 500)).resolves.toMatchObject({
-    ok: false,
-    error: {
-      code: "CRASH",
-      message: "bridge disposal exploded",
-      durationMs: 0,
-    },
-  });
+  const result = await executor.execute("return 99", {}, 500);
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error("expected success");
+  expect(result.value.output).toBe(99);
 });
 
 test("bridgeToExecutor preserves an execution failure when dispose also fails", async () => {
