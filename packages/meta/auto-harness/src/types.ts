@@ -124,6 +124,14 @@ export type AutoHarnessSynthesizeHarness = (
 export interface AutoHarnessConfig {
   readonly forgeStore: ForgeStore;
   readonly notifier?: StoreChangeNotifier | undefined;
+  /**
+   * Trust predicate threaded into the embedded `policy-cache` middleware.
+   * `register()` is fail-closed: hosts that wire auto-harness without a
+   * verifier cannot promote any deployed policy entry into the cache. Wire
+   * this to forge's verified-set lookup so only forge-verified bricks
+   * short-circuit tool dispatch. Sync-only — keeps `register()` synchronous.
+   */
+  readonly policyVerifier?: ((entry: PolicyEntry) => boolean) | undefined;
   readonly generate: AutoHarnessGenerate;
   readonly verifyCandidate: AutoHarnessVerifyCandidate;
   readonly evaluatePolicy: AutoHarnessEvaluatePolicy;

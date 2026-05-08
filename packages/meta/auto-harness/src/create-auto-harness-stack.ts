@@ -51,9 +51,14 @@ async function runStageOrReport<T>(
 export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessStack {
   const policyCacheHandle = createPolicyCacheMiddleware({
     notifier: config.notifier,
+    ...(config.policyVerifier !== undefined && { verifier: config.policyVerifier }),
   });
   const { middleware: policyCacheMiddleware } = policyCacheHandle;
   const maxSynthesesPerSession = resolveMaxSynthesesPerSession(config.maxSynthesesPerSession);
+  // Counts synthesis attempts (any path past the gate), not only successful
+  // deployments. A persistent bad signal or unavailable dependency cannot
+  // burn unbounded model calls within a single session — every entry past
+  // the gate consumes one unit of the per-session budget.
   let synthesesThisSession = 0;
 
   const emitEvent = (event: AutoHarnessEvent): void => {
@@ -75,6 +80,7 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       });
       return null;
     }
+    synthesesThisSession += 1;
     emitEvent({ kind: "synthesis.started", signalId: signal.id });
 
     let code: string;
@@ -180,7 +186,6 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       }
     }
 
-    synthesesThisSession += 1;
     emitEvent({
       kind: "deployment.succeeded",
       signalId: signal.id,

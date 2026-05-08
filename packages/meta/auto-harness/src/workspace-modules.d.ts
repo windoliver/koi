@@ -14,6 +14,7 @@ declare module "@koi/middleware-policy-cache" {
 
   export declare function createPolicyCacheMiddleware(config?: {
     readonly notifier?: import("@koi/core").StoreChangeNotifier | undefined;
+    readonly verifier?: ((entry: PolicyEntry) => boolean) | undefined;
   }): PolicyCacheHandle;
 
   export type PolicyEntry = {
