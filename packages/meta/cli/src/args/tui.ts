@@ -72,6 +72,12 @@ export interface TuiFlags extends BaseFlags {
    * `mode: sandbox` (or `auto` with no URL) auto-spawns @koi/nexus-sandbox.
    */
   readonly nexusUrl: string | undefined;
+  /**
+   * Optional remote gateway URL (issue #2122). When set, the TUI connects
+   * to a running `koi gateway-up` over WebSocket instead of executing the
+   * engine in-process. Requires KOI_GATEWAY_TOKEN to authenticate.
+   */
+  readonly gatewayUrl: string | undefined;
 }
 
 export function parseTuiFlags(rest: readonly string[]): TuiFlags {
@@ -80,6 +86,7 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     readonly session: string | undefined;
     readonly resume: string | undefined;
     readonly manifest: string | undefined;
+    readonly "gateway-url": string | undefined;
     readonly "no-manifest": boolean | undefined;
     readonly "until-pass": string[] | undefined;
     readonly "max-iter": string | undefined;
@@ -106,6 +113,7 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
         session: { type: "string" },
         resume: { type: "string" },
         manifest: { type: "string" },
+        "gateway-url": { type: "string" },
         "no-manifest": { type: "boolean", default: false },
         "until-pass": { type: "string", multiple: true },
         "max-iter": { type: "string" },
@@ -202,6 +210,7 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     yolo: (values.yolo ?? false) || (values["dangerously-skip-permissions"] ?? false),
     governance,
     nexusUrl: values["nexus-url"],
+    gatewayUrl: values["gateway-url"],
   };
 }
 

@@ -6,6 +6,17 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **Remote TUI gateway client (#2122)**: `koi tui --gateway-url ws://…`
+  connects to a running `koi gateway-up` instead of executing the engine
+  in-process. New modules `tui-gateway-client.ts` + `tui-request-stream.ts`
+  bridge per-request gateway response/error frames into `EngineEvent`
+  deltas + terminal `done`. Authentication uses `KOI_GATEWAY_TOKEN`
+  (set on both the gateway and the TUI). Each `run()` installs a
+  ref-correlated WebSocket listener; mismatched refs are ignored, terminal
+  frames detach the listener via the iterator's try/finally. Tests cover
+  matching/mismatching ref, error frames, and pre-terminal socket close.
+  No new dependencies.
+
 - **`koi gateway-up` command (#1213 follow-up)**: new direct dependency on
   `@koi/gateway-stack`. Adds the `gateway-up` subcommand, which spins up a
   loopback gateway via the new `createLocalGatewayLauncher` (gateway WS +

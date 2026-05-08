@@ -17,7 +17,7 @@ Current snapshot:
 | exec | 2 | 12 | 2 |
 | kernel | 4 | 126 | 0 |
 | lib | 139 | 718 | 121 |
-| meta | 3 | 107 | 3 |
+| meta | 3 | 109 | 3 |
 | mm | 12 | 54 | 12 |
 | net | 10 | 90 | 10 |
 | sandbox | 11 | 58 | 11 |
@@ -190,7 +190,7 @@ Each line shows package name, package directory, package description, test-file 
 
 ## meta (3)
 
-- `@koi-agent/cli` (packages/meta/cli) - Interactive command-line interface for agent initialization and local execution. Tests: 66. Docs: docs/L3/cli.md.
+- `@koi-agent/cli` (packages/meta/cli) - Interactive command-line interface for agent initialization and local execution. Tests: 68. Docs: docs/L3/cli.md.
 - `@koi/rlm-stack` (packages/meta/rlm-stack) - L3 composition wiring @koi/middleware-rlm with @koi/context-manager threshold coordination. Tests: 3. Docs: docs/L2/rlm-stack.md, docs/L3/rlm-stack.md.
 - `@koi/runtime` (packages/meta/runtime) - L3 meta-package: wires Phase 1 kernel + L2 packages into a bootable runtime with progressive stub replacement. Tests: 38. Docs: docs/L3/runtime.md.
 
