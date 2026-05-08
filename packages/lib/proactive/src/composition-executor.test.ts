@@ -1410,7 +1410,7 @@ describe("createCompositionExecutor", () => {
       steps: [
         {
           kind: "create_schedule",
-          expression: "not a real cron expression",
+          expression: "0 9 * *",
           agentId: agentId("agent-1"),
           mode: "spawn",
           input: { kind: "text", text: "x" },

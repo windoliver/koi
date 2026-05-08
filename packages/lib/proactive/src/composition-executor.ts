@@ -286,13 +286,13 @@ function unsupportedScheduleOption(
   return undefined;
 }
 
-// Cheap pre-commit syntactic check: a cron expression must be a non-empty
-// string with 5 or 6 whitespace-separated fields composed only of
-// cron-legal characters. Catches the most common bad-plan inputs (empty
-// strings, free-text, fewer/more fields) before claiming the execution-log
-// key, so deterministic failures stay re-plannable. Fuller semantic
-// validation still happens inside scheduler.schedule().
-const CRON_FIELD_CHARS = /^[\d*?\-,/LW#]+$/;
+// Cheap pre-commit syntactic check. Intentionally permissive: it only
+// catches obviously-malformed inputs (empty strings, free-text, wrong
+// field count) so the real backend cron parser remains the source of
+// truth. Allowed charset includes letters so named day/month tokens
+// (MON-SUN, JAN-DEC) used by `croner` and most cron flavours pass through.
+// Fuller semantic validation still happens inside scheduler.schedule().
+const CRON_FIELD_CHARS = /^[A-Za-z\d*?\-,/#]+$/;
 function malformedCronExpression(expression: string): string | undefined {
   if (typeof expression !== "string" || expression.trim().length === 0) {
     return "expression must be a non-empty string";
