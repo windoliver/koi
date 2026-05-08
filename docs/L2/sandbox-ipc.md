@@ -73,3 +73,25 @@ worker captures the nonce, then seals its IPC channel
 (`process.send`/`process.disconnect` overridden, `message` listeners removed)
 before invoking untrusted code. Sealing-plus-nonce makes it infeasible for
 worker payloads to forge a `result`/`error` frame on the host channel.
+
+The default spawn path also scrubs the worker environment to a small
+allowlist (`PATH`, `HOME`, `USER`, `TMPDIR`, `LANG`, `LC_ALL`) and merges
+`profile.env` (after context narrowing) on top, so ambient host secrets do
+not flow into untrusted code by default. Override the allowlist with
+`BridgeConfig.envAllowlist` if a backend has additional safe variables.
+
+### Process-group isolation (descendant teardown)
+
+`BridgeConfig.processGroupIsolation` controls how the default spawn
+implementation handles descendants the worker may itself spawn.
+
+- `"best-effort"` (default): if `setsid` is on `PATH`, the worker is launched
+  inside its own session and the bridge kills the entire group on
+  timeout/dispose. If `setsid` is missing (default macOS without
+  util-linux), only the direct worker is killed — descendants may survive.
+- `"required"`: refuse to spawn unless `setsid` is available. Use this on
+  production hosts where descendant teardown is part of the security
+  contract.
+
+Backends that ship their own spawn wrapper (`createSandboxBridge` accepts
+an injected `spawnFn`) can implement equivalent isolation directly.

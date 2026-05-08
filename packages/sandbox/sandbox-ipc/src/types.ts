@@ -56,12 +56,13 @@ export interface BridgeConfig {
   readonly graceMs?: number;
   readonly maxResultBytes?: number;
   /**
-   * Process-group isolation policy for the default spawn implementation. When
-   * "required" (default), the bridge refuses to spawn workers if descendant
-   * teardown via process-group kill is not available on the host (e.g.,
-   * `setsid` missing). When "best-effort", the bridge spawns directly and
-   * only kills the direct worker — appropriate for trusted code or test
-   * harnesses that inject their own spawn function.
+   * Process-group isolation policy for the default spawn implementation.
+   * Default: "best-effort". When `setsid` is available, workers run in their
+   * own session so descendant processes can be torn down via group kill.
+   * When `setsid` is missing (e.g., default macOS), the bridge falls back to
+   * direct kill of the worker only. Set to "required" for production hosts
+   * where descendant teardown is essential — the bridge will refuse to spawn
+   * workers without `setsid` available.
    */
   readonly processGroupIsolation?: "required" | "best-effort";
   /**
