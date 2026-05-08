@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import { existsSync, readFileSync, rmSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { dirname, join } from "node:path";
 
 import {
@@ -9,6 +10,7 @@ import {
   resolveExitStatus,
   runCommands,
   runRuntimeGoldenReplay,
+  signalExitCode,
   spawnCommand,
 } from "./run-runtime-golden-replay.js";
 
@@ -66,14 +68,34 @@ describe("buildCommands", () => {
   });
 });
 
+describe("signalExitCode", () => {
+  test("returns 128 + signo for known POSIX signals (SIGINT -> 130, SIGTERM -> 143)", () => {
+    const signals = osConstants.signals as unknown as Record<string, number | undefined>;
+    const sigint = signals.SIGINT ?? 0;
+    const sigterm = signals.SIGTERM ?? 0;
+    expect(signalExitCode("SIGINT")).toBe(128 + sigint);
+    expect(signalExitCode("SIGTERM")).toBe(128 + sigterm);
+  });
+
+  test("distinguishes SIGINT from SIGTERM", () => {
+    expect(signalExitCode("SIGINT")).not.toBe(signalExitCode("SIGTERM"));
+  });
+
+  test("falls back to 128 when the signal name is unknown", () => {
+    expect(signalExitCode("SIGNOPE_NOT_REAL")).toBe(128);
+  });
+});
+
 describe("resolveExitStatus", () => {
   test("returns the child's exit code on a normal exit", () => {
     expect(resolveExitStatus({ exitCode: 0 })).toBe(0);
     expect(resolveExitStatus({ exitCode: 2 })).toBe(2);
   });
 
-  test("returns 128 when the child was killed by a signal", () => {
-    expect(resolveExitStatus({ exitCode: null, signalCode: "SIGTERM" })).toBe(128);
+  test("maps signaled children to 128 + signo (SIGTERM -> 143)", () => {
+    const signals = osConstants.signals as unknown as Record<string, number | undefined>;
+    const sigterm = signals.SIGTERM ?? 0;
+    expect(resolveExitStatus({ exitCode: null, signalCode: "SIGTERM" })).toBe(128 + sigterm);
   });
 
   test("returns 1 when the child has neither a code nor a signal", () => {
@@ -83,10 +105,10 @@ describe("resolveExitStatus", () => {
 });
 
 describe("runCommands", () => {
-  test("runs commands in order", () => {
+  test("runs commands in order and returns 0 when all succeed", () => {
     const seen: CommandSpec[] = [];
 
-    runCommands(
+    const status = runCommands(
       [
         { cmd: ["bun", "run", "build"], cwd: "/repo" },
         { cmd: ["bun", "test", "/repo/test.ts"], cwd: "/repo" },
@@ -97,30 +119,36 @@ describe("runCommands", () => {
       },
     );
 
-    expect(seen).toEqual([
-      { cmd: ["bun", "run", "build"], cwd: "/repo" },
-      { cmd: ["bun", "test", "/repo/test.ts"], cwd: "/repo" },
-    ]);
+    expect(status).toBe(0);
+    expect(seen).toHaveLength(2);
   });
 
-  test("propagates a signaled subprocess as a non-zero exit", () => {
-    const exitSpy = mock((_code?: string | number | null | undefined) => {
-      throw new Error("process.exit called");
-    });
-    const originalExit = process.exit;
-    process.exit = exitSpy as unknown as typeof process.exit;
+  test("returns the failing exit code and stops at the first failure", () => {
+    const seen: CommandSpec[] = [];
+    const status = runCommands(
+      [
+        { cmd: ["bun", "run", "build"], cwd: "/repo" },
+        { cmd: ["bun", "test"], cwd: "/repo" },
+      ],
+      (command) => {
+        seen.push(command);
+        return { exitCode: command.cmd[1] === "run" ? 0 : 7 };
+      },
+    );
 
-    try {
-      expect(() =>
-        runCommands([{ cmd: ["bun", "test"], cwd: "/repo" }], () => ({
-          exitCode: null,
-          signalCode: "SIGTERM",
-        })),
-      ).toThrow("process.exit called");
-      expect(exitSpy).toHaveBeenCalledWith(128);
-    } finally {
-      process.exit = originalExit;
-    }
+    expect(status).toBe(7);
+    expect(seen).toHaveLength(2);
+  });
+
+  test("returns 128 + signo when a child is killed by signal", () => {
+    const signals = osConstants.signals as unknown as Record<string, number | undefined>;
+    const sigterm = signals.SIGTERM ?? 0;
+    const status = runCommands([{ cmd: ["bun", "test"], cwd: "/repo" }], () => ({
+      exitCode: null,
+      signalCode: "SIGTERM",
+    }));
+
+    expect(status).toBe(128 + sigterm);
   });
 });
 
@@ -136,12 +164,12 @@ describe("spawnCommand", () => {
 });
 
 describe("runRuntimeGoldenReplay", () => {
-  test("creates a bunfig and removes its dir around the targeted commands", () => {
+  test("returns 0 and runs build + golden-replay with the supplied repo root", () => {
     const spawn = mock(() => ({ exitCode: 0 }));
     const createBunfig = mock(() => "/tmp/koi-runtime-golden-replay/bunfig.toml");
     const removeBunfig = mock(() => {});
 
-    runRuntimeGoldenReplay(
+    const status = runRuntimeGoldenReplay(
       ["-t", "Golden: feedback-loop"],
       "/repo",
       createBunfig,
@@ -149,6 +177,7 @@ describe("runRuntimeGoldenReplay", () => {
       spawn,
     );
 
+    expect(status).toBe(0);
     expect(createBunfig).toHaveBeenCalledTimes(1);
     expect(spawn).toHaveBeenNthCalledWith(1, {
       cmd: [process.execPath, "run", "build", "--filter=@koi/runtime"],
@@ -165,6 +194,21 @@ describe("runRuntimeGoldenReplay", () => {
       ],
       cwd: "/repo",
     });
+    expect(removeBunfig).toHaveBeenCalledWith("/tmp/koi-runtime-golden-replay/bunfig.toml");
+  });
+
+  test("returns the failing status and still removes the bunfig on a non-zero child exit", () => {
+    const removeBunfig = mock(() => {});
+
+    const status = runRuntimeGoldenReplay(
+      [],
+      "/repo",
+      () => "/tmp/koi-runtime-golden-replay/bunfig.toml",
+      removeBunfig,
+      () => ({ exitCode: 5 }),
+    );
+
+    expect(status).toBe(5);
     expect(removeBunfig).toHaveBeenCalledWith("/tmp/koi-runtime-golden-replay/bunfig.toml");
   });
 
@@ -186,11 +230,27 @@ describe("runRuntimeGoldenReplay", () => {
     expect(removeBunfig).toHaveBeenCalledWith("/tmp/koi-runtime-golden-replay/bunfig.toml");
   });
 
-  test("uses the default cleanup to remove the bunfig dir when no override is provided", () => {
+  test("default cleanup removes the temp bunfig dir on failure (no leak)", () => {
     const bunfigPath = createNoCoverageBunfig();
     const bunfigDir = dirname(bunfigPath);
 
-    runRuntimeGoldenReplay(
+    const status = runRuntimeGoldenReplay(
+      [],
+      "/repo",
+      () => bunfigPath,
+      undefined,
+      () => ({ exitCode: 9 }),
+    );
+
+    expect(status).toBe(9);
+    expect(existsSync(bunfigDir)).toBe(false);
+  });
+
+  test("default cleanup removes the temp bunfig dir on success", () => {
+    const bunfigPath = createNoCoverageBunfig();
+    const bunfigDir = dirname(bunfigPath);
+
+    const status = runRuntimeGoldenReplay(
       [],
       "/repo",
       () => bunfigPath,
@@ -198,6 +258,7 @@ describe("runRuntimeGoldenReplay", () => {
       () => ({ exitCode: 0 }),
     );
 
+    expect(status).toBe(0);
     expect(existsSync(bunfigDir)).toBe(false);
   });
 

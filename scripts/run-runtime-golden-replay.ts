@@ -1,11 +1,12 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { constants as osConstants, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const GOLDEN_REPLAY_PATH = "packages/meta/runtime/src/__tests__/golden-replay.test.ts";
 const NO_COVERAGE_BUNFIG = `[test]
 coverage = false
 `;
+const DEFAULT_SIGNAL_EXIT_CODE = 128;
 
 export type CommandSpec = {
   readonly cmd: readonly string[];
@@ -60,9 +61,18 @@ export function spawnCommand(command: CommandSpec): SpawnResult {
   return { exitCode: result.exitCode, signalCode: result.signalCode ?? null };
 }
 
+export function signalExitCode(signalCode: string): number {
+  const signals = osConstants.signals as unknown as Record<string, number | undefined>;
+  const signo = signals[signalCode];
+  if (typeof signo === "number" && signo > 0) {
+    return 128 + signo;
+  }
+  return DEFAULT_SIGNAL_EXIT_CODE;
+}
+
 export function resolveExitStatus(result: SpawnResult): number {
   if (result.signalCode != null) {
-    return 128;
+    return signalExitCode(result.signalCode);
   }
   if (result.exitCode == null) {
     return 1;
@@ -73,14 +83,14 @@ export function resolveExitStatus(result: SpawnResult): number {
 export function runCommands(
   commands: readonly CommandSpec[],
   spawn: SpawnSync = spawnCommand,
-): void {
+): number {
   for (const command of commands) {
-    const result = spawn(command);
-    const status = resolveExitStatus(result);
+    const status = resolveExitStatus(spawn(command));
     if (status !== 0) {
-      process.exit(status);
+      return status;
     }
   }
+  return 0;
 }
 
 export function runRuntimeGoldenReplay(
@@ -91,16 +101,19 @@ export function runRuntimeGoldenReplay(
     rmSync(join(bunfigPath, ".."), { force: true, recursive: true });
   },
   spawn: SpawnSync = spawnCommand,
-): void {
+): number {
   const bunfigPath = createBunfig();
 
   try {
-    runCommands(buildCommands(repoRoot, bunfigPath, extraArgs), spawn);
+    return runCommands(buildCommands(repoRoot, bunfigPath, extraArgs), spawn);
   } finally {
     removeBunfig(bunfigPath);
   }
 }
 
 if (import.meta.main) {
-  runRuntimeGoldenReplay(process.argv.slice(2));
+  const status = runRuntimeGoldenReplay(process.argv.slice(2));
+  if (status !== 0) {
+    process.exit(status);
+  }
 }
