@@ -324,6 +324,47 @@ describe("createAutoHarnessStack", () => {
     expect(errors[0]?.message).toBe("generate failed");
   });
 
+  test("reports thrown verifier failures and returns null", async () => {
+    const errors: AutoHarnessError[] = [];
+    const stack = createAutoHarnessStack({
+      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      generate: async () => "candidate-code",
+      verifyCandidate: async () => {
+        throw new Error("verifier crashed");
+      },
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async () => ({ ok: true }),
+      onError: (error) => errors.push(error),
+    });
+
+    await expect(stack.synthesizeHarness(makeSignal())).resolves.toBeNull();
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.stage).toBe("verify");
+    expect(errors[0]?.message).toBe("verifyCandidate failed");
+  });
+
+  test("reports thrown approval failures and returns null", async () => {
+    const errors: AutoHarnessError[] = [];
+    const artifact = makeArtifact();
+    const stack = createAutoHarnessStack({
+      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      generate: async () => "candidate-code",
+      verifyCandidate: async () => ({ ok: true, artifact }),
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => {
+        throw new Error("approval service unavailable");
+      },
+      deployCandidate: async () => ({ ok: true }),
+      onError: (error) => errors.push(error),
+    });
+
+    await expect(stack.synthesizeHarness(makeSignal())).resolves.toBeNull();
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.stage).toBe("request-deployment-approval");
+    expect(errors[0]?.message).toBe("requestDeploymentApproval failed");
+  });
+
   test("reports deployment failures without consuming the session cap", async () => {
     const errors: AutoHarnessError[] = [];
     const artifact = makeArtifact();

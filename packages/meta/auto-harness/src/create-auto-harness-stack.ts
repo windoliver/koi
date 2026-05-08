@@ -19,6 +19,19 @@ function resolveMaxSynthesesPerSession(value: number | undefined): number {
   return value;
 }
 
+async function runStageOrReport<T>(
+  action: () => Promise<T>,
+  error: AutoHarnessError,
+  reportError: (error: AutoHarnessError) => void,
+): Promise<T | null> {
+  try {
+    return await action();
+  } catch (cause: unknown) {
+    reportError({ ...error, cause });
+    return null;
+  }
+}
+
 export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessStack {
   const policyCacheHandle = createPolicyCacheMiddleware({
     notifier: config.notifier,
@@ -56,7 +69,14 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       return null;
     }
 
-    const verification = await config.verifyCandidate(signal, code);
+    const verification = await runStageOrReport(
+      () => config.verifyCandidate(signal, code),
+      { stage: "verify", message: "verifyCandidate failed" },
+      reportError,
+    );
+    if (verification === null) {
+      return null;
+    }
     if (!verification.ok || verification.artifact === null) {
       emitEvent({
         kind: "verification.failed",
@@ -67,7 +87,14 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     }
 
     const artifact = verification.artifact;
-    const policy = await config.evaluatePolicy(artifact, signal);
+    const policy = await runStageOrReport(
+      () => config.evaluatePolicy(artifact, signal),
+      { stage: "evaluate-policy", message: "evaluatePolicy failed" },
+      reportError,
+    );
+    if (policy === null) {
+      return null;
+    }
     if (!policy.ok || policy.action !== "allow") {
       emitEvent({
         kind: "policy.blocked",
@@ -78,7 +105,17 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       return null;
     }
 
-    const approved = await config.requestDeploymentApproval(artifact, signal);
+    const approved = await runStageOrReport(
+      () => config.requestDeploymentApproval(artifact, signal),
+      {
+        stage: "request-deployment-approval",
+        message: "requestDeploymentApproval failed",
+      },
+      reportError,
+    );
+    if (approved === null) {
+      return null;
+    }
     if (!approved) {
       emitEvent({
         kind: "approval.denied",
@@ -89,7 +126,14 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       return null;
     }
 
-    const deployment = await config.deployCandidate(artifact, signal);
+    const deployment = await runStageOrReport(
+      () => config.deployCandidate(artifact, signal),
+      { stage: "deploy", message: "deployCandidate failed" },
+      reportError,
+    );
+    if (deployment === null) {
+      return null;
+    }
     if (!deployment.ok) {
       reportError({
         stage: "deploy",
