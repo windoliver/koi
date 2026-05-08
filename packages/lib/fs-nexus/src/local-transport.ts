@@ -566,8 +566,15 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
       ...(at !== undefined ? { at } : {}),
     });
     if (!result.ok) return result;
+    // Best-effort cache refresh: the bridge has already committed the mount.
+    // If list_mounts fails (timeout, transient error), don't trick the caller
+    // into retrying a non-idempotent mutation. Optimistically append the new
+    // path so the local cache stays consistent until the next successful
+    // listMounts().
     const refreshed = await listMounts();
-    if (!refreshed.ok) return { ok: false, error: refreshed.error };
+    if (!refreshed.ok && !mounts.includes(result.value.path)) {
+      mounts = [...mounts, result.value.path];
+    }
     return result;
   }
 
@@ -578,8 +585,13 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
       path,
     });
     if (!result.ok) return result;
+    // Best-effort cache refresh: see addMount() for rationale. Optimistically
+    // drop the removed path so the cache reflects the committed state even
+    // when list_mounts fails.
     const refreshed = await listMounts();
-    if (!refreshed.ok) return { ok: false, error: refreshed.error };
+    if (!refreshed.ok) {
+      mounts = mounts.filter((m) => m !== path);
+    }
     return result;
   }
 

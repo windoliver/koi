@@ -119,26 +119,23 @@ function connectorNameFromPath(path: string): string {
   return parts[0] ?? "unknown";
 }
 
-async function describeMountWithFallback(
-  transport: import("@koi/fs-nexus").NexusTransport,
-  path: string,
-): Promise<MountDescription> {
-  const described = await transport.describeMount?.(path);
-  if (described !== undefined && described.ok) return described.value;
-  return {
-    path,
-    connector: connectorNameFromPath(path),
-  };
+function cheapMountDescription(path: string): MountDescription {
+  return { path, connector: connectorNameFromPath(path) };
 }
 
-async function collectManifestMountDescriptions(
+/**
+ * Synchronous, network-free seed for the prompt-injection middleware.
+ *
+ * Intentionally does NOT call `describeMount` — that RPC may force OAuth or
+ * connector-warmup work and would turn cosmetic prompt enrichment into a
+ * blocking dependency on TUI startup. Callers that want richer descriptions
+ * (e.g. README content) should refresh asynchronously after startup.
+ */
+function seedManifestMountDescriptions(
   transport: import("@koi/fs-nexus").NexusTransport,
-): Promise<readonly MountDescription[]> {
+): readonly MountDescription[] {
   const mounts = transport.mounts ?? [];
-  const descriptions = await Promise.all(
-    mounts.map((path) => describeMountWithFallback(transport, path)),
-  );
-  return [...descriptions].sort((a, b) => a.path.localeCompare(b.path));
+  return [...mounts.map(cheapMountDescription)].sort((a, b) => a.path.localeCompare(b.path));
 }
 
 /**
@@ -478,10 +475,18 @@ export async function resolveFileSystemAsync(
     try {
       unsubscribe = onNotification !== undefined ? transport.subscribe(onNotification) : () => {};
 
+      // Single-mount default: when no explicit mountPoint is configured and
+      // exactly one mount was discovered, root the backend at that mount so
+      // bare paths like "/foo.txt" resolve under the mounted workspace
+      // (preserves pre-multi-mount behavior). For multi-mount sessions we
+      // keep namespace-root so callers must address mounts explicitly.
+      const transportMounts = transport.mounts ?? [];
+      const inferredMountPoint =
+        options.mountPoint ?? (transportMounts.length === 1 ? transportMounts[0] : undefined);
       nexusBackend = createNexusFileSystem({
         url: "local://bridge",
         transport,
-        ...(options.mountPoint !== undefined ? { mountPoint: options.mountPoint } : {}),
+        ...(inferredMountPoint !== undefined ? { mountPoint: inferredMountPoint } : {}),
       });
     } catch (e: unknown) {
       transport.close();
@@ -512,7 +517,7 @@ export async function resolveFileSystemAsync(
     return {
       backend,
       operations,
-      mountDescriptions: await collectManifestMountDescriptions(transport),
+      mountDescriptions: seedManifestMountDescriptions(transport),
       transport,
     };
   }
