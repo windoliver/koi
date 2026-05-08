@@ -128,7 +128,7 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
       });
       if (!result.ok) return result as Result<WorkerHandle, KoiError>;
 
-      const parsed = parseSpawnResponse(result.value, now());
+      const parsed = parseSpawnResponse(result.value, now(), request.workerId);
       if (!parsed.ok) return parsed;
 
       if (previous !== undefined) {
@@ -309,7 +309,7 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
             throw new Error(`remote watch events failed for ${id}: ${polled.error.message}`);
           }
 
-          const parsed = parseEventsResponse(polled.value);
+          const parsed = parseEventsResponse(polled.value, id);
           if (!parsed.ok) throw new Error(parsed.error.message);
           state.cursor = parsed.value.nextCursor;
           for (const ev of parsed.value.events) {
@@ -431,6 +431,7 @@ function parseAvailability(value: unknown): boolean {
 function parseSpawnResponse(
   value: unknown,
   fallbackStartedAt: number,
+  expectedWorkerId: WorkerId,
 ): Result<
   {
     readonly startedAt: number;
@@ -451,7 +452,7 @@ function parseSpawnResponse(
       : fallbackStartedAt;
   const pid =
     typeof record.pid === "number" && Number.isFinite(record.pid) ? record.pid : undefined;
-  const events = parseRemoteEventsArray(record.events);
+  const events = parseRemoteEventsArray(record.events, expectedWorkerId);
   if (!events.ok) return events;
   return {
     ok: true,
@@ -476,7 +477,10 @@ function parseStatusResponse(value: unknown): Result<RemoteStatusResponse, KoiEr
   return { ok: true, value: { alive } };
 }
 
-function parseEventsResponse(value: unknown): Result<
+function parseEventsResponse(
+  value: unknown,
+  expectedWorkerId: WorkerId,
+): Result<
   {
     readonly nextCursor: unknown;
     readonly alive: boolean | undefined;
@@ -488,7 +492,7 @@ function parseEventsResponse(value: unknown): Result<
     return invalidRemoteResponse("workers.events returned a non-object payload");
   }
   const record = value as Record<string, unknown>;
-  const events = parseRemoteEventsArray(record.events);
+  const events = parseRemoteEventsArray(record.events, expectedWorkerId);
   if (!events.ok) return events;
   const alive = typeof record.alive === "boolean" ? record.alive : undefined;
   return {
@@ -501,20 +505,26 @@ function parseEventsResponse(value: unknown): Result<
   };
 }
 
-function parseRemoteEventsArray(value: unknown): Result<readonly WorkerEvent[], KoiError> {
+function parseRemoteEventsArray(
+  value: unknown,
+  expectedWorkerId?: WorkerId,
+): Result<readonly WorkerEvent[], KoiError> {
   if (value === undefined) return { ok: true, value: [] };
   if (!Array.isArray(value))
     return invalidRemoteResponse("remote worker events payload must be an array");
   const events: WorkerEvent[] = [];
   for (const item of value) {
-    const parsed = parseWorkerEvent(item);
+    const parsed = parseWorkerEvent(item, expectedWorkerId);
     if (!parsed.ok) return parsed;
-    events.push(parsed.value);
+    if (parsed.value !== null) events.push(parsed.value);
   }
   return { ok: true, value: events };
 }
 
-function parseWorkerEvent(value: unknown): Result<WorkerEvent, KoiError> {
+function parseWorkerEvent(
+  value: unknown,
+  expectedWorkerId: WorkerId | undefined,
+): Result<WorkerEvent | null, KoiError> {
   if (value === null || typeof value !== "object") {
     return invalidRemoteResponse("remote worker event must be an object");
   }
@@ -529,6 +539,9 @@ function parseWorkerEvent(value: unknown): Result<WorkerEvent, KoiError> {
     typeof kind !== "string"
   ) {
     return invalidRemoteResponse("remote worker event is missing kind/workerId/at");
+  }
+  if (expectedWorkerId !== undefined && worker !== expectedWorkerId) {
+    return { ok: true, value: null };
   }
 
   if (kind === "started") {
@@ -548,12 +561,11 @@ function parseWorkerEvent(value: unknown): Result<WorkerEvent, KoiError> {
     return { ok: true, value: { kind, workerId: worker as WorkerId, at } };
   }
   if (kind === "exited") {
-    if (
-      typeof record.code !== "number" ||
-      typeof record.state !== "string" ||
-      !PROCESS_STATES.has(record.state as ProcessState)
-    ) {
+    if (typeof record.code !== "number" || typeof record.state !== "string") {
       return invalidRemoteResponse("remote exited event is missing code/state");
+    }
+    if (!PROCESS_STATES.has(record.state as ProcessState)) {
+      return { ok: true, value: null };
     }
     return {
       ok: true,
@@ -591,7 +603,7 @@ function parseWorkerEvent(value: unknown): Result<WorkerEvent, KoiError> {
       },
     };
   }
-  return invalidRemoteResponse(`remote worker event kind "${kind}" is not supported`);
+  return { ok: true, value: null };
 }
 
 function invalidRemoteResponse<T>(message: string): Result<T, KoiError> {
