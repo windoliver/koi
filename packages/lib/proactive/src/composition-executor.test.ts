@@ -1510,4 +1510,18 @@ describe("createCompositionExecutor", () => {
     expect(isPreCommitRejection(new Error("boom"))).toBe(false);
     expect(isPreCommitRejection({})).toBe(false);
   });
+
+  test("isPreCommitRejection() recognizes the brand on non-Error objects (cross-realm)", async () => {
+    // Simulates an Error from another realm/bundle that fails same-realm
+    // `instanceof Error` but still carries the shared Symbol.for() brand.
+    const brand = Symbol.for("@koi/proactive/preCommitRejection");
+    const crossRealm: Record<string | symbol, unknown> = { message: "x", [brand]: true };
+    expect(isPreCommitRejection(crossRealm)).toBe(true);
+
+    // null/undefined/primitives still rejected.
+    expect(isPreCommitRejection(null)).toBe(false);
+    expect(isPreCommitRejection(undefined)).toBe(false);
+    expect(isPreCommitRejection("brand")).toBe(false);
+    expect(isPreCommitRejection(42)).toBe(false);
+  });
 });

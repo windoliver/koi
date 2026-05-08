@@ -293,6 +293,29 @@ const llmPlanSchema = z
   })
   .passthrough();
 
+// Step kinds the executor currently does not run; the executor fail-closes
+// on the first such step, so any supported follow-up (notify_user,
+// submit_task, create_schedule) placed after one is silently dropped.
+const EXECUTOR_UNSUPPORTED_KINDS = new Set<string>([
+  "spawn_agent",
+  "forge_skill",
+  "tool_call",
+]);
+
+// Stable-partition LLM-emitted steps so executor-supported steps come
+// before unsupported ones, preserving relative order within each group.
+// This keeps safe operator-facing actions (e.g. notify_user) from being
+// suppressed by an LLM choosing to lead with an unsupported diagnostic.
+function normalizeStepOrder(steps: readonly CompositionStep[]): readonly CompositionStep[] {
+  const supported: CompositionStep[] = [];
+  const unsupported: CompositionStep[] = [];
+  for (const step of steps) {
+    if (EXECUTOR_UNSUPPORTED_KINDS.has(step.kind)) unsupported.push(step);
+    else supported.push(step);
+  }
+  return [...supported, ...unsupported];
+}
+
 function parseAdapterResponse(
   raw: string,
   trigger: CompositionTrigger,
@@ -316,7 +339,7 @@ function parseAdapterResponse(
     return {
       triggerId: plan.triggerId,
       triggerEmittedAt: trigger.emittedAt,
-      steps: plan.steps as readonly CompositionStep[],
+      steps: normalizeStepOrder(plan.steps as readonly CompositionStep[]),
       estimatedCost: plan.estimatedCost,
     };
   } catch (error) {

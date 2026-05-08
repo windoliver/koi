@@ -160,8 +160,17 @@ export function preCommitRejection(
 }
 
 export function isPreCommitRejection(value: unknown): value is CompositionPreCommitRejection {
-  if (!(value instanceof Error)) return false;
-  return (value as unknown as { [PRE_COMMIT_BRAND]?: unknown })[PRE_COMMIT_BRAND] === true;
+  // Detect the brand structurally, not via `instanceof Error`. Errors
+  // crossing realm/bundle boundaries (worker threads, vm contexts,
+  // duplicate-loaded modules) can fail same-realm `instanceof` checks
+  // even when they carry the shared `Symbol.for()` brand. The brand
+  // itself is unforgeable enough to rely on alone — synthesizing it
+  // requires an explicit `Symbol.for("@koi/proactive/preCommitRejection")`
+  // lookup, which is treated as opt-in to the contract.
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+    return false;
+  }
+  return (value as { [PRE_COMMIT_BRAND]?: unknown })[PRE_COMMIT_BRAND] === true;
 }
 
 /**

@@ -133,6 +133,48 @@ describe("createLlmCompositionPlanner", () => {
     expect(plan.requiresApproval).toBe(false);
   });
 
+  test("LLM step ordering is normalized so unsupported steps come last", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "trigger-1",
+            triggerEmittedAt: 1,
+            // Adversarial ordering: unsupported step BEFORE the
+            // user-facing notification. Executor fail-closes on
+            // unsupported, so without normalization the notify drops.
+            steps: [
+              {
+                kind: "spawn_agent",
+                agentType: "diagnostic",
+                input: { kind: "text", text: "diagnose" },
+                delivery: { kind: "deferred" },
+              },
+              { kind: "notify_user", channel: "inbox", message: "alert", priority: "high" },
+            ],
+            estimatedCost: 6,
+          });
+        },
+      },
+    });
+
+    const plan = await planner.plan(
+      {
+        id: "trigger-1",
+        source: "test",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 1,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    expect(plan.steps[0]?.kind).toBe("notify_user");
+    expect(plan.steps[1]?.kind).toBe("spawn_agent");
+  });
+
   test("trigger-id mismatch falls back to the rule planner when configured", async () => {
     const planner = createLlmCompositionPlanner({
       adapter: {
