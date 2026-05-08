@@ -258,6 +258,13 @@ export interface StructuredPlaybookStore {
   /** Fetch a prior version (for rollback). Implementations without lineage
    *  return `undefined`. */
   readonly getVersion?: (id: string, version: number) => Promise<StructuredPlaybook | undefined>;
+  /** Capability flag: true when the adapter actually maintains a version
+   *  lineage table (i.e. `getVersion` can resolve any historical version,
+   *  not just the current head). Stub implementations whose `getVersion`
+   *  always returns `undefined` MUST leave this `false` or undefined so
+   *  features like rollback can fail closed at the capability boundary
+   *  rather than at a misleading version-not-found. */
+  readonly lineageSupported?: boolean;
 }
 
 /** Append-only log of proposals + their evaluations (immutable lineage). */

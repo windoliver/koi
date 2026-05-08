@@ -298,6 +298,16 @@ export async function commitPromotion(
   evaluation: PlaybookEvaluation,
   thresholds: PromotionThresholds,
 ): Promise<PromotionDecision> {
+  // Fail closed on rollback verdict: commitPromotion is the promote/reject
+  // dispatch path and must never silently downgrade a rollback decision to a
+  // reject. Callers route rollback evaluations through rollbackPromotion()
+  // explicitly so the version restore path runs.
+  if (evaluation.verdict === "rollback") {
+    throw new Error(
+      "ACE promotion gate: commitPromotion received a rollback verdict; route rollback evaluations through rollbackPromotion()",
+    );
+  }
+
   const current = await deps.structuredStore.get(proposal.playbookId);
   if (current === undefined) {
     throw new Error(`ACE promotion gate: structured playbook not found: ${proposal.playbookId}`);
@@ -424,7 +434,10 @@ export async function rollbackPromotion(
   targetVersion: number,
   evaluation: PlaybookEvaluation,
 ): Promise<PromotionDecision> {
-  if (deps.structuredStore.getVersion === undefined) {
+  if (
+    deps.structuredStore.getVersion === undefined ||
+    deps.structuredStore.lineageSupported !== true
+  ) {
     throw new Error("ACE promotion gate: rollback requires structured store lineage support");
   }
 

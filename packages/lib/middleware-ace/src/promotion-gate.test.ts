@@ -133,6 +133,7 @@ function createStructuredStore(
         ? (structuredClone(current) as StructuredPlaybook)
         : undefined;
     },
+    lineageSupported: true,
   };
 }
 
@@ -204,6 +205,7 @@ function createSaveFailingStructuredStore(
       id === current.id && version === current.version
         ? (structuredClone(current) as StructuredPlaybook)
         : undefined,
+    lineageSupported: true,
   };
 }
 
@@ -613,29 +615,23 @@ describe("commitPromotion", () => {
     ]);
   });
 
-  test("treats a rollback verdict as a rejected no-op and records the evaluation", async () => {
+  test("fails closed when given a rollback verdict (must use rollbackPromotion)", async () => {
     const store = createStructuredStore();
     const proposalStore = createProposalStore();
 
-    const decision = await commitPromotion(
-      { structuredStore: store, proposalStore, clock: () => 500 },
-      createProposal({ baseVersion: 1 }),
-      evaluation({ verdict: "rollback" }),
-      thresholds,
-    );
+    await expect(
+      commitPromotion(
+        { structuredStore: store, proposalStore, clock: () => 500 },
+        createProposal({ baseVersion: 1 }),
+        evaluation({ verdict: "rollback" }),
+        thresholds,
+      ),
+    ).rejects.toThrow(/rollback verdict.*rollbackPromotion/i);
 
-    expect(decision).toEqual({
-      outcome: "rejected",
-      playbookId: "playbook-1",
-      proposalId: "proposal-1",
-      evaluationId: "evaluation-1",
-      fromVersion: 1,
-      toVersion: 1,
-    });
-
+    // No mutation: head untouched, no audit recorded for the wrong path.
     const saved = await store.get("playbook-1");
     expect(saved).toEqual(createStructuredPlaybook());
-    expect(proposalStore.recordedEvaluations).toEqual([evaluation({ verdict: "rollback" })]);
+    expect(proposalStore.recordedEvaluations).toEqual([]);
   });
 
   test("audit-first: skips head save when evaluation recording fails", async () => {
@@ -801,6 +797,7 @@ describe("rollbackPromotion", () => {
           ? (structuredClone(snapshot) as StructuredPlaybook)
           : undefined;
       },
+      lineageSupported: true,
     };
     const proposalStore = createProposalStore();
 
@@ -923,6 +920,7 @@ describe("rollbackPromotion", () => {
         id === current.id && version === previous.version
           ? (structuredClone(previous) as StructuredPlaybook)
           : undefined,
+      lineageSupported: true,
     };
 
     await expect(

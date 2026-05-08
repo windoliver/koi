@@ -124,7 +124,10 @@ export interface SqlitePlaybookStoreConfig {
 export interface SqlitePlaybookStore {
   readonly playbooks: PlaybookStore;
   readonly structuredPlaybooks: Required<
-    Pick<StructuredPlaybookStore, "get" | "list" | "save" | "remove" | "getVersion">
+    Pick<
+      StructuredPlaybookStore,
+      "get" | "list" | "save" | "remove" | "getVersion" | "lineageSupported"
+    >
   >;
   readonly trajectories: TrajectoryStore;
   readonly proposals: PlaybookProposalStore;
@@ -844,6 +847,7 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
       const row = selectVersion.get(id, version) as { readonly snapshot: string } | null;
       return row !== null ? (JSON.parse(row.snapshot) as StructuredPlaybook) : undefined;
     },
+    lineageSupported: true,
   };
 }
 
