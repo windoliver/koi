@@ -75,7 +75,24 @@ export interface CompositionExecutionLog {
 
 export interface CompositionExecutionContext {
   readonly agentId: AgentId;
+  /**
+   * Scheduler used for `submit_task` and `create_schedule`. Implementations
+   * SHOULD throw `preCommitRejection(...)` (from this package) for any
+   * deterministic, no-side-effect failure (invalid cron expression, invalid
+   * input, unsupported option, etc.) so the executor releases the
+   * execution-log claim and a corrected retry can succeed without operator
+   * intervention. Plain `Error` throws are treated as ambiguous (claim left
+   * pending, idempotencyKey surfaced for reconciliation) since the
+   * executor cannot tell whether a side effect committed.
+   */
   readonly scheduler: SchedulerComponent;
+  /**
+   * User-notification dispatch. Implementations SHOULD throw
+   * `preCommitRejection(...)` for deterministic pre-send failures (invalid
+   * payload, local config error, unauthorized channel) so the executor
+   * releases the claim. Plain `Error` throws are ambiguous and leave the
+   * claim pending — see `executionLog` semantics for reconciliation.
+   */
   readonly notify: (notification: CompositionNotification) => Promise<unknown>;
   readonly spawn?: ((request: CompositionSpawnRequest) => Promise<unknown>) | undefined;
   readonly forge?: ((request: CompositionForgeRequest) => Promise<unknown>) | undefined;
@@ -269,6 +286,29 @@ function unsupportedScheduleOption(
   return undefined;
 }
 
+// Cheap pre-commit syntactic check: a cron expression must be a non-empty
+// string with 5 or 6 whitespace-separated fields composed only of
+// cron-legal characters. Catches the most common bad-plan inputs (empty
+// strings, free-text, fewer/more fields) before claiming the execution-log
+// key, so deterministic failures stay re-plannable. Fuller semantic
+// validation still happens inside scheduler.schedule().
+const CRON_FIELD_CHARS = /^[\d*?\-,/LW#]+$/;
+function malformedCronExpression(expression: string): string | undefined {
+  if (typeof expression !== "string" || expression.trim().length === 0) {
+    return "expression must be a non-empty string";
+  }
+  const fields = expression.trim().split(/\s+/u);
+  if (fields.length < 5 || fields.length > 6) {
+    return `expression must have 5 or 6 fields (got ${fields.length})`;
+  }
+  for (const field of fields) {
+    if (!CRON_FIELD_CHARS.test(field)) {
+      return `field "${field}" contains characters not allowed in a cron expression`;
+    }
+  }
+  return undefined;
+}
+
 function approvalRequired(trigger: CompositionTrigger): CompositionExecutionResult {
   return {
     triggerId: trigger.id,
@@ -406,6 +446,22 @@ export function createCompositionExecutor(
 
       if (plan.requiresApproval) return approvalRequired(trigger);
 
+      // Empty non-approval plans are almost always a planner bug — silently
+      // succeeding would drop the trigger without any visible action. Fail
+      // closed as INVALID_PLAN so the caller can re-plan or escalate.
+      if (plan.steps.length === 0) {
+        return {
+          triggerId: trigger.id,
+          status: "failed",
+          stepResults: [],
+          executedCount: 0,
+          error: {
+            code: "INVALID_PLAN",
+            message: "plan has zero steps; refusing to silently succeed on an empty plan",
+          },
+        };
+      }
+
       const allowedChannels =
         context.allowedNotifyChannels ?? DEFAULT_ALLOWED_NOTIFY_CHANNELS;
 
@@ -475,6 +531,23 @@ export function createCompositionExecutor(
                   error: {
                     code: "INVALID_PLAN",
                     message: `create_schedule taskOptions.${unsupported} is not supported — scheduler backends cannot persist or enforce it on cron firings`,
+                    stepKind: "create_schedule",
+                  },
+                });
+              }
+
+              // Cheap cron syntax pre-check before claim so an obviously
+              // malformed expression surfaces as INVALID_PLAN (re-plannable)
+              // instead of wedging the execution log on a deterministic
+              // scheduler.schedule() throw.
+              const cronError = malformedCronExpression(step.expression);
+              if (cronError !== undefined) {
+                return failedResult(trigger.id, stepResults, {
+                  step,
+                  status: "failed",
+                  error: {
+                    code: "INVALID_PLAN",
+                    message: `create_schedule expression "${step.expression}" is malformed: ${cronError}`,
                     stepKind: "create_schedule",
                   },
                 });

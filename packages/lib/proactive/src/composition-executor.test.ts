@@ -1371,6 +1371,64 @@ describe("createCompositionExecutor", () => {
     expect(notifyKeys[0]).not.toBe(notifyKeys[1]);
   });
 
+  test("empty plan with requiresApproval=false fails as INVALID_PLAN", async () => {
+    const { scheduler } = schedulerStub();
+    const { log, store } = inMemoryExecutionLog();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: log,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [],
+      estimatedCost: 0,
+      requiresApproval: false,
+    };
+
+    const result = await executor.execute(trigger(), plan);
+
+    expect(result.status).toBe("failed");
+    expect(result.error?.code).toBe("INVALID_PLAN");
+    expect(store.size).toBe(0);
+  });
+
+  test("create_schedule with malformed cron rejects as INVALID_PLAN before claim", async () => {
+    const { scheduler, calls } = schedulerStub();
+    const { log, store } = inMemoryExecutionLog();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: log,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [
+        {
+          kind: "create_schedule",
+          expression: "not a real cron expression",
+          agentId: agentId("agent-1"),
+          mode: "spawn",
+          input: { kind: "text", text: "x" },
+        },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const result = await executor.execute(trigger(), plan);
+
+    expect(result.status).toBe("failed");
+    expect(result.error?.code).toBe("INVALID_PLAN");
+    expect(calls.schedule).toHaveLength(0);
+    // Pre-commit rejection must NOT poison the execution log.
+    expect(store.size).toBe(0);
+  });
+
   test("isPreCommitRejection() recognizes only the exported helper-built rejection", async () => {
     const built = preCommitRejection("nope");
     expect(isPreCommitRejection(built)).toBe(true);
