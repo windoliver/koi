@@ -105,13 +105,13 @@ export function createDashboardClient(config: DashboardClientConfig): DashboardC
   const baseUrl = stripTrailingSlash(config.baseUrl);
 
   return {
-    listAgents: (query?: AgentListQuery): Promise<Result<Page<AgentStatus>>> => {
-      const qs = encodeAgentListQuery(query);
-      const url = qs.length > 0 ? `${baseUrl}/api/agents?${qs}` : `${baseUrl}/api/agents`;
-      return getJson<Page<AgentStatus>>(fetchImpl, url, { validate: isAgentStatusPage });
-    },
-
-    getAgent: (id): Promise<Result<AgentStatus | undefined>> =>
+    listAgents: (query) =>
+      getJson<Page<AgentStatus>>(
+        fetchImpl,
+        listUrl(baseUrl, "agents", encodeAgentListQuery(query)),
+        { validate: isAgentStatusPage },
+      ),
+    getAgent: (id) =>
       getJson<AgentStatus | undefined>(
         fetchImpl,
         `${baseUrl}/api/agents/${encodeURIComponent(id)}`,
@@ -120,49 +120,14 @@ export function createDashboardClient(config: DashboardClientConfig): DashboardC
           validate: isAgentStatus,
         },
       ),
-
-    listSessions: (query?: SessionListQuery): Promise<Result<Page<SessionSummary>>> => {
-      const qs = encodeSessionListQuery(query);
-      const url = qs.length > 0 ? `${baseUrl}/api/sessions?${qs}` : `${baseUrl}/api/sessions`;
-      return getJson<Page<SessionSummary>>(fetchImpl, url, { validate: isSessionSummaryPage });
-    },
-
-    getMetrics: async (query): Promise<Result<readonly MetricPoint[]>> => {
-      // The dashboard-api parser only honors a single `name` plus `since`/`limit`.
-      // Fan out one request per name and filter `toMs` + tag predicates client-side
-      // so the SDK's `MetricQuery` contract (multi-name, range, tags, limit) is
-      // honored for callers, regardless of the server's narrower parser.
-      const names = query.names.length > 0 ? query.names : [undefined];
-      const responses = await Promise.all(
-        names.map((name) =>
-          getJson<readonly MetricPoint[] | { readonly points: readonly MetricPoint[] }>(
-            fetchImpl,
-            `${baseUrl}/api/metrics?${encodeSingleNameQuery(query, name)}`,
-            { validate: isMetricPointEnvelope },
-          ),
-        ),
-      );
-      const collected: MetricPoint[] = [];
-      for (const response of responses) {
-        if (!response.ok) return response;
-        for (const point of unwrapMetricList(response.value)) {
-          if (point.timestampMs < query.fromMs || point.timestampMs > query.toMs) continue;
-          if (query.tags && !matchesTags(point.tags, query.tags)) continue;
-          collected.push(point);
-        }
-      }
-      // Enforce the published `limit` across the merged set so callers get the
-      // bound they asked for even after fan-out. Sort newest-first so a small
-      // limit reliably returns the most recent samples.
-      collected.sort((left, right) => right.timestampMs - left.timestampMs);
-      const bounded =
-        query.limit !== undefined && collected.length > query.limit
-          ? collected.slice(0, query.limit)
-          : collected;
-      return { ok: true, value: bounded };
-    },
-
-    getTrace: (turnId): Promise<Result<TraceView | undefined>> =>
+    listSessions: (query) =>
+      getJson<Page<SessionSummary>>(
+        fetchImpl,
+        listUrl(baseUrl, "sessions", encodeSessionListQuery(query)),
+        { validate: isSessionSummaryPage },
+      ),
+    getMetrics: (query) => fetchMetricsFanOut(fetchImpl, baseUrl, query),
+    getTrace: (turnId) =>
       getJson<TraceView | undefined>(
         fetchImpl,
         `${baseUrl}/api/traces/${encodeURIComponent(turnId)}`,
@@ -171,20 +136,59 @@ export function createDashboardClient(config: DashboardClientConfig): DashboardC
           validate: isTraceView,
         },
       ),
-
-    listTraces: (query?: TraceListQuery): Promise<Result<Page<TraceView>>> => {
-      const qs = encodeTraceListQuery(query);
-      const url = qs.length > 0 ? `${baseUrl}/api/traces?${qs}` : `${baseUrl}/api/traces`;
-      return getJson<Page<TraceView>>(fetchImpl, url, { validate: isTraceViewPage });
-    },
-
-    subscribe: (topics, handlers): Unsubscribe =>
-      openSubscription(sseAdapter, baseUrl, topics, handlers),
+    listTraces: (query) =>
+      getJson<Page<TraceView>>(fetchImpl, listUrl(baseUrl, "traces", encodeTraceListQuery(query)), {
+        validate: isTraceViewPage,
+      }),
+    subscribe: (topics, handlers) => openSubscription(sseAdapter, baseUrl, topics, handlers),
   };
 }
 
 function stripTrailingSlash(url: string): string {
   return url.endsWith("/") ? url.slice(0, -1) : url;
+}
+
+function listUrl(baseUrl: string, path: string, qs: string): string {
+  return qs.length > 0 ? `${baseUrl}/api/${path}?${qs}` : `${baseUrl}/api/${path}`;
+}
+
+async function fetchMetricsFanOut(
+  fetchImpl: FetchLike,
+  baseUrl: string,
+  query: MetricQuery,
+): Promise<Result<readonly MetricPoint[]>> {
+  // The dashboard-api parser only honors a single `name` plus `since`. Fan out
+  // one request per name and filter `toMs` + tag predicates client-side so the
+  // SDK's `MetricQuery` contract (multi-name, range, tags, limit) is honored
+  // for callers, regardless of the server's narrower parser.
+  const names = query.names.length > 0 ? query.names : [undefined];
+  const responses = await Promise.all(
+    names.map((name) =>
+      getJson<readonly MetricPoint[] | { readonly points: readonly MetricPoint[] }>(
+        fetchImpl,
+        `${baseUrl}/api/metrics?${encodeSingleNameQuery(query, name)}`,
+        { validate: isMetricPointEnvelope },
+      ),
+    ),
+  );
+  const collected: MetricPoint[] = [];
+  for (const response of responses) {
+    if (!response.ok) return response;
+    for (const point of unwrapMetricList(response.value)) {
+      if (point.timestampMs < query.fromMs || point.timestampMs > query.toMs) continue;
+      if (query.tags && !matchesTags(point.tags, query.tags)) continue;
+      collected.push(point);
+    }
+  }
+  // Enforce the published `limit` across the merged set so callers get the
+  // bound they asked for even after fan-out. Sort newest-first so a small
+  // limit reliably returns the most recent samples.
+  collected.sort((left, right) => right.timestampMs - left.timestampMs);
+  const bounded =
+    query.limit !== undefined && collected.length > query.limit
+      ? collected.slice(0, query.limit)
+      : collected;
+  return { ok: true, value: bounded };
 }
 
 function encodeSingleNameQuery(query: MetricQuery, name: string | undefined): string {
