@@ -211,20 +211,20 @@ function dispatchNotice(store: TuiStore, _tag: string, text: string): void {
   store.dispatch({ kind: "add_info", message: text });
 }
 
-function parseMountArgs(
-  args: string,
-): { readonly ok: true; readonly value: { readonly uri: string; readonly at?: string } } | {
-  readonly ok: false;
-  readonly error: string;
-} {
+function parseMountArgs(args: string):
+  | { readonly ok: true; readonly value: { readonly uri: string; readonly at?: string } }
+  | {
+      readonly ok: false;
+      readonly error: string;
+    } {
   const trimmed = args.trim();
   if (trimmed.length === 0) {
-    return { ok: false, error: 'Usage: /mount <uri> [as=/mount/path]' };
+    return { ok: false, error: "Usage: /mount <uri> [as=/mount/path]" };
   }
   const parts = trimmed.split(/\s+/);
   const [uri, ...rest] = parts;
   if (uri === undefined || uri.length === 0) {
-    return { ok: false, error: 'Usage: /mount <uri> [as=/mount/path]' };
+    return { ok: false, error: "Usage: /mount <uri> [as=/mount/path]" };
   }
   let at: string | undefined;
   for (const part of rest) {
@@ -253,7 +253,10 @@ function formatMountedConnectors(entries: readonly MountDescription[]): string {
     .join("\n");
 }
 
-function isRpcMethodUnavailable(error: { readonly context?: unknown; readonly message: string }): boolean {
+function isRpcMethodUnavailable(error: {
+  readonly context?: unknown;
+  readonly message: string;
+}): boolean {
   if (
     typeof error.context === "object" &&
     error.context !== null &&
@@ -2135,6 +2138,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: set when nexus local-bridge transport resolves; passed to runtime for
   // permission policy sync and audit trail. Undefined for local-only sessions.
   let nexusFilesystemTransport: NexusTransport | undefined;
+  // True only when the resolved nexus backend was constructed with a stable
+  // (explicit or namespace-root) base path. False when we inferred a
+  // single-mount root for backward compat — in that mode the backend root is
+  // fixed at startup and runtime /mount /unmount mutations would point the
+  // session at a stale path. See resolveFileSystemAsync for full rationale.
+  let runtimeMountMutationsSupported = false;
 
   // Single OAuthChannel — shared by nexus and MCP. Created unconditionally so
   // nav:mcp-auth and MCP onAuthNeeded always have a renderer regardless of whether
@@ -2155,6 +2164,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       tuiAuthNotificationHandler,
     );
     resolvedFilesystemBackend = fsResolved.backend;
+    runtimeMountMutationsSupported = fsResolved.runtimeMountMutationsSupported;
     mountDescriptionsState.setManifest(fsResolved.mountDescriptions);
     // If `fsResolved.operations` is set, it overrides the manifest-derived ops
     // (the two should agree, but resolveFileSystemAsync is authoritative).
@@ -2696,7 +2706,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               : {}),
           }),
           ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),
-          extraMiddleware: [mountDescriptionsMiddleware],
           // TUI opts out of engine loop detection explicitly: the
           // per-submit iteration budget reset + governance caps below
           // already bound spirals, and false-positive trips during an
@@ -3002,8 +3011,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             : {}),
           extraMiddleware:
             aceMiddleware !== undefined
-              ? [securityBridge.middleware, aceMiddleware]
-              : [securityBridge.middleware],
+              ? [mountDescriptionsMiddleware, securityBridge.middleware, aceMiddleware]
+              : [mountDescriptionsMiddleware, securityBridge.middleware],
           // Bridge spawn lifecycle events into the TUI store so /agents view and
           // inline spawn_call blocks reflect real spawn state. Each spawn call
           // produces one spawn_requested + one agent_status_changed event.
@@ -6211,6 +6220,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               return;
             }
+            if (!runtimeMountMutationsSupported) {
+              store.dispatch({
+                kind: "add_error",
+                code: "MOUNT_UNAVAILABLE",
+                message:
+                  "Runtime /mount is disabled because this session inferred a single-mount root for backward compat. Set filesystem.options.mountPoint explicitly in the manifest to enable runtime mount changes.",
+              });
+              return;
+            }
             const parsed = parseMountArgs(args);
             if (!parsed.ok) {
               store.dispatch({
@@ -6259,6 +6277,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 kind: "add_error",
                 code: "UNMOUNT_UNAVAILABLE",
                 message: "Runtime mount changes are unavailable in this session.",
+              });
+              return;
+            }
+            if (!runtimeMountMutationsSupported) {
+              store.dispatch({
+                kind: "add_error",
+                code: "UNMOUNT_UNAVAILABLE",
+                message:
+                  "Runtime /unmount is disabled because this session inferred a single-mount root for backward compat. Set filesystem.options.mountPoint explicitly in the manifest to enable runtime mount changes.",
               });
               return;
             }

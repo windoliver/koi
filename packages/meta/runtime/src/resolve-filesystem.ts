@@ -401,6 +401,18 @@ export async function resolveFileSystemAsync(
    * `transport.submitAuthCode(url, correlationId)`.
    */
   readonly transport: import("@koi/fs-nexus").NexusTransport | undefined;
+  /**
+   * Whether `/mount` and `/unmount` runtime operations are safe in this session.
+   *
+   * False when the backend was initialized with an inferred single-mount root
+   * (legacy compat for manifests that omit `mountPoint`): in that mode bare
+   * paths resolve under the inferred root, but the backend cannot retarget
+   * itself when mounts change at runtime, so allowing add/remove would leave
+   * the session pointing at a stale or removed root. Operators who need
+   * runtime mount mutation must set `mountPoint` explicitly (or accept the
+   * namespace-root default).
+   */
+  readonly runtimeMountMutationsSupported: boolean;
 }> {
   const fsBackend = config?.backend ?? "local";
   // Preserve operation grants from the config — callers must forward these to
@@ -440,7 +452,13 @@ export async function resolveFileSystemAsync(
         : scope !== undefined
           ? createScopedFileSystem(rawBackend, scope)
           : rawBackend;
-    return { backend, operations, mountDescriptions: [], transport: undefined };
+    return {
+      backend,
+      operations,
+      mountDescriptions: [],
+      transport: undefined,
+      runtimeMountMutationsSupported: false,
+    };
   }
 
   const options = config?.options;
@@ -472,6 +490,7 @@ export async function resolveFileSystemAsync(
     // (e.g. invalid mountPoint validation) would orphan the bridge process.
     let nexusBackend: ReturnType<typeof createNexusFileSystem>;
     let unsubscribe: () => void;
+    let mutationsSupported = false;
     try {
       unsubscribe = onNotification !== undefined ? transport.subscribe(onNotification) : () => {};
 
@@ -488,6 +507,13 @@ export async function resolveFileSystemAsync(
         transport,
         ...(inferredMountPoint !== undefined ? { mountPoint: inferredMountPoint } : {}),
       });
+      // The backend root is fixed at construction time. If we inferred a
+      // single-mount root (legacy compat) the operator must not /mount or
+      // /unmount at runtime — those would leave the backend pointing at a
+      // stale path. Only when the operator opted in to namespace-root
+      // (explicit empty mountPoint) or set an explicit mountPoint can we
+      // safely allow runtime mutations.
+      mutationsSupported = options.mountPoint !== undefined || transportMounts.length !== 1;
     } catch (e: unknown) {
       transport.close();
       throw e;
@@ -519,6 +545,7 @@ export async function resolveFileSystemAsync(
       operations,
       mountDescriptions: seedManifestMountDescriptions(transport),
       transport,
+      runtimeMountMutationsSupported: mutationsSupported,
     };
   }
 
@@ -534,5 +561,11 @@ export async function resolveFileSystemAsync(
       : scope !== undefined
         ? createScopedFileSystem(nexusHttpBackend, scope)
         : nexusHttpBackend;
-  return { backend, operations, mountDescriptions: [], transport: undefined };
+  return {
+    backend,
+    operations,
+    mountDescriptions: [],
+    transport: undefined,
+    runtimeMountMutationsSupported: false,
+  };
 }
