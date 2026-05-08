@@ -1371,6 +1371,32 @@ describe("createCompositionExecutor", () => {
     expect(notifyKeys[0]).not.toBe(notifyKeys[1]);
   });
 
+  test("plan without triggerEmittedAt is rejected as INVALID_PLAN", async () => {
+    const { scheduler, calls } = schedulerStub();
+    const { log } = inMemoryExecutionLog();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: log,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      // triggerEmittedAt deliberately omitted
+      steps: [{ kind: "notify_user", channel: "inbox", message: "hi", priority: "normal" }],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const result = await executor.execute(trigger(), plan);
+
+    expect(result.status).toBe("failed");
+    expect(result.error?.code).toBe("INVALID_PLAN");
+    expect(result.error?.message).toMatch(/triggerEmittedAt is required/);
+    expect(calls.submit).toHaveLength(0);
+    expect(calls.schedule).toHaveLength(0);
+  });
+
   test("empty plan with requiresApproval=false fails as INVALID_PLAN", async () => {
     const { scheduler } = schedulerStub();
     const { log, store } = inMemoryExecutionLog();

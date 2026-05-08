@@ -422,14 +422,27 @@ export function createCompositionExecutor(
       }
 
       // Bind plan to the exact trigger emission, not just `trigger.id`.
-      // Trigger ids are not guaranteed unique across emissions, so a stale
-      // plan from emission A would otherwise execute against emission B.
-      // Only enforced when the plan declares emittedAt — older planners
-      // that pre-date this field still get triggerId-only validation.
-      if (
-        plan.triggerEmittedAt !== undefined &&
-        plan.triggerEmittedAt !== trigger.emittedAt
-      ) {
+      // Trigger ids are not guaranteed unique across emissions in the public
+      // CompositionTrigger contract, so a stale plan from emission A could
+      // otherwise execute against emission B. The executor enforces emission
+      // binding even though the L0 CompositionPlan field is optional — older
+      // planners that omit it cannot safely run on this executor.
+      if (plan.triggerEmittedAt === undefined) {
+        return {
+          triggerId: trigger.id,
+          status: "failed",
+          stepResults: [],
+          executedCount: 0,
+          error: {
+            code: "INVALID_PLAN",
+            message:
+              "plan.triggerEmittedAt is required by this executor — planners must " +
+              "bind plans to a specific trigger emission so reused trigger ids cannot " +
+              "execute the wrong plan",
+          },
+        };
+      }
+      if (plan.triggerEmittedAt !== trigger.emittedAt) {
         return {
           triggerId: trigger.id,
           status: "failed",
