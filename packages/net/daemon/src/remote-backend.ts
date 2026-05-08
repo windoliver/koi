@@ -105,10 +105,6 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
       }
 
       const previous = workers.get(request.workerId);
-      if (previous !== undefined) {
-        previous.generationController.abort();
-        workers.delete(request.workerId);
-      }
 
       const result = await transport.call<unknown>(method("spawn"), {
         workerId: request.workerId,
@@ -122,6 +118,12 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
 
       const parsed = parseSpawnResponse(result.value, now());
       if (!parsed.ok) return parsed;
+
+      if (previous !== undefined) {
+        previous.generationController.abort();
+        if (previous.pruneTimer !== undefined) clearTimeout(previous.pruneTimer);
+        workers.delete(request.workerId);
+      }
 
       const state: RemoteWorkerState = {
         generationController: new AbortController(),
@@ -263,7 +265,10 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
           const parsed = parseEventsResponse(polled.value);
           if (!parsed.ok) throw new Error(parsed.error.message);
           state.cursor = parsed.value.nextCursor;
-          for (const ev of parsed.value.events) emit(id, state, ev);
+          for (const ev of parsed.value.events) {
+            emit(id, state, ev);
+            if (ev.kind === "heartbeat") yield ev;
+          }
           if (parsed.value.events.length > 0) continue;
           if (parsed.value.alive === false) {
             state.alive = false;
