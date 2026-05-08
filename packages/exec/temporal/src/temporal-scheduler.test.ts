@@ -275,6 +275,15 @@ describe("dispatch mode", () => {
     const opts = createArgs?.[1] as { action: { type: string } };
     expect(opts.action.type).toBe("startWorkflow");
   });
+
+  test("spawn schedule defaults scheduled task workflow type when workflowType is omitted", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler({ client, taskQueue: "test-queue" });
+    await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn");
+    const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
+    const opts = createArgs?.[1] as { action: { workflowType: string } };
+    expect(opts.action.workflowType).toBe("scheduledTaskWorkflow");
+  });
 });
 
 describe("rollback safety", () => {
