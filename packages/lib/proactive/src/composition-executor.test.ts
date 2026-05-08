@@ -7,7 +7,7 @@ import {
   scheduleId,
   taskId,
 } from "../../../kernel/core/src/index.js";
-import { createCompositionExecutor } from "./composition-executor.js";
+import { createCompositionExecutor, preCommitRejection } from "./composition-executor.js";
 
 function trigger(): CompositionTrigger {
   return {
@@ -84,6 +84,27 @@ function failingSubmitSchedulerStub() {
   return { scheduler: failingScheduler, calls };
 }
 
+function inMemoryExecutionLog() {
+  const store = new Map<string, { kind: "pending" } | { kind: "complete"; output: unknown }>();
+  return {
+    log: {
+      claim: (key: string) => {
+        const existing = store.get(key);
+        if (existing) return existing;
+        store.set(key, { kind: "pending" });
+        return { kind: "claimed" } as const;
+      },
+      record: (key: string, output: unknown) => {
+        store.set(key, { kind: "complete", output });
+      },
+      release: (key: string) => {
+        store.delete(key);
+      },
+    },
+    store,
+  };
+}
+
 function failingScheduleSchedulerStub() {
   const { scheduler, calls } = schedulerStub();
   const failingScheduler: SchedulerComponent = {
@@ -107,6 +128,7 @@ describe("createCompositionExecutor", () => {
         notifications.push(notification);
         return { delivered: true };
       },
+      executionLog: inMemoryExecutionLog().log,
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
@@ -138,6 +160,7 @@ describe("createCompositionExecutor", () => {
         notifications.push(notification);
         return { delivered: true };
       },
+      executionLog: inMemoryExecutionLog().log,
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-other",
@@ -165,6 +188,7 @@ describe("createCompositionExecutor", () => {
       agentId: agentId("agent-1"),
       scheduler,
       notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
@@ -191,16 +215,18 @@ describe("createCompositionExecutor", () => {
     expect(calls.submit[0]).toEqual([
       { kind: "text", text: "follow up" },
       "dispatch",
-      { delayMs: 5 },
+      { delayMs: 5, idempotencyKey: expect.stringMatching(/^cmp-0-[0-9a-f]{32}$/) },
     ]);
   });
 
   test("executes create_schedule for the attached agent and records output", async () => {
     const { scheduler, calls } = schedulerStub();
+    const { log } = inMemoryExecutionLog();
     const executor = createCompositionExecutor({
       agentId: agentId("agent-1"),
       scheduler,
       notify: async () => ({ delivered: true }),
+      executionLog: log,
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
@@ -226,6 +252,7 @@ describe("createCompositionExecutor", () => {
     expect(result.stepResults[0]?.status).toBe("executed");
     expect(result.stepResults[0]?.output).toBe(scheduleId("schedule-1"));
     expect(calls.schedule).toHaveLength(1);
+    // schedule() must NOT receive idempotencyKey — Temporal scheduler rejects it.
     expect(calls.schedule[0]).toEqual([
       "0 9 * * *",
       { kind: "text", text: "daily check-in" },
@@ -237,6 +264,7 @@ describe("createCompositionExecutor", () => {
   test("executes notify_user and records output", async () => {
     const { scheduler } = schedulerStub();
     const notifications: unknown[] = [];
+    const { log } = inMemoryExecutionLog();
     const executor = createCompositionExecutor({
       agentId: agentId("agent-1"),
       scheduler,
@@ -244,6 +272,7 @@ describe("createCompositionExecutor", () => {
         notifications.push(notification);
         return { delivered: true };
       },
+      executionLog: log,
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
@@ -258,7 +287,14 @@ describe("createCompositionExecutor", () => {
     expect(result.executedCount).toBe(1);
     expect(result.stepResults[0]?.status).toBe("executed");
     expect(result.stepResults[0]?.output).toEqual({ delivered: true });
-    expect(notifications).toEqual([{ channel: "inbox", message: "hello", priority: "normal" }]);
+    expect(notifications).toEqual([
+      {
+        channel: "inbox",
+        message: "hello",
+        priority: "normal",
+        idempotencyKey: expect.stringMatching(/^cmp-0-[0-9a-f]{32}$/),
+      },
+    ]);
   });
 
   test("fails when submit_task targets a different agentId than the attached scheduler", async () => {
@@ -267,6 +303,7 @@ describe("createCompositionExecutor", () => {
       agentId: agentId("agent-1"),
       scheduler,
       notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
@@ -299,6 +336,7 @@ describe("createCompositionExecutor", () => {
       agentId: agentId("agent-1"),
       scheduler,
       notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
@@ -332,6 +370,7 @@ describe("createCompositionExecutor", () => {
       agentId: agentId("agent-1"),
       scheduler,
       notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
@@ -362,6 +401,7 @@ describe("createCompositionExecutor", () => {
   test("returns failed after a successful prefix when scheduler.schedule throws", async () => {
     const { scheduler, calls } = failingScheduleSchedulerStub();
     const notifications: unknown[] = [];
+    const { log } = inMemoryExecutionLog();
     const executor = createCompositionExecutor({
       agentId: agentId("agent-1"),
       scheduler,
@@ -369,6 +409,7 @@ describe("createCompositionExecutor", () => {
         notifications.push(notification);
         return { delivered: true };
       },
+      executionLog: log,
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
@@ -403,6 +444,7 @@ describe("createCompositionExecutor", () => {
   test("stops on unsupported spawn_agent after executed prefix", async () => {
     const { scheduler } = schedulerStub();
     const notifications: unknown[] = [];
+    const { log } = inMemoryExecutionLog();
     const executor = createCompositionExecutor({
       agentId: agentId("agent-1"),
       scheduler,
@@ -410,6 +452,7 @@ describe("createCompositionExecutor", () => {
         notifications.push(notification);
         return { delivered: true };
       },
+      executionLog: log,
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
@@ -446,6 +489,7 @@ describe("createCompositionExecutor", () => {
       agentId: agentId("agent-1"),
       scheduler,
       notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
@@ -488,6 +532,7 @@ describe("createCompositionExecutor", () => {
   test("stops on unsupported tool_call after executed prefix", async () => {
     const { scheduler } = schedulerStub();
     const notifications: unknown[] = [];
+    const { log } = inMemoryExecutionLog();
     const executor = createCompositionExecutor({
       agentId: agentId("agent-1"),
       scheduler,
@@ -495,6 +540,7 @@ describe("createCompositionExecutor", () => {
         notifications.push(notification);
         return { delivered: true };
       },
+      executionLog: log,
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
@@ -521,12 +567,14 @@ describe("createCompositionExecutor", () => {
 
   test("returns failed when notify_user throws", async () => {
     const { scheduler } = schedulerStub();
+    const { log } = inMemoryExecutionLog();
     const executor = createCompositionExecutor({
       agentId: agentId("agent-1"),
       scheduler,
       notify: async () => {
         throw new Error("notify failed");
       },
+      executionLog: log,
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
@@ -549,6 +597,7 @@ describe("createCompositionExecutor", () => {
   test("returns failed after a successful prefix when a later notify_user throws", async () => {
     const { scheduler } = schedulerStub();
     let notifyCalls = 0;
+    const { log } = inMemoryExecutionLog();
     const executor = createCompositionExecutor({
       agentId: agentId("agent-1"),
       scheduler,
@@ -557,6 +606,7 @@ describe("createCompositionExecutor", () => {
         if (notifyCalls === 2) throw new Error("notify failed later");
         return { delivered: true };
       },
+      executionLog: log,
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
@@ -578,5 +628,564 @@ describe("createCompositionExecutor", () => {
     });
     expect(result.stepResults[0]?.status).toBe("executed");
     expect(result.stepResults[1]?.status).toBe("failed");
+  });
+
+  test("re-executing the same trigger+plan reuses idempotency keys (retry-safe)", async () => {
+    const { scheduler, calls } = schedulerStub();
+    const notifications: unknown[] = [];
+    const { log } = inMemoryExecutionLog();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async (notification) => {
+        notifications.push(notification);
+        return { delivered: true };
+      },
+      executionLog: log,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      steps: [
+        {
+          kind: "submit_task",
+          agentId: agentId("agent-1"),
+          mode: "dispatch",
+          input: { kind: "text", text: "retry me" },
+        },
+        {
+          kind: "create_schedule",
+          expression: "0 9 * * *",
+          agentId: agentId("agent-1"),
+          mode: "spawn",
+          input: { kind: "text", text: "daily" },
+        },
+        { kind: "notify_user", channel: "inbox", message: "hi", priority: "normal" },
+      ],
+      estimatedCost: 3,
+      requiresApproval: false,
+    };
+
+    await executor.execute(trigger(), plan);
+    await executor.execute(trigger(), plan);
+
+    // Identical replays produce identical keys → downstream dedupe collapses.
+    const submitKey0 = (calls.submit[0] as readonly unknown[])[2] as { idempotencyKey: string };
+    const submitKey1 = (calls.submit[1] as readonly unknown[])[2] as { idempotencyKey: string };
+    expect(submitKey0.idempotencyKey).toBe(submitKey1.idempotencyKey);
+    expect(submitKey0.idempotencyKey).not.toContain(":"); // Temporal-safe.
+
+    // schedule() must NOT carry idempotencyKey — backend rejects it.
+    const scheduleOpts0 = (calls.schedule[0] as readonly unknown[])[3] as Record<string, unknown>;
+    expect(scheduleOpts0).not.toHaveProperty("idempotencyKey");
+
+    // create_schedule and notify_user MUST short-circuit on replay via the
+    // executionLog — exactly one underlying side-effect call across both
+    // executions, even though both runs report the steps as executed.
+    expect(calls.schedule).toHaveLength(1);
+    expect(notifications).toHaveLength(1);
+  });
+
+  test("create_schedule strips planner-supplied idempotencyKey from taskOptions", async () => {
+    const { scheduler, calls } = schedulerStub();
+    const { log } = inMemoryExecutionLog();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: log,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      steps: [
+        {
+          kind: "create_schedule",
+          expression: "0 9 * * *",
+          agentId: agentId("agent-1"),
+          mode: "spawn",
+          input: { kind: "text", text: "daily" },
+          taskOptions: { idempotencyKey: "planner-supplied", maxRetries: 2 },
+        },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const result = await executor.execute(trigger(), plan);
+
+    expect(result.status).toBe("executed");
+    const opts = (calls.schedule[0] as readonly unknown[])[3] as Record<string, unknown>;
+    expect(opts).not.toHaveProperty("idempotencyKey");
+    expect(opts).toMatchObject({ maxRetries: 2 });
+  });
+
+  test("create_schedule fails closed when prior attempt is pending (partial-failure recovery)", async () => {
+    const { scheduler, calls } = schedulerStub();
+    const { log, store } = inMemoryExecutionLog();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: log,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      steps: [
+        {
+          kind: "create_schedule",
+          expression: "0 9 * * *",
+          agentId: agentId("agent-1"),
+          mode: "spawn",
+          input: { kind: "text", text: "daily" },
+        },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    // Simulate a prior attempt that scheduled but never recorded.
+    const stepKey = Array.from(store.keys()).at(0); // none yet — derive via run
+    expect(stepKey).toBeUndefined();
+    // Run once normally to learn the key, then poison it back to pending.
+    await executor.execute(trigger(), plan);
+    const liveKey = Array.from(store.keys())[0]!;
+    store.set(liveKey, { kind: "pending" });
+
+    const before = calls.schedule.length;
+    const result = await executor.execute(trigger(), plan);
+
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatchObject({ code: "STEP_FAILED", stepKind: "create_schedule" });
+    // No additional schedule() call on the retry.
+    expect(calls.schedule).toHaveLength(before);
+  });
+
+  test("identical plan with different trigger emittedAt produces different keys", async () => {
+    const { scheduler, calls } = schedulerStub();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      steps: [
+        {
+          kind: "submit_task",
+          agentId: agentId("agent-1"),
+          mode: "dispatch",
+          input: { kind: "text", text: "x" },
+        },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    await executor.execute({ ...trigger(), emittedAt: 1 }, plan);
+    await executor.execute({ ...trigger(), emittedAt: 2 }, plan);
+
+    const key0 = (calls.submit[0] as readonly unknown[])[2] as { idempotencyKey: string };
+    const key1 = (calls.submit[1] as readonly unknown[])[2] as { idempotencyKey: string };
+    expect(key0.idempotencyKey).not.toBe(key1.idempotencyKey);
+  });
+
+  test("re-planning with different content at the same index produces a different key", async () => {
+    const { scheduler, calls } = schedulerStub();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+    });
+    const planA: CompositionPlan = {
+      triggerId: "trigger-1",
+      steps: [
+        {
+          kind: "submit_task",
+          agentId: agentId("agent-1"),
+          mode: "dispatch",
+          input: { kind: "text", text: "version A" },
+        },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+    const planB: CompositionPlan = {
+      ...planA,
+      steps: [
+        {
+          kind: "submit_task",
+          agentId: agentId("agent-1"),
+          mode: "dispatch",
+          input: { kind: "text", text: "version B" },
+        },
+      ],
+    };
+
+    await executor.execute(trigger(), planA);
+    await executor.execute(trigger(), planB);
+
+    const keyA = (calls.submit[0] as readonly unknown[])[2] as { idempotencyKey: string };
+    const keyB = (calls.submit[1] as readonly unknown[])[2] as { idempotencyKey: string };
+    expect(keyA.idempotencyKey).not.toBe(keyB.idempotencyKey);
+  });
+
+  test("ambiguous schedule() throw leaves the claim pending and exposes the key for reconciliation", async () => {
+    const { calls } = schedulerStub();
+    const { log, store } = inMemoryExecutionLog();
+    const failingScheduler: SchedulerComponent = {
+      async submit(...args) {
+        calls.submit.push(args);
+        return taskId("task-1");
+      },
+      async cancel() {
+        return true;
+      },
+      async schedule(...args) {
+        calls.schedule.push(args);
+        throw new Error("ambiguous: timeout");
+      },
+      async unschedule() {
+        return true;
+      },
+      async pause() {
+        return true;
+      },
+      async resume() {
+        return true;
+      },
+      async query() {
+        return [];
+      },
+      async stats() {
+        return {
+          pending: 0,
+          running: 0,
+          completed: 0,
+          failed: 0,
+          deadLettered: 0,
+          activeSchedules: 0,
+          pausedSchedules: 0,
+        };
+      },
+      async history() {
+        return [];
+      },
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler: failingScheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: log,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      steps: [
+        {
+          kind: "create_schedule",
+          expression: "0 9 * * *",
+          agentId: agentId("agent-1"),
+          mode: "spawn",
+          input: { kind: "text", text: "daily" },
+        },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    // First attempt: schedule throws. Claim is left pending — we cannot
+    // tell whether the schedule was actually created.
+    const first = await executor.execute(trigger(), plan);
+    expect(first.status).toBe("failed");
+    expect(store.size).toBe(1);
+    const [pendingKey] = Array.from(store.keys());
+    expect(store.get(pendingKey!)).toEqual({ kind: "pending" });
+
+    // Second attempt: must fail closed and expose the idempotency key so an
+    // operator can manually reconcile.
+    const second = await executor.execute(trigger(), plan);
+    expect(second.status).toBe("failed");
+    expect(second.error).toMatchObject({
+      code: "STEP_FAILED",
+      stepKind: "create_schedule",
+      idempotencyKey: pendingKey,
+    });
+    // No second schedule() call — the pending guard short-circuits.
+    expect(calls.schedule).toHaveLength(1);
+
+    // After operator reconciliation (release), retry can succeed.
+    log.release(pendingKey!);
+    expect(store.size).toBe(0);
+  });
+
+  test("create_schedule pre-commit rejection releases the claim so retry can succeed", async () => {
+    const { calls } = schedulerStub();
+    const { log, store } = inMemoryExecutionLog();
+    let attempt = 0;
+    const validatingScheduler: SchedulerComponent = {
+      async submit(...args) {
+        calls.submit.push(args);
+        return taskId("task-1");
+      },
+      async cancel() {
+        return true;
+      },
+      async schedule(...args) {
+        calls.schedule.push(args);
+        attempt += 1;
+        if (attempt === 1) {
+          throw preCommitRejection("schedule() does not support delayMs");
+        }
+        return scheduleId("schedule-2");
+      },
+      async unschedule() {
+        return true;
+      },
+      async pause() {
+        return true;
+      },
+      async resume() {
+        return true;
+      },
+      async query() {
+        return [];
+      },
+      async stats() {
+        return {
+          pending: 0,
+          running: 0,
+          completed: 0,
+          failed: 0,
+          deadLettered: 0,
+          activeSchedules: 0,
+          pausedSchedules: 0,
+        };
+      },
+      async history() {
+        return [];
+      },
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler: validatingScheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: log,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      steps: [
+        {
+          kind: "create_schedule",
+          expression: "0 9 * * *",
+          agentId: agentId("agent-1"),
+          mode: "spawn",
+          input: { kind: "text", text: "daily" },
+        },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const first = await executor.execute(trigger(), plan);
+    expect(first.status).toBe("failed");
+    // Pre-commit rejection released the claim — store is empty.
+    expect(store.size).toBe(0);
+
+    // Ordinary retry succeeds; no operator intervention required.
+    const second = await executor.execute(trigger(), plan);
+    expect(second.status).toBe("executed");
+    expect(calls.schedule).toHaveLength(2);
+  });
+
+  test("ambiguous schedule() throw exposes idempotencyKey on the first failure", async () => {
+    const { calls } = schedulerStub();
+    const { log } = inMemoryExecutionLog();
+    const failingScheduler: SchedulerComponent = {
+      async submit(...args) {
+        calls.submit.push(args);
+        return taskId("task-1");
+      },
+      async cancel() {
+        return true;
+      },
+      async schedule(...args) {
+        calls.schedule.push(args);
+        throw new Error("ambiguous");
+      },
+      async unschedule() {
+        return true;
+      },
+      async pause() {
+        return true;
+      },
+      async resume() {
+        return true;
+      },
+      async query() {
+        return [];
+      },
+      async stats() {
+        return {
+          pending: 0,
+          running: 0,
+          completed: 0,
+          failed: 0,
+          deadLettered: 0,
+          activeSchedules: 0,
+          pausedSchedules: 0,
+        };
+      },
+      async history() {
+        return [];
+      },
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler: failingScheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: log,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      steps: [
+        {
+          kind: "create_schedule",
+          expression: "0 9 * * *",
+          agentId: agentId("agent-1"),
+          mode: "spawn",
+          input: { kind: "text", text: "daily" },
+        },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const result = await executor.execute(trigger(), plan);
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatchObject({
+      code: "STEP_FAILED",
+      stepKind: "create_schedule",
+      idempotencyKey: expect.stringMatching(/^cmp-0-[0-9a-f]{32}$/),
+    });
+  });
+
+  test("release() failure during pre-commit rejection returns structured failure", async () => {
+    const { calls } = schedulerStub();
+    // Log whose release() always rejects — simulates a degraded backend.
+    const log = {
+      claim: (_key: string) => ({ kind: "claimed" }) as const,
+      record: (_key: string, _output: unknown) => {},
+      release: (_key: string) => {
+        throw new Error("log backend unavailable");
+      },
+    };
+    const flakyScheduler: SchedulerComponent = {
+      async submit(...args) {
+        calls.submit.push(args);
+        return taskId("task-1");
+      },
+      async cancel() {
+        return true;
+      },
+      async schedule() {
+        throw preCommitRejection("invalid expression");
+      },
+      async unschedule() {
+        return true;
+      },
+      async pause() {
+        return true;
+      },
+      async resume() {
+        return true;
+      },
+      async query() {
+        return [];
+      },
+      async stats() {
+        return {
+          pending: 0,
+          running: 0,
+          completed: 0,
+          failed: 0,
+          deadLettered: 0,
+          activeSchedules: 0,
+          pausedSchedules: 0,
+        };
+      },
+      async history() {
+        return [];
+      },
+    };
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler: flakyScheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: log,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      steps: [
+        {
+          kind: "create_schedule",
+          expression: "0 9 * * *",
+          agentId: agentId("agent-1"),
+          mode: "spawn",
+          input: { kind: "text", text: "daily" },
+        },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    // execute() must NOT throw — it must return a structured result.
+    const result = await executor.execute(trigger(), plan);
+    expect(result.status).toBe("failed");
+    expect(result.error?.message).toContain("invalid expression");
+    expect(result.error?.message).toContain("release() also failed");
+    expect(result.error).toMatchObject({
+      idempotencyKey: expect.stringMatching(/^cmp-0-[0-9a-f]{32}$/),
+    });
+  });
+
+  test("operator can recover a stuck-pending entry by calling record() after external confirmation", async () => {
+    const { scheduler, calls } = schedulerStub();
+    const { log, store } = inMemoryExecutionLog();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: log,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      steps: [
+        {
+          kind: "create_schedule",
+          expression: "0 9 * * *",
+          agentId: agentId("agent-1"),
+          mode: "spawn",
+          input: { kind: "text", text: "daily" },
+        },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    await executor.execute(trigger(), plan);
+    const [key] = Array.from(store.keys());
+    // Simulate a transient record() outage that left the entry pending
+    // even though the scheduler had committed.
+    store.set(key!, { kind: "pending" });
+
+    // Operator confirms externally that the schedule exists and finalizes.
+    log.record(key!, scheduleId("schedule-recovered"));
+
+    // Subsequent retries now short-circuit with the recovered output —
+    // no second schedule() call.
+    const recovered = await executor.execute(trigger(), plan);
+    expect(recovered.status).toBe("executed");
+    expect(recovered.stepResults[0]?.output).toBe(scheduleId("schedule-recovered"));
+    expect(calls.schedule).toHaveLength(1);
   });
 });

@@ -17,6 +17,12 @@ export interface CompositionNotification {
   readonly channel: string;
   readonly message: string;
   readonly priority: "low" | "normal" | "high";
+  /**
+   * Deterministic per-step key. Adapters that support dedupe SHOULD drop
+   * duplicate deliveries with the same key. Optional for source compatibility
+   * with adapters that pre-date dedupe support.
+   */
+  readonly idempotencyKey?: string | undefined;
 }
 
 export interface CompositionSpawnRequest {
@@ -29,15 +35,153 @@ export interface CompositionForgeRequest {
   readonly demand: ForgeDemandSignal;
 }
 
+export type CompositionExecutionStatus =
+  | { readonly kind: "claimed" }
+  | { readonly kind: "pending" }
+  | { readonly kind: "complete"; readonly output: unknown };
+
+/**
+ * Persisted record of step executions, keyed by deterministic step idempotency
+ * key. Three-call atomic contract for irreversible side effects (notably
+ * `create_schedule` and `notify_user`):
+ *
+ *   1. `claim(key)` — atomic compare-and-set. Returns:
+ *        - `{ kind: "claimed" }`: caller is the unique winner; proceed with
+ *          the side effect, then call `record()`.
+ *        - `{ kind: "pending" }`: a prior attempt reserved this key but never
+ *          finalized; fail closed (re-running risks duplicate side effects).
+ *        - `{ kind: "complete", output }`: side effect already happened;
+ *          short-circuit with the recorded output.
+ *      Implementations MUST make this single call atomic across concurrent
+ *      callers (e.g. row-level UPSERT, Redis SETNX, or in-process Map check).
+ *
+ *   2. `record(key, output)` — finalize after the side effect succeeds.
+ *      record() is idempotent: it overwrites whatever entry currently
+ *      exists (absent, pending, or complete). After a transient record()
+ *      outage, an operator that has externally confirmed the side effect
+ *      committed can re-call `record(key, output)` to recover the stuck
+ *      "pending" state without re-running the side effect.
+ *
+ *   3. `release(key)` — drop the claim. The executor calls this when a
+ *      step throws `preCommitRejection(...)` (proven pre-commit failure).
+ *      Operators also call it manually after confirming a "pending" entry
+ *      did NOT commit its side effect.
+ */
+export interface CompositionExecutionLog {
+  readonly claim: (key: string) => CompositionExecutionStatus | Promise<CompositionExecutionStatus>;
+  readonly record: (key: string, output: unknown) => void | Promise<void>;
+  readonly release: (key: string) => void | Promise<void>;
+}
+
 export interface CompositionExecutionContext {
   readonly agentId: AgentId;
   readonly scheduler: SchedulerComponent;
   readonly notify: (notification: CompositionNotification) => Promise<unknown>;
   readonly spawn?: ((request: CompositionSpawnRequest) => Promise<unknown>) | undefined;
   readonly forge?: ((request: CompositionForgeRequest) => Promise<unknown>) | undefined;
+  /**
+   * MANDATORY. Required to execute `create_schedule` and `notify_user`
+   * safely. Required at the type boundary so callers cannot accidentally
+   * skip retry-safety: neither step kind has native dedupe (scheduler.schedule
+   * rejects idempotencyKey; notification adapters are best-effort), and an
+   * ambiguous retry would otherwise register a duplicate cron schedule or
+   * send a duplicate user notification.
+   */
+  readonly executionLog: CompositionExecutionLog;
 }
 
 type ExecutedStepResult = Extract<CompositionStepResult, { status: "executed" }>;
+
+/**
+ * Branded error indicating a pre-commit validation rejection — no durable
+ * side effect was produced. Scheduler/notify implementations throw this
+ * (via `preCommitRejection(...)`) to let the executor release the claimed
+ * key, so ordinary callers can fix the input and retry without manual
+ * reconciliation. Plain `Error` throws are treated as ambiguous and leave
+ * the claim pending.
+ */
+const PRE_COMMIT_BRAND: unique symbol = Symbol.for("@koi/proactive/CompositionPreCommitRejection");
+
+export type CompositionPreCommitRejection = Error & { readonly preCommitRejection: true };
+
+export function preCommitRejection(
+  message: string,
+  cause?: unknown,
+): CompositionPreCommitRejection {
+  const error = new Error(message, cause === undefined ? undefined : { cause });
+  Object.defineProperty(error, PRE_COMMIT_BRAND, {
+    value: true,
+    enumerable: false,
+  });
+  return error as CompositionPreCommitRejection;
+}
+
+export function isPreCommitRejection(value: unknown): value is CompositionPreCommitRejection {
+  if (!(value instanceof Error)) return false;
+  return (value as unknown as { [PRE_COMMIT_BRAND]?: unknown })[PRE_COMMIT_BRAND] === true;
+}
+
+/**
+ * Process-local CompositionExecutionLog backed by a Map. Suitable for
+ * single-process callers and tests. Not durable across restarts —
+ * production deployments need a persistent backend (SQLite, Redis,
+ * Postgres) so retries after a crash still see prior claims/records.
+ */
+export function inMemoryCompositionExecutionLog(): CompositionExecutionLog {
+  const store = new Map<string, { kind: "pending" } | { kind: "complete"; output: unknown }>();
+  return {
+    claim: (key) => {
+      const existing = store.get(key);
+      if (existing) return existing;
+      store.set(key, { kind: "pending" });
+      return { kind: "claimed" };
+    },
+    record: (key, output) => {
+      store.set(key, { kind: "complete", output });
+    },
+    release: (key) => {
+      store.delete(key);
+    },
+  };
+}
+
+// Stable JSON: object keys sorted recursively so logically equal payloads
+// always serialize to the same string (independent of insertion order).
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of entries) out[k] = canonicalize(v);
+    return out;
+  }
+  return value;
+}
+
+// Per-step idempotency key. Hash-based and ':' free so it is accepted by
+// scheduler backends that use ':' as their internal task-ID delimiter
+// (e.g. the Temporal scheduler). Hashes trigger id + emittedAt + ordinal +
+// canonicalized step payload — `emittedAt` distinguishes distinct emissions
+// of triggers that may share an `id` (the public CompositionTrigger contract
+// does not require id uniqueness across emissions).
+function deriveStepIdempotencyKey(
+  trigger: CompositionTrigger,
+  index: number,
+  step: CompositionStep,
+): string {
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(
+    JSON.stringify({
+      triggerId: trigger.id,
+      emittedAt: trigger.emittedAt,
+      index,
+      step: canonicalize(step),
+    }),
+  );
+  return `cmp-${index}-${hasher.digest("hex").slice(0, 32)}`;
+}
 
 function approvalRequired(trigger: CompositionTrigger): CompositionExecutionResult {
   return {
@@ -90,6 +234,7 @@ function stepUnsupported(
 function stepFailed(
   step: CompositionStep,
   cause: unknown,
+  idempotencyKey?: string,
 ): Extract<CompositionStepResult, { status: "failed" }> {
   const message = cause instanceof Error ? cause.message : String(cause);
   return {
@@ -99,6 +244,7 @@ function stepFailed(
       code: "STEP_FAILED",
       message,
       stepKind: step.kind,
+      ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
     },
   };
 }
@@ -153,7 +299,16 @@ export function createCompositionExecutor(
 
       const stepResults: ExecutedStepResult[] = [];
 
-      for (const step of plan.steps) {
+      for (let index = 0; index < plan.steps.length; index += 1) {
+        const step = plan.steps[index]!;
+        // Deterministic per-step key keyed on content as well as ordinal, so
+        // identical replays dedupe but a re-plan with different content at the
+        // same index does not collide with the prior step.
+        const stepIdempotencyKey = deriveStepIdempotencyKey(trigger, index, step);
+        // Track whether this step has acquired the executionLog claim so the
+        // outer catch can release on pre-commit rejection or surface the key
+        // on ambiguous failure. Only set after claim() returns "claimed".
+        let claimedKey: string | undefined;
         try {
           switch (step.kind) {
             case "submit_task": {
@@ -165,11 +320,10 @@ export function createCompositionExecutor(
                 });
               }
 
-              const output = await context.scheduler.submit(
-                step.input,
-                step.mode,
-                step.taskOptions,
-              );
+              const output = await context.scheduler.submit(step.input, step.mode, {
+                ...step.taskOptions,
+                idempotencyKey: step.taskOptions?.idempotencyKey ?? stepIdempotencyKey,
+              });
               stepResults.push({ step, status: "executed", output });
               break;
             }
@@ -183,26 +337,92 @@ export function createCompositionExecutor(
                 });
               }
 
+              // Replay safety: scheduler.schedule() has no native dedupe and
+              // the Temporal backend explicitly rejects idempotencyKey. The
+              // mandatory executionLog enforces single-fire across retries.
+              const claim = await context.executionLog.claim(stepIdempotencyKey);
+              if (claim.kind === "complete") {
+                stepResults.push({ step, status: "executed", output: claim.output });
+                break;
+              }
+              if (claim.kind === "pending") {
+                // Prior attempt reached scheduler.schedule() but never
+                // finalized — the schedule may or may not have been created.
+                // Fail closed: a retry could register a duplicate.
+                return failedResult(trigger.id, stepResults, {
+                  step,
+                  status: "failed",
+                  error: {
+                    code: "STEP_FAILED",
+                    message:
+                      "Previous create_schedule attempt is in indeterminate state " +
+                      `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
+                    stepKind: "create_schedule",
+                    idempotencyKey: stepIdempotencyKey,
+                  },
+                });
+              }
+
+              claimedKey = stepIdempotencyKey;
+
+              // Strip idempotencyKey from forwarded TaskOptions — Temporal's
+              // schedule() rejects it whether it came from us or a planner.
+              const { idempotencyKey: _stripped, ...scheduleOptions } = step.taskOptions ?? {};
+              // Throw handling past this point: pre-commit rejections release
+              // the claim (caller can fix and retry without operator
+              // intervention); other throws leave the claim pending and
+              // surface the key for operator reconciliation.
               const output = await context.scheduler.schedule(
                 step.expression,
                 step.input,
                 step.mode,
                 {
-                  ...step.taskOptions,
+                  ...scheduleOptions,
                   ...(step.timezone === undefined ? {} : { timezone: step.timezone }),
                 },
               );
+              await context.executionLog.record(stepIdempotencyKey, output);
               stepResults.push({ step, status: "executed", output });
               break;
             }
 
             case "notify_user": {
-              const output = await context.notify({
+              // Notification adapters are best-effort on dedupe, so the
+              // executor enforces replay safety via the same atomic claim
+              // path as create_schedule.
+              const claim = await context.executionLog.claim(stepIdempotencyKey);
+              if (claim.kind === "complete") {
+                stepResults.push({ step, status: "executed", output: claim.output });
+                break;
+              }
+              if (claim.kind === "pending") {
+                return failedResult(trigger.id, stepResults, {
+                  step,
+                  status: "failed",
+                  error: {
+                    code: "STEP_FAILED",
+                    message:
+                      "Previous notify_user attempt is in indeterminate state " +
+                      `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
+                    stepKind: "notify_user",
+                    idempotencyKey: stepIdempotencyKey,
+                  },
+                });
+              }
+
+              claimedKey = stepIdempotencyKey;
+
+              // Same release rules as create_schedule: pre-commit rejections
+              // release the claim; other throws leave it pending and surface
+              // the key, since the notification may have been delivered.
+              const notifyOutput = await context.notify({
                 channel: step.channel,
                 message: step.message,
                 priority: step.priority,
+                idempotencyKey: stepIdempotencyKey,
               });
-              stepResults.push({ step, status: "executed", output });
+              await context.executionLog.record(stepIdempotencyKey, notifyOutput);
+              stepResults.push({ step, status: "executed", output: notifyOutput });
               break;
             }
 
@@ -212,6 +432,38 @@ export function createCompositionExecutor(
               return unsupportedResult(trigger.id, stepResults, stepUnsupported(step));
           }
         } catch (cause) {
+          if (claimedKey !== undefined) {
+            if (isPreCommitRejection(cause)) {
+              // Caller proved no durable side effect committed; release the
+              // claim so an ordinary retry with corrected input succeeds.
+              // A release() failure must NOT abort execute() — the original
+              // pre-commit error is still the actionable failure for the
+              // caller, and a degraded log backend should not turn a
+              // structured rejection into an uncaught throw. Compose the
+              // release error into the message so operators see both.
+              try {
+                await context.executionLog.release(claimedKey);
+              } catch (releaseCause) {
+                const original = cause instanceof Error ? cause.message : String(cause);
+                const releaseMsg =
+                  releaseCause instanceof Error ? releaseCause.message : String(releaseCause);
+                return failedResult(
+                  trigger.id,
+                  stepResults,
+                  stepFailed(
+                    step,
+                    new Error(
+                      `${original} (release() also failed for key ${claimedKey}: ${releaseMsg})`,
+                    ),
+                    claimedKey,
+                  ),
+                );
+              }
+            }
+            // For ambiguous throws, leave the claim pending and surface the
+            // idempotency key so operators can reconcile from this failure.
+            return failedResult(trigger.id, stepResults, stepFailed(step, cause, claimedKey));
+          }
           return failedResult(trigger.id, stepResults, stepFailed(step, cause));
         }
       }

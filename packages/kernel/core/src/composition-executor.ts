@@ -15,6 +15,13 @@ export interface CompositionExecutionError {
   readonly code: "APPROVAL_REQUIRED" | "STEP_UNSUPPORTED" | "STEP_FAILED" | "INVALID_PLAN";
   readonly message: string;
   readonly stepKind?: CompositionStep["kind"] | undefined;
+  /**
+   * For STEP_FAILED caused by a `pending` execution-log entry: the derived
+   * per-step idempotency key identifying the stuck record. Operators use
+   * this to locate the entry and call `executionLog.release(key)` after
+   * manually confirming the side effect did not commit.
+   */
+  readonly idempotencyKey?: string | undefined;
 }
 
 type CompositionApprovalRequiredError = CompositionExecutionError & {

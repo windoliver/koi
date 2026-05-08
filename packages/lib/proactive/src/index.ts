@@ -11,10 +11,16 @@ export {
 } from "./composition-approval.js";
 export {
   type CompositionExecutionContext,
+  type CompositionExecutionLog,
+  type CompositionExecutionStatus,
   type CompositionForgeRequest,
   type CompositionNotification,
+  type CompositionPreCommitRejection,
   type CompositionSpawnRequest,
   createCompositionExecutor,
+  inMemoryCompositionExecutionLog,
+  isPreCommitRejection,
+  preCommitRejection,
 } from "./composition-executor.js";
 export { mapSystemSignalToCompositionTrigger } from "./composition-trigger.js";
 export { createProactiveTools } from "./create-proactive-tools.js";
