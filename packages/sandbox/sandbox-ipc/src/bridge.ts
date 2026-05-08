@@ -501,19 +501,12 @@ export async function createSandboxBridge(
           return;
         }
 
-        const rawNonce =
-          typeof rawMessage === "object" &&
-          rawMessage !== null &&
-          !Array.isArray(rawMessage) &&
-          "nonce" in rawMessage
-            ? (rawMessage as { nonce?: unknown }).nonce
-            : undefined;
-        if (rawNonce !== executeNonce) {
+        if (message.nonce !== executeNonce) {
           settle({
             ok: false,
             error: createIpcError(
               "DESERIALIZE",
-              "Worker terminal frame missing or with invalid nonce",
+              "Worker terminal frame nonce did not match the expected execute nonce",
               { durationMs: performance.now() - startedAt },
             ),
           });

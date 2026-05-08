@@ -29,6 +29,8 @@ export interface ResultMessage {
   readonly output?: unknown;
   readonly durationMs: number;
   readonly memoryUsedBytes?: number;
+  /** Echoed `ExecuteMessage.nonce`. Required to defeat forged terminal frames. */
+  readonly nonce: string;
 }
 
 export interface ErrorMessage {
@@ -36,6 +38,8 @@ export interface ErrorMessage {
   readonly code: SandboxIpcErrorCode;
   readonly message: string;
   readonly durationMs?: number;
+  /** Echoed `ExecuteMessage.nonce`. Required to defeat forged terminal frames. */
+  readonly nonce: string;
 }
 
 export type HostMessage = ExecuteMessage;

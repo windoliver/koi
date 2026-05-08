@@ -247,12 +247,15 @@ describe("parseExecuteMessage", () => {
 });
 
 describe("parseResultMessage", () => {
+  const VALID_NONCE = "n-result";
+
   test("accepts a result frame", () => {
     const parsed = parseResultMessage({
       kind: "result",
       output: { answer: 42 },
       durationMs: 12,
       memoryUsedBytes: 256,
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(true);
@@ -260,6 +263,19 @@ describe("parseResultMessage", () => {
     expect(parsed.value.output).toEqual({ answer: 42 });
     expect(parsed.value.durationMs).toBe(12);
     expect(parsed.value.memoryUsedBytes).toBe(256);
+    expect(parsed.value.nonce).toBe(VALID_NONCE);
+  });
+
+  test("rejects missing nonce", () => {
+    const parsed = parseResultMessage({
+      kind: "result",
+      output: 1,
+      durationMs: 1,
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("nonce");
   });
 
   test("rejects malformed result input", () => {
@@ -267,6 +283,7 @@ describe("parseResultMessage", () => {
       kind: "result",
       output: "ok",
       durationMs: -1,
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);
@@ -278,6 +295,7 @@ describe("parseResultMessage", () => {
     const parsed = parseResultMessage({
       kind: "result",
       output: { answer: 42 },
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);
@@ -290,6 +308,7 @@ describe("parseResultMessage", () => {
       kind: "result",
       output: { answer: 42 },
       durationMs: "12",
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);
@@ -303,6 +322,7 @@ describe("parseResultMessage", () => {
       output: { answer: 42 },
       durationMs: 12,
       memoryUsedBytes: "256",
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);
@@ -312,12 +332,15 @@ describe("parseResultMessage", () => {
 });
 
 describe("parseErrorMessage", () => {
+  const VALID_NONCE = "n-error";
+
   test("accepts an error frame", () => {
     const parsed = parseErrorMessage({
       kind: "error",
       code: "TIMEOUT",
       message: "execution timed out",
       durationMs: 5_000,
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(true);
@@ -325,6 +348,7 @@ describe("parseErrorMessage", () => {
     expect(parsed.value.code).toBe("TIMEOUT");
     expect(parsed.value.message).toBe("execution timed out");
     expect(parsed.value.durationMs).toBe(5_000);
+    expect(parsed.value.nonce).toBe(VALID_NONCE);
   });
 
   test("accepts an error frame without durationMs", () => {
@@ -332,6 +356,7 @@ describe("parseErrorMessage", () => {
       kind: "error",
       code: "TIMEOUT",
       message: "execution timed out",
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(true);
@@ -341,12 +366,25 @@ describe("parseErrorMessage", () => {
     expect(parsed.value.durationMs).toBeUndefined();
   });
 
+  test("rejects missing nonce", () => {
+    const parsed = parseErrorMessage({
+      kind: "error",
+      code: "TIMEOUT",
+      message: "execution timed out",
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("nonce");
+  });
+
   test("rejects malformed error input", () => {
     const parsed = parseErrorMessage({
       kind: "error",
       code: "BOOM",
       message: "unsupported",
       durationMs: 1,
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);
@@ -359,6 +397,7 @@ describe("parseErrorMessage", () => {
       kind: "error",
       message: "execution timed out",
       durationMs: 5_000,
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);
@@ -371,6 +410,7 @@ describe("parseErrorMessage", () => {
       kind: "error",
       code: "TIMEOUT",
       durationMs: 5_000,
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);
@@ -384,6 +424,7 @@ describe("parseErrorMessage", () => {
       code: "TIMEOUT",
       message: 5_000,
       durationMs: 5_000,
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);
@@ -397,6 +438,7 @@ describe("parseErrorMessage", () => {
       code: "TIMEOUT",
       message: "execution timed out",
       durationMs: "5_000",
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);
@@ -419,6 +461,7 @@ describe("parseWorkerMessage", () => {
       kind: "result",
       output: { ok: true },
       durationMs: 9,
+      nonce: "n-1",
     });
 
     expect(parsed.ok).toBe(true);
@@ -432,6 +475,7 @@ describe("parseWorkerMessage", () => {
       code: "CRASH",
       message: "worker crashed",
       durationMs: 3,
+      nonce: "n-1",
     });
 
     expect(parsed.ok).toBe(true);

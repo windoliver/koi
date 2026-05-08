@@ -25,12 +25,26 @@ control, while also adapting that bridge back into the existing
 - `bridgeToExecutor(config)` is the compatibility surface for
   `SandboxExecutor` consumers
 
+## Scope: host-local Bun child
+
+`@koi/sandbox-ipc` is a **host-local** bridge. It writes the worker source to
+the host's `tmpdir()` and tells the injected command builder to run
+`bun run <host-path>`, so the worker process must share the host filesystem.
+Layer-local sandboxing wrappers (Seatbelt, Bubblewrap, cgroups, namespaces)
+fit naturally because they wrap the same `bun` invocation in place.
+
+Out-of-host backends (Docker, SSH, E2B, cloud sandboxes) need a different
+delivery mechanism for the worker source and are handled by separate L2
+packages (e.g., `@koi/sandbox-e2b`, future `@koi/sandbox-docker`). Those
+packages may reuse the protocol/error types here, but they do not call
+`createSandboxBridge()` directly.
+
 ## Layer cleanliness
 
-The package does not know how to wrap Bun with Docker, SSH, Seatbelt, Bubblewrap,
-or any other backend-specific launcher. Instead it accepts an injected command
-builder, which keeps `@koi/sandbox-ipc` layer-clean and reusable across multiple
-sandbox implementations.
+The package does not know how to wrap Bun with Docker, SSH, Seatbelt,
+Bubblewrap, or any other backend-specific launcher. The injected command
+builder lets local backends (Seatbelt/Bubblewrap profiles, namespace
+launchers) plug into the same protocol surface.
 
 ## Notes
 

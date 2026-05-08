@@ -212,9 +212,13 @@ export function parseResultMessage(value: unknown): ParseResult<ResultMessage> {
   const memoryUsedBytes = expectOptionalNonNegativeNumber(record.value, "memoryUsedBytes");
   if (!memoryUsedBytes.ok) return memoryUsedBytes;
 
+  const nonce = expectNonEmptyString(record.value, "nonce");
+  if (!nonce.ok) return nonce;
+
   const base = {
     kind: "result" as const,
     durationMs: durationMs.value,
+    nonce: nonce.value,
     ...(memoryUsedBytes.value !== undefined ? { memoryUsedBytes: memoryUsedBytes.value } : {}),
   };
 
@@ -244,10 +248,14 @@ export function parseErrorMessage(value: unknown): ParseResult<ErrorMessage> {
   const durationMs = expectOptionalNonNegativeNumber(record.value, "durationMs");
   if (!durationMs.ok) return durationMs;
 
+  const nonce = expectNonEmptyString(record.value, "nonce");
+  if (!nonce.ok) return nonce;
+
   return ok({
     kind: "error",
     code: code.value,
     message: message.value,
+    nonce: nonce.value,
     ...(durationMs.value !== undefined ? { durationMs: durationMs.value } : {}),
   });
 }
