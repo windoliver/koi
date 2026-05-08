@@ -20,6 +20,10 @@ import {
   ATTR_GEN_AI_TOOL_NAME,
   ATTR_GEN_AI_USAGE_INPUT_TOKENS,
   ATTR_GEN_AI_USAGE_OUTPUT_TOKENS,
+  ATTR_KOI_RETRY_ATTEMPT,
+  ATTR_KOI_RETRY_FAILURE_CLASS,
+  ATTR_KOI_RETRY_OF_TURN,
+  ATTR_KOI_RETRY_REASON,
   ATTR_KOI_SESSION_ID,
   ATTR_KOI_STEP_OUTCOME,
   GEN_AI_OPERATION_CHAT,
@@ -124,6 +128,18 @@ export function buildModelSpanAttrs(step: RichTrajectoryStep, sessionId: string)
     if (typeof meta.modelStopReason === "string") {
       attrs[ATTR_GEN_AI_RESPONSE_FINISH_REASONS] = [meta.modelStopReason];
     }
+    if (typeof meta.retryOfTurn === "number") {
+      attrs[ATTR_KOI_RETRY_OF_TURN] = meta.retryOfTurn;
+    }
+    if (typeof meta.retryAttempt === "number") {
+      attrs[ATTR_KOI_RETRY_ATTEMPT] = meta.retryAttempt;
+    }
+    if (typeof meta.retryFailureClass === "string") {
+      attrs[ATTR_KOI_RETRY_FAILURE_CLASS] = meta.retryFailureClass;
+    }
+    if (typeof meta.retryReason === "string") {
+      attrs[ATTR_KOI_RETRY_REASON] = meta.retryReason;
+    }
   }
 
   // Token usage from step metrics
@@ -154,8 +170,22 @@ export function buildToolSpanAttrs(step: RichTrajectoryStep, sessionId: string):
 
   // Tool call correlation ID (set by permissions middleware on denial steps)
   const meta = step.metadata as Record<string, unknown> | undefined;
-  if (meta !== undefined && typeof meta.decisionCorrelationId === "string") {
-    attrs[ATTR_GEN_AI_TOOL_CALL_ID] = meta.decisionCorrelationId;
+  if (meta !== undefined) {
+    if (typeof meta.decisionCorrelationId === "string") {
+      attrs[ATTR_GEN_AI_TOOL_CALL_ID] = meta.decisionCorrelationId;
+    }
+    if (typeof meta.retryOfTurn === "number") {
+      attrs[ATTR_KOI_RETRY_OF_TURN] = meta.retryOfTurn;
+    }
+    if (typeof meta.retryAttempt === "number") {
+      attrs[ATTR_KOI_RETRY_ATTEMPT] = meta.retryAttempt;
+    }
+    if (typeof meta.retryFailureClass === "string") {
+      attrs[ATTR_KOI_RETRY_FAILURE_CLASS] = meta.retryFailureClass;
+    }
+    if (typeof meta.retryReason === "string") {
+      attrs[ATTR_KOI_RETRY_REASON] = meta.retryReason;
+    }
   }
 
   return attrs;
