@@ -6335,53 +6335,64 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           })();
           break;
         case "system:mounts":
-          // Real refresh: when the transport supports listMounts/describeMount
-          // we re-read the live mount set from the bridge before printing,
-          // then update mountDescriptionsState so any partial-success state
-          // (e.g. an add_mount that returned pathUnknown) is reconciled.
-          // Falls back to the cached snapshot if the transport doesn't
-          // provide a list API.
+          // Two-stage refresh, never blocked on slow connectors:
+          //   1. Call listMounts() — the cheap, authoritative path list — and
+          //      reconcile mountDescriptionsState so removed mounts disappear
+          //      and stale `pathUnknown` placeholders are dropped.
+          //   2. Print immediately using cheap path/connector fallbacks for
+          //      any path we don't already have a description for.
+          //   3. Best-effort, fire-and-forget describeMount per path: each is
+          //      bounded by the transport's own callTimeoutMs so a single
+          //      OAuth-blocked connector cannot stall others or the print.
           void (async (): Promise<void> => {
             const transport = nexusFilesystemTransport;
-            if (transport?.listMounts === undefined) {
+            const printSnapshot = (): void => {
               const snapshot = mountDescriptionsState.getSnapshot();
               dispatchNotice(
                 store,
                 "mounts-info",
                 formatMountedConnectors([...snapshot.manifest, ...snapshot.runtime]),
               );
+            };
+            if (transport?.listMounts === undefined) {
+              printSnapshot();
               return;
             }
             const listResult = await transport.listMounts();
             if (!listResult.ok) {
-              const snapshot = mountDescriptionsState.getSnapshot();
-              dispatchNotice(
-                store,
-                "mounts-info",
-                formatMountedConnectors([...snapshot.manifest, ...snapshot.runtime]),
-              );
+              printSnapshot();
               return;
             }
-            // Best-effort describeMount per path. Failures degrade to a cheap
-            // {path, connector} fallback rather than abort the refresh —
-            // describe RPCs may force OAuth / README generation that we
-            // explicitly do not block /mounts on.
-            const refreshed: MountDescription[] = await Promise.all(
-              listResult.value.map(async (path): Promise<MountDescription> => {
-                if (transport.describeMount === undefined) {
-                  return { path, connector: path.split("/").filter(Boolean)[0] ?? "unknown" };
-                }
-                const described = await transport.describeMount(path);
-                if (described.ok) return described.value;
-                return { path, connector: path.split("/").filter(Boolean)[0] ?? "unknown" };
-              }),
+            const livePaths = listResult.value;
+            mountDescriptionsState.reconcile(livePaths);
+            // Seed any newly-discovered live paths with cheap fallbacks so
+            // the print includes them even before describeMount completes.
+            const known = new Set(
+              [
+                ...mountDescriptionsState.getSnapshot().manifest,
+                ...mountDescriptionsState.getSnapshot().runtime,
+              ].map((entry) => entry.path),
             );
-            mountDescriptionsState.setManifest(refreshed);
-            const snapshot = mountDescriptionsState.getSnapshot();
-            dispatchNotice(
-              store,
-              "mounts-info",
-              formatMountedConnectors([...snapshot.manifest, ...snapshot.runtime]),
+            for (const path of livePaths) {
+              if (!known.has(path)) {
+                mountDescriptionsState.addRuntime({
+                  path,
+                  connector: path.split("/").filter(Boolean)[0] ?? "unknown",
+                });
+              }
+            }
+            printSnapshot();
+            // Background enrichment — don't await. Each describeMount is
+            // independent; one slow connector cannot block the others.
+            if (transport.describeMount === undefined) return;
+            const enrich = transport.describeMount;
+            void Promise.allSettled(
+              livePaths.map(async (path) => {
+                const described = await enrich(path);
+                if (described.ok) {
+                  mountDescriptionsState.addRuntime(described.value);
+                }
+              }),
             );
           })();
           break;

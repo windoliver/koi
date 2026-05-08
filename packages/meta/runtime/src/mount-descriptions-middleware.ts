@@ -20,6 +20,14 @@ export interface MountDescriptionsState {
   readonly setManifest: (entries: readonly MountDescription[]) => void;
   readonly addRuntime: (entry: MountDescription) => void;
   readonly remove: (path: string) => void;
+  /**
+   * Reconcile in-memory state against an authoritative list of mount paths
+   * (typically the result of a fresh `transport.listMounts()`). Drops any
+   * manifest or runtime entry whose path is not in `authoritative` so stale
+   * state — mounts removed out of band, or `pathUnknown` placeholders that
+   * never resolved — cannot keep being surfaced to the model or operator.
+   */
+  readonly reconcile: (authoritative: readonly string[]) => void;
 }
 
 export function createMountDescriptionsState(
@@ -42,6 +50,11 @@ export function createMountDescriptionsState(
     remove: (path): void => {
       manifest = manifest.filter((entry) => entry.path !== path);
       runtime = runtime.filter((entry) => entry.path !== path);
+    },
+    reconcile: (authoritative): void => {
+      const live = new Set(authoritative);
+      manifest = manifest.filter((entry) => live.has(entry.path));
+      runtime = runtime.filter((entry) => live.has(entry.path));
     },
   };
 }

@@ -561,22 +561,46 @@ export async function resolveFileSystemAsync(
     // backend's active root. The backend root is fixed at construction time
     // and unmounting it would strand the session — defense-in-depth beyond
     // the TUI-level guard.
+    // Build the set of mount paths whose removal would strand the session:
+    //   - the inferred backend root (if any)
+    //   - the scoped-fs root (if filesystem.options.root is set)
+    //   - glob scope `allow` static prefixes
+    // Unmounting any of these paths OR an ancestor of them would leave the
+    // session resolving operations into a mount that no longer exists.
+    const protectedRoots: string[] = [];
+    if (inferredMountPoint !== undefined) protectedRoots.push(inferredMountPoint);
+    if (scope !== undefined) protectedRoots.push(scope.root);
+    if (globScope !== undefined) {
+      for (const pattern of globScope.allow) {
+        const wildcardIdx = pattern.search(/[*?]/);
+        const staticPrefix = wildcardIdx === -1 ? pattern : pattern.slice(0, wildcardIdx);
+        if (staticPrefix.length > 0) protectedRoots.push(staticPrefix);
+      }
+    }
+    const isPathProtectedByUnmount = (path: string): boolean => {
+      for (const root of protectedRoots) {
+        if (path === root) return true;
+        // Unmounting an ancestor of a protected root strands it just like
+        // unmounting the root itself.
+        if (root.startsWith(`${path}/`)) return true;
+      }
+      return false;
+    };
     const guardedTransport: import("@koi/fs-nexus").NexusTransport =
       ((): import("@koi/fs-nexus").NexusTransport => {
-        if (inferredMountPoint === undefined || transport.removeMount === undefined) {
+        if (protectedRoots.length === 0 || transport.removeMount === undefined) {
           return transport;
         }
         const innerRemove = transport.removeMount;
-        const activeRoot = inferredMountPoint;
         return {
           ...transport,
           removeMount: async (path) => {
-            if (path === activeRoot) {
+            if (isPathProtectedByUnmount(path)) {
               return {
                 ok: false,
                 error: {
                   code: "VALIDATION",
-                  message: `Cannot unmount ${path}: it is the active backend root for this session and removing it would strand the filesystem on a dead mount.`,
+                  message: `Cannot unmount ${path}: it (or a descendant) is an active filesystem root for this session and removing it would strand the backend on a dead mount.`,
                   retryable: RETRYABLE_DEFAULTS.VALIDATION,
                 },
               };
