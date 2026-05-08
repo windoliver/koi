@@ -118,6 +118,25 @@ def _mount_targets(fs):
     )
 
 
+async def _list_mounts_scoped(fs):
+    """List mounts visible through the scoped filesystem wrapper.
+
+    Critical for trust-boundary enforcement on describe_mount and
+    remove_mount: this MUST NOT walk through to inner raw backends via
+    _mount_targets(). A scoped wrapper that does not expose list_mounts
+    has no authoritative scope-aware view, so callers must fail closed
+    rather than fall through to the raw backend (which would let scoped
+    sessions describe or remove sibling/tenant mounts).
+
+    Returns the list reported by `fs.list_mounts()` itself, or None when
+    the scoped fs does not expose `list_mounts` (caller must reject).
+    """
+    list_fn = getattr(fs, "list_mounts", None)
+    if not callable(list_fn):
+        return None
+    return await _maybe_await(list_fn())
+
+
 async def _generate_mount_readme(fs, path: str) -> str | None:
     targets = _mount_targets(fs)
     try:
@@ -669,24 +688,26 @@ async def dispatch(fs, method, params):
         mount_path = params.get("path")
         if not isinstance(mount_path, str) or len(mount_path) == 0:
           raise ValueError("describe_mount requires a non-empty string path")
-        # Enforce the trust boundary at the bridge: describe_mount must only
-        # operate on paths the backend authoritatively reports as live. The
-        # underlying _describe_mount walks fs.backend / fs._backend / fs.facade
-        # to invoke generate_readme(), bypassing scoped-fs wrappers, so any
-        # caller could otherwise request connector-controlled README content
-        # for sibling/tenant mounts outside their session's scope. Verify the
-        # path against list_mounts() before forwarding.
+        # Trust-boundary enforcement: validate `mount_path` against the
+        # scope-aware list_mounts() ONLY. Walking through to raw backends
+        # via _mount_targets() would let a scoped session describe sibling
+        # or tenant mounts that the wrapper would otherwise hide, since
+        # the underlying _describe_mount also bypasses the wrapper to
+        # invoke generate_readme().
         try:
-            live_mounts = await _call_first(_mount_targets(fs), ("list_mounts",))
+            scoped_live = await _list_mounts_scoped(fs)
         except Exception as exc:
-            # If the backend cannot list mounts we cannot prove `mount_path`
-            # is in scope. Refuse rather than fail-open.
             raise ValueError(
                 f"describe_mount cannot verify path {mount_path!r}: list_mounts failed ({exc})"
             ) from exc
-        if mount_path not in live_mounts:
+        if scoped_live is None:
             raise ValueError(
-                f"describe_mount refused: path {mount_path!r} is not a live mount"
+                "describe_mount refused: scoped filesystem does not expose list_mounts; "
+                "cannot prove path is in scope"
+            )
+        if mount_path not in scoped_live:
+            raise ValueError(
+                f"describe_mount refused: path {mount_path!r} is not in the scoped mount set"
             )
         return await _describe_mount(fs, mount_path)
 
@@ -762,14 +783,31 @@ async def dispatch(fs, method, params):
         mount_path = params.get("path")
         if not isinstance(mount_path, str) or len(mount_path) == 0:
             raise ValueError("remove_mount requires a non-empty string path")
+        # Trust-boundary enforcement: a scoped session must not be able to
+        # unmount sibling/tenant mounts outside its scope. Validate the
+        # target against the scope-aware list_mounts() ONLY (do not walk
+        # through to inner backends, which would bypass scope filtering).
+        # If the scoped fs cannot authoritatively list, fail closed.
+        try:
+            scoped_live = await _list_mounts_scoped(fs)
+        except Exception as exc:
+            raise ValueError(
+                f"remove_mount cannot verify path {mount_path!r}: list_mounts failed ({exc})"
+            ) from exc
+        if scoped_live is None:
+            raise ValueError(
+                "remove_mount refused: scoped filesystem does not expose list_mounts; "
+                "cannot prove path is in scope"
+            )
+        if mount_path not in scoped_live:
+            raise ValueError(
+                f"remove_mount refused: path {mount_path!r} is not in the scoped mount set"
+            )
         # Snapshot before mutation so we can diff to identify the
         # authoritative removed path. The caller-supplied `mount_path` may
         # be a non-canonical form (trailing slash, missing leading slash);
         # echoing it verbatim would let client caches drift from list_mounts.
-        try:
-            before = set(await _call_first(_mount_targets(fs), ("list_mounts",)))
-        except Exception:
-            before = set()
+        before = set(scoped_live)
         await _call_first(_mount_targets(fs), ("remove_mount", "unmount"), mount_path)
         # Resolve the actual path that disappeared. If exactly one mount was
         # removed, return its authoritative form; otherwise fall back to the
@@ -777,7 +815,8 @@ async def dispatch(fs, method, params):
         # side already canonicalizes via canonicalizeMountPath()).
         resolved_path = mount_path
         try:
-            after = set(await _call_first(_mount_targets(fs), ("list_mounts",)))
+            after_listed = await _list_mounts_scoped(fs)
+            after = set(after_listed) if after_listed is not None else set()
             removed = [m for m in before if m not in after]
             if len(removed) == 1:
                 resolved_path = removed[0]

@@ -788,13 +788,28 @@ export async function resolveFileSystemAsync(
             // Authoritative pre-mutation snapshot. transport.mounts is a
             // local cache that can drift from the bridge — diffing against
             // a stale cache would let an existing mount get misclassified
-            // as "newly added" and unmounted by the rollback below. Prefer
-            // a fresh listMounts(); fall back to the cache only when the
-            // transport doesn't expose listMounts at all.
+            // as "newly added" and unmounted by the rollback below, or
+            // miss a real overlap (silent shadow mount). When the transport
+            // exposes listMounts, fail closed on its failure: the cache is
+            // not a safe substitute for safety-critical overlap decisions.
+            // When the transport has no listMounts at all, the cache is
+            // the only available state — accept it but the post-commit
+            // rollback path is also gated on listMounts so the failure
+            // mode is still bounded.
             let preMounts: Set<string>;
             if (transport.listMounts !== undefined) {
               const preList = await transport.listMounts();
-              preMounts = new Set(preList.ok ? preList.value : (transport.mounts ?? []));
+              if (!preList.ok) {
+                return {
+                  ok: false,
+                  error: {
+                    code: "INTERNAL",
+                    message: `Cannot validate mount of ${uri}: pre-commit listMounts failed (${preList.error.message}). Refusing to mutate without authoritative state — the optimistic cache may be stale and could miss an overlap with an existing live mount.`,
+                    retryable: RETRYABLE_DEFAULTS.INTERNAL,
+                  },
+                };
+              }
+              preMounts = new Set(preList.value);
             } else {
               preMounts = new Set(transport.mounts ?? []);
             }
