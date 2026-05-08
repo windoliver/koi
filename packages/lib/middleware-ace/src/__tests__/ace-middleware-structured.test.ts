@@ -242,6 +242,57 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
     }
   });
 
+  test("empty session (no recorded calls) → no proposal, no evaluation, no head change", async () => {
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+
+      let reflectorCalls = 0;
+      let curatorCalls = 0;
+      let evaluatorCalls = 0;
+      let counter = 0;
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: async () => {
+            reflectorCalls++;
+            return reflection;
+          },
+          curator: async () => {
+            curatorCalls++;
+            return addOperation;
+          },
+          evaluator: async (args) => {
+            evaluatorCalls++;
+            return makeEvaluator("promote")(args);
+          },
+          thresholds,
+          idGenerator: () => `id-${++counter}`,
+        },
+      });
+
+      const ctx = sessionCtx("sess-empty");
+      await mw.onSessionStart?.(ctx);
+      // No wrapToolCall / wrapModelCall — session ends with zero entries.
+      await mw.onSessionEnd?.(ctx);
+
+      expect(reflectorCalls).toBe(0);
+      expect(curatorCalls).toBe(0);
+      expect(evaluatorCalls).toBe(0);
+      expect(counter).toBe(0);
+
+      const head = await store.structuredPlaybooks.get(PLAYBOOK_ID);
+      expect(head?.version).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
   test("structured-pipeline failure does not block session end (onError observes)", async () => {
     const store = createSqlitePlaybookStore({ path: ":memory:" });
     try {
@@ -276,7 +327,315 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
       await mw.onSessionEnd?.(ctx);
 
       expect(observed.length).toBe(1);
-      expect(String(observed[0])).toMatch(/reflector boom/);
+      const wrapped = observed[0] as { cause?: unknown; stage?: unknown };
+      expect(String(wrapped.cause)).toMatch(/reflector boom/);
+      expect(wrapped.stage).toBe("reflect");
+
+      const head = await store.structuredPlaybooks.get(PLAYBOOK_ID);
+      expect(head?.version).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("hostile thrown value with no onError still resolves session end", async () => {
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+
+      // Proxy whose every property access throws — exercises the safeString
+      // fallback so that console.error inspection can't rethrow.
+      const hostile = new Proxy(
+        {},
+        {
+          get() {
+            throw new Error("hostile getter");
+          },
+        },
+      );
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: async () => {
+            throw hostile;
+          },
+          curator: stubCurator,
+          evaluator: makeEvaluator("promote"),
+          thresholds,
+          // Intentionally no onError — exercises default fail-loud path.
+        },
+      });
+
+      const ctx = sessionCtx("sess-hostile");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-hostile", 0);
+      await mw.wrapToolCall?.(t, { toolId: "search", input: {} }, async () => ({
+        output: "ok",
+        isError: false,
+      }));
+      // Must not throw despite hostile error value passed through default logger.
+      await mw.onSessionEnd?.(ctx);
+
+      const head = await store.structuredPlaybooks.get(PLAYBOOK_ID);
+      expect(head?.version).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("proxy with throwing getPrototypeOf trap does not break onSessionEnd", async () => {
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+
+      // Trap fires for any `instanceof` probe; verifies safeString avoids it.
+      const proto = new Proxy(
+        {},
+        {
+          getPrototypeOf() {
+            throw new Error("hostile prototype");
+          },
+        },
+      );
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: async () => {
+            throw proto;
+          },
+          curator: stubCurator,
+          evaluator: makeEvaluator("promote"),
+          thresholds,
+        },
+      });
+
+      const ctx = sessionCtx("sess-proto");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-proto", 0);
+      await mw.wrapToolCall?.(t, { toolId: "search", input: {} }, async () => ({
+        output: "ok",
+        isError: false,
+      }));
+      await mw.onSessionEnd?.(ctx);
+
+      const head = await store.structuredPlaybooks.get(PLAYBOOK_ID);
+      expect(head?.version).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("throwing onError still leaves an operator-visible log trail", async () => {
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    const originalError = console.error;
+    const logged: string[] = [];
+    console.error = (...args: unknown[]): void => {
+      logged.push(args.map((a) => String(a)).join(" "));
+    };
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: async () => {
+            throw new Error("pipeline boom");
+          },
+          curator: stubCurator,
+          evaluator: makeEvaluator("promote"),
+          thresholds,
+          onError: () => {
+            throw new Error("handler boom");
+          },
+        },
+      });
+
+      const ctx = sessionCtx("sess-handler-throws");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-handler-throws", 0);
+      await mw.wrapToolCall?.(t, { toolId: "search", input: {} }, async () => ({
+        output: "ok",
+        isError: false,
+      }));
+      await mw.onSessionEnd?.(ctx);
+
+      expect(logged.length).toBeGreaterThan(0);
+      const trail = logged.join("\n");
+      expect(trail).toMatch(/structured pipeline failure/);
+      expect(trail).toMatch(/onError handler also failed/);
+    } finally {
+      console.error = originalError;
+      store.close();
+    }
+  });
+
+  test("default logger emits sanitized one-liner (no raw Error object)", async () => {
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    const originalError = console.error;
+    const captured: unknown[][] = [];
+    console.error = (...args: unknown[]): void => {
+      captured.push(args);
+    };
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: async () => {
+            throw new Error("ordinary boom");
+          },
+          curator: stubCurator,
+          evaluator: makeEvaluator("promote"),
+          thresholds,
+        },
+      });
+
+      const ctx = sessionCtx("sess-ordinary");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-ordinary", 0);
+      await mw.wrapToolCall?.(t, { toolId: "search", input: {} }, async () => ({
+        output: "ok",
+        isError: false,
+      }));
+      await mw.onSessionEnd?.(ctx);
+
+      // Default path must NOT pass the raw Error to console.error (data-leak
+      // guard); it must emit a single sanitized string containing message text.
+      expect(captured.length).toBeGreaterThan(0);
+      for (const args of captured) {
+        for (const a of args) {
+          expect(a instanceof Error).toBe(false);
+        }
+      }
+      const trail = captured.map((a) => a.join(" ")).join("\n");
+      expect(trail).toMatch(/structured pipeline failure/);
+      // Default path must NOT leak the error message text — only class metadata.
+      expect(trail).not.toMatch(/ordinary boom/);
+      expect(trail).toMatch(/class=StagedPipelineError/);
+      expect(trail).toMatch(/stage=reflect/);
+      expect(trail).toMatch(/sessionId=sess-ordinary/);
+    } finally {
+      console.error = originalError;
+      store.close();
+    }
+  });
+
+  test("async-rejecting onError still produces fallback log trail", async () => {
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    const originalError = console.error;
+    const logged: string[] = [];
+    console.error = (...args: unknown[]): void => {
+      logged.push(args.map((a) => (a instanceof Error ? a.message : String(a))).join(" "));
+    };
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: async () => {
+            throw new Error("pipeline boom");
+          },
+          curator: stubCurator,
+          evaluator: makeEvaluator("promote"),
+          thresholds,
+          onError: async () => {
+            throw new Error("async handler boom");
+          },
+        },
+      });
+
+      const ctx = sessionCtx("sess-async-handler");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-async-handler", 0);
+      await mw.wrapToolCall?.(t, { toolId: "search", input: {} }, async () => ({
+        output: "ok",
+        isError: false,
+      }));
+      await mw.onSessionEnd?.(ctx);
+
+      // Async rejection lands on next microtask; flush.
+      await new Promise((r) => setTimeout(r, 0));
+
+      const trail = logged.join("\n");
+      expect(trail).toMatch(/structured pipeline failure/);
+      expect(trail).toMatch(/onError handler also failed/);
+      // Class-only metadata; messages must NOT leak to default log path.
+      expect(trail).not.toMatch(/async handler boom/);
+      expect(trail).not.toMatch(/pipeline boom/);
+    } finally {
+      console.error = originalError;
+      store.close();
+    }
+  });
+
+  test("onError returning a hostile thenable does not break onSessionEnd", async () => {
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+
+      // Looks like a thenable but `then` getter throws. Promise.resolve will
+      // see the throwing getter and either capture it in a rejected promise
+      // (newer engines) or throw — invokeOnErrorDetached must contain both.
+      const hostileThenable = new Proxy(
+        {},
+        {
+          get(_target, prop) {
+            if (prop === "then") throw new Error("hostile then getter");
+            return undefined;
+          },
+        },
+      );
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: async () => {
+            throw new Error("pipeline boom");
+          },
+          curator: stubCurator,
+          evaluator: makeEvaluator("promote"),
+          thresholds,
+          onError: () => hostileThenable as unknown as void,
+        },
+      });
+
+      const ctx = sessionCtx("sess-hostile-thenable");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-hostile-thenable", 0);
+      await mw.wrapToolCall?.(t, { toolId: "search", input: {} }, async () => ({
+        output: "ok",
+        isError: false,
+      }));
+      // Must not throw.
+      await mw.onSessionEnd?.(ctx);
 
       const head = await store.structuredPlaybooks.get(PLAYBOOK_ID);
       expect(head?.version).toBe(1);
@@ -316,7 +675,9 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
       await mw.onSessionEnd?.(ctx);
 
       expect(observed.length).toBe(1);
-      expect(String(observed[0])).toMatch(/rollback.*pipeline only handles promote\/reject/);
+      const wrapped = observed[0] as { cause?: unknown; stage?: unknown };
+      expect(wrapped.stage).toBe("rollback-rejected");
+      expect(String(wrapped.cause)).toMatch(/rollback.*pipeline only handles promote\/reject/);
 
       const head = await store.structuredPlaybooks.get(PLAYBOOK_ID);
       expect(head?.version).toBe(1);
