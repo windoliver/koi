@@ -17545,6 +17545,99 @@ describe("Golden: @koi/playbook-store-sqlite", () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Golden: @koi/playbook-store-nexus (no LLM, no cassette — pure store over fake transport)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Nexus-backed ACE store has no model dependency. Exercise the contract
+// directly against an in-memory fake transport: structured save → get →
+// monotonic version enforcement → lineage capability flag.
+
+describe("Golden: @koi/playbook-store-nexus", () => {
+  test("structured save → get round-trip through fake transport", async () => {
+    const { createNexusStructuredPlaybookStore } = await import("@koi/playbook-store-nexus");
+    const { createFakeNexusTransport } = await import("@koi/fs-nexus/testing");
+
+    const store = createNexusStructuredPlaybookStore({
+      transport: createFakeNexusTransport(),
+      basePath: "ace-golden",
+    });
+
+    const playbook = {
+      id: "spb-golden-nexus",
+      title: "v1",
+      sections: [
+        {
+          name: "Errors",
+          slug: "errors",
+          bullets: [
+            {
+              id: "b1",
+              content: "check exists",
+              helpful: 0,
+              harmful: 0,
+              createdAt: 0,
+              updatedAt: 0,
+            },
+          ],
+        },
+      ],
+      tags: ["fs"],
+      source: "curated" as const,
+      createdAt: 1,
+      updatedAt: 2,
+      sessionCount: 0,
+      version: 1,
+    };
+
+    await store.save(playbook);
+    const got = await store.get("spb-golden-nexus");
+    expect(got?.title).toBe("v1");
+    expect(got?.version).toBe(1);
+    expect(got?.sections[0]?.bullets[0]?.content).toBe("check exists");
+  });
+
+  test("rejects below-head save (monotonic version enforcement)", async () => {
+    const { createNexusStructuredPlaybookStore } = await import("@koi/playbook-store-nexus");
+    const { createFakeNexusTransport } = await import("@koi/fs-nexus/testing");
+
+    const store = createNexusStructuredPlaybookStore({
+      transport: createFakeNexusTransport(),
+      basePath: "ace-golden",
+    });
+
+    const base = {
+      id: "spb-monotonic",
+      title: "v2",
+      sections: [],
+      tags: [],
+      source: "curated" as const,
+      createdAt: 0,
+      updatedAt: 0,
+      sessionCount: 0,
+      version: 2,
+    };
+
+    await store.save(base);
+    // Below-head replay must be rejected — matches sqlite contract.
+    await expect(store.save({ ...base, version: 1 })).rejects.toThrow(/below current version/i);
+  });
+
+  test("getVersion returns undefined and lineageSupported is false (no lineage)", async () => {
+    const { createNexusStructuredPlaybookStore } = await import("@koi/playbook-store-nexus");
+    const { createFakeNexusTransport } = await import("@koi/fs-nexus/testing");
+
+    const store = createNexusStructuredPlaybookStore({
+      transport: createFakeNexusTransport(),
+      basePath: "ace-golden",
+    });
+
+    expect(store.lineageSupported).toBe(false);
+    const v = await store.getVersion?.("any-id", 1);
+    expect(v).toBeUndefined();
+  });
+});
+
 describe("Golden: @koi/middleware-intent-capsule", () => {
   test("createIntentCapsuleMiddleware returns a KoiMiddleware with correct name and priority", async () => {
     const { createIntentCapsuleMiddleware } = await import("@koi/middleware-intent-capsule");

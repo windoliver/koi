@@ -160,6 +160,7 @@
     "@koi/skill-distiller": "workspace:*",
     "@koi/skill-scanner": "workspace:*",
     "@koi/skill-tool": "workspace:*",
+    "@koi/playbook-store-nexus": "workspace:*",
     "@koi/playbook-store-sqlite": "workspace:*",
     "@koi/skills-runtime": "workspace:*",
     "@koi/snapshot-store-sqlite": "workspace:*",

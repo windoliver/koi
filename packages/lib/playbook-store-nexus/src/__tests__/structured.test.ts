@@ -105,20 +105,22 @@ describe("createNexusStructuredPlaybookStore", () => {
     expect(filtered.map((p) => p.id)).toEqual(["two-tags"]);
   });
 
-  test("save with same id and different version is last-write-wins", async () => {
-    // DIVERGENCE vs sqlite: sqlite enforces version-CAS (same-version different content
-    // throws; lower-version save is rejected). Nexus is last-write-wins — any save
-    // overwrites the current file regardless of version. Documented in
+  test("save with same id rejects below-head writes (monotonic version CAS)", async () => {
+    // Since #1715 the Nexus structured store enforces the same monotonic
+    // version contract as sqlite: forward writes succeed; below-head replays
+    // and same-version divergent content are rejected. Cross-process safety
+    // is enforced by transport-level if_match etag CAS. Documented in
     // docs/L2/playbook-store-nexus.md.
     const store = newStore();
     await store.save({ ...spb("p"), version: 2, title: "v2" });
     await store.save({ ...spb("p"), version: 3, title: "v3" });
     expect((await store.get("p"))?.version).toBe(3);
     expect((await store.get("p"))?.title).toBe("v3");
-    // sqlite would throw here if v2 were re-saved after v3 (out-of-order);
-    // nexus allows it (last-write-wins).
-    await store.save({ ...spb("p"), version: 2, title: "rollback" });
-    expect((await store.get("p"))?.version).toBe(2);
+    // Out-of-order: re-saving v2 after v3 must fail closed.
+    await expect(store.save({ ...spb("p"), version: 2, title: "rollback" })).rejects.toThrow(
+      /below current version/i,
+    );
+    expect((await store.get("p"))?.version).toBe(3);
   });
 
   // --- ACE ID path-safety regression tests (Finding 1) ---
@@ -236,7 +238,7 @@ describe("createNexusStructuredPlaybookStore", () => {
       proposalStore.recordProposal(makeProposal("p-wrapper-lock", "pb-wrapper-lock", 1)),
     ]);
 
-    // save must always succeed (last-write-wins).
+    // save advances monotonically (v1 -> v2) — must always succeed.
     expect(saveResult.status).toBe("fulfilled");
 
     if (recordResult.status === "rejected") {

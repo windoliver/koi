@@ -1634,6 +1634,7 @@
         "@koi/outcome-evaluator": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/permissions-nexus": "workspace:*",
+        "@koi/playbook-store-nexus": "workspace:*",
         "@koi/playbook-store-sqlite": "workspace:*",
         "@koi/plugins": "workspace:*",
         "@koi/query-engine": "workspace:*",

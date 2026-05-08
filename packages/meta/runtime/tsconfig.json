@@ -157,6 +157,7 @@
     { "path": "../../lib/skill-distiller" },
     { "path": "../../security/skill-scanner" },
     { "path": "../../lib/skill-tool" },
+    { "path": "../../lib/playbook-store-nexus" },
     { "path": "../../lib/playbook-store-sqlite" },
     { "path": "../../lib/skills-runtime" },
     { "path": "../../lib/model-router" },
