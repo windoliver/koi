@@ -25,8 +25,23 @@ import {
   type WsFactory,
 } from "./subscribe.js";
 
-const isMetricPointList = (x: unknown): x is readonly MetricPoint[] =>
-  isReadonlyArrayOf(x, isMetricPointValue);
+// dashboard-api wraps metric responses in { points: [...] } (unique among list
+// endpoints). Accept both shapes so the SDK works against the real server and
+// the existing array-shape mocks in older test fixtures.
+const isMetricPointEnvelope = (
+  x: unknown,
+): x is readonly MetricPoint[] | { readonly points: readonly MetricPoint[] } => {
+  if (isReadonlyArrayOf(x, isMetricPointValue)) return true;
+  if (typeof x !== "object" || x === null) return false;
+  const obj = x as { readonly points?: unknown };
+  return isReadonlyArrayOf(obj.points, isMetricPointValue);
+};
+const unwrapMetricList = (
+  v: readonly MetricPoint[] | { readonly points: readonly MetricPoint[] },
+): readonly MetricPoint[] => {
+  if (Array.isArray(v)) return v as readonly MetricPoint[];
+  return (v as { readonly points: readonly MetricPoint[] }).points;
+};
 
 function isPageOf<T>(itemGuard: (x: unknown) => x is T) {
   return (x: unknown): x is Page<T> => {
@@ -120,17 +135,17 @@ export function createDashboardClient(config: DashboardClientConfig): DashboardC
       const names = query.names.length > 0 ? query.names : [undefined];
       const responses = await Promise.all(
         names.map((name) =>
-          getJson<readonly MetricPoint[]>(
+          getJson<readonly MetricPoint[] | { readonly points: readonly MetricPoint[] }>(
             fetchImpl,
             `${baseUrl}/api/metrics?${encodeSingleNameQuery(query, name)}`,
-            { validate: isMetricPointList },
+            { validate: isMetricPointEnvelope },
           ),
         ),
       );
       const collected: MetricPoint[] = [];
       for (const response of responses) {
         if (!response.ok) return response;
-        for (const point of response.value) {
+        for (const point of unwrapMetricList(response.value)) {
           if (point.timestampMs < query.fromMs || point.timestampMs > query.toMs) continue;
           if (query.tags && !matchesTags(point.tags, query.tags)) continue;
           collected.push(point);
@@ -173,10 +188,13 @@ function stripTrailingSlash(url: string): string {
 }
 
 function encodeSingleNameQuery(query: MetricQuery, name: string | undefined): string {
+  // Don't forward `query.limit` to the server: the server applies the limit
+  // before any ordering, so passing it would truncate to the OLDEST N points
+  // per name. The fan-out below sorts newest-first across all names and then
+  // applies `query.limit` client-side, which is the contract callers expect.
   const params = new URLSearchParams();
   if (name !== undefined) params.set("name", name);
   params.set("since", String(query.fromMs));
-  if (query.limit !== undefined) params.set("limit", String(query.limit));
   return params.toString();
 }
 

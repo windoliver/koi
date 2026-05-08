@@ -95,16 +95,47 @@ async function safeFetch(
   if (response.status === 429) {
     return { ok: false, error: clientError("RATE_LIMIT", `Rate limited on ${url}`) };
   }
-  if (response.status === 404) {
-    return { ok: false, error: clientError("NOT_FOUND", `Not found: ${url}`) };
-  }
   if (!response.ok) {
+    // Try to read the server-emitted KoiError envelope so callers see the real
+    // failure code (e.g. AUTH_REQUIRED, FORBIDDEN, VALIDATION) instead of a
+    // generic EXTERNAL classification.
+    const fromBody = await readKoiErrorFromBody(response);
+    if (fromBody) return { ok: false, error: fromBody };
+    if (response.status === 404) {
+      return { ok: false, error: clientError("NOT_FOUND", `Not found: ${url}`) };
+    }
     return {
       ok: false,
       error: clientError("EXTERNAL", `HTTP ${response.status} on ${url}`),
     };
   }
   return { ok: true, value: response };
+}
+
+async function readKoiErrorFromBody(response: Response): Promise<KoiError | null> {
+  try {
+    const body = await response.clone().json();
+    if (
+      typeof body === "object" &&
+      body !== null &&
+      (body as { ok?: unknown }).ok === false &&
+      typeof (body as { error?: unknown }).error === "object" &&
+      (body as { error: unknown }).error !== null
+    ) {
+      const err = (body as { error: { code?: unknown; message?: unknown; retryable?: unknown } })
+        .error;
+      if (typeof err.code === "string" && typeof err.message === "string") {
+        return {
+          code: err.code as KoiErrorCode,
+          message: err.message,
+          retryable: typeof err.retryable === "boolean" ? err.retryable : false,
+        };
+      }
+    }
+  } catch {
+    // Body wasn't JSON or didn't match the envelope; fall through.
+  }
+  return null;
 }
 
 async function safeParseEnvelope<T>(

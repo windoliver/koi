@@ -47,14 +47,15 @@ describe("createDashboardClient", () => {
       tags: { agent: "a1" },
       limit: 50,
     });
-    // Multi-name queries fan out one request per name. Each request encodes only
-    // the filters the server actually parses (single `name`, `since`, `limit`);
-    // `to`/`tag` filtering is enforced client-side before returning to caller.
+    // Multi-name queries fan out one request per name. Each request encodes
+    // only `name` and `since`; `to`/`tag`/`limit` are enforced client-side
+    // (server applies `limit` before ordering, so forwarding it would truncate
+    // to the OLDEST N points per name and break newest-first semantics).
     expect(calls.length).toBe(2);
     for (const u of calls) {
       expect(u.startsWith("http://h:1/api/metrics?")).toBe(true);
       expect(u).toContain("since=1000");
-      expect(u).toContain("limit=50");
+      expect(u).not.toContain("limit=");
       expect(u).not.toContain("from=");
       expect(u).not.toContain("to=");
       expect(u).not.toContain("tag=");

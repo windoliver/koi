@@ -179,13 +179,14 @@ describe("HTTP integration", () => {
       tags: { env: "prod", region: "us" },
     });
     expect(r.ok).toBe(true);
-    // Multi-name queries fan out one request per name; each request encodes only
-    // the filters dashboard-api actually parses (single `name`, `since`, `limit`).
-    // `to`/`tags` filtering happens client-side.
+    // Multi-name queries fan out one request per name; each request encodes
+    // only `name` and `since`. `to`/`tags`/`limit` are enforced client-side
+    // (server applies `limit` before ordering, so forwarding it would
+    // truncate to the OLDEST N points per name).
     expect(capturedQueries.length).toBe(2);
     for (const q of capturedQueries) {
       expect(q).toContain("since=100");
-      expect(q).toContain("limit=50");
+      expect(q).not.toContain("limit=");
       expect(q).not.toContain("from=");
       expect(q).not.toContain("to=");
       expect(q).not.toContain("tag=");
