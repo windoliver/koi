@@ -4,9 +4,9 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 209 workspace packages
+- 210 workspace packages
 - 11 package families
-- 209 packages with local test files
+- 210 packages with local test files
 - 187 packages with dedicated package docs
 
 ## Family Summary
@@ -23,7 +23,7 @@ Current snapshot:
 | sandbox | 11 | 58 | 11 |
 | sched | 5 | 22 | 5 |
 | security | 20 | 109 | 20 |
-| ui | 1 | 54 | 1 |
+| ui | 2 | 57 | 1 |
 
 ## Package Inventory
 
@@ -81,7 +81,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/cost-aggregator` (packages/lib/cost-aggregator) - Real-time cost aggregation with per-model/tool/agent/provider breakdowns and budget thresholds. Tests: 7. Docs: docs/L2/cost-aggregator.md.
 - `@koi/crystallize` (packages/lib/crystallize) - Pattern detection over agent turn traces — surfaces repeating tool sequences as scored forge candidates.. Tests: 4. Docs: docs/L2/crystallize.md.
 - `@koi/dashboard-api` (packages/lib/dashboard-api) - Dashboard HTTP API — headless REST + SSE handler over Bun.serve, bearer-auth, cursor pagination, and query filters. Tests: 7. Docs: docs/L2/dashboard-api.md.
-- `@koi/dashboard-client` (packages/lib/dashboard-client) - Typed HTTP + WebSocket client SDK for the Koi dashboard API. Tests: 4. Docs: docs/L2/dashboard-client.md.
+- `@koi/dashboard-client` (packages/lib/dashboard-client) - Typed HTTP + SSE client SDK for the Koi dashboard API. Tests: 4. Docs: docs/L2/dashboard-client.md.
 - `@koi/dashboard-types` (packages/lib/dashboard-types) - Dashboard contracts: AgentStatus, SessionSummary, MetricPoint, TraceView, REST envelope, WS subscribe protocol. Tests: 1. Docs: docs/L2/dashboard-types.md.
 - `@koi/debug` (packages/lib/debug) - Debug package — step-through agent execution, breakpoints, and state inspection. Tests: 4. Docs: docs/L2/debug.md.
 - `@koi/decision-ledger` (packages/lib/decision-ledger) - Per-session decision ledger projection — read-only join over trajectory + audit with run report as a sidecar summary. Tests: 1. Docs: docs/L2/decision-ledger.md.
@@ -267,6 +267,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/skill-scanner` (packages/security/skill-scanner) - AST-based security scanner for SKILL.md files. Tests: 7. Docs: docs/L2/skill-scanner.md.
 - `@koi/violation-store-sqlite` (packages/security/violation-store-sqlite) - Append-only SQLite-backed ViolationStore with WAL mode and indexed queries. Tests: 3. Docs: docs/L2/violation-store-sqlite.md.
 
-## ui (1)
+## ui (2)
 
+- `@koi/dashboard-ui` (packages/ui/dashboard-ui) - Minimal React + Vite scaffold for the Koi dashboard UI. Tests: 3. Docs: -.
 - `@koi/tui` (packages/ui/tui) - OpenTUI-based terminal UI for Koi agent conversations. Tests: 54. Docs: docs/L2/tui.md.
