@@ -6,6 +6,17 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`koi gateway-up` command (#1213 follow-up)**: new direct dependency on
+  `@koi/gateway-stack`. Adds the `gateway-up` subcommand, which spins up a
+  loopback gateway via the new `createLocalGatewayLauncher` (gateway WS +
+  health endpoint on `port+1`). Optional Nexus HA wiring through
+  `--nexus-url`/`--nexus-api-key`. Port range is `[1, 65534]` because the
+  health server reserves `port+1`. Health responds `503 {"status":"starting"}`
+  (JSON) until `stack.start()` completes, then delegates to
+  `stack.healthHandler`. Failed startup tears down the gateway transport,
+  Nexus transport, health server, and stack independently so a partial bind
+  cannot leak resources. No changes to existing commands or wiring.
+
 - **Review-finding sync for TUI internals (#2139)**: no CLI command, flag, or
   dependency changes. The TUI command registry comments now describe the
   implemented command surface rather than parity aspirations, and clipboard
