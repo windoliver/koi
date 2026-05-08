@@ -24,6 +24,7 @@ interface RemoteWorkerState {
   readonly generationController: AbortController;
   readonly events: WorkerEvent[];
   readonly listeners: Array<(ev: WorkerEvent) => void>;
+  readonly delivered: Set<string>;
   alive: boolean;
   terminatedIntentionally: boolean;
   terminalDelivered: boolean;
@@ -60,7 +61,21 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
 
   const method = (name: string): string => `${methodPrefix}.${name}`;
 
-  const emit = (id: WorkerId, state: RemoteWorkerState, ev: WorkerEvent): void => {
+  const fingerprint = (ev: WorkerEvent): string => {
+    if (ev.kind === "exited") return `exited:${ev.at}:${ev.code}:${ev.state}`;
+    if (ev.kind === "crashed") return `crashed:${ev.at}:${ev.error.code}`;
+    if (ev.kind === "started") return `started:${ev.at}:${ev.pid ?? ""}`;
+    return `heartbeat:${ev.at}`;
+  };
+  const emit = (id: WorkerId, state: RemoteWorkerState, ev: WorkerEvent): boolean => {
+    if (ev.kind !== "heartbeat") {
+      const fp = fingerprint(ev);
+      if (state.delivered.has(fp)) return false;
+      state.delivered.add(fp);
+    }
+    return emitInternal(id, state, ev);
+  };
+  const emitInternal = (id: WorkerId, state: RemoteWorkerState, ev: WorkerEvent): boolean => {
     if (ev.kind === "heartbeat") {
       state.lastHeartbeat = ev;
     } else {
@@ -79,6 +94,7 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
     const pending = [...state.listeners];
     state.listeners.length = 0;
     for (const listener of pending) listener(ev);
+    return true;
   };
 
   const supportsHeartbeat = options.supportsHeartbeat === true;
@@ -175,6 +191,7 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
         generationController: new AbortController(),
         events: [],
         listeners: [],
+        delivered: new Set<string>(),
         alive: parsed.value.alive,
         terminatedIntentionally: false,
         terminalDelivered: false,
