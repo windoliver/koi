@@ -329,9 +329,13 @@ describe("createNexusScratchpad", () => {
     expect(fallbackWriteCalls).toBe(0);
   });
 
-  test("onChange emits unseen writes once", async () => {
+  test("onChange does not replay pre-existing entries; only emits writes after subscription", async () => {
     const { createNexusScratchpad } = await import("./index.js");
 
+    // Matches scratchpad-local: subscribers see writes/deletes that
+    // happen AFTER they attach. Otherwise reconnecting a watcher to a
+    // non-empty group would replay history as fresh writes and
+    // duplicate downstream work.
     let calls = 0;
     const scratchpad = await createNexusScratchpad({
       groupId: agentGroupId("group-a"),
@@ -370,13 +374,15 @@ describe("createNexusScratchpad", () => {
     await Bun.sleep(25);
     unsubscribe();
 
-    expect(seen).toContain(1);
+    // generation=1 was historical at subscribe time → suppressed.
+    // generation=2 happened after subscription → emitted.
+    expect(seen).not.toContain(1);
     expect(seen).toContain(2);
   });
 });
 
 describe("createChangeTracker", () => {
-  test("emits a deleted event when an entry disappears", async () => {
+  test("first snapshot primes baseline silently; later disappearance emits a deleted event", async () => {
     const { createChangeTracker } = await import("./change-tracker.js");
     const tracker = createChangeTracker("group-a");
 
@@ -391,10 +397,11 @@ describe("createChangeTracker", () => {
         sizeBytes: 5,
       },
     ];
+    // First snapshot establishes the baseline — no replay events.
     const firstEvents = tracker.nextEvents(initial);
-    expect(firstEvents).toHaveLength(1);
-    expect(firstEvents[0]?.kind).toBe("written");
+    expect(firstEvents).toHaveLength(0);
 
+    // Entry disappears in a later exhaustive snapshot → delete fires.
     const afterDelete = tracker.nextEvents([]);
     expect(afterDelete).toHaveLength(1);
     expect(afterDelete[0]?.kind).toBe("deleted");
