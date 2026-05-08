@@ -37,12 +37,18 @@ describe("activity factories", () => {
   });
 
   test("retry activity returns serializable success results", async () => {
+    const serializableValue = {
+      nested: { count: 2, flags: [true, false] },
+      label: "ok",
+    };
+
     const activities = createRetryActivities({
-      runOperation: async () => "ok",
+      runOperation: async () => serializableValue,
     });
 
     const result = await activities.runRetriedOperation({ operation: "runScheduledTask", payload: {} });
-    expect(result).toEqual({ kind: "succeeded", value: "ok" });
+    expect(result).toEqual({ kind: "succeeded", value: serializableValue });
+    expect(result.kind === "succeeded" ? result.value : null).not.toBe(serializableValue);
   });
 
   test("scheduled task activity returns the built execution", async () => {
