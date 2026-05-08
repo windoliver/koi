@@ -14,7 +14,7 @@ describe("createDashboardClient", () => {
     const calls: string[] = [];
     const fetchImpl = async (url: string): Promise<Response> => {
       calls.push(url);
-      return jsonResponse({ ok: true, value: [] });
+      return jsonResponse({ ok: true, value: { items: [] } });
     };
     const client = createDashboardClient({ baseUrl: "http://h:1", fetch: fetchImpl });
     const result = await client.listAgents();

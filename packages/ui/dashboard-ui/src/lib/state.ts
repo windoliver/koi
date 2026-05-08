@@ -118,6 +118,10 @@ export interface DashboardViewModel {
   // so late-arriving historical hydration cannot roll the trace pane back.
   latestTurnByAgentId: Record<string, { readonly turnId: string; readonly startedAtMs: number }>;
   selectedAgentTrace: DashboardTraceEntry[];
+  // Metric points received before their session.summary arrived. Drained when the
+  // matching session is added so the new session does not lose its first samples
+  // under SSE event ordering races.
+  pendingMetricsBySessionId: Record<string, readonly DashboardClientMetricPoint[]>;
   isLoading: boolean;
   errorMessage: string | null;
 }
@@ -151,9 +155,12 @@ function buildSessionsById(sessions: DashboardSession[]): Record<string, Dashboa
   return Object.fromEntries(sessions.map((session) => [session.id, session]));
 }
 
-function createDerivedState(
-  baseState: Omit<DashboardViewModel, "visibleSessions" | "selectedSession" | "selectedAgentTrace">,
-): DashboardViewModel {
+type DerivedFreeBase = Omit<
+  DashboardViewModel,
+  "visibleSessions" | "selectedSession" | "selectedAgentTrace"
+>;
+
+function createDerivedState(baseState: DerivedFreeBase): DashboardViewModel {
   const visibleSessions = baseState.selectedAgentId
     ? sortSessionsByUpdatedAt(baseState.sessionsByAgentId[baseState.selectedAgentId] ?? [])
     : [];
@@ -185,6 +192,7 @@ function createViewModelState(
       string,
       { readonly turnId: string; readonly startedAtMs: number }
     >;
+    readonly pendingMetricsBySessionId?: Record<string, readonly DashboardClientMetricPoint[]>;
   },
 ): DashboardViewModel {
   const sessionsByAgentId = Object.fromEntries(
@@ -217,6 +225,7 @@ function createViewModelState(
     selectedSessionId: firstSessionId,
     tracesByTurnId: options?.tracesByTurnId ?? {},
     latestTurnByAgentId: options?.latestTurnByAgentId ?? {},
+    pendingMetricsBySessionId: options?.pendingMetricsBySessionId ?? {},
     isLoading: options?.isLoading ?? false,
     errorMessage: options?.errorMessage ?? null,
   });
@@ -417,6 +426,26 @@ export function mapTraceView(trace: DashboardClientTraceView): DashboardTraceEnt
   return entries;
 }
 
+// Per-session ceiling on buffered orphan metric points. Bounds memory if a
+// session-summary never arrives for a given sessionId (misbehaving backend).
+const PENDING_METRICS_PER_SESSION_LIMIT = 1000;
+
+function applyMetricPointsToSession(
+  state: DashboardViewModel,
+  sessionId: string,
+  points: readonly DashboardClientMetricPoint[],
+): DashboardViewModel {
+  const existingSession = state.sessionsById[sessionId];
+  if (!existingSession || points.length === 0) return state;
+  return replaceSession(state, {
+    ...existingSession,
+    updatedAt: new Date(
+      Math.max(Date.parse(existingSession.updatedAt), ...points.map((point) => point.timestampMs)),
+    ).toISOString(),
+    metrics: mergeMetrics(existingSession.metrics, mapMetricPoints(points)),
+  });
+}
+
 function mergeMetrics(
   currentMetrics: DashboardMetric[],
   nextMetrics: DashboardMetric[],
@@ -453,6 +482,7 @@ function replaceSession(state: DashboardViewModel, session: DashboardSession): D
       selectedSessionId: state.selectedSessionId,
       tracesByTurnId: state.tracesByTurnId,
       latestTurnByAgentId: state.latestTurnByAgentId,
+      pendingMetricsBySessionId: state.pendingMetricsBySessionId,
     },
   );
 }
@@ -480,6 +510,7 @@ function replaceAgent(state: DashboardViewModel, agent: DashboardAgent): Dashboa
       selectedSessionId: state.selectedSessionId,
       tracesByTurnId: state.tracesByTurnId,
       latestTurnByAgentId: state.latestTurnByAgentId,
+      pendingMetricsBySessionId: state.pendingMetricsBySessionId,
     },
   );
 }
@@ -523,6 +554,7 @@ export function applyDashboardEvent(
         selectedSessionId: state.selectedSessionId,
         tracesByTurnId: state.tracesByTurnId,
         latestTurnByAgentId: state.latestTurnByAgentId,
+        pendingMetricsBySessionId: state.pendingMetricsBySessionId,
       });
 
     case "agent.status.received": {
@@ -536,6 +568,7 @@ export function applyDashboardEvent(
 
     case "session.summary.received": {
       const previousSession = state.sessionsById[event.session.sessionId];
+      const isNewSession = previousSession === undefined;
       const nextSession = mapSessionSnapshot(event.session, event.nowMs);
       const mergedSession = previousSession
         ? {
@@ -545,13 +578,30 @@ export function applyDashboardEvent(
           }
         : nextSession;
 
-      return replaceSession(
+      let nextState = replaceSession(
         createDerivedState({
           ...state,
           generatedAt: new Date(event.session.endedAt ?? event.nowMs ?? Date.now()).toISOString(),
         }),
         mergedSession,
       );
+
+      // Drain any metric points that arrived before this session's summary.
+      // Without this, an SSE ordering race (metric event delivered before
+      // session-summary) would silently lose the new session's first samples.
+      if (isNewSession) {
+        const pendingPoints = state.pendingMetricsBySessionId[event.session.sessionId];
+        if (pendingPoints && pendingPoints.length > 0) {
+          nextState = applyMetricPointsToSession(nextState, event.session.sessionId, pendingPoints);
+          const { [event.session.sessionId]: _drained, ...remainingPending } =
+            nextState.pendingMetricsBySessionId;
+          nextState = createDerivedState({
+            ...nextState,
+            pendingMetricsBySessionId: remainingPending,
+          });
+        }
+      }
+      return nextState;
     }
 
     case "metric.received": {
@@ -569,21 +619,28 @@ export function applyDashboardEvent(
       }
 
       let nextState = state;
+      let nextPending = state.pendingMetricsBySessionId;
       for (const [sessionId, points] of pointsBySessionId) {
         const existingSession = nextState.sessionsById[sessionId];
-        if (!existingSession) continue;
-        nextState = replaceSession(nextState, {
-          ...existingSession,
-          updatedAt: new Date(
-            Math.max(
-              Date.parse(existingSession.updatedAt),
-              ...points.map((point) => point.timestampMs),
-            ),
-          ).toISOString(),
-          // mergeMetrics now keeps the metric with the higher per-label timestamp,
-          // so a late-arriving historical fetch cannot overwrite a newer live sample
-          // for the same label.
-          metrics: mergeMetrics(existingSession.metrics, mapMetricPoints(points)),
+        if (existingSession) {
+          nextState = applyMetricPointsToSession(nextState, sessionId, points);
+        } else {
+          // Session not yet seen. Buffer points by sessionId so they apply once
+          // session.summary.received arrives. Bound the buffer per session to
+          // avoid an unbounded memory leak when a session-summary is never sent.
+          const previous = nextPending[sessionId] ?? [];
+          const merged = [...previous, ...points];
+          const bounded =
+            merged.length > PENDING_METRICS_PER_SESSION_LIMIT
+              ? merged.slice(merged.length - PENDING_METRICS_PER_SESSION_LIMIT)
+              : merged;
+          nextPending = { ...nextPending, [sessionId]: bounded };
+        }
+      }
+      if (nextPending !== state.pendingMetricsBySessionId) {
+        nextState = createDerivedState({
+          ...nextState,
+          pendingMetricsBySessionId: nextPending,
         });
       }
       return nextState;

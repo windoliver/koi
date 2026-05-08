@@ -62,7 +62,10 @@ beforeAll(() => {
     fetch(req, _server): Response | undefined {
       const url = new URL(req.url);
       if (url.pathname === "/api/agents") {
-        return Response.json({ ok: true, value: [wellFormedAgent("a1"), wellFormedAgent("a2")] });
+        return Response.json({
+          ok: true,
+          value: { items: [wellFormedAgent("a1"), wellFormedAgent("a2")] },
+        });
       }
       if (url.pathname.startsWith("/api/agents/")) {
         const id = decodeURIComponent(url.pathname.slice("/api/agents/".length));
@@ -70,7 +73,7 @@ beforeAll(() => {
         return Response.json({ ok: true, value: wellFormedAgent(id) });
       }
       if (url.pathname === "/api/sessions") {
-        return Response.json({ ok: true, value: [wellFormedSession] });
+        return Response.json({ ok: true, value: { items: [wellFormedSession] } });
       }
       if (url.pathname === "/api/metrics") {
         capturedQueries.push(url.search);
@@ -150,7 +153,8 @@ describe("HTTP integration", () => {
   test("listAgents reads a real envelope over real fetch", async () => {
     const r = await client.listAgents();
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value.map((a) => a.agentId)).toEqual([asAgentId("a1"), asAgentId("a2")]);
+    if (r.ok)
+      expect(r.value.items.map((a) => a.agentId)).toEqual([asAgentId("a1"), asAgentId("a2")]);
   });
 
   test("getAgent encodes path segments (no double-encoding)", async () => {

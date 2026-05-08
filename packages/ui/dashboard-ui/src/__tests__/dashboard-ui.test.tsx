@@ -20,37 +20,41 @@ function createFakeDashboardClient(): DashboardClient {
   return {
     listAgents: async () => ({
       ok: true,
-      value: [
-        {
-          agentId: "agent-orchid" as never,
-          name: "Orchid",
-          state: "running",
-          agentType: "copilot",
-          model: "gpt-5.4",
-          channels: ["local"],
-          turns: 12,
-          tokenCount: 148_000,
-          startedAt: Date.parse("2026-05-07T21:30:00.000Z"),
-          lastActivityAt: Date.parse("2026-05-07T22:14:42.000Z"),
-          childCount: 0,
-        },
-      ],
+      value: {
+        items: [
+          {
+            agentId: "agent-orchid" as never,
+            name: "Orchid",
+            state: "running",
+            agentType: "copilot",
+            model: "gpt-5.4",
+            channels: ["local"],
+            turns: 12,
+            tokenCount: 148_000,
+            startedAt: Date.parse("2026-05-07T21:30:00.000Z"),
+            lastActivityAt: Date.parse("2026-05-07T22:14:42.000Z"),
+            childCount: 0,
+          },
+        ],
+      },
     }),
     getAgent: async () => ({ ok: true, value: undefined }),
     listSessions: async () => ({
       ok: true,
-      value: [
-        {
-          sessionId: "session-orchid-2" as never,
-          agentId: "agent-orchid" as never,
-          status: "active",
-          turns: 8,
-          inputTokens: 1024,
-          outputTokens: 256,
-          costUsd: 1.25,
-          startedAt: Date.parse("2026-05-07T21:56:00.000Z"),
-        },
-      ],
+      value: {
+        items: [
+          {
+            sessionId: "session-orchid-2" as never,
+            agentId: "agent-orchid" as never,
+            status: "active",
+            turns: 8,
+            inputTokens: 1024,
+            outputTokens: 256,
+            costUsd: 1.25,
+            startedAt: Date.parse("2026-05-07T21:56:00.000Z"),
+          },
+        ],
+      },
     }),
     getMetrics: async () => ({
       ok: true,
@@ -364,6 +368,115 @@ describe("DashboardApp", () => {
       (metric) => metric.label === "Latency Ms",
     );
     expect(latency?.value).toBe("1,500");
+  });
+
+  test("loadDashboardSnapshot follows nextCursor across multi-page list responses", async () => {
+    const agentPages = [
+      {
+        items: [
+          {
+            agentId: "agent-1" as never,
+            name: "One",
+            state: "running",
+            agentType: "copilot",
+            channels: [],
+            turns: 0,
+            tokenCount: 0,
+            startedAt: 0,
+            lastActivityAt: 0,
+            childCount: 0,
+          },
+        ],
+        nextCursor: "agent-2",
+      },
+      {
+        items: [
+          {
+            agentId: "agent-2" as never,
+            name: "Two",
+            state: "idle",
+            agentType: "copilot",
+            channels: [],
+            turns: 0,
+            tokenCount: 0,
+            startedAt: 0,
+            lastActivityAt: 0,
+            childCount: 0,
+          },
+        ],
+      },
+    ];
+    let agentCallIndex = 0;
+    const client: DashboardClient = {
+      listAgents: async () => {
+        const page = agentPages[agentCallIndex++];
+        return { ok: true, value: page ?? { items: [] } };
+      },
+      getAgent: async () => ({ ok: true, value: undefined }),
+      listSessions: async () => ({ ok: true, value: { items: [] } }),
+      getMetrics: async () => ({ ok: true, value: [] }),
+      getTrace: async () => ({ ok: true, value: undefined }),
+      subscribe: () => () => undefined,
+    };
+    const snapshot = await loadDashboardSnapshot(client, {
+      nowMs: Date.parse("2026-05-07T22:15:00.000Z"),
+    });
+    expect(snapshot.agents.length).toBe(2);
+    expect(snapshot.agents.map((a) => a.id)).toEqual(["agent-1", "agent-2"]);
+    expect(agentCallIndex).toBe(2);
+  });
+
+  test("buffers orphan metric points until the matching session.summary arrives", () => {
+    const baseTimeMs = Date.parse("2026-05-07T22:14:40.000Z");
+    const initial = createDashboardViewModel({
+      generatedAt: new Date(baseTimeMs).toISOString(),
+      agents: [
+        {
+          id: "agent-orchid",
+          name: "Orchid",
+          role: "Copilot",
+          status: "running" as const,
+          region: "local",
+          lastSeenAt: new Date(baseTimeMs).toISOString(),
+        },
+      ],
+      sessions: [],
+    });
+    const orphaned = applyDashboardEvent(initial, {
+      type: "metric.received",
+      points: [
+        {
+          name: "latency_ms",
+          value: 999,
+          timestampMs: baseTimeMs,
+          tags: { sessionId: "session-late" },
+        },
+      ],
+    });
+    // Buffered, not dropped, not applied to any existing session.
+    expect(orphaned.pendingMetricsBySessionId["session-late"]?.length).toBe(1);
+    expect(orphaned.sessionsById["session-late"]).toBeUndefined();
+
+    const sessionArrived = applyDashboardEvent(orphaned, {
+      type: "session.summary.received",
+      session: {
+        sessionId: "session-late",
+        agentId: "agent-orchid",
+        status: "active",
+        turns: 1,
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+        startedAt: baseTimeMs - 5_000,
+      },
+      nowMs: baseTimeMs,
+    });
+    // Orphaned point is now attached to the new session, and the buffer is drained.
+    expect(sessionArrived.pendingMetricsBySessionId["session-late"]).toBeUndefined();
+    const latency = sessionArrived.sessionsById["session-late"]?.metrics.find(
+      (metric) => metric.label === "Latency Ms",
+    );
+    expect(latency?.value).toBe("999");
   });
 
   test("ignores metric points that lack an explicit sessionId tag", () => {

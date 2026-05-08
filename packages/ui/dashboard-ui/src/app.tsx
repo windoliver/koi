@@ -18,14 +18,19 @@ import {
   type DashboardViewModel,
 } from "./lib/state.js";
 
+interface PageOf<T> {
+  readonly items: readonly T[];
+  readonly nextCursor?: string | undefined;
+}
+
 export interface DashboardClient {
-  listAgents(): Promise<
-    | { readonly ok: true; readonly value: readonly Parameters<typeof mapAgentSnapshot>[0][] }
+  listAgents(query?: { readonly cursor?: string; readonly limit?: number }): Promise<
+    | { readonly ok: true; readonly value: PageOf<Parameters<typeof mapAgentSnapshot>[0]> }
     | { readonly ok: false; readonly error: { readonly message?: string | undefined } }
   >;
   getAgent(id: string): Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: { readonly message?: string | undefined } }>;
-  listSessions(): Promise<
-    | { readonly ok: true; readonly value: readonly Parameters<typeof mapSessionSnapshot>[0][] }
+  listSessions(query?: { readonly cursor?: string; readonly limit?: number }): Promise<
+    | { readonly ok: true; readonly value: PageOf<Parameters<typeof mapSessionSnapshot>[0]> }
     | { readonly ok: false; readonly error: { readonly message?: string | undefined } }
   >;
   getMetrics(query: {
@@ -43,10 +48,11 @@ export interface DashboardClient {
     readonly agentId?: string;
     readonly sinceMs?: number;
     readonly limit?: number;
+    readonly cursor?: string;
   }): Promise<
     | {
         readonly ok: true;
-        readonly value: { readonly items: readonly Parameters<typeof mapTraceView>[0][] };
+        readonly value: PageOf<Parameters<typeof mapTraceView>[0]>;
       }
     | { readonly ok: false; readonly error: { readonly message?: string | undefined } }
   >;
@@ -101,28 +107,55 @@ function createMetricQuery(
   };
 }
 
+// Cap pagination so a misbehaving backend with broken cursor termination cannot
+// pin the bootstrap loop forever. Tuned well above any realistic operator fleet.
+const MAX_PAGINATION_PAGES = 50;
+
+async function drainPagedList<T>(
+  fetchPage: (cursor: string | undefined) => Promise<
+    | { readonly ok: true; readonly value: PageOf<T> }
+    | { readonly ok: false; readonly error: { readonly message?: string | undefined } }
+  >,
+  resourceLabel: string,
+): Promise<readonly T[]> {
+  const collected: T[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_PAGINATION_PAGES; page += 1) {
+    const result = await fetchPage(cursor);
+    if (!result.ok) {
+      throw new Error(
+        `Unable to load ${resourceLabel}: ${getErrorMessage(result.error, "Unknown error")}`,
+      );
+    }
+    for (const item of result.value.items) collected.push(item);
+    if (!result.value.nextCursor) return collected;
+    cursor = result.value.nextCursor;
+  }
+  // Pagination cap reached: surface what we have rather than spinning forever.
+  // Operators can refresh; the next live SSE event will fill any tail entries.
+  return collected;
+}
+
 export async function loadDashboardSnapshot(
   client: DashboardClient,
   options?: { readonly nowMs?: number },
 ): Promise<DashboardSnapshot> {
   const nowMs = options?.nowMs ?? Date.now();
-  const [agentsResult, sessionsResult] = await Promise.all([client.listAgents(), client.listSessions()]);
-
-  if (!agentsResult.ok) {
-    throw new Error(`Unable to load agents: ${getErrorMessage(agentsResult.error, "Unknown error")}`);
-  }
-  if (!sessionsResult.ok) {
-    throw new Error(
-      `Unable to load sessions: ${getErrorMessage(sessionsResult.error, "Unknown error")}`,
-    );
-  }
-
-  const sessions = sessionsResult.value.map((session) => mapSessionSnapshot(session, nowMs));
+  const [agents, sessions] = await Promise.all([
+    drainPagedList(
+      (cursor) => client.listAgents(cursor !== undefined ? { cursor } : {}),
+      "agents",
+    ),
+    drainPagedList(
+      (cursor) => client.listSessions(cursor !== undefined ? { cursor } : {}),
+      "sessions",
+    ),
+  ]);
 
   return {
     generatedAt: new Date(nowMs).toISOString(),
-    agents: agentsResult.value.map((agent) => mapAgentSnapshot(agent)),
-    sessions,
+    agents: agents.map((agent) => mapAgentSnapshot(agent)),
+    sessions: sessions.map((session) => mapSessionSnapshot(session, nowMs)),
   };
 }
 
@@ -297,19 +330,26 @@ export function DashboardApp({
         const listTraces = clientRef.current.listTraces;
         if (listTraces) {
           // The dashboard-api /traces list endpoint has no documented ordering
-          // guarantee, so requesting limit:1 could pin the agent to the *oldest*
-          // trace under an unstable backend. Pull a bounded recent page and let
+          // guarantee, so we pull a bounded number of pages per agent and let
           // the trace.received reducer's monotonic startedAtMs check pick the
-          // newest turn.
+          // newest turn. Cursor is followed up to MAX_PAGINATION_PAGES so larger
+          // agents do not silently truncate their trace history.
           await Promise.all(
             snapshot.agents.map(async (agent) => {
-              const result = await listTraces.call(clientRef.current, {
-                agentId: agent.id,
-                limit: 50,
-              });
-              if (disposed || !result.ok) return;
-              for (const trace of result.value.items) {
-                dispatch({ type: "trace.received", trace });
+              let cursor: string | undefined;
+              for (let page = 0; page < MAX_PAGINATION_PAGES; page += 1) {
+                if (disposed) return;
+                const result = await listTraces.call(clientRef.current, {
+                  agentId: agent.id,
+                  limit: 50,
+                  ...(cursor !== undefined ? { cursor } : {}),
+                });
+                if (disposed || !result.ok) return;
+                for (const trace of result.value.items) {
+                  dispatch({ type: "trace.received", trace });
+                }
+                if (!result.value.nextCursor) return;
+                cursor = result.value.nextCursor;
               }
             }),
           );

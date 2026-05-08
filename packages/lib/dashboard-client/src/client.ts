@@ -3,6 +3,7 @@ import type {
   AgentStatus,
   MetricPoint,
   MetricQuery,
+  Page,
   SessionSummary,
   TraceView,
   WsTopic,
@@ -24,30 +25,39 @@ import {
   type WsFactory,
 } from "./subscribe.js";
 
-const isAgentStatusList = (x: unknown): x is readonly AgentStatus[] =>
-  isReadonlyArrayOf(x, isAgentStatus);
-const isSessionSummaryList = (x: unknown): x is readonly SessionSummary[] =>
-  isReadonlyArrayOf(x, isSessionSummary);
 const isMetricPointList = (x: unknown): x is readonly MetricPoint[] =>
   isReadonlyArrayOf(x, isMetricPointValue);
 
-interface TraceListPage {
-  readonly items: readonly TraceView[];
-  readonly nextCursor?: string | undefined;
+function isPageOf<T>(itemGuard: (x: unknown) => x is T) {
+  return (x: unknown): x is Page<T> => {
+    if (typeof x !== "object" || x === null) return false;
+    const obj = x as { readonly items?: unknown; readonly nextCursor?: unknown };
+    if (!isReadonlyArrayOf(obj.items, itemGuard)) return false;
+    if (obj.nextCursor !== undefined && typeof obj.nextCursor !== "string") return false;
+    return true;
+  };
 }
-const isTraceListPage = (x: unknown): x is TraceListPage => {
-  if (typeof x !== "object" || x === null) return false;
-  const obj = x as { readonly items?: unknown; readonly nextCursor?: unknown };
-  if (!isReadonlyArrayOf(obj.items, isTraceView)) return false;
-  if (obj.nextCursor !== undefined && typeof obj.nextCursor !== "string") return false;
-  return true;
-};
+const isAgentStatusPage = isPageOf(isAgentStatus);
+const isSessionSummaryPage = isPageOf(isSessionSummary);
+const isTraceViewPage = isPageOf(isTraceView);
 
-export interface TraceListQuery {
-  readonly agentId?: AgentId;
-  readonly sinceMs?: number;
+export interface ListQuery {
   readonly limit?: number;
   readonly cursor?: string;
+}
+
+export interface AgentListQuery extends ListQuery {
+  readonly state?: string;
+}
+
+export interface SessionListQuery extends ListQuery {
+  readonly agentId?: AgentId;
+  readonly status?: string;
+}
+
+export interface TraceListQuery extends ListQuery {
+  readonly agentId?: AgentId;
+  readonly sinceMs?: number;
 }
 
 export interface DashboardClientConfig {
@@ -62,12 +72,12 @@ export interface DashboardClientConfig {
 }
 
 export interface DashboardClient {
-  listAgents(): Promise<Result<readonly AgentStatus[]>>;
+  listAgents(query?: AgentListQuery): Promise<Result<Page<AgentStatus>>>;
   getAgent(id: AgentId): Promise<Result<AgentStatus | undefined>>;
-  listSessions(): Promise<Result<readonly SessionSummary[]>>;
+  listSessions(query?: SessionListQuery): Promise<Result<Page<SessionSummary>>>;
   getMetrics(query: MetricQuery): Promise<Result<readonly MetricPoint[]>>;
   getTrace(turnId: string): Promise<Result<TraceView | undefined>>;
-  listTraces(query?: TraceListQuery): Promise<Result<TraceListPage>>;
+  listTraces(query?: TraceListQuery): Promise<Result<Page<TraceView>>>;
   subscribe(topics: readonly WsTopic[], handlers: SubscriptionHandlers): Unsubscribe;
 }
 
@@ -80,10 +90,11 @@ export function createDashboardClient(config: DashboardClientConfig): DashboardC
   const baseUrl = stripTrailingSlash(config.baseUrl);
 
   return {
-    listAgents: (): Promise<Result<readonly AgentStatus[]>> =>
-      getJson<readonly AgentStatus[]>(fetchImpl, `${baseUrl}/api/agents`, {
-        validate: isAgentStatusList,
-      }),
+    listAgents: (query?: AgentListQuery): Promise<Result<Page<AgentStatus>>> => {
+      const qs = encodeAgentListQuery(query);
+      const url = qs.length > 0 ? `${baseUrl}/api/agents?${qs}` : `${baseUrl}/api/agents`;
+      return getJson<Page<AgentStatus>>(fetchImpl, url, { validate: isAgentStatusPage });
+    },
 
     getAgent: (id): Promise<Result<AgentStatus | undefined>> =>
       getJson<AgentStatus | undefined>(
@@ -95,10 +106,11 @@ export function createDashboardClient(config: DashboardClientConfig): DashboardC
         },
       ),
 
-    listSessions: (): Promise<Result<readonly SessionSummary[]>> =>
-      getJson<readonly SessionSummary[]>(fetchImpl, `${baseUrl}/api/sessions`, {
-        validate: isSessionSummaryList,
-      }),
+    listSessions: (query?: SessionListQuery): Promise<Result<Page<SessionSummary>>> => {
+      const qs = encodeSessionListQuery(query);
+      const url = qs.length > 0 ? `${baseUrl}/api/sessions?${qs}` : `${baseUrl}/api/sessions`;
+      return getJson<Page<SessionSummary>>(fetchImpl, url, { validate: isSessionSummaryPage });
+    },
 
     getMetrics: async (query): Promise<Result<readonly MetricPoint[]>> => {
       // The dashboard-api parser only honors a single `name` plus `since`/`limit`.
@@ -145,10 +157,10 @@ export function createDashboardClient(config: DashboardClientConfig): DashboardC
         },
       ),
 
-    listTraces: (query?: TraceListQuery): Promise<Result<TraceListPage>> => {
+    listTraces: (query?: TraceListQuery): Promise<Result<Page<TraceView>>> => {
       const qs = encodeTraceListQuery(query);
       const url = qs.length > 0 ? `${baseUrl}/api/traces?${qs}` : `${baseUrl}/api/traces`;
-      return getJson<TraceListPage>(fetchImpl, url, { validate: isTraceListPage });
+      return getJson<Page<TraceView>>(fetchImpl, url, { validate: isTraceViewPage });
     },
 
     subscribe: (topics, handlers): Unsubscribe =>
@@ -183,6 +195,25 @@ function encodeTraceListQuery(query: TraceListQuery | undefined): string {
   const params = new URLSearchParams();
   if (query.agentId !== undefined) params.set("agentId", query.agentId);
   if (query.sinceMs !== undefined) params.set("since", String(query.sinceMs));
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.cursor !== undefined) params.set("cursor", query.cursor);
+  return params.toString();
+}
+
+function encodeAgentListQuery(query: AgentListQuery | undefined): string {
+  if (!query) return "";
+  const params = new URLSearchParams();
+  if (query.state !== undefined) params.set("state", query.state);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.cursor !== undefined) params.set("cursor", query.cursor);
+  return params.toString();
+}
+
+function encodeSessionListQuery(query: SessionListQuery | undefined): string {
+  if (!query) return "";
+  const params = new URLSearchParams();
+  if (query.agentId !== undefined) params.set("agentId", query.agentId);
+  if (query.status !== undefined) params.set("status", query.status);
   if (query.limit !== undefined) params.set("limit", String(query.limit));
   if (query.cursor !== undefined) params.set("cursor", query.cursor);
   return params.toString();
