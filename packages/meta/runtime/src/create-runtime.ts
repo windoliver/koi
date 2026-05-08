@@ -173,6 +173,18 @@ export function wrapOnDemandWithAutoHarness(
       // Caller callback errors must not block auto-harness kickoff.
     }
 
+    // Fail closed when no session owner can be resolved AND the runtime is
+    // operating in a session-aware configuration. Falling back to a missing
+    // session context routes the signal into the global bucket, where it
+    // would share dedupe state, retry budget, and dismiss behavior with
+    // unrelated traffic — exactly the cross-tenant interference per-session
+    // ownership exists to prevent (R5 round 10 finding). The signal is
+    // dropped here; forge-demand will re-fire after cooldown until the host
+    // either restores the session entry or resetSession is called.
+    if (sessionLookup !== undefined && owner === undefined) {
+      return;
+    }
+
     const sessionCtx =
       owner !== undefined
         ? {
@@ -475,7 +487,14 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                   signalId: signal.id,
                 },
               });
-              return decision?.kind === "allow" || decision?.kind === "always-allow";
+              // Only single-shot `allow` is honored. `always-allow` is
+              // explicitly rejected: every auto-harness deployment uses the
+              // same synthetic tool id, so a cached `always-allow` would
+              // silently authorize ALL future synthesized artifacts from a
+              // single approval. Per-candidate human review is the
+              // invariant — there is no compatible always-allow semantics
+              // here (R5 round 10 finding).
+              return decision?.kind === "allow";
             },
           })
         : undefined;
