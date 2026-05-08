@@ -694,6 +694,17 @@ export async function resolveFileSystemAsync(
     // state. Lifted only when the operator restarts the session.
     let transportQuarantined = false;
     let quarantineReason = "";
+    // Per-session mutation lock. Concurrent /mount and /unmount must not
+    // interleave their pre/post listMounts diffs, otherwise one request can
+    // observe the other's newly added path as a "candidate" and roll it
+    // back. Chain every mutation through a single FIFO promise queue so
+    // verification and rollback always run against a stable mount set.
+    let mutationLock: Promise<unknown> = Promise.resolve();
+    function serializeMutation<T>(fn: () => Promise<T>): Promise<T> {
+      const next = mutationLock.then(fn, fn);
+      mutationLock = next.catch(() => undefined);
+      return next;
+    }
     const guardedTransport: import("@koi/fs-nexus").NexusTransport =
       ((): import("@koi/fs-nexus").NexusTransport => {
         if (protectedRoots.length === 0) return transport;
@@ -701,7 +712,7 @@ export async function resolveFileSystemAsync(
         const innerAdd = transport.addMount;
         const wrapped: Record<string, unknown> = { ...transport };
         if (innerRemove !== undefined) {
-          wrapped.removeMount = async (path: string) => {
+          const removeImpl = async (path: string) => {
             if (transportQuarantined) {
               return {
                 ok: false,
@@ -724,9 +735,10 @@ export async function resolveFileSystemAsync(
             }
             return innerRemove(path);
           };
+          wrapped.removeMount = (path: string) => serializeMutation(() => removeImpl(path));
         }
         if (innerAdd !== undefined) {
-          wrapped.addMount = async (uri: string, at?: string | undefined) => {
+          const addImpl = async (uri: string, at?: string | undefined) => {
             if (transportQuarantined) {
               return {
                 ok: false,
@@ -898,6 +910,8 @@ export async function resolveFileSystemAsync(
             }
             return result;
           };
+          wrapped.addMount = (uri: string, at?: string | undefined) =>
+            serializeMutation(() => addImpl(uri, at));
         }
         Object.defineProperty(wrapped, "mounts", {
           enumerable: true,
