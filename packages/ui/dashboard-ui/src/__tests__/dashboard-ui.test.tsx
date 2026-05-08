@@ -229,6 +229,52 @@ describe("DashboardApp", () => {
     expect(traced.sessionsById["session-b"]?.trace).toEqual([]);
   });
 
+  test("ignores metric points that lack an explicit sessionId tag", () => {
+    const baseTimeMs = Date.parse("2026-05-07T22:14:40.000Z");
+    const snapshot = {
+      generatedAt: new Date(baseTimeMs).toISOString(),
+      agents: [
+        {
+          id: "agent-orchid",
+          name: "Orchid",
+          role: "Copilot",
+          status: "running" as const,
+          region: "local",
+          lastSeenAt: new Date(baseTimeMs).toISOString(),
+        },
+      ],
+      sessions: [
+        {
+          id: "session-a",
+          agentId: "agent-orchid",
+          title: "Session session-a",
+          summary: "Active",
+          status: "active" as const,
+          startedAt: new Date(baseTimeMs - 60_000).toISOString(),
+          updatedAt: new Date(baseTimeMs).toISOString(),
+          durationMs: 60_000,
+          trace: [],
+          metrics: [],
+        },
+      ],
+    };
+    const initial = createDashboardViewModel(snapshot);
+    const next = applyDashboardEvent(initial, {
+      type: "metric.received",
+      points: [
+        {
+          name: "latency_ms",
+          value: 999,
+          timestampMs: baseTimeMs,
+          tags: { agentId: "agent-orchid" },
+        },
+      ],
+    });
+    // No sessionId tag — must not be routed to any session.
+    expect(next.sessionsById["session-a"]?.metrics).toEqual([]);
+    expect(next.sessionsById["session-a"]?.updatedAt).toBe(initial.sessionsById["session-a"]?.updatedAt);
+  });
+
   test("applies a live metric event and updates the rendered UI", async () => {
     const snapshot = await loadDashboardSnapshot(createFakeDashboardClient(), {
       nowMs: Date.parse("2026-05-07T22:15:00.000Z"),

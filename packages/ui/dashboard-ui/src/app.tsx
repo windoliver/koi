@@ -38,6 +38,17 @@ export interface DashboardClient {
     | { readonly ok: false; readonly error: { readonly message?: string | undefined } }
   >;
   getTrace(turnId: string): Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: { readonly message?: string | undefined } }>;
+  listTraces?(query?: {
+    readonly agentId?: string;
+    readonly sinceMs?: number;
+    readonly limit?: number;
+  }): Promise<
+    | {
+        readonly ok: true;
+        readonly value: { readonly items: readonly Parameters<typeof mapTraceView>[0][] };
+      }
+    | { readonly ok: false; readonly error: { readonly message?: string | undefined } }
+  >;
   subscribe(
     topics: readonly ["agent-status", "session-summary", "metric", "trace"] | readonly string[],
     handlers: {
@@ -219,7 +230,7 @@ export function DashboardApp({
     // Subscribe FIRST so events emitted during the snapshot fetch window are buffered
     // and replayed after the snapshot is applied. This eliminates the bootstrap race
     // where live transitions arriving before subscribe() would be lost permanently.
-    const unsubscribe = clientRef.current.subscribe(
+    let unsubscribe = clientRef.current.subscribe(
       ["agent-status", "session-summary", "metric", "trace"],
       {
         onEvent: (event) => {
@@ -257,12 +268,38 @@ export function DashboardApp({
           dispatchLiveEvent(dispatch, buffered);
         }
         buffer.length = 0;
+
+        // Hydrate the trace cache from server history so the trace pane is populated
+        // immediately after page load instead of waiting for the next live trace
+        // event. Best-effort: skip silently if the SDK lacks listTraces or the call
+        // fails (older servers may not implement /api/traces listing).
+        const listTraces = clientRef.current.listTraces;
+        if (listTraces) {
+          await Promise.all(
+            snapshot.agents.map(async (agent) => {
+              const result = await listTraces.call(clientRef.current, {
+                agentId: agent.id,
+                limit: 1,
+              });
+              if (disposed || !result.ok) return;
+              for (const trace of result.value.items) {
+                dispatch({ type: "trace.received", trace });
+              }
+            }),
+          );
+        }
       } catch (error: unknown) {
         if (disposed) return;
         dispatch({
           type: "error.set",
           message: error instanceof Error ? error.message : "Unable to load dashboard data.",
         });
+        // Snapshot failed: drop the buffered events and tear down the SSE
+        // subscription so a degraded backend cannot turn the page into an
+        // unbounded event sink. The UI surfaces the error and waits for a reload.
+        buffer.length = 0;
+        unsubscribe();
+        unsubscribe = () => {};
       } finally {
         if (!disposed) {
           dispatch({ type: "loading.set", isLoading: false });

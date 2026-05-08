@@ -460,14 +460,6 @@ function replaceAgent(state: DashboardViewModel, agent: DashboardAgent): Dashboa
   );
 }
 
-function findTargetSessionId(state: DashboardViewModel, agentId: string): string | null {
-  if (state.selectedSession?.agentId === agentId) {
-    return state.selectedSession.id;
-  }
-
-  return state.sessionsByAgentId[agentId]?.[0]?.id ?? null;
-}
-
 export function applyDashboardEvent(
   state: DashboardViewModel,
   event: DashboardEvent,
@@ -542,9 +534,10 @@ export function applyDashboardEvent(
       const pointsBySessionId = new Map<string, DashboardClientMetricPoint[]>();
 
       for (const point of event.points) {
-        const sessionId =
-          point.tags?.sessionId ??
-          (point.tags?.agentId ? findTargetSessionId(state, point.tags.agentId) : null);
+        // Route only by an explicit sessionId tag. The agentId fallback used to guess
+        // a session when an agent had multiple, which corrupted per-session metrics
+        // and updatedAt for the wrong card.
+        const sessionId = point.tags?.sessionId ?? null;
         if (sessionId === null) continue;
         const existingPoints = pointsBySessionId.get(sessionId) ?? [];
         existingPoints.push(point);

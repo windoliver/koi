@@ -31,6 +31,25 @@ const isSessionSummaryList = (x: unknown): x is readonly SessionSummary[] =>
 const isMetricPointList = (x: unknown): x is readonly MetricPoint[] =>
   isReadonlyArrayOf(x, isMetricPointValue);
 
+interface TraceListPage {
+  readonly items: readonly TraceView[];
+  readonly nextCursor?: string | undefined;
+}
+const isTraceListPage = (x: unknown): x is TraceListPage => {
+  if (typeof x !== "object" || x === null) return false;
+  const obj = x as { readonly items?: unknown; readonly nextCursor?: unknown };
+  if (!isReadonlyArrayOf(obj.items, isTraceView)) return false;
+  if (obj.nextCursor !== undefined && typeof obj.nextCursor !== "string") return false;
+  return true;
+};
+
+export interface TraceListQuery {
+  readonly agentId?: AgentId;
+  readonly sinceMs?: number;
+  readonly limit?: number;
+  readonly cursor?: string;
+}
+
 export interface DashboardClientConfig {
   /** Base URL of the dashboard API (e.g. `http://localhost:3100`). No trailing slash. */
   readonly baseUrl: string;
@@ -48,6 +67,7 @@ export interface DashboardClient {
   listSessions(): Promise<Result<readonly SessionSummary[]>>;
   getMetrics(query: MetricQuery): Promise<Result<readonly MetricPoint[]>>;
   getTrace(turnId: string): Promise<Result<TraceView | undefined>>;
+  listTraces(query?: TraceListQuery): Promise<Result<TraceListPage>>;
   subscribe(topics: readonly WsTopic[], handlers: SubscriptionHandlers): Unsubscribe;
 }
 
@@ -97,6 +117,12 @@ export function createDashboardClient(config: DashboardClientConfig): DashboardC
         },
       ),
 
+    listTraces: (query?: TraceListQuery): Promise<Result<TraceListPage>> => {
+      const qs = encodeTraceListQuery(query);
+      const url = qs.length > 0 ? `${baseUrl}/api/traces?${qs}` : `${baseUrl}/api/traces`;
+      return getJson<TraceListPage>(fetchImpl, url, { validate: isTraceListPage });
+    },
+
     subscribe: (topics, handlers): Unsubscribe =>
       openSubscription(sseAdapter, baseUrl, topics, handlers),
   };
@@ -115,6 +141,16 @@ function encodeMetricQuery(query: MetricQuery): string {
   if (query.tags) {
     for (const [k, v] of Object.entries(query.tags)) params.append("tag", `${k}=${v}`);
   }
+  return params.toString();
+}
+
+function encodeTraceListQuery(query: TraceListQuery | undefined): string {
+  if (!query) return "";
+  const params = new URLSearchParams();
+  if (query.agentId !== undefined) params.set("agentId", query.agentId);
+  if (query.sinceMs !== undefined) params.set("since", String(query.sinceMs));
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.cursor !== undefined) params.set("cursor", query.cursor);
   return params.toString();
 }
 
