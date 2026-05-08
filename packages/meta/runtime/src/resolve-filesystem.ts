@@ -332,7 +332,11 @@ const localBridgeOptionsSchema = z
     startupTimeoutMs: z.number().positive().optional(),
     callTimeoutMs: z.number().positive().optional(),
     authTimeoutMs: z.number().positive().optional(),
-    mountPoint: z.string().min(1).optional(),
+    // Empty string is a valid value: it opts into Nexus-root semantics for
+    // multi-mount local-bridge sessions (see resolveFileSystemAsync). Schema
+    // therefore accepts any string, including "". Path-traversal validation
+    // ("..") still happens inside createNexusFileSystem.
+    mountPoint: z.string().optional(),
     env: z.record(z.string(), z.string()).optional(),
   })
   .strict();

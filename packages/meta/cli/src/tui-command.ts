@@ -6386,12 +6386,22 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             // independent; one slow connector cannot block the others.
             if (transport.describeMount === undefined) return;
             const enrich = transport.describeMount;
+            // Race protection: an in-flight describeMount() result can land
+            // long after the user has /unmounted that path or another /mounts
+            // refresh has dropped it. Snapshot the live set we're enriching
+            // so callbacks can skip re-adding stale paths.
+            const liveAtRefresh = new Set(livePaths);
             void Promise.allSettled(
               livePaths.map(async (path) => {
                 const described = await enrich(path);
-                if (described.ok) {
-                  mountDescriptionsState.addRuntime(described.value);
-                }
+                if (!described.ok) return;
+                // Reject results whose path was removed (out of band or by a
+                // user /unmount) between dispatch and resolution. Without this
+                // check the enrichment would silently resurrect dead mounts.
+                if (!liveAtRefresh.has(described.value.path)) return;
+                const currentLive = nexusFilesystemTransport?.mounts ?? [];
+                if (!currentLive.includes(described.value.path)) return;
+                mountDescriptionsState.addRuntime(described.value);
               }),
             );
           })();
