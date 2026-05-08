@@ -42,7 +42,10 @@ describe("validate-profile", () => {
     });
 
     expect(unsupported).toEqual({
-      fields: [
+      filesystem: true,
+      network: true,
+      resources: true,
+      details: [
         "network.allow=false",
         "filesystem.defaultReadAccess=closed",
         "filesystem.allowRead",
@@ -58,7 +61,10 @@ describe("validate-profile", () => {
 
   test("adapter-specific fail-closed guidance includes the adapter name and detail", () => {
     const message = formatUnsupportedProfileError("sandbox-e2b", {
-      fields: ["network.allow=false", "resources.maxMemoryMb"],
+      filesystem: false,
+      network: true,
+      resources: true,
+      details: ["network.allow=false", "resources.maxMemoryMb"],
     });
 
     expect(message).toContain("sandbox-e2b");

@@ -6,9 +6,8 @@ export type { LineReaderEvent, LineReaderOptions } from "./line-reader.js";
 export { createLineReader } from "./line-reader.js";
 export type { OutputAccumulator, OutputAccumulatorChunk } from "./output-accumulator.js";
 export { createOutputAccumulator } from "./output-accumulator.js";
-export type { ProfileDefaults, UnsupportedProfileFields } from "./validate-profile.js";
+export type { UnsupportedProfileFields } from "./validate-profile.js";
 export {
   detectUnsupportedProfileFields,
-  extractProfileDefaults,
   formatUnsupportedProfileError,
 } from "./validate-profile.js";
