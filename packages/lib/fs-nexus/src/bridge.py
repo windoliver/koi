@@ -716,16 +716,16 @@ async def dispatch(fs, method, params):
                 "connector": scheme,
                 "pathUnknown": True,
             }
-        try:
-            return await _describe_mount(fs, resolved_path)
-        except Exception:
-            # README generation / connector metadata can fail for OAuth-backed
-            # or remote connectors. Return a minimal success payload so the
-            # caller sees the new mount path without confusing errors.
-            return {
-                "path": resolved_path,
-                "connector": _mount_connector_from_path(resolved_path),
-            }
+        # Do NOT await _describe_mount here. Description / README generation
+        # may hang on slow OAuth or large remote connectors and can exceed the
+        # client's per-RPC timeout. The mount IS committed at this point, and
+        # surfacing a timeout error to the caller would invite a retry against
+        # a non-idempotent mutation. Return the minimal canonical payload now;
+        # callers refresh enriched descriptions on demand via describe_mount.
+        return {
+            "path": resolved_path,
+            "connector": _mount_connector_from_path(resolved_path),
+        }
 
     if method == "remove_mount":
         mount_path = params.get("path")

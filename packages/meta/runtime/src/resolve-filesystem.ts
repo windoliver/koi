@@ -590,15 +590,28 @@ export async function resolveFileSystemAsync(
       }
       return false;
     };
+    // addMount must reject targets that overlay or fall under any protected
+    // root: a new mount at e.g. `/local/ws` (active backend root) or
+    // `/local/ws/sub` (under a scope.root) would silently redirect already-
+    // approved paths through the new connector, breaking the trust boundary.
+    // Reject equality and any descendant relationship to a protected root.
+    const isPathProtectedByMount = (target: string): boolean => {
+      for (const root of protectedRoots) {
+        if (target === root) return true;
+        if (target.startsWith(`${root}/`)) return true;
+        // Mounting an ancestor would also shadow the protected subtree.
+        if (root.startsWith(`${target}/`)) return true;
+      }
+      return false;
+    };
     const guardedTransport: import("@koi/fs-nexus").NexusTransport =
       ((): import("@koi/fs-nexus").NexusTransport => {
-        if (protectedRoots.length === 0 || transport.removeMount === undefined) {
-          return transport;
-        }
+        if (protectedRoots.length === 0) return transport;
         const innerRemove = transport.removeMount;
-        return {
-          ...transport,
-          removeMount: async (path) => {
+        const innerAdd = transport.addMount;
+        const wrapped: Record<string, unknown> = { ...transport };
+        if (innerRemove !== undefined) {
+          wrapped.removeMount = async (path: string) => {
             if (isPathProtectedByUnmount(path)) {
               return {
                 ok: false,
@@ -610,11 +623,34 @@ export async function resolveFileSystemAsync(
               };
             }
             return innerRemove(path);
-          },
-          get mounts(): readonly string[] {
+          };
+        }
+        if (innerAdd !== undefined) {
+          wrapped.addMount = async (uri: string, at?: string | undefined) => {
+            // Only `at` (when provided) is checked: it's the explicit target.
+            // When `at` is undefined the bridge picks the path; the resulting
+            // path is policed at next /mounts reconcile via the same protected
+            // set if it lands on a protected root we'd otherwise refuse.
+            if (typeof at === "string" && isPathProtectedByMount(at)) {
+              return {
+                ok: false,
+                error: {
+                  code: "VALIDATION",
+                  message: `Cannot mount at ${at}: that path overlays an active filesystem root for this session, which would silently redirect already-approved paths through the new connector.`,
+                  retryable: RETRYABLE_DEFAULTS.VALIDATION,
+                },
+              };
+            }
+            return innerAdd(uri, at);
+          };
+        }
+        Object.defineProperty(wrapped, "mounts", {
+          enumerable: true,
+          get(): readonly string[] {
             return transport.mounts ?? [];
           },
-        };
+        });
+        return wrapped as unknown as import("@koi/fs-nexus").NexusTransport;
       })();
     return {
       backend,
