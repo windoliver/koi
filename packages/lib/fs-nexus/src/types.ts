@@ -16,6 +16,13 @@ export type { NexusCallOptions, NexusHealth, NexusHealthOptions, NexusTransportK
 // Config
 // ---------------------------------------------------------------------------
 
+export interface MountDescription {
+  readonly path: string;
+  readonly connector: string;
+  readonly description?: string | undefined;
+  readonly readme?: string | undefined;
+}
+
 export interface NexusFileSystemConfig {
   /** Nexus server URL, e.g. "http://localhost:3100" or "https://nexus.example.com". */
   readonly url: string;
@@ -136,6 +143,21 @@ export interface NexusTransport {
   readonly close: () => void;
   /** Mount points discovered during startup (local transport only). */
   readonly mounts?: readonly string[] | undefined;
+  /** Describe a mount path, including connector metadata when available. */
+  readonly describeMount?: (
+    path: string,
+  ) => Promise<Result<MountDescription, KoiError>>;
+  /** Add a mount dynamically at runtime when supported by the backend. */
+  readonly addMount?: (
+    uri: string,
+    at?: string | undefined,
+  ) => Promise<Result<MountDescription, KoiError>>;
+  /** Remove a mount dynamically at runtime when supported by the backend. */
+  readonly removeMount?: (
+    path: string,
+  ) => Promise<Result<{ readonly path: string; readonly removed: true }, KoiError>>;
+  /** List the currently-mounted paths when supported by the backend. */
+  readonly listMounts?: () => Promise<Result<readonly string[], KoiError>>;
 }
 
 // ---------------------------------------------------------------------------

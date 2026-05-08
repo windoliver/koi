@@ -19,6 +19,7 @@ Usage:
 """
 
 import asyncio
+import inspect
 import json
 import os
 import re
@@ -57,6 +58,91 @@ _auth_submit_queue: asyncio.Queue[str] = asyncio.Queue()
 
 class ConflictError(Exception):
     """Raised when if_match fails (optimistic concurrency violation)."""
+
+
+def _mount_connector_from_path(path: str) -> str:
+    parts = [part for part in path.split("/") if part]
+    return parts[0] if parts else "unknown"
+
+
+def _parse_frontmatter_value(frontmatter: str, key: str) -> str | None:
+    pattern = re.compile(rf"^{re.escape(key)}\s*:\s*(.+)$", re.MULTILINE)
+    match = pattern.search(frontmatter)
+    if match is None:
+        return None
+    value = match.group(1).strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    return value
+
+
+def _extract_description_from_readme(readme: str) -> str | None:
+    if readme.startswith("---\n"):
+        end = readme.find("\n---\n", 4)
+        if end != -1:
+            frontmatter = readme[4:end]
+            for key in ("description", "summary", "title"):
+                value = _parse_frontmatter_value(frontmatter, key)
+                if value:
+                    return value
+    for line in readme.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped[:200]
+    return None
+
+
+async def _maybe_await(value):
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+async def _call_first(targets, names, *args, **kwargs):
+    for target in targets:
+        if target is None:
+            continue
+        for name in names:
+            fn = getattr(target, name, None)
+            if callable(fn):
+                return await _maybe_await(fn(*args, **kwargs))
+    raise NotImplementedError(f"Backend does not support any of: {', '.join(names)}")
+
+
+def _mount_targets(fs):
+    return (
+        fs,
+        getattr(fs, "backend", None),
+        getattr(fs, "_backend", None),
+        getattr(fs, "facade", None),
+    )
+
+
+async def _generate_mount_readme(fs, path: str) -> str | None:
+    targets = _mount_targets(fs)
+    try:
+        readme = await _call_first(targets, ("generate_readme",), path)
+    except NotImplementedError:
+        return None
+    if readme is None:
+        return None
+    if isinstance(readme, bytes):
+        return readme.decode("utf-8")
+    return str(readme)
+
+
+async def _describe_mount(fs, path: str) -> dict:
+    readme = await _generate_mount_readme(fs, path)
+    description = _extract_description_from_readme(readme) if readme is not None else None
+    result = {
+        "path": path,
+        "connector": _mount_connector_from_path(path),
+    }
+    if description:
+        result["description"] = description
+    if readme:
+        result["readme"] = readme
+    return result
 
 
 def _write(obj: dict) -> None:
@@ -570,6 +656,49 @@ async def dispatch(fs, method, params):
         parents = params.get("parents", True)
         await fs.mkdir(path, parents=parents)
         return {"created": True}
+
+    if method == "list_mounts":
+        mounts = await _maybe_await(fs.list_mounts())
+        return {"mounts": mounts}
+
+    if method == "describe_mount":
+        mount_path = params.get("path")
+        if not isinstance(mount_path, str) or len(mount_path) == 0:
+          raise ValueError("describe_mount requires a non-empty string path")
+        return await _describe_mount(fs, mount_path)
+
+    if method == "add_mount":
+        uri = params.get("uri")
+        at = params.get("at")
+        if not isinstance(uri, str) or len(uri) == 0:
+            raise ValueError("add_mount requires a non-empty string uri")
+        if at is not None and (not isinstance(at, str) or len(at) == 0):
+            raise ValueError("add_mount at must be a non-empty string when provided")
+        before = set(await _maybe_await(fs.list_mounts()))
+        targets = _mount_targets(fs)
+        if at is None:
+            await _call_first(targets, ("add_mount", "mount"), uri)
+        else:
+            try:
+                await _call_first(targets, ("add_mount",), uri, at=at)
+            except NotImplementedError:
+                await _call_first(targets, ("mount",), uri, at)
+        after = list(await _maybe_await(fs.list_mounts()))
+        resolved_path = at if isinstance(at, str) else None
+        if resolved_path is None:
+            new_mounts = [mount for mount in after if mount not in before]
+            if len(new_mounts) == 1:
+                resolved_path = new_mounts[0]
+        if resolved_path is None:
+            raise RuntimeError("Mount was added but the resulting path could not be determined")
+        return await _describe_mount(fs, resolved_path)
+
+    if method == "remove_mount":
+        mount_path = params.get("path")
+        if not isinstance(mount_path, str) or len(mount_path) == 0:
+            raise ValueError("remove_mount requires a non-empty string path")
+        await _call_first(_mount_targets(fs), ("remove_mount", "unmount"), mount_path)
+        return {"path": mount_path, "removed": True}
 
     raise NotImplementedError(f"Unknown method: {method}")
 

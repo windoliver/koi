@@ -17,7 +17,12 @@
 import { fileURLToPath } from "node:url";
 import type { KoiError, Result } from "@koi/core";
 import { mapNexusError } from "./errors.js";
-import type { BridgeNotification, JsonRpcResponse, NexusTransport } from "./types.js";
+import type {
+  BridgeNotification,
+  JsonRpcResponse,
+  MountDescription,
+  NexusTransport,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -541,7 +546,57 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     }
   }
 
-  return { kind: "local-bridge", call, subscribe, submitAuthCode, close, mounts };
+  async function listMounts(): Promise<Result<readonly string[], KoiError>> {
+    const result = await call<{ readonly mounts?: readonly string[] }>("list_mounts", {});
+    if (!result.ok) return result;
+    mounts = result.value.mounts ?? [];
+    return { ok: true, value: mounts };
+  }
+
+  async function describeMount(path: string): Promise<Result<MountDescription, KoiError>> {
+    return call<MountDescription>("describe_mount", { path });
+  }
+
+  async function addMount(
+    uri: string,
+    at?: string | undefined,
+  ): Promise<Result<MountDescription, KoiError>> {
+    const result = await call<MountDescription>("add_mount", {
+      uri,
+      ...(at !== undefined ? { at } : {}),
+    });
+    if (!result.ok) return result;
+    const refreshed = await listMounts();
+    if (!refreshed.ok) return { ok: false, error: refreshed.error };
+    return result;
+  }
+
+  async function removeMount(
+    path: string,
+  ): Promise<Result<{ readonly path: string; readonly removed: true }, KoiError>> {
+    const result = await call<{ readonly path: string; readonly removed: true }>("remove_mount", {
+      path,
+    });
+    if (!result.ok) return result;
+    const refreshed = await listMounts();
+    if (!refreshed.ok) return { ok: false, error: refreshed.error };
+    return result;
+  }
+
+  return {
+    kind: "local-bridge",
+    call,
+    subscribe,
+    submitAuthCode,
+    close,
+    get mounts(): readonly string[] {
+      return mounts;
+    },
+    describeMount,
+    addMount,
+    removeMount,
+    listMounts,
+  };
 }
 
 // ---------------------------------------------------------------------------

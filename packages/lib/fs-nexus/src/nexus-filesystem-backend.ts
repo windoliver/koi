@@ -284,8 +284,8 @@ export function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSy
 
   const transport = injectedTransport ?? createHttpTransport(config);
   // Normalize mountPoint: strip leading slash for Nexus path convention
-  const rawMount = config.mountPoint ?? DEFAULT_MOUNT_POINT;
-  const basePath = rawMount.startsWith("/") ? rawMount.slice(1) : rawMount;
+  const rawMount = config.mountPoint ?? (injectedTransport !== undefined ? "" : DEFAULT_MOUNT_POINT);
+  const basePath = rawMount.replace(/^\/+/, "").replace(/\/+$/, "");
 
   // -------------------------------------------------------------------
   // Operations

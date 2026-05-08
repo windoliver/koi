@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 import type { FileSystemBackend, FileSystemConfig, KoiError, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
 import { createLocalFileSystem } from "@koi/fs-local";
-import type { BridgeNotification } from "@koi/fs-nexus";
+import type { BridgeNotification, MountDescription } from "@koi/fs-nexus";
 import {
   createLocalTransport,
   createNexusFileSystem,
@@ -112,6 +112,33 @@ function normalizeAllowPattern(pattern: string, cwd: string): string {
   } catch {
     return absPrefix + tail;
   }
+}
+
+function connectorNameFromPath(path: string): string {
+  const parts = path.split("/").filter((part) => part.length > 0);
+  return parts[0] ?? "unknown";
+}
+
+async function describeMountWithFallback(
+  transport: import("@koi/fs-nexus").NexusTransport,
+  path: string,
+): Promise<MountDescription> {
+  const described = await transport.describeMount?.(path);
+  if (described !== undefined && described.ok) return described.value;
+  return {
+    path,
+    connector: connectorNameFromPath(path),
+  };
+}
+
+async function collectManifestMountDescriptions(
+  transport: import("@koi/fs-nexus").NexusTransport,
+): Promise<readonly MountDescription[]> {
+  const mounts = transport.mounts ?? [];
+  const descriptions = await Promise.all(
+    mounts.map((path) => describeMountWithFallback(transport, path)),
+  );
+  return [...descriptions].sort((a, b) => a.path.localeCompare(b.path));
 }
 
 /**
@@ -369,6 +396,7 @@ export async function resolveFileSystemAsync(
 ): Promise<{
   readonly backend: FileSystemBackend;
   readonly operations: readonly ("read" | "write" | "edit")[] | undefined;
+  readonly mountDescriptions: readonly MountDescription[];
   /**
    * The underlying local bridge transport, only present when
    * `filesystem.options.transport === "local"`. Callers must use this to
@@ -415,7 +443,7 @@ export async function resolveFileSystemAsync(
         : scope !== undefined
           ? createScopedFileSystem(rawBackend, scope)
           : rawBackend;
-    return { backend, operations, transport: undefined };
+    return { backend, operations, mountDescriptions: [], transport: undefined };
   }
 
   const options = config?.options;
@@ -433,20 +461,6 @@ export async function resolveFileSystemAsync(
   }
   if (localBridgeParsed.ok) {
     const options = localBridgeParsed.value; // validated — overrides outer `options`
-    // Multi-mount is not supported in this path: the bridge reports multiple mounts
-    // but createNexusFileSystem() accepts only one mountPoint prefix. Until per-mount
-    // transport routing exists, mixing OAuth-gated mounts (gdrive://) with local mounts
-    // in one resolveFileSystemAsync() call would silently route all paths under the
-    // first mount, breaking the others. Reject early with an actionable message.
-    const mountUris = Array.isArray(options.mountUri) ? options.mountUri : [options.mountUri];
-    if (mountUris.length > 1) {
-      throw new Error(
-        `resolveFileSystemAsync() does not support multi-mount local bridge configs yet. ` +
-          `Split mounts into separate transports or use a single mountUri. ` +
-          `Provided: ${mountUris.join(", ")}`,
-      );
-    }
-
     const transport = await createLocalTransport({
       mountUri: options.mountUri,
       pythonPath: options.pythonPath,
@@ -464,16 +478,10 @@ export async function resolveFileSystemAsync(
     try {
       unsubscribe = onNotification !== undefined ? transport.subscribe(onNotification) : () => {};
 
-      // Derive mount point: explicit config wins, then fall back to the bridge's
-      // actual mount (transport.mounts[0] without leading slash). Without this,
-      // local and gdrive paths resolve against the HTTP default ("fs"), not the
-      // bridge's real namespace, and every I/O call will fail.
-      const derivedMountPoint = options.mountPoint ?? transport.mounts?.[0]?.slice(1);
-
       nexusBackend = createNexusFileSystem({
         url: "local://bridge",
         transport,
-        ...(derivedMountPoint !== undefined ? { mountPoint: derivedMountPoint } : {}),
+        ...(options.mountPoint !== undefined ? { mountPoint: options.mountPoint } : {}),
       });
     } catch (e: unknown) {
       transport.close();
@@ -501,7 +509,12 @@ export async function resolveFileSystemAsync(
         : scope !== undefined
           ? createScopedFileSystem(nexusWrapped, scope)
           : nexusWrapped;
-    return { backend, operations, transport };
+    return {
+      backend,
+      operations,
+      mountDescriptions: await collectManifestMountDescriptions(transport),
+      transport,
+    };
   }
 
   // Nexus HTTP transport — synchronous resolution
@@ -516,5 +529,5 @@ export async function resolveFileSystemAsync(
       : scope !== undefined
         ? createScopedFileSystem(nexusHttpBackend, scope)
         : nexusHttpBackend;
-  return { backend, operations, transport: undefined };
+  return { backend, operations, mountDescriptions: [], transport: undefined };
 }

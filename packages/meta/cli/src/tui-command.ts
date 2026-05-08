@@ -64,7 +64,12 @@ import {
   createFileSessionRegistry,
   createSubprocessBackend,
 } from "@koi/daemon";
-import { createAuthNotificationHandler } from "@koi/fs-nexus";
+import {
+  createAuthNotificationHandler,
+  createHttpTransport,
+  type MountDescription,
+  type NexusTransport,
+} from "@koi/fs-nexus";
 import type { PatternRule } from "@koi/governance-defaults";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createApprovalStore, createPatternPermissionBackend } from "@koi/middleware-permissions";
@@ -74,8 +79,12 @@ import {
   createModelRouterMiddleware,
   validateRouterConfig,
 } from "@koi/model-router";
-import { createHttpTransport } from "@koi/nexus-client";
-import { createArtifactToolProvider, resolveFileSystemAsync } from "@koi/runtime";
+import {
+  createArtifactToolProvider,
+  createMountDescriptionsMiddleware,
+  createMountDescriptionsState,
+  resolveFileSystemAsync,
+} from "@koi/runtime";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import {
   createProgressiveSkillProvider,
@@ -200,6 +209,60 @@ const SESSION_PREVIEW_MAX = 80;
  */
 function dispatchNotice(store: TuiStore, _tag: string, text: string): void {
   store.dispatch({ kind: "add_info", message: text });
+}
+
+function parseMountArgs(
+  args: string,
+): { readonly ok: true; readonly value: { readonly uri: string; readonly at?: string } } | {
+  readonly ok: false;
+  readonly error: string;
+} {
+  const trimmed = args.trim();
+  if (trimmed.length === 0) {
+    return { ok: false, error: 'Usage: /mount <uri> [as=/mount/path]' };
+  }
+  const parts = trimmed.split(/\s+/);
+  const [uri, ...rest] = parts;
+  if (uri === undefined || uri.length === 0) {
+    return { ok: false, error: 'Usage: /mount <uri> [as=/mount/path]' };
+  }
+  let at: string | undefined;
+  for (const part of rest) {
+    if (part.startsWith("as=") && part.length > 3) {
+      at = part.slice(3);
+      continue;
+    }
+    return { ok: false, error: `Unrecognized /mount argument: ${part}` };
+  }
+  return {
+    ok: true,
+    value: at !== undefined ? { uri, at } : { uri },
+  };
+}
+
+function formatMountedConnectors(entries: readonly MountDescription[]): string {
+  if (entries.length === 0) return "[No mounts]";
+  return entries
+    .map((entry) => {
+      const details =
+        entry.description !== undefined && entry.description.length > 0
+          ? ` — ${entry.description}`
+          : "";
+      return `${entry.path} (${entry.connector})${details}`;
+    })
+    .join("\n");
+}
+
+function isRpcMethodUnavailable(error: { readonly context?: unknown; readonly message: string }): boolean {
+  if (
+    typeof error.context === "object" &&
+    error.context !== null &&
+    "rpcCode" in error.context &&
+    (error.context as { readonly rpcCode?: unknown }).rpcCode === -32601
+  ) {
+    return true;
+  }
+  return error.message.includes("Unknown method");
 }
 
 /**
@@ -2064,10 +2127,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Resolved nexus backend (if any). Passed to `createKoiRuntime` via `filesystem`.
   // The `dispose()` on this backend closes the bridge subprocess and unsubscribes.
   let resolvedFilesystemBackend: import("@koi/core").FileSystemBackend | undefined;
+  const mountDescriptionsState = createMountDescriptionsState();
+  const mountDescriptionsMiddleware = createMountDescriptionsMiddleware({
+    state: mountDescriptionsState,
+  });
 
   // let: set when nexus local-bridge transport resolves; passed to runtime for
   // permission policy sync and audit trail. Undefined for local-only sessions.
-  let nexusFilesystemTransport: import("@koi/nexus-client").NexusTransport | undefined;
+  let nexusFilesystemTransport: NexusTransport | undefined;
 
   // Single OAuthChannel — shared by nexus and MCP. Created unconditionally so
   // nav:mcp-auth and MCP onAuthNeeded always have a renderer regardless of whether
@@ -2088,6 +2155,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       tuiAuthNotificationHandler,
     );
     resolvedFilesystemBackend = fsResolved.backend;
+    mountDescriptionsState.setManifest(fsResolved.mountDescriptions);
     // If `fsResolved.operations` is set, it overrides the manifest-derived ops
     // (the two should agree, but resolveFileSystemAsync is authoritative).
     if (fsResolved.operations !== undefined) {
@@ -2628,6 +2696,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               : {}),
           }),
           ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),
+          extraMiddleware: [mountDescriptionsMiddleware],
           // TUI opts out of engine loop detection explicitly: the
           // per-submit iteration budget reset + governance caps below
           // already bound spirals, and false-positive trips during an
@@ -6130,6 +6199,92 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           }
           store.dispatch({ kind: "set_zoom", level: next });
           dispatchNotice(store, "zoom-info", `[Zoom level: ${next}×]`);
+          break;
+        }
+        case "system:mount":
+          void (async (): Promise<void> => {
+            if (nexusFilesystemTransport?.addMount === undefined) {
+              store.dispatch({
+                kind: "add_error",
+                code: "MOUNT_UNAVAILABLE",
+                message: "Runtime mount changes are unavailable in this session.",
+              });
+              return;
+            }
+            const parsed = parseMountArgs(args);
+            if (!parsed.ok) {
+              store.dispatch({
+                kind: "add_error",
+                code: "MOUNT_INVALID_ARGS",
+                message: parsed.error,
+              });
+              return;
+            }
+            const result = await nexusFilesystemTransport.addMount(
+              parsed.value.uri,
+              parsed.value.at,
+            );
+            if (!result.ok) {
+              const message = isRpcMethodUnavailable(result.error)
+                ? "Mount add/remove requires a newer Nexus build with add_mount/remove_mount support."
+                : `Mount failed: ${result.error.message}`;
+              store.dispatch({
+                kind: "add_error",
+                code: "MOUNT_FAILED",
+                message,
+              });
+              return;
+            }
+            mountDescriptionsState.addRuntime(result.value);
+            dispatchNotice(
+              store,
+              "mount-info",
+              `[Mounted ${parsed.value.uri} at ${result.value.path}]`,
+            );
+          })();
+          break;
+        case "system:unmount":
+          void (async (): Promise<void> => {
+            const path = args.trim();
+            if (path.length === 0) {
+              store.dispatch({
+                kind: "add_error",
+                code: "UNMOUNT_INVALID_ARGS",
+                message: "Usage: /unmount <mount-path>",
+              });
+              return;
+            }
+            if (nexusFilesystemTransport?.removeMount === undefined) {
+              store.dispatch({
+                kind: "add_error",
+                code: "UNMOUNT_UNAVAILABLE",
+                message: "Runtime mount changes are unavailable in this session.",
+              });
+              return;
+            }
+            const result = await nexusFilesystemTransport.removeMount(path);
+            if (!result.ok) {
+              const message = isRpcMethodUnavailable(result.error)
+                ? "Mount add/remove requires a newer Nexus build with add_mount/remove_mount support."
+                : `Unmount failed: ${result.error.message}`;
+              store.dispatch({
+                kind: "add_error",
+                code: "UNMOUNT_FAILED",
+                message,
+              });
+              return;
+            }
+            mountDescriptionsState.remove(path);
+            dispatchNotice(store, "unmount-info", `[Unmounted ${path}]`);
+          })();
+          break;
+        case "system:mounts": {
+          const snapshot = mountDescriptionsState.getSnapshot();
+          dispatchNotice(
+            store,
+            "mounts-info",
+            formatMountedConnectors([...snapshot.manifest, ...snapshot.runtime]),
+          );
           break;
         }
         case "system:governance-reset":

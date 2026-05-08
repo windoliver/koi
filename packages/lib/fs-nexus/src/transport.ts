@@ -24,5 +24,22 @@ export function createHttpTransport(config: NexusFileSystemConfig): NexusTranspo
     // HTTP transport has no bridge subprocess — notifications are local-only.
     subscribe: (): (() => void) => (): void => {},
     submitAuthCode: (): void => {},
+    describeMount: async (path) => {
+      return base.call("describe_mount", { path });
+    },
+    addMount: async (uri, at) => {
+      return base.call("add_mount", {
+        uri,
+        ...(at !== undefined ? { at } : {}),
+      });
+    },
+    removeMount: async (path) => {
+      return base.call("remove_mount", { path });
+    },
+    listMounts: async () => {
+      const result = await base.call<{ readonly mounts?: readonly string[] }>("list_mounts", {});
+      if (!result.ok) return result;
+      return { ok: true, value: result.value.mounts ?? [] };
+    },
   };
 }
