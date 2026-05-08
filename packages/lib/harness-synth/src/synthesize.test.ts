@@ -1162,7 +1162,9 @@ describe("synthesize", () => {
     if (!result.ok) return;
     // Verifier mutates its live reference AFTER synthesize() resolved.
     live.totalDurationMs = 9999;
-    live.stageResults[0]!.passed = false;
+    const stage0 = live.stageResults[0];
+    if (stage0 === undefined) throw new Error("expected stage 0");
+    stage0.passed = false;
     // Returned value must be unaffected.
     expect(result.value.verification.totalDurationMs).toBe(17);
     expect(result.value.verification.stageResults[0]?.passed).toBe(true);

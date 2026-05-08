@@ -230,6 +230,7 @@ describe("scanModuleGraphForFenceViolations — corner cases", () => {
   it("CATCHES a target reference inside a template literal substitution", () => {
     const v = scanModuleGraphForFenceViolations({
       entryPath: "h.ts",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: source fixture, not interpolation
       modules: { "h.ts": "export default () => `done at ${fetch}`;" },
     });
     // Template literal substitutions are stripped along with the literal,

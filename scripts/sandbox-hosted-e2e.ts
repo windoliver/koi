@@ -359,8 +359,10 @@ async function makeRealE2bAdapter(): Promise<SandboxAdapter> {
     supportsTeardown: true,
     supportsCancelCreate: false,
     createSandbox: async (opts) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const sb = await (sdk as any).Sandbox.create({ apiKey, metadata: { label: opts.label } });
+      const sb = await (sdk as unknown as E2bSdkModule).Sandbox.create({
+        apiKey,
+        metadata: { label: opts.label },
+      });
       return wrapE2bSandbox(sb);
     },
   };
@@ -369,8 +371,43 @@ async function makeRealE2bAdapter(): Promise<SandboxAdapter> {
   return r.value;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function wrapE2bSandbox(sb: any): E2bSdkSandbox {
+interface E2bRawCommandResult {
+  readonly exitCode?: number;
+  readonly stdout?: string;
+  readonly stderr?: string;
+}
+
+interface E2bRawCommandOpts {
+  readonly cwd?: string | undefined;
+  readonly envs?: Readonly<Record<string, string>> | undefined;
+  readonly timeoutMs?: number | undefined;
+  readonly onStdout?: ((d: string) => void) | undefined;
+  readonly onStderr?: ((d: string) => void) | undefined;
+}
+
+interface E2bRawSandbox {
+  readonly commands: {
+    readonly run: (cmd: string, opts: E2bRawCommandOpts) => Promise<E2bRawCommandResult>;
+  };
+  readonly files: {
+    readonly read: (p: string) => Promise<string>;
+    readonly write: (p: string, c: string) => Promise<void>;
+    readonly readBytes?: (p: string) => Promise<Uint8Array>;
+    readonly writeBytes?: (p: string, c: Uint8Array) => Promise<void>;
+  };
+  readonly kill: () => Promise<void>;
+}
+
+interface E2bSdkModule {
+  readonly Sandbox: {
+    readonly create: (opts: {
+      readonly apiKey: string;
+      readonly metadata: { readonly label: string };
+    }) => Promise<E2bRawSandbox>;
+  };
+}
+
+function wrapE2bSandbox(sb: E2bRawSandbox): E2bSdkSandbox {
   return {
     commands: {
       run: async (cmd, opts) => {
@@ -402,8 +439,8 @@ function wrapE2bSandbox(sb: any): E2bSdkSandbox {
     files: {
       read: (p) => sb.files.read(p),
       write: (p, c) => sb.files.write(p, c),
-      readBytes: (p) => sb.files.readBytes?.(p),
-      writeBytes: (p, c) => sb.files.writeBytes?.(p, c),
+      ...(sb.files.readBytes !== undefined ? { readBytes: sb.files.readBytes } : {}),
+      ...(sb.files.writeBytes !== undefined ? { writeBytes: sb.files.writeBytes } : {}),
     },
     kill: () => sb.kill(),
   };
@@ -420,8 +457,8 @@ async function makeRealDaytonaAdapter(): Promise<SandboxAdapter> {
     supportsWorkspaceDelete: true,
     supportsCancelCreate: false,
     createSandbox: async (opts) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const dt = new (sdk as any).Daytona({ apiKey });
+      const SdkModule = sdk as unknown as DaytonaSdkModule;
+      const dt = new SdkModule.Daytona({ apiKey });
       const ws = await dt.create({ labels: { "koi-label": opts.label } });
       return wrapDaytonaSandbox(ws);
     },
@@ -431,8 +468,41 @@ async function makeRealDaytonaAdapter(): Promise<SandboxAdapter> {
   return r.value;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function wrapDaytonaSandbox(ws: any): DaytonaSdkSandbox {
+interface DaytonaRawCommandResult {
+  readonly exitCode?: number;
+  readonly result?: string;
+  readonly stdout?: string;
+  readonly stderr?: string;
+}
+
+interface DaytonaRawWorkspace {
+  readonly process: {
+    readonly executeCommand: (
+      cmd: string,
+      cwd: string | undefined,
+      envs: Readonly<Record<string, string>> | undefined,
+      timeoutMs: number | undefined,
+    ) => Promise<DaytonaRawCommandResult>;
+  };
+  readonly fs: {
+    readonly downloadFile: (p: string) => Promise<Uint8Array>;
+    readonly uploadFile: (c: Uint8Array, p: string) => Promise<void>;
+  };
+  readonly close?: () => Promise<void>;
+  readonly delete: () => Promise<void>;
+}
+
+interface DaytonaSdkModule {
+  readonly Daytona: new (opts: {
+    readonly apiKey: string;
+  }) => {
+    readonly create: (opts: {
+      readonly labels: Readonly<Record<string, string>>;
+    }) => Promise<DaytonaRawWorkspace>;
+  };
+}
+
+function wrapDaytonaSandbox(ws: DaytonaRawWorkspace): DaytonaSdkSandbox {
   return {
     commands: {
       run: async (cmd, opts) => {
