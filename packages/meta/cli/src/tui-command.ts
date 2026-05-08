@@ -2168,7 +2168,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Resolved nexus backend (if any). Passed to `createKoiRuntime` via `filesystem`.
   // The `dispose()` on this backend closes the bridge subprocess and unsubscribes.
   let resolvedFilesystemBackend: import("@koi/core").FileSystemBackend | undefined;
-  const mountDescriptionsState = createMountDescriptionsState();
+  // strictPromptIdentifiers: backend-supplied mount paths/connector names
+  // flow into the system prompt via mount-descriptions-middleware. Reject any
+  // entry that fails the strict character allowlist so a hostile or buggy
+  // bridge cannot smuggle prompt-injection text through identifiers, even
+  // after the description sanitization above.
+  const mountDescriptionsState = createMountDescriptionsState({
+    strictPromptIdentifiers: true,
+  });
   const mountDescriptionsMiddleware = createMountDescriptionsMiddleware({
     state: mountDescriptionsState,
   });
@@ -2209,6 +2216,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     resolvedFilesystemBackend = fsResolved.backend;
     runtimeMountMutationsSupported = fsResolved.runtimeMountMutationsSupported;
     backendActiveRoot = fsResolved.backendActiveRoot;
+    // Apply the session disclosure scope so all subsequent /mount and
+    // /mounts updates filter sibling mounts the same way startup-seed did.
+    mountDescriptionsState.setScope(fsResolved.effectiveScopePaths);
     mountDescriptionsState.setManifest(fsResolved.mountDescriptions);
     // If `fsResolved.operations` is set, it overrides the manifest-derived ops
     // (the two should agree, but resolveFileSystemAsync is authoritative).

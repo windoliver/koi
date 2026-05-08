@@ -464,6 +464,13 @@ export async function resolveFileSystemAsync(
    * backends), in which case unmounting any path is safe.
    */
   readonly backendActiveRoot: string | undefined;
+  /**
+   * Canonicalized protected/scope paths for this session, or undefined when
+   * the session has no disclosure boundary. Pass to
+   * `mountDescriptionsState.setScope()` so /mount and /mounts updates obey
+   * the same disclosure boundary applied at startup-seed.
+   */
+  readonly effectiveScopePaths: readonly string[] | undefined;
 }> {
   const fsBackend = config?.backend ?? "local";
   // Preserve operation grants from the config — callers must forward these to
@@ -510,6 +517,7 @@ export async function resolveFileSystemAsync(
       transport: undefined,
       runtimeMountMutationsSupported: false,
       backendActiveRoot: undefined,
+      effectiveScopePaths: undefined,
     };
   }
 
@@ -899,6 +907,7 @@ export async function resolveFileSystemAsync(
       // protectedRoots is empty the seed includes all mounts (no scope
       // configured → no filtering needed).
       mountDescriptions: seedManifestMountDescriptions(transport, protectedRoots),
+      effectiveScopePaths: protectedRoots.length > 0 ? protectedRoots : undefined,
       transport: guardedTransport,
       runtimeMountMutationsSupported: mutationsSupported,
       backendActiveRoot: canonicalActiveRoot,
@@ -924,5 +933,6 @@ export async function resolveFileSystemAsync(
     transport: undefined,
     runtimeMountMutationsSupported: false,
     backendActiveRoot: undefined,
+    effectiveScopePaths: undefined,
   };
 }

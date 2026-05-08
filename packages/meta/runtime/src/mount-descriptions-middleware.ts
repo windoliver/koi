@@ -28,13 +28,96 @@ export interface MountDescriptionsState {
    * never resolved — cannot keep being surfaced to the model or operator.
    */
   readonly reconcile: (authoritative: readonly string[]) => void;
+  /**
+   * Update the disclosure scope after construction. Filters all currently-
+   * stored entries against the new scope so a state that was populated
+   * before scope information was available (e.g. seed before
+   * resolveFileSystemAsync returns) can still be tightened retroactively.
+   */
+  readonly setScope: (scopePaths: readonly string[] | undefined) => void;
+}
+
+/**
+ * Strict allow-list for mount identifiers that flow into the system prompt.
+ * `path` must be an absolute Nexus-style path of `/`-separated segments where
+ * each segment uses only `[A-Za-z0-9._-]`. `connector` must use the same
+ * character class. Anything else is rejected so backend-supplied data
+ * (`list_mounts`, `add_mount`) cannot smuggle instruction-bearing text or
+ * structural punctuation into the highest-trust prompt layer.
+ */
+const SAFE_PATH_RE = /^(\/[A-Za-z0-9._-]+)+$/;
+const SAFE_CONNECTOR_RE = /^[A-Za-z0-9._-]+$/;
+function isPromptSafeMountIdentifier(entry: MountDescription): boolean {
+  if (!SAFE_PATH_RE.test(entry.path)) return false;
+  if (!SAFE_CONNECTOR_RE.test(entry.connector)) return false;
+  return true;
+}
+
+/**
+ * Filter mount entries against a session-disclosure scope (canonicalized
+ * `/path` strings). When `scopePaths` is undefined or empty, no filtering is
+ * applied. When set, only entries whose `path` falls within one of the
+ * scopes (or whose scope falls within them) are retained. This mirrors the
+ * filter applied at startup-seed time so runtime updates from `/mount` and
+ * `/mounts` cannot disclose sibling mounts a scoped session was meant to
+ * hide.
+ */
+function filterEntriesByScope(
+  entries: readonly MountDescription[],
+  scopePaths: readonly string[] | undefined,
+): readonly MountDescription[] {
+  if (scopePaths === undefined || scopePaths.length === 0) return entries;
+  return entries.filter((entry) =>
+    scopePaths.some(
+      (scopePath) =>
+        entry.path === scopePath ||
+        entry.path.startsWith(`${scopePath}/`) ||
+        scopePath.startsWith(`${entry.path}/`),
+    ),
+  );
+}
+
+/**
+ * Optional config for the mount-descriptions state.
+ *
+ * `scopePaths` — when set, every mount entry written to the state (manifest
+ * or runtime) is filtered against these canonicalized `/path` scopes before
+ * being stored, so /mount and /mounts updates obey the same disclosure
+ * boundary that startup-seed applies.
+ *
+ * `strictPromptIdentifiers` — when true, entries whose `path` or `connector`
+ * fail the prompt-safe character allowlist are rejected at write time. Use
+ * for sessions where mount names flow through to the system prompt.
+ */
+export interface MountDescriptionsStateConfig {
+  readonly initial?: Partial<MountDescriptionsSnapshot> | undefined;
+  readonly scopePaths?: readonly string[] | undefined;
+  readonly strictPromptIdentifiers?: boolean | undefined;
 }
 
 export function createMountDescriptionsState(
-  initial?: Partial<MountDescriptionsSnapshot> | undefined,
+  configOrInitial?: MountDescriptionsStateConfig | Partial<MountDescriptionsSnapshot> | undefined,
 ): MountDescriptionsState {
-  let manifest = sortManifest(initial?.manifest ?? []);
-  let runtime = [...(initial?.runtime ?? [])];
+  // Backward-compat: accept the original `Partial<MountDescriptionsSnapshot>`
+  // shape OR the new full config object. Disambiguate by checking for
+  // config-only fields.
+  const config: MountDescriptionsStateConfig =
+    configOrInitial !== undefined &&
+    ("scopePaths" in configOrInitial ||
+      "strictPromptIdentifiers" in configOrInitial ||
+      "initial" in configOrInitial)
+      ? (configOrInitial as MountDescriptionsStateConfig)
+      : { initial: configOrInitial as Partial<MountDescriptionsSnapshot> | undefined };
+  let scopePaths = config.scopePaths;
+  const strict = config.strictPromptIdentifiers === true;
+
+  const allow = (entries: readonly MountDescription[]): readonly MountDescription[] => {
+    const scoped = filterEntriesByScope(entries, scopePaths);
+    return strict ? scoped.filter(isPromptSafeMountIdentifier) : scoped;
+  };
+
+  let manifest = sortManifest(allow(config.initial?.manifest ?? []));
+  let runtime = [...allow(config.initial?.runtime ?? [])];
 
   return {
     getSnapshot: (): MountDescriptionsSnapshot => ({
@@ -42,10 +125,12 @@ export function createMountDescriptionsState(
       runtime,
     }),
     setManifest: (entries): void => {
-      manifest = sortManifest(entries);
+      manifest = sortManifest(allow(entries));
     },
     addRuntime: (entry): void => {
-      runtime = [...runtime.filter((candidate) => candidate.path !== entry.path), entry];
+      const accepted = allow([entry]);
+      if (accepted.length === 0) return;
+      runtime = [...runtime.filter((candidate) => candidate.path !== entry.path), ...accepted];
     },
     remove: (path): void => {
       manifest = manifest.filter((entry) => entry.path !== path);
@@ -55,6 +140,13 @@ export function createMountDescriptionsState(
       const live = new Set(authoritative);
       manifest = manifest.filter((entry) => live.has(entry.path));
       runtime = runtime.filter((entry) => live.has(entry.path));
+    },
+    setScope: (paths): void => {
+      scopePaths = paths;
+      // Re-apply the new scope to currently-held entries so anything that
+      // slipped in before the scope was known is removed retroactively.
+      manifest = sortManifest(allow(manifest));
+      runtime = [...allow(runtime)];
     },
   };
 }
