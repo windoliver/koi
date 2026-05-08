@@ -1,8 +1,5 @@
 import { expect, test } from "bun:test";
-import {
-  bridgeToFunctionExecutor as createExecutor,
-  type IpcSandboxExecutor,
-} from "./adapter.js";
+import { bridgeToFunctionExecutor as createExecutor, type IpcSandboxExecutor } from "./adapter.js";
 import type { BridgeConfig, CommandBuilder, SandboxBridge } from "./types.js";
 
 const TEST_PROFILE: BridgeConfig["profile"] = {

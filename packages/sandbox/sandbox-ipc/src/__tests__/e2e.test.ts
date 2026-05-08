@@ -180,9 +180,7 @@ describe("sandbox-ipc e2e — env scrubbing", () => {
   });
 
   test("envAllowlist forwards only the requested host vars", async () => {
-    const bridge = await createSandboxBridge(
-      makeConfig({ envAllowlist: ["PATH", SECRET] }),
-    );
+    const bridge = await createSandboxBridge(makeConfig({ envAllowlist: ["PATH", SECRET] }));
     try {
       const result = await bridge.execute(
         `return { allowed: process.env["${SECRET}"], path: typeof process.env.PATH };`,
@@ -233,11 +231,7 @@ describe("sandbox-ipc e2e — async function-body wrapper", () => {
 
   test("rejects module source without spawning a worker", async () => {
     const executor = bridgeToFunctionExecutor(makeConfig());
-    const result = await executor.executeFunctionBody(
-      `export default async () => 1;`,
-      {},
-      1_000,
-    );
+    const result = await executor.executeFunctionBody(`export default async () => 1;`, {}, 1_000);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected reject");
     expect(result.error.code).toBe("CRASH");

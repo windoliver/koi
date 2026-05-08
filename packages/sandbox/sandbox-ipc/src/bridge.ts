@@ -283,7 +283,7 @@ function defaultSpawnFn(
   if (setsidPath === null && isolationPolicy === "required") {
     throw new Error(
       "sandbox-ipc: process-group isolation is required but `setsid` is not available on this host. " +
-        "Install `setsid` (util-linux) or set BridgeConfig.processGroupIsolation = \"best-effort\" to opt out.",
+        'Install `setsid` (util-linux) or set BridgeConfig.processGroupIsolation = "best-effort" to opt out.',
     );
   }
   const useGroup = setsidPath !== null;
