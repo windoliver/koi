@@ -7,7 +7,7 @@ Current snapshot:
 - 210 workspace packages
 - 11 package families
 - 210 packages with local test files
-- 187 packages with dedicated package docs
+- 188 packages with dedicated package docs
 
 ## Family Summary
 
@@ -23,7 +23,7 @@ Current snapshot:
 | sandbox | 11 | 58 | 11 |
 | sched | 5 | 22 | 5 |
 | security | 20 | 109 | 20 |
-| ui | 2 | 57 | 1 |
+| ui | 2 | 57 | 2 |
 
 ## Package Inventory
 
@@ -269,5 +269,5 @@ Each line shows package name, package directory, package description, test-file 
 
 ## ui (2)
 
-- `@koi/dashboard-ui` (packages/ui/dashboard-ui) - Minimal React + Vite scaffold for the Koi dashboard UI. Tests: 3. Docs: -.
+- `@koi/dashboard-ui` (packages/ui/dashboard-ui) - Minimal React + Vite scaffold for the Koi dashboard UI. Tests: 3. Docs: docs/L2/dashboard-ui.md.
 - `@koi/tui` (packages/ui/tui) - OpenTUI-based terminal UI for Koi agent conversations. Tests: 54. Docs: docs/L2/tui.md.
