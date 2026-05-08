@@ -187,14 +187,14 @@ export function parseErrorMessage(value: unknown): ParseResult<ErrorMessage> {
   const message = expectString(record.value, "message");
   if (!message.ok) return message;
 
-  const durationMs = expectNonNegativeNumber(record.value, "durationMs");
+  const durationMs = expectOptionalNonNegativeNumber(record.value, "durationMs");
   if (!durationMs.ok) return durationMs;
 
   return ok({
     kind: "error",
     code: code.value,
     message: message.value,
-    durationMs: durationMs.value,
+    ...(durationMs.value !== undefined ? { durationMs: durationMs.value } : {}),
   });
 }
 

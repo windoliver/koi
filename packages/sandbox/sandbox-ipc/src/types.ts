@@ -28,7 +28,7 @@ export interface ErrorMessage {
   readonly kind: "error";
   readonly code: SandboxIpcErrorCode;
   readonly message: string;
-  readonly durationMs: number;
+  readonly durationMs?: number;
 }
 
 export type HostMessage = ExecuteMessage;

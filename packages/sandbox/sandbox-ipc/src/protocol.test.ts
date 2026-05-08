@@ -212,6 +212,20 @@ describe("parseErrorMessage", () => {
     expect(parsed.value.durationMs).toBe(5_000);
   });
 
+  test("accepts an error frame without durationMs", () => {
+    const parsed = parseErrorMessage({
+      kind: "error",
+      code: "TIMEOUT",
+      message: "execution timed out",
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error("expected error frame");
+    expect(parsed.value.code).toBe("TIMEOUT");
+    expect(parsed.value.message).toBe("execution timed out");
+    expect(parsed.value.durationMs).toBeUndefined();
+  });
+
   test("rejects malformed error input", () => {
     const parsed = parseErrorMessage({
       kind: "error",
@@ -247,18 +261,6 @@ describe("parseErrorMessage", () => {
     expect(parsed.ok).toBe(false);
     if (parsed.ok) throw new Error("expected parse failure");
     expect(parsed.error.message).toContain("message");
-  });
-
-  test("rejects missing durationMs", () => {
-    const parsed = parseErrorMessage({
-      kind: "error",
-      code: "TIMEOUT",
-      message: "execution timed out",
-    });
-
-    expect(parsed.ok).toBe(false);
-    if (parsed.ok) throw new Error("expected parse failure");
-    expect(parsed.error.message).toContain("durationMs");
   });
 
   test("rejects non-string message", () => {
