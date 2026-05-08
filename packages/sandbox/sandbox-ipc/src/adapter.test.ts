@@ -1,8 +1,7 @@
 import { expect, test } from "bun:test";
 import type { SandboxExecutor } from "@koi/core/sandbox-executor";
 import { bridgeToExecutor as createExecutor } from "./adapter.js";
-import type { SandboxBridge } from "./types.js";
-import type { BridgeConfig, CommandBuilder } from "./types.js";
+import type { BridgeConfig, CommandBuilder, SandboxBridge } from "./types.js";
 
 const TEST_PROFILE: BridgeConfig["profile"] = {
   filesystem: {
@@ -29,15 +28,10 @@ function validBridgeConfig(): BridgeConfig {
   };
 }
 
-type CreateBridge = (
-  config: BridgeConfig,
-) => Promise<SandboxBridge> | SandboxBridge;
+type CreateBridge = (config: BridgeConfig) => Promise<SandboxBridge> | SandboxBridge;
 
 function bridgeToExecutor(config: BridgeConfig, createBridge?: CreateBridge): SandboxExecutor {
-  return createExecutor(
-    config,
-    createBridge === undefined ? undefined : { createBridge },
-  );
+  return createExecutor(config, createBridge === undefined ? undefined : { createBridge });
 }
 
 function makeMockBridge(overrides: Partial<SandboxBridge> = {}): SandboxBridge {
@@ -134,8 +128,8 @@ test("bridgeToExecutor preserves array input semantics", async () => {
 
 test("bridgeToExecutor maps non-IPC code exceptions into valid SandboxError results", async () => {
   const executor = bridgeToExecutor(validBridgeConfig(), async () => {
-      throw { code: "EACCES", message: "permission denied" };
-    });
+    throw { code: "EACCES", message: "permission denied" };
+  });
   const result = await executor.execute("return 1", {}, 500);
 
   expect(result.ok).toBe(false);
@@ -149,8 +143,8 @@ test("bridgeToExecutor maps non-IPC code exceptions into valid SandboxError resu
 
 test("bridgeToExecutor maps bridge creation failures into SandboxError results", async () => {
   const executor = bridgeToExecutor(validBridgeConfig(), async () => {
-      throw new Error("bridge creation exploded");
-    });
+    throw new Error("bridge creation exploded");
+  });
 
   await expect(executor.execute("return 1", {}, 500)).resolves.toMatchObject({
     ok: false,

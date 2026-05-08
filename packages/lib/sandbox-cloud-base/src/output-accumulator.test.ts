@@ -1,8 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  createOutputAccumulator,
-  DEFAULT_MAX_OUTPUT_BYTES,
-} from "./output-accumulator.js";
+import { createOutputAccumulator, DEFAULT_MAX_OUTPUT_BYTES } from "./output-accumulator.js";
 
 describe("createOutputAccumulator", () => {
   test("exports the documented default byte limit", () => {

@@ -8,4 +8,3 @@ export default defineConfig({
   treeshake: true,
   target: "node22",
 });
-

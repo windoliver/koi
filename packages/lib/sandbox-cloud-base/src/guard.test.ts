@@ -17,6 +17,8 @@ describe("createDestroyGuard", () => {
     guard.destroy();
 
     expect(guard.destroy()).toBe(false);
-    expect(() => guard.check("execute")).toThrow("sandbox-cloud: cannot call execute() after destroy()");
+    expect(() => guard.check("execute")).toThrow(
+      "sandbox-cloud: cannot call execute() after destroy()",
+    );
   });
 });

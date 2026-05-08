@@ -40,7 +40,7 @@ describe("createLineReader", () => {
   });
 
   test("reconstructs newline-delimited records across chunk boundaries", async () => {
-    const lines = await collectLines(streamFromStrings(['{"a":1', '}\n{"b"', ':2}\n']));
+    const lines = await collectLines(streamFromStrings(['{"a":1', '}\n{"b"', ":2}\n"]));
 
     expect(lines).toEqual(['{"a":1}', '{"b":2}']);
   });

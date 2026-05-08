@@ -41,7 +41,7 @@ describe("sandbox-ipc real Bun child integration", () => {
 
     try {
       const result = await bridge.execute(
-        'return { total: input.left + input.right, label: input.label };',
+        "return { total: input.left + input.right, label: input.label };",
         { left: 19, right: 23, label: "seen-by-worker" },
       );
 

@@ -50,13 +50,11 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
             network: unsupported.fields.includes("network.allow=false"),
             resources: unsupported.fields.some((field) => field.startsWith("resources.")),
             details: [
-              ...(
-                unsupported.fields.some(
-                  (field) => field.startsWith("filesystem.") || field === "nexusMounts",
-                )
-                  ? (["filesystem restrictions or Nexus mounts"] as const)
-                  : []
-              ),
+              ...(unsupported.fields.some(
+                (field) => field.startsWith("filesystem.") || field === "nexusMounts",
+              )
+                ? (["filesystem restrictions or Nexus mounts"] as const)
+                : []),
               ...(unsupported.fields.includes("network.allow=false")
                 ? (["network deny (allow=false)"] as const)
                 : []),

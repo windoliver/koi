@@ -1,4 +1,4 @@
-export const WORKER_SOURCE: string = String.raw`// @bun
+export const WORKER_SOURCE: string = `// @bun
 function send(message) {
   if (typeof process.send !== "function") {
     throw new Error("Worker must be spawned with IPC enabled");

@@ -36,7 +36,7 @@ function isPlainObjectRecord(value: unknown): value is RecordValue {
 }
 
 function hasOwn(record: RecordValue, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(record, key);
+  return Object.hasOwn(record, key);
 }
 
 function isJsonValue(value: unknown): value is JsonValue {

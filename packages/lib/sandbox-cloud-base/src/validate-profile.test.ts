@@ -84,10 +84,7 @@ describe("validate-profile", () => {
       filesystem: false,
       network: true,
       resources: true,
-      details: [
-        "network deny (allow=false)",
-        "resource limits (maxMemoryMb/maxPids/maxOpenFiles)",
-      ],
+      details: ["network deny (allow=false)", "resource limits (maxMemoryMb/maxPids/maxOpenFiles)"],
     });
 
     expect(message).toBe(

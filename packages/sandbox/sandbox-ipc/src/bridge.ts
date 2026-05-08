@@ -1,8 +1,8 @@
-import type { ExecutionContext, JsonObject, Result, SandboxProfile } from "@koi/core";
 import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serialize } from "node:v8";
+import type { ExecutionContext, JsonObject, Result, SandboxProfile } from "@koi/core";
 import { parseWorkerMessage } from "./protocol.js";
 import type {
   BridgeConfig,
