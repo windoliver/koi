@@ -69,9 +69,41 @@ describe("workflow module surface", () => {
     expect(RETRY_WORKFLOW_NAME).toBe("retryWorkflow");
   });
 
-  test("exports workflow entry point functions", () => {
-    expect(typeof agentWorkflow).toBe("function");
-    expect(typeof scheduledTaskWorkflow).toBe("function");
-    expect(typeof retryWorkflow).toBe("function");
+  test("executes workflow entry points", async () => {
+    const config = {
+      agentId: "agent-1" as never,
+      sessionId: "session-1" as never,
+      stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+    };
+
+    await expect(agentWorkflow(config)).resolves.toBeUndefined();
+
+    await expect(
+      scheduledTaskWorkflow({
+        mode: "dispatch",
+        agentId: config.agentId,
+        stateRefs: config.stateRefs,
+        input: { kind: "text", text: "hello" },
+      }),
+    ).resolves.toEqual({ kind: "dispatched" });
+
+    await expect(
+      scheduledTaskWorkflow({
+        mode: "spawn",
+        agentId: config.agentId,
+        stateRefs: config.stateRefs,
+        input: { kind: "text", text: "hello" },
+      }),
+    ).resolves.toEqual({ kind: "spawned", workflowId: "pending" });
+
+    await expect(
+      retryWorkflow({
+        operation: "runAgentTurn",
+        attempt: 0,
+        maxAttempts: 3,
+        backoffMs: 250,
+        payload: { agentId: config.agentId },
+      }),
+    ).resolves.toEqual({ kind: "failed", attempts: 1, error: "unimplemented" });
   });
 });
