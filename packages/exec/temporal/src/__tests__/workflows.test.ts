@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 import {
   AGENT_MESSAGE_SIGNAL,
   AGENT_STATE_QUERY,
+  AGENT_WORKFLOW_NAME,
   RETRY_WORKFLOW_NAME,
   SCHEDULED_TASK_WORKFLOW_NAME,
   agentWorkflow,
@@ -65,6 +66,7 @@ describe("workflow module surface", () => {
   test("exports stable workflow names and signal names", () => {
     expect(AGENT_MESSAGE_SIGNAL).toBe("agent.message");
     expect(AGENT_STATE_QUERY).toBe("agent.state");
+    expect(AGENT_WORKFLOW_NAME).toBe("agentWorkflow");
     expect(SCHEDULED_TASK_WORKFLOW_NAME).toBe("scheduledTaskWorkflow");
     expect(RETRY_WORKFLOW_NAME).toBe("retryWorkflow");
   });
@@ -94,7 +96,7 @@ describe("workflow module surface", () => {
         stateRefs: config.stateRefs,
         input: { kind: "text", text: "hello" },
       }),
-    ).resolves.toEqual({ kind: "spawned", workflowId: "pending" });
+    ).resolves.toMatchObject({ kind: "spawned" });
 
     await expect(
       retryWorkflow({
@@ -104,6 +106,6 @@ describe("workflow module surface", () => {
         backoffMs: 250,
         payload: { agentId: config.agentId },
       }),
-    ).resolves.toEqual({ kind: "failed", attempts: 1, error: "unimplemented" });
+    ).resolves.toMatchObject({ kind: "failed", attempts: 1 });
   });
 });

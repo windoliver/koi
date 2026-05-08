@@ -21,6 +21,7 @@ import type {
   TaskScheduler,
 } from "@koi/core";
 import { agentId, scheduleId, taskId } from "@koi/core";
+import { AGENT_WORKFLOW_NAME } from "./workflows/index.js";
 
 // ---------------------------------------------------------------------------
 // Structural types (no @temporalio/* imports)
@@ -283,7 +284,7 @@ async function verifyScheduleOwnership(
 export function createTemporalScheduler(
   config: TemporalSchedulerConfig,
 ): TaskScheduler & { readonly bootstrap: () => Promise<void> } {
-  const workflowType = config.workflowType ?? "agentWorkflow";
+  const workflowType = config.workflowType ?? AGENT_WORKFLOW_NAME;
 
   const tasks = new Map<TaskId, ScheduledTask>();
   const schedules = new Map<ScheduleId, CronSchedule>();
