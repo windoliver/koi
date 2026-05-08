@@ -12,9 +12,12 @@ import {
 function formatGeneratePrompt(signal: ForgeDemandSignal): string {
   const failed =
     signal.context.failedToolCalls.length > 0
-      ? signal.context.failedToolCalls.join(", ")
+      ? sanitizeFailureEvidence(signal.context.failedToolCalls.join(", "))
       : "(none)";
-  const task = signal.context.taskDescription ?? "(unspecified)";
+  const task =
+    signal.context.taskDescription !== undefined
+      ? sanitizeFailureEvidence(signal.context.taskDescription)
+      : "(unspecified)";
   return [
     `Generate a koi middleware harness for brick kind ${signal.suggestedBrickKind}.`,
     `Trigger: ${signal.trigger.kind} (signal ${signal.id}, confidence ${signal.confidence.toFixed(2)}).`,
@@ -23,6 +26,61 @@ function formatGeneratePrompt(signal: ForgeDemandSignal): string {
     `Task: ${task}.`,
     "Export `createMiddleware()` returning a KoiMiddleware that addresses the failure mode above.",
   ].join("\n");
+}
+
+/**
+ * Stable identity derived from the demand signal trigger contents — keeps
+ * cooldown re-fires and concurrent emissions for the same root cause from
+ * spawning duplicate pipelines. The detector mints a fresh `signal.id` per
+ * emission, so id-based dedup is insufficient.
+ */
+function triggerIdentity(signal: ForgeDemandSignal): string {
+  const t = signal.trigger;
+  switch (t.kind) {
+    case "repeated_failure":
+      return `repeated_failure:${t.toolName}`;
+    case "no_matching_tool":
+      return `no_matching_tool:${t.query}`;
+    case "capability_gap":
+      return `capability_gap:${t.requiredCapability}`;
+    case "performance_degradation":
+      return `performance_degradation:${t.toolName}:${t.metric}`;
+    case "agent_capability_gap":
+      return `agent_capability_gap:${t.agentType}`;
+    case "agent_repeated_failure":
+      return `agent_repeated_failure:${t.agentType}`;
+    default: {
+      // Exhaustive fallback for any future trigger kinds added to the L0 union.
+      const exhaustive: Record<string, string> = t as never;
+      return `unknown:${JSON.stringify(exhaustive)}`;
+    }
+  }
+}
+
+/**
+ * Strip secrets-shaped tokens out of failure evidence before forwarding to
+ * the model. Forge-demand records raw `extractMessage(e)` output from
+ * failing tools, which can contain credentials, tenant identifiers, or
+ * internal paths. We redact common secret shapes; callers that need richer
+ * sanitization should pre-process their failure logs.
+ */
+const SECRET_PATTERNS: readonly RegExp[] = [
+  // `Authorization: Bearer <token>` — including the token after the prefix.
+  /\b(?:authorization|x-api-key)\b\s*[:=]\s*(?:Bearer\s+)?[A-Za-z0-9._\-+/=]+/gi,
+  // `key=value`, `token: value`, etc — strip the value up to whitespace/quote/brace.
+  /\b(?:password|passwd|secret|token|apikey|api[_-]?key|bearer|access[_-]?token|refresh[_-]?token)\b\s*[:=]\s*["']?[^\s"',}]+["']?/gi,
+  // High-entropy alphanumeric run 28+ chars (likely opaque tokens / secrets).
+  /\b[A-Za-z0-9]{28,}\b/g,
+  // Base64-ish runs with separators.
+  /\b[A-Za-z0-9_+/-]{40,}={0,2}\b/g,
+];
+
+function sanitizeFailureEvidence(text: string): string {
+  let out = text;
+  for (const pattern of SECRET_PATTERNS) {
+    out = out.replace(pattern, "[REDACTED]");
+  }
+  return out;
 }
 
 function resolveMaxSynthesesPerSession(value: number | undefined): number {
@@ -69,22 +127,21 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     config.onError?.(error);
   };
 
-  // Re-entrancy guard: forge-demand can emit the same signal multiple times
-  // under load (cooldown re-fire, concurrent traffic). Without serialization,
-  // duplicate pipelines run for the same failure — wasting model calls,
-  // duplicating approval prompts, and racing deploy side effects. The
-  // in-flight set keys on `signal.id`; the runtime's wrapper invokes us
-  // fire-and-forget per emission, so this is the canonical chokepoint.
-  const inFlightSignalIds = new Set<string>();
+  // Re-entrancy guard: forge-demand mints a fresh `signal.id` per emission,
+  // so id-based dedup misses cooldown re-fires and concurrent emissions for
+  // the same failing tool. Key on a stable trigger identity instead — same
+  // tool + same kind ⇒ one in-flight pipeline at a time.
+  const inFlightTriggers = new Set<string>();
 
   const synthesizeHarness = async (
     signal: ForgeDemandSignal,
   ): Promise<AutoHarnessSynthesisResult> => {
-    if (inFlightSignalIds.has(signal.id)) {
+    const triggerKey = triggerIdentity(signal);
+    if (inFlightTriggers.has(triggerKey)) {
       emitEvent({
         kind: "synthesis.skipped",
         signalId: signal.id,
-        message: "synthesis already in flight for this signal",
+        message: `synthesis already in flight for trigger ${triggerKey}`,
       });
       return null;
     }
@@ -96,13 +153,13 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       });
       return null;
     }
-    inFlightSignalIds.add(signal.id);
+    inFlightTriggers.add(triggerKey);
     synthesesThisSession += 1;
     emitEvent({ kind: "synthesis.started", signalId: signal.id });
     try {
       return await runPipeline(signal);
     } finally {
-      inFlightSignalIds.delete(signal.id);
+      inFlightTriggers.delete(triggerKey);
     }
   };
 

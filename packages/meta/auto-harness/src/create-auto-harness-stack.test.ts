@@ -573,7 +573,10 @@ describe("createAutoHarnessStack", () => {
     expect(events.some((e) => e.kind === "deployment.succeeded")).toBe(true);
   });
 
-  test("dedupes concurrent syntheses for the same signal id", async () => {
+  test("dedupes concurrent syntheses by stable trigger identity (different signal ids, same tool)", async () => {
+    // Forge-demand mints a fresh signal.id per emission. Without trigger-
+    // identity dedup, cooldown re-fires for the same failing tool would race
+    // duplicate pipelines.
     let generateCalls = 0;
     let resolveGate: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => {
@@ -595,11 +598,11 @@ describe("createAutoHarnessStack", () => {
       onEvent: (event) => events.push(event),
     });
 
-    const signal = makeSignal();
-    const first = stack.synthesizeHarness(signal);
-    // Second call while first is still in-flight must short-circuit with a
-    // synthesis.skipped event keyed by the same signal id.
-    const second = await stack.synthesizeHarness(signal);
+    // Two distinct signal ids but the SAME trigger (same tool + kind).
+    const sig1 = { ...makeSignal(), id: "demand-A" };
+    const sig2 = { ...makeSignal(), id: "demand-B" };
+    const first = stack.synthesizeHarness(sig1);
+    const second = await stack.synthesizeHarness(sig2);
     expect(second).toBeNull();
     expect(
       events.some((e) => e.kind === "synthesis.skipped" && e.message.includes("already in flight")),
@@ -609,6 +612,51 @@ describe("createAutoHarnessStack", () => {
     const firstResult = await first;
     expect(firstResult).toBe(artifact);
     expect(generateCalls).toBe(1);
+  });
+
+  test("sanitizes secret-shaped tokens out of the generation prompt", async () => {
+    const prompts: string[] = [];
+    const stack = createAutoHarnessStack({
+      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      generate: async (prompt) => {
+        prompts.push(prompt);
+        return "candidate-code";
+      },
+      verifyCandidate: async () => ({ ok: false, artifact: null, reason: "stop" }),
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async () => ({ ok: true }),
+    });
+
+    // Synthetic fixtures composed at runtime to avoid github secret-scanning
+    // false positives on the literal source.
+    const fakeBearer = `${"X".repeat(16)}-${"Y".repeat(16)}`;
+    const fakeApiKey = `notreal-${"a".repeat(28)}`;
+    const fakePass = "synthetic-pass-1234";
+    const fakeToken = `TOKEN-${"Z".repeat(28)}`;
+
+    const sig: ForgeDemandSignal = {
+      ...makeSignal(),
+      context: {
+        failureCount: 1,
+        failedToolCalls: [
+          `http: Authorization: Bearer ${fakeBearer}`,
+          `db: connection failed (api_key=${fakeApiKey})`,
+          "fs: Error reading /home/alice/.aws/credentials: ENOENT",
+        ],
+        taskDescription: `fetch via password=${fakePass} and token=${fakeToken}`,
+      },
+    };
+
+    await stack.synthesizeHarness(sig);
+
+    expect(prompts).toHaveLength(1);
+    const prompt = prompts[0] ?? "";
+    expect(prompt).not.toContain(fakeBearer);
+    expect(prompt).not.toContain(fakeApiKey);
+    expect(prompt).not.toContain(fakePass);
+    expect(prompt).not.toContain(fakeToken);
+    expect(prompt).toContain("[REDACTED]");
   });
 
   test("persists the verified artifact via forgeStore.save before policy / approval / deploy", async () => {

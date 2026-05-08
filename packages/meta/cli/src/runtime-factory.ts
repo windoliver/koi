@@ -4039,12 +4039,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             autoHarness: config.autoHarness,
           })
         : undefined;
-    const hasPolicyCacheMiddleware =
-      sharedRuntimeHandle?.autoHarness !== undefined &&
-      new Set([
-        ...stackContribution.middleware.map((mw) => mw.name),
-        ...(config.extraMiddleware ?? []).map((mw) => mw.name),
-      ]).has("policy-cache");
+    // When auto-harness is configured the stack-owned policy-cache is the
+    // single source of truth for both register() and live dispatch. Drop any
+    // caller-supplied `policy-cache` from the host-level chain — leaving it
+    // installed would dispatch against an instance that auto-harness's
+    // register() never populates, silently masking promoted policies.
+    const dropCallerPolicyCache = (mws: readonly KoiMiddleware[]): readonly KoiMiddleware[] =>
+      sharedRuntimeHandle?.autoHarness !== undefined
+        ? mws.filter((mw) => mw.name !== "policy-cache")
+        : mws;
 
     // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
     // The ordering (outermost → innermost) is defined in one place —
@@ -4076,14 +4079,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // slot and is composed strictly INSIDE the security core
       // layers, regardless of array position here.
       presetExtras: [
-        ...stackContribution.middleware,
-        ...(sharedRuntimeHandle?.autoHarness !== undefined && !hasPolicyCacheMiddleware
+        ...dropCallerPolicyCache(stackContribution.middleware),
+        ...(sharedRuntimeHandle?.autoHarness !== undefined
           ? [sharedRuntimeHandle.autoHarness.middleware]
           : []),
         ...auditPresetExtras,
         ...(governanceMw !== undefined ? [governanceMw] : []),
         ...(config.ace !== undefined ? [createAceMiddleware(config.ace)] : []),
-        ...(config.extraMiddleware ?? []),
+        ...dropCallerPolicyCache(config.extraMiddleware ?? []),
       ],
       manifestMiddleware: zoneBMiddleware,
       ...(config.skillInjector !== undefined ? { skillInjector: config.skillInjector } : {}),
