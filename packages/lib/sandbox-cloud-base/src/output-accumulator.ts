@@ -8,19 +8,22 @@ export interface OutputAccumulator {
   };
 }
 
-const DEFAULT_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
-const encoder = new TextEncoder();
+export const DEFAULT_MAX_OUTPUT_BYTES: number = 10 * 1024 * 1024;
 
 function prefixByBytes(chunk: string, maxBytes: number): string {
   if (maxBytes <= 0 || chunk.length === 0) {
     return "";
   }
 
-  let end = chunk.length;
-  while (end > 0 && encoder.encode(chunk.slice(0, end)).byteLength > maxBytes) {
-    end -= 1;
+  let prefix = "";
+  for (const char of chunk) {
+    const next = prefix + char;
+    if (Buffer.byteLength(next, "utf8") > maxBytes) {
+      break;
+    }
+    prefix = next;
   }
-  return chunk.slice(0, end);
+  return prefix;
 }
 
 export function createOutputAccumulator(
@@ -36,7 +39,7 @@ export function createOutputAccumulator(
         return;
       }
 
-      const chunkBytes = encoder.encode(chunk).byteLength;
+      const chunkBytes = Buffer.byteLength(chunk, "utf8");
       if (bytes + chunkBytes <= maxBytes) {
         chunks.push(chunk);
         bytes += chunkBytes;

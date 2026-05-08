@@ -5,8 +5,8 @@ export interface LineReaderOptions {
   readonly maxTotalBytes?: number;
 }
 
-const DEFAULT_MAX_LINE_BYTES = 1 * 1024 * 1024;
-const DEFAULT_MAX_TOTAL_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_MAX_LINE_BYTES: number = 1 * 1024 * 1024;
+export const DEFAULT_MAX_TOTAL_BYTES: number = 10 * 1024 * 1024;
 const encoder = new TextEncoder();
 
 function clampPrefix(text: string, maxBytes: number): string {
