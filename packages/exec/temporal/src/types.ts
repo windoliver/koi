@@ -7,6 +7,7 @@ export interface AgentWorkflowConfig {
   readonly gatewayUrl?: string | undefined;
   readonly initialMessage?: IncomingMessage | undefined;
   readonly initialMessages?: readonly IncomingMessage[] | undefined;
+  readonly initialScheduledInput?: ScheduledInputPayload | undefined;
   readonly maxStopRetries?: number | undefined;
 }
 
@@ -21,6 +22,7 @@ export interface AgentTurnInput {
   readonly message: IncomingMessage;
   readonly stateRefs: AgentStateRefs;
   readonly gatewayUrl: string | undefined;
+  readonly maxStopRetries?: number | undefined;
   readonly nexusApiKey?: string | undefined;
   readonly delegationId?: string | undefined;
 }
@@ -74,6 +76,7 @@ export interface WorkerWorkflowConfig {
   readonly stateRefs: AgentStateRefs;
   readonly gatewayUrl?: string | undefined;
   readonly initialMessage?: IncomingMessage | undefined;
+  readonly maxStopRetries?: number | undefined;
   readonly nexusApiKey?: string | undefined;
   readonly delegationId?: string | undefined;
 }

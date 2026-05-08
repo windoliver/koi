@@ -62,6 +62,7 @@ export {
 export type {
   AgentActivityStatus,
   MessageSignalPayload,
+  MessagesSignalPayload,
   PendingCountQueryResult,
   ShutdownSignalPayload,
   StateQueryResult,
@@ -69,6 +70,7 @@ export type {
 } from "./workflows/signals.js";
 export {
   MESSAGE_SIGNAL_NAME,
+  MESSAGES_SIGNAL_NAME,
   PENDING_COUNT_QUERY_NAME,
   SHUTDOWN_SIGNAL_NAME,
   STATE_QUERY_NAME,

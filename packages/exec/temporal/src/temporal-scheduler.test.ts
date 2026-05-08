@@ -5,6 +5,7 @@ import {
   type TemporalClientLike,
   type TemporalSchedulerConfig,
 } from "./temporal-scheduler.js";
+import { MESSAGE_SIGNAL_NAME, MESSAGES_SIGNAL_NAME } from "./workflows/signals.js";
 
 function makeMockClient(wfOverrides?: Partial<TemporalClientLike["workflow"]>): TemporalClientLike {
   return {
@@ -235,6 +236,20 @@ describe("dispatch mode", () => {
     expect(signalArgs?.[0]).toBe(String(AGENT_ID));
   });
 
+  test("dispatch keeps single-message delivery on the live message signal", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
+    const signalCalls = (client.workflow.signal as ReturnType<typeof mock>).mock.calls;
+    expect(signalCalls).toHaveLength(1);
+    expect(signalCalls[0]?.[1]).toBe(MESSAGE_SIGNAL_NAME);
+    expect(signalCalls[0]?.[2]).toMatchObject({
+      id: expect.any(String),
+      senderId: "scheduler",
+      content: [{ kind: "text", text: "hello" }],
+    });
+  });
+
   test("spawn starts a new workflow with a unique id", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
@@ -357,15 +372,37 @@ describe("rollback safety", () => {
   test("dispatch sends whole message batch as single signal (atomic delivery)", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
-    await scheduler.submit(AGENT_ID, MESSAGES_INPUT, "dispatch");
+    await scheduler.submit(
+      AGENT_ID,
+      {
+        kind: "messages",
+        messages: [
+          { content: [{ kind: "text", text: "first" }], senderId: "u1", timestamp: 1 },
+          { content: [{ kind: "text", text: "second" }], senderId: "u2", timestamp: 2 },
+        ],
+      } as unknown as EngineInput,
+      "dispatch",
+    );
     const signalCalls = (client.workflow.signal as ReturnType<typeof mock>).mock.calls;
     // Only one signal call for the entire batch
     expect(signalCalls).toHaveLength(1);
-    expect(signalCalls[0]?.[1]).toBe("messages");
+    expect(signalCalls[0]?.[1]).toBe(MESSAGES_SIGNAL_NAME);
     // The third arg is the messages array
     const batch = signalCalls[0]?.[2] as readonly unknown[];
     expect(Array.isArray(batch)).toBe(true);
-    expect(batch).toHaveLength(1);
+    expect(batch).toHaveLength(2);
+    expect(batch[0]).toMatchObject({
+      id: expect.any(String),
+      senderId: "u1",
+      timestamp: 1,
+      content: [{ kind: "text", text: "first" }],
+    });
+    expect(batch[1]).toMatchObject({
+      id: expect.any(String),
+      senderId: "u2",
+      timestamp: 2,
+      content: [{ kind: "text", text: "second" }],
+    });
   });
 
   test("start+signal success: task emitted as submitted before running", async () => {
@@ -439,8 +476,9 @@ describe("schedule / unschedule", () => {
     const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
     const opts = createArgs?.[1] as { action: { args: readonly [Record<string, unknown>] } };
     const wfConfig = opts.action.args[0];
-    // Raw EngineInput is embedded so each firing generates fresh IDs/timestamps
-    expect(wfConfig).toHaveProperty("input");
+    // Raw EngineInput is embedded in the workflow config so each firing generates fresh IDs/timestamps.
+    expect(wfConfig).toHaveProperty("initialScheduledInput");
+    expect(wfConfig).toHaveProperty("sessionId");
     expect(wfConfig).not.toHaveProperty("initialMessages");
   });
 
@@ -590,7 +628,7 @@ describe("schedule / unschedule", () => {
     const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
     const opts = createArgs?.[1] as { action: { args: readonly [Record<string, unknown>] } };
     const spawnArgs = opts.action.args[0];
-    const payload = spawnArgs?.input as Record<string, unknown>;
+    const payload = spawnArgs?.initialScheduledInput as Record<string, unknown>;
     expect(payload).not.toHaveProperty("callHandlers");
     expect(payload).not.toHaveProperty("signal");
     expect(payload).toEqual({ kind: "text", text: "hello" });
@@ -624,14 +662,14 @@ describe("schedule / unschedule", () => {
     );
   });
 
-  test("spawn schedule omits sessionId so each run uses its own execution id", async () => {
+  test("spawn schedule seeds a stable sessionId for the scheduled workflow config", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn");
     const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
     const opts = createArgs?.[1] as { action: { args: readonly [Record<string, unknown>] } };
     const wfConfig = opts.action.args[0];
-    expect(wfConfig).not.toHaveProperty("sessionId");
+    expect(wfConfig.sessionId).toBe(opts.action.workflowId);
   });
 });
 
@@ -1519,8 +1557,8 @@ describe("idempotencyKey", () => {
     });
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", { idempotencyKey: "idem-1" });
-    const msgs = signalArgs[0]?.[2] as Array<{ id: string }> | undefined;
-    expect(msgs?.[0]?.id).toBe(`${AGENT_ID}:dispatch:idem-1:0`);
+    const message = signalArgs[0]?.[2] as { id?: string } | undefined;
+    expect(message?.id).toBe(`${AGENT_ID}:dispatch:idem-1:0`);
     await scheduler[Symbol.asyncDispose]();
   });
 

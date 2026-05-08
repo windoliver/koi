@@ -12,10 +12,29 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { AgentId } from "@koi/core";
-import { agentId } from "@koi/core";
+import type {
+  AgentStateRefs,
+  AgentTurnInput,
+  AgentTurnResult,
+  AgentWorkflowConfig,
+  IncomingMessage,
+  ScheduledInputPayload,
+  WorkerWorkflowConfig,
+} from "../index.js";
+import {
+  MESSAGE_SIGNAL_NAME,
+  PENDING_COUNT_QUERY_NAME,
+  SHUTDOWN_SIGNAL_NAME,
+  STATE_QUERY_NAME,
+  STATUS_QUERY_NAME,
+} from "../index.js";
+import { MESSAGES_SIGNAL_NAME } from "../workflows/signals.js";
 
 const SKIP = process.env.TEMPORAL_INTEGRATION !== "true";
+const REAL_WORKFLOW_PATH = new URL("../workflows/agent-workflow.ts", import.meta.url).pathname;
+type WorkflowAgentId = AgentWorkflowConfig["agentId"];
+type WorkerAgentId = WorkerWorkflowConfig["agentId"];
+type WorkerParentAgentId = WorkerWorkflowConfig["parentAgentId"];
 
 // ---------------------------------------------------------------------------
 // 1. Bun compatibility gate
@@ -100,10 +119,15 @@ async function makeRealClient() {
           const handle = await temporalClient.workflow.start(workflowType, opts as never);
           return { workflowId: handle.workflowId };
         },
+        signal: async (id: string, signalName: string, ...args: readonly unknown[]) => {
+          const handle = temporalClient.workflow.getHandle(id);
+          await handle.signal(signalName, ...(args as []));
+        },
         cancel: async (id: string) => {
           const handle = temporalClient.workflow.getHandle(id);
           await handle.cancel();
         },
+        getResult: async (id: string) => temporalClient.workflow.getHandle(id).result(),
         describe: async (id: string) => {
           const desc = await temporalClient.workflow.getHandle(id).describe();
           // In @temporalio/client >=1.16, status is { code: number, name: string }
@@ -149,17 +173,248 @@ async function makeRealClient() {
   };
 }
 
+async function waitFor<T>(
+  readValue: () => Promise<T>,
+  predicate: (value: T) => boolean,
+  timeoutMs = 15_000,
+  intervalMs = 200,
+): Promise<T> {
+  const start = Date.now();
+
+  while (true) {
+    const value = await readValue();
+    if (predicate(value)) {
+      return value;
+    }
+
+    if (Date.now() - start >= timeoutMs) {
+      throw new Error("timed out waiting for Temporal workflow state");
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
 // ---------------------------------------------------------------------------
-// 2. Scheduler integration — real Temporal server
+// 2. Restored workflow integration — real workflow module + stubbed activity
+// ---------------------------------------------------------------------------
+
+describe.skipIf(SKIP)("Restored workflow integration (real Temporal)", () => {
+  const QUEUE = "integration-agent-workflow-queue";
+
+  test("agentWorkflow processes messages, updates queries, and shuts down", async () => {
+    const { Client, Connection } = await import("@temporalio/client");
+    const { NativeConnection, Worker } = await import("@temporalio/worker");
+
+    const initialMessage: IncomingMessage = {
+      id: "msg-1",
+      senderId: "user-1",
+      content: [],
+      timestamp: Date.now(),
+    };
+    const followUpMessage: IncomingMessage = {
+      id: "msg-2",
+      senderId: "user-2",
+      content: [],
+      timestamp: Date.now() + 1,
+    };
+    const workflowConfig: AgentWorkflowConfig = {
+      agentId: "workflow-agent" as WorkflowAgentId,
+      sessionId: "session-integration" as AgentWorkflowConfig["sessionId"],
+      stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+      initialMessages: [initialMessage],
+      gatewayUrl: "ws://workflow-gateway",
+    };
+    const activityCalls: AgentTurnInput[] = [];
+    let nativeConn: InstanceType<typeof NativeConnection> | undefined;
+    let worker: InstanceType<typeof Worker> | undefined;
+    let workerPromise: Promise<void> | undefined;
+    let clientConn: InstanceType<typeof Connection> | undefined;
+
+    try {
+      nativeConn = await NativeConnection.connect({ address: "localhost:7233" });
+      worker = await Worker.create({
+        connection: nativeConn,
+        taskQueue: QUEUE,
+        workflowsPath: REAL_WORKFLOW_PATH,
+        activities: {
+          async runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
+            const turnNumber = activityCalls.length + 1;
+            activityCalls.push(input);
+            return {
+              turnId: `turn-${turnNumber}`,
+              blocks: [],
+              updatedStateRefs: {
+                lastTurnId: `turn-${turnNumber}`,
+                turnsProcessed: input.stateRefs.turnsProcessed + 1,
+              },
+              spawnChild: undefined,
+            };
+          },
+        },
+      });
+      workerPromise = worker.run();
+      clientConn = await Connection.connect({ address: "localhost:7233" });
+      const client = new Client({ connection: clientConn });
+
+      const handle = await client.workflow.start("agentWorkflow", {
+        taskQueue: QUEUE,
+        workflowId: `restored-agent-workflow-${Date.now()}`,
+        args: [workflowConfig],
+      });
+      const queryPendingCount = async (): Promise<number> =>
+        (await handle.query(PENDING_COUNT_QUERY_NAME)) as number;
+      const queryStatus = async (): Promise<string> =>
+        (await handle.query(STATUS_QUERY_NAME)) as string;
+
+      await waitFor(
+        async () => activityCalls.length,
+        (count) => count === 1,
+      );
+
+      expect(activityCalls[0]).toEqual({
+        agentId: workflowConfig.agentId,
+        sessionId: workflowConfig.sessionId,
+        message: initialMessage,
+        stateRefs: workflowConfig.stateRefs,
+        gatewayUrl: "ws://workflow-gateway",
+      });
+
+      const firstState = await waitFor(
+        async () => (await handle.query(STATE_QUERY_NAME)) as AgentStateRefs,
+        (state) => state.turnsProcessed === 1,
+      );
+      expect(firstState).toEqual({
+        lastTurnId: "turn-1",
+        turnsProcessed: 1,
+      });
+      expect(await queryPendingCount()).toBe(0);
+      expect(await queryStatus()).toBe("idle");
+
+      await handle.signal(MESSAGE_SIGNAL_NAME, followUpMessage);
+
+      await waitFor(
+        async () => activityCalls.length,
+        (count) => count === 2,
+      );
+      expect(activityCalls[1]?.message).toEqual(followUpMessage);
+
+      const secondState = await waitFor(
+        async () => (await handle.query(STATE_QUERY_NAME)) as AgentStateRefs,
+        (state) => state.turnsProcessed === 2,
+      );
+      expect(secondState).toEqual({
+        lastTurnId: "turn-2",
+        turnsProcessed: 2,
+      });
+      expect(await queryPendingCount()).toBe(0);
+      expect(await queryStatus()).toBe("idle");
+
+      await handle.signal(SHUTDOWN_SIGNAL_NAME, { reason: "integration-complete" });
+      await expect(handle.result()).resolves.toBeUndefined();
+    } finally {
+      await clientConn?.close();
+      worker?.shutdown();
+      await workerPromise;
+      await nativeConn?.close();
+    }
+  }, 60_000);
+
+  test("workerWorkflow forwards optional runtime fields through the real workflow module", async () => {
+    const { Client, Connection } = await import("@temporalio/client");
+    const { NativeConnection, Worker } = await import("@temporalio/worker");
+
+    const activityCalls: AgentTurnInput[] = [];
+    const workflowConfig: WorkerWorkflowConfig = {
+      agentId: "child-worker" as WorkerAgentId,
+      sessionId: "session-worker" as WorkerWorkflowConfig["sessionId"],
+      parentAgentId: "parent-worker" as WorkerParentAgentId,
+      stateRefs: { lastTurnId: "turn-0", turnsProcessed: 4 },
+      gatewayUrl: "ws://worker-gateway",
+      nexusApiKey: "nexus-secret",
+      delegationId: "delegation-42",
+    };
+    let nativeConn: InstanceType<typeof NativeConnection> | undefined;
+    let worker: InstanceType<typeof Worker> | undefined;
+    let workerPromise: Promise<void> | undefined;
+    let clientConn: InstanceType<typeof Connection> | undefined;
+
+    try {
+      nativeConn = await NativeConnection.connect({ address: "localhost:7233" });
+      worker = await Worker.create({
+        connection: nativeConn,
+        taskQueue: QUEUE,
+        workflowsPath: REAL_WORKFLOW_PATH,
+        activities: {
+          async runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
+            activityCalls.push(input);
+            return {
+              turnId: "worker-turn-1",
+              blocks: [],
+              updatedStateRefs: {
+                lastTurnId: "worker-turn-1",
+                turnsProcessed: input.stateRefs.turnsProcessed + 1,
+              },
+              spawnChild: undefined,
+            };
+          },
+        },
+      });
+      workerPromise = worker.run();
+      clientConn = await Connection.connect({ address: "localhost:7233" });
+      const client = new Client({ connection: clientConn });
+
+      const handle = await client.workflow.start("workerWorkflow", {
+        taskQueue: QUEUE,
+        workflowId: `restored-worker-workflow-${Date.now()}`,
+        args: [workflowConfig],
+      });
+
+      await expect(handle.result()).resolves.toEqual({
+        turnId: "worker-turn-1",
+        blocks: [],
+        updatedStateRefs: {
+          lastTurnId: "worker-turn-1",
+          turnsProcessed: 5,
+        },
+        spawnChild: undefined,
+      });
+      expect(activityCalls).toEqual([
+        {
+          agentId: workflowConfig.agentId,
+          sessionId: workflowConfig.sessionId,
+          message: {
+            id: "worker-init:child-worker",
+            senderId: "parent-worker",
+            content: [],
+            timestamp: expect.any(Number),
+          },
+          stateRefs: workflowConfig.stateRefs,
+          gatewayUrl: workflowConfig.gatewayUrl,
+          nexusApiKey: workflowConfig.nexusApiKey,
+          delegationId: workflowConfig.delegationId,
+        },
+      ]);
+    } finally {
+      await clientConn?.close();
+      worker?.shutdown();
+      await workerPromise;
+      await nativeConn?.close();
+    }
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// 3. Scheduler integration — real Temporal server
 // ---------------------------------------------------------------------------
 
 describe.skipIf(SKIP)("Scheduler integration (real Temporal)", () => {
   const QUEUE = "integration-test-queue";
-  const agent = agentId("integration-agent") as AgentId;
+  const agent = "integration-agent" as WorkflowAgentId;
 
   test("submit starts a workflow and query returns running status", async () => {
     const { NativeConnection, Worker } = await import("@temporalio/worker");
-    const { createTemporalScheduler } = await import("../scheduler.js");
+    const { createTemporalScheduler } = await import("../temporal-scheduler.js");
 
     const { client, close } = await makeRealClient();
 
@@ -191,8 +446,8 @@ describe.skipIf(SKIP)("Scheduler integration (real Temporal)", () => {
       await new Promise((r) => setTimeout(r, 300));
 
       // Poll: task starts in live map; once completed it moves to history
-      let tasks: readonly import("@koi/core").ScheduledTask[] = [];
-      let hist: readonly import("@koi/core").TaskRunRecord[] = [];
+      let tasks: Array<{ readonly status?: string }> = [];
+      let hist: Array<{ readonly status?: string }> = [];
       for (let i = 0; i < 14; i++) {
         tasks = await scheduler.query({});
         hist = await scheduler.history({});
@@ -219,7 +474,7 @@ describe.skipIf(SKIP)("Scheduler integration (real Temporal)", () => {
 
   test("cancel returns false for already-COMPLETED workflow", async () => {
     const { NativeConnection, Worker } = await import("@temporalio/worker");
-    const { createTemporalScheduler } = await import("../scheduler.js");
+    const { createTemporalScheduler } = await import("../temporal-scheduler.js");
 
     const { client, close, _temporalClient } = await makeRealClient();
 
@@ -267,10 +522,10 @@ describe.skipIf(SKIP)("Scheduler integration (real Temporal)", () => {
 
   test("cancel throws when memo agentId does not match (ownership mismatch)", async () => {
     const { NativeConnection, Worker } = await import("@temporalio/worker");
-    const { createTemporalScheduler } = await import("../scheduler.js");
+    const { createTemporalScheduler } = await import("../temporal-scheduler.js");
 
-    const agentA = agentId("agent-alpha") as AgentId;
-    const agentB = agentId("agent-beta") as AgentId;
+    const agentA = "agent-alpha" as WorkflowAgentId;
+    const agentB = "agent-beta" as WorkflowAgentId;
 
     const { client, close } = await makeRealClient();
 
@@ -323,7 +578,7 @@ describe.skipIf(SKIP)("Scheduler integration (real Temporal)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. Worker factory integration
+// 4. Worker factory integration
 // ---------------------------------------------------------------------------
 
 describe.skipIf(SKIP)("createTemporalWorker integration", () => {
@@ -359,13 +614,121 @@ describe.skipIf(SKIP)("createTemporalWorker integration", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. Corner cases (unit-level, no server needed — but grouped here for completeness)
+// 5. Corner cases (unit-level, no server needed — but grouped here for completeness)
 // ---------------------------------------------------------------------------
 
 describe("Corner cases (no server required)", () => {
-  test("cancel on unknown id throws 'Cannot verify ownership' (describe absent)", async () => {
-    const { createTemporalScheduler } = await import("../scheduler.js");
-    const { taskId } = await import("@koi/core");
+  test("dispatch sends message batches atomically through the workflow batch signal", async () => {
+    const { createTemporalScheduler } = await import("../temporal-scheduler.js");
+
+    const signalCalls: unknown[][] = [];
+    const scheduler = createTemporalScheduler({
+      client: {
+        workflow: {
+          start: async () => ({ workflowId: "wf-unused" }),
+          signal: async (...args: readonly unknown[]) => {
+            signalCalls.push([...args]);
+          },
+          cancel: async () => {},
+          getResult: async () => undefined,
+        },
+        schedule: {
+          create: async () => {},
+          pause: async () => {},
+          unpause: async () => {},
+          delete: async () => {},
+          getHandle: () => ({ describe: async () => ({}) }),
+        },
+      },
+      taskQueue: "q",
+      workflowType: "agentWorkflow",
+    });
+
+    await scheduler.submit(
+      "dispatch-agent" as WorkflowAgentId,
+      {
+        kind: "messages",
+        messages: [
+          { senderId: "user-a", content: [{ kind: "text", text: "first" }], timestamp: 1 },
+          { senderId: "user-b", content: [{ kind: "text", text: "second" }], timestamp: 2 },
+        ],
+      } as never,
+      "dispatch",
+    );
+
+    expect(signalCalls).toHaveLength(1);
+    expect(signalCalls[0]?.[0]).toBe("dispatch-agent");
+    expect(signalCalls[0]?.[1]).toBe(MESSAGES_SIGNAL_NAME);
+    expect(signalCalls[0]?.[2]).toMatchObject([
+      {
+        senderId: "user-a",
+        content: [{ kind: "text", text: "first" }],
+        timestamp: 1,
+      },
+      {
+        senderId: "user-b",
+        content: [{ kind: "text", text: "second" }],
+        timestamp: 2,
+      },
+    ]);
+
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("scheduled spawn action passes queued workflow input and preserves maxStopRetries", async () => {
+    const { createTemporalScheduler } = await import("../temporal-scheduler.js");
+
+    const createCalls: Array<[string, Record<string, unknown>]> = [];
+    const scheduler = createTemporalScheduler({
+      client: {
+        workflow: {
+          start: async () => ({ workflowId: "wf-unused" }),
+          signal: async () => {},
+          cancel: async () => {},
+          getResult: async () => undefined,
+        },
+        schedule: {
+          create: async (scheduleId: string, options: Record<string, unknown>) => {
+            createCalls.push([scheduleId, options]);
+          },
+          pause: async () => {},
+          unpause: async () => {},
+          delete: async () => {},
+          getHandle: () => ({ describe: async () => ({}) }),
+        },
+      },
+      taskQueue: "q",
+      workflowType: "agentWorkflow",
+    });
+
+    const scheduledInput: ScheduledInputPayload = {
+      kind: "text",
+      text: "tick",
+      maxStopRetries: 6,
+    };
+
+    await scheduler.schedule(
+      "0 * * * *",
+      "scheduled-agent" as WorkflowAgentId,
+      scheduledInput as never,
+      "spawn",
+    );
+
+    const action = createCalls[0]?.[1]?.action as Record<string, unknown>;
+    const args = action.args as [Record<string, unknown>];
+    expect(action.type).toBe("startWorkflow");
+    expect(args[0]).toMatchObject({
+      agentId: "scheduled-agent",
+      initialScheduledInput: scheduledInput,
+      maxStopRetries: 6,
+    });
+    expect(args[0]).not.toHaveProperty("input");
+
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("cancel on unknown id returns false when no local task exists", async () => {
+    const { createTemporalScheduler } = await import("../temporal-scheduler.js");
 
     const scheduler = createTemporalScheduler({
       client: {
@@ -384,15 +747,12 @@ describe("Corner cases (no server required)", () => {
       taskQueue: "q",
     });
 
-    const unknownId = taskId("never-submitted");
-    await expect(scheduler.cancel(unknownId)).rejects.toThrow(/Cannot verify ownership/);
+    await expect(scheduler.cancel("never-submitted" as never)).resolves.toBe(false);
   });
 
-  test("stats() counts completed from history not live task map", async () => {
-    const { createTemporalScheduler } = await import("../scheduler.js");
-    const agent = agentId("stats-agent") as AgentId;
-
-    let completionCallback: (() => void) | undefined;
+  test("stats() counts completed work without a Temporal server", async () => {
+    const { createTemporalScheduler } = await import("../temporal-scheduler.js");
+    const agent = "stats-agent" as WorkflowAgentId;
 
     const client = {
       workflow: {
@@ -400,19 +760,7 @@ describe("Corner cases (no server required)", () => {
           workflowId: (opts.workflowId as string) ?? "wf-1",
         }),
         cancel: async () => {},
-        describe: async (_id: string) => {
-          // Return COMPLETED on the first describe call to trigger reconciliation
-          return {
-            status: "COMPLETED" as const,
-            memo: {
-              agentId: agent,
-              workflowType: "agentWorkflow",
-              taskQueue: "stats-queue",
-              mode: "dispatch",
-              inputFingerprint: JSON.stringify({ kind: "text", text: "t" }),
-            },
-          };
-        },
+        getResult: async () => undefined,
         list: async () => [],
       },
       schedule: {
@@ -422,32 +770,30 @@ describe("Corner cases (no server required)", () => {
         delete: async () => {},
       },
     };
-    void completionCallback;
 
     const scheduler = createTemporalScheduler({ client, taskQueue: "stats-queue" });
-    const id = await scheduler.submit(agent, { kind: "text", text: "t" }, "dispatch");
+    const id = await scheduler.submit(agent, { kind: "text", text: "t" }, "spawn");
 
-    // Before reconcile: task is pending in map
-    const beforeStats = scheduler.stats();
-    expect(beforeStats.pending + beforeStats.running).toBe(1);
-    expect(beforeStats.completed).toBe(0);
+    const initialStats = scheduler.stats();
+    expect(initialStats.pending + initialStats.running + initialStats.completed).toBe(1);
 
-    // Trigger reconcile via query
-    await scheduler.query({});
-
-    // After reconcile: task moved to history, completed count increments
-    const afterStats = scheduler.stats();
+    const afterStats = await waitFor(
+      async () => scheduler.stats(),
+      (stats) => stats.completed === 1,
+    );
     expect(afterStats.completed).toBe(1);
-    // Task no longer in live map
-    const liveTasks = await scheduler.query({});
-    expect(liveTasks.find((t) => t.id === id)).toBeUndefined();
+    expect(afterStats.pending).toBe(0);
+    expect(afterStats.running).toBe(0);
+
+    const history = await scheduler.history({});
+    expect(history.find((entry) => entry.taskId === id)?.status).toBe("completed");
 
     await scheduler[Symbol.asyncDispose]();
   });
 
   test("watch() listener not called after unsubscribe", async () => {
-    const { createTemporalScheduler } = await import("../scheduler.js");
-    const agent = agentId("watch-agent") as AgentId;
+    const { createTemporalScheduler } = await import("../temporal-scheduler.js");
+    const agent = "watch-agent" as WorkflowAgentId;
 
     const client = {
       workflow: {
@@ -455,6 +801,7 @@ describe("Corner cases (no server required)", () => {
           workflowId: (opts.workflowId as string) ?? "wf-watch",
         }),
         cancel: async () => {},
+        getResult: async () => undefined,
         list: async () => [],
       },
       schedule: {
@@ -468,17 +815,17 @@ describe("Corner cases (no server required)", () => {
     const scheduler = createTemporalScheduler({ client, taskQueue: "watch-q" });
 
     const events: string[] = [];
-    const unsubscribe = scheduler.watch((e) => {
-      events.push(e.kind);
+    const unsubscribe = scheduler.watch((event: { readonly kind: string }) => {
+      events.push(event.kind);
     });
 
-    await scheduler.submit(agent, { kind: "text", text: "a" }, "dispatch");
+    await scheduler.submit(agent, { kind: "text", text: "a" }, "spawn");
     expect(events).toContain("task:submitted");
 
     unsubscribe();
     const countBefore = events.length;
 
-    await scheduler.submit(agent, { kind: "text", text: "b" }, "dispatch");
+    await scheduler.submit(agent, { kind: "text", text: "b" }, "spawn");
     // No new events after unsubscribe
     expect(events.length).toBe(countBefore);
 
@@ -486,7 +833,7 @@ describe("Corner cases (no server required)", () => {
   });
 
   test("asyncDispose() called twice does not double-close or throw", async () => {
-    const { createTemporalScheduler } = await import("../scheduler.js");
+    const { createTemporalScheduler } = await import("../temporal-scheduler.js");
 
     const scheduler = createTemporalScheduler({
       client: {

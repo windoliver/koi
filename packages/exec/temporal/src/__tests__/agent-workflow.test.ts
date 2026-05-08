@@ -1,21 +1,26 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import {
-  MESSAGE_SIGNAL_NAME,
-  PENDING_COUNT_QUERY_NAME,
-  SHUTDOWN_SIGNAL_NAME,
-  STATE_QUERY_NAME,
-  STATUS_QUERY_NAME,
-} from "../workflows/signals.js";
 import type {
   AgentStateRefs,
   AgentTurnInput,
   AgentTurnResult,
   AgentWorkflowConfig,
   IncomingMessage,
+  ScheduledInputPayload,
   WorkerWorkflowConfig,
 } from "../types.js";
+import { scheduledInputToMessages } from "../workflows/scheduled-input.js";
+import {
+  MESSAGE_SIGNAL_NAME,
+  MESSAGES_SIGNAL_NAME,
+  PENDING_COUNT_QUERY_NAME,
+  SHUTDOWN_SIGNAL_NAME,
+  STATE_QUERY_NAME,
+  STATUS_QUERY_NAME,
+} from "../workflows/signals.js";
 
 const WORKFLOW_MODULE_PATH = new URL("../workflows/agent-workflow.ts", import.meta.url).href;
+
+type WorkflowHandler = (...args: readonly unknown[]) => unknown;
 
 afterEach(() => {
   mock.restore();
@@ -24,6 +29,7 @@ afterEach(() => {
 describe("agent workflow module", () => {
   test("shared signal/query constants stay stable", () => {
     expect(MESSAGE_SIGNAL_NAME).toBe("message");
+    expect(MESSAGES_SIGNAL_NAME).toBe("messages");
     expect(SHUTDOWN_SIGNAL_NAME).toBe("shutdown");
     expect(STATE_QUERY_NAME).toBe("getState");
     expect(STATUS_QUERY_NAME).toBe("getStatus");
@@ -34,7 +40,7 @@ describe("agent workflow module", () => {
     const defineSignalCalls: string[] = [];
     const defineQueryCalls: string[] = [];
     const proxyActivitiesCalls: unknown[] = [];
-    const handlers = new Map<string, (...args: any[]) => any>();
+    const handlers = new Map<string, WorkflowHandler>();
     const startChildCalls: Array<{ workflowType: string; options: Record<string, unknown> }> = [];
     const stateSnapshots: AgentStateRefs[] = [];
     let currentStatus = "uninitialized";
@@ -52,13 +58,29 @@ describe("agent workflow module", () => {
       content: [],
       timestamp: 2,
     };
-
+    const batchMessages: IncomingMessage[] = [
+      {
+        id: "msg-batch-1",
+        senderId: "user-3",
+        content: [{ kind: "text", text: "batched-1" }],
+        timestamp: 3,
+      },
+      {
+        id: "msg-batch-2",
+        senderId: "user-4",
+        content: [{ kind: "text", text: "batched-2" }],
+        timestamp: 4,
+      },
+    ];
     const runAgentTurn = mock(async (input: AgentTurnInput): Promise<AgentTurnResult> => {
       if (input.agentId === ("agent-1" as AgentTurnInput["agentId"])) {
         stateSnapshots.push(input.stateRefs);
-        currentStatus = handlers.get(STATUS_QUERY_NAME)?.();
+        currentStatus =
+          (handlers.get(STATUS_QUERY_NAME)?.() as string | undefined) ?? currentStatus;
         handlers.get(MESSAGE_SIGNAL_NAME)?.(liveMessage);
-        pendingDuringTurn = handlers.get(PENDING_COUNT_QUERY_NAME)?.();
+        handlers.get(MESSAGES_SIGNAL_NAME)?.(batchMessages);
+        pendingDuringTurn =
+          (handlers.get(PENDING_COUNT_QUERY_NAME)?.() as number | undefined) ?? pendingDuringTurn;
         handlers.get(SHUTDOWN_SIGNAL_NAME)?.({ reason: "operator-requested" });
 
         return {
@@ -77,6 +99,7 @@ describe("agent workflow module", () => {
             childConfig: {
               stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
               initialMessage: liveMessage,
+              maxStopRetries: 2,
             },
           },
         };
@@ -106,7 +129,7 @@ describe("agent workflow module", () => {
         proxyActivitiesCalls.push(options);
         return { runAgentTurn };
       },
-      setHandler: (definition: string, handler: (...args: any[]) => any) => {
+      setHandler: (definition: string, handler: WorkflowHandler) => {
         handlers.set(definition, handler);
       },
       condition: async (predicate: () => boolean) => {
@@ -133,11 +156,17 @@ describe("agent workflow module", () => {
         stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
         initialMessages: [initialMessage],
         gatewayUrl: "ws://gateway",
+        maxStopRetries: 7,
       };
 
       await agentWorkflow(agentConfig);
 
-      expect(defineSignalCalls).toEqual([MESSAGE_SIGNAL_NAME, SHUTDOWN_SIGNAL_NAME]);
+      expect(defineSignalCalls).toEqual([
+        MESSAGE_SIGNAL_NAME,
+        MESSAGES_SIGNAL_NAME,
+        "scheduled-input",
+        SHUTDOWN_SIGNAL_NAME,
+      ]);
       expect(defineQueryCalls).toEqual([
         STATE_QUERY_NAME,
         STATUS_QUERY_NAME,
@@ -147,15 +176,16 @@ describe("agent workflow module", () => {
       expect(runAgentTurn).toHaveBeenCalledTimes(1);
       expect(runAgentTurn.mock.calls[0]?.[0]?.message).toEqual(initialMessage);
       expect(runAgentTurn.mock.calls[0]?.[0]?.gatewayUrl).toBe("ws://gateway");
+      expect(runAgentTurn.mock.calls[0]?.[0]?.maxStopRetries).toBe(7);
       expect(stateSnapshots).toEqual([{ lastTurnId: undefined, turnsProcessed: 0 }]);
       expect(currentStatus).toBe("working");
-      expect(pendingDuringTurn).toBe(1);
+      expect(pendingDuringTurn).toBe(3);
       expect(handlers.get(STATUS_QUERY_NAME)?.()).toBe("shutting_down");
       expect(handlers.get(STATE_QUERY_NAME)?.()).toEqual({
         lastTurnId: "turn-1",
         turnsProcessed: 1,
       });
-      expect(handlers.get(PENDING_COUNT_QUERY_NAME)?.()).toBe(1);
+      expect(handlers.get(PENDING_COUNT_QUERY_NAME)?.()).toBe(3);
       expect(startChildCalls).toEqual([
         {
           workflowType: "workerWorkflow",
@@ -168,6 +198,7 @@ describe("agent workflow module", () => {
                 stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
                 initialMessage: liveMessage,
                 gatewayUrl: "ws://gateway",
+                maxStopRetries: 2,
               },
             ],
             workflowId: "worker:session-1:child-1:turn-1",
@@ -183,6 +214,7 @@ describe("agent workflow module", () => {
         gatewayUrl: "ws://worker-gateway",
         nexusApiKey: "nexus-secret",
         delegationId: "delegation-9",
+        maxStopRetries: 9,
       };
 
       const result = await workerWorkflow(workerConfig);
@@ -205,9 +237,27 @@ describe("agent workflow module", () => {
         gatewayUrl: "ws://worker-gateway",
         nexusApiKey: "nexus-secret",
         delegationId: "delegation-9",
+        maxStopRetries: 9,
       });
     } finally {
       Date.now = originalNow;
     }
+  });
+
+  test("maps scheduled spawn input to queued messages", () => {
+    const scheduledPayload: ScheduledInputPayload = {
+      kind: "resume",
+      state: { engineId: "engine-1", data: { checkpoint: "abc" } },
+      maxStopRetries: 4,
+    };
+    expect(scheduledInputToMessages(scheduledPayload, "seed-1", 1234)).toEqual([
+      {
+        id: "seed-1:resume",
+        senderId: "scheduler",
+        content: [],
+        timestamp: 1234,
+        resumeState: scheduledPayload.state,
+      },
+    ]);
   });
 });

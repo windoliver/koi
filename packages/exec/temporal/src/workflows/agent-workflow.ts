@@ -1,9 +1,9 @@
 import {
+  condition,
   defineQuery,
   defineSignal,
   proxyActivities,
   setHandler,
-  condition,
   startChild,
 } from "@temporalio/workflow";
 
@@ -13,19 +13,24 @@ import type {
   AgentTurnResult,
   AgentWorkflowConfig,
   IncomingMessage,
+  ScheduledInputPayload,
   WorkerWorkflowConfig,
 } from "../types.js";
+import { SCHEDULED_INPUT_SIGNAL_NAME, scheduledInputToMessages } from "./scheduled-input.js";
 import {
+  type AgentActivityStatus,
   MESSAGE_SIGNAL_NAME,
+  MESSAGES_SIGNAL_NAME,
   PENDING_COUNT_QUERY_NAME,
   SHUTDOWN_SIGNAL_NAME,
+  type ShutdownSignalPayload,
   STATE_QUERY_NAME,
   STATUS_QUERY_NAME,
-  type AgentActivityStatus,
-  type ShutdownSignalPayload,
 } from "./signals.js";
 
 const messageSignal = defineSignal<[IncomingMessage]>(MESSAGE_SIGNAL_NAME);
+const messagesSignal = defineSignal<[readonly IncomingMessage[]]>(MESSAGES_SIGNAL_NAME);
+const scheduledInputSignal = defineSignal<[ScheduledInputPayload]>(SCHEDULED_INPUT_SIGNAL_NAME);
 const shutdownSignal = defineSignal<[ShutdownSignalPayload]>(SHUTDOWN_SIGNAL_NAME);
 const stateQuery = defineQuery<AgentStateRefs>(STATE_QUERY_NAME);
 const statusQuery = defineQuery<AgentActivityStatus>(STATUS_QUERY_NAME);
@@ -51,15 +56,35 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
   const pendingMessages: IncomingMessage[] = [];
   let processingTurn = false;
   let shutdownRequested = false;
+  let scheduledBatchCount = 0;
+
+  const enqueueScheduledInput = (input: ScheduledInputPayload) => {
+    pendingMessages.push(
+      ...scheduledInputToMessages(
+        input,
+        buildScheduledMessageSeed(config.sessionId, scheduledBatchCount),
+      ),
+    );
+    scheduledBatchCount++;
+  };
 
   if (config.initialMessages !== undefined && config.initialMessages.length > 0) {
     pendingMessages.push(...config.initialMessages);
   } else if (config.initialMessage !== undefined) {
     pendingMessages.push(config.initialMessage);
   }
+  if (config.initialScheduledInput !== undefined) {
+    enqueueScheduledInput(config.initialScheduledInput);
+  }
 
   setHandler(messageSignal, (message: IncomingMessage) => {
     pendingMessages.push(message);
+  });
+  setHandler(messagesSignal, (messages: readonly IncomingMessage[]) => {
+    pendingMessages.push(...messages);
+  });
+  setHandler(scheduledInputSignal, (input: ScheduledInputPayload) => {
+    enqueueScheduledInput(input);
   });
 
   setHandler(shutdownSignal, (_payload: ShutdownSignalPayload) => {
@@ -95,6 +120,7 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
         message,
         stateRefs,
         gatewayUrl: config.gatewayUrl,
+        maxStopRetries: config.maxStopRetries,
       });
     } finally {
       processingTurn = false;
@@ -143,6 +169,7 @@ export async function workerWorkflow(config: WorkerWorkflowConfig): Promise<Agen
     message,
     stateRefs: config.stateRefs,
     gatewayUrl: config.gatewayUrl,
+    maxStopRetries: config.maxStopRetries,
     nexusApiKey: config.nexusApiKey,
     delegationId: config.delegationId,
   });
@@ -154,4 +181,11 @@ function buildChildWorkflowId(
   turnId: AgentTurnResult["turnId"],
 ): string {
   return `worker:${sessionId}:${childAgentId}:${turnId}`;
+}
+
+function buildScheduledMessageSeed(
+  sessionId: AgentWorkflowConfig["sessionId"],
+  batch: number,
+): string {
+  return `scheduled:${sessionId}:${Date.now()}:${batch}`;
 }

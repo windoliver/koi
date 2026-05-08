@@ -29,7 +29,12 @@ import type {
   TaskRunRecord,
   TaskScheduler,
 } from "@koi/core";
-import type { IncomingMessage, ScheduledInputPayload, ScheduledSpawnArgs } from "./types.js";
+import type { AgentWorkflowConfig, IncomingMessage, ScheduledInputPayload } from "./types.js";
+import {
+  SCHEDULED_INPUT_SIGNAL_NAME,
+  scheduledInputToMessages,
+} from "./workflows/scheduled-input.js";
+import { MESSAGE_SIGNAL_NAME, MESSAGES_SIGNAL_NAME } from "./workflows/signals.js";
 
 // ---------------------------------------------------------------------------
 // Durable state persistence (used when config.dbPath is set)
@@ -606,40 +611,7 @@ function toScheduleId(id: string): ScheduleId {
 }
 
 function mapEngineInputToMessages(input: EngineInput, taskId: string): readonly IncomingMessage[] {
-  const now = Date.now();
-  switch (input.kind) {
-    case "text":
-      return [
-        {
-          id: `${taskId}:0`,
-          senderId: "scheduler",
-          content: [{ kind: "text", text: input.text }],
-          timestamp: now,
-        },
-      ];
-    case "messages":
-      return input.messages.map(
-        (msg, i): IncomingMessage => ({
-          id: `${taskId}:${i}`,
-          senderId: msg.senderId,
-          content: [...msg.content],
-          timestamp: msg.timestamp,
-          threadId: msg.threadId,
-          metadata: msg.metadata as Record<string, unknown> | undefined,
-          pinned: msg.pinned,
-        }),
-      );
-    case "resume":
-      return [
-        {
-          id: `${taskId}:resume`,
-          senderId: "scheduler",
-          content: [],
-          timestamp: now,
-          resumeState: input.state,
-        },
-      ];
-  }
+  return scheduledInputToMessages(mapEngineInputToScheduledPayload(input), taskId);
 }
 
 function assertJsonSafeValue(value: unknown, path: string): void {
@@ -1292,11 +1264,15 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           });
           targetWorkflowId = handle.workflowId;
         } else {
-          // dispatch: target the long-running workflow for this agent.
-          // Send the whole batch in one signal so delivery is atomic — a partial message
-          // set cannot be observed and retries produce no duplicates.
+          // dispatch: target the long-running workflow for this agent. Single-message
+          // deliveries preserve the live message signal contract, while multi-message
+          // dispatches use a dedicated batch signal so retries never partially deliver.
           targetWorkflowId = String(agentId);
-          await config.client.workflow.signal(targetWorkflowId, "messages", messages);
+          if (messages.length === 1) {
+            await config.client.workflow.signal(targetWorkflowId, MESSAGE_SIGNAL_NAME, messages[0]);
+          } else {
+            await config.client.workflow.signal(targetWorkflowId, MESSAGES_SIGNAL_NAME, messages);
+          }
         }
       } catch (err: unknown) {
         const skipCancel = mode === "spawn" && options?.idempotencyKey !== undefined;
@@ -1809,23 +1785,25 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         paused: false,
       };
 
-      // spawn: startWorkflow on each cron firing. ScheduledSpawnArgs carries the
-      //   serialized payload; the workflow generates fresh IncomingMessage IDs and
-      //   timestamps at each execution to prevent duplicate idempotency keys.
-      // dispatch: "scheduled-input" signal with serialized payload so the workflow
-      //   signal handler creates a fresh IncomingMessage envelope per firing.
-      //   Distinct signal name prevents conflating one-shot direct signals ("message")
-      //   with recurring schedule-fired inputs.
+      // spawn: startWorkflow on each cron firing using AgentWorkflowConfig with
+      //   initialScheduledInput so the workflow can materialize fresh queued messages
+      //   at execution time.
+      // dispatch: scheduled-input signal with the serialized payload so the workflow
+      //   can materialize fresh queued messages at signal handling time.
       let scheduleAction: Record<string, unknown>;
       if (mode === "spawn") {
         // Use snapshotPayload (the already-cloned/validated copy) so the remote schedule
         // definition is byte-for-byte identical to the persisted local metadata.
         // Using the original scheduledPayload risks split-brain if the caller mutates
         // the input after schedule() is called or a client wrapper serializes lazily.
-        const spawnArgs: ScheduledSpawnArgs = {
+        const spawnArgs: AgentWorkflowConfig = {
           agentId,
+          sessionId: id,
           stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
-          input: snapshotPayload,
+          initialScheduledInput: snapshotPayload,
+          ...(snapshotPayload.maxStopRetries !== undefined
+            ? { maxStopRetries: snapshotPayload.maxStopRetries }
+            : {}),
         };
         scheduleAction = {
           type: "startWorkflow",
@@ -1843,7 +1821,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         scheduleAction = {
           type: "sendSignal",
           workflowId: String(agentId),
-          signalName: "scheduled-input",
+          signalName: SCHEDULED_INPUT_SIGNAL_NAME,
           args: [snapshotPayload], // same: use snapshot so remote and local payloads are identical
         };
       }
