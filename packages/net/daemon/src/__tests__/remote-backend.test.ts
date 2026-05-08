@@ -255,6 +255,374 @@ describe("remote backend", () => {
     }
     expect(secondKinds).toEqual(["started", "exited"]);
   });
+
+  it("propagates transport errors from workers.spawn", async () => {
+    const { transport } = makeTransport(async (method) => {
+      if (method === "workers.spawn") {
+        return {
+          ok: false,
+          error: { code: "INTERNAL", message: "remote unavailable", retryable: true },
+        };
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const backend = createRemoteBackend({ transport });
+
+    const spawned = await backend.spawn({
+      workerId: workerId("remote-spawn-fail"),
+      agentId: agentId("agent-spawn-fail"),
+      command: ["bun", "-v"],
+    });
+    expect(spawned.ok).toBe(false);
+    if (!spawned.ok) expect(spawned.error.code).toBe("INTERNAL");
+  });
+
+  it("rejects malformed workers.spawn payloads", async () => {
+    const { transport } = makeTransport(async (method) => {
+      if (method === "workers.spawn") return { ok: true, value: "not-an-object" };
+      throw new Error(`unexpected method ${method}`);
+    });
+    const backend = createRemoteBackend({ transport });
+
+    const spawned = await backend.spawn({
+      workerId: workerId("remote-bad-payload"),
+      agentId: agentId("agent-bad-payload"),
+      command: ["bun", "-v"],
+    });
+    expect(spawned.ok).toBe(false);
+    if (!spawned.ok) expect(spawned.error.code).toBe("VALIDATION");
+  });
+
+  it("drops cross-worker events from polled batches", async () => {
+    const id = workerId("remote-scope");
+    let pollCount = 0;
+    const { transport } = makeTransport(async (method) => {
+      if (method === "workers.spawn")
+        return { ok: true, value: { startedAt: 1, cursor: 0, events: [] } };
+      if (method === "workers.events") {
+        pollCount += 1;
+        if (pollCount === 1) {
+          return {
+            ok: true,
+            value: {
+              events: [
+                {
+                  kind: "exited",
+                  workerId: "OTHER",
+                  at: 50,
+                  code: 1,
+                  state: "terminated",
+                },
+                {
+                  kind: "exited",
+                  workerId: "remote-scope",
+                  at: 60,
+                  code: 0,
+                  state: "terminated",
+                },
+              ],
+              nextCursor: 1,
+              alive: false,
+            },
+          };
+        }
+        return { ok: true, value: { events: [], nextCursor: 1, alive: true } };
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const backend = createRemoteBackend({ transport, pollIntervalMs: 1 });
+
+    expect(
+      (
+        await backend.spawn({
+          workerId: id,
+          agentId: agentId("agent-scope"),
+          command: ["bun", "-v"],
+        })
+      ).ok,
+    ).toBe(true);
+
+    const seen: WorkerEvent[] = [];
+    for await (const ev of backend.watch(id)) {
+      seen.push(ev);
+    }
+    expect(seen.every((ev) => ev.workerId === "remote-scope")).toBe(true);
+    expect(seen.some((ev) => ev.kind === "exited")).toBe(true);
+  });
+
+  it("skips unknown event kinds in polled batches", async () => {
+    const id = workerId("remote-unknown");
+    let pollCount = 0;
+    const { transport } = makeTransport(async (method) => {
+      if (method === "workers.spawn")
+        return { ok: true, value: { startedAt: 1, cursor: 0, events: [] } };
+      if (method === "workers.events") {
+        pollCount += 1;
+        if (pollCount === 1) {
+          return {
+            ok: true,
+            value: {
+              events: [
+                { kind: "paused", workerId: "remote-unknown", at: 50 },
+                {
+                  kind: "exited",
+                  workerId: "remote-unknown",
+                  at: 60,
+                  code: 0,
+                  state: "terminated",
+                },
+              ],
+              nextCursor: 1,
+              alive: false,
+            },
+          };
+        }
+        return { ok: true, value: { events: [], nextCursor: 1, alive: true } };
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const backend = createRemoteBackend({ transport, pollIntervalMs: 1 });
+
+    expect(
+      (
+        await backend.spawn({
+          workerId: id,
+          agentId: agentId("agent-unknown"),
+          command: ["bun", "-v"],
+        })
+      ).ok,
+    ).toBe(true);
+
+    const kinds: string[] = [];
+    for await (const ev of backend.watch(id)) {
+      kinds.push(ev.kind);
+    }
+    expect(kinds).toEqual(["started", "exited"]);
+  });
+
+  it("yields heartbeat events from polled batches", async () => {
+    const id = workerId("remote-hb");
+    let pollCount = 0;
+    const { transport } = makeTransport(async (method) => {
+      if (method === "workers.spawn")
+        return { ok: true, value: { startedAt: 1, cursor: 0, events: [] } };
+      if (method === "workers.events") {
+        pollCount += 1;
+        if (pollCount === 1) {
+          return {
+            ok: true,
+            value: {
+              events: [{ kind: "heartbeat", workerId: "remote-hb", at: 50 }],
+              nextCursor: 1,
+              alive: true,
+            },
+          };
+        }
+        return {
+          ok: true,
+          value: {
+            events: [
+              {
+                kind: "exited",
+                workerId: "remote-hb",
+                at: 60,
+                code: 0,
+                state: "terminated",
+              },
+            ],
+            nextCursor: 2,
+            alive: false,
+          },
+        };
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const backend = createRemoteBackend({ transport, pollIntervalMs: 1 });
+
+    expect(
+      (
+        await backend.spawn({
+          workerId: id,
+          agentId: agentId("agent-hb"),
+          command: ["bun", "-v"],
+        })
+      ).ok,
+    ).toBe(true);
+
+    const kinds: string[] = [];
+    for await (const ev of backend.watch(id)) {
+      kinds.push(ev.kind);
+    }
+    expect(kinds).toContain("heartbeat");
+    expect(kinds).toContain("exited");
+  });
+
+  it("synthesizes crashed when spawn reports alive=false without a terminal event", async () => {
+    const id = workerId("remote-dead-spawn");
+    const { transport } = makeTransport(async (method) => {
+      if (method === "workers.spawn")
+        return { ok: true, value: { startedAt: 1, cursor: 0, alive: false, events: [] } };
+      if (method === "workers.events")
+        return { ok: true, value: { events: [], nextCursor: 0, alive: false } };
+      throw new Error(`unexpected method ${method}`);
+    });
+    const backend = createRemoteBackend({ transport, pollIntervalMs: 1 });
+
+    expect(
+      (
+        await backend.spawn({
+          workerId: id,
+          agentId: agentId("agent-dead-spawn"),
+          command: ["bun", "-v"],
+        })
+      ).ok,
+    ).toBe(true);
+
+    const kinds: string[] = [];
+    for await (const ev of backend.watch(id)) {
+      kinds.push(ev.kind);
+    }
+    expect(kinds).toContain("started");
+    expect(kinds).toContain("crashed");
+  });
+
+  it("rejects concurrent watchers on the same worker", async () => {
+    const id = workerId("remote-concurrent");
+    const { transport } = makeTransport(async (method) => {
+      if (method === "workers.spawn")
+        return { ok: true, value: { startedAt: 1, cursor: 0, events: [] } };
+      if (method === "workers.events")
+        return { ok: true, value: { events: [], nextCursor: 0, alive: true } };
+      throw new Error(`unexpected method ${method}`);
+    });
+    const backend = createRemoteBackend({ transport, pollIntervalMs: 50 });
+
+    expect(
+      (
+        await backend.spawn({
+          workerId: id,
+          agentId: agentId("agent-concurrent"),
+          command: ["bun", "-v"],
+        })
+      ).ok,
+    ).toBe(true);
+
+    const firstController = new AbortController();
+    const firstWatch = (async (): Promise<void> => {
+      for await (const _ev of backend.watch(id, firstController.signal)) {
+        // drain
+      }
+    })();
+    await new Promise((r) => setTimeout(r, 5));
+
+    let threw = false;
+    try {
+      const iter = backend.watch(id)[Symbol.asyncIterator]();
+      await iter.next();
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+
+    firstController.abort();
+    await firstWatch;
+  });
+
+  it("respawn fails with CONFLICT when previous remote worker is still alive", async () => {
+    const id = workerId("remote-conflict");
+    const { transport } = makeTransport(async (method) => {
+      if (method === "workers.spawn")
+        return { ok: true, value: { startedAt: 1, cursor: 0, events: [] } };
+      if (method === "workers.events")
+        return { ok: true, value: { events: [], nextCursor: 0, alive: true } };
+      if (method === "workers.terminate") return { ok: true, value: undefined };
+      if (method === "workers.status") return { ok: true, value: { alive: true } };
+      throw new Error(`unexpected method ${method}`);
+    });
+    const backend = createRemoteBackend({ transport, pollIntervalMs: 50 });
+
+    expect(
+      (
+        await backend.spawn({
+          workerId: id,
+          agentId: agentId("agent-conflict-1"),
+          command: ["bun", "-v"],
+        })
+      ).ok,
+    ).toBe(true);
+
+    const second = await backend.spawn({
+      workerId: id,
+      agentId: agentId("agent-conflict-2"),
+      command: ["bun", "-v"],
+    });
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.error.code).toBe("CONFLICT");
+  });
+
+  it("isAlive after terminate ack queries remote status to confirm", async () => {
+    const id = workerId("remote-confirm");
+    let statusCalls = 0;
+    const { transport } = makeTransport(async (method) => {
+      if (method === "workers.spawn")
+        return { ok: true, value: { startedAt: 1, cursor: 0, events: [] } };
+      if (method === "workers.terminate") return { ok: true, value: undefined };
+      if (method === "workers.status") {
+        statusCalls += 1;
+        return { ok: true, value: { alive: false } };
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const backend = createRemoteBackend({ transport, pollIntervalMs: 50 });
+
+    expect(
+      (
+        await backend.spawn({
+          workerId: id,
+          agentId: agentId("agent-confirm"),
+          command: ["bun", "-v"],
+        })
+      ).ok,
+    ).toBe(true);
+
+    const term = await backend.terminate(id, "test");
+    expect(term.ok).toBe(true);
+
+    const alive = await backend.isAlive(id);
+    expect(alive).toBe(false);
+    expect(statusCalls).toBeGreaterThan(0);
+  });
+
+  it("isAlive preserves cached liveness on transient status failures", async () => {
+    const id = workerId("remote-flaky");
+    const { transport } = makeTransport(async (method) => {
+      if (method === "workers.spawn")
+        return { ok: true, value: { startedAt: 1, cursor: 0, events: [] } };
+      if (method === "workers.terminate") return { ok: true, value: undefined };
+      if (method === "workers.status") {
+        return {
+          ok: false,
+          error: { code: "INTERNAL", message: "nexus down", retryable: true },
+        };
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const backend = createRemoteBackend({ transport, pollIntervalMs: 50 });
+
+    expect(
+      (
+        await backend.spawn({
+          workerId: id,
+          agentId: agentId("agent-flaky"),
+          command: ["bun", "-v"],
+        })
+      ).ok,
+    ).toBe(true);
+
+    expect((await backend.terminate(id, "test")).ok).toBe(true);
+    const alive = await backend.isAlive(id);
+    expect(alive).toBe(true);
+  });
 });
 
 function paramsToCursor(params: unknown): number {
