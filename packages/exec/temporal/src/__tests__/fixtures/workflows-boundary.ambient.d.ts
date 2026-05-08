@@ -1,5 +1,5 @@
 declare module "@koi/core" {
-  export type AgentId = any;
+  export type AgentId = string;
   export type ContentBlock = any;
   export type CronSchedule = any;
   export type EngineInput = any;
@@ -7,16 +7,16 @@ declare module "@koi/core" {
   export type KoiErrorCode = any;
   export type ScheduledTask = any;
   export type ScheduledTaskStatus = any;
-  export type ScheduleId = any;
+  export type ScheduleId = string;
   export type SchedulerEvent = any;
   export type SchedulerStats = any;
   export type TaskFilter = any;
   export type TaskHistoryFilter = any;
-  export type TaskId = any;
+  export type TaskId = string;
   export type TaskOptions = any;
   export type TaskRunRecord = any;
   export type TaskScheduler = any;
-  export type SessionId = any;
+  export type SessionId = string;
   export type InboundMessage = any;
   export type SpawnLedger = any;
   export const agentId: any;

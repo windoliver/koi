@@ -7,6 +7,8 @@ import type {
   ScheduledTaskWorkflowResult,
 } from "../../index.js";
 
+type IsAny<T> = 0 extends 1 & T ? true : false;
+
 const agentConfig: AgentWorkflowConfig = {
   agentId: "agent-1" as AgentWorkflowConfig["agentId"],
   sessionId: "session-1" as AgentWorkflowConfig["sessionId"],
@@ -40,10 +42,23 @@ const failedRetryResult: RetryWorkflowResult = {
   error: "boom",
 };
 
+const _agentIdIsNotAny: IsAny<AgentWorkflowConfig["agentId"]> = false;
+const _sessionIdIsNotAny: IsAny<AgentWorkflowConfig["sessionId"]> = false;
+const _stateRefsIsNotAny: IsAny<AgentWorkflowConfig["stateRefs"]> = false;
+const _scheduledArgsIsNotAny: IsAny<ScheduledTaskWorkflowArgs> = false;
+const _scheduledModeIsNotAny: IsAny<ScheduledTaskWorkflowArgs["mode"]> = false;
+const _scheduledInputIsNotAny: IsAny<ScheduledTaskWorkflowArgs["input"]> = false;
+const _scheduledResultIsNotAny: IsAny<ScheduledTaskWorkflowResult> = false;
+const _retryArgsIsNotAny: IsAny<RetryWorkflowArgs> = false;
+const _retryPayloadIsNotAny: IsAny<RetryWorkflowArgs["payload"]> = false;
+const _retryResultIsNotAny: IsAny<RetryWorkflowResult> = false;
+const _scheduledInputKindIsNotAny: IsAny<ScheduledInputPayload["kind"]> = false;
+
 function inspectScheduledArgs(args: ScheduledTaskWorkflowArgs): string {
   const mode: "spawn" | "dispatch" = args.mode;
   const agentId: AgentWorkflowConfig["agentId"] = args.agentId;
   const turnCount: number = args.stateRefs.turnsProcessed;
+  const input: ScheduledInputPayload = args.input;
   switch (args.input.kind) {
     case "text": {
       const text: string = args.input.text;
@@ -59,6 +74,8 @@ function inspectScheduledArgs(args: ScheduledTaskWorkflowArgs): string {
       return `${mode}:${String(agentId)}:${turnCount}:${engineId}:${String(data)}`;
     }
   }
+
+  return `${mode}:${String(agentId)}:${turnCount}:${input.kind}`;
 }
 
 function inspectScheduledResult(result: ScheduledTaskWorkflowResult): string {
@@ -92,3 +109,14 @@ void inspectScheduledResult(scheduledResult);
 void inspectScheduledResult(spawnedResult);
 void inspectRetryResult(retryResult);
 void inspectRetryResult(failedRetryResult);
+void _agentIdIsNotAny;
+void _sessionIdIsNotAny;
+void _stateRefsIsNotAny;
+void _scheduledArgsIsNotAny;
+void _scheduledModeIsNotAny;
+void _scheduledInputIsNotAny;
+void _scheduledResultIsNotAny;
+void _retryArgsIsNotAny;
+void _retryPayloadIsNotAny;
+void _retryResultIsNotAny;
+void _scheduledInputKindIsNotAny;
