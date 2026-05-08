@@ -81,21 +81,16 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
     for (const listener of pending) listener(ev);
   };
 
-  let probedHeartbeat: boolean | undefined;
+  const supportsHeartbeat = options.supportsHeartbeat === true;
   const backend: WorkerBackend = {
     kind: "remote",
     displayName: "remote",
-    get supportsHeartbeat(): boolean {
-      if (options.supportsHeartbeat !== undefined) return options.supportsHeartbeat;
-      return probedHeartbeat ?? false;
-    },
+    supportsHeartbeat,
     isAvailable: async (): Promise<boolean> => {
       try {
         const result = await transport.call<unknown>(method("probe"), {});
         if (!result.ok) return false;
-        const probe = parseProbeResponse(result.value);
-        probedHeartbeat = probe.heartbeat;
-        return probe.available;
+        return parseProbeResponse(result.value).available;
       } catch {
         return false;
       }
@@ -609,7 +604,7 @@ function parseWorkerEvent(
       return invalidRemoteResponse("remote exited event is missing code/state");
     }
     if (!PROCESS_STATES.has(record.state as ProcessState)) {
-      return { ok: true, value: null };
+      return invalidRemoteResponse(`remote exited event has unsupported state "${record.state}"`);
     }
     return {
       ok: true,
