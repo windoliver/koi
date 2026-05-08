@@ -31,12 +31,13 @@ export interface AutoHarnessError {
 export interface AutoHarnessVerificationResult {
   readonly ok: boolean;
   readonly artifact: BrickArtifact | null;
+  readonly reason?: string;
   readonly error?: AutoHarnessError;
 }
 
 export interface AutoHarnessPolicyResult {
   readonly ok: boolean;
-  readonly action: "allow" | "deny" | "review";
+  readonly action: "allow" | "block" | "review";
   readonly reason?: string;
   readonly error?: AutoHarnessError;
 }
@@ -48,17 +49,16 @@ export interface AutoHarnessDeployResult {
 }
 
 export interface AutoHarnessEvent {
-  readonly type:
-    | "synthesis-started"
-    | "synthesis-skipped"
-    | "verification-completed"
-    | "policy-evaluated"
-    | "deployment-requested"
-    | "deployment-completed"
-    | "session-reset";
-  readonly signal?: ForgeDemandSignal;
-  readonly artifact?: BrickArtifact | null;
-  readonly stage?: AutoHarnessStage;
+  readonly kind:
+    | "synthesis.started"
+    | "synthesis.skipped"
+    | "verification.failed"
+    | "policy.blocked"
+    | "approval.denied"
+    | "deployment.succeeded"
+    | "session.reset";
+  readonly signalId?: string;
+  readonly artifactId?: string;
   readonly message?: string;
 }
 

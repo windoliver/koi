@@ -47,23 +47,75 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
   const synthesizeHarness = async (
     signal: ForgeDemandSignal,
   ): Promise<AutoHarnessSynthesisResult> => {
-    emitEvent({ type: "synthesis-started", signal, stage: "generate" });
     if (synthesesThisSession >= maxSynthesesPerSession) {
       emitEvent({
-        type: "synthesis-skipped",
-        signal,
-        stage: "generate",
+        kind: "synthesis.skipped",
+        signalId: signal.id,
         message: "session synthesis cap reached",
       });
       return null;
     }
+    emitEvent({ kind: "synthesis.started", signalId: signal.id });
+
+    let code: string;
+    try {
+      code = await config.generate("export function createMiddleware() {}");
+    } catch (cause: unknown) {
+      reportError({ stage: "generate", message: "generate failed", cause });
+      return null;
+    }
+
+    const verification = await config.verifyCandidate(signal, code);
+    if (!verification.ok || verification.artifact === null) {
+      emitEvent({
+        kind: "verification.failed",
+        signalId: signal.id,
+        message: verification.reason ?? verification.error?.message ?? "verification failed",
+      });
+      return null;
+    }
+
+    const artifact = verification.artifact;
+    const policy = await config.evaluatePolicy(artifact, signal);
+    if (!policy.ok || policy.action !== "allow") {
+      emitEvent({
+        kind: "policy.blocked",
+        signalId: signal.id,
+        artifactId: artifact.id,
+        message: policy.reason ?? policy.error?.message ?? "policy blocked deployment",
+      });
+      return null;
+    }
+
+    const approved = await config.requestDeploymentApproval(artifact, signal);
+    if (!approved) {
+      emitEvent({
+        kind: "approval.denied",
+        signalId: signal.id,
+        artifactId: artifact.id,
+        message: "deployment approval denied",
+      });
+      return null;
+    }
+
+    const deployment = await config.deployCandidate(artifact, signal);
+    if (!deployment.ok) {
+      reportError({
+        stage: "deploy",
+        message: deployment.error?.message ?? "deployment failed",
+        cause: deployment.error?.cause,
+        koiError: deployment.error?.koiError,
+      });
+      return null;
+    }
+
     synthesesThisSession += 1;
-    void config
-      .generate("export function createMiddleware() {}")
-      .catch((cause: unknown) =>
-        reportError({ stage: "generate", message: "generate failed", cause }),
-      );
-    return null;
+    emitEvent({
+      kind: "deployment.succeeded",
+      signalId: signal.id,
+      artifactId: artifact.id,
+    });
+    return artifact;
   };
 
   return {
@@ -72,7 +124,7 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     synthesizeHarness,
     resetSession: () => {
       synthesesThisSession = 0;
-      emitEvent({ type: "session-reset", message: "session synthesis state cleared" });
+      emitEvent({ kind: "session.reset", message: "session synthesis state cleared" });
     },
     maxSynthesesPerSession,
   };
