@@ -534,6 +534,12 @@ export async function resolveFileSystemAsync(
       // (explicit empty mountPoint) or set an explicit mountPoint can we
       // safely allow runtime mutations.
       mutationsSupported = options.mountPoint !== undefined || transportMounts.length !== 1;
+      // Defense-in-depth: if any scope (root or glob-allow) is configured
+      // but the resolver cannot derive at least one concrete protected
+      // namespace prefix for it, the addMount/removeMount guards have
+      // nothing to enforce. Refuse runtime mutations entirely in that
+      // case rather than silently allowing unguarded mounts to overlay
+      // wildcard-scoped paths. (Computed below once protectedRoots is built.)
     } catch (e: unknown) {
       transport.close();
       throw e;
@@ -574,12 +580,31 @@ export async function resolveFileSystemAsync(
     const protectedRoots: string[] = [];
     if (inferredMountPoint !== undefined) protectedRoots.push(inferredMountPoint);
     if (scope !== undefined) protectedRoots.push(scope.root);
+    let hasUnprotectableScope = false;
     if (globScope !== undefined) {
       for (const pattern of globScope.allow) {
         const wildcardIdx = pattern.search(/[*?]/);
         const staticPrefix = wildcardIdx === -1 ? pattern : pattern.slice(0, wildcardIdx);
-        if (staticPrefix.length > 0) protectedRoots.push(staticPrefix);
+        // Trim trailing slash so e.g. "/local/ws/" and "/local/ws" produce
+        // identical protected entries downstream.
+        const normalized = staticPrefix.replace(/\/+$/, "");
+        if (normalized.length > 0) {
+          protectedRoots.push(normalized);
+        } else {
+          // Wildcard-only allow pattern (e.g. "**/*.md", "*.txt") cannot be
+          // reduced to a static namespace, so the addMount/removeMount
+          // guards have nothing to enforce. Mark the session as having an
+          // unprotectable scope so we can fail-close runtime mutations.
+          hasUnprotectableScope = true;
+        }
       }
+    }
+    if (hasUnprotectableScope) {
+      // Fail-closed: a glob-scoped session whose patterns lack a static
+      // prefix cannot prove that a runtime /mount won't overlay an
+      // already-approved path. Disable runtime mount mutations entirely
+      // until the operator sets a stable scope.
+      mutationsSupported = false;
     }
     const isPathProtectedByUnmount = (path: string): boolean => {
       for (const root of protectedRoots) {
@@ -666,10 +691,19 @@ export async function resolveFileSystemAsync(
                 },
               };
             }
-            // Snapshot pre-mutation mount set so we can authoritatively
-            // discover what `add_mount` added even when the bridge couldn't
-            // — necessary for the pathUnknown protected-root path below.
-            const preMounts = new Set(transport.mounts ?? []);
+            // Authoritative pre-mutation snapshot. transport.mounts is a
+            // local cache that can drift from the bridge — diffing against
+            // a stale cache would let an existing mount get misclassified
+            // as "newly added" and unmounted by the rollback below. Prefer
+            // a fresh listMounts(); fall back to the cache only when the
+            // transport doesn't expose listMounts at all.
+            let preMounts: Set<string>;
+            if (transport.listMounts !== undefined) {
+              const preList = await transport.listMounts();
+              preMounts = new Set(preList.ok ? preList.value : (transport.mounts ?? []));
+            } else {
+              preMounts = new Set(transport.mounts ?? []);
+            }
             const result = await innerAdd(uri, at);
             if (!result.ok) return result;
             // pathUnknown branch: the bridge committed the mutation but
@@ -717,6 +751,16 @@ export async function resolveFileSystemAsync(
                   const rollbackErrors: string[] = [];
                   if (innerRemove !== undefined) {
                     for (const p of offending) {
+                      // Defense-in-depth: even though `p` was diffed against
+                      // an authoritative pre-mount snapshot, refuse to roll
+                      // back any path that the unmount guard considers
+                      // protected. A misclassification under transient list
+                      // drift would otherwise be allowed to remove a real
+                      // protected root and strand the session.
+                      if (isPathProtectedByUnmount(p)) {
+                        rollbackErrors.push(`${p}: refused rollback — path is itself protected`);
+                        continue;
+                      }
                       try {
                         const rb = await innerRemove(p);
                         if (!rb.ok) rollbackErrors.push(`${p}: ${rb.error.message}`);
