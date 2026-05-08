@@ -638,21 +638,74 @@ export async function resolveFileSystemAsync(
                 },
               };
             }
+            // Snapshot pre-mutation mount set so we can authoritatively
+            // discover what `add_mount` added even when the bridge couldn't
+            // — necessary for the pathUnknown protected-root path below.
+            const preMounts = new Set(transport.mounts ?? []);
             const result = await innerAdd(uri, at);
             if (!result.ok) return result;
-            // Post-commit verification: when `at` was omitted the bridge
-            // picked the path. If it landed on (or under, or above) a
-            // protected root, attempt to roll back via removeMount and
-            // surface a structural error. We deliberately call the
-            // INNER removeMount so the outer guard doesn't block the
-            // rollback. If rollback itself fails, fall through with a
-            // strong warning — the operator must intervene.
+            // pathUnknown branch: the bridge committed the mutation but
+            // could not isolate the resulting path. We MUST NOT accept this
+            // as "merely a refresh prompt" when protected roots exist —
+            // the new mount could be shadowing one of them silently. Do
+            // an authoritative listMounts diff against preMounts; for any
+            // newly-introduced path that overlays a protected root, attempt
+            // rollback and fail closed.
+            if (result.value.pathUnknown === true || result.value.path === "") {
+              if (protectedRoots.length > 0 && transport.listMounts !== undefined) {
+                const listed = await transport.listMounts();
+                if (!listed.ok) {
+                  // Cannot verify safety. Fail closed: best-effort rollback of
+                  // *all* mounts that aren't in preMounts (we don't know which).
+                  return {
+                    ok: false,
+                    error: {
+                      code: "INTERNAL",
+                      message: `addMount succeeded with pathUnknown and listMounts could not verify protected-root safety: ${listed.error.message}. The bridge mount may be live; run /mounts manually and /unmount any unexpected entries before continuing.`,
+                      retryable: RETRYABLE_DEFAULTS.INTERNAL,
+                    },
+                  };
+                }
+                const candidates = listed.value.filter((p) => !preMounts.has(p));
+                const offending = candidates.filter((p) => isPathProtectedByMount(p));
+                if (offending.length > 0) {
+                  const rollbackErrors: string[] = [];
+                  if (innerRemove !== undefined) {
+                    for (const p of offending) {
+                      try {
+                        const rb = await innerRemove(p);
+                        if (!rb.ok) rollbackErrors.push(`${p}: ${rb.error.message}`);
+                      } catch (e: unknown) {
+                        rollbackErrors.push(`${p}: ${e instanceof Error ? e.message : String(e)}`);
+                      }
+                    }
+                  }
+                  if (rollbackErrors.length === 0) {
+                    return {
+                      ok: false,
+                      error: {
+                        code: "VALIDATION",
+                        message: `Mount of ${uri} rejected: it landed on protected root(s) ${offending.join(", ")}. Bridge mount(s) rolled back; verify with /mounts.`,
+                        retryable: RETRYABLE_DEFAULTS.VALIDATION,
+                      },
+                    };
+                  }
+                  return {
+                    ok: false,
+                    error: {
+                      code: "INTERNAL",
+                      message: `Mount of ${uri} landed on protected root(s) and rollback was unsuccessful (${rollbackErrors.join("; ")}). The mount may still be live — run /mounts and manually /unmount the offending paths from outside the protected scope to repair state.`,
+                      retryable: RETRYABLE_DEFAULTS.INTERNAL,
+                    },
+                  };
+                }
+              }
+              // No protected roots, OR no overlay detected → forward the
+              // pathUnknown payload upstream so the TUI can prompt /mounts.
+              return result;
+            }
             const committed = result.value.path;
-            if (
-              committed !== "" &&
-              result.value.pathUnknown !== true &&
-              isPathProtectedByMount(committed)
-            ) {
+            if (committed !== "" && isPathProtectedByMount(committed)) {
               // removeMount returns a Result (never throws on a Nexus error);
               // we MUST inspect rollback.ok before claiming success or the
               // shadowing mount stays live with the operator told otherwise.
