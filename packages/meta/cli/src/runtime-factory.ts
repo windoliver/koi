@@ -4705,10 +4705,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             hookErrors.push(hookErr);
           }
         }
-        // Reset only the rotating session's auto-harness state. Calling
-        // resetSession() with no id would clear every tracked session and
-        // break per-session budget/dedupe isolation in multi-session hosts.
-        sharedRuntimeHandle?.autoHarness?.resetSession(runtime.sessionId);
+        // Reset the *prior* session's auto-harness state. cycleSession()
+        // already rotated runtime.sessionId, so reading it here would clear
+        // the empty new session and leak the old session's budget/dedupe
+        // map plus its scoped forge-demand handle.
+        sharedRuntimeHandle?.autoHarness?.resetSession(priorSessionId);
 
         // 3. Clear the OLD session's approval state (always-allow, caches,
         //    trackers). Not a stack concern — permissions is a core slot.

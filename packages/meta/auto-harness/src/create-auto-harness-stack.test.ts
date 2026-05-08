@@ -743,8 +743,9 @@ describe("createAutoHarnessStack", () => {
     expect(policyCalls).toBe(1);
   });
 
-  test("reports forgeStore.save failures but does not block the pipeline", async () => {
+  test("fails closed when forgeStore.save fails — no live deploy without durable record", async () => {
     const errors: AutoHarnessError[] = [];
+    let deployed = false;
     const artifact = makeArtifact();
     const stack = createAutoHarnessStack({
       forgeStore: {
@@ -757,13 +758,17 @@ describe("createAutoHarnessStack", () => {
       verifyCandidate: async () => ({ ok: true, artifact }),
       evaluatePolicy: async () => ({ ok: true, action: "allow" }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async () => ({ ok: true }),
+      deployCandidate: async () => {
+        deployed = true;
+        return { ok: true };
+      },
       onError: (error) => errors.push(error),
     });
 
     const result = await stack.synthesizeHarness(makeSignal());
 
-    expect(result).toBe(artifact);
+    expect(result).toBeNull();
+    expect(deployed).toBe(false);
     expect(errors.some((e) => e.message.includes("forgeStore.save failed"))).toBe(true);
   });
 });

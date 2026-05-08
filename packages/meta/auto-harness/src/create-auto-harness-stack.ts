@@ -43,6 +43,25 @@ function formatGeneratePrompt(signal: ForgeDemandSignal): string {
  * spawning duplicate pipelines. The detector mints a fresh `signal.id` per
  * emission, so id-based dedup is insufficient.
  */
+/**
+ * Stable, low-cardinality fingerprint of failure evidence — narrow enough
+ * to distinguish materially different failure modes (timeout vs malformed
+ * input vs auth) but coarse enough to coalesce true duplicates of the same
+ * symptom. Sanitized first so secrets never enter the dedupe key.
+ */
+function failureFingerprint(failedToolCalls: readonly string[]): string {
+  if (failedToolCalls.length === 0) return "none";
+  const sample = sanitizeFailureEvidence(failedToolCalls.slice(0, 3).join("|"));
+  // FNV-1a 32-bit hash — small, fast, no crypto dep, sufficient for
+  // partitioning concurrent in-flight pipelines.
+  let h = 0x81_1c_9d_c5;
+  for (let i = 0; i < sample.length; i++) {
+    h ^= sample.charCodeAt(i);
+    h = Math.imul(h, 0x01_00_01_93);
+  }
+  return (h >>> 0).toString(16);
+}
+
 function triggerIdentity(signal: ForgeDemandSignal): string {
   const t = signal.trigger;
   // Defensive: callers occasionally pass partial signals (tests, mocks).
@@ -52,7 +71,11 @@ function triggerIdentity(signal: ForgeDemandSignal): string {
   }
   switch (t.kind) {
     case "repeated_failure":
-      return `repeated_failure:${t.toolName}`;
+      // Distinct failure modes for the same tool (timeout vs malformed
+      // input) must not collapse into one dedupe bucket — the synthesis
+      // prompt depends on different failure evidence and dropping the
+      // later signal would lose that failure mode entirely.
+      return `repeated_failure:${t.toolName}:${failureFingerprint(signal.context?.failedToolCalls ?? [])}`;
     case "no_matching_tool":
       return `no_matching_tool:${t.query}`;
     case "capability_gap":
@@ -242,10 +265,11 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     const artifact = verification.artifact;
 
     // Persist the verified artifact before any policy / approval / deploy
-    // decisions. From this point on the candidate is durable: operators can
-    // inspect or retry it even after policy block, approval denial, deploy
-    // error, or process restart. Save failures degrade audit but do not
-    // block the pipeline — the in-memory candidate is still actionable.
+    // decisions. Persistence is a HARD GATE: if the artifact cannot be
+    // durably stored we must not proceed to deploy. A live deployed harness
+    // with no stored record cannot be inspected, redeployed, or cleanly
+    // recovered after a process restart — exactly the failure mode the
+    // forgeStore contract exists to prevent.
     try {
       const saveResult = await config.forgeStore.save(artifact);
       if (!saveResult.ok) {
@@ -254,6 +278,7 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
           message: `forgeStore.save failed: ${saveResult.error.message}`,
           koiError: saveResult.error,
         });
+        return null;
       }
     } catch (cause: unknown) {
       reportError({
@@ -261,6 +286,7 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
         message: "forgeStore.save threw",
         cause,
       });
+      return null;
     }
 
     const policy = await runStageOrReport(
