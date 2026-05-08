@@ -18,6 +18,9 @@ export function createScheduledTaskActivities(deps: ScheduledTaskActivityDeps) {
 
 export interface DefaultScheduledTaskActivityDeps {
   readonly runAgentWorkflow: (input: AgentWorkflowConfig) => Promise<void>;
+  readonly spawnAgentWorkflow?:
+    | ((workflowId: string, input: AgentWorkflowConfig) => Promise<void>)
+    | undefined;
   readonly createWorkflowId?: (() => string) | undefined;
 }
 
@@ -82,7 +85,12 @@ export function createDefaultScheduledTaskActivities(deps: DefaultScheduledTaskA
     async spawn(input: ScheduledTaskWorkflowArgs): Promise<string> {
       const workflowId =
         deps.createWorkflowId?.() ?? `scheduled:${String(input.agentId)}:${crypto.randomUUID()}`;
-      await deps.runAgentWorkflow(materializeScheduledAgentWorkflowConfig(input, workflowId));
+      const config = materializeScheduledAgentWorkflowConfig(input, workflowId);
+      if (deps.spawnAgentWorkflow !== undefined) {
+        await deps.spawnAgentWorkflow(workflowId, config);
+      } else {
+        await deps.runAgentWorkflow(config);
+      }
       return workflowId;
     },
     async dispatch(input: ScheduledTaskWorkflowArgs): Promise<void> {

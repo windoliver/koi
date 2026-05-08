@@ -32,6 +32,7 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
   }
 
   let stateRefs = config.stateRefs;
+  let remainingStopRetries = Math.max(config.maxStopRetries ?? 0, 0);
   const maxTurns = messages.length + Math.max(config.maxStopRetries ?? 0, 0);
 
   for (let turn = 0; turn < maxTurns; turn += 1) {
@@ -52,7 +53,10 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
       stateRefs.turnsProcessed > previousStateRefs.turnsProcessed ||
       stateRefs.lastTurnId !== previousStateRefs.lastTurnId;
     if (!progressed) {
-      throw new Error("agent workflow requested retry without advancing state");
+      if (remainingStopRetries <= 0) {
+        throw new Error("agent workflow requested retry without advancing state");
+      }
+      remainingStopRetries -= 1;
     }
   }
 

@@ -1,3 +1,4 @@
+// biome-ignore-all lint/suspicious/noExplicitAny: ambient fixture intentionally uses permissive placeholders
 declare module "@koi/core" {
   export type AgentId = string;
   export type ContentBlock = any;
@@ -40,6 +41,8 @@ declare module "@temporalio/common" {
 
 declare module "@temporalio/workflow" {
   export const __temporalWorkflow: unknown;
+  export const sleep: (ms: number) => Promise<void>;
+  export const startChild: (workflow: unknown, options?: unknown) => Promise<unknown>;
 }
 
 declare module "node:fs" {
@@ -69,5 +72,5 @@ declare const process: {
 
 declare namespace NodeJS {
   type ErrnoException = any;
-  interface Timeout {}
+  type Timeout = unknown;
 }

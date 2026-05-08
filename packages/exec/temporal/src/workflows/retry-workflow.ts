@@ -1,3 +1,4 @@
+import { sleep as workflowSleep } from "@temporalio/workflow";
 import { createDefaultAgentActivities } from "../activities/agent-activity.js";
 import {
   createDefaultRetryActivities,
@@ -20,11 +21,7 @@ const defaultRetryActivities = createDefaultRetryActivities({
 
 const defaultRetryWorkflowDeps: RetryWorkflowDeps = {
   runRetriedOperation: defaultRetryActivities.runRetriedOperation,
-  sleep: async (ms) => {
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, ms);
-    });
-  },
+  sleep: workflowSleep,
 };
 
 let retryWorkflowDeps: RetryWorkflowDeps = defaultRetryWorkflowDeps;

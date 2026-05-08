@@ -116,6 +116,24 @@ describe("activity factories", () => {
     expect(result.kind === "succeeded" ? result.value : null).not.toBe(serializableValue);
   });
 
+  test("retry activity preserves undefined fields when cloning success payloads", async () => {
+    const activities = createRetryActivities({
+      runOperation: async () => ({
+        updatedStateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+      }),
+    });
+
+    const result = await activities.runRetriedOperation({
+      operation: "runAgentTurn",
+      payload: {},
+    });
+
+    expect(result).toEqual({
+      kind: "succeeded",
+      value: { updatedStateRefs: { lastTurnId: undefined, turnsProcessed: 0 } },
+    });
+  });
+
   test("default retry activity routes scheduled task operations through the scheduled-task handler", async () => {
     const activities = createDefaultRetryActivities({
       runAgentTurn: async () => ({
@@ -171,19 +189,19 @@ describe("activity factories", () => {
     const seenConfigs: unknown[] = [];
     const activities = createDefaultScheduledTaskActivities({
       createWorkflowId: () => "scheduled:agent-1:run-1",
-      runAgentWorkflow: async (config) => {
+      runAgentWorkflow: async () => undefined,
+      spawnAgentWorkflow: async (_workflowId, config) => {
         seenConfigs.push(config);
       },
     });
 
-    await expect(
-      activities.startAgentExecution({
-        mode: "spawn",
-        agentId: "agent-1" as never,
-        stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
-        input: { kind: "text", text: "hello" },
-      }),
-    ).resolves.toBe("scheduled:agent-1:run-1");
+    const workflowIdPromise = activities.startAgentExecution({
+      mode: "spawn",
+      agentId: "agent-1" as never,
+      stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+      input: { kind: "text", text: "hello" },
+    });
+    await expect(workflowIdPromise).resolves.toBe("scheduled:agent-1:run-1");
 
     expect(seenConfigs).toEqual([
       {

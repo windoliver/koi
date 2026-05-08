@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createDefaultAgentActivities } from "../activities/agent-activity.js";
 import {
   resetAgentWorkflowDepsForTest,
   setAgentWorkflowDepsForTest,
@@ -21,6 +20,10 @@ import {
   resetRetryWorkflowDepsForTest,
   setRetryWorkflowDepsForTest,
 } from "../workflows/retry-workflow.js";
+import {
+  resetScheduledTaskWorkflowDepsForTest,
+  setScheduledTaskWorkflowDepsForTest,
+} from "../workflows/scheduled-task-workflow.js";
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = join(TEST_DIR, "..", "..");
@@ -145,14 +148,22 @@ describe("workflow module surface", () => {
       }),
     ).resolves.toEqual({ kind: "dispatched" });
 
-    await expect(
-      scheduledTaskWorkflow({
-        mode: "spawn",
-        agentId: config.agentId,
-        stateRefs: config.stateRefs,
-        input: { kind: "text", text: "hello" },
-      }),
-    ).resolves.toMatchObject({ kind: "spawned" });
+    setScheduledTaskWorkflowDepsForTest({
+      startAgentExecution: async () => "wf-entrypoint",
+    });
+
+    try {
+      await expect(
+        scheduledTaskWorkflow({
+          mode: "spawn",
+          agentId: config.agentId,
+          stateRefs: config.stateRefs,
+          input: { kind: "text", text: "hello" },
+        }),
+      ).resolves.toEqual({ kind: "spawned", workflowId: "wf-entrypoint" });
+    } finally {
+      resetScheduledTaskWorkflowDepsForTest();
+    }
   });
 
   test("retry workflow retries until success within max attempts", async () => {
@@ -217,13 +228,52 @@ describe("workflow module surface", () => {
     });
   });
 
-  test("scheduled task workflow spawn default routes scheduled input through agent workflow", async () => {
-    const seenConfigs: unknown[] = [];
-    const realAgentActivities = createDefaultAgentActivities();
+  test("agent workflow permits bounded same-state retries when maxStopRetries is available", async () => {
+    let attempts = 0;
     setAgentWorkflowDepsForTest({
-      runAgentTurn: async (input) => {
-        seenConfigs.push(input);
-        return realAgentActivities.runAgentTurn(input);
+      runAgentTurn: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          return {
+            turnId: "turn-0",
+            updatedStateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+            next: { kind: "retry" },
+          } as const;
+        }
+
+        return {
+          turnId: "turn-1",
+          updatedStateRefs: { lastTurnId: "turn-1", turnsProcessed: 1 },
+          next: { kind: "complete" },
+        } as const;
+      },
+    });
+
+    try {
+      await expect(
+        agentWorkflow({
+          agentId: "agent-1" as never,
+          sessionId: "session-1" as never,
+          stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+          initialMessages: [
+            { id: "m1", senderId: "u1", content: [{ kind: "text", text: "tick" }], timestamp: 1 },
+          ],
+          maxStopRetries: 2,
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(attempts).toBe(2);
+    } finally {
+      resetAgentWorkflowDepsForTest();
+    }
+  });
+
+  test("scheduled task workflow spawn default routes scheduled input through agent workflow", async () => {
+    const seenInputs: unknown[] = [];
+    setScheduledTaskWorkflowDepsForTest({
+      startAgentExecution: async (input) => {
+        seenInputs.push(input);
+        return "scheduled:agent-1:spawned";
       },
     });
 
@@ -243,36 +293,35 @@ describe("workflow module surface", () => {
         }),
       ).resolves.toMatchObject({
         kind: "spawned",
-        workflowId: expect.stringMatching(/^scheduled:agent-1:/),
+        workflowId: "scheduled:agent-1:spawned",
       });
 
-      expect(seenConfigs).toHaveLength(2);
-      expect(seenConfigs[0]).toMatchObject({
-        initialMessages: [
-          {
-            senderId: "u1",
-            content: [{ kind: "text", text: "tick" }],
+      expect(seenInputs).toEqual([
+        {
+          mode: "spawn",
+          agentId: "agent-1",
+          stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+          input: {
+            kind: "messages",
+            messages: [
+              { senderId: "u1", content: [{ kind: "text", text: "tick" }], timestamp: 1 },
+              { senderId: "u2", content: [{ kind: "text", text: "tock" }], timestamp: 2 },
+            ],
           },
-          {
-            senderId: "u2",
-            content: [{ kind: "text", text: "tock" }],
-          },
-        ],
-        stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
-      });
+        },
+      ]);
     } finally {
-      resetAgentWorkflowDepsForTest();
+      resetScheduledTaskWorkflowDepsForTest();
     }
   });
 
   test("scheduled task workflow dispatch default routes scheduled input through agent workflow", async () => {
-    const seenConfigs: unknown[] = [];
-    const realAgentActivities = createDefaultAgentActivities();
-    setAgentWorkflowDepsForTest({
-      runAgentTurn: async (input) => {
-        seenConfigs.push(input);
-        return realAgentActivities.runAgentTurn(input);
+    const seenInputs: unknown[] = [];
+    setScheduledTaskWorkflowDepsForTest({
+      dispatchToAgent: async (input) => {
+        seenInputs.push(input);
       },
+      startAgentExecution: async () => "unused",
     });
 
     try {
@@ -285,19 +334,16 @@ describe("workflow module surface", () => {
         }),
       ).resolves.toEqual({ kind: "dispatched" });
 
-      expect(seenConfigs).toHaveLength(1);
-      expect(seenConfigs[0]).toMatchObject({
-        sessionId: "agent-1",
-        stateRefs: { lastTurnId: "previous-turn", turnsProcessed: 1 },
-        initialMessages: [
-          {
-            senderId: "scheduler",
-            content: [{ kind: "text", text: "scheduled ping" }],
-          },
-        ],
-      });
+      expect(seenInputs).toEqual([
+        {
+          mode: "dispatch",
+          agentId: "agent-1",
+          stateRefs: { lastTurnId: "previous-turn", turnsProcessed: 1 },
+          input: { kind: "text", text: "scheduled ping" },
+        },
+      ]);
     } finally {
-      resetAgentWorkflowDepsForTest();
+      resetScheduledTaskWorkflowDepsForTest();
     }
   });
 });

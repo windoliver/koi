@@ -16,6 +16,7 @@ export type RetryActivitySerializableValue =
   | number
   | boolean
   | null
+  | undefined
   | readonly RetryActivitySerializableValue[]
   | { readonly [key: string]: RetryActivitySerializableValue };
 
@@ -35,12 +36,37 @@ export interface DefaultRetryActivityDeps {
 }
 
 function normalizeRetryValue(value: unknown): RetryActivitySerializableValue {
-  const serialized = JSON.stringify(value);
-  if (serialized === undefined) {
+  if (value === null) {
+    return null;
+  }
+
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeRetryValue(entry));
+  }
+
+  if (typeof value !== "object") {
     throw new Error("retry activity returned a non-serializable value");
   }
 
-  return JSON.parse(serialized) as RetryActivitySerializableValue;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error("retry activity returned a non-serializable value");
+  }
+
+  const normalized: Record<string, RetryActivitySerializableValue> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    normalized[key] = normalizeRetryValue(entry);
+  }
+
+  return normalized;
 }
 
 export function createRetryActivities(deps: RetryActivityDeps) {
