@@ -75,7 +75,7 @@ function invalidPlanError(
 
 function stepUnsupported(
   step: Extract<CompositionStep, { kind: "spawn_agent" | "forge_skill" | "tool_call" }>,
-): CompositionStepResult {
+): Extract<CompositionStepResult, { status: "unsupported" }> {
   return {
     step,
     status: "unsupported",
@@ -87,7 +87,10 @@ function stepUnsupported(
   };
 }
 
-function stepFailed(step: CompositionStep, cause: unknown): CompositionStepResult {
+function stepFailed(
+  step: CompositionStep,
+  cause: unknown,
+): Extract<CompositionStepResult, { status: "failed" }> {
   const message = cause instanceof Error ? cause.message : String(cause);
   return {
     step,
