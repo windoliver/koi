@@ -27,12 +27,15 @@ describe("parseReadyMessage", () => {
 });
 
 describe("parseExecuteMessage", () => {
+  const VALID_NONCE = "n-12345";
+
   test("accepts an execute frame", () => {
     const parsed = parseExecuteMessage({
       kind: "execute",
       code: "return input.value + 1;",
       input: { value: 41 },
       timeoutMs: 5_000,
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(true);
@@ -40,6 +43,81 @@ describe("parseExecuteMessage", () => {
     expect(parsed.value.code).toBe("return input.value + 1;");
     expect(parsed.value.input).toEqual({ value: 41 });
     expect(parsed.value.timeoutMs).toBe(5_000);
+    expect(parsed.value.nonce).toBe(VALID_NONCE);
+  });
+
+  test("accepts optional maxResultBytes and serialization", () => {
+    const parsed = parseExecuteMessage({
+      kind: "execute",
+      code: "return 1;",
+      input: { value: 1 },
+      timeoutMs: 5_000,
+      nonce: VALID_NONCE,
+      maxResultBytes: 1_024,
+      serialization: "json",
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error("expected execute frame");
+    expect(parsed.value.maxResultBytes).toBe(1_024);
+    expect(parsed.value.serialization).toBe("json");
+  });
+
+  test("rejects missing nonce", () => {
+    const parsed = parseExecuteMessage({
+      kind: "execute",
+      code: "return 1;",
+      input: { value: 1 },
+      timeoutMs: 5_000,
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("nonce");
+  });
+
+  test("rejects empty nonce", () => {
+    const parsed = parseExecuteMessage({
+      kind: "execute",
+      code: "return 1;",
+      input: { value: 1 },
+      timeoutMs: 5_000,
+      nonce: "",
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("nonce");
+  });
+
+  test("rejects unsupported serialization", () => {
+    const parsed = parseExecuteMessage({
+      kind: "execute",
+      code: "return 1;",
+      input: { value: 1 },
+      timeoutMs: 5_000,
+      nonce: VALID_NONCE,
+      serialization: "xml",
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("serialization");
+  });
+
+  test("rejects non-positive maxResultBytes", () => {
+    const parsed = parseExecuteMessage({
+      kind: "execute",
+      code: "return 1;",
+      input: { value: 1 },
+      timeoutMs: 5_000,
+      nonce: VALID_NONCE,
+      maxResultBytes: 0,
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("maxResultBytes");
   });
 
   test("rejects malformed execute input", () => {
@@ -48,6 +126,7 @@ describe("parseExecuteMessage", () => {
       code: "return 1;",
       input: { value: 1 },
       timeoutMs: 0,
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);
@@ -60,6 +139,7 @@ describe("parseExecuteMessage", () => {
       kind: "execute",
       input: { value: 1 },
       timeoutMs: 5_000,
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);
@@ -72,6 +152,7 @@ describe("parseExecuteMessage", () => {
       kind: "execute",
       code: "return 1;",
       timeoutMs: 5_000,
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);
@@ -84,6 +165,7 @@ describe("parseExecuteMessage", () => {
       kind: "execute",
       code: "return 1;",
       input: { value: 1 },
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);
@@ -97,6 +179,7 @@ describe("parseExecuteMessage", () => {
       code: 42,
       input: { value: 1 },
       timeoutMs: 5_000,
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);
@@ -110,6 +193,7 @@ describe("parseExecuteMessage", () => {
       code: "return 1;",
       input: { nested: () => 1 },
       timeoutMs: 5_000,
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);
@@ -123,6 +207,7 @@ describe("parseExecuteMessage", () => {
       code: "return input.value;",
       input: { value: Number.NaN },
       timeoutMs: 5_000,
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);
@@ -137,6 +222,7 @@ describe("parseExecuteMessage", () => {
       code: "return input.when;",
       input: { when: new Date("2026-01-01T00:00:00.000Z") },
       timeoutMs: 5_000,
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);
@@ -151,6 +237,7 @@ describe("parseExecuteMessage", () => {
       code: "return 1;",
       input: { value: 1 },
       timeoutMs: "500",
+      nonce: VALID_NONCE,
     });
 
     expect(parsed.ok).toBe(false);

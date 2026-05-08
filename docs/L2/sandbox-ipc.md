@@ -85,13 +85,15 @@ not flow into untrusted code by default. Override the allowlist with
 `BridgeConfig.processGroupIsolation` controls how the default spawn
 implementation handles descendants the worker may itself spawn.
 
-- `"best-effort"` (default): if `setsid` is on `PATH`, the worker is launched
-  inside its own session and the bridge kills the entire group on
-  timeout/dispose. If `setsid` is missing (default macOS without
-  util-linux), only the direct worker is killed — descendants may survive.
-- `"required"`: refuse to spawn unless `setsid` is available. Use this on
-  production hosts where descendant teardown is part of the security
-  contract.
+- `"required"` (default): refuse to spawn unless `setsid` is on `PATH`. The
+  worker is launched inside its own session and the bridge kills the entire
+  group on timeout/dispose. Use util-linux on macOS dev hosts, or pass
+  `"best-effort"` explicitly when the caller has accepted descendant-leak
+  risk.
+- `"best-effort"`: if `setsid` is on `PATH`, the worker is launched inside
+  its own session and the bridge kills the entire group on timeout/dispose.
+  If `setsid` is missing, only the direct worker is killed — descendants may
+  survive.
 
 Backends that ship their own spawn wrapper (`createSandboxBridge` accepts
 an injected `spawnFn`) can implement equivalent isolation directly.

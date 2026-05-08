@@ -44,6 +44,7 @@ export function createCachedBridge<
   let disposed = false;
   let inflight: Promise<Slot<TLease>> | undefined;
   let pendingCleanup: Promise<void> | undefined;
+  const deferredCleanups = new Set<Promise<void>>();
 
   function isExpired(target: Slot<TLease>, now: number): boolean {
     return now >= target.expiresAt;
@@ -125,7 +126,11 @@ export function createCachedBridge<
           } else {
             // Defer disposal until in-flight executions drain so they don't get torn
             // down mid-call. New callers can proceed against a fresh lease meanwhile.
-            void disposeWhenDrained(stale);
+            // Track the cleanup promise so dispose() always awaits every detached
+            // slot, even when several have accumulated concurrently.
+            const deferred = disposeWhenDrained(stale).catch(() => undefined);
+            deferredCleanups.add(deferred);
+            void deferred.finally(() => deferredCleanups.delete(deferred));
           }
         }
 
@@ -188,6 +193,12 @@ export function createCachedBridge<
 
     if (pendingCleanup !== undefined) {
       await pendingCleanup;
+    }
+
+    // Wait for every previously-detached stale slot to finish its cleanup
+    // before declaring disposal complete.
+    while (deferredCleanups.size > 0) {
+      await Promise.all(Array.from(deferredCleanups));
     }
   }
 

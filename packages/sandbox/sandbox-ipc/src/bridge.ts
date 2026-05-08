@@ -279,7 +279,7 @@ function defaultSpawnFn(
 ): IpcProcess {
   const messageHandlers: Array<(message: unknown) => void> = [];
   const setsidPath = detectSetsid();
-  const isolationPolicy = options.processGroupIsolation ?? "best-effort";
+  const isolationPolicy = options.processGroupIsolation ?? "required";
   if (setsidPath === null && isolationPolicy === "required") {
     throw new Error(
       "sandbox-ipc: process-group isolation is required but `setsid` is not available on this host. " +
@@ -396,7 +396,7 @@ export async function createSandboxBridge(
       proc = spawnFn([builtCommand.value.executable, ...builtCommand.value.args], {
         serialization,
         env: childEnv,
-        processGroupIsolation: config.processGroupIsolation ?? "best-effort",
+        processGroupIsolation: config.processGroupIsolation ?? "required",
       });
     } catch (error) {
       return {

@@ -133,6 +133,36 @@ export function parseReadyMessage(value: unknown): ParseResult<ReadyMessage> {
   return ok({ kind: "ready" });
 }
 
+function expectNonEmptyString(record: RecordValue, key: string): ParseResult<string> {
+  const value = record[key];
+  if (typeof value !== "string" || value.length === 0) {
+    return fail(key, "expected a non-empty string");
+  }
+  return ok(value);
+}
+
+function expectOptionalPositiveNumber(
+  record: RecordValue,
+  key: string,
+): ParseResult<number | undefined> {
+  if (!hasOwn(record, key) || record[key] === undefined) {
+    return ok(undefined);
+  }
+  return expectPositiveNumber(record, key);
+}
+
+function expectOptionalSerialization(
+  record: RecordValue,
+): ParseResult<"advanced" | "json" | undefined> {
+  if (!hasOwn(record, "serialization") || record.serialization === undefined) {
+    return ok(undefined);
+  }
+  if (record.serialization !== "advanced" && record.serialization !== "json") {
+    return fail("serialization", 'expected "advanced" or "json"');
+  }
+  return ok(record.serialization);
+}
+
 export function parseExecuteMessage(value: unknown): ParseResult<ExecuteMessage> {
   const record = expectRecord(value);
   if (!record.ok) return record;
@@ -149,11 +179,23 @@ export function parseExecuteMessage(value: unknown): ParseResult<ExecuteMessage>
   const timeoutMs = expectPositiveNumber(record.value, "timeoutMs");
   if (!timeoutMs.ok) return timeoutMs;
 
+  const nonce = expectNonEmptyString(record.value, "nonce");
+  if (!nonce.ok) return nonce;
+
+  const maxResultBytes = expectOptionalPositiveNumber(record.value, "maxResultBytes");
+  if (!maxResultBytes.ok) return maxResultBytes;
+
+  const serialization = expectOptionalSerialization(record.value);
+  if (!serialization.ok) return serialization;
+
   return ok({
     kind: "execute",
     code: code.value,
     input: input.value,
     timeoutMs: timeoutMs.value,
+    nonce: nonce.value,
+    ...(maxResultBytes.value !== undefined ? { maxResultBytes: maxResultBytes.value } : {}),
+    ...(serialization.value !== undefined ? { serialization: serialization.value } : {}),
   });
 }
 

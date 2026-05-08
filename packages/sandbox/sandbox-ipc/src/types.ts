@@ -16,6 +16,12 @@ export interface ExecuteMessage {
   readonly code: string;
   readonly input: JsonValue;
   readonly timeoutMs: number;
+  /** Per-call random nonce. Worker echoes this on every terminal frame. */
+  readonly nonce: string;
+  /** Optional worker-side cap on serialized result bytes. */
+  readonly maxResultBytes?: number;
+  /** Transport serialization mode the worker should account for in the cap. */
+  readonly serialization?: "advanced" | "json";
 }
 
 export interface ResultMessage {
@@ -57,12 +63,12 @@ export interface BridgeConfig {
   readonly maxResultBytes?: number;
   /**
    * Process-group isolation policy for the default spawn implementation.
-   * Default: "best-effort". When `setsid` is available, workers run in their
-   * own session so descendant processes can be torn down via group kill.
-   * When `setsid` is missing (e.g., default macOS), the bridge falls back to
-   * direct kill of the worker only. Set to "required" for production hosts
-   * where descendant teardown is essential — the bridge will refuse to spawn
-   * workers without `setsid` available.
+   * Default: "required" — the bridge refuses to spawn workers when `setsid`
+   * is not on `PATH`, so descendant processes spawned by untrusted code can
+   * always be torn down via group kill on timeout/dispose. Set to
+   * "best-effort" only when callers consciously accept descendant-leak risk
+   * (e.g., dev hosts without util-linux); the bridge then falls back to
+   * killing only the direct worker.
    */
   readonly processGroupIsolation?: "required" | "best-effort";
   /**
