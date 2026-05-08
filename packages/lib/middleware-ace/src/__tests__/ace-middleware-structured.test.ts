@@ -135,13 +135,13 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
 
       // Drive a fake session: start → record one tool entry → end.
       const ctx = sessionCtx("sess-promote");
-      await mw.onSessionStart!(ctx);
+      await mw.onSessionStart?.(ctx);
       const t = turnCtx("sess-promote", 0);
-      await mw.wrapToolCall!(t, { toolId: "search", input: {} }, async () => ({
+      await mw.wrapToolCall?.(t, { toolId: "search", input: {} }, async () => ({
         output: "ok",
         isError: false,
       }));
-      await mw.onSessionEnd!(ctx);
+      await mw.onSessionEnd?.(ctx);
 
       // Head advanced via commitPromotion.
       const head = await store.structuredPlaybooks.get(PLAYBOOK_ID);
@@ -182,13 +182,13 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
       });
 
       const ctx = sessionCtx("sess-reject");
-      await mw.onSessionStart!(ctx);
+      await mw.onSessionStart?.(ctx);
       const t = turnCtx("sess-reject", 0);
-      await mw.wrapToolCall!(t, { toolId: "search", input: {} }, async () => ({
+      await mw.wrapToolCall?.(t, { toolId: "search", input: {} }, async () => ({
         output: "ok",
         isError: false,
       }));
-      await mw.onSessionEnd!(ctx);
+      await mw.onSessionEnd?.(ctx);
 
       // Head NOT advanced (reject is audit-only).
       const head = await store.structuredPlaybooks.get(PLAYBOOK_ID);
@@ -225,13 +225,13 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
       });
 
       const ctx = sessionCtx("sess-noop");
-      await mw.onSessionStart!(ctx);
+      await mw.onSessionStart?.(ctx);
       const t = turnCtx("sess-noop", 0);
-      await mw.wrapToolCall!(t, { toolId: "search", input: {} }, async () => ({
+      await mw.wrapToolCall?.(t, { toolId: "search", input: {} }, async () => ({
         output: "ok",
         isError: false,
       }));
-      await mw.onSessionEnd!(ctx);
+      await mw.onSessionEnd?.(ctx);
 
       const head = await store.structuredPlaybooks.get(PLAYBOOK_ID);
       expect(head?.version).toBe(1);
@@ -266,14 +266,14 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
       });
 
       const ctx = sessionCtx("sess-err");
-      await mw.onSessionStart!(ctx);
+      await mw.onSessionStart?.(ctx);
       const t = turnCtx("sess-err", 0);
-      await mw.wrapToolCall!(t, { toolId: "search", input: {} }, async () => ({
+      await mw.wrapToolCall?.(t, { toolId: "search", input: {} }, async () => ({
         output: "ok",
         isError: false,
       }));
       // Must NOT throw despite reflector failure.
-      await mw.onSessionEnd!(ctx);
+      await mw.onSessionEnd?.(ctx);
 
       expect(observed.length).toBe(1);
       expect(String(observed[0])).toMatch(/reflector boom/);
@@ -307,13 +307,13 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
       });
 
       const ctx = sessionCtx("sess-rb");
-      await mw.onSessionStart!(ctx);
+      await mw.onSessionStart?.(ctx);
       const t = turnCtx("sess-rb", 0);
-      await mw.wrapToolCall!(t, { toolId: "search", input: {} }, async () => ({
+      await mw.wrapToolCall?.(t, { toolId: "search", input: {} }, async () => ({
         output: "ok",
         isError: false,
       }));
-      await mw.onSessionEnd!(ctx);
+      await mw.onSessionEnd?.(ctx);
 
       expect(observed.length).toBe(1);
       expect(String(observed[0])).toMatch(/rollback.*pipeline only handles promote\/reject/);
