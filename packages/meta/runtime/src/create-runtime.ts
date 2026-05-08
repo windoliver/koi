@@ -523,17 +523,21 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
               onSessionAttached: (
                 sessionContext: SessionContext,
                 scoped: import("@koi/forge-demand").SessionScopedForgeDemandHandle,
-              ) => {
+              ): void | Promise<void> => {
                 sessionEntries.set(sessionContext.sessionId, {
                   sessionId: sessionContext.sessionId,
                   scoped,
                 });
-                // Forward to caller-supplied onSessionAttached if any.
-                try {
-                  baseConfigWithHealth.onSessionAttached?.(sessionContext, scoped);
-                } catch {
-                  // Caller handler is observer-only; don't disrupt detector wiring.
+                // Preserve caller callback's return value: forge-demand
+                // treats a returned Promise as load-bearing — async
+                // rejection keeps the session unready and triggers retry on
+                // later traffic. Swallowing the rejection would let
+                // signals accumulate while the host has no dismiss path.
+                // Synchronous throws are surfaced by re-throwing.
+                if (baseConfigWithHealth.onSessionAttached === undefined) {
+                  return undefined;
                 }
+                return baseConfigWithHealth.onSessionAttached(sessionContext, scoped);
               },
             }
           : baseConfigWithHealth;

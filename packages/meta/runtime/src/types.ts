@@ -767,7 +767,7 @@ export type RuntimeAutoHarnessConfig = Omit<BaseAutoHarnessConfig, "requestDeplo
 export interface RuntimeAutoHarnessHandle {
   readonly middleware: import("@koi/core").KoiMiddleware;
   readonly synthesizeHarness: AutoHarnessStack["synthesizeHarness"];
-  readonly resetSession: () => void;
+  readonly resetSession: (sessionId?: string) => void;
   readonly maxSynthesesPerSession: number;
 }
 

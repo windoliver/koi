@@ -481,6 +481,15 @@ export interface KoiRuntimeConfig {
    */
   readonly autoHarness?: RuntimeAutoHarnessConfig | undefined;
   /**
+   * Optional forge-demand detector config. When supplied alongside
+   * `autoHarness`, demand signals automatically drive `synthesizeHarness`
+   * — without this, callers must invoke `synthesizeHarness` out-of-band.
+   * Required to satisfy the runtime's onSessionAttached precondition.
+   */
+  readonly forgeDemand?:
+    | NonNullable<Parameters<typeof createRuntime>[0]>["forgeDemand"]
+    | undefined;
+  /**
    * Override the built-in permission backend. When omitted, the factory
    * uses `default`-mode with the TUI's tiered allow rules (pre-allowed
    * read-only tools, everything else falls through to "ask"). Hosts that
@@ -4037,6 +4046,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         ? createRuntime({
             requestApproval: approvalHandler,
             autoHarness: config.autoHarness,
+            // Threading forgeDemand here is what wires the runtime's
+            // onDemand→synthesizeHarness path. Without it, the auto-harness
+            // handle is exposed but demand signals never drive the pipeline.
+            ...(config.forgeDemand !== undefined ? { forgeDemand: config.forgeDemand } : {}),
           })
         : undefined;
     // When auto-harness is configured the stack-owned policy-cache is the
@@ -4685,7 +4698,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             hookErrors.push(hookErr);
           }
         }
-        sharedRuntimeHandle?.autoHarness?.resetSession();
+        // Reset only the rotating session's auto-harness state. Calling
+        // resetSession() with no id would clear every tracked session and
+        // break per-session budget/dedupe isolation in multi-session hosts.
+        sharedRuntimeHandle?.autoHarness?.resetSession(runtime.sessionId);
 
         // 3. Clear the OLD session's approval state (always-allow, caches,
         //    trackers). Not a stack concern — permissions is a core slot.
