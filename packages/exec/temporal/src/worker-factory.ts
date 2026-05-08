@@ -34,6 +34,18 @@ export interface WorkerCreateParams {
   readonly activities: Record<string, (...args: readonly unknown[]) => unknown>;
 }
 
+export interface WorkerBundle {
+  readonly workflowsPath: string;
+  readonly activities: Record<string, (...args: readonly unknown[]) => unknown>;
+}
+
+export function createWorkerBundle(
+  workflowsPath: string,
+  activities: Record<string, (...args: readonly unknown[]) => unknown>,
+): WorkerBundle {
+  return { workflowsPath, activities };
+}
+
 export interface WorkerAndConnection {
   readonly worker: WorkerLike;
   readonly connection: NativeConnectionLike;

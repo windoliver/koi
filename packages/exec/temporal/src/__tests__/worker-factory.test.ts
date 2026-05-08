@@ -105,6 +105,18 @@ describe("createTemporalWorker", () => {
     expect(params.maxCachedWorkflows).toBe(100);
   });
 
+  test("worker factory accepts workflow bundle metadata", async () => {
+    const factory = makeWorkerFactory();
+    await createTemporalWorker(
+      { taskQueue: "q" },
+      { runAgentTurn: async () => ({}) },
+      "/wf.js",
+      factory,
+    );
+    const [params] = (factory as ReturnType<typeof mock>).mock.calls[0] as [WorkerCreateParams];
+    expect(params.workflowsPath).toBe("/wf.js");
+  });
+
   test("factory error propagates: createWorkerFn throw rejects createTemporalWorker", async () => {
     const badFactory = mock(async (_params: WorkerCreateParams): Promise<WorkerAndConnection> => {
       throw new Error("worker create failed");

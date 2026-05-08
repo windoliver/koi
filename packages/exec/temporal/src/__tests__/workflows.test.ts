@@ -106,10 +106,12 @@ describe("temporal workflow public surface", () => {
     expect(result.stderr).toBe("");
   }, 30_000);
 
-  test("public scheduler uses the centralized agent workflow name", () => {
+  test("public scheduler defaults spawn workflows through the centralized scheduled task name", () => {
     const source = readFileSync(PUBLIC_SCHEDULER_SOURCE, "utf8");
 
-    expect(source).toContain("config.workflowType ?? AGENT_WORKFLOW_NAME");
+    expect(source).toContain(
+      "const workflowType = config.workflowType ?? DEFAULT_SCHEDULED_TASK_WORKFLOW_TYPE",
+    );
   });
 });
 

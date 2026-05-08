@@ -12,7 +12,6 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname } from "node:path";
-import { AGENT_WORKFLOW_NAME } from "./workflows/index.js";
 import type {
   AgentId,
   CronSchedule,
@@ -86,6 +85,7 @@ interface PersistedState {
 // Prevents false "live" detection when the OS reuses a PID from a crashed process:
 // a new process has a different token, so the old (pid, token) pair never matches.
 const PROCESS_SESSION_TOKEN = crypto.randomUUID();
+const DEFAULT_SCHEDULED_TASK_WORKFLOW_TYPE = "scheduledTaskWorkflow";
 
 const VALID_TASK_STATUSES = new Set<string>([
   "pending",
@@ -751,7 +751,7 @@ export interface TemporalClientLike {
 export interface TemporalSchedulerConfig {
   readonly client: TemporalClientLike;
   readonly taskQueue: string;
-  readonly workflowType: string;
+  readonly workflowType?: string | undefined;
   /**
    * Path to a JSON file for durable state persistence. When provided, task/schedule
    * state is written on each mutation and restored on startup, preserving management
@@ -1267,7 +1267,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       let targetWorkflowId: string = id;
       try {
         if (mode === "spawn") {
-          const handle = await config.client.workflow.start(config.workflowType ?? AGENT_WORKFLOW_NAME, {
+          const workflowType = config.workflowType ?? DEFAULT_SCHEDULED_TASK_WORKFLOW_TYPE;
+          const handle = await config.client.workflow.start(workflowType, {
             taskQueue: config.taskQueue,
             workflowId: id,
             // Idempotent spawns reuse a stable workflowId derived from idempotencyKey.
@@ -1819,6 +1820,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       //   with recurring schedule-fired inputs.
       let scheduleAction: Record<string, unknown>;
       if (mode === "spawn") {
+        const workflowType = config.workflowType ?? DEFAULT_SCHEDULED_TASK_WORKFLOW_TYPE;
         // Use snapshotPayload (the already-cloned/validated copy) so the remote schedule
         // definition is byte-for-byte identical to the persisted local metadata.
         // Using the original scheduledPayload risks split-brain if the caller mutates
@@ -1830,7 +1832,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         };
         scheduleAction = {
           type: "startWorkflow",
-          workflowType: config.workflowType,
+          workflowType,
           taskQueue: config.taskQueue,
           // Explicit workflowId so Temporal can apply overlap/reuse policies deterministically.
           // The schedule ID is the stable base; Temporal's overlap policy governs concurrent firings.
