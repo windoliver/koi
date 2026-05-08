@@ -4,10 +4,10 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 212 workspace packages
+- 216 workspace packages
 - 11 package families
-- 212 packages with local test files
-- 189 packages with dedicated package docs
+- 216 packages with local test files
+- 193 packages with dedicated package docs
 
 ## Family Summary
 
@@ -16,7 +16,7 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 2 | 12 | 2 |
 | kernel | 4 | 126 | 0 |
-| lib | 140 | 724 | 121 |
+| lib | 144 | 736 | 125 |
 | meta | 3 | 109 | 3 |
 | mm | 12 | 54 | 12 |
 | net | 10 | 91 | 10 |
@@ -46,7 +46,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/engine-compose` (packages/kernel/engine-compose) - Middleware composition and guard factories for the Koi kernel. Tests: 7. Docs: -.
 - `@koi/engine-reconcile` (packages/kernel/engine-reconcile) - Reconciliation, supervision, and process management for the Koi kernel. Tests: 22. Docs: -.
 
-## lib (140)
+## lib (144)
 
 - `@koi/ace-types` (packages/lib/ace-types) - Shared domain types for ACE (Adaptive Continuous Enhancement) middleware and stores. Tests: 1. Docs: -.
 - `@koi/agent-discovery` (packages/lib/agent-discovery) - Runtime discovery of external coding agents (CLI, filesystem registry, MCP). Tests: 8. Docs: docs/L2/agent-discovery.md.
@@ -158,7 +158,9 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/replay` (packages/lib/replay) - Deterministic cassette recording and replay for Koi agent tests. Tests: 3. Docs: docs/L2/replay.md.
 - `@koi/rules-loader` (packages/lib/rules-loader) - Hierarchical project rules file discovery, loading, merging, and system prompt injection. Tests: 6. Docs: docs/L2/rules-loader.md.
 - `@koi/sandbox-cloud-base` (packages/lib/sandbox-cloud-base) - Shared bridge and hosted-sandbox helpers for cloud-backed execution. Tests: 5. Docs: -.
-- `@koi/scratchpad-local` (packages/lib/scratchpad-local) - In-memory ScratchpadComponent with CAS, TTL, and glob filtering. Tests: 1. Docs: docs/L2/scratchpad-local.md.
+- `@koi/scratchpad-conformance` (packages/lib/scratchpad-conformance) - Shared bun:test conformance suite for ScratchpadComponent implementations. Tests: 1. Docs: docs/L2/scratchpad-conformance.md.
+- `@koi/scratchpad-local` (packages/lib/scratchpad-local) - In-memory ScratchpadComponent with CAS, TTL, and glob filtering. Tests: 2. Docs: docs/L2/scratchpad-local.md.
+- `@koi/scratchpad-nexus` (packages/lib/scratchpad-nexus) - Nexus-backed ScratchpadComponent with optional local fallback. Tests: 4. Docs: docs/L2/scratchpad-nexus.md.
 - `@koi/search-nexus` (packages/lib/search-nexus) - Nexus-backed SearchBackend — Retriever + Indexer via Nexus search RPC. Tests: 3. Docs: docs/L2/search-nexus.md.
 - `@koi/secure-storage` (packages/lib/secure-storage) - OS keychain token storage with file-based locking for concurrent access. Tests: 3. Docs: -.
 - `@koi/session` (packages/lib/session) - Session persistence (SQLite/WAL) and transcript (append-only JSONL) for crash recovery. Tests: 9. Docs: docs/L2/session.md.
@@ -187,7 +189,9 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/validation` (packages/lib/validation) - Validate brick artifacts, pipelines, fitness scores, and config schemas. Tests: 17. Docs: -.
 - `@koi/variant-selection` (packages/lib/variant-selection) - Selection strategies for degenerate tool/brick variants. L0u utility package.. Tests: 7. Docs: -.
 - `@koi/watch-patterns` (packages/lib/watch-patterns) - Linear-time regex matcher, line buffer, and pending-match store for reactive shell notifications. Tests: 5. Docs: docs/L2/watch-patterns.md.
-- `@koi/workspace` (packages/lib/workspace) - Git worktree WorkspaceBackend and ComponentProvider for agent isolation. Tests: 2. Docs: docs/L2/workspace.md.
+- `@koi/workspace` (packages/lib/workspace) - Git worktree WorkspaceBackend and ComponentProvider for agent isolation. Tests: 3. Docs: docs/L2/workspace.md.
+- `@koi/workspace-conformance` (packages/lib/workspace-conformance) - Shared bun:test conformance suite for WorkspaceBackend implementations. Tests: 1. Docs: docs/L2/workspace-conformance.md.
+- `@koi/workspace-nexus` (packages/lib/workspace-nexus) - Nexus-backed WorkspaceBackend with optional local fallback. Tests: 4. Docs: docs/L2/workspace-nexus.md.
 
 ## meta (3)
 

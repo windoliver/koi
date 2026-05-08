@@ -18217,3 +18217,206 @@ describe("Golden: @koi/channel-fallback", () => {
     }
   });
 });
+
+describe("Golden: @koi/scratchpad-nexus", () => {
+  test("createNexusScratchpad write/read round-trip through a mock Nexus transport", async () => {
+    const { createNexusScratchpad } = await import("@koi/scratchpad-nexus");
+    const { agentGroupId, agentId, scratchpadPath } = await import("@koi/core");
+    type KoiResult<T> = import("@koi/core").Result<T, import("@koi/core").KoiError>;
+    type Transport = import("@koi/nexus-client").NexusTransport;
+
+    const path = scratchpadPath("notes/golden");
+    let stored: { content: string; generation: number } | null = null;
+
+    const transport: Transport = {
+      kind: "http",
+      health: async () => ({
+        ok: true,
+        value: { status: "ok", version: "1", latencyMs: 1, probed: ["version"] },
+      }),
+      close: () => {},
+      call: async <T>(method: string): Promise<KoiResult<T>> => {
+        if (method === "scratchpad.write") {
+          stored = { content: "hello golden", generation: 1 };
+          return { ok: true, value: { path, generation: 1, sizeBytes: 12 } as T };
+        }
+        if (method === "scratchpad.read") {
+          if (stored === null) {
+            return {
+              ok: false,
+              error: { code: "NOT_FOUND", message: "missing", retryable: false },
+            };
+          }
+          return {
+            ok: true,
+            value: {
+              entry: {
+                path,
+                content: stored.content,
+                generation: stored.generation,
+                groupId: "group-golden",
+                authorId: "agent-golden",
+                createdAt: "2026-05-07T00:00:00.000Z",
+                updatedAt: "2026-05-07T00:00:00.000Z",
+                sizeBytes: stored.content.length,
+              },
+            } as T,
+          };
+        }
+        if (method === "scratchpad.list") {
+          return { ok: true, value: { entries: [] } as T };
+        }
+        return { ok: false, error: { code: "EXTERNAL", message: method, retryable: false } };
+      },
+    };
+
+    const pad = await createNexusScratchpad({
+      groupId: agentGroupId("group-golden"),
+      authorId: agentId("agent-golden"),
+      transport,
+    });
+
+    const writeResult = await pad.write({ path, content: "hello golden" });
+    expect(writeResult.ok).toBe(true);
+
+    const readResult = await pad.read(path);
+    expect(readResult.ok).toBe(true);
+    if (readResult.ok) {
+      expect(readResult.value.content).toBe("hello golden");
+      expect(readResult.value.generation).toBe(1);
+    }
+  });
+
+  test("createNexusScratchpad surfaces CONFLICT when server rejects stale CAS write", async () => {
+    const { createNexusScratchpad } = await import("@koi/scratchpad-nexus");
+    const { agentGroupId, agentId, scratchpadPath } = await import("@koi/core");
+    type KoiResult<T> = import("@koi/core").Result<T, import("@koi/core").KoiError>;
+    type Transport = import("@koi/nexus-client").NexusTransport;
+
+    const transport: Transport = {
+      kind: "http",
+      health: async () => ({
+        ok: true,
+        value: { status: "ok", version: "1", latencyMs: 1, probed: ["version"] },
+      }),
+      close: () => {},
+      call: async <T>(method: string, params: Record<string, unknown>): Promise<KoiResult<T>> => {
+        if (method === "scratchpad.write") {
+          if (params.expectedGeneration === 0) {
+            return {
+              ok: false,
+              error: { code: "CONFLICT", message: "stale generation", retryable: false },
+            };
+          }
+          return {
+            ok: false,
+            error: { code: "EXTERNAL", message: "unexpected", retryable: false },
+          };
+        }
+        return { ok: false, error: { code: "EXTERNAL", message: method, retryable: false } };
+      },
+    };
+
+    const pad = await createNexusScratchpad({
+      groupId: agentGroupId("group-cas"),
+      authorId: agentId("agent-cas"),
+      transport,
+    });
+
+    const result = await pad.write({
+      path: scratchpadPath("cas/test"),
+      content: "stale",
+      expectedGeneration: 0,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("CONFLICT");
+  });
+});
+
+describe("Golden: @koi/workspace-nexus", () => {
+  test("createNexusWorkspaceBackend create/dispose round-trip via mock transport", async () => {
+    const { createNexusWorkspaceBackend } = await import("@koi/workspace-nexus");
+    const { agentId } = await import("@koi/core");
+    type KoiResult<T> = import("@koi/core").Result<T, import("@koi/core").KoiError>;
+    type Transport = import("@koi/nexus-client").NexusTransport;
+
+    const transport: Transport = {
+      kind: "http",
+      health: async () => ({
+        ok: true,
+        value: { status: "ok", version: "1", latencyMs: 1, probed: ["version"] },
+      }),
+      close: () => {},
+      call: async <T>(method: string): Promise<KoiResult<T>> => {
+        if (method === "workspace.create") {
+          return {
+            ok: true,
+            value: {
+              workspace: {
+                id: "ws-golden",
+                path: "/tmp/ws-golden",
+                createdAt: 1,
+                metadata: {},
+              },
+            } as T,
+          };
+        }
+        if (method === "workspace.dispose") return { ok: true, value: { ok: true } as T };
+        if (method === "workspace.health") return { ok: true, value: { healthy: true } as T };
+        return { ok: false, error: { code: "EXTERNAL", message: method, retryable: false } };
+      },
+    };
+
+    const backend = await createNexusWorkspaceBackend({ transport });
+
+    expect(backend.name).toBe("workspace-nexus");
+    expect(typeof backend.create).toBe("function");
+    expect(typeof backend.dispose).toBe("function");
+    expect(typeof backend.isHealthy).toBe("function");
+
+    const aid = agentId("golden-agent");
+    const created = await backend.create(aid, { cleanupPolicy: "always", cleanupTimeoutMs: 5_000 });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(await backend.isHealthy(created.value.id)).toBe(true);
+    const disposed = await backend.dispose(created.value.id);
+    expect(disposed.ok).toBe(true);
+  });
+
+  test("createNexusWorkspaceBackend gates isSandboxed on full attestation hook capability", async () => {
+    const { createNexusWorkspaceBackend } = await import("@koi/workspace-nexus");
+    type KoiResult<T> = import("@koi/core").Result<T, import("@koi/core").KoiError>;
+    type Transport = import("@koi/nexus-client").NexusTransport;
+
+    const transport: Transport = {
+      kind: "http",
+      health: async () => ({
+        ok: true,
+        value: { status: "ok", version: "1", latencyMs: 1, probed: ["version"] },
+      }),
+      close: () => {},
+      call: async <T>(): Promise<KoiResult<T>> => ({
+        ok: false,
+        error: { code: "EXTERNAL", message: "unused", retryable: false },
+      }),
+    };
+
+    const sandboxed = await createNexusWorkspaceBackend({
+      transport,
+      serverCapabilities: {
+        findByAgentId: true,
+        attestSetupComplete: true,
+        verifySetupComplete: true,
+        invalidateSetupComplete: true,
+        exists: true,
+      },
+    });
+    expect(sandboxed.isSandboxed).toBe(true);
+
+    const partial = await createNexusWorkspaceBackend({
+      transport,
+      serverCapabilities: { findByAgentId: false },
+    });
+    expect(partial.isSandboxed).toBe(false);
+  });
+});

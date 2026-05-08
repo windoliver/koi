@@ -1046,11 +1046,32 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/scratchpad-conformance": {
+      "name": "@koi/scratchpad-conformance",
+      "version": "0.1.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/scratchpad-local": {
       "name": "@koi/scratchpad-local",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/scratchpad-conformance": "workspace:*",
+      },
+    },
+    "packages/lib/scratchpad-nexus": {
+      "name": "@koi/scratchpad-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/scratchpad-conformance": "workspace:*",
       },
     },
     "packages/lib/search-nexus": {
@@ -1290,6 +1311,27 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/git-utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/workspace-conformance": "workspace:*",
+      },
+    },
+    "packages/lib/workspace-conformance": {
+      "name": "@koi/workspace-conformance",
+      "version": "0.1.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/workspace-nexus": {
+      "name": "@koi/workspace-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/workspace-conformance": "workspace:*",
       },
     },
     "packages/meta/cli": {
@@ -1584,7 +1626,9 @@
         "@koi/scheduler": "workspace:*",
         "@koi/scheduler-nexus": "workspace:*",
         "@koi/scheduler-provider": "workspace:*",
+        "@koi/scratchpad-conformance": "workspace:*",
         "@koi/scratchpad-local": "workspace:*",
+        "@koi/scratchpad-nexus": "workspace:*",
         "@koi/search-nexus": "workspace:*",
         "@koi/session": "workspace:*",
         "@koi/settings": "workspace:*",
@@ -1611,6 +1655,8 @@
         "@koi/violation-store-sqlite": "workspace:*",
         "@koi/watch-patterns": "workspace:*",
         "@koi/workspace": "workspace:*",
+        "@koi/workspace-conformance": "workspace:*",
+        "@koi/workspace-nexus": "workspace:*",
         "zod": "4.3.6",
       },
       "devDependencies": {
@@ -2911,7 +2957,11 @@
 
     "@koi/scheduler-provider": ["@koi/scheduler-provider@workspace:packages/sched/scheduler-provider"],
 
+    "@koi/scratchpad-conformance": ["@koi/scratchpad-conformance@workspace:packages/lib/scratchpad-conformance"],
+
     "@koi/scratchpad-local": ["@koi/scratchpad-local@workspace:packages/lib/scratchpad-local"],
+
+    "@koi/scratchpad-nexus": ["@koi/scratchpad-nexus@workspace:packages/lib/scratchpad-nexus"],
 
     "@koi/search-nexus": ["@koi/search-nexus@workspace:packages/lib/search-nexus"],
 
@@ -2984,6 +3034,10 @@
     "@koi/watch-patterns": ["@koi/watch-patterns@workspace:packages/lib/watch-patterns"],
 
     "@koi/workspace": ["@koi/workspace@workspace:packages/lib/workspace"],
+
+    "@koi/workspace-conformance": ["@koi/workspace-conformance@workspace:packages/lib/workspace-conformance"],
+
+    "@koi/workspace-nexus": ["@koi/workspace-nexus@workspace:packages/lib/workspace-nexus"],
 
     "@manypkg/find-root": ["@manypkg/find-root@1.1.0", "", { "dependencies": { "@babel/runtime": "^7.5.5", "@types/node": "^12.7.1", "find-up": "^4.1.0", "fs-extra": "^8.1.0" } }, "sha512-mki5uBvhHzO8kYYix/WRy2WX8S3B5wdVSc9D6KcU5lQNglP2yt58/VfLuAK49glRXChosY8ap2oJ1qgma3GUVA=="],
 

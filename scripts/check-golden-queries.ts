@@ -30,6 +30,8 @@ const GOLDEN_QUERY_EXEMPT: ReadonlySet<string> = new Set([
   "@koi/gateway-nexus", // HA SessionStore backend — sits outside the agent loop, no tool/middleware surface
   "@koi/dashboard-api", // Headless HTTP+SSE handler — sits outside the agent loop, no tool/middleware surface
   "@koi/dashboard-client", // Read-only HTTP/WS SDK consumed by dashboards — sits outside the agent loop, no tool/middleware surface
+  "@koi/scratchpad-conformance", // bun:test conformance harness — exercised by adapter test files, not the agent loop
+  "@koi/workspace-conformance", // bun:test conformance harness — exercised by adapter test files, not the agent loop
 ]);
 
 /** Files that count as golden query test files. */

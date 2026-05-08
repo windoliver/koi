@@ -115,6 +115,8 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/permissions-nexus",
   "@koi/plugins",
   "@koi/sandbox-conformance",
+  "@koi/scratchpad-conformance",
+  "@koi/workspace-conformance",
   "@koi/sandbox-daytona",
   "@koi/sandbox-docker",
   "@koi/sandbox-e2b",

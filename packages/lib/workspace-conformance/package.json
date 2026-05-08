@@ -1,7 +1,7 @@
 {
-  "name": "@koi/scratchpad-local",
-  "description": "In-memory ScratchpadComponent with CAS, TTL, and glob filtering",
-  "version": "0.0.0",
+  "name": "@koi/workspace-conformance",
+  "description": "Shared bun:test conformance suite for WorkspaceBackend implementations",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -11,7 +11,7 @@
     }
   },
   "scripts": {
-    "build": "bun ../../../scripts/run-tsup.ts",
+    "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test"
@@ -19,7 +19,5 @@
   "dependencies": {
     "@koi/core": "workspace:*"
   },
-  "devDependencies": {
-    "@koi/scratchpad-conformance": "workspace:*"
-  }
+  "devDependencies": {}
 }
