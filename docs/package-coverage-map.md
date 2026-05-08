@@ -19,7 +19,7 @@ Current snapshot:
 | lib | 139 | 718 | 121 |
 | meta | 3 | 109 | 3 |
 | mm | 12 | 54 | 12 |
-| net | 10 | 90 | 10 |
+| net | 10 | 91 | 10 |
 | sandbox | 11 | 58 | 11 |
 | sched | 5 | 22 | 5 |
 | security | 20 | 109 | 20 |
@@ -211,7 +211,7 @@ Each line shows package name, package directory, package description, test-file 
 
 ## net (10)
 
-- `@koi/daemon` (packages/net/daemon) - OS-process supervisor and worker backends (subprocess) for long-running agent workers. Tests: 14. Docs: docs/L2/daemon.md.
+- `@koi/daemon` (packages/net/daemon) - OS-process supervisor and worker backends (subprocess) for long-running agent workers. Tests: 15. Docs: docs/L2/daemon.md.
 - `@koi/gateway` (packages/net/gateway) - WebSocket gateway core — routing, auth, sequencing, backpressure (v2 minimal, no node registry or tool routing). Tests: 9. Docs: docs/L2/gateway.md.
 - `@koi/gateway-canvas` (packages/net/gateway-canvas) - Canvas HTTP server: surface CRUD with ETag CAS and SSE streaming for real-time agent-rendered content. Tests: 3. Docs: docs/L2/gateway-canvas.md.
 - `@koi/gateway-http` (packages/net/gateway-http) - Production HTTP/WS gateway: HMAC auth, replay/idempotency, rate limits, CORS, audit log, graceful shutdown. Tests: 22. Docs: docs/L2/gateway-http.md.

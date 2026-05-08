@@ -205,6 +205,45 @@ The backend reuses the session when it already exists, allocates a distinct
 pane per worker, and honors `watch(id, signal?)` aborts so supervisor stop and
 shutdown do not leak backend watchers.
 
+### createRemoteBackend
+
+Nexus-backed worker backend for remote execution. Workers are spawned and
+controlled through a `NexusTransport`-driven JSON-RPC surface
+(`workers.spawn`, `workers.events`, `workers.status`, `workers.terminate`,
+`workers.kill`, `workers.probe`). Local state mirrors remote lifecycle:
+
+```typescript
+import { createRemoteBackend } from "@koi/daemon";
+
+const backend = createRemoteBackend({
+  transport,                    // NexusTransport
+  pollIntervalMs: 200,          // events poll cadence
+  pruneGraceMs: 30_000,         // delay before evicting terminated state
+  supportsHeartbeat: false,     // opt-in; remote endpoint must emit heartbeat events
+});
+// backend.kind === "remote"
+// backend.isAvailable() calls workers.probe
+```
+
+Hardening invariants:
+
+- Remote events are scoped to the requested `workerId`; cross-worker events
+  in a polled batch are dropped.
+- Unknown event kinds are skipped (forward-compatible). Unknown
+  `exited.state` fails closed (terminal events require known process state).
+- Same-id respawn terminates the previous generation and waits for a
+  confirming `workers.status` (alive=false / NOT_FOUND) before swapping local
+  state. If the previous generation is still alive, spawn returns `CONFLICT`.
+- `terminate`/`kill` only mark the worker dead on `NOT_FOUND`; otherwise
+  liveness is confirmed via a follow-up `workers.status` from `isAlive()`.
+- Transient transport or validation failures from `workers.status` preserve
+  cached liveness instead of falsely reporting the worker dead.
+- Concurrent watchers on the same id are rejected; the first watcher owns
+  polling and shared state.
+- Lifecycle events delivered from the spawn buffer and the first poll are
+  deduplicated so a server cursor that sits before its returned events
+  cannot replay them.
+
 ### createFileSessionRegistry
 
 File-backed cross-process session registry. One JSON file per worker under the

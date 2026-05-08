@@ -1723,6 +1723,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",

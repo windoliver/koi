@@ -10,6 +10,7 @@
     { "path": "../../kernel/engine" },
     { "path": "../../kernel/engine-compose" },
     { "path": "../../kernel/engine-reconcile" },
-    { "path": "../../lib/errors" }
+    { "path": "../../lib/errors" },
+    { "path": "../../lib/nexus-client" }
   ]
 }

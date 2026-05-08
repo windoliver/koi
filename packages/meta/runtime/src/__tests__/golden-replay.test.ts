@@ -12581,6 +12581,128 @@ describe("Golden: @koi/daemon", () => {
 
     await supervisorResult.value.shutdown("test");
   });
+
+  test("remote backend — spawn issues workers.spawn over the transport", async () => {
+    const { createRemoteBackend } = await import("@koi/daemon");
+    const { agentId, workerId } = await import("@koi/core");
+
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const backend = createRemoteBackend({
+      transport: {
+        kind: "http",
+        call: async <T>(
+          method: string,
+          params: Record<string, unknown>,
+        ): Promise<{ ok: true; value: T } | { ok: false; error: never }> => {
+          calls.push({ method, params });
+          if (method === "workers.spawn") {
+            return {
+              ok: true,
+              value: {
+                startedAt: 100,
+                pid: 4242,
+                cursor: 0,
+                events: [],
+              } as unknown as T,
+            };
+          }
+          if (method === "workers.events") {
+            return {
+              ok: true,
+              value: { events: [], nextCursor: 0, alive: true } as unknown as T,
+            };
+          }
+          return { ok: true, value: undefined as unknown as T };
+        },
+        close: () => {},
+      },
+    });
+
+    const spawned = await backend.spawn({
+      workerId: workerId("remote-golden-1"),
+      agentId: agentId("agent-remote-golden-1"),
+      command: ["bun", "--version"],
+    });
+    expect(spawned.ok).toBe(true);
+    if (!spawned.ok) return;
+    expect(spawned.value.backendKind).toBe("remote");
+    expect(spawned.value.startedAt).toBe(100);
+    expect(calls.map((c) => c.method)).toEqual(["workers.spawn"]);
+  });
+
+  test("remote backend — drops cross-worker events from polled batches", async () => {
+    const { createRemoteBackend } = await import("@koi/daemon");
+    const { agentId, workerId } = await import("@koi/core");
+
+    let pollCount = 0;
+    const backend = createRemoteBackend({
+      transport: {
+        kind: "http",
+        call: async <T>(
+          method: string,
+        ): Promise<{ ok: true; value: T } | { ok: false; error: never }> => {
+          if (method === "workers.spawn") {
+            return {
+              ok: true,
+              value: { startedAt: 1, cursor: 0, events: [] } as unknown as T,
+            };
+          }
+          if (method === "workers.events") {
+            pollCount += 1;
+            if (pollCount === 1) {
+              return {
+                ok: true,
+                value: {
+                  events: [
+                    {
+                      kind: "exited",
+                      workerId: "OTHER-WORKER",
+                      at: 50,
+                      code: 0,
+                      state: "terminated",
+                    },
+                    {
+                      kind: "exited",
+                      workerId: "remote-golden-2",
+                      at: 60,
+                      code: 0,
+                      state: "terminated",
+                    },
+                  ],
+                  nextCursor: 1,
+                  alive: false,
+                } as unknown as T,
+              };
+            }
+            return {
+              ok: true,
+              value: { events: [], nextCursor: 1, alive: true } as unknown as T,
+            };
+          }
+          return { ok: true, value: undefined as unknown as T };
+        },
+        close: () => {},
+      },
+      pollIntervalMs: 1,
+    });
+
+    const id = workerId("remote-golden-2");
+    const spawned = await backend.spawn({
+      workerId: id,
+      agentId: agentId("agent-remote-golden-2"),
+      command: ["bun", "--version"],
+    });
+    expect(spawned.ok).toBe(true);
+
+    const kinds: string[] = [];
+    const ids: string[] = [];
+    for await (const ev of backend.watch(id)) {
+      kinds.push(ev.kind);
+      ids.push(ev.workerId);
+    }
+    expect(ids.every((wid) => wid === "remote-golden-2")).toBe(true);
+    expect(kinds).toContain("exited");
+  });
 });
 
 describe("Golden: @koi/middleware-strict-agentic", () => {
