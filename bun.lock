@@ -1592,6 +1592,7 @@
         "@koi/scheduler-nexus": "workspace:*",
         "@koi/scheduler-provider": "workspace:*",
         "@koi/scratchpad-local": "workspace:*",
+        "@koi/scratchpad-nexus": "workspace:*",
         "@koi/session": "workspace:*",
         "@koi/settings": "workspace:*",
         "@koi/skill-distiller": "workspace:*",
@@ -1617,6 +1618,7 @@
         "@koi/violation-store-sqlite": "workspace:*",
         "@koi/watch-patterns": "workspace:*",
         "@koi/workspace": "workspace:*",
+        "@koi/workspace-nexus": "workspace:*",
         "zod": "4.3.6",
       },
       "devDependencies": {

@@ -167,7 +167,9 @@
     { "path": "../../security/violation-store-sqlite" },
     { "path": "../../lib/validation" },
     { "path": "../../lib/scratchpad-local" },
+    { "path": "../../lib/scratchpad-nexus" },
     { "path": "../../lib/workspace" },
+    { "path": "../../lib/workspace-nexus" },
     { "path": "../../lib/hash" }
   ]
 }
