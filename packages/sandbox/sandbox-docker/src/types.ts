@@ -29,6 +29,12 @@ export interface DockerContainer {
   readonly writeFile: (path: string, content: Uint8Array) => Promise<void>;
   readonly stop: () => Promise<void>;
   readonly remove: () => Promise<void>;
+  /**
+   * Detach from the container without removing it: stop only.
+   * The container survives so a later `findOrCreate(scope)` can reattach.
+   * Optional — only present on containers produced via the persistence path.
+   */
+  readonly detach?: (() => Promise<void>) | undefined;
 }
 
 export interface DockerCreateOpts {
@@ -50,10 +56,33 @@ export interface DockerCreateOpts {
    * Each entry is passed as `--tmpfs <path>`. Ignored when readOnlyRoot is false.
    */
   readonly tmpfsMounts?: readonly string[];
+  /**
+   * Optional Docker labels applied at create time (`--label key=value`).
+   * Used by the persistence path to tag a container with its scope so a later
+   * `findOrCreate(scope)` can locate it.
+   */
+  readonly labels?: Readonly<Record<string, string>>;
 }
+
+/** Lifecycle state of an existing container, normalized across docker versions. */
+export type DockerContainerState = "running" | "exited" | "stopped" | "dead" | "unknown";
 
 export interface DockerClient {
   readonly createContainer: (opts: DockerCreateOpts) => Promise<DockerContainer>;
+  /**
+   * Look up a container by exact label match. Returns the most recent matching
+   * container (running preferred over stopped) or `undefined` when none exists.
+   * Optional — clients without a persistence story omit this; the adapter
+   * treats persistence as unavailable when any of findContainer / inspectState
+   * / startContainer is missing.
+   */
+  readonly findContainer?:
+    | ((labels: Readonly<Record<string, string>>) => Promise<DockerContainer | undefined>)
+    | undefined;
+  /** Inspect the lifecycle state of a container by id. */
+  readonly inspectState?: ((id: string) => Promise<DockerContainerState>) | undefined;
+  /** Start a stopped container (no-op if already running). */
+  readonly startContainer?: ((id: string) => Promise<void>) | undefined;
 }
 
 export interface DockerAdapterConfig {

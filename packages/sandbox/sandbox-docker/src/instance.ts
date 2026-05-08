@@ -75,5 +75,8 @@ export function createDockerInstance(container: DockerContainer): SandboxInstanc
       await container.remove();
       if (stopError !== undefined) throw stopError;
     },
+    // Only surface detach when the container backend provides one (persistence path).
+    // L0 contract: detach pauses without removing so a later findOrCreate(scope) reattaches.
+    ...(container.detach !== undefined ? { detach: container.detach } : {}),
   };
 }

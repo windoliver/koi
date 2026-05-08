@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import type {
   DockerClient,
   DockerContainer,
+  DockerContainerState,
   DockerCreateOpts,
   DockerExecOpts,
   DockerExecResult,
@@ -288,8 +289,24 @@ function buildCreateArgs(opts: DockerCreateOpts): readonly string[] {
   for (const cap of opts.capAdd ?? []) args.push("--cap-add", cap);
   if (opts.readOnlyRoot === true) args.push("--read-only");
   for (const path of opts.tmpfsMounts ?? []) args.push("--tmpfs", path);
+  for (const [k, v] of Object.entries(opts.labels ?? {})) args.push("--label", `${k}=${v}`);
   args.push(opts.image, "sleep", "infinity");
   return args;
+}
+
+/**
+ * Map docker's `State.Status` field to the adapter-level `DockerContainerState`.
+ * Docker reports: created, running, paused, restarting, removing, exited, dead.
+ * We collapse paused/restarting/created → "stopped" so callers can simply
+ * call `startContainer` and re-attach.
+ */
+function mapInspectStatus(raw: string): DockerContainerState {
+  const s = raw.trim().toLowerCase();
+  if (s === "running") return "running";
+  if (s === "exited") return "exited";
+  if (s === "dead") return "dead";
+  if (s === "created" || s === "paused" || s === "restarting") return "stopped";
+  return "unknown";
 }
 
 function buildExecArgs(id: string, cmd: string, execOpts: DockerExecOpts): readonly string[] {
@@ -349,6 +366,13 @@ function makeContainer(id: string, env: Record<string, string>): DockerContainer
         throw new Error(`docker rm -f failed for ${id}`, { cause: r });
       }
     },
+    // Persistence: stop without remove so a later findOrCreate(scope) reattaches.
+    detach: async (): Promise<void> => {
+      const r = await runDocker(["stop", id], undefined, env);
+      if (r.exitCode !== 0) {
+        throw new Error(`docker stop failed for ${id}`, { cause: r });
+      }
+    },
   };
 }
 
@@ -380,6 +404,42 @@ export function createDefaultDockerClient(config?: DefaultDockerClientConfig): D
         throw e;
       }
       return makeContainer(id, env);
+    },
+    findContainer: async (
+      labels: Readonly<Record<string, string>>,
+    ): Promise<DockerContainer | undefined> => {
+      // Build --filter label=K=V flags from the supplied label set.
+      const filterArgs: string[] = [];
+      for (const [k, v] of Object.entries(labels)) {
+        filterArgs.push("--filter", `label=${k}=${v}`);
+      }
+      // Prefer running containers (so resume is faster). If none, fall back to all.
+      const psArgsRunning = ["ps", "-q", ...filterArgs];
+      const psArgsAll = ["ps", "-a", "-q", ...filterArgs];
+      const running = await runDocker(psArgsRunning, undefined, env);
+      const idsRaw =
+        running.exitCode === 0 && running.stdout.trim().length > 0
+          ? running.stdout
+          : (await runDocker(psArgsAll, undefined, env)).stdout;
+      const id = idsRaw
+        .split("\n")
+        .map((x) => x.trim())
+        .find((x) => x.length > 0);
+      if (id === undefined) return undefined;
+      return makeContainer(id, env);
+    },
+    inspectState: async (id: string): Promise<DockerContainerState> => {
+      const r = await runDocker(["inspect", "--format", "{{.State.Status}}", id], undefined, env);
+      // A missing/removed container reports a non-zero exit; treat as unknown
+      // so the adapter creates a fresh one rather than throwing.
+      if (r.exitCode !== 0) return "unknown";
+      return mapInspectStatus(r.stdout);
+    },
+    startContainer: async (id: string): Promise<void> => {
+      const r = await runDocker(["start", id], undefined, env);
+      if (r.exitCode !== 0) {
+        throw new Error(`docker start failed for ${id}`, { cause: r });
+      }
     },
   };
 }

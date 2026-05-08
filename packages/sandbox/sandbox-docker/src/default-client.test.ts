@@ -739,4 +739,210 @@ describe("createDefaultDockerClient", () => {
       }
     }
   });
+
+  // Persistence: labels passed to docker create as repeated --label K=V flags.
+  test("buildCreateArgs: passes --label K=V for each entry in opts.labels", async () => {
+    const createArgs: string[][] = [];
+    let callCount = 0;
+    // @ts-expect-error — test stub: returning a partial SubProcess for coverage
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((args: string[]) => {
+      callCount += 1;
+      createArgs.push(args);
+      if (callCount === 1) return fakeProc({ stdout: "lid\n", stderr: "", exitCode: 0 });
+      return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
+    });
+    try {
+      const client = createDefaultDockerClient();
+      await client.createContainer({
+        image: "ubuntu:22.04",
+        networkMode: "none",
+        labels: { "koi.sandbox.scope": "scope-A", "koi.sandbox.kind": "test" },
+      });
+      const first = createArgs[0] ?? [];
+      // Two --label flags expected, paired with the K=V values.
+      const labelIdxs = first.reduce<number[]>((acc, a, i) => {
+        if (a === "--label") acc.push(i);
+        return acc;
+      }, []);
+      expect(labelIdxs.length).toBe(2);
+      const values = labelIdxs.map((i) => first[i + 1]);
+      expect(values).toContain("koi.sandbox.scope=scope-A");
+      expect(values).toContain("koi.sandbox.kind=test");
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  // Persistence: container.detach calls `docker stop <id>` only (no rm).
+  test("container.detach calls docker stop only, never rm", async () => {
+    const allArgs: string[][] = [];
+    let callCount = 0;
+    // @ts-expect-error — test stub: returning a partial SubProcess for coverage
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((args: string[]) => {
+      callCount += 1;
+      allArgs.push(args);
+      if (callCount === 1) return fakeProc({ stdout: "did\n", stderr: "", exitCode: 0 });
+      return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
+    });
+    try {
+      const client = createDefaultDockerClient();
+      const c = await client.createContainer({ image: "ubuntu:22.04", networkMode: "none" });
+      const before = allArgs.length;
+      if (c.detach === undefined) throw new Error("detach must be exposed");
+      await c.detach();
+      const after = allArgs.slice(before);
+      expect(after.length).toBe(1);
+      // args[0] is "docker", args[1] is the subcommand.
+      expect(after[0]?.[1]).toBe("stop");
+      // Must not contain rm
+      expect(after[0]?.includes("rm")).toBe(false);
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  // Persistence: findContainer prefers running containers, returns first id.
+  test("findContainer: returns first running id when present", async () => {
+    const calls: string[][] = [];
+    // @ts-expect-error — test stub
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((args: string[]) => {
+      calls.push(args);
+      // First call (running ps): return a single id. args[1]="ps", args[2]="-q".
+      if (args[1] === "ps" && args[2] === "-q") {
+        return fakeProc({ stdout: "running-1\n", stderr: "", exitCode: 0 });
+      }
+      return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
+    });
+    try {
+      const client = createDefaultDockerClient();
+      if (client.findContainer === undefined) throw new Error("findContainer must exist");
+      const got = await client.findContainer({ "koi.sandbox.scope": "S" });
+      expect(got?.id).toBe("running-1");
+      // First call was the running-only ps query (args[0]=docker).
+      expect(calls[0]?.slice(1, 3)).toEqual(["ps", "-q"]);
+      expect(calls[0]).toContain("--filter");
+      expect(calls[0]).toContain("label=koi.sandbox.scope=S");
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  // Persistence: findContainer falls back to -a when no running match exists.
+  test("findContainer: falls back to ps -a when running result is empty", async () => {
+    const calls: string[][] = [];
+    // @ts-expect-error — test stub
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((args: string[]) => {
+      calls.push(args);
+      // running query → empty.
+      if (args[1] === "ps" && args[2] === "-q" && !args.includes("-a")) {
+        return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
+      }
+      // -a query → returns id.
+      if (args[1] === "ps" && args.includes("-a")) {
+        return fakeProc({ stdout: "stopped-1\n", stderr: "", exitCode: 0 });
+      }
+      return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
+    });
+    try {
+      const client = createDefaultDockerClient();
+      if (client.findContainer === undefined) throw new Error("findContainer must exist");
+      const got = await client.findContainer({ "koi.sandbox.scope": "S" });
+      expect(got?.id).toBe("stopped-1");
+      expect(calls.length).toBe(2);
+      expect(calls[1]?.slice(1, 4)).toEqual(["ps", "-a", "-q"]);
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  // Persistence: findContainer returns undefined when nothing matches.
+  test("findContainer: returns undefined when no container matches", async () => {
+    // @ts-expect-error — test stub
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) =>
+      fakeProc({ stdout: "", stderr: "", exitCode: 0 }),
+    );
+    try {
+      const client = createDefaultDockerClient();
+      if (client.findContainer === undefined) throw new Error("findContainer must exist");
+      const got = await client.findContainer({ "koi.sandbox.scope": "missing" });
+      expect(got).toBeUndefined();
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  // Persistence: inspectState maps docker State.Status to DockerContainerState.
+  test("inspectState: maps State.Status to DockerContainerState", async () => {
+    // Build a sequence of mocked outputs: running, exited, paused, dead, garbage.
+    const outputs = ["running", "exited", "paused", "dead", "weirdthing"];
+    let i = 0;
+    // @ts-expect-error — test stub
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) => {
+      const out = outputs[i] ?? "";
+      i += 1;
+      return fakeProc({ stdout: `${out}\n`, stderr: "", exitCode: 0 });
+    });
+    try {
+      const client = createDefaultDockerClient();
+      if (client.inspectState === undefined) throw new Error("inspectState must exist");
+      expect(await client.inspectState("c1")).toBe("running");
+      expect(await client.inspectState("c2")).toBe("exited");
+      expect(await client.inspectState("c3")).toBe("stopped");
+      expect(await client.inspectState("c4")).toBe("dead");
+      expect(await client.inspectState("c5")).toBe("unknown");
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  // Persistence: inspectState returns "unknown" when docker inspect fails (container removed).
+  test("inspectState: returns 'unknown' when docker inspect fails", async () => {
+    // @ts-expect-error — test stub
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) =>
+      fakeProc({ stdout: "", stderr: "no such object", exitCode: 1 }),
+    );
+    try {
+      const client = createDefaultDockerClient();
+      if (client.inspectState === undefined) throw new Error("inspectState must exist");
+      const state = await client.inspectState("missing");
+      expect(state).toBe("unknown");
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  // Persistence: startContainer issues `docker start <id>`.
+  test("startContainer: invokes docker start <id>", async () => {
+    const calls: string[][] = [];
+    // @ts-expect-error — test stub
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((args: string[]) => {
+      calls.push(args);
+      return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
+    });
+    try {
+      const client = createDefaultDockerClient();
+      if (client.startContainer === undefined) throw new Error("startContainer must exist");
+      await client.startContainer("xid");
+      // args[0] is "docker", args[1] is the subcommand.
+      expect(calls[0]?.[1]).toBe("start");
+      expect(calls[0]).toContain("xid");
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  // Persistence: startContainer throws on non-zero exit.
+  test("startContainer: throws when docker start fails", async () => {
+    // @ts-expect-error — test stub
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) =>
+      fakeProc({ stdout: "", stderr: "no such container", exitCode: 1 }),
+    );
+    try {
+      const client = createDefaultDockerClient();
+      if (client.startContainer === undefined) throw new Error("startContainer must exist");
+      await expect(client.startContainer("nope")).rejects.toThrow("docker start failed");
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
 });
