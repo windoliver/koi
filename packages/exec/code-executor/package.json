@@ -19,5 +19,7 @@
   "dependencies": {
     "@koi/core": "workspace:*"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@koi/sandbox-executor": "workspace:*"
+  }
 }

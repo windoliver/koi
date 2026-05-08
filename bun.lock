@@ -49,6 +49,9 @@
       "dependencies": {
         "@koi/core": "workspace:*",
       },
+      "devDependencies": {
+        "@koi/sandbox-executor": "workspace:*",
+      },
     },
     "packages/exec/hook-prompt": {
       "name": "@koi/hook-prompt",
