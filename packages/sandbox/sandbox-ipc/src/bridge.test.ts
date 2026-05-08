@@ -284,4 +284,59 @@ describe("createSandboxBridge", () => {
       },
     });
   });
+
+  test("adds the generated worker path to the effective read profile before command building", async () => {
+    const seen: {
+      profile?: BridgeConfig["profile"];
+      args?: readonly string[];
+    } = {};
+    const buildCommand: CommandBuilder = (profile, command, args) => {
+      seen.profile = profile;
+      seen.args = args;
+      return {
+        ok: true,
+        value: { executable: command, args: [...args] },
+      };
+    };
+
+    const mock = createMockSpawn({
+      onCreated(control) {
+        control.sendToHost({ kind: "ready" });
+      },
+      onHostMessage(_message, control) {
+        control.sendToHost({
+          kind: "result",
+          output: "ok",
+          durationMs: 1,
+        });
+        control.exitWith(0);
+      },
+    });
+
+    const bridge = await createSandboxBridge(
+      createConfig({
+        profile: {
+          filesystem: {
+            defaultReadAccess: "closed",
+            allowRead: ["/usr"],
+            allowWrite: ["/tmp"],
+          },
+          network: { allow: false },
+          resources: { timeoutMs: 25, maxMemoryMb: 128 },
+        },
+        buildCommand,
+      }),
+      { spawnFn: mock.spawnFn },
+    );
+
+    try {
+      const result = await bridge.execute("return 'ok';", {});
+      expect(result.ok).toBe(true);
+
+      expect(seen.args).toEqual(["run", expect.any(String)]);
+      expect(seen.profile?.filesystem.allowRead).toContain(seen.args?.[1]);
+    } finally {
+      await bridge.dispose();
+    }
+  });
 });

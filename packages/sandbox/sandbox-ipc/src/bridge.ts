@@ -2,6 +2,7 @@ import type { ExecutionContext, JsonObject, Result, SandboxProfile } from "@koi/
 import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { serialize } from "node:v8";
 import { parseWorkerMessage } from "./protocol.js";
 import type {
   BridgeConfig,
@@ -135,6 +136,21 @@ function applyContextToProfile(
   };
 }
 
+function ensureReadablePath(profile: SandboxProfile, path: string): SandboxProfile {
+  const allowRead = profile.filesystem.allowRead ?? [];
+  if (allowRead.includes(path)) {
+    return profile;
+  }
+
+  return {
+    ...profile,
+    filesystem: {
+      ...profile.filesystem,
+      allowRead: [...allowRead, path],
+    },
+  };
+}
+
 function mapWorkerErrorCode(code: ErrorMessage["code"]): IpcErrorCode {
   switch (code) {
     case "TIMEOUT":
@@ -152,22 +168,27 @@ function processResultMessage(
   message: ResultMessage,
   maxResultBytes: number,
   spawnDurationMs: number,
+  serialization: "advanced" | "json",
 ): Result<BridgeResult, IpcError> {
-  let serialized: string;
+  let sizeBytes: number;
   try {
-    serialized = JSON.stringify(message.output ?? null);
+    if (serialization === "advanced") {
+      sizeBytes = serialize(message.output).byteLength;
+    } else {
+      const serialized = JSON.stringify(message.output ?? null);
+      sizeBytes = Buffer.byteLength(serialized, "utf8");
+    }
   } catch (error) {
     return {
       ok: false,
       error: createIpcError(
         "DESERIALIZE",
-        `Result is not JSON-serializable: ${error instanceof Error ? error.message : String(error)}`,
+        `Result could not be serialized for ${serialization} IPC: ${error instanceof Error ? error.message : String(error)}`,
         { durationMs: message.durationMs },
       ),
     };
   }
 
-  const sizeBytes = Buffer.byteLength(serialized, "utf8");
   if (sizeBytes > maxResultBytes) {
     return {
       ok: false,
@@ -193,6 +214,22 @@ function processResultMessage(
   };
 }
 
+function drainStream(stream: ReadableStream<Uint8Array> | null): void {
+  if (stream === null) {
+    return;
+  }
+
+  void stream
+    .pipeTo(
+      new WritableStream<Uint8Array>({
+        write() {
+          // Discard child stdio without buffering it in host memory.
+        },
+      }),
+    )
+    .catch(() => {});
+}
+
 function defaultSpawnFn(
   command: readonly string[],
   options: {
@@ -212,12 +249,8 @@ function defaultSpawnFn(
     },
   });
 
-  if (proc.stdout !== null) {
-    void new Response(proc.stdout).text().catch(() => {});
-  }
-  if (proc.stderr !== null) {
-    void new Response(proc.stderr).text().catch(() => {});
-  }
+  drainStream(proc.stdout);
+  drainStream(proc.stderr);
 
   return {
     pid: proc.pid,
@@ -274,7 +307,10 @@ export async function createSandboxBridge(
       execOptions?.timeoutMs ?? config.profile.resources.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const bridgeTimeoutMs = requestTimeoutMs + graceMs;
     const maxResultBytes = execOptions?.maxResultBytes ?? defaultMaxResultBytes;
-    const executionProfile = applyContextToProfile(config.profile, execOptions?.context);
+    const executionProfile = ensureReadablePath(
+      applyContextToProfile(config.profile, execOptions?.context),
+      workerPath,
+    );
     const builtCommand = config.buildCommand(executionProfile, "bun", ["run", workerPath]);
 
     if (!builtCommand.ok) {
@@ -395,7 +431,7 @@ export async function createSandboxBridge(
         }
 
         if (message.kind === "result") {
-          settle(processResultMessage(message, maxResultBytes, spawnDurationMs));
+          settle(processResultMessage(message, maxResultBytes, spawnDurationMs, serialization));
           return;
         }
 

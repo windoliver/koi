@@ -87,4 +87,29 @@ describe("sandbox-ipc real Bun child integration", () => {
       await bridge.dispose();
     }
   });
+
+  test("preserves BigInt results when advanced serialization is enabled", async () => {
+    const buildCommand: CommandBuilder = (_profile, command, args) => ({
+      ok: true,
+      value: { executable: command, args: [...args] },
+    });
+
+    const bridge = await createSandboxBridge(createIntegrationConfig(buildCommand));
+
+    try {
+      const result = await bridge.execute("return 42n;", {});
+
+      expect(result).toEqual({
+        ok: true,
+        value: {
+          output: 42n,
+          durationMs: expect.any(Number),
+          exitCode: 0,
+          spawnDurationMs: expect.any(Number),
+        },
+      });
+    } finally {
+      await bridge.dispose();
+    }
+  });
 });
