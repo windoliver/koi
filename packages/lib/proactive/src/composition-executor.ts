@@ -102,6 +102,8 @@ export interface CompositionExecutionContext {
 const DEFAULT_ALLOWED_NOTIFY_CHANNELS: readonly string[] = ["inbox"];
 
 type ExecutedStepResult = Extract<CompositionStepResult, { status: "executed" }>;
+type UnsupportedStepResult = Extract<CompositionStepResult, { status: "unsupported" }>;
+type ProgressedStepResult = ExecutedStepResult | UnsupportedStepResult;
 
 /**
  * Branded error indicating a pre-commit validation rejection — no durable
@@ -335,31 +337,23 @@ function stepFailed(
   };
 }
 
+function executedCount(results: readonly ProgressedStepResult[]): number {
+  let n = 0;
+  for (const r of results) if (r.status === "executed") n += 1;
+  return n;
+}
+
 function failedResult(
   triggerId: string,
-  prior: readonly ExecutedStepResult[],
+  prior: readonly ProgressedStepResult[],
   failure: Extract<CompositionStepResult, { status: "failed" }>,
 ): CompositionExecutionResult {
   return {
     triggerId,
     status: "failed",
     stepResults: [...prior, failure],
-    executedCount: prior.length,
+    executedCount: executedCount(prior),
     error: failure.error,
-  };
-}
-
-function unsupportedResult(
-  triggerId: string,
-  prior: readonly ExecutedStepResult[],
-  unsupported: Extract<CompositionStepResult, { status: "unsupported" }>,
-): CompositionExecutionResult {
-  return {
-    triggerId,
-    status: "unsupported",
-    stepResults: [...prior, unsupported],
-    executedCount: prior.length,
-    error: unsupported.error,
   };
 }
 
@@ -409,7 +403,8 @@ export function createCompositionExecutor(
       const allowedChannels =
         context.allowedNotifyChannels ?? DEFAULT_ALLOWED_NOTIFY_CHANNELS;
 
-      const stepResults: ExecutedStepResult[] = [];
+      const stepResults: ProgressedStepResult[] = [];
+      let lastUnsupported: UnsupportedStepResult | undefined;
 
       // Per-content occurrence counter — the Nth identical step in a plan
       // gets occurrenceIndex N. Stable across reorders of unrelated steps.
@@ -584,8 +579,15 @@ export function createCompositionExecutor(
 
             case "spawn_agent":
             case "forge_skill":
-            case "tool_call":
-              return unsupportedResult(trigger.id, stepResults, stepUnsupported(step));
+            case "tool_call": {
+              // Don't bail on unsupported: record the step and continue so
+              // later supported steps (e.g. notify_user) still run. Final
+              // result.status reflects "unsupported" overall.
+              const unsupported = stepUnsupported(step);
+              stepResults.push(unsupported);
+              lastUnsupported = unsupported;
+              break;
+            }
           }
         } catch (cause) {
           if (claimedKey !== undefined) {
@@ -624,11 +626,24 @@ export function createCompositionExecutor(
         }
       }
 
+      if (lastUnsupported !== undefined) {
+        return {
+          triggerId: trigger.id,
+          status: "unsupported",
+          stepResults,
+          executedCount: executedCount(stepResults),
+          error: lastUnsupported.error,
+        };
+      }
+
+      // No unsupported steps reached; narrow stepResults to the executed-only
+      // shape required by the "executed" result variant.
+      const executedSteps = stepResults as readonly ExecutedStepResult[];
       return {
         triggerId: trigger.id,
         status: "executed",
-        stepResults,
-        executedCount: stepResults.length,
+        stepResults: executedSteps,
+        executedCount: executedSteps.length,
       };
     },
   };

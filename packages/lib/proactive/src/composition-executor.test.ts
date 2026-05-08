@@ -453,7 +453,7 @@ describe("createCompositionExecutor", () => {
     expect(notifications).toHaveLength(1);
   });
 
-  test("stops on unsupported spawn_agent after executed prefix", async () => {
+  test("records unsupported spawn_agent after executed prefix", async () => {
     const { scheduler } = schedulerStub();
     const notifications: unknown[] = [];
     const { log } = inMemoryExecutionLog();
@@ -496,7 +496,7 @@ describe("createCompositionExecutor", () => {
     expect(notifications).toHaveLength(1);
   });
 
-  test("stops on unsupported forge_skill", async () => {
+  test("records unsupported forge_skill", async () => {
     const { scheduler } = schedulerStub();
     const executor = createCompositionExecutor({
       agentId: agentId("agent-1"),
@@ -543,7 +543,7 @@ describe("createCompositionExecutor", () => {
     expect(result.stepResults[0]?.status).toBe("unsupported");
   });
 
-  test("stops on unsupported tool_call after executed prefix", async () => {
+  test("records unsupported tool_call after executed prefix", async () => {
     const { scheduler } = schedulerStub();
     const notifications: unknown[] = [];
     const { log } = inMemoryExecutionLog();
@@ -1318,6 +1318,46 @@ describe("createCompositionExecutor", () => {
     expect(opts.idempotencyKey).toMatch(/^cmp-[0-9a-f]{32}$/);
     // Other options pass through unchanged.
     expect(opts.priority).toBe(3);
+  });
+
+  test("unsupported step does not abort later supported steps in the same plan", async () => {
+    const { scheduler } = schedulerStub();
+    const notifications: unknown[] = [];
+    const { log } = inMemoryExecutionLog();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async (notification) => {
+        notifications.push(notification);
+        return { delivered: true };
+      },
+      executionLog: log,
+    });
+    // Mirrors the rule planner's error_rate output: spawn_agent (currently
+    // unsupported) followed by notify_user (must still fire).
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [
+        {
+          kind: "spawn_agent",
+          agentType: "diagnostic",
+          input: { kind: "text", text: "diagnose" },
+          delivery: { kind: "deferred" },
+        },
+        { kind: "notify_user", channel: "inbox", message: "alert", priority: "high" },
+      ],
+      estimatedCost: 2,
+      requiresApproval: false,
+    };
+
+    const result = await executor.execute(trigger(), plan);
+
+    expect(result.status).toBe("unsupported");
+    expect(result.executedCount).toBe(1);
+    expect(result.stepResults[0]?.status).toBe("unsupported");
+    expect(result.stepResults[1]?.status).toBe("executed");
+    expect(notifications).toHaveLength(1);
   });
 
   test("identical steps in one plan each fire (occurrence index disambiguates)", async () => {
