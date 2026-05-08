@@ -25,11 +25,10 @@ import type {
   TransitionReason,
   VisibilityContext,
 } from "@koi/core";
-import { agentGroupId, agentId, matchesFilter, VALID_TRANSITIONS, zoneId } from "@koi/core";
+import { agentId, matchesFilter, VALID_TRANSITIONS, zoneId } from "@koi/core";
 import { createListenerSet } from "@koi/event-delivery";
 import type { NexusRegistryConfig } from "./config.js";
 import { DEFAULT_NEXUS_REGISTRY_CONFIG, validateNexusRegistryConfig } from "./config.js";
-import type { NexusAgent } from "./nexus-rpc.js";
 import {
   nexusDeleteAgent,
   nexusGetAgent,
@@ -38,122 +37,8 @@ import {
   nexusTransition,
   nexusUpdateMetadata,
 } from "./nexus-rpc.js";
-import { decodeKoiStatus, encodeKoiStatus, mapKoiToNexus, mapNexusToKoi } from "./state-mapping.js";
-
-/**
- * Metadata keys owned by the registry adapter. Callers must not overwrite
- * these via patch() — they encode lifecycle and identity that the adapter
- * treats as authoritative when re-hydrating from Nexus, and accepting
- * caller writes would let `metadata.koi:terminated = true` (or a forged
- * agentType/parentId/etc.) cross the user-data → registry-state trust
- * boundary on the next refetch.
- */
-const RESERVED_METADATA_KEYS: ReadonlySet<string> = new Set([
-  "koi:status",
-  "koi:terminated",
-  "agentType",
-  "registeredAt",
-  "priority",
-  "parentId",
-  "spawner",
-  "groupId",
-  "zoneId",
-]);
-
-/**
- * Deep-freeze a registry entry before storing or returning it. TypeScript
- * `readonly` is compile-only; without runtime freezing, callers (including
- * watch listeners) could mutate `entry.metadata` in place. Later
- * `transition()` / `patch()` rebuild outbound Nexus payloads from
- * `current.metadata`, so an in-process mutation could inject reserved
- * keys (`koi:terminated`, `agentType`, etc.) that bypass the validation
- * path in `patch({ metadata })` and corrupt lifecycle/identity state.
- */
-function deepFreeze(value: unknown): void {
-  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
-  Object.freeze(value);
-  for (const key of Object.keys(value)) {
-    deepFreeze((value as Record<string, unknown>)[key]);
-  }
-}
-
-function freezeEntry(entry: RegistryEntry): RegistryEntry {
-  // Deep-freeze metadata: nested objects (notably the `koi:status` payload
-  // and any caller-supplied object values) must also be immutable, otherwise
-  // `metadata["koi:status"].phase = "terminated"` after lookup() would be
-  // re-sent verbatim by the next transition()/patch() rebuild.
-  deepFreeze(entry.metadata);
-  deepFreeze(entry.status);
-  return Object.freeze(entry);
-}
-
-function mapNexusAgentToEntry(agent: NexusAgent): RegistryEntry {
-  const metadata = agent.metadata ?? {};
-  const koiStatus = decodeKoiStatus(metadata);
-  const remotePhase = mapNexusToKoi(agent.state, metadata);
-
-  // Trust koi:status only when its phase agrees with the authoritative
-  // Nexus state. After a partial-failure path (agent_transition committed,
-  // update_agent_metadata failed), Nexus has advanced but the metadata
-  // blob is stale — falling back to the live state prevents phase rollback
-  // on the next poll.
-  //
-  // Special case: Nexus `SUSPENDED` is lossy — both Koi `suspended` and
-  // `terminated` map to it. The phase comparison alone is not enough to
-  // detect a stale metadata blob, since (e.g.) a stale `phase: "suspended"`
-  // matches the lossy decode of a remote `terminated` agent. Require that
-  // metadata.koi:terminated explicitly match the encoded phase before
-  // trusting the blob in this ambiguous case.
-  const remoteIsAmbiguousSuspended = agent.state === "SUSPENDED";
-  const terminatedFlag = metadata["koi:terminated"] === true;
-  const ambiguityResolved =
-    !remoteIsAmbiguousSuspended ||
-    (koiStatus?.phase === "terminated" && terminatedFlag) ||
-    (koiStatus?.phase === "suspended" && !terminatedFlag);
-
-  // Trust koi:status when it round-trips through the same Nexus state, not
-  // only when it equals the default remotePhase. CONNECTED admits both
-  // `created` and `running`, IDLE admits both `waiting` and `idle`. Without
-  // this, a `created` agent registered through this adapter would be
-  // observable as `running` on every refetch — losing the `created → running`
-  // transition event that startup observers (ChildHandle, spawn-child) rely
-  // on.
-  const koiStatusRoundTrips =
-    koiStatus !== undefined && mapKoiToNexus(koiStatus.phase) === agent.state;
-  const trustedKoiStatus =
-    koiStatus !== undefined && koiStatusRoundTrips && ambiguityResolved ? koiStatus : undefined;
-
-  const status: AgentStatus = trustedKoiStatus ?? {
-    phase: remotePhase,
-    generation: agent.generation ?? 0,
-    conditions: [],
-    lastTransitionAt: Date.now(),
-  };
-
-  const parentId = typeof metadata.parentId === "string" ? agentId(metadata.parentId) : undefined;
-  const spawner = typeof metadata.spawner === "string" ? agentId(metadata.spawner) : undefined;
-  const groupIdValue =
-    typeof metadata.groupId === "string" ? agentGroupId(metadata.groupId) : undefined;
-  const zoneIdValue =
-    typeof agent.zone_id === "string"
-      ? zoneId(agent.zone_id)
-      : typeof metadata.zoneId === "string"
-        ? zoneId(metadata.zoneId)
-        : undefined;
-
-  return {
-    agentId: agentId(agent.agent_id),
-    status,
-    agentType: (metadata.agentType as "copilot" | "worker") ?? "worker",
-    metadata,
-    registeredAt: (metadata.registeredAt as number) ?? Date.now(),
-    priority: (metadata.priority as number) ?? 10,
-    ...(parentId !== undefined ? { parentId } : {}),
-    ...(spawner !== undefined ? { spawner } : {}),
-    ...(groupIdValue !== undefined ? { groupId: groupIdValue } : {}),
-    ...(zoneIdValue !== undefined ? { zoneId: zoneIdValue } : {}),
-  };
-}
+import { freezeEntry, mapNexusAgentToEntry, RESERVED_METADATA_KEYS } from "./projection.js";
+import { encodeKoiStatus, mapKoiToNexus } from "./state-mapping.js";
 
 /**
  * Create a Nexus-backed AgentRegistry.
