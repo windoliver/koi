@@ -307,6 +307,28 @@ describe("createFetchSseAdapter", () => {
     await waitFor(() => closes === 1);
     expect(closes).toBe(1);
   });
+
+  test("seq high-water mark advances strictly — skipped seq numbers are still ignored if a later batch lands first", async () => {
+    // Guards the bounded-memory dedup invariant: a delayed earlier batch must
+    // not replay events after a higher-seq batch has been observed.
+    const harness = makeStreamHarness();
+    const seen: WsEvent[] = [];
+    const adapter = createFetchSseAdapter(harness.fetchImpl);
+    const teardown = adapter.open("http://h:1", ["metric"], {
+      onEvent: (event) => seen.push(event),
+    });
+
+    harness.push(makeBatch([metricEvent()], 5));
+    await waitFor(() => seen.length === 1);
+    // A late-delivered older batch (seq=3) must be dropped by the high-water
+    // mark, even though we have not seen seq=3 before.
+    harness.push(makeBatch([metricEvent()], 3));
+    harness.push(makeBatch([metricEvent()], 6));
+    await waitFor(() => seen.length === 2);
+
+    expect(seen).toHaveLength(2);
+    teardown.close();
+  });
 });
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
