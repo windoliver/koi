@@ -604,6 +604,14 @@ export async function resolveFileSystemAsync(
       }
       return false;
     };
+    // Quarantine flag: set when addMount commits a mutation we cannot prove
+    // is safe (e.g. pathUnknown + listMounts verification fails) AND best-
+    // effort rollback could not confirm cleanup. While quarantined, all
+    // subsequent add/remove mutations are refused so callers cannot continue
+    // operating against a transport whose mount routing is in an unknown
+    // state. Lifted only when the operator restarts the session.
+    let transportQuarantined = false;
+    let quarantineReason = "";
     const guardedTransport: import("@koi/fs-nexus").NexusTransport =
       ((): import("@koi/fs-nexus").NexusTransport => {
         if (protectedRoots.length === 0) return transport;
@@ -612,6 +620,16 @@ export async function resolveFileSystemAsync(
         const wrapped: Record<string, unknown> = { ...transport };
         if (innerRemove !== undefined) {
           wrapped.removeMount = async (path: string) => {
+            if (transportQuarantined) {
+              return {
+                ok: false,
+                error: {
+                  code: "INTERNAL",
+                  message: `Mount mutations are quarantined for this session: ${quarantineReason}`,
+                  retryable: RETRYABLE_DEFAULTS.INTERNAL,
+                },
+              };
+            }
             if (isPathProtectedByUnmount(path)) {
               return {
                 ok: false,
@@ -627,6 +645,16 @@ export async function resolveFileSystemAsync(
         }
         if (innerAdd !== undefined) {
           wrapped.addMount = async (uri: string, at?: string | undefined) => {
+            if (transportQuarantined) {
+              return {
+                ok: false,
+                error: {
+                  code: "INTERNAL",
+                  message: `Mount mutations are quarantined for this session: ${quarantineReason}`,
+                  retryable: RETRYABLE_DEFAULTS.INTERNAL,
+                },
+              };
+            }
             // Pre-commit guard for the explicit `at` case.
             if (typeof at === "string" && isPathProtectedByMount(at)) {
               return {
@@ -655,13 +683,30 @@ export async function resolveFileSystemAsync(
               if (protectedRoots.length > 0 && transport.listMounts !== undefined) {
                 const listed = await transport.listMounts();
                 if (!listed.ok) {
-                  // Cannot verify safety. Fail closed: best-effort rollback of
-                  // *all* mounts that aren't in preMounts (we don't know which).
+                  // Cannot verify safety. The bridge committed *something* and
+                  // we have no authoritative way to know if it overlays a
+                  // protected root. Best-effort rollback by attempting to
+                  // remove the URI directly (some bridges accept URI as a
+                  // remove target), then quarantine the transport so further
+                  // mutations are refused until session restart.
+                  let cleanupAttempted = false;
+                  let cleanupOk = false;
+                  if (innerRemove !== undefined) {
+                    cleanupAttempted = true;
+                    try {
+                      const rb = await innerRemove(uri);
+                      cleanupOk = rb.ok;
+                    } catch {
+                      cleanupOk = false;
+                    }
+                  }
+                  transportQuarantined = true;
+                  quarantineReason = `addMount(${uri}) returned pathUnknown and listMounts verification failed (${listed.error.message}); cleanup ${cleanupAttempted ? (cleanupOk ? "succeeded but unverified" : "failed") : "unavailable"}. Restart the session to recover.`;
                   return {
                     ok: false,
                     error: {
                       code: "INTERNAL",
-                      message: `addMount succeeded with pathUnknown and listMounts could not verify protected-root safety: ${listed.error.message}. The bridge mount may be live; run /mounts manually and /unmount any unexpected entries before continuing.`,
+                      message: quarantineReason,
                       retryable: RETRYABLE_DEFAULTS.INTERNAL,
                     },
                   };

@@ -240,14 +240,48 @@ function parseMountArgs(args: string):
   };
 }
 
+/**
+ * Strip C0 controls and ANSI/CSI/OSC escape sequences from connector-supplied
+ * text before sending it to the terminal. Mount descriptions are sourced from
+ * connector READMEs (untrusted) and would otherwise let a hostile or
+ * compromised connector inject control sequences into the operator UI to
+ * spoof notices, hide output, or manipulate the cursor. Keeps tabs and
+ * newlines because they're useful in multi-line README excerpts.
+ */
+// Built via RegExp constructor + string concatenation rather than regex
+// literals so Biome's noControlCharactersInRegex lint doesn't trip on the
+// explicit control-character classes — these regexes need to match control
+// chars by definition.
+const ESC = String.fromCharCode(0x1b);
+const BEL = String.fromCharCode(0x07);
+const SANITIZE_CSI_OSC = new RegExp(`${ESC}[\\[\\]][^${BEL}${ESC}]*?(?:${BEL}|${ESC}\\\\)`, "g");
+const SANITIZE_BARE_ESC = new RegExp(`${ESC}.`, "g");
+const SANITIZE_C0_DEL = new RegExp(
+  `[${String.fromCharCode(0x00)}-${String.fromCharCode(0x08)}${String.fromCharCode(0x0b)}${String.fromCharCode(0x0c)}${String.fromCharCode(0x0e)}-${String.fromCharCode(0x1f)}${String.fromCharCode(0x7f)}]`,
+  "g",
+);
+function sanitizeConnectorText(value: string): string {
+  // Drop ESC-prefixed sequences first (covers CSI ESC[..., OSC ESC]...), then
+  // any remaining bare ESC + next char, then C0 controls except \t \n \r, and
+  // DEL. Tabs/newlines/CR are preserved so multi-line README excerpts render.
+  return value
+    .replace(SANITIZE_CSI_OSC, "")
+    .replace(SANITIZE_BARE_ESC, "")
+    .replace(SANITIZE_C0_DEL, "");
+}
+
 function formatMountedConnectors(entries: readonly MountDescription[]): string {
   if (entries.length === 0) return "[No mounts]";
   return entries
     .map((entry) => {
-      const details =
+      // path/connector are operator-controlled identifiers (mount URI / Nexus
+      // routing); description is connector-supplied (README content) and must
+      // be sanitized before reaching the terminal.
+      const description =
         entry.description !== undefined && entry.description.length > 0
-          ? ` — ${entry.description}`
+          ? sanitizeConnectorText(entry.description)
           : "";
+      const details = description.length > 0 ? ` — ${description}` : "";
       return `${entry.path} (${entry.connector})${details}`;
     })
     .join("\n");
