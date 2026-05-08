@@ -189,6 +189,22 @@ describe("createKoiRuntime — assembly", () => {
     expect(runtimeHandle.runtime).toBeDefined();
   });
 
+  test("passes autoHarness config through to createRuntime and preserves approval gating", async () => {
+    runtimeHandle = await createKoiRuntime({
+      ...makeConfig(),
+      autoHarness: {
+        forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+        generate: async () => "candidate-code",
+        verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-5" } as never }),
+        evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+        deployCandidate: async () => ({ ok: true }),
+      },
+    });
+
+    expect(runtimeHandle.autoHarness).toBeDefined();
+    expect(typeof runtimeHandle.autoHarness?.synthesizeHarness).toBe("function");
+  });
+
   test("returns a mutable transcript array", async () => {
     runtimeHandle = await createKoiRuntime(makeConfig());
     const { transcript } = runtimeHandle;

@@ -35,6 +35,7 @@ import { createNdjsonAuditSink, validateNdjsonAuditSinkConfig } from "@koi/audit
 import { createNexusAuditSink } from "@koi/audit-sink-nexus";
 import type { SqliteRetentionConfig } from "@koi/audit-sink-sqlite";
 import { createSqliteAuditSink, validateSqliteAuditSinkConfig } from "@koi/audit-sink-sqlite";
+import { type AutoHarnessConfig, createAutoHarnessStack } from "@koi/auto-harness";
 import type { Checkpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
 import type { BudgetConfig } from "@koi/context-manager";
@@ -126,7 +127,7 @@ import {
 } from "@koi/permissions";
 import type { NexusPermissionBackend } from "@koi/permissions-nexus";
 import { createNexusPermissionBackend } from "@koi/permissions-nexus";
-import { wrapMiddlewareWithTrace } from "@koi/runtime";
+import { type RuntimeAutoHarnessHandle, wrapMiddlewareWithTrace } from "@koi/runtime";
 import { loadSettings } from "@koi/settings";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import { createSqliteViolationStore } from "@koi/violation-store-sqlite";
@@ -469,6 +470,12 @@ export interface KoiRuntimeConfig {
   readonly modelName: string;
   /** Approval handler for permission prompts — should be permissionBridge.handler. */
   readonly approvalHandler: ApprovalHandler;
+  /**
+   * Optional auto-harness pipeline config. The host factory injects the
+   * runtime approval bridge so candidate deployment still routes through the
+   * caller's approval handler.
+   */
+  readonly autoHarness?: Omit<AutoHarnessConfig, "requestDeploymentApproval"> | undefined;
   /**
    * Override the built-in permission backend. When omitted, the factory
    * uses `default`-mode with the TUI's tiered allow rules (pre-allowed
@@ -1063,6 +1070,8 @@ export interface KoiRuntimeConfig {
 export interface KoiRuntimeHandle {
   /** The assembled KoiRuntime — call runtime.run(input) to stream a turn. */
   readonly runtime: KoiRuntime;
+  /** Auto-harness handle. Only populated when `config.autoHarness` is provided. */
+  readonly autoHarness?: RuntimeAutoHarnessHandle | undefined;
   /**
    * Checkpoint handle for session-level rollback (#1625). Always populated
    * in the TUI — captures end-of-turn snapshots and exposes rewind() so the
@@ -2559,6 +2568,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // next parent-visible dispose — guaranteeing host observability
   // even when children outlive the parent's first dispose call.
   const childManifestCleanupFailures: unknown[] = [];
+  let autoHarnessHandle: ReturnType<typeof createAutoHarnessStack> | undefined;
   let zoneBMiddleware: readonly KoiMiddleware[];
   try {
     zoneBMiddleware = await resolveManifestMiddleware(
@@ -4018,6 +4028,34 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           })
         : undefined;
 
+    autoHarnessHandle =
+      config.autoHarness !== undefined
+        ? createAutoHarnessStack({
+            ...config.autoHarness,
+            requestDeploymentApproval: async (artifact, signal) => {
+              const decision = await approvalHandler({
+                toolId: "auto-harness:deploy-candidate",
+                input: {
+                  artifactId: artifact.id,
+                  signalId: signal.id,
+                },
+                reason: "Approve deployment of an auto-generated harness candidate.",
+                metadata: {
+                  artifactId: artifact.id,
+                  signalId: signal.id,
+                },
+              });
+              return decision.kind === "allow" || decision.kind === "always-allow";
+            },
+          })
+        : undefined;
+    const hasPolicyCacheMiddleware =
+      autoHarnessHandle !== undefined &&
+      new Set([
+        ...stackContribution.middleware.map((mw) => mw.name),
+        ...(config.extraMiddleware ?? []).map((mw) => mw.name),
+      ]).has("policy-cache");
+
     // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
     // The ordering (outermost → innermost) is defined in one place —
     // compose-middleware.ts. Preset stacks (observability, checkpoint,
@@ -4049,6 +4087,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // layers, regardless of array position here.
       presetExtras: [
         ...stackContribution.middleware,
+        ...(autoHarnessHandle !== undefined && !hasPolicyCacheMiddleware
+          ? [autoHarnessHandle.policyCacheMiddleware]
+          : []),
         ...auditPresetExtras,
         ...(governanceMw !== undefined ? [governanceMw] : []),
         ...(config.ace !== undefined ? [createAceMiddleware(config.ace)] : []),
@@ -4089,6 +4130,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             }),
           )
         : allMiddleware;
+    const installedAutoHarnessMiddleware =
+      autoHarnessHandle !== undefined
+        ? tracedMiddleware.find((mw) => mw.name === "policy-cache")
+        : undefined;
 
     // --- Assemble runtime via createKoi ---
     // When a session is configured, thread `config.session.sessionId` into
@@ -4287,6 +4332,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     //     already-ended writers.
     // Per-hook tracking gives precise retry semantics.
     const completedManifestHooks = new WeakSet<() => Promise<void> | void>();
+    let autoHarnessDisposed = false;
     const wrappedDispose = async (): Promise<void> => {
       await engineDispose();
       // Fire manifest-middleware cleanup in reverse registration
@@ -4327,6 +4373,19 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // repeated dispose attempts.
       const pendingChildErrors = childManifestCleanupFailures.splice(0);
       hookErrors.push(...pendingChildErrors);
+      if (autoHarnessHandle !== undefined && !autoHarnessDisposed) {
+        try {
+          autoHarnessHandle.policyCacheHandle.dispose();
+          autoHarnessDisposed = true;
+        } catch (disposeErr) {
+          console.warn(
+            `[koi/${hostId}] auto-harness shutdown hook failed during dispose: ${
+              disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+            }`,
+          );
+          hookErrors.push(disposeErr);
+        }
+      }
       if (hookErrors.length > 0) {
         throw new AggregateError(
           hookErrors,
@@ -4351,6 +4410,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     handleOwnershipTransferred = true;
     return {
       runtime: wrappedRuntime,
+      autoHarness:
+        autoHarnessHandle !== undefined && installedAutoHarnessMiddleware !== undefined
+          ? {
+              middleware: installedAutoHarnessMiddleware,
+              synthesizeHarness: autoHarnessHandle.synthesizeHarness,
+              resetSession: autoHarnessHandle.resetSession,
+              maxSynthesesPerSession: autoHarnessHandle.maxSynthesesPerSession,
+            }
+          : undefined,
       checkpoint: checkpointHandle,
       transcript,
       sandboxActive,
@@ -4625,6 +4693,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             hookErrors.push(hookErr);
           }
         }
+        autoHarnessHandle?.resetSession();
 
         // 3. Clear the OLD session's approval state (always-allow, caches,
         //    trackers). Not a stack concern — permissions is a core slot.
@@ -4760,6 +4829,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // partially-constructed resources are released.
     if (!handleOwnershipTransferred) {
       await unwindManifestMiddlewareHooks();
+    }
+    try {
+      autoHarnessHandle?.policyCacheHandle.dispose();
+    } catch (disposeErr) {
+      console.warn(
+        `[koi/${hostId}] auto-harness cleanup failed during assembly unwind: ${
+          disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+        }`,
+      );
     }
     throw assemblyErr;
   }
