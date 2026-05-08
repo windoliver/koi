@@ -686,6 +686,26 @@ export async function resolveFileSystemAsync(
       }
       return false;
     };
+    // Overlap check against an authoritative live-mount snapshot. Even when
+    // `protectedRoots` is empty (e.g. namespace-root sessions with no scope),
+    // mounting at, over, or under an *existing* live mount silently shadows
+    // already-approved routing. Reject equality and any ancestor/descendant
+    // relationship; return the offending live mount path for the error
+    // message, or undefined when no overlap exists.
+    const overlapsExistingMount = (
+      rawTarget: string,
+      liveMounts: Iterable<string>,
+    ): string | undefined => {
+      const target = canonicalizeMountPath(rawTarget);
+      for (const m of liveMounts) {
+        const live = canonicalizeMountPath(m);
+        if (live.length === 0) continue;
+        if (target === live) return live;
+        if (target.startsWith(`${live}/`)) return live;
+        if (live.startsWith(`${target}/`)) return live;
+      }
+      return undefined;
+    };
     // Quarantine flag: set when addMount commits a mutation we cannot prove
     // is safe (e.g. pathUnknown + listMounts verification fails) AND best-
     // effort rollback could not confirm cleanup. While quarantined, all
@@ -707,9 +727,14 @@ export async function resolveFileSystemAsync(
     }
     const guardedTransport: import("@koi/fs-nexus").NexusTransport =
       ((): import("@koi/fs-nexus").NexusTransport => {
-        if (protectedRoots.length === 0) return transport;
         const innerRemove = transport.removeMount;
         const innerAdd = transport.addMount;
+        // Nothing to guard if the transport exposes neither mutation. The
+        // wrapper is otherwise unconditional: even when `protectedRoots` is
+        // empty (namespace-root + no scope), addMount still needs to refuse
+        // overlap with existing live mounts so a runtime /mount cannot
+        // shadow an already-approved routing path.
+        if (innerAdd === undefined && innerRemove === undefined) return transport;
         const wrapped: Record<string, unknown> = { ...transport };
         if (innerRemove !== undefined) {
           const removeImpl = async (path: string) => {
@@ -772,6 +797,23 @@ export async function resolveFileSystemAsync(
               preMounts = new Set(preList.ok ? preList.value : (transport.mounts ?? []));
             } else {
               preMounts = new Set(transport.mounts ?? []);
+            }
+            // Pre-commit overlap guard against existing live mounts. Runs
+            // even when `protectedRoots` is empty (e.g. namespace-root + no
+            // scope) so a runtime /mount cannot shadow an already-approved
+            // mount by overlaying its path or an ancestor/descendant.
+            if (typeof at === "string") {
+              const overlap = overlapsExistingMount(at, preMounts);
+              if (overlap !== undefined) {
+                return {
+                  ok: false,
+                  error: {
+                    code: "VALIDATION",
+                    message: `Cannot mount at ${at}: it overlaps existing live mount ${overlap}; remove the existing mount first or choose a non-overlapping path.`,
+                    retryable: RETRYABLE_DEFAULTS.VALIDATION,
+                  },
+                };
+              }
             }
             const result = await innerAdd(uri, at);
             if (!result.ok) return result;
@@ -869,6 +911,51 @@ export async function resolveFileSystemAsync(
               return result;
             }
             const committed = result.value.path;
+            // Post-commit overlap check against the pre-mutation live-mount
+            // snapshot. Catches the case where the bridge resolved the URI
+            // to a path that overlaps an existing mount (e.g. operator
+            // omitted `at` and the connector landed on a colliding default).
+            // Mirrors the protected-root rollback flow but uses the broader
+            // overlap predicate so namespace-root sessions are also covered.
+            if (committed !== "" && !isPathProtectedByMount(committed)) {
+              const overlap = overlapsExistingMount(committed, preMounts);
+              if (overlap !== undefined) {
+                let rolledBack = false;
+                let rollbackMessage = "rollback unavailable (removeMount unsupported)";
+                if (innerRemove !== undefined) {
+                  try {
+                    const rollback = await innerRemove(committed);
+                    if (rollback.ok) {
+                      rolledBack = true;
+                    } else {
+                      rollbackMessage = `rollback failed: ${rollback.error.message}`;
+                    }
+                  } catch (e: unknown) {
+                    rollbackMessage = `rollback threw: ${e instanceof Error ? e.message : String(e)}`;
+                  }
+                }
+                if (rolledBack) {
+                  return {
+                    ok: false,
+                    error: {
+                      code: "VALIDATION",
+                      message: `Mount at ${committed} rejected: it overlaps existing live mount ${overlap}. Bridge mount rolled back; verify with /mounts.`,
+                      retryable: RETRYABLE_DEFAULTS.VALIDATION,
+                    },
+                  };
+                }
+                transportQuarantined = true;
+                quarantineReason = `addMount committed at ${committed} overlapping existing mount ${overlap} and rollback failed (${rollbackMessage}). Restart the session to recover.`;
+                return {
+                  ok: false,
+                  error: {
+                    code: "INTERNAL",
+                    message: `Mount at ${committed} overlaps existing mount ${overlap} and rollback was unsuccessful (${rollbackMessage}). The mount may still be live — run /mounts and manually /unmount ${committed} to repair state. Further mount mutations are now quarantined for this session.`,
+                    retryable: RETRYABLE_DEFAULTS.INTERNAL,
+                  },
+                };
+              }
+            }
             if (committed !== "" && isPathProtectedByMount(committed)) {
               // removeMount returns a Result (never throws on a Nexus error);
               // we MUST inspect rollback.ok before claiming success or the
@@ -921,15 +1008,32 @@ export async function resolveFileSystemAsync(
         });
         return wrapped as unknown as import("@koi/fs-nexus").NexusTransport;
       })();
+    // Sentinel "scope" that no real mount path can match. When a session has
+    // a glob scope whose patterns lack any static prefix
+    // (`hasUnprotectableScope`), we cannot prove which sibling mounts the
+    // operator intended to hide. Fail closed: emit no manifest mount entries
+    // and hand the middleware a sentinel scope so any /mounts refresh that
+    // tries to add runtime entries also drops them.
+    const UNPROTECTABLE_SCOPE_SENTINEL = "/__koi_unprotectable_scope_no_disclosure__";
+    const seedMounts = hasUnprotectableScope
+      ? []
+      : seedManifestMountDescriptions(transport, protectedRoots);
+    const seedScope = hasUnprotectableScope
+      ? [UNPROTECTABLE_SCOPE_SENTINEL]
+      : protectedRoots.length > 0
+        ? protectedRoots
+        : undefined;
     return {
       backend,
       operations,
       // Pass protectedRoots as the disclosure scope so a scoped session
       // does not leak sibling mount paths into the system prompt. When
-      // protectedRoots is empty the seed includes all mounts (no scope
-      // configured → no filtering needed).
-      mountDescriptions: seedManifestMountDescriptions(transport, protectedRoots),
-      effectiveScopePaths: protectedRoots.length > 0 ? protectedRoots : undefined,
+      // protectedRoots is empty AND the scope is fully static (no
+      // unprotectable wildcards), the seed includes all mounts (no scope
+      // configured → no filtering needed). Wildcard-only scopes get the
+      // sentinel above, which filters every entry out.
+      mountDescriptions: seedMounts,
+      effectiveScopePaths: seedScope,
       transport: guardedTransport,
       runtimeMountMutationsSupported: mutationsSupported,
       backendActiveRoot: canonicalActiveRoot,
