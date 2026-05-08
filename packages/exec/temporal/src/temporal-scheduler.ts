@@ -12,6 +12,7 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname } from "node:path";
+import { AGENT_WORKFLOW_NAME } from "./workflows/index.js";
 import type {
   AgentId,
   CronSchedule,
@@ -1266,7 +1267,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       let targetWorkflowId: string = id;
       try {
         if (mode === "spawn") {
-          const handle = await config.client.workflow.start(config.workflowType, {
+          const handle = await config.client.workflow.start(config.workflowType ?? AGENT_WORKFLOW_NAME, {
             taskQueue: config.taskQueue,
             workflowId: id,
             // Idempotent spawns reuse a stable workflowId derived from idempotencyKey.

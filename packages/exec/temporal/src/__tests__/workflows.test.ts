@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -18,6 +19,7 @@ const PACKAGE_ROOT = join(TEST_DIR, "..", "..");
 const FIXTURE = join(TEST_DIR, "fixtures", "workflows-boundary.ts");
 const AMBIENT = join(TEST_DIR, "fixtures", "workflows-boundary.ambient.d.ts");
 const ROOT_FIXTURE = join(TEST_DIR, "fixtures", "workflows-root-surface.ts");
+const PUBLIC_SCHEDULER_SOURCE = join(TEST_DIR, "..", "temporal-scheduler.ts");
 
 function runTypecheckFixture() {
   return spawnSync(
@@ -103,6 +105,12 @@ describe("temporal workflow public surface", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
   }, 30_000);
+
+  test("public scheduler uses the centralized agent workflow name", () => {
+    const source = readFileSync(PUBLIC_SCHEDULER_SOURCE, "utf8");
+
+    expect(source).toContain("config.workflowType ?? AGENT_WORKFLOW_NAME");
+  });
 });
 
 describe("workflow module surface", () => {
