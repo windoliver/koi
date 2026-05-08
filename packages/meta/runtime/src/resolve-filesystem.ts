@@ -836,11 +836,17 @@ export async function resolveFileSystemAsync(
                       },
                     };
                   }
+                  // Rollback refused or failed → quarantine. Continuing to
+                  // accept mutations against routing state that may include
+                  // a live shadowing mount is the failure mode this code
+                  // exists to prevent.
+                  transportQuarantined = true;
+                  quarantineReason = `addMount(${uri}) landed on protected root(s) ${offending.join(", ")} and rollback was unsuccessful (${rollbackErrors.join("; ")}). Restart the session to recover.`;
                   return {
                     ok: false,
                     error: {
                       code: "INTERNAL",
-                      message: `Mount of ${uri} landed on protected root(s) and rollback was unsuccessful (${rollbackErrors.join("; ")}). The mount may still be live — run /mounts and manually /unmount the offending paths from outside the protected scope to repair state.`,
+                      message: `Mount of ${uri} landed on protected root(s) and rollback was unsuccessful (${rollbackErrors.join("; ")}). The mount may still be live — run /mounts and manually /unmount the offending paths from outside the protected scope to repair state. Further mount mutations are now quarantined for this session.`,
                       retryable: RETRYABLE_DEFAULTS.INTERNAL,
                     },
                   };
@@ -879,11 +885,13 @@ export async function resolveFileSystemAsync(
                   },
                 };
               }
+              transportQuarantined = true;
+              quarantineReason = `addMount committed at protected path ${committed} and rollback failed (${rollbackMessage}). Restart the session to recover.`;
               return {
                 ok: false,
                 error: {
                   code: "INTERNAL",
-                  message: `Mount at ${committed} overlays an active filesystem root and rollback was unsuccessful (${rollbackMessage}). The mount may still be live — run /mounts and manually /unmount ${committed} (from outside the protected scope) to repair state.`,
+                  message: `Mount at ${committed} overlays an active filesystem root and rollback was unsuccessful (${rollbackMessage}). The mount may still be live — run /mounts and manually /unmount ${committed} (from outside the protected scope) to repair state. Further mount mutations are now quarantined for this session.`,
                   retryable: RETRYABLE_DEFAULTS.INTERNAL,
                 },
               };
