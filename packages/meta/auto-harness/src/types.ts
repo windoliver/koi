@@ -121,9 +121,7 @@ export interface AutoHarnessConfig {
   readonly evaluatePolicy: AutoHarnessEvaluatePolicy;
   readonly requestDeploymentApproval: AutoHarnessRequestDeploymentApproval;
   readonly deployCandidate: AutoHarnessDeployCandidate;
-  readonly maxIterations?: number;
   readonly maxSynthesesPerSession?: number;
-  readonly enableRefinement?: boolean;
   readonly onEvent?: ((event: AutoHarnessEvent) => void) | undefined;
   readonly onError?: ((error: AutoHarnessError) => void) | undefined;
 }
