@@ -15,6 +15,16 @@ export interface NexusScratchpadConfig {
   readonly methodPrefix?: string | undefined;
   readonly pollIntervalMs?: number | undefined;
   readonly pageSize?: number | undefined;
+  /**
+   * Capability flag declaring that the configured Nexus server honors the
+   * `nextCursor` pagination contract. Defaults to `true`: an absent
+   * `nextCursor` is taken as proof that the snapshot is exhaustive and the
+   * tracker can synthesize delete events. Set to `false` only when targeting
+   * a legacy server that ignores the cursor field — in that compatibility
+   * mode a terminal page of exactly `pageSize` entries is treated as
+   * ambiguous and delete synthesis is skipped for that round.
+   */
+  readonly serverSupportsPagination?: boolean | undefined;
 }
 
 export interface NexusScratchpadEntryRecord
@@ -40,4 +50,10 @@ export interface NexusScratchpadListResponse {
     readonly groupId: string;
     readonly authorId: string;
   })[];
+  /**
+   * Opaque continuation token. When present, the caller must invoke `list`
+   * again with `cursor: nextCursor` to drain the remainder. When absent the
+   * snapshot is exhaustive.
+   */
+  readonly nextCursor?: string | undefined;
 }

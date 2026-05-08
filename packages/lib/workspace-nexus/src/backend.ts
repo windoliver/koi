@@ -1,8 +1,6 @@
 import type {
   AgentId,
-  KoiError,
   ResolvedWorkspaceConfig,
-  Result,
   WorkspaceBackend,
   WorkspaceId,
   WorkspaceInfo,
@@ -40,22 +38,24 @@ export async function createNexusWorkspaceBackend(
   const client = createNexusWorkspaceBackendClient(config.transport, prefix);
   let degraded = false;
 
-  async function callOrFallback<T>(
-    clientCall: () => Promise<Result<T, KoiError>>,
-    fallbackCall: () => Promise<T>,
-    failureMessage: string,
-  ): Promise<T> {
-    if (degraded && config.fallback !== undefined) {
-      return fallbackCall();
-    }
-    const result = await clientCall();
-    if (result.ok) return result.value;
-    if (config.fallback === undefined) {
-      throw new Error(failureMessage, { cause: result.error });
-    }
-    degraded = true;
-    return fallbackCall();
-  }
+  // Optional hooks are only exposed when both modes can honor them. Callers
+  // (e.g. the workspace provider) treat method presence as a capability
+  // signal; advertising a hook that throws once we degrade because the
+  // fallback can't satisfy it would be a contract break that turns
+  // recoverable flows into runtime failures during crash recovery. Policy:
+  //   - No fallback configured → expose every hook (Nexus is sole authority).
+  //   - Fallback configured AND fallback implements the hook → expose it.
+  //   - Fallback configured AND fallback lacks the hook → omit it.
+  const fallbackHas = (
+    key: keyof Pick<
+      WorkspaceBackend,
+      | "findByAgentId"
+      | "attestSetupComplete"
+      | "verifySetupComplete"
+      | "invalidateSetupComplete"
+      | "exists"
+    >,
+  ): boolean => config.fallback === undefined || config.fallback[key] !== undefined;
 
   return {
     name: "workspace-nexus",
@@ -99,41 +99,91 @@ export async function createNexusWorkspaceBackend(
       }
       return result.value.healthy;
     },
-    findByAgentId: async (agentId: AgentId) =>
-      callOrFallback(
-        () => client.findByAgentId(agentId),
-        async () => config.fallback?.findByAgentId?.(agentId) ?? [],
-        `Workspace backend failed to find workspaces for agent ${String(agentId)}`,
-      ).then((records) => records.map(mapWorkspace)),
-    attestSetupComplete: async (wsId: WorkspaceId) =>
-      callOrFallback(
-        () => client.attestSetupComplete(wsId),
-        async () => {
-          await config.fallback?.attestSetupComplete?.(wsId);
-          return undefined;
-        },
-        `Workspace backend failed to attest setup completion for ${wsId}`,
-      ),
-    verifySetupComplete: async (wsId: WorkspaceId) =>
-      callOrFallback(
-        () => client.verifySetupComplete(wsId),
-        async () => config.fallback?.verifySetupComplete?.(wsId) ?? false,
-        `Workspace backend failed to verify setup completion for ${wsId}`,
-      ),
-    invalidateSetupComplete: async (wsId: WorkspaceId) =>
-      callOrFallback(
-        () => client.invalidateSetupComplete(wsId),
-        async () => {
-          await config.fallback?.invalidateSetupComplete?.(wsId);
-          return undefined;
-        },
-        `Workspace backend failed to invalidate setup completion for ${wsId}`,
-      ),
-    exists: async (wsId: WorkspaceId) =>
-      callOrFallback(
-        () => client.exists(wsId),
-        async () => config.fallback?.exists?.(wsId) ?? false,
-        `Workspace backend failed to check existence for ${wsId}`,
-      ),
+    ...(fallbackHas("findByAgentId")
+      ? {
+          findByAgentId: async (agentId: AgentId): Promise<readonly WorkspaceInfo[]> => {
+            // Fallback discovery is only authoritative once a lifecycle op has
+            // pinned ownership to it. A first read failure must NOT auto-route
+            // to fallback: the fallback only knows its own inventory, so an
+            // empty answer for a Nexus-owned workspace would let the provider
+            // create a duplicate while the original is still live.
+            if (degraded && config.fallback?.findByAgentId !== undefined) {
+              const fallbackRecords = (await config.fallback.findByAgentId(agentId)) ?? [];
+              return [...fallbackRecords].sort((a, b) => b.createdAt - a.createdAt);
+            }
+            const result = await client.findByAgentId(agentId);
+            if (result.ok) {
+              return result.value.map(mapWorkspace).toSorted((a, b) => b.createdAt - a.createdAt);
+            }
+            throw new Error(
+              `Workspace backend failed to find workspaces for agent ${String(agentId)}`,
+              { cause: result.error },
+            );
+          },
+        }
+      : {}),
+    ...(fallbackHas("attestSetupComplete")
+      ? {
+          attestSetupComplete: async (wsId: WorkspaceId): Promise<void> => {
+            if (degraded && config.fallback?.attestSetupComplete !== undefined) {
+              await config.fallback.attestSetupComplete(wsId);
+              return;
+            }
+            const result = await client.attestSetupComplete(wsId);
+            if (result.ok) return;
+            throw new Error(`Workspace backend failed to attest setup completion for ${wsId}`, {
+              cause: result.error,
+            });
+          },
+        }
+      : {}),
+    ...(fallbackHas("invalidateSetupComplete")
+      ? {
+          invalidateSetupComplete: async (wsId: WorkspaceId): Promise<void> => {
+            if (degraded && config.fallback?.invalidateSetupComplete !== undefined) {
+              await config.fallback.invalidateSetupComplete(wsId);
+              return;
+            }
+            const result = await client.invalidateSetupComplete(wsId);
+            if (result.ok) return;
+            throw new Error(`Workspace backend failed to invalidate setup completion for ${wsId}`, {
+              cause: result.error,
+            });
+          },
+        }
+      : {}),
+    ...(fallbackHas("verifySetupComplete")
+      ? {
+          verifySetupComplete: async (wsId: WorkspaceId): Promise<boolean> => {
+            // Authoritative read: a first Nexus read failure must not return
+            // a fallback "false" for a Nexus-owned workspace — that would
+            // trick the provider into disposing or recreating a still-live
+            // workspace. Only consult fallback once ownership is pinned.
+            if (degraded && config.fallback?.verifySetupComplete !== undefined) {
+              return (await config.fallback.verifySetupComplete(wsId)) ?? false;
+            }
+            const result = await client.verifySetupComplete(wsId);
+            if (result.ok) return result.value;
+            throw new Error(`Workspace backend failed to verify setup completion for ${wsId}`, {
+              cause: result.error,
+            });
+          },
+        }
+      : {}),
+    ...(fallbackHas("exists")
+      ? {
+          exists: async (wsId: WorkspaceId): Promise<boolean> => {
+            // Same fail-closed policy as `verifySetupComplete`.
+            if (degraded && config.fallback?.exists !== undefined) {
+              return (await config.fallback.exists(wsId)) ?? false;
+            }
+            const result = await client.exists(wsId);
+            if (result.ok) return result.value;
+            throw new Error(`Workspace backend failed to check existence for ${wsId}`, {
+              cause: result.error,
+            });
+          },
+        }
+      : {}),
   };
 }

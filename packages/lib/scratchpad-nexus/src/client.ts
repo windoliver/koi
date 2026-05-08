@@ -20,6 +20,7 @@ export interface NexusScratchpadClient {
     groupId: string,
     filter: ScratchpadFilter | undefined,
     limit: number,
+    cursor?: string,
   ) => Promise<Result<NexusScratchpadListResponse, KoiError>>;
   readonly delete: (
     groupId: string,
@@ -45,8 +46,13 @@ export function createNexusScratchpadClient(
       }),
     read: (groupId, path) =>
       transport.call<NexusScratchpadReadResponse>(`${prefix}.read`, { groupId, path }),
-    list: (groupId, filter, limit) =>
-      transport.call<NexusScratchpadListResponse>(`${prefix}.list`, { groupId, filter, limit }),
+    list: (groupId, filter, limit, cursor) =>
+      transport.call<NexusScratchpadListResponse>(`${prefix}.list`, {
+        groupId,
+        filter,
+        limit,
+        cursor,
+      }),
     delete: async (groupId, authorId, path) => {
       const result = await transport.call<{ readonly ok: true }>(`${prefix}.delete`, {
         groupId,
