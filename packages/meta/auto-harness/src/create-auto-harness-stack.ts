@@ -1,4 +1,4 @@
-import type { ForgeDemandSignal } from "@koi/core";
+import type { BrickArtifact, ForgeDemandSignal } from "@koi/core";
 import { createPolicyCacheMiddleware } from "@koi/middleware-policy-cache";
 import {
   type AutoHarnessConfig,
@@ -274,28 +274,43 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     state.count += 1;
     emitEvent({ kind: "synthesis.started", signalId: signal.id });
     try {
-      const result = await runPipeline(signal);
+      const outcome = await runPipeline(signal);
       // Acknowledge the signal regardless of terminal outcome (success,
       // verification fail, policy block, approval denial, deploy error).
       // Without dismissal, forge-demand keeps re-emitting the same condition
       // after cooldown and burns the session emit budget.
       safeDismiss();
-      return result;
+      // Only mark the trigger as completed for outcomes that won't change
+      // on retry: success, hard verification rejection, policy block, or
+      // explicit approval denial. Transient failures (generator outage,
+      // verifier crash, store error, deploy infrastructure failure) leave
+      // the trigger eligible so a subsequent signal for the same root cause
+      // can re-attempt the pipeline once the dependency recovers (R5
+      // round 8 finding).
+      if (outcome.kind !== "transient") {
+        state.completedTriggers.add(triggerKey);
+      }
+      return outcome.artifact;
     } finally {
       state.inFlightTriggers.delete(triggerKey);
-      // Record completion so identical sequential replays of this trigger
-      // are suppressed until the host explicitly resets the session.
-      state.completedTriggers.add(triggerKey);
     }
   };
 
-  const runPipeline = async (signal: ForgeDemandSignal): Promise<AutoHarnessSynthesisResult> => {
+  type PipelineOutcome =
+    | { readonly kind: "success"; readonly artifact: BrickArtifact }
+    | { readonly kind: "non_retriable"; readonly artifact: null }
+    | { readonly kind: "transient"; readonly artifact: null };
+  const transient = (): PipelineOutcome => ({ kind: "transient", artifact: null });
+  const nonRetriable = (): PipelineOutcome => ({ kind: "non_retriable", artifact: null });
+
+  const runPipeline = async (signal: ForgeDemandSignal): Promise<PipelineOutcome> => {
     let code: string;
     try {
       code = await config.generate(formatGeneratePrompt(signal));
     } catch (cause: unknown) {
+      // Generator outages are transient — leave the trigger retriable.
       reportError({ stage: "generate", message: "generate failed", cause });
-      return null;
+      return transient();
     }
 
     const verification = await runStageOrReport(
@@ -304,15 +319,18 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       reportError,
     );
     if (verification === null) {
-      return null;
+      // Verifier crash is transient infrastructure failure.
+      return transient();
     }
     if (!verification.ok || verification.artifact === null) {
+      // Hard verification rejection — same trigger will produce the same
+      // unsuitable code without resetSession, so suppress further attempts.
       emitEvent({
         kind: "verification.failed",
         signalId: signal.id,
         message: verification.reason ?? verification.error?.message ?? "verification failed",
       });
-      return null;
+      return nonRetriable();
     }
 
     // Force lifecycle to "draft" before persistence. Verification produced a
@@ -332,12 +350,14 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     try {
       const saveResult = await config.forgeStore.save(artifact);
       if (!saveResult.ok) {
+        // Store outage is transient — retry the same trigger when the
+        // backend recovers rather than black-holing it for the session.
         reportError({
           stage: "verify",
           message: `forgeStore.save failed: ${saveResult.error.message}`,
           koiError: saveResult.error,
         });
-        return null;
+        return transient();
       }
     } catch (cause: unknown) {
       reportError({
@@ -345,7 +365,7 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
         message: "forgeStore.save threw",
         cause,
       });
-      return null;
+      return transient();
     }
 
     const policy = await runStageOrReport(
@@ -354,16 +374,19 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       reportError,
     );
     if (policy === null) {
-      return null;
+      // Policy evaluator crash is infrastructure failure.
+      return transient();
     }
     if (!policy.ok || policy.action !== "allow") {
+      // Policy decision — same input will produce the same verdict; mark
+      // non-retriable so the trigger stops re-emitting until reset.
       emitEvent({
         kind: "policy.blocked",
         signalId: signal.id,
         artifactId: artifact.id,
         message: policy.reason ?? policy.error?.message ?? "policy blocked deployment",
       });
-      return null;
+      return nonRetriable();
     }
 
     const approved = await runStageOrReport(
@@ -375,16 +398,18 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       reportError,
     );
     if (approved === null) {
-      return null;
+      return transient();
     }
     if (!approved) {
+      // User explicitly denied — re-asking on the next signal would create
+      // approval-prompt fatigue. Reset to re-prompt.
       emitEvent({
         kind: "approval.denied",
         signalId: signal.id,
         artifactId: artifact.id,
         message: "deployment approval denied",
       });
-      return null;
+      return nonRetriable();
     }
 
     const deployment = await runStageOrReport(
@@ -393,57 +418,69 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       reportError,
     );
     if (deployment === null) {
-      return null;
+      return transient();
     }
     if (!deployment.ok) {
+      // Deploy infrastructure failure (engine reload, network, container
+      // start) — leave retriable. Codified policy denials are reported via
+      // the policy stage above, not here.
       reportError({
         stage: "deploy",
         message: deployment.error?.message ?? "deployment failed",
         cause: deployment.error?.cause,
         koiError: deployment.error?.koiError,
       });
-      return null;
+      return transient();
     }
 
-    // Treat the deploy result as authoritative for the post-deploy artifact:
-    // deployCandidate is allowed to promote lifecycle, assign a deployed id,
-    // or attach metadata that only exists once the harness is live. The
-    // pre-deploy `draft` we saved is a recovery record, not the final state
-    // — emitting and returning that draft would let consumers believe the
-    // harness is still pending after live activation already happened (R5
-    // round 7 finding).
-    const deployedArtifact = deployment.artifact ?? artifact;
+    // The authoritative deployed artifact is mandatory: deployCandidate may
+    // promote lifecycle, assign a deployed id, or attach metadata that only
+    // exists once the harness is live. Without it we cannot prove a
+    // post-deploy state distinct from the pre-deploy draft, and consumers
+    // that trust synthesizeHarness / the forge store would believe the
+    // harness is still pending. Treat its absence as deploy-infrastructure
+    // failure (transient) so the host can fix the deploy contract and
+    // retry. (R5 round 8 finding.)
+    if (deployment.artifact === undefined) {
+      reportError({
+        stage: "deploy",
+        message:
+          "deployCandidate returned ok without an authoritative artifact; " +
+          "post-deploy state cannot be persisted",
+      });
+      return transient();
+    }
+    const deployedArtifact = deployment.artifact;
 
-    // Persist the deployed artifact so the durable record matches the live
-    // activation. forgeStore.save is the upsert path; failure here is a
-    // best-effort follow-up — the deployment side effects are already
-    // committed and policy entries below depend on the live state, not the
-    // store record. Surface the failure via reportError so operators can
-    // reconcile manually.
-    if (deployment.artifact !== undefined && deployment.artifact !== artifact) {
-      try {
-        const saveResult = await config.forgeStore.save(deployedArtifact);
-        if (!saveResult.ok) {
-          reportError({
-            stage: "deploy",
-            message: `forgeStore.save (post-deploy) failed: ${saveResult.error.message}`,
-            koiError: saveResult.error,
-          });
-        }
-      } catch (cause: unknown) {
+    // Persist the deployed artifact BEFORE emitting deployment.succeeded.
+    // The durable store must reflect the live activation: restart/recovery
+    // and rollback paths trust the store as the source of truth for what is
+    // actually live. A best-effort save would let observers see a draft
+    // forever after the harness is already serving traffic.
+    try {
+      const saveResult = await config.forgeStore.save(deployedArtifact);
+      if (!saveResult.ok) {
         reportError({
           stage: "deploy",
-          message: "forgeStore.save (post-deploy) threw",
-          cause,
+          message: `forgeStore.save (post-deploy) failed: ${saveResult.error.message}`,
+          koiError: saveResult.error,
         });
+        return transient();
       }
+    } catch (cause: unknown) {
+      reportError({
+        stage: "deploy",
+        message: "forgeStore.save (post-deploy) threw",
+        cause,
+      });
+      return transient();
     }
 
-    // Deployment side effects are now committed; emit success BEFORE
-    // attempting the cache write. Policy-cache registration is a follow-on
-    // optimization (short-circuit dispatch) — its failure must not be
-    // reported as a deployment failure, otherwise callers would treat a
-    // live artifact as missing and retry/duplicate the activation.
+    // Deployment side effects are now committed AND durably recorded; emit
+    // success BEFORE the cache write. Policy-cache registration is a
+    // follow-on optimization — its failure must not be reported as a
+    // deployment failure, otherwise callers would treat a live artifact as
+    // missing and retry/duplicate the activation.
     emitEvent({
       kind: "deployment.succeeded",
       signalId: signal.id,
@@ -474,7 +511,7 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       }
     }
 
-    return deployedArtifact;
+    return { kind: "success", artifact: deployedArtifact };
   };
 
   return {

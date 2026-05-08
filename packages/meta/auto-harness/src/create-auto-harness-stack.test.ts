@@ -88,7 +88,8 @@ describe("createAutoHarnessStack", () => {
         action: "allow",
       }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async (_artifact, _signal): Promise<AutoHarnessDeployResult> => ({
+      deployCandidate: async (artifact, _signal): Promise<AutoHarnessDeployResult> => ({
+        artifact,
         ok: true,
       }),
     });
@@ -121,7 +122,8 @@ describe("createAutoHarnessStack", () => {
         action: "allow",
       }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async (_artifact, _signal): Promise<AutoHarnessDeployResult> => ({
+      deployCandidate: async (artifact, _signal): Promise<AutoHarnessDeployResult> => ({
+        artifact,
         ok: true,
       }),
     });
@@ -148,7 +150,8 @@ describe("createAutoHarnessStack", () => {
         action: "allow",
       }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async (_artifact, _signal): Promise<AutoHarnessDeployResult> => ({
+      deployCandidate: async (artifact, _signal): Promise<AutoHarnessDeployResult> => ({
+        artifact,
         ok: true,
       }),
       onEvent: (event) => events.push(event),
@@ -193,7 +196,10 @@ describe("createAutoHarnessStack", () => {
         action: "allow",
       }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async (): Promise<AutoHarnessDeployResult> => ({ ok: true }),
+      deployCandidate: async (artifact): Promise<AutoHarnessDeployResult> => ({
+        ok: true,
+        artifact,
+      }),
       onEvent: (event) => events.push(event),
     });
 
@@ -215,6 +221,45 @@ describe("createAutoHarnessStack", () => {
     expect(generated).toHaveLength(2);
   });
 
+  test("transient pipeline failures keep the trigger eligible for retry", async () => {
+    let generateCalls = 0;
+    let verifierShouldFail = true;
+    const stack = createAutoHarnessStack({
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+      } as never,
+      notifier: makeNotifier(),
+      generate: async () => {
+        generateCalls += 1;
+        return "export function createMiddleware() {}";
+      },
+      verifyCandidate: async () => {
+        if (verifierShouldFail) {
+          throw new Error("verifier outage (transient)");
+        }
+        return { ok: true, artifact: makeArtifact() };
+      },
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async (artifact) => ({ ok: true, artifact }),
+    });
+
+    const signal = makeSignal();
+    // First call: verifier crashes — transient, trigger stays retriable.
+    await stack.synthesizeHarness(signal);
+    expect(generateCalls).toBe(1);
+    // Second call: verifier still down — still transient.
+    await stack.synthesizeHarness(signal);
+    expect(generateCalls).toBe(2);
+    // Verifier recovers; same trigger now succeeds.
+    verifierShouldFail = false;
+    await stack.synthesizeHarness(signal);
+    expect(generateCalls).toBe(3);
+    // Now that the pipeline ran to success, replays are suppressed.
+    await stack.synthesizeHarness(signal);
+    expect(generateCalls).toBe(3);
+  });
+
   test("rejects non-positive maxSynthesesPerSession", () => {
     expect(() =>
       createAutoHarnessStack({
@@ -232,7 +277,8 @@ describe("createAutoHarnessStack", () => {
           action: "allow",
         }),
         requestDeploymentApproval: async () => true,
-        deployCandidate: async (_artifact, _signal): Promise<AutoHarnessDeployResult> => ({
+        deployCandidate: async (artifact, _signal): Promise<AutoHarnessDeployResult> => ({
+          artifact,
           ok: true,
         }),
         maxSynthesesPerSession: 0,
@@ -365,7 +411,7 @@ describe("createAutoHarnessStack", () => {
       }),
       evaluatePolicy: async () => ({ ok: true, action: "allow" }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async () => ({ ok: true }),
+      deployCandidate: async (artifact) => ({ ok: true, artifact }),
       onError: (error) => errors.push(error),
     });
 
@@ -385,7 +431,7 @@ describe("createAutoHarnessStack", () => {
       },
       evaluatePolicy: async () => ({ ok: true, action: "allow" }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async () => ({ ok: true }),
+      deployCandidate: async (artifact) => ({ ok: true, artifact }),
       onError: (error) => errors.push(error),
     });
 
@@ -406,7 +452,7 @@ describe("createAutoHarnessStack", () => {
       requestDeploymentApproval: async () => {
         throw new Error("approval service unavailable");
       },
-      deployCandidate: async () => ({ ok: true }),
+      deployCandidate: async (artifact) => ({ ok: true, artifact }),
       onError: (error) => errors.push(error),
     });
 
@@ -499,7 +545,7 @@ describe("createAutoHarnessStack", () => {
       verifyCandidate: async () => ({ ok: false, artifact: null, reason: "no" }),
       evaluatePolicy: async () => ({ ok: true, action: "allow" }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async () => ({ ok: true }),
+      deployCandidate: async (artifact) => ({ ok: true, artifact }),
       maxSynthesesPerSession: 2,
     });
 
@@ -537,7 +583,7 @@ describe("createAutoHarnessStack", () => {
       verifyCandidate: async () => ({ ok: false, artifact: null, reason: "stop" }),
       evaluatePolicy: async () => ({ ok: true, action: "allow" }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async () => ({ ok: true }),
+      deployCandidate: async (artifact) => ({ ok: true, artifact }),
     });
 
     await stack.synthesizeHarness(makeSignal());
@@ -665,7 +711,7 @@ describe("createAutoHarnessStack", () => {
       verifyCandidate: async () => ({ ok: true, artifact }),
       evaluatePolicy: async () => ({ ok: true, action: "allow" }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async () => ({ ok: true }),
+      deployCandidate: async (artifact) => ({ ok: true, artifact }),
       onEvent: (event) => events.push(event),
     });
 
@@ -696,7 +742,7 @@ describe("createAutoHarnessStack", () => {
       verifyCandidate: async () => ({ ok: true, artifact: makeArtifact() }),
       evaluatePolicy: async () => ({ ok: true, action: "allow" }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async () => ({ ok: true }),
+      deployCandidate: async (artifact) => ({ ok: true, artifact }),
       maxSynthesesPerSession: 2,
     });
 
@@ -735,7 +781,7 @@ describe("createAutoHarnessStack", () => {
           : { ok: true, artifact: makeArtifact() },
       evaluatePolicy: async () => ({ ok: true, action: "allow" }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async () => ({ ok: true }),
+      deployCandidate: async (artifact) => ({ ok: true, artifact }),
     });
 
     // Success path dismisses
@@ -760,7 +806,7 @@ describe("createAutoHarnessStack", () => {
       verifyCandidate: async () => ({ ok: false, artifact: null, reason: "stop" }),
       evaluatePolicy: async () => ({ ok: true, action: "allow" }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async () => ({ ok: true }),
+      deployCandidate: async (artifact) => ({ ok: true, artifact }),
     });
 
     // Synthetic fixtures composed at runtime to avoid github secret-scanning
@@ -814,7 +860,7 @@ describe("createAutoHarnessStack", () => {
         return { ok: true, action: "allow" };
       },
       requestDeploymentApproval: async () => true,
-      deployCandidate: async () => ({ ok: true }),
+      deployCandidate: async (artifact) => ({ ok: true, artifact }),
     });
 
     await stack.synthesizeHarness(makeSignal());
