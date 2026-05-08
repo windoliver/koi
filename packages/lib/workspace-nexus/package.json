@@ -19,8 +19,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/nexus-client": "workspace:*",
-    "@koi/workspace": "workspace:*"
+    "@koi/nexus-client": "workspace:*"
   },
   "devDependencies": {
     "@koi/workspace-conformance": "workspace:*"
