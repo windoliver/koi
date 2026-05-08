@@ -5,7 +5,7 @@ import type {
   SandboxResult,
 } from "@koi/core/sandbox-executor";
 import { createSandboxBridge } from "./bridge.js";
-import type { BridgeConfig, IpcError } from "./types.js";
+import type { BridgeConfig, IpcError, SandboxBridge } from "./types.js";
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -39,6 +39,26 @@ function invalidInputError(input: unknown): SandboxError {
   };
 }
 
+function mapUnknownErrorToSandboxError(error: unknown): SandboxError {
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return mapIpcErrorToSandboxError(error as IpcError);
+  }
+
+  return {
+    code: "CRASH",
+    message: error instanceof Error ? error.message : String(error),
+    durationMs: 0,
+    ...(error instanceof Error && error.stack !== undefined ? { stack: error.stack } : {}),
+  };
+}
+
 export function bridgeToExecutor(config: BridgeConfig): SandboxExecutor {
   return {
     async execute(
@@ -54,30 +74,51 @@ export function bridgeToExecutor(config: BridgeConfig): SandboxExecutor {
         return { ok: false, error: invalidInputError(input) };
       }
 
-      const bridge = await createSandboxBridge(config);
+      let bridge: SandboxBridge | undefined;
+      let mappedResult:
+        | { readonly ok: true; readonly value: SandboxResult }
+        | { readonly ok: false; readonly error: SandboxError };
 
       try {
+        bridge = await createSandboxBridge(config);
+
         const result = await bridge.execute(code, input, { timeoutMs, context });
         if (!result.ok) {
-          return {
+          mappedResult = {
             ok: false,
             error: mapIpcErrorToSandboxError(result.error),
           };
+        } else {
+          mappedResult = {
+            ok: true,
+            value: {
+              output: result.value.output,
+              durationMs: result.value.durationMs,
+              ...(result.value.memoryUsedBytes !== undefined
+                ? { memoryUsedBytes: result.value.memoryUsedBytes }
+                : {}),
+            },
+          };
         }
-
+      } catch (error) {
         return {
-          ok: true,
-          value: {
-            output: result.value.output,
-            durationMs: result.value.durationMs,
-            ...(result.value.memoryUsedBytes !== undefined
-              ? { memoryUsedBytes: result.value.memoryUsedBytes }
-              : {}),
-          },
+          ok: false,
+          error: mapUnknownErrorToSandboxError(error),
         };
       } finally {
-        await bridge.dispose();
+        if (bridge !== undefined) {
+          try {
+            await bridge.dispose();
+          } catch (error) {
+            mappedResult = {
+              ok: false,
+              error: mapUnknownErrorToSandboxError(error),
+            };
+          }
+        }
       }
+
+      return mappedResult;
     },
   };
 }
