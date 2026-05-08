@@ -7,9 +7,16 @@ export {
   parseWorkerMessage,
 } from "./protocol.js";
 export type {
+  BridgeConfig,
+  BridgeExecOptions,
+  BridgeResult,
+  CommandBuilder,
   ErrorMessage,
   ExecuteMessage,
   HostMessage,
+  IpcError,
+  IpcErrorCode,
+  IpcProcess,
   JsonPrimitive,
   JsonValue,
   ParseFailure,
@@ -17,7 +24,10 @@ export type {
   ParseSuccess,
   ReadyMessage,
   ResultMessage,
+  SandboxBridge,
+  SandboxCommand,
   SandboxIpcErrorCode,
   SandboxIpcMessage,
+  SpawnFn,
   WorkerMessage,
 } from "./types.js";

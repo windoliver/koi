@@ -54,6 +54,81 @@ describe("parseExecuteMessage", () => {
     if (parsed.ok) throw new Error("expected parse failure");
     expect(parsed.error.message).toContain("timeoutMs");
   });
+
+  test("rejects missing code", () => {
+    const parsed = parseExecuteMessage({
+      kind: "execute",
+      input: { value: 1 },
+      timeoutMs: 5_000,
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("code");
+  });
+
+  test("rejects missing input", () => {
+    const parsed = parseExecuteMessage({
+      kind: "execute",
+      code: "return 1;",
+      timeoutMs: 5_000,
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("input");
+  });
+
+  test("rejects missing timeoutMs", () => {
+    const parsed = parseExecuteMessage({
+      kind: "execute",
+      code: "return 1;",
+      input: { value: 1 },
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("timeoutMs");
+  });
+
+  test("rejects non-string code", () => {
+    const parsed = parseExecuteMessage({
+      kind: "execute",
+      code: 42,
+      input: { value: 1 },
+      timeoutMs: 5_000,
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("code");
+  });
+
+  test("rejects non-json input", () => {
+    const parsed = parseExecuteMessage({
+      kind: "execute",
+      code: "return 1;",
+      input: { nested: () => 1 },
+      timeoutMs: 5_000,
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("input");
+  });
+
+  test("rejects string timeoutMs", () => {
+    const parsed = parseExecuteMessage({
+      kind: "execute",
+      code: "return 1;",
+      input: { value: 1 },
+      timeoutMs: "500",
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("timeoutMs");
+  });
 });
 
 describe("parseResultMessage", () => {
@@ -82,6 +157,42 @@ describe("parseResultMessage", () => {
     expect(parsed.ok).toBe(false);
     if (parsed.ok) throw new Error("expected parse failure");
     expect(parsed.error.message).toContain("durationMs");
+  });
+
+  test("rejects missing durationMs", () => {
+    const parsed = parseResultMessage({
+      kind: "result",
+      output: { answer: 42 },
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("durationMs");
+  });
+
+  test("rejects string durationMs", () => {
+    const parsed = parseResultMessage({
+      kind: "result",
+      output: { answer: 42 },
+      durationMs: "12",
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("durationMs");
+  });
+
+  test("rejects string memoryUsedBytes", () => {
+    const parsed = parseResultMessage({
+      kind: "result",
+      output: { answer: 42 },
+      durationMs: 12,
+      memoryUsedBytes: "256",
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("memoryUsedBytes");
   });
 });
 
@@ -112,6 +223,68 @@ describe("parseErrorMessage", () => {
     expect(parsed.ok).toBe(false);
     if (parsed.ok) throw new Error("expected parse failure");
     expect(parsed.error.message).toContain("code");
+  });
+
+  test("rejects missing code", () => {
+    const parsed = parseErrorMessage({
+      kind: "error",
+      message: "execution timed out",
+      durationMs: 5_000,
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("code");
+  });
+
+  test("rejects missing message", () => {
+    const parsed = parseErrorMessage({
+      kind: "error",
+      code: "TIMEOUT",
+      durationMs: 5_000,
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("message");
+  });
+
+  test("rejects missing durationMs", () => {
+    const parsed = parseErrorMessage({
+      kind: "error",
+      code: "TIMEOUT",
+      message: "execution timed out",
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("durationMs");
+  });
+
+  test("rejects non-string message", () => {
+    const parsed = parseErrorMessage({
+      kind: "error",
+      code: "TIMEOUT",
+      message: 5_000,
+      durationMs: 5_000,
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("message");
+  });
+
+  test("rejects string durationMs", () => {
+    const parsed = parseErrorMessage({
+      kind: "error",
+      code: "TIMEOUT",
+      message: "execution timed out",
+      durationMs: "5_000",
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.message).toContain("durationMs");
   });
 });
 
