@@ -62,17 +62,23 @@ function getErrorMessage(error: { readonly message?: string | undefined } | unkn
   return fallback;
 }
 
-function createMetricQuery(sessionId: string, nowMs: number): {
+const SESSION_METRIC_NAMES = ["token_usage", "latency_ms", "tool_calls"] as const;
+
+// The dashboard-api currently honors only `name` (single) and `since` server-side; it
+// ignores `to` and tag filters. We issue one fetch per metric name, then filter the
+// returned points to the target sessionId via point.tags?.sessionId so the panel is
+// truly per-session even though the server can't enforce that filter.
+function createMetricQuery(name: string, nowMs: number): {
   readonly names: readonly string[];
   readonly fromMs: number;
   readonly toMs: number;
   readonly tags: Readonly<Record<string, string>>;
 } {
   return {
-    names: ["token_usage", "latency_ms", "tool_calls"],
+    names: [name],
     fromMs: Math.max(0, nowMs - 30 * 60_000),
     toMs: nowMs,
-    tags: { sessionId },
+    tags: {},
   };
 }
 
@@ -106,9 +112,22 @@ export async function fetchSessionMetrics(
   sessionId: string,
   nowMs: number = Date.now(),
 ): Promise<readonly Parameters<typeof mapMetricPoints>[0][number][] | null> {
-  const result = await client.getMetrics(createMetricQuery(sessionId, nowMs));
-  if (!result.ok) return null;
-  return result.value;
+  const responses = await Promise.all(
+    SESSION_METRIC_NAMES.map((name) => client.getMetrics(createMetricQuery(name, nowMs))),
+  );
+  const collected: Parameters<typeof mapMetricPoints>[0][number][] = [];
+  let anyOk = false;
+  for (const response of responses) {
+    if (!response.ok) continue;
+    anyOk = true;
+    for (const point of response.value) {
+      // Server-side tag filtering is not implemented; filter client-side so this
+      // panel is genuinely per-session rather than silently mixing global samples.
+      if (point.tags?.sessionId === sessionId) collected.push(point);
+    }
+  }
+  if (!anyOk) return null;
+  return collected;
 }
 
 export function DashboardView({

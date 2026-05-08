@@ -179,10 +179,13 @@ async function pumpSseStream(
   let buffer = "";
   let eventType = "";
   let dataLines: string[] = [];
-  const seenBatchSeqs = new Set<number>();
+  // Server batch `seq` is monotonic per connection. Track only the highest seq
+  // seen instead of every seen value so long-lived dashboards do not accumulate
+  // one Set entry per flush forever.
+  const seqState = { lastSeen: -1 };
   const flushFrame = (): void => {
     if (eventType === "batch" && dataLines.length > 0) {
-      dispatchBatch(dataLines.join("\n"), handlers, seenBatchSeqs);
+      dispatchBatch(dataLines.join("\n"), handlers, seqState);
     }
     eventType = "";
     dataLines = [];
@@ -232,7 +235,7 @@ async function cancelBody(body: ReadableStream<Uint8Array<ArrayBufferLike>> | nu
 function dispatchBatch(
   raw: string,
   handlers: SubscriptionHandlers,
-  seenBatchSeqs: Set<number>,
+  seqState: { lastSeen: number },
 ): void {
   let body: unknown;
   try {
@@ -241,8 +244,8 @@ function dispatchBatch(
     return;
   }
   if (!isBatchFrame(body)) return;
-  if (seenBatchSeqs.has(body.seq)) return;
-  seenBatchSeqs.add(body.seq);
+  if (body.seq <= seqState.lastSeen) return;
+  seqState.lastSeen = body.seq;
   for (const event of body.events) {
     if (isWsEvent(event)) handlers.onEvent(event);
   }
