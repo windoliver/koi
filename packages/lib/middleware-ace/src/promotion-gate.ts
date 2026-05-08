@@ -434,9 +434,16 @@ export async function rollbackPromotion(
   targetVersion: number,
   evaluation: PlaybookEvaluation,
 ): Promise<PromotionDecision> {
+  // Lineage capability: getVersion is the documented mandatory hook for
+  // historical lookup. The optional lineageSupported flag is an explicit
+  // opt-out for stub adapters whose getVersion always returns undefined
+  // (e.g. nexus). Treat the flag as a fail-closed signal only when explicitly
+  // set to false; absent (undefined) means "trust getVersion presence" so
+  // existing/third-party adapters that implement getVersion correctly do not
+  // need to be updated to set the new flag.
   if (
     deps.structuredStore.getVersion === undefined ||
-    deps.structuredStore.lineageSupported !== true
+    deps.structuredStore.lineageSupported === false
   ) {
     throw new Error("ACE promotion gate: rollback requires structured store lineage support");
   }

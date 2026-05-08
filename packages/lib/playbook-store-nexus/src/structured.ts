@@ -94,16 +94,27 @@ export function createNexusStructuredPlaybookStore(
           const raw = readResult.value as
             | { content?: unknown; metadata?: { etag?: string } }
             | undefined;
-          if (raw !== undefined && typeof raw.content === "string" && raw.content.length > 0) {
-            try {
-              current = JSON.parse(raw.content) as StructuredPlaybook;
-            } catch (e) {
-              throw new Error(`playbook-store-nexus: parse error at ${path(playbook.id)}`, {
-                cause: e,
-              });
-            }
-            etag = raw.metadata?.etag;
+          // Fail closed if the path resolved but the content is missing,
+          // empty, or not a string — a corrupted/protocol-shifted file must
+          // not be silently overwritten and lose the prior head.
+          if (raw === undefined) {
+            throw new Error(
+              `playbook-store-nexus: read returned no envelope at ${path(playbook.id)}`,
+            );
           }
+          if (typeof raw.content !== "string" || raw.content.length === 0) {
+            throw new Error(
+              `playbook-store-nexus: read returned empty/non-string content at ${path(playbook.id)} — refusing to overwrite a degraded head`,
+            );
+          }
+          try {
+            current = JSON.parse(raw.content) as StructuredPlaybook;
+          } catch (e) {
+            throw new Error(`playbook-store-nexus: parse error at ${path(playbook.id)}`, {
+              cause: e,
+            });
+          }
+          etag = raw.metadata?.etag;
         } else if (readResult.error.code !== "NOT_FOUND") {
           throw new Error(readResult.error.message);
         }
@@ -128,10 +139,19 @@ export function createNexusStructuredPlaybookStore(
           path: path(playbook.id),
           content: JSON.stringify(playbook),
         };
-        // Only set if_match when we have an etag for an existing file. A
-        // missing file has no etag — concurrent first-writers race here, but
-        // both must agree on version=initial; any divergent content is
-        // rejected by the version check on the next save.
+        // Only set if_match when we have an etag for an existing file.
+        //
+        // INITIAL-CREATE RACE: when no file exists yet, the underlying Nexus
+        // transport does not currently expose create-if-absent (no
+        // if_none_match), so two coordinators racing on the very first save
+        // for a playbook id can both succeed and last-writer-wins. The
+        // monotonic version check on the NEXT save catches divergent
+        // continuations, but if the two initial payloads differ at the same
+        // initial version the loser is silently lost. Distributed
+        // deployments must funnel initial structured-playbook creation
+        // through a single coordinator (or through the sqlite adapter which
+        // has DB-level transactional CAS) until the transport exposes
+        // create-only writes.
         if (etag !== undefined) {
           writeParams.if_match = etag;
         }
@@ -169,5 +189,9 @@ export function createNexusStructuredPlaybookStore(
       // version that does not exist.
       return undefined;
     },
+    // Explicit fail-closed signal: this adapter has no lineage table.
+    // Consumers (e.g. promotion-gate rollback) check this to refuse before
+    // attempting historical lookups that will silently return undefined.
+    lineageSupported: false,
   };
 }
