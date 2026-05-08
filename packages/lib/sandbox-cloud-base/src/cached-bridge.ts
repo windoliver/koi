@@ -23,6 +23,14 @@ export interface CachedBridge<
   readonly dispose: () => Promise<void>;
 }
 
+interface Slot<TLease> {
+  readonly lease: TLease;
+  expiresAt: number;
+  activeCount: number;
+  pendingDispose: boolean;
+  drainListeners: Array<() => void>;
+}
+
 function createDisposedError(): Error {
   return new Error("Cached bridge has been disposed");
 }
@@ -32,24 +40,40 @@ export function createCachedBridge<
   TOutput,
   TLease extends CachedBridgeLease<TInput, TOutput> = CachedBridgeLease<TInput, TOutput>,
 >(config: CachedBridgeConfig<TInput, TOutput, TLease>): CachedBridge<TInput, TOutput, TLease> {
-  let lease: TLease | undefined;
-  let expiresAt = 0;
+  let slot: Slot<TLease> | undefined;
   let disposed = false;
-  let inflight: Promise<TLease> | undefined;
+  let inflight: Promise<Slot<TLease>> | undefined;
   let pendingCleanup: Promise<void> | undefined;
 
-  function isExpired(now: number): boolean {
-    return lease !== undefined && now >= expiresAt;
+  function isExpired(target: Slot<TLease>, now: number): boolean {
+    return now >= target.expiresAt;
   }
 
-  async function disposeLease(target: TLease | undefined): Promise<void> {
-    if (target === undefined) {
+  function notifyDrained(target: Slot<TLease>): void {
+    if (target.activeCount !== 0) {
       return;
     }
+    const listeners = target.drainListeners;
+    target.drainListeners = [];
+    for (const cb of listeners) {
+      cb();
+    }
+  }
+
+  function waitForDrain(target: Slot<TLease>): Promise<void> {
+    if (target.activeCount === 0) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      target.drainListeners.push(resolve);
+    });
+  }
+
+  async function disposeLease(target: TLease): Promise<void> {
     await target.dispose();
   }
 
-  async function runCleanup(target: TLease | undefined): Promise<void> {
+  async function runCleanup(target: TLease): Promise<void> {
     const cleanup = disposeLease(target);
     pendingCleanup = cleanup;
     try {
@@ -61,30 +85,52 @@ export function createCachedBridge<
     }
   }
 
-  async function warmup(): Promise<TLease> {
+  async function disposeWhenDrained(target: Slot<TLease>): Promise<void> {
+    target.pendingDispose = true;
+    if (target.activeCount === 0) {
+      await runCleanup(target.lease);
+      return;
+    }
+    await waitForDrain(target);
+    await runCleanup(target.lease);
+  }
+
+  function detachExpiredSlot(): Slot<TLease> | undefined {
+    if (slot === undefined) {
+      return undefined;
+    }
+    if (!isExpired(slot, Date.now())) {
+      return undefined;
+    }
+    const stale = slot;
+    slot = undefined;
+    return stale;
+  }
+
+  async function acquireSlot(): Promise<Slot<TLease>> {
     if (disposed) {
       throw createDisposedError();
     }
 
-    if (lease !== undefined && !isExpired(Date.now())) {
-      return lease;
+    if (slot !== undefined && !isExpired(slot, Date.now())) {
+      return slot;
     }
 
     if (inflight === undefined) {
       inflight = (async () => {
-        if (lease !== undefined && isExpired(Date.now())) {
-          const expiredLease = lease;
-          lease = undefined;
-          expiresAt = 0;
-          await runCleanup(expiredLease);
+        const stale = detachExpiredSlot();
+        if (stale !== undefined) {
+          if (stale.activeCount === 0) {
+            await runCleanup(stale.lease);
+          } else {
+            // Defer disposal until in-flight executions drain so they don't get torn
+            // down mid-call. New callers can proceed against a fresh lease meanwhile.
+            void disposeWhenDrained(stale);
+          }
         }
 
-        if (lease !== undefined) {
-          return lease;
-        }
-
-        if (pendingCleanup !== undefined) {
-          await pendingCleanup;
+        if (slot !== undefined) {
+          return slot;
         }
 
         const nextLease = await config.acquire();
@@ -93,9 +139,15 @@ export function createCachedBridge<
           throw createDisposedError();
         }
 
-        lease = nextLease;
-        expiresAt = Date.now() + Math.max(0, config.ttlMs);
-        return nextLease;
+        const newSlot: Slot<TLease> = {
+          lease: nextLease,
+          expiresAt: Date.now() + Math.max(0, config.ttlMs),
+          activeCount: 0,
+          pendingDispose: false,
+          drainListeners: [],
+        };
+        slot = newSlot;
+        return newSlot;
       })().finally(() => {
         inflight = undefined;
       });
@@ -104,9 +156,20 @@ export function createCachedBridge<
     return inflight;
   }
 
+  async function warmup(): Promise<TLease> {
+    const acquired = await acquireSlot();
+    return acquired.lease;
+  }
+
   async function execute(input: TInput): Promise<TOutput> {
-    const activeLease = await warmup();
-    return activeLease.execute(input);
+    const acquired = await acquireSlot();
+    acquired.activeCount += 1;
+    try {
+      return await acquired.lease.execute(input);
+    } finally {
+      acquired.activeCount -= 1;
+      notifyDrained(acquired);
+    }
   }
 
   async function dispose(): Promise<void> {
@@ -117,10 +180,11 @@ export function createCachedBridge<
       await currentInflight.catch(() => undefined);
     }
 
-    const currentLease = lease;
-    lease = undefined;
-    expiresAt = 0;
-    await runCleanup(currentLease);
+    const current = slot;
+    slot = undefined;
+    if (current !== undefined) {
+      await disposeWhenDrained(current);
+    }
 
     if (pendingCleanup !== undefined) {
       await pendingCleanup;
@@ -130,13 +194,13 @@ export function createCachedBridge<
   return {
     warmup,
     getLease: () => {
-      if (lease === undefined) {
+      if (slot === undefined) {
         return undefined;
       }
-      if (isExpired(Date.now())) {
+      if (isExpired(slot, Date.now())) {
         return undefined;
       }
-      return lease;
+      return slot.lease;
     },
     execute,
     dispose,

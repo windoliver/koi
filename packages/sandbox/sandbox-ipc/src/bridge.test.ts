@@ -127,13 +127,16 @@ describe("createSandboxBridge", () => {
           code: "return input.value + 1;",
           input: { value: 41 },
           timeoutMs: 25,
+          nonce: expect.any(String),
         });
 
+        const nonce = (message as { nonce: string }).nonce;
         control.sendToHost({
           kind: "result",
           output: 42,
           durationMs: 7,
           memoryUsedBytes: 512,
+          nonce,
         });
         control.exitWith(0);
       },
@@ -166,12 +169,14 @@ describe("createSandboxBridge", () => {
       onCreated(control) {
         control.sendToHost({ kind: "ready" });
       },
-      onHostMessage(_message, control) {
+      onHostMessage(message, control) {
+        const nonce = (message as { nonce: string }).nonce;
         control.sendToHost({
           kind: "error",
           code: "CRASH",
           message: "worker exploded",
           durationMs: 3,
+          nonce,
         });
         control.exitWith(1);
       },
@@ -235,11 +240,13 @@ describe("createSandboxBridge", () => {
       onCreated(control) {
         control.sendToHost({ kind: "ready" });
       },
-      onHostMessage(_message, control) {
+      onHostMessage(message, control) {
+        const nonce = (message as { nonce: string }).nonce;
         control.sendToHost({
           kind: "result",
           output: "x".repeat(256),
           durationMs: 4,
+          nonce,
         });
       },
     });
@@ -303,11 +310,13 @@ describe("createSandboxBridge", () => {
       onCreated(control) {
         control.sendToHost({ kind: "ready" });
       },
-      onHostMessage(_message, control) {
+      onHostMessage(message, control) {
+        const nonce = (message as { nonce: string }).nonce;
         control.sendToHost({
           kind: "result",
           output: "ok",
           durationMs: 1,
+          nonce,
         });
         control.exitWith(0);
       },

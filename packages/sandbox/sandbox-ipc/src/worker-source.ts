@@ -1,10 +1,28 @@
 export const WORKER_SOURCE: string = `// @bun
+const _send = process.send.bind(process);
+let _nonce;
+
 function send(message) {
-  if (typeof process.send !== "function") {
+  if (typeof _send !== "function") {
     throw new Error("Worker must be spawned with IPC enabled");
   }
 
-  process.send(message);
+  if (message.kind === "ready" || _nonce === undefined) {
+    _send(message);
+    return;
+  }
+  _send({ ...message, nonce: _nonce });
+}
+
+function sealHostChannel() {
+  // Prevent untrusted code from forging IPC frames after the host hands control off.
+  process.send = function () {
+    return true;
+  };
+  if (typeof process.disconnect === "function") {
+    process.disconnect = function () {};
+  }
+  process.removeAllListeners("message");
 }
 
 function validateExecuteMessage(value) {
@@ -28,6 +46,9 @@ function validateExecuteMessage(value) {
   }
   if (typeof record.input !== "object" || record.input === null || Array.isArray(record.input)) {
     return "Execute message input must be an object";
+  }
+  if (typeof record.nonce !== "string" || record.nonce.length === 0) {
+    return "Execute message nonce must be a non-empty string";
   }
 
   return record;
@@ -57,6 +78,14 @@ process.on("message", async (raw) => {
 
   const message = validateExecuteMessage(raw);
   if (typeof message === "string") {
+    if (
+      raw !== null &&
+      typeof raw === "object" &&
+      typeof raw.nonce === "string" &&
+      raw.nonce.length > 0
+    ) {
+      _nonce = raw.nonce;
+    }
     send({
       kind: "error",
       code: "CRASH",
@@ -68,6 +97,8 @@ process.on("message", async (raw) => {
   }
 
   handled = true;
+  _nonce = message.nonce;
+  sealHostChannel();
 
   const startedAt = performance.now();
   let settled = false;

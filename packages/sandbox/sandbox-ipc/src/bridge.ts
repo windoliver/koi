@@ -95,6 +95,10 @@ function classifyExitCode(exitCode: number, durationMs: number): IpcError {
   });
 }
 
+// BridgeConfig.profile is the enforcement ceiling. Per-call ExecutionContext can only
+// narrow that ceiling — never broaden network or filesystem allowances. Workspace and
+// entry paths must be declared in the bridge profile up front; they are not appended
+// from context here. Resource limits are tightened (min) when present in both.
 function applyContextToProfile(
   base: SandboxProfile,
   context: ExecutionContext | undefined,
@@ -103,33 +107,30 @@ function applyContextToProfile(
     return base;
   }
 
-  const filesystem = { ...base.filesystem };
   const network = { ...base.network };
   const resources = { ...base.resources };
 
-  if (context.workspacePath !== undefined) {
-    filesystem.allowRead = [...(filesystem.allowRead ?? []), context.workspacePath];
-    filesystem.allowWrite = [...(filesystem.allowWrite ?? []), context.workspacePath];
-  }
-
-  if (context.entryPath !== undefined) {
-    filesystem.allowRead = [...(filesystem.allowRead ?? []), context.entryPath];
-  }
-
-  if (context.networkAllowed === true) {
-    network.allow = true;
+  if (context.networkAllowed === false) {
+    network.allow = false;
   }
 
   if (context.resourceLimits?.maxMemoryMb !== undefined) {
-    resources.maxMemoryMb = context.resourceLimits.maxMemoryMb;
+    const baseMax = base.resources.maxMemoryMb;
+    resources.maxMemoryMb =
+      baseMax !== undefined
+        ? Math.min(baseMax, context.resourceLimits.maxMemoryMb)
+        : context.resourceLimits.maxMemoryMb;
   }
   if (context.resourceLimits?.maxPids !== undefined) {
-    resources.maxPids = context.resourceLimits.maxPids;
+    const baseMax = base.resources.maxPids;
+    resources.maxPids =
+      baseMax !== undefined
+        ? Math.min(baseMax, context.resourceLimits.maxPids)
+        : context.resourceLimits.maxPids;
   }
 
   return {
     ...base,
-    filesystem,
     network,
     resources,
     ...(context.env !== undefined ? { env: { ...(base.env ?? {}), ...context.env } } : {}),
@@ -320,6 +321,8 @@ export async function createSandboxBridge(
       };
     }
 
+    const executeNonce = crypto.randomUUID();
+
     const startedAt = performance.now();
     let proc: IpcProcess;
     try {
@@ -414,6 +417,26 @@ export async function createSandboxBridge(
             code,
             input,
             timeoutMs: requestTimeoutMs,
+            nonce: executeNonce,
+          });
+          return;
+        }
+
+        const rawNonce =
+          typeof rawMessage === "object" &&
+          rawMessage !== null &&
+          !Array.isArray(rawMessage) &&
+          "nonce" in rawMessage
+            ? (rawMessage as { nonce?: unknown }).nonce
+            : undefined;
+        if (rawNonce !== executeNonce) {
+          settle({
+            ok: false,
+            error: createIpcError(
+              "DESERIALIZE",
+              "Worker terminal frame missing or with invalid nonce",
+              { durationMs: performance.now() - startedAt },
+            ),
           });
           return;
         }
