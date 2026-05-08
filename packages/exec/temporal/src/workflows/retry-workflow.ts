@@ -1,13 +1,25 @@
-import type { RetryActivityInput, RetryActivityResult } from "../activities/retry-activity.js";
+import { createDefaultAgentActivities } from "../activities/agent-activity.js";
+import {
+  createDefaultRetryActivities,
+  type RetryActivityInput,
+  type RetryActivityResult,
+} from "../activities/retry-activity.js";
 import type { RetryWorkflowArgs, RetryWorkflowResult } from "../types.js";
+import { scheduledTaskWorkflow } from "./scheduled-task-workflow.js";
 
 interface RetryWorkflowDeps {
   readonly runRetriedOperation: (input: RetryActivityInput) => Promise<RetryActivityResult>;
   readonly sleep: (ms: number) => Promise<void>;
 }
 
+const defaultAgentActivities = createDefaultAgentActivities();
+const defaultRetryActivities = createDefaultRetryActivities({
+  runAgentTurn: defaultAgentActivities.runAgentTurn,
+  runScheduledTask: scheduledTaskWorkflow,
+});
+
 const defaultRetryWorkflowDeps: RetryWorkflowDeps = {
-  runRetriedOperation: async () => ({ kind: "failed", error: "unimplemented" }),
+  runRetriedOperation: defaultRetryActivities.runRetriedOperation,
   sleep: async (ms) => {
     await new Promise<void>((resolve) => {
       setTimeout(resolve, ms);

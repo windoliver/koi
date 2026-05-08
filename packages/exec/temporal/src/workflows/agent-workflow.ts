@@ -1,27 +1,18 @@
-import type { AgentStateRefs, AgentWorkflowConfig } from "../types.js";
-
-interface AgentWorkflowRunResult {
-  readonly turnId: string;
-  readonly updatedStateRefs: AgentStateRefs;
-  readonly next: { readonly kind: "complete" | "retry" };
-}
+import {
+  type AgentTurnResult,
+  createDefaultAgentActivities,
+  getAgentWorkflowMessages,
+} from "../activities/agent-activity.js";
+import type { AgentWorkflowConfig } from "../types.js";
 
 interface AgentWorkflowDeps {
-  readonly runAgentTurn: (input: AgentWorkflowConfig) => Promise<AgentWorkflowRunResult>;
+  readonly runAgentTurn: (input: AgentWorkflowConfig) => Promise<AgentTurnResult>;
 }
 
+const defaultAgentActivities = createDefaultAgentActivities();
+
 const defaultAgentWorkflowDeps: AgentWorkflowDeps = {
-  runAgentTurn: async (input) => {
-    const turnId = input.stateRefs.lastTurnId ?? `turn-${input.stateRefs.turnsProcessed + 1}`;
-    return {
-      turnId,
-      updatedStateRefs: {
-        lastTurnId: turnId,
-        turnsProcessed: input.stateRefs.turnsProcessed + 1,
-      },
-      next: { kind: "complete" },
-    };
-  },
+  runAgentTurn: defaultAgentActivities.runAgentTurn,
 };
 
 let agentWorkflowDeps: AgentWorkflowDeps = defaultAgentWorkflowDeps;
@@ -35,12 +26,35 @@ export function resetAgentWorkflowDepsForTest(): void {
 }
 
 export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> {
-  if (
-    config.initialMessage === undefined &&
-    (config.initialMessages === undefined || config.initialMessages.length === 0)
-  ) {
+  const messages = getAgentWorkflowMessages(config);
+  if (messages.length === 0) {
     return;
   }
 
-  await agentWorkflowDeps.runAgentTurn(config);
+  let stateRefs = config.stateRefs;
+  const maxTurns = messages.length + Math.max(config.maxStopRetries ?? 0, 0);
+
+  for (let turn = 0; turn < maxTurns; turn += 1) {
+    const previousStateRefs = stateRefs;
+    const result = await agentWorkflowDeps.runAgentTurn({
+      ...config,
+      stateRefs,
+      initialMessage: undefined,
+      initialMessages: messages,
+    });
+
+    stateRefs = result.updatedStateRefs;
+    if (result.next.kind === "complete") {
+      return;
+    }
+
+    const progressed =
+      stateRefs.turnsProcessed > previousStateRefs.turnsProcessed ||
+      stateRefs.lastTurnId !== previousStateRefs.lastTurnId;
+    if (!progressed) {
+      throw new Error("agent workflow requested retry without advancing state");
+    }
+  }
+
+  throw new Error("agent workflow exhausted turn budget before completion");
 }
