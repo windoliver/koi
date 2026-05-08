@@ -57,9 +57,10 @@ TrajectoryEntry[] ── aggregateTrajectoryStats ──▶ Map<id, AggregatedSt
                           formatActivePlaybooksMessage → system prompt
 ```
 
-The stat/injection/promotion-gate helpers remain pure orchestration surfaces.
-`ace-middleware.ts` is the shipped runtime wrapper that owns session state,
-clock access, and lifecycle wiring around those helpers.
+The stat and injection helpers remain pure. The promotion-gate commit/rollback
+helpers are store-backed orchestration that read and write structured-playbook
+state. `ace-middleware.ts` is the shipped runtime wrapper that owns session
+state, clock access, and lifecycle wiring around those helpers.
 
 ---
 

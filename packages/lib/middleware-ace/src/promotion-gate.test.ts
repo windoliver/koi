@@ -819,6 +819,19 @@ describe("rollbackPromotion", () => {
     ).rejects.toThrow(/verdict/i);
   });
 
+  test("throws on stale base-version mismatch before rollback", async () => {
+    const store = createStructuredStore(createStructuredPlaybook({ version: 3 }));
+
+    await expect(
+      rollbackPromotion(
+        { structuredStore: store, clock: () => 500 },
+        createProposal({ baseVersion: 2 }),
+        2,
+        evaluation({ verdict: "rollback" }),
+      ),
+    ).rejects.toThrow(/base version mismatch/i);
+  });
+
   test("throws when rollback target version is not older than the current head", async () => {
     await expect(
       rollbackPromotion(

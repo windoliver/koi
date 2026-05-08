@@ -366,6 +366,12 @@ export async function rollbackPromotion(
     throw new Error(`ACE promotion gate: structured playbook not found: ${proposal.playbookId}`);
   }
 
+  if (current.version !== proposal.baseVersion) {
+    throw new Error(
+      `ACE promotion gate: base version mismatch for ${proposal.playbookId}; expected ${proposal.baseVersion}, got ${current.version}`,
+    );
+  }
+
   if (targetVersion >= current.version) {
     throw new Error("ACE promotion gate: rollback targetVersion must be older than the current head");
   }
