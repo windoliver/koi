@@ -58,6 +58,7 @@ const makeArtifact = (): BrickArtifact =>
     kind: "middleware",
     id: "brick-1",
     name: "auto-harness-search",
+    lifecycle: "draft",
   }) as BrickArtifact;
 
 describe("createAutoHarnessStack", () => {
@@ -126,7 +127,7 @@ describe("createAutoHarnessStack", () => {
     });
 
     expect(stack.maxSynthesesPerSession).toBe(3);
-    await expect(stack.synthesizeHarness(makeSignal())).resolves.toBe(artifact);
+    await expect(stack.synthesizeHarness(makeSignal())).resolves.toEqual(artifact);
   });
 
   test("resetSession reopens the per-session synthesis counter and emits events", async () => {
@@ -154,12 +155,12 @@ describe("createAutoHarnessStack", () => {
     });
 
     const signal = makeSignal();
-    await expect(stack.synthesizeHarness(signal)).resolves.toBe(artifact);
-    await expect(stack.synthesizeHarness(signal)).resolves.toBe(artifact);
-    await expect(stack.synthesizeHarness(signal)).resolves.toBe(artifact);
+    await expect(stack.synthesizeHarness(signal)).resolves.toEqual(artifact);
+    await expect(stack.synthesizeHarness(signal)).resolves.toEqual(artifact);
+    await expect(stack.synthesizeHarness(signal)).resolves.toEqual(artifact);
     await expect(stack.synthesizeHarness(signal)).resolves.toBeNull();
     stack.resetSession();
-    await expect(stack.synthesizeHarness(signal)).resolves.toBe(artifact);
+    await expect(stack.synthesizeHarness(signal)).resolves.toEqual(artifact);
     expect(events.some((event) => event.kind === "session.reset")).toBe(true);
     expect(events.some((event) => event.kind === "deployment.succeeded")).toBe(true);
   });
@@ -495,6 +496,7 @@ describe("createAutoHarnessStack", () => {
     };
     const stack = createAutoHarnessStack({
       forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      policyVerifier: (() => async () => ({ ok: true as const, value: undefined })) as never,
       generate: async () => "candidate-code",
       verifyCandidate: async () => ({ ok: true, artifact }),
       evaluatePolicy: async () => ({ ok: true, action: "allow" }),
@@ -517,7 +519,7 @@ describe("createAutoHarnessStack", () => {
 
     try {
       const result = await stack.synthesizeHarness(makeSignal());
-      expect(result).toBe(artifact);
+      expect(result).toEqual(artifact);
       expect(registered).toHaveLength(1);
       expect(registered[0]).toBe(policyEntry);
     } finally {
@@ -531,6 +533,7 @@ describe("createAutoHarnessStack", () => {
     const artifact = makeArtifact();
     const stack = createAutoHarnessStack({
       forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      policyVerifier: (() => async () => ({ ok: true as const, value: undefined })) as never,
       generate: async () => "candidate-code",
       verifyCandidate: async () => ({ ok: true, artifact }),
       evaluatePolicy: async () => ({ ok: true, action: "allow" }),
@@ -566,7 +569,7 @@ describe("createAutoHarnessStack", () => {
     // Deployment side effects are committed before register runs; reporting
     // a register failure as a deployment failure would lead callers to retry
     // and duplicate the live activation.
-    expect(result).toBe(artifact);
+    expect(result).toEqual(artifact);
     expect(errors).toHaveLength(1);
     expect(errors[0]?.stage).toBe("register-policy");
     expect(errors[0]?.message).toBe("verifier rejected");
@@ -610,7 +613,7 @@ describe("createAutoHarnessStack", () => {
 
     resolveGate?.();
     const firstResult = await first;
-    expect(firstResult).toBe(artifact);
+    expect(firstResult).toEqual(artifact);
     expect(generateCalls).toBe(1);
   });
 

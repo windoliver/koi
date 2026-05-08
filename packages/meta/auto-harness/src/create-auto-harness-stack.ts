@@ -110,6 +110,14 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /\b[A-Za-z0-9]{28,}\b/g,
   // Base64-ish runs with separators.
   /\b[A-Za-z0-9_+/-]{40,}={0,2}\b/g,
+  // POSIX user home paths — leak username and often tenant-shaped subdirs.
+  /\/(?:Users|home)\/[^/\s"',)}]+/g,
+  // Internal-style hostnames: foo.local, foo.internal, *.svc, *.cluster.local.
+  /\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9][a-z0-9-]*)*\.(?:local|internal|svc|cluster\.local)\b/gi,
+  // IPv4 addresses (private + public — defense in depth, model doesn't need them).
+  /\b(?:\d{1,3}\.){3}\d{1,3}\b/g,
+  // tenant=..., tenant_id=..., orgId=..., x-tenant-id: ... — common multi-tenant identifiers.
+  /\b(?:tenant(?:[_-]?id)?|org(?:[_-]?id)?|account(?:[_-]?id)?|customer(?:[_-]?id)?|x-tenant(?:-id)?)\b\s*[:=]\s*["']?[^\s"',}]+["']?/gi,
 ];
 
 function sanitizeFailureEvidence(text: string): string {
@@ -262,7 +270,13 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       return null;
     }
 
-    const artifact = verification.artifact;
+    // Force lifecycle to "draft" before persistence. Verification produced a
+    // candidate but it has not yet cleared policy or approval — storing it
+    // as "active" would expose pre-approval bricks to any consumer reading
+    // the forge store (resolvers, dashboards, redeployment paths). The
+    // deploy stage is responsible for promoting the lifecycle once the
+    // artifact is actually live.
+    const artifact = { ...verification.artifact, lifecycle: "draft" as const };
 
     // Persist the verified artifact before any policy / approval / deploy
     // decisions. Persistence is a HARD GATE: if the artifact cannot be
@@ -357,7 +371,13 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       artifactId: artifact.id,
     });
 
-    if (deployment.policyEntry !== undefined) {
+    // Skip cache registration when no verifier is configured. Without a
+    // verifier the policy-cache fails closed on every register and would
+    // emit spurious "register-policy" errors for a deployment that
+    // succeeded. The middleware still short-circuits via its own miss path;
+    // not populating the cache simply means no fast-path optimization until
+    // the host wires a verifier.
+    if (deployment.policyEntry !== undefined && config.policyVerifier !== undefined) {
       try {
         const result = policyCacheHandle.register(deployment.policyEntry);
         if (!result.ok) {
