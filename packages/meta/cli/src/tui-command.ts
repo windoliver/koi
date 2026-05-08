@@ -274,15 +274,19 @@ function formatMountedConnectors(entries: readonly MountDescription[]): string {
   if (entries.length === 0) return "[No mounts]";
   return entries
     .map((entry) => {
-      // path/connector are operator-controlled identifiers (mount URI / Nexus
-      // routing); description is connector-supplied (README content) and must
-      // be sanitized before reaching the terminal.
+      // Every field is sanitized before reaching the terminal: even though
+      // path / connector look like operator-controlled identifiers, they're
+      // ultimately derived from bridge `list_mounts` / `add_mount` output,
+      // which a malicious or compromised backend can populate with control
+      // characters or ANSI escapes.
+      const path = sanitizeConnectorText(entry.path);
+      const connector = sanitizeConnectorText(entry.connector);
       const description =
         entry.description !== undefined && entry.description.length > 0
           ? sanitizeConnectorText(entry.description)
           : "";
       const details = description.length > 0 ? ` — ${description}` : "";
-      return `${entry.path} (${entry.connector})${details}`;
+      return `${path} (${connector})${details}`;
     })
     .join("\n");
 }
@@ -6309,7 +6313,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             dispatchNotice(
               store,
               "mount-info",
-              `[Mounted ${parsed.value.uri} at ${result.value.path}]`,
+              `[Mounted ${sanitizeConnectorText(parsed.value.uri)} at ${sanitizeConnectorText(result.value.path)}]`,
             );
           })();
           break;
@@ -6365,7 +6369,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               return;
             }
             mountDescriptionsState.remove(path);
-            dispatchNotice(store, "unmount-info", `[Unmounted ${path}]`);
+            dispatchNotice(store, "unmount-info", `[Unmounted ${sanitizeConnectorText(path)}]`);
           })();
           break;
         case "system:mounts":

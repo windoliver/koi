@@ -119,6 +119,20 @@ function connectorNameFromPath(path: string): string {
   return parts[0] ?? "unknown";
 }
 
+/**
+ * Normalize a Nexus mount path to a canonical form: exactly one leading
+ * slash, no trailing slash, empty input → empty string. The Nexus backend
+ * itself strips leading/trailing slashes when computing its base path, so
+ * comparisons in protected-root/active-root logic must canonicalize first
+ * — otherwise `mountPoint: "gmail"` (a valid config) and the live mount
+ * path `/gmail` would not match and the guard would be bypassed.
+ */
+function canonicalizeMountPath(value: string): string {
+  if (value.length === 0) return "";
+  const stripped = value.replace(/^\/+/, "").replace(/\/+$/, "");
+  return stripped.length === 0 ? "" : `/${stripped}`;
+}
+
 function cheapMountDescription(path: string): MountDescription {
   return { path, connector: connectorNameFromPath(path) };
 }
@@ -130,12 +144,35 @@ function cheapMountDescription(path: string): MountDescription {
  * connector-warmup work and would turn cosmetic prompt enrichment into a
  * blocking dependency on TUI startup. Callers that want richer descriptions
  * (e.g. README content) should refresh asynchronously after startup.
+ *
+ * If `scopePaths` is provided (canonicalized protected/scope roots), the
+ * seed is filtered so only mounts that fall within at least one of those
+ * paths are surfaced. This prevents a scope-restricted session from
+ * disclosing the existence of sibling mounts (other accounts, tenants,
+ * unrelated workspaces) to the model via the system prompt — even though
+ * the filesystem wrappers would block I/O, the trust boundary is already
+ * breached once those names enter the privileged prompt layer.
  */
 function seedManifestMountDescriptions(
   transport: import("@koi/fs-nexus").NexusTransport,
+  scopePaths?: readonly string[] | undefined,
 ): readonly MountDescription[] {
   const mounts = transport.mounts ?? [];
-  return [...mounts.map(cheapMountDescription)].sort((a, b) => a.path.localeCompare(b.path));
+  const filtered =
+    scopePaths === undefined || scopePaths.length === 0
+      ? mounts
+      : mounts.filter((mountPath) => {
+          const canonical = canonicalizeMountPath(mountPath);
+          return scopePaths.some(
+            (scopePath) =>
+              canonical === scopePath ||
+              canonical.startsWith(`${scopePath}/`) ||
+              // The scope is *under* the mount: reading still works (scoped
+              // wrapper caps it), so disclose the mount.
+              scopePath.startsWith(`${canonical}/`),
+          );
+        });
+  return [...filtered.map(cheapMountDescription)].sort((a, b) => a.path.localeCompare(b.path));
 }
 
 /**
@@ -577,19 +614,29 @@ export async function resolveFileSystemAsync(
     //   - glob scope `allow` static prefixes
     // Unmounting any of these paths OR an ancestor of them would leave the
     // session resolving operations into a mount that no longer exists.
+    // Every protected-root entry is canonicalized (leading slash, no
+    // trailing slash) so comparisons against incoming mount paths match
+    // regardless of whether the operator wrote `mountPoint: "gmail"` or
+    // `mountPoint: "/gmail"`. Without this, a slashless explicit
+    // mountPoint silently bypasses the unmount/addMount guards.
+    const canonicalActiveRoot =
+      inferredMountPoint === undefined ? undefined : canonicalizeMountPath(inferredMountPoint);
     const protectedRoots: string[] = [];
-    if (inferredMountPoint !== undefined) protectedRoots.push(inferredMountPoint);
-    if (scope !== undefined) protectedRoots.push(scope.root);
+    if (canonicalActiveRoot !== undefined && canonicalActiveRoot.length > 0) {
+      protectedRoots.push(canonicalActiveRoot);
+    }
+    if (scope !== undefined) {
+      const scopeCanonical = canonicalizeMountPath(scope.root);
+      if (scopeCanonical.length > 0) protectedRoots.push(scopeCanonical);
+    }
     let hasUnprotectableScope = false;
     if (globScope !== undefined) {
       for (const pattern of globScope.allow) {
         const wildcardIdx = pattern.search(/[*?]/);
         const staticPrefix = wildcardIdx === -1 ? pattern : pattern.slice(0, wildcardIdx);
-        // Trim trailing slash so e.g. "/local/ws/" and "/local/ws" produce
-        // identical protected entries downstream.
-        const normalized = staticPrefix.replace(/\/+$/, "");
-        if (normalized.length > 0) {
-          protectedRoots.push(normalized);
+        const canonical = canonicalizeMountPath(staticPrefix);
+        if (canonical.length > 0) {
+          protectedRoots.push(canonical);
         } else {
           // Wildcard-only allow pattern (e.g. "**/*.md", "*.txt") cannot be
           // reduced to a static namespace, so the addMount/removeMount
@@ -606,7 +653,8 @@ export async function resolveFileSystemAsync(
       // until the operator sets a stable scope.
       mutationsSupported = false;
     }
-    const isPathProtectedByUnmount = (path: string): boolean => {
+    const isPathProtectedByUnmount = (rawPath: string): boolean => {
+      const path = canonicalizeMountPath(rawPath);
       for (const root of protectedRoots) {
         if (path === root) return true;
         // Unmounting an ancestor of a protected root strands it just like
@@ -620,7 +668,8 @@ export async function resolveFileSystemAsync(
     // `/local/ws/sub` (under a scope.root) would silently redirect already-
     // approved paths through the new connector, breaking the trust boundary.
     // Reject equality and any descendant relationship to a protected root.
-    const isPathProtectedByMount = (target: string): boolean => {
+    const isPathProtectedByMount = (rawTarget: string): boolean => {
+      const target = canonicalizeMountPath(rawTarget);
       for (const root of protectedRoots) {
         if (target === root) return true;
         if (target.startsWith(`${root}/`)) return true;
@@ -845,10 +894,14 @@ export async function resolveFileSystemAsync(
     return {
       backend,
       operations,
-      mountDescriptions: seedManifestMountDescriptions(transport),
+      // Pass protectedRoots as the disclosure scope so a scoped session
+      // does not leak sibling mount paths into the system prompt. When
+      // protectedRoots is empty the seed includes all mounts (no scope
+      // configured → no filtering needed).
+      mountDescriptions: seedManifestMountDescriptions(transport, protectedRoots),
       transport: guardedTransport,
       runtimeMountMutationsSupported: mutationsSupported,
-      backendActiveRoot: inferredMountPoint,
+      backendActiveRoot: canonicalActiveRoot,
     };
   }
 
