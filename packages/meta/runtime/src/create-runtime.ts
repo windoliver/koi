@@ -537,6 +537,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       agentMonitorMiddleware !== undefined
         ? [...middlewareBeforeMonitor, agentMonitorMiddleware]
         : middlewareBeforeMonitor;
+    const installedPolicyCacheMiddleware = middleware.find((mw) => mw.name === "policy-cache");
 
     const activityTimeoutConfig = resolveActivityTimeoutConfig(
       config.activityTimeout,
@@ -1181,9 +1182,9 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       forgeDemand:
         forgeDemandHandle !== undefined ? { middleware: forgeDemandHandle.middleware } : undefined,
       autoHarness:
-        autoHarnessStack !== undefined
+        autoHarnessStack !== undefined && installedPolicyCacheMiddleware !== undefined
           ? {
-              middleware: autoHarnessStack.policyCacheMiddleware,
+              middleware: installedPolicyCacheMiddleware,
               synthesizeHarness: autoHarnessStack.synthesizeHarness,
               resetSession: autoHarnessStack.resetSession,
               maxSynthesesPerSession: autoHarnessStack.maxSynthesesPerSession,

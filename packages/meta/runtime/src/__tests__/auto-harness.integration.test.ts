@@ -20,8 +20,7 @@ describe("createRuntime autoHarness wiring", () => {
     expect(runtime.middleware.filter((mw) => mw.name === "policy-cache")).toHaveLength(1);
     expect(runtime.middleware).toContain(providedPolicyCache);
     expect(runtime.autoHarness).toBeDefined();
-    expect(runtime.autoHarness?.middleware.name).toBe("policy-cache");
-    expect(runtime.autoHarness?.middleware).not.toBe(providedPolicyCache);
+    expect(runtime.autoHarness?.middleware).toBe(providedPolicyCache);
   });
 
   test("installs policy-cache middleware when autoHarness is enabled", () => {
