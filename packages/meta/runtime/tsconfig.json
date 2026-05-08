@@ -160,6 +160,8 @@
     { "path": "../../lib/model-router" },
     { "path": "../../security/middleware-audit" },
     { "path": "../../security/audit-sink-nexus" },
+    { "path": "../../security/registry-nexus" },
+    { "path": "../../lib/search-nexus" },
     { "path": "../../security/audit-sink-sqlite" },
     { "path": "../../security/audit-sink-ndjson" },
     { "path": "../../security/violation-store-sqlite" },

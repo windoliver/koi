@@ -4,10 +4,10 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 207 workspace packages
+- 209 workspace packages
 - 11 package families
-- 207 packages with local test files
-- 185 packages with dedicated package docs
+- 209 packages with local test files
+- 187 packages with dedicated package docs
 
 ## Family Summary
 
@@ -16,13 +16,13 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 2 | 12 | 2 |
 | kernel | 4 | 126 | 0 |
-| lib | 138 | 715 | 120 |
+| lib | 139 | 718 | 121 |
 | meta | 3 | 107 | 3 |
 | mm | 12 | 54 | 12 |
 | net | 10 | 89 | 10 |
 | sandbox | 11 | 58 | 11 |
 | sched | 5 | 22 | 5 |
-| security | 19 | 105 | 19 |
+| security | 20 | 109 | 20 |
 | ui | 1 | 54 | 1 |
 
 ## Package Inventory
@@ -46,7 +46,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/engine-compose` (packages/kernel/engine-compose) - Middleware composition and guard factories for the Koi kernel. Tests: 7. Docs: -.
 - `@koi/engine-reconcile` (packages/kernel/engine-reconcile) - Reconciliation, supervision, and process management for the Koi kernel. Tests: 22. Docs: -.
 
-## lib (138)
+## lib (139)
 
 - `@koi/ace-types` (packages/lib/ace-types) - Shared domain types for ACE (Adaptive Continuous Enhancement) middleware and stores. Tests: 1. Docs: -.
 - `@koi/agent-discovery` (packages/lib/agent-discovery) - Runtime discovery of external coding agents (CLI, filesystem registry, MCP). Tests: 8. Docs: docs/L2/agent-discovery.md.
@@ -158,6 +158,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/replay` (packages/lib/replay) - Deterministic cassette recording and replay for Koi agent tests. Tests: 3. Docs: docs/L2/replay.md.
 - `@koi/rules-loader` (packages/lib/rules-loader) - Hierarchical project rules file discovery, loading, merging, and system prompt injection. Tests: 6. Docs: docs/L2/rules-loader.md.
 - `@koi/scratchpad-local` (packages/lib/scratchpad-local) - In-memory ScratchpadComponent with CAS, TTL, and glob filtering. Tests: 1. Docs: docs/L2/scratchpad-local.md.
+- `@koi/search-nexus` (packages/lib/search-nexus) - Nexus-backed SearchBackend — Retriever + Indexer via Nexus search RPC. Tests: 3. Docs: docs/L2/search-nexus.md.
 - `@koi/secure-storage` (packages/lib/secure-storage) - OS keychain token storage with file-based locking for concurrent access. Tests: 3. Docs: -.
 - `@koi/session` (packages/lib/session) - Session persistence (SQLite/WAL) and transcript (append-only JSONL) for crash recovery. Tests: 9. Docs: docs/L2/session.md.
 - `@koi/settings` (packages/lib/settings) - Hierarchical settings cascade: user → project → local → flag → policy. Tests: 4. Docs: docs/L2/settings.md.
@@ -243,7 +244,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/scheduler-provider` (packages/sched/scheduler-provider) - Agent-facing tools for scheduler interaction (9 tools via SchedulerComponent). Tests: 1. Docs: docs/L2/scheduler-provider.md.
 - `@koi/verified-loop` (packages/sched/verified-loop) - External verification loop — iterate agent against objective gates instead of LLM self-assessment. Tests: 5. Docs: docs/L2/verified-loop.md.
 
-## security (19)
+## security (20)
 
 - `@koi/audit-sink-ndjson` (packages/security/audit-sink-ndjson) - Buffered NDJSON file sink for @koi/middleware-audit. Tests: 1. Docs: docs/L2/audit-sink-ndjson.md.
 - `@koi/audit-sink-nexus` (packages/security/audit-sink-nexus) - Nexus-backed AuditSink — batched writes with interval and size triggers. Tests: 2. Docs: docs/L2/audit-sink-nexus.md.
@@ -262,6 +263,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/permissions` (packages/security/permissions) - Rule-based tool access control implementing PermissionBackend. Tests: 7. Docs: docs/L2/permissions.md.
 - `@koi/permissions-nexus` (packages/security/permissions-nexus) - Nexus-backed permission persistence, cross-node sync, and delegation hooks. Tests: 4. Docs: docs/L2/permissions-nexus.md.
 - `@koi/redaction` (packages/security/redaction) - Mask secrets (API keys, credentials, tokens) in logs with 13 built-in pattern detectors. Tests: 13. Docs: docs/L2/redaction.md.
+- `@koi/registry-nexus` (packages/security/registry-nexus) - Nexus-backed AgentRegistry — distributed agent discovery with CAS transitions and polling projection. Tests: 4. Docs: docs/L2/registry-nexus.md.
 - `@koi/skill-scanner` (packages/security/skill-scanner) - AST-based security scanner for SKILL.md files. Tests: 7. Docs: docs/L2/skill-scanner.md.
 - `@koi/violation-store-sqlite` (packages/security/violation-store-sqlite) - Append-only SQLite-backed ViolationStore with WAL mode and indexed queries. Tests: 3. Docs: docs/L2/violation-store-sqlite.md.
 

@@ -1,0 +1,798 @@
+/**
+ * Nexus-backed AgentRegistry implementation.
+ *
+ * Uses Nexus as the authoritative store for agent state. Maintains a local
+ * in-memory projection for fast reads, synchronized via periodic polling.
+ * Watch events are emitted both from local mutations and from poll-detected
+ * remote changes.
+ *
+ * Dual-generation model: Koi generation (CAS for callers) is tracked in the
+ * local projection. Nexus generation (CAS for server) is tracked separately
+ * in `nexusGens` and used for Nexus RPC calls.
+ */
+
+import type {
+  AgentId,
+  AgentRegistry,
+  AgentStatus,
+  KoiError,
+  PatchableRegistryFields,
+  ProcessState,
+  RegistryEntry,
+  RegistryEvent,
+  RegistryFilter,
+  Result,
+  TransitionReason,
+  VisibilityContext,
+} from "@koi/core";
+import { matchesFilter, VALID_TRANSITIONS, zoneId } from "@koi/core";
+import { createListenerSet } from "@koi/event-delivery";
+import type { NexusRegistryConfig } from "./config.js";
+import { DEFAULT_NEXUS_REGISTRY_CONFIG, validateNexusRegistryConfig } from "./config.js";
+import {
+  nexusDeleteAgent,
+  nexusGetAgent,
+  nexusListAgents,
+  nexusRegisterAgent,
+  nexusTransition,
+  nexusUpdateMetadata,
+} from "./nexus-rpc.js";
+import { runPoll } from "./poll.js";
+import { freezeEntry, mapNexusAgentToEntry, RESERVED_METADATA_KEYS } from "./projection.js";
+import { encodeKoiStatus, mapKoiToNexus } from "./state-mapping.js";
+
+/**
+ * Create a Nexus-backed AgentRegistry.
+ *
+ * Performs eager warmup by listing all agents from Nexus at startup.
+ * Starts a poll timer to keep the local projection in sync.
+ */
+export async function createNexusRegistry(config: NexusRegistryConfig): Promise<AgentRegistry> {
+  const validation = validateNexusRegistryConfig(config);
+  if (!validation.ok) {
+    throw new Error(validation.error.message, { cause: validation.error });
+  }
+
+  const transport = config.transport;
+  const maxEntries = config.maxEntries ?? DEFAULT_NEXUS_REGISTRY_CONFIG.maxEntries;
+  const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_NEXUS_REGISTRY_CONFIG.pollIntervalMs;
+  const startupTimeoutMs =
+    config.startupTimeoutMs ?? DEFAULT_NEXUS_REGISTRY_CONFIG.startupTimeoutMs;
+
+  const projection = new Map<AgentId, RegistryEntry>();
+  /** Nexus-side generation per agent — separate from Koi generation. */
+  const nexusGens = new Map<AgentId, number>();
+  const listeners = createListenerSet<RegistryEvent>({
+    onError: (err) =>
+      console.warn("[registry-nexus] listener threw:", err instanceof Error ? err.message : err),
+  });
+  // let: self-scheduled poll handle (setTimeout). Used instead of
+  // setInterval so polls cannot overlap — re-entrant polls can produce
+  // split-brain deletions when an older slow poll completes after a
+  // newer poll has already added a fresh agent.
+  let pollTimer: ReturnType<typeof setTimeout> | undefined;
+  // let: in-flight guard belt-and-braces against bugs where dispose
+  // races a tick boundary.
+  let pollInFlight = false;
+  // let: disposed flag to gate background work
+  let disposed = false;
+  // let: broken flag — set when poll detects an unrecoverable overflow
+  // or repeated sync failures. Once broken, all operations throw rather
+  // than returning a partial / stale mirror.
+  let broken: string | undefined;
+  // let: consecutive poll failures — used to fail closed before the
+  // mirror becomes unboundedly stale.
+  let consecutivePollFailures = 0;
+  const MAX_POLL_FAILURES = 5;
+  // Per-entry tombstones for agents whose phase is known to be stale
+  // (transition committed remotely, reconciliation refetch failed). Reads
+  // and mutating ops fail closed on these IDs until a successful refetch
+  // resyncs the projection — phase-based scheduling/cleanup must not act
+  // on a value the registry knows is wrong.
+  const stale = new Set<AgentId>();
+  // Per-agent poll hydration failures — a single agent that fails to
+  // refetch repeatedly is tombstoned so callers don't read stale state.
+  const perAgentGetFailures = new Map<AgentId, number>();
+
+  function assertHealthy(): void {
+    if (broken !== undefined) {
+      throw new Error(`registry-nexus is broken: ${broken}`);
+    }
+  }
+
+  const notify = listeners.notify;
+
+  async function loadProjection(): Promise<void> {
+    const listResult = await nexusListAgents(transport, config.zoneId);
+    if (!listResult.ok) {
+      throw new Error(
+        `Failed to load agents from Nexus during startup: ${listResult.error.message}`,
+        {
+          cause: listResult.error,
+        },
+      );
+    }
+
+    if (listResult.value.length > maxEntries) {
+      throw new Error(
+        `Nexus reports ${String(listResult.value.length)} agents but maxEntries=${String(maxEntries)}; refuse to start with a partial mirror`,
+      );
+    }
+
+    projection.clear();
+    nexusGens.clear();
+
+    for (const nexusAgent of listResult.value) {
+      const detail = await nexusGetAgent(transport, nexusAgent.agent_id);
+      if (!detail.ok) {
+        // Fail closed: starting up with a partial mirror would silently
+        // hide live agents until poll happens to repair them.
+        throw new Error(
+          `Failed to hydrate agent ${nexusAgent.agent_id} during warmup: ${detail.error.message}`,
+          { cause: detail.error },
+        );
+      }
+      const entry = freezeEntry(mapNexusAgentToEntry(detail.value));
+      projection.set(entry.agentId, entry);
+      nexusGens.set(entry.agentId, detail.value.generation ?? 0);
+    }
+  }
+
+  function recordPollFailure(reason: string, err: KoiError): void {
+    consecutivePollFailures += 1;
+    console.warn(
+      `[registry-nexus] poll failure (${String(consecutivePollFailures)}/${String(MAX_POLL_FAILURES)}): ${reason}: ${err.message}`,
+    );
+    if (consecutivePollFailures >= MAX_POLL_FAILURES) {
+      broken = `poll failed ${String(MAX_POLL_FAILURES)} consecutive times — last error: ${err.message}`;
+      console.error(`[registry-nexus] ${broken}`);
+      if (pollTimer !== undefined) {
+        clearTimeout(pollTimer);
+        pollTimer = undefined;
+      }
+    }
+  }
+
+  function poll(): Promise<void> {
+    return runPoll({
+      transport,
+      zoneId: config.zoneId,
+      maxEntries,
+      projection,
+      nexusGens,
+      stale,
+      perAgentGetFailures,
+      notify,
+      recordPollFailure,
+      setBroken: (msg) => {
+        broken = msg;
+        console.error(`[registry-nexus] ${broken}`);
+        if (pollTimer !== undefined) {
+          clearTimeout(pollTimer);
+          pollTimer = undefined;
+        }
+      },
+      isDisposed: () => disposed,
+      onPollComplete: (perTickGetFailures, remoteAgentCount) => {
+        if (perTickGetFailures === 0) {
+          consecutivePollFailures = 0;
+        } else if (perTickGetFailures === remoteAgentCount && remoteAgentCount > 0) {
+          recordPollFailure("all get_agent calls failed", {
+            code: "EXTERNAL",
+            message: "all per-agent fetches failed",
+            retryable: true,
+          });
+        }
+      },
+    });
+  }
+
+  async function register(entry: RegistryEntry): Promise<RegistryEntry> {
+    assertHealthy();
+    // Fail closed if the local projection is at capacity — registering
+    // remotely without a local mirror would silently desync state and
+    // hide the agent from list()/lookup() until eviction.
+    if (projection.size >= maxEntries && !projection.has(entry.agentId)) {
+      throw new Error(
+        `Registry projection at capacity (${String(maxEntries)} entries); refuse to register ${entry.agentId} without a local mirror`,
+      );
+    }
+    // Strip caller-supplied reserved keys before merging — register() must
+    // enforce the same trust boundary as patch(). A caller-supplied
+    // `koi:terminated`/`koi:status`/etc. would let user metadata flip
+    // authoritative lifecycle state on first hydration.
+    const sanitizedCallerMetadata: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(entry.metadata)) {
+      if (!RESERVED_METADATA_KEYS.has(k)) sanitizedCallerMetadata[k] = v;
+    }
+    const koiMetadata = encodeKoiStatus(entry.status);
+    const merged: Record<string, unknown> = {
+      ...sanitizedCallerMetadata,
+      ...koiMetadata,
+      // Explicitly clear koi:terminated when the status is not terminated;
+      // encodeKoiStatus only sets it for terminated, so without this a
+      // future caller-supplied value (already filtered above) or a stale
+      // remote flag could bleed through on round-trip.
+      ...(entry.status.phase !== "terminated" ? { "koi:terminated": false } : {}),
+      agentType: entry.agentType,
+      registeredAt: entry.registeredAt,
+      priority: entry.priority,
+      ...(entry.parentId !== undefined ? { parentId: entry.parentId } : {}),
+      ...(entry.spawner !== undefined ? { spawner: entry.spawner } : {}),
+      ...(entry.groupId !== undefined ? { groupId: entry.groupId } : {}),
+    };
+
+    const registerResult = await nexusRegisterAgent(transport, {
+      agent_id: entry.agentId,
+      name: entry.agentId,
+      metadata: merged,
+      ...(entry.zoneId !== undefined
+        ? { zone_id: entry.zoneId }
+        : config.zoneId !== undefined
+          ? { zone_id: config.zoneId }
+          : {}),
+    });
+
+    if (!registerResult.ok) {
+      throw new Error(
+        `Failed to register agent ${entry.agentId} in Nexus: ${registerResult.error.message}`,
+        { cause: registerResult.error },
+      );
+    }
+    const initialNexusGen = registerResult.value.generation ?? 0;
+
+    async function rollbackOrphan(
+      reason: string,
+      cause: unknown,
+      expectedFailedState: string,
+    ): Promise<never> {
+      // Refetch-and-reconcile: a transition RPC error can be ambiguous
+      // (the request may have committed before the response was lost).
+      // Only delete when we can prove Nexus is still in the
+      // pre-transition state. Otherwise surface the failure without
+      // touching a possibly-live agent — caller can retry.
+      //
+      // Bounded retry on probe failure: a single failed get_agent
+      // shouldn't strand an orphaned Nexus record with no local
+      // ownership. Retry the probe a few times before giving up.
+      const PROBE_ATTEMPTS = 3;
+      let probe: Awaited<ReturnType<typeof nexusGetAgent>> | undefined;
+      for (let attempt = 0; attempt < PROBE_ATTEMPTS; attempt++) {
+        if (attempt > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 50 * 2 ** (attempt - 1)));
+        }
+        probe = await nexusGetAgent(transport, entry.agentId);
+        if (probe.ok) break;
+      }
+      const remoteState = probe?.ok ? probe.value.state : undefined;
+      const safeToDelete = remoteState === expectedFailedState;
+      let rollbackFailureMessage: string | undefined;
+      if (safeToDelete) {
+        const deleteAttempt = await nexusDeleteAgent(transport, entry.agentId);
+        if (!deleteAttempt.ok) rollbackFailureMessage = deleteAttempt.error.message;
+      } else if (probe?.ok) {
+        rollbackFailureMessage = `skipped delete: remote agent state is ${remoteState ?? "unknown"} — refusing destructive rollback after ambiguous transition failure (transition may have committed; retry register or call deregister explicitly)`;
+      } else {
+        // Probe never succeeded — we cannot tell whether the agent is
+        // orphaned or live. Tombstone the id locally so subsequent ops
+        // see the entry as reconcile-pending rather than vanished, and
+        // surface the situation to the caller.
+        const tombstoneEntry: RegistryEntry = {
+          ...entry,
+          metadata: {
+            ...entry.metadata,
+            ...encodeKoiStatus(entry.status),
+          },
+        };
+        projection.set(entry.agentId, freezeEntry(tombstoneEntry));
+        nexusGens.set(entry.agentId, initialNexusGen);
+        stale.add(entry.agentId);
+        rollbackFailureMessage = `probe failed after ${String(PROBE_ATTEMPTS)} attempts; remote record may be orphaned. Tombstoned local id ${entry.agentId} — call deregister() once Nexus is reachable again`;
+      }
+      throw new Error(
+        `Failed to register agent ${entry.agentId}: ${reason}${
+          rollbackFailureMessage !== undefined ? ` (rollback: ${rollbackFailureMessage})` : ""
+        }`,
+        { cause },
+      );
+    }
+
+    // let: advances through setup transitions
+    let currentNexusGen = initialNexusGen;
+
+    const targetNexusState = mapKoiToNexus(entry.status.phase);
+    const connectedResult = await nexusTransition(
+      transport,
+      entry.agentId,
+      "CONNECTED",
+      currentNexusGen,
+    );
+    if (!connectedResult.ok) {
+      // Pre-transition state for first-step rollback is UNKNOWN
+      // (register_agent's initial state).
+      await rollbackOrphan(
+        `transition to CONNECTED failed: ${connectedResult.error.message}`,
+        connectedResult.error,
+        "UNKNOWN",
+      );
+    }
+    currentNexusGen = connectedResult.ok
+      ? (connectedResult.value.generation ?? currentNexusGen + 1)
+      : currentNexusGen;
+
+    if (targetNexusState !== "CONNECTED") {
+      const targetResult = await nexusTransition(
+        transport,
+        entry.agentId,
+        targetNexusState,
+        currentNexusGen,
+      );
+      if (!targetResult.ok) {
+        // After CONNECTED step succeeded, agent is in CONNECTED state;
+        // only delete if the second-step ambiguous failure left it there.
+        await rollbackOrphan(
+          `transition to ${targetNexusState} failed: ${targetResult.error.message}`,
+          targetResult.error,
+          "CONNECTED",
+        );
+      }
+      currentNexusGen = targetResult.ok
+        ? (targetResult.value.generation ?? currentNexusGen + 1)
+        : currentNexusGen;
+    }
+
+    // Preserve the caller's original phase. Nexus only carries
+    // CONNECTED/IDLE/SUSPENDED, but the koi:status metadata blob carries
+    // the precise Koi phase. mapNexusAgentToEntry trusts koi:status when
+    // it round-trips through the same Nexus state, so a `created` agent
+    // registered here remains observable as `created` until the runtime
+    // performs the real `created → running` transition. Without this,
+    // ChildHandle/spawn-child observers would miss the startup event
+    // because the agent would be observable as `running` immediately.
+    const canonicalStatus: AgentStatus = entry.status;
+    const canonicalMerged: Record<string, unknown> = merged;
+
+    // Store the merged metadata blob locally so subsequent
+    // patch()/transition() round-trips don't drop identity fields
+    // (agentType, registeredAt, parent/spawner/group) or lifecycle
+    // markers (koi:status, koi:terminated) when rebuilding the outbound
+    // metadata from `current.metadata`.
+    // Persist the effective zoneId used in the Nexus write. Without this
+    // a registration that picked up `config.zoneId` (because entry.zoneId
+    // was undefined) would create a split-brain projection: Nexus has the
+    // agent in a zone, local mirror reports zoneId=undefined, and
+    // list({ zoneId }) / zone-scoped schedulers would miss it.
+    const effectiveZoneId =
+      entry.zoneId ?? (config.zoneId !== undefined ? zoneId(config.zoneId) : undefined);
+    const stored: RegistryEntry = freezeEntry({
+      ...entry,
+      status: canonicalStatus,
+      metadata: canonicalMerged,
+      ...(effectiveZoneId !== undefined ? { zoneId: effectiveZoneId } : {}),
+    });
+    projection.set(entry.agentId, stored);
+    nexusGens.set(entry.agentId, currentNexusGen);
+    // Clear all per-ID failure state — re-registering a previously
+    // tombstoned ID with a fresh agent must not stay invisible.
+    stale.delete(entry.agentId);
+    perAgentGetFailures.delete(entry.agentId);
+
+    notify({ kind: "registered", entry: stored });
+    return stored;
+  }
+
+  async function deregister(id: AgentId): Promise<boolean> {
+    assertHealthy();
+    const existed = projection.has(id);
+    if (!existed) return false;
+
+    const deleteResult = await nexusDeleteAgent(transport, id);
+    if (!deleteResult.ok) {
+      // Nexus is the source of truth — if delete failed there, do not
+      // drop local state. Otherwise local would believe the agent is gone
+      // while Nexus still has it (split-brain) until the next poll.
+      throw new Error(`Failed to delete agent ${id} from Nexus: ${deleteResult.error.message}`, {
+        cause: deleteResult.error,
+      });
+    }
+    projection.delete(id);
+    nexusGens.delete(id);
+    stale.delete(id);
+    perAgentGetFailures.delete(id);
+    notify({ kind: "deregistered", agentId: id });
+    return true;
+  }
+
+  function lookup(id: AgentId): RegistryEntry | undefined {
+    assertHealthy();
+    if (stale.has(id)) return undefined;
+    return projection.get(id);
+  }
+
+  function list(
+    filter?: RegistryFilter,
+    _visibility?: VisibilityContext,
+  ): readonly RegistryEntry[] {
+    assertHealthy();
+    // VisibilityContext is intentionally not enforced here — that is the
+    // job of createVisibilityFilter() (L2 engine-compose), which wraps an
+    // inner registry and applies permission scoping before returning the
+    // filtered set. Throwing here would break the AgentRegistry contract
+    // and break every permission-scoped caller (MCP koi_list_agents,
+    // createVisibilityFilter, discoverBySkill). The parameter is accepted
+    // and ignored so the contract remains satisfied.
+    const entries = [...projection.values()].filter((e) => !stale.has(e.agentId));
+    if (filter === undefined) return entries;
+    return entries.filter((e) => matchesFilter(e, filter));
+  }
+
+  async function transition(
+    id: AgentId,
+    targetPhase: ProcessState,
+    expectedGeneration: number,
+    reason: TransitionReason,
+  ): Promise<Result<RegistryEntry, KoiError>> {
+    assertHealthy();
+    if (stale.has(id)) {
+      return {
+        ok: false,
+        error: {
+          code: "EXTERNAL",
+          message: `Agent ${id} is in a tombstoned reconcile-pending state; refetch from Nexus must succeed before phase transitions can resume`,
+          retryable: true,
+        },
+      };
+    }
+    const current = projection.get(id);
+    if (current === undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: `Agent ${id} not found in registry`,
+          retryable: false,
+        },
+      };
+    }
+
+    if (current.status.generation !== expectedGeneration) {
+      return {
+        ok: false,
+        error: {
+          code: "CONFLICT",
+          message: `Stale generation: expected ${String(expectedGeneration)}, current ${String(current.status.generation)}`,
+          retryable: true,
+        },
+      };
+    }
+
+    const allowed = VALID_TRANSITIONS[current.status.phase];
+    if (!allowed.some((s) => s === targetPhase)) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: `Invalid transition: ${current.status.phase} → ${targetPhase}. Allowed: [${allowed.join(", ")}]`,
+          retryable: false,
+        },
+      };
+    }
+
+    const targetNexusState = mapKoiToNexus(targetPhase);
+    const currentNexusGen = nexusGens.get(id) ?? 0;
+    const nexusResult = await nexusTransition(transport, id, targetNexusState, currentNexusGen);
+
+    if (!nexusResult.ok) {
+      if (nexusResult.error.code === "CONFLICT") {
+        return {
+          ok: false,
+          error: {
+            code: "CONFLICT",
+            message: `Concurrent modification on agent ${id} in Nexus`,
+            retryable: true,
+          },
+        };
+      }
+      return { ok: false, error: nexusResult.error };
+    }
+
+    nexusGens.set(id, nexusResult.value.generation ?? currentNexusGen + 1);
+
+    const newStatus: AgentStatus = {
+      phase: targetPhase,
+      generation: current.status.generation + 1,
+      conditions: [...current.status.conditions],
+      reason,
+      lastTransitionAt: Date.now(),
+    };
+
+    const updateResult = await nexusUpdateMetadata(
+      transport,
+      id,
+      {
+        ...current.metadata,
+        ...encodeKoiStatus(newStatus),
+      },
+      // CAS: bind to the post-transition Nexus generation so a concurrent
+      // writer cannot clobber this update by overwriting an older blob.
+      nexusGens.get(id),
+    );
+
+    // Materialize the new lifecycle metadata so subsequent patch() calls
+    // don't replay a stale koi:status blob (which would clobber the
+    // terminated marker, etc.).
+    const refreshedMetadata: Readonly<Record<string, unknown>> = {
+      ...current.metadata,
+      ...encodeKoiStatus(newStatus),
+    };
+
+    if (!updateResult.ok) {
+      // Special case: target=terminated. Nexus is now in SUSPENDED but the
+      // `koi:terminated` flag write failed, so the authoritative record is
+      // ambiguous — refetching would map bare SUSPENDED back to `suspended`
+      // and silently downgrade an intended terminate to a resumable agent,
+      // letting cleanup logic act on a still-live entry. Tombstone instead:
+      // the agent stays invisible to reads until the caller explicitly
+      // deregisters or a subsequent transition repairs the metadata.
+      if (targetPhase === "terminated") {
+        stale.add(id);
+        console.warn(
+          `[registry-nexus] terminate metadata-write failed for ${id} (Nexus is SUSPENDED without koi:terminated=true); tombstoning to prevent silent downgrade to "suspended" — caller should retry transition() or deregister`,
+        );
+        return { ok: false, error: updateResult.error };
+      }
+      // agent_transition committed remotely, but the lifecycle metadata
+      // write did not. Reconcile the local projection from the
+      // authoritative Nexus record so we don't claim a phase that Nexus
+      // cannot actually represent without the missing metadata flag.
+      // Bounded retry: dropping the entry on a single transient failure
+      // would orphan the live Nexus agent when polling is disabled.
+      const RECONCILE_ATTEMPTS = 3;
+      for (let attempt = 0; attempt < RECONCILE_ATTEMPTS; attempt++) {
+        if (attempt > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 50 * 2 ** (attempt - 1)));
+        }
+        const refetch = await nexusGetAgent(transport, id);
+        if (refetch.ok) {
+          // Unknown-state errors during reconciliation should not crash
+          // the caller; treat as a refetch failure for the next attempt.
+          let reconciled: RegistryEntry;
+          try {
+            reconciled = freezeEntry(mapNexusAgentToEntry(refetch.value));
+          } catch {
+            continue;
+          }
+          projection.set(id, reconciled);
+          nexusGens.set(id, refetch.value.generation ?? currentNexusGen);
+          stale.delete(id);
+          if (reconciled.status.phase !== current.status.phase) {
+            notify({
+              kind: "transitioned",
+              agentId: id,
+              from: current.status.phase,
+              to: reconciled.status.phase,
+              generation: reconciled.status.generation,
+              reason,
+            });
+          }
+          return { ok: false, error: updateResult.error };
+        }
+      }
+      // All retries exhausted. Tombstone the entry: keep it for
+      // deregister/recovery, but block lookup/list/mutating reads so
+      // callers don't act on the known-stale phase. A successful poll or
+      // subsequent transition will clear the tombstone.
+      stale.add(id);
+      console.warn(
+        `[registry-nexus] reconcile failed for ${id} after ${String(RECONCILE_ATTEMPTS)} attempts (last error: ${updateResult.error.message}); tombstoning local projection — reads return undefined until Nexus refetch succeeds`,
+      );
+      return { ok: false, error: updateResult.error };
+    }
+
+    if (updateResult.value.generation !== undefined) {
+      nexusGens.set(id, updateResult.value.generation);
+    }
+
+    const updated: RegistryEntry = freezeEntry({
+      ...current,
+      status: newStatus,
+      metadata: refreshedMetadata,
+    });
+    projection.set(id, updated);
+
+    notify({
+      kind: "transitioned",
+      agentId: id,
+      from: current.status.phase,
+      to: targetPhase,
+      generation: newStatus.generation,
+      reason,
+    });
+
+    return { ok: true, value: updated };
+  }
+
+  async function patch(
+    id: AgentId,
+    fields: PatchableRegistryFields,
+  ): Promise<Result<RegistryEntry, KoiError>> {
+    assertHealthy();
+    if (stale.has(id)) {
+      return {
+        ok: false,
+        error: {
+          code: "EXTERNAL",
+          message: `Agent ${id} is in a tombstoned reconcile-pending state; refetch must succeed before patches can resume`,
+          retryable: true,
+        },
+      };
+    }
+    const current = projection.get(id);
+    if (current === undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: `Agent ${id} not found in registry`,
+          retryable: false,
+        },
+      };
+    }
+
+    if (fields.metadata !== undefined) {
+      const reserved = Object.keys(fields.metadata).filter((k) => RESERVED_METADATA_KEYS.has(k));
+      if (reserved.length > 0) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: `patch({ metadata }) cannot overwrite registry-owned keys: ${reserved.join(", ")}`,
+            retryable: false,
+          },
+        };
+      }
+    }
+
+    if (fields.zoneId !== undefined) {
+      // Nexus does not expose a zone-move RPC, and `update_agent_metadata`
+      // does not touch the authoritative `agent.zone_id` field. Accepting
+      // a zoneId patch would make the local projection diverge from Nexus
+      // and silently revert on the next poll. Fail closed instead.
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message:
+            "patch({ zoneId }) is not supported by registry-nexus — Nexus has no zone-move RPC",
+          retryable: false,
+        },
+      };
+    }
+
+    const nexusMeta: Record<string, unknown> = { ...current.metadata };
+    if (fields.priority !== undefined) nexusMeta.priority = fields.priority;
+    if (fields.metadata !== undefined) Object.assign(nexusMeta, fields.metadata);
+
+    // Local metadata mirror MUST match the outbound Nexus payload — the
+    // adapter rebuilds outbound metadata from `current.metadata` on later
+    // writes, so any divergence here will get re-sent and clobber Nexus.
+    const updated: RegistryEntry = freezeEntry({
+      ...current,
+      ...(fields.priority !== undefined ? { priority: fields.priority } : {}),
+      metadata: nexusMeta,
+    });
+
+    // CAS: bind the patch to the last-known Nexus generation so concurrent
+    // writers can't clobber newer state with this stale-built blob.
+    const updateResult = await nexusUpdateMetadata(transport, id, nexusMeta, nexusGens.get(id));
+    if (!updateResult.ok) {
+      if (updateResult.error.code === "CONFLICT") {
+        return {
+          ok: false,
+          error: {
+            code: "CONFLICT",
+            message: `Concurrent modification on agent ${id} in Nexus`,
+            retryable: true,
+          },
+        };
+      }
+      // Ambiguous failure: a transport/server error after the metadata
+      // RPC may have committed remotely while losing the response. The
+      // local mirror would otherwise silently diverge and the next
+      // patch would build from stale state. Mirror transition()'s
+      // reconcile-or-tombstone behavior: bounded refetch + tombstone on
+      // exhaustion.
+      const RECONCILE_ATTEMPTS = 3;
+      for (let attempt = 0; attempt < RECONCILE_ATTEMPTS; attempt++) {
+        if (attempt > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 50 * 2 ** (attempt - 1)));
+        }
+        const refetch = await nexusGetAgent(transport, id);
+        if (refetch.ok) {
+          let reconciled: RegistryEntry;
+          try {
+            reconciled = freezeEntry(mapNexusAgentToEntry(refetch.value));
+          } catch {
+            continue;
+          }
+          projection.set(id, reconciled);
+          nexusGens.set(id, refetch.value.generation ?? nexusGens.get(id) ?? 0);
+          stale.delete(id);
+          return { ok: false, error: updateResult.error };
+        }
+      }
+      stale.add(id);
+      console.warn(
+        `[registry-nexus] patch reconcile failed for ${id} after ${String(RECONCILE_ATTEMPTS)} attempts; tombstoning local projection — Nexus remains authoritative`,
+      );
+      return { ok: false, error: updateResult.error };
+    }
+
+    if (updateResult.value.generation !== undefined) {
+      nexusGens.set(id, updateResult.value.generation);
+    }
+
+    projection.set(id, updated);
+    notify({ kind: "patched", agentId: id, fields, entry: updated });
+
+    return { ok: true, value: updated };
+  }
+
+  function watch(listener: (event: RegistryEvent) => void): () => void {
+    return listeners.subscribe(listener);
+  }
+
+  async function dispose(): Promise<void> {
+    disposed = true;
+    if (pollTimer !== undefined) {
+      clearTimeout(pollTimer);
+      pollTimer = undefined;
+    }
+    projection.clear();
+    nexusGens.clear();
+  }
+
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(`createNexusRegistry warmup timed out after ${String(startupTimeoutMs)}ms`));
+    }, startupTimeoutMs);
+  });
+  try {
+    await Promise.race([loadProjection(), timeoutPromise]);
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+  }
+
+  function schedulePoll(): void {
+    if (disposed || broken !== undefined || pollIntervalMs <= 0) return;
+    pollTimer = setTimeout(async () => {
+      if (pollInFlight) {
+        // Should not happen with self-scheduling, but guard against
+        // re-entrant calls from manual triggers / tests.
+        schedulePoll();
+        return;
+      }
+      pollInFlight = true;
+      try {
+        await poll();
+      } finally {
+        pollInFlight = false;
+        schedulePoll();
+      }
+    }, pollIntervalMs);
+  }
+
+  schedulePoll();
+
+  return {
+    register,
+    deregister,
+    lookup,
+    list,
+    transition,
+    patch,
+    watch,
+    [Symbol.asyncDispose]: dispose,
+  };
+}

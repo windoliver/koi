@@ -1046,6 +1046,14 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/search-nexus": {
+      "name": "@koi/search-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+    },
     "packages/lib/secure-storage": {
       "name": "@koi/secure-storage",
       "version": "0.0.0",
@@ -1553,6 +1561,7 @@
         "@koi/plugins": "workspace:*",
         "@koi/query-engine": "workspace:*",
         "@koi/redaction": "workspace:*",
+        "@koi/registry-nexus": "workspace:*",
         "@koi/replay": "workspace:*",
         "@koi/rlm-stack": "workspace:*",
         "@koi/rules-loader": "workspace:*",
@@ -1568,6 +1577,7 @@
         "@koi/scheduler-nexus": "workspace:*",
         "@koi/scheduler-provider": "workspace:*",
         "@koi/scratchpad-local": "workspace:*",
+        "@koi/search-nexus": "workspace:*",
         "@koi/session": "workspace:*",
         "@koi/settings": "workspace:*",
         "@koi/skill-distiller": "workspace:*",
@@ -2083,6 +2093,15 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+    },
+    "packages/security/registry-nexus": {
+      "name": "@koi/registry-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/event-delivery": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
       },
     },
     "packages/security/skill-scanner": {
@@ -2806,6 +2825,8 @@
 
     "@koi/redaction": ["@koi/redaction@workspace:packages/security/redaction"],
 
+    "@koi/registry-nexus": ["@koi/registry-nexus@workspace:packages/security/registry-nexus"],
+
     "@koi/replay": ["@koi/replay@workspace:packages/lib/replay"],
 
     "@koi/rlm-stack": ["@koi/rlm-stack@workspace:packages/meta/rlm-stack"],
@@ -2843,6 +2864,8 @@
     "@koi/scheduler-provider": ["@koi/scheduler-provider@workspace:packages/sched/scheduler-provider"],
 
     "@koi/scratchpad-local": ["@koi/scratchpad-local@workspace:packages/lib/scratchpad-local"],
+
+    "@koi/search-nexus": ["@koi/search-nexus@workspace:packages/lib/search-nexus"],
 
     "@koi/secure-storage": ["@koi/secure-storage@workspace:packages/lib/secure-storage"],
 
