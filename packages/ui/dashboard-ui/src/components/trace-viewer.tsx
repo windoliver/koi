@@ -4,13 +4,7 @@ import type { DashboardTraceEntry } from "../lib/state.js";
 import { EmptyState } from "./empty-state.js";
 import { StatusPill } from "./status-pill.js";
 
-export function TraceViewer({
-  trace,
-  ambiguous = false,
-}: {
-  trace: DashboardTraceEntry[];
-  ambiguous?: boolean;
-}): ReactElement {
+export function TraceViewer({ trace }: { trace: DashboardTraceEntry[] }): ReactElement {
   return (
     <section className="dashboard-panel" aria-label="Trace">
       <div className="panel-header">
@@ -20,12 +14,7 @@ export function TraceViewer({
         </div>
       </div>
 
-      {ambiguous ? (
-        <EmptyState
-          title="Trace unavailable for multi-session agent"
-          message="Server traces don't carry a sessionId, so the UI cannot prove which session a trace belongs to when this agent has more than one. Trace will appear once a session/turn mapping is wired through the API."
-        />
-      ) : trace.length === 0 ? (
+      {trace.length === 0 ? (
         <EmptyState
           title="No trace events yet"
           message="Shows the most recent turn for the selected agent. Server traces don't carry a sessionId, so the trace pane is agent-scoped, not session-scoped."

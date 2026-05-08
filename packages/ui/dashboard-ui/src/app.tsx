@@ -137,22 +137,21 @@ export async function fetchSessionMetrics(
       client.getMetrics(createMetricQuery(name, sessionId, nowMs)),
     ),
   );
+  // Fail closed on partial failure: returning a half-populated metric set would
+  // hide backend errors behind cards that look healthy. Callers see null and
+  // surface a degraded-state indicator rather than rendering misleading numbers.
+  for (const response of responses) {
+    if (!response.ok) return null;
+  }
   const collected: Parameters<typeof mapMetricPoints>[0][number][] = [];
-  let anyOk = false;
   for (const response of responses) {
     if (!response.ok) continue;
-    anyOk = true;
     for (const point of response.value) {
-      // Hard-filter client-side because the dashboard-api parser ignores `to` and
-      // `tag`; only `since` (the lower bound) is enforced server-side. Without
-      // these guards the panel could merge old or cross-session samples as if
-      // they were current per-session data.
       if (point.tags?.sessionId !== sessionId) continue;
       if (point.timestampMs < fromMs || point.timestampMs > nowMs) continue;
       collected.push(point);
     }
   }
-  if (!anyOk) return null;
   return collected;
 }
 
@@ -195,22 +194,14 @@ export function DashboardView({
 
           <div className="dashboard-grid">
             <MetricsPanel metrics={state.selectedSession?.metrics ?? []} />
-            <TraceViewer
-              trace={
-                // Trace events have no sessionId, so we cannot prove a trace belongs
-                // to the selected session when an agent has multiple sessions.
-                // Suppress the trace contents in that case to avoid showing one
-                // session's metrics next to another session's trace.
-                state.selectedAgentId &&
-                (state.sessionsByAgentId[state.selectedAgentId]?.length ?? 0) <= 1
-                  ? state.selectedAgentTrace
-                  : []
-              }
-              ambiguous={
-                state.selectedAgentId !== null &&
-                (state.sessionsByAgentId[state.selectedAgentId]?.length ?? 0) > 1
-              }
-            />
+            {/*
+              Server traces don't carry a sessionId, so the trace pane is
+              agent-scoped (latest turn for selected agent), not session-scoped.
+              The TraceViewer header makes that explicit; we keep it visible for
+              multi-session agents because a busy agent is exactly when an
+              operator most needs trace data.
+            */}
+            <TraceViewer trace={state.selectedAgentTrace} />
           </div>
         </section>
       </div>
@@ -350,7 +341,17 @@ export function DashboardApp({
     let cancelled = false;
     void (async () => {
       const points = await fetchSessionMetrics(clientRef.current, selectedSessionId);
-      if (cancelled || points === null || points.length === 0) return;
+      if (cancelled) return;
+      if (points === null) {
+        // fetchSessionMetrics fails closed if any per-name request fails; surface
+        // it so operators don't read partial numbers as healthy state.
+        dispatch({
+          type: "error.set",
+          message: "Session metrics partially unavailable — backend request failed.",
+        });
+        return;
+      }
+      if (points.length === 0) return;
       dispatch({ type: "metric.received", points });
     })();
     return () => {
