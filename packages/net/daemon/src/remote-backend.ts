@@ -141,8 +141,10 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
       workers.set(request.workerId, state);
 
       let sawStarted = false;
+      let sawTerminal = false;
       for (const ev of parsed.value.events) {
         if (ev.kind === "started") sawStarted = true;
+        if (isTerminalEvent(ev)) sawTerminal = true;
         emit(request.workerId, state, ev);
       }
       if (!sawStarted) {
@@ -151,6 +153,18 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
           workerId: request.workerId,
           at: parsed.value.startedAt,
           ...(parsed.value.pid !== undefined ? { pid: parsed.value.pid } : {}),
+        });
+      }
+      if (!parsed.value.alive && !sawTerminal) {
+        emit(request.workerId, state, {
+          kind: "crashed",
+          workerId: request.workerId,
+          at: now(),
+          error: {
+            code: "INTERNAL",
+            message: `remote worker ${request.workerId} reported alive=false at spawn without a terminal event`,
+            retryable: false,
+          },
         });
       }
 
@@ -165,22 +179,24 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
     },
     terminate: async (id, reason) => {
       const state = workers.get(id);
-      if (state !== undefined) state.terminatedIntentionally = true;
       const result = await transport.call<void>(method("terminate"), { workerId: id, reason });
       if (!result.ok && result.error.code === "NOT_FOUND") {
+        if (state !== undefined) state.terminatedIntentionally = true;
         if (workers.get(id) === state) workers.delete(id);
         return { ok: true, value: undefined };
       }
+      if (result.ok && state !== undefined) state.terminatedIntentionally = true;
       return result;
     },
     kill: async (id) => {
       const state = workers.get(id);
-      if (state !== undefined) state.terminatedIntentionally = true;
       const result = await transport.call<void>(method("kill"), { workerId: id });
       if (!result.ok && result.error.code === "NOT_FOUND") {
+        if (state !== undefined) state.terminatedIntentionally = true;
         if (workers.get(id) === state) workers.delete(id);
         return { ok: true, value: undefined };
       }
+      if (result.ok && state !== undefined) state.terminatedIntentionally = true;
       return result;
     },
     isAlive: async (id) => {
