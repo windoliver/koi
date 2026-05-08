@@ -1,10 +1,9 @@
 /**
  * @koi/middleware-ace — Adaptive Continuous Enhancement (L2).
  *
- * Phase 1 surface (#1715): pure stat-pipeline primitives, token-budgeted
- * playbook injection, promotion-gate evaluation, and store-backed promotion
- * commit orchestration. Middleware integration continues landing in
- * subsequent steps.
+ * Current surface (#1715): shipped ACE middleware integration, pure stat
+ * pipeline primitives, token-budgeted playbook injection, and promotion-gate
+ * evaluation/commit/rollback orchestration.
  */
 
 export type { AceConfig } from "./ace-middleware.js";
@@ -24,4 +23,9 @@ export {
   curateTrajectorySummary,
 } from "./stats-aggregator.js";
 export type { PromotionDecision, PromotionGateDeps } from "./promotion-gate.js";
-export { applyProposalOperations, commitPromotion, evaluatePromotion } from "./promotion-gate.js";
+export {
+  applyProposalOperations,
+  commitPromotion,
+  evaluatePromotion,
+  rollbackPromotion,
+} from "./promotion-gate.js";

@@ -9,7 +9,12 @@ import type {
   PromotionThresholds,
 } from "@koi/ace-types";
 
-import { applyProposalOperations, commitPromotion, evaluatePromotion } from "./promotion-gate.js";
+import {
+  applyProposalOperations,
+  commitPromotion,
+  evaluatePromotion,
+  rollbackPromotion,
+} from "./promotion-gate.js";
 
 const proposal: PlaybookProposal = {
   id: "proposal-1",
@@ -123,6 +128,28 @@ function createStructuredStore(seed?: StructuredPlaybook): StructuredPlaybookSto
         ? (structuredClone(current) as StructuredPlaybook)
         : undefined;
     },
+  };
+}
+
+function createStructuredStoreWithoutLineage(seed?: StructuredPlaybook): StructuredPlaybookStore {
+  const latestById = new Map<string, StructuredPlaybook>();
+  if (arguments.length === 0) {
+    latestById.set(structuredPlaybook.id, createStructuredPlaybook());
+  } else if (seed !== undefined) {
+    latestById.set(seed.id, seed);
+  }
+
+  return {
+    get: async (id) => {
+      const current = latestById.get(id);
+      return current !== undefined ? (structuredClone(current) as StructuredPlaybook) : undefined;
+    },
+    list: async () =>
+      [...latestById.values()].map((playbook) => structuredClone(playbook) as StructuredPlaybook),
+    save: async (playbook) => {
+      latestById.set(playbook.id, structuredClone(playbook) as StructuredPlaybook);
+    },
+    remove: async (id) => latestById.delete(id),
   };
 }
 
@@ -645,5 +672,161 @@ describe("commitPromotion", () => {
         thresholds,
       ),
     ).rejects.toThrow(/base version mismatch/i);
+  });
+});
+
+describe("rollbackPromotion", () => {
+  test("restores a prior snapshot as a new head, increments version, stamps provenance, and records the evaluation", async () => {
+    const current = createStructuredPlaybook({
+      version: 3,
+      updatedAt: 300,
+      sections: [
+        {
+          name: "Existing",
+          slug: "existing",
+          bullets: [
+            {
+              id: "str-00001",
+              content: "mutated head bullet",
+              helpful: 9,
+              harmful: 4,
+              createdAt: 10,
+              updatedAt: 300,
+            },
+          ],
+        },
+      ],
+      provenance: {
+        sourceTrajectoryRange: proposal.sourceTrajectoryRange,
+        proposalId: "older-proposal",
+        evaluationId: "older-evaluation",
+        committedAt: 300,
+      },
+    });
+    const target = createStructuredPlaybook({
+      version: 2,
+      updatedAt: 200,
+      sections: [
+        {
+          name: "Existing",
+          slug: "existing",
+          bullets: [
+            {
+              id: "str-00001",
+              content: "restored bullet",
+              helpful: 2,
+              harmful: 1,
+              createdAt: 10,
+              updatedAt: 200,
+            },
+          ],
+        },
+        {
+          name: "Recovered",
+          slug: "recovered",
+          bullets: [
+            {
+              id: "str-00003",
+              content: "restored section bullet",
+              helpful: 1,
+              harmful: 0,
+              createdAt: 20,
+              updatedAt: 200,
+            },
+          ],
+        },
+      ],
+    });
+    const versions = new Map<number, StructuredPlaybook>([
+      [current.version, current],
+      [target.version, target],
+    ]);
+    const store: StructuredPlaybookStore = {
+      get: async (id) => (id === current.id ? (structuredClone(current) as StructuredPlaybook) : undefined),
+      list: async () => [(structuredClone(current) as StructuredPlaybook)],
+      save: async (playbook) => {
+        versions.set(playbook.version, structuredClone(playbook) as StructuredPlaybook);
+      },
+      remove: async () => false,
+      getVersion: async (id, version) => {
+        if (id !== current.id) return undefined;
+        const snapshot = versions.get(version);
+        return snapshot !== undefined ? (structuredClone(snapshot) as StructuredPlaybook) : undefined;
+      },
+    };
+    const proposalStore = createProposalStore();
+
+    const decision = await rollbackPromotion(
+      { structuredStore: store, proposalStore, clock: () => 500 },
+      createProposal({ baseVersion: current.version }),
+      target.version,
+      evaluation({ verdict: "rollback" }),
+    );
+
+    expect(decision).toEqual({
+      outcome: "rolled_back",
+      playbookId: "playbook-1",
+      proposalId: "proposal-1",
+      evaluationId: "evaluation-1",
+      fromVersion: 3,
+      toVersion: 4,
+    });
+
+    const saved = versions.get(4);
+    expect(saved).toBeDefined();
+    expect(saved?.version).toBe(4);
+    expect(saved?.updatedAt).toBe(500);
+    expect(saved?.sections).toEqual(target.sections);
+    expect(saved?.provenance).toEqual({
+      sourceTrajectoryRange: proposal.sourceTrajectoryRange,
+      proposalId: "proposal-1",
+      evaluationId: "evaluation-1",
+      committedAt: 500,
+    });
+    expect(proposalStore.recordedEvaluations).toEqual([evaluation({ verdict: "rollback" })]);
+  });
+
+  test("throws when the structured store does not support lineage lookups", async () => {
+    await expect(
+      rollbackPromotion(
+        { structuredStore: createStructuredStoreWithoutLineage(), clock: () => 500 },
+        createProposal({ baseVersion: 1 }),
+        0,
+        evaluation({ verdict: "rollback" }),
+      ),
+    ).rejects.toThrow(/lineage/i);
+  });
+
+  test("throws when rollback evaluation proposal id does not match the proposal", async () => {
+    await expect(
+      rollbackPromotion(
+        { structuredStore: createStructuredStore(createStructuredPlaybook({ version: 2 })), clock: () => 500 },
+        createProposal({ baseVersion: 2 }),
+        1,
+        evaluation({ proposalId: "other-proposal", verdict: "rollback" }),
+      ),
+    ).rejects.toThrow(/proposalId/i);
+  });
+
+  test("throws when rollback evaluation verdict is not rollback", async () => {
+    await expect(
+      rollbackPromotion(
+        { structuredStore: createStructuredStore(createStructuredPlaybook({ version: 2 })), clock: () => 500 },
+        createProposal({ baseVersion: 2 }),
+        1,
+        evaluation({ verdict: "promote" }),
+      ),
+    ).rejects.toThrow(/verdict/i);
+  });
+
+  test("throws when rollback target version is not older than the current head", async () => {
+    await expect(
+      rollbackPromotion(
+        { structuredStore: createStructuredStore(createStructuredPlaybook({ version: 2 })), clock: () => 500 },
+        createProposal({ baseVersion: 2 }),
+        2,
+        evaluation({ verdict: "rollback" }),
+      ),
+    ).rejects.toThrow(/older than the current head/i);
   });
 });

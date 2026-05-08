@@ -20,7 +20,7 @@ export interface PromotionGateDeps {
 }
 
 export interface PromotionDecision {
-  readonly outcome: "promoted" | "rejected";
+  readonly outcome: "promoted" | "rejected" | "rolled_back";
   readonly playbookId: string;
   readonly proposalId: string;
   readonly evaluationId: string;
@@ -336,5 +336,72 @@ export async function commitPromotion(
     evaluationId: evaluation.id,
     fromVersion: current.version,
     toVersion: next.version,
+  };
+}
+
+export async function rollbackPromotion(
+  deps: PromotionGateDeps,
+  proposal: PlaybookProposal,
+  targetVersion: number,
+  evaluation: PlaybookEvaluation,
+): Promise<PromotionDecision> {
+  if (deps.structuredStore.getVersion === undefined) {
+    throw new Error("ACE promotion gate: rollback requires structured store lineage support");
+  }
+
+  assertNonEmptyId(proposal.id, "proposal.id");
+  assertNonEmptyId(evaluation.id, "evaluation.id");
+  assertNonEmptyId(evaluation.proposalId, "evaluation.proposalId");
+
+  if (evaluation.proposalId !== proposal.id) {
+    throw new Error("evaluation.proposalId must match proposal.id");
+  }
+
+  if (evaluation.verdict !== "rollback") {
+    throw new Error("ACE promotion gate: rollback evaluation verdict must be rollback");
+  }
+
+  const current = await deps.structuredStore.get(proposal.playbookId);
+  if (current === undefined) {
+    throw new Error(`ACE promotion gate: structured playbook not found: ${proposal.playbookId}`);
+  }
+
+  if (targetVersion >= current.version) {
+    throw new Error("ACE promotion gate: rollback targetVersion must be older than the current head");
+  }
+
+  const target = await deps.structuredStore.getVersion(proposal.playbookId, targetVersion);
+  if (target === undefined) {
+    throw new Error(
+      `ACE promotion gate: structured playbook version not found: ${proposal.playbookId}@${targetVersion}`,
+    );
+  }
+
+  const now = deps.clock?.() ?? Date.now();
+  const restored: StructuredPlaybook = {
+    ...target,
+    version: current.version + 1,
+    updatedAt: now,
+    provenance: {
+      sourceTrajectoryRange: proposal.sourceTrajectoryRange,
+      proposalId: proposal.id,
+      evaluationId: evaluation.id,
+      committedAt: now,
+    },
+  };
+
+  if (deps.proposalStore !== undefined) {
+    await deps.proposalStore.recordEvaluation(evaluation);
+  }
+
+  await deps.structuredStore.save(restored);
+
+  return {
+    outcome: "rolled_back",
+    playbookId: proposal.playbookId,
+    proposalId: proposal.id,
+    evaluationId: evaluation.id,
+    fromVersion: current.version,
+    toVersion: restored.version,
   };
 }
