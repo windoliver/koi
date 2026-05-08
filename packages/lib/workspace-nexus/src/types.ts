@@ -1,4 +1,3 @@
-import type { WorkspaceBackend } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
 
 export interface NexusWorkspaceServerCapabilities {
@@ -11,7 +10,6 @@ export interface NexusWorkspaceServerCapabilities {
 
 export interface NexusWorkspaceBackendConfig {
   readonly transport: NexusTransport;
-  readonly fallback?: WorkspaceBackend | undefined;
   readonly methodPrefix?: string | undefined;
   readonly basePath?: string | undefined;
   /**

@@ -28,22 +28,13 @@ export async function createNexusWorkspaceBackend(
 ): Promise<WorkspaceBackend> {
   const prefix = config.methodPrefix ?? DEFAULT_PREFIX;
 
-  // Up-front health probe is the ONLY failover boundary. If Nexus is down at
-  // construction time and a fallback is configured, we hand the caller the
-  // raw fallback backend — that backend is then the sole authority for every
-  // workspace it manages, with no Nexus involvement and no ownership
-  // ambiguity. Once we return the Nexus-routed backend below, every
-  // subsequent op goes to Nexus: per-call create-time failover would risk
-  // double-creating a workspace (Nexus committed but lost the response →
-  // fallback also creates) and would let a fallback's incomplete inventory
-  // hide live Nexus workspaces from discovery and cleanup.
-  if (config.transport.health !== undefined) {
-    const health = await config.transport.health();
-    if (!health.ok && config.fallback !== undefined) {
-      return config.fallback;
-    }
-  }
-
+  // Nexus is always the authority. We deliberately do NOT swap to a
+  // fallback on a failed startup health probe: that decision happens
+  // before any workspace-specific reconciliation, so a transient or
+  // narrower probe failure could hide live Nexus-owned workspaces from
+  // discovery/dispose and lead the provider to allocate duplicates.
+  // Operators who need a no-Nexus environment construct the local
+  // backend directly.
   const client = createNexusWorkspaceBackendClient(config.transport, prefix);
 
   // Optional hooks are opt-in via explicit `serverCapabilities`. The

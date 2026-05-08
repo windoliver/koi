@@ -131,13 +131,74 @@ describe("createNexusScratchpad", () => {
     if (readResult.ok) expect(readResult.value.content).toBe("hello");
   });
 
-  test("uses fallback when health check fails", async () => {
+  test("write rejects non-JSON-serializable metadata before crossing the RPC boundary", async () => {
     const { createNexusScratchpad } = await import("./index.js");
 
+    let writeCalls = 0;
     const scratchpad = await createNexusScratchpad({
       groupId: agentGroupId("group-a"),
       authorId: agentId("agent-a"),
-      fallback: createFallbackScratchpad(),
+      transport: createHealthyTransport(async <T>(method: string): Promise<Result<T, KoiError>> => {
+        if (method === "scratchpad.write") {
+          writeCalls += 1;
+          return { ok: true, value: { path: "x", generation: 1, sizeBytes: 1 } as T };
+        }
+        return { ok: true, value: {} as T };
+      }),
+    });
+
+    // Circular references break JSON.stringify — must be caught locally
+    // rather than failing deep inside transport serialization.
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+
+    const result = await scratchpad.write({
+      path: scratchpadPath("notes.txt"),
+      content: "ok",
+      metadata: circular,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+    expect(writeCalls).toBe(0);
+  });
+
+  test("write rejects entries that exceed the contract size limit before crossing the RPC boundary", async () => {
+    const { createNexusScratchpad } = await import("./index.js");
+    const { SCRATCHPAD_DEFAULTS } = await import("@koi/core");
+
+    let writeCalls = 0;
+    const scratchpad = await createNexusScratchpad({
+      groupId: agentGroupId("group-a"),
+      authorId: agentId("agent-a"),
+      transport: createHealthyTransport(async <T>(method: string): Promise<Result<T, KoiError>> => {
+        if (method === "scratchpad.write") {
+          writeCalls += 1;
+          return { ok: true, value: { path: "x", generation: 1, sizeBytes: 1 } as T };
+        }
+        return { ok: true, value: {} as T };
+      }),
+    });
+
+    const oversized = "x".repeat(SCRATCHPAD_DEFAULTS.MAX_FILE_SIZE_BYTES + 1);
+    const result = await scratchpad.write({
+      path: scratchpadPath("big.bin"),
+      content: oversized,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+    expect(writeCalls).toBe(0);
+  });
+
+  test("does NOT swap to a local store on a failed startup health probe", async () => {
+    const { createNexusScratchpad } = await import("./index.js");
+
+    // Returning a local fallback when the generic probe fails would let
+    // this instance read/write only the local store while other
+    // participants kept hitting Nexus, producing silent divergence and
+    // effective data loss for the caller. Errors propagate instead.
+    const scratchpad = await createNexusScratchpad({
+      groupId: agentGroupId("group-a"),
+      authorId: agentId("agent-a"),
       transport: {
         kind: "http",
         call: async <T>(): Promise<Result<T, KoiError>> => ({
@@ -156,7 +217,7 @@ describe("createNexusScratchpad", () => {
       path: scratchpadPath("fallback.txt"),
       content: "ok",
     });
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
   });
 
   test("runtime failure does NOT swap the storage authority to the fallback", async () => {
@@ -169,7 +230,7 @@ describe("createNexusScratchpad", () => {
     // for the up-front health probe.
     let nexusWriteCalls = 0;
     let fallbackWriteCalls = 0;
-    const fallback: ScratchpadComponent = {
+    const _unusedFallback: ScratchpadComponent = {
       ...createFallbackScratchpad(),
       write: async () => {
         fallbackWriteCalls += 1;
@@ -182,7 +243,6 @@ describe("createNexusScratchpad", () => {
     const scratchpad = await createNexusScratchpad({
       groupId: agentGroupId("group-a"),
       authorId: agentId("agent-a"),
-      fallback,
       transport: createHealthyTransport(async <T>(method: string): Promise<Result<T, KoiError>> => {
         if (method === "scratchpad.write") {
           nexusWriteCalls += 1;
@@ -419,7 +479,6 @@ describe("createChangeTracker", () => {
       groupId: agentGroupId("group-a"),
       authorId: agentId("agent-a"),
       pollIntervalMs: 5,
-      fallback,
       transport: createHealthyTransport(async <T>(method: string): Promise<Result<T, KoiError>> => {
         if (method !== "scratchpad.list") {
           return {

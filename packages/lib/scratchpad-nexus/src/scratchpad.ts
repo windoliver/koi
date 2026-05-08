@@ -72,6 +72,53 @@ function validateTtl(ttlSeconds: number | undefined): KoiError | null {
   return null;
 }
 
+// Mirror scratchpad-local's metadata clone: round-trip through JSON to
+// reject non-serializable inputs (BigInt, functions, circular structures)
+// at the trust boundary instead of failing deep inside RPC serialization.
+function cloneMetadata(
+  metadata: Record<string, unknown>,
+): { ok: true; value: Record<string, unknown> } | { ok: false; error: KoiError } {
+  try {
+    return { ok: true, value: JSON.parse(JSON.stringify(metadata)) as Record<string, unknown> };
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "Scratchpad metadata is not JSON-serializable",
+        retryable: false,
+        context: { reason: err instanceof Error ? err.message : String(err) },
+      },
+    };
+  }
+}
+
+// Enforce the contract-level entry-size cap before crossing the network so
+// oversized writes fail deterministically here rather than producing
+// vendor-specific errors deep in the transport layer. Matches the local
+// implementation: content bytes + serialized metadata bytes.
+function validateEntrySize(
+  content: string,
+  metadata: Record<string, unknown> | undefined,
+): { ok: true; value: number } | { ok: false; error: KoiError } {
+  const encoder = new TextEncoder();
+  const contentBytes = encoder.encode(content).byteLength;
+  const metadataBytes =
+    metadata !== undefined ? encoder.encode(JSON.stringify(metadata)).byteLength : 0;
+  const sizeBytes = contentBytes + metadataBytes;
+  if (sizeBytes > SCRATCHPAD_DEFAULTS.MAX_FILE_SIZE_BYTES) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: `Entry size ${sizeBytes} exceeds limit ${SCRATCHPAD_DEFAULTS.MAX_FILE_SIZE_BYTES}`,
+        retryable: false,
+      },
+    };
+  }
+  return { ok: true, value: sizeBytes };
+}
+
 export async function createNexusScratchpad(
   config: NexusScratchpadConfig,
 ): Promise<ScratchpadComponent> {
@@ -81,18 +128,14 @@ export async function createNexusScratchpad(
   const pageSize = config.pageSize ?? DEFAULT_PAGE_SIZE;
   const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
 
-  // The up-front health probe is the ONLY failover boundary. Once we have
-  // returned the Nexus-routed component below, runtime RPC failures must
-  // NEVER swap the storage authority to the unrelated fallback: the two
-  // backends do not share state, so silently rerouting reads/writes after
-  // a transient blip would fork the source of truth — Nexus would still
-  // hold the real entries while callers see (and overwrite) an empty
-  // local store. Errors propagate to callers instead.
-  if (config.transport.health !== undefined) {
-    const health = await config.transport.health();
-    if (!health.ok && config.fallback !== undefined) return config.fallback;
-  }
-
+  // Nexus is always the authority. We deliberately do NOT swap to a
+  // fallback on a failed startup health probe: a generic probe failure
+  // is not proof that Nexus has lost this group's scratchpad state.
+  // Returning a local fallback in that window would let this instance
+  // read/write only the local store while other participants continue
+  // hitting Nexus, producing silent divergence and effective data loss
+  // from the caller's perspective. Operators who want a no-Nexus
+  // environment construct scratchpad-local directly.
   const client = createNexusScratchpadClient(config.transport, prefix);
   const tracker = createChangeTracker(groupId);
 
@@ -166,7 +209,21 @@ export async function createNexusScratchpad(
       if (pathErr !== null) return { ok: false, error: pathErr };
       const ttlErr = validateTtl(input.ttlSeconds);
       if (ttlErr !== null) return { ok: false, error: ttlErr };
-      const result = await client.write(groupId, authorId, input);
+      let cloned: Record<string, unknown> | undefined;
+      if (input.metadata !== undefined) {
+        const metaResult = cloneMetadata(input.metadata);
+        if (!metaResult.ok) return metaResult;
+        cloned = metaResult.value;
+      }
+      const sizeResult = validateEntrySize(input.content, cloned);
+      if (!sizeResult.ok) return sizeResult;
+      const sanitized: ScratchpadWriteInput = {
+        path: input.path,
+        content: input.content,
+        ...(input.ttlSeconds !== undefined ? { ttlSeconds: input.ttlSeconds } : {}),
+        ...(cloned !== undefined ? { metadata: cloned } : {}),
+      };
+      const result = await client.write(groupId, authorId, sanitized);
       if (result.ok) {
         return {
           ok: true,

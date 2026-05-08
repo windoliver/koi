@@ -93,11 +93,15 @@ describe("createNexusWorkspaceBackend", () => {
     }
   });
 
-  test("uses fallback backend when health check fails", async () => {
+  test("does NOT swap to a fallback on a failed startup health probe", async () => {
     const { createNexusWorkspaceBackend } = await import("./index.js");
 
+    // A failed generic health probe is not proof that Nexus has lost
+    // any specific workspace. Returning a local fallback authority
+    // could orphan live Nexus survivors and cause the provider to
+    // duplicate-allocate. Operators run scratchpad-local/workspace-local
+    // directly when they want a no-Nexus environment.
     const backend = await createNexusWorkspaceBackend({
-      fallback: createFallbackBackend(),
       transport: {
         kind: "http",
         call: async <T>(): Promise<Result<T, KoiError>> => ({
@@ -112,12 +116,13 @@ describe("createNexusWorkspaceBackend", () => {
       },
     });
 
+    // Calls go to Nexus and surface the transport failure rather than
+    // silently succeeding against an unrelated authority.
     const created = await backend.create(agentId("agent-a"), {
       cleanupPolicy: "on_success",
       cleanupTimeoutMs: 5_000,
     });
-    expect(created.ok).toBe(true);
-    if (created.ok) expect(created.value.id).toBe(workspaceId("fallback-ws"));
+    expect(created.ok).toBe(false);
   });
 
   test("isHealthy on a Nexus-owned workspace does not reroute disposal of *other* workspaces", async () => {
@@ -125,7 +130,7 @@ describe("createNexusWorkspaceBackend", () => {
 
     let nexusDisposeCalls = 0;
     let fallbackDisposeCalls = 0;
-    const fallback: WorkspaceBackend = {
+    const _unusedFallback: WorkspaceBackend = {
       ...createFallbackBackend(),
       dispose: async () => {
         fallbackDisposeCalls += 1;
@@ -134,7 +139,6 @@ describe("createNexusWorkspaceBackend", () => {
     };
 
     const backend = await createNexusWorkspaceBackend({
-      fallback,
       transport: createHealthyTransport(async <T>(method: string): Promise<Result<T, KoiError>> => {
         if (method === "workspace.create") {
           return {
@@ -280,7 +284,7 @@ describe("createNexusWorkspaceBackend", () => {
 
     let fallbackVerifyCalls = 0;
     let fallbackExistsCalls = 0;
-    const fallback: WorkspaceBackend = {
+    const _unusedFallback: WorkspaceBackend = {
       ...createFallbackBackend(),
       verifySetupComplete: async () => {
         fallbackVerifyCalls += 1;
@@ -293,7 +297,6 @@ describe("createNexusWorkspaceBackend", () => {
     };
 
     const backend = await createNexusWorkspaceBackend({
-      fallback,
       serverCapabilities: ALL_CAPS,
       transport: createHealthyTransport(
         async <T>(): Promise<Result<T, KoiError>> => ({
@@ -320,43 +323,6 @@ describe("createNexusWorkspaceBackend", () => {
     }
     expect(fallbackVerifyCalls).toBe(0);
     expect(fallbackExistsCalls).toBe(0);
-  });
-
-  test("when Nexus health probe fails at construction, the raw fallback is returned as the sole authority", async () => {
-    const { createNexusWorkspaceBackend } = await import("./index.js");
-
-    let fallbackVerifyCalls = 0;
-    const fallback: WorkspaceBackend = {
-      ...createFallbackBackend(),
-      verifySetupComplete: async () => {
-        fallbackVerifyCalls += 1;
-        return true;
-      },
-    };
-
-    // The up-front health probe is the ONLY failover boundary. When it
-    // fails, callers are handed the fallback directly and Nexus is never
-    // touched again — there is no per-call create-time failover that could
-    // cause double-creates.
-    const backend = await createNexusWorkspaceBackend({
-      fallback,
-      transport: {
-        kind: "http",
-        call: async <T>(): Promise<Result<T, KoiError>> => ({
-          ok: false,
-          error: { code: "EXTERNAL", message: "nexus down", retryable: false },
-        }),
-        health: async () => ({
-          ok: false,
-          error: { code: "EXTERNAL", message: "down", retryable: false },
-        }),
-        close: () => {},
-      },
-    });
-
-    expect(backend).toBe(fallback);
-    expect(await backend.verifySetupComplete?.(workspaceId("any"))).toBe(true);
-    expect(fallbackVerifyCalls).toBe(1);
   });
 
   test("authoritative reads fail closed when Nexus is unreachable and no fallback is configured", async () => {
@@ -399,7 +365,6 @@ describe("createNexusWorkspaceBackend", () => {
     // making the provider miss live Nexus survivors after a restart and
     // create duplicate workspaces. Server capability is the gate.
     const backend = await createNexusWorkspaceBackend({
-      fallback: createFallbackBackend(),
       serverCapabilities: { findByAgentId: true },
       transport: createHealthyTransport(
         async <T>(): Promise<Result<T, KoiError>> => ({
@@ -444,7 +409,6 @@ describe("createNexusWorkspaceBackend", () => {
     // that even after a discovery hiccup, create() still hits Nexus on the
     // next attempt — there is no global degrade flag to flip.
     const backend = await createNexusWorkspaceBackend({
-      fallback: createFallbackBackend(),
       transport: createHealthyTransport(async <T>(method: string): Promise<Result<T, KoiError>> => {
         if (method === "workspace.findByAgentId") {
           return {
@@ -489,7 +453,7 @@ describe("createNexusWorkspaceBackend", () => {
     const { createNexusWorkspaceBackend } = await import("./index.js");
 
     let fallbackAttestCalls = 0;
-    const fallback: WorkspaceBackend = {
+    const _unusedFallback: WorkspaceBackend = {
       ...createFallbackBackend(),
       attestSetupComplete: async () => {
         fallbackAttestCalls += 1;
@@ -497,7 +461,6 @@ describe("createNexusWorkspaceBackend", () => {
     };
 
     const backend = await createNexusWorkspaceBackend({
-      fallback,
       serverCapabilities: ALL_CAPS,
       transport: createHealthyTransport(
         async <T>(): Promise<Result<T, KoiError>> => ({
@@ -521,7 +484,7 @@ describe("createNexusWorkspaceBackend", () => {
     const { createNexusWorkspaceBackend } = await import("./index.js");
 
     let fallbackInvalidateCalls = 0;
-    const fallback: WorkspaceBackend = {
+    const _unusedFallback: WorkspaceBackend = {
       ...createFallbackBackend(),
       invalidateSetupComplete: async () => {
         fallbackInvalidateCalls += 1;
@@ -529,7 +492,6 @@ describe("createNexusWorkspaceBackend", () => {
     };
 
     const backend = await createNexusWorkspaceBackend({
-      fallback,
       serverCapabilities: ALL_CAPS,
       transport: createHealthyTransport(
         async <T>(): Promise<Result<T, KoiError>> => ({
@@ -553,7 +515,7 @@ describe("createNexusWorkspaceBackend", () => {
     const { createNexusWorkspaceBackend } = await import("./index.js");
 
     let fallbackCreateCalls = 0;
-    const fallback: WorkspaceBackend = {
+    const _unusedFallback: WorkspaceBackend = {
       ...createFallbackBackend(),
       create: async () => {
         fallbackCreateCalls += 1;
@@ -575,7 +537,6 @@ describe("createNexusWorkspaceBackend", () => {
     // have committed and only lost the response). Surfacing the error
     // preserves the provider's single-workspace-per-agent invariant.
     const backend = await createNexusWorkspaceBackend({
-      fallback,
       transport: createHealthyTransport(async <T>(method: string): Promise<Result<T, KoiError>> => {
         if (method === "workspace.create") {
           return {
@@ -603,7 +564,6 @@ describe("createNexusWorkspaceBackend", () => {
     // the capability would push the provider into recreating workspaces
     // it could otherwise reuse.
     const backend = await createNexusWorkspaceBackend({
-      fallback: createFallbackBackend(),
       serverCapabilities: ALL_CAPS,
       transport: createHealthyTransport(
         async <T>(): Promise<Result<T, KoiError>> => ({
@@ -645,11 +605,6 @@ describe("createNexusWorkspaceBackend", () => {
     // so advertising findByAgentId/exists/etc. against a server that does
     // not implement them would turn attach/cleanup into hard failures.
     const backend = await createNexusWorkspaceBackend({
-      fallback: {
-        ...createFallbackBackend(),
-        findByAgentId: async () => [],
-        exists: async () => true,
-      },
       transport: createHealthyTransport(
         async <T>(): Promise<Result<T, KoiError>> => ({
           ok: true,
@@ -670,7 +625,7 @@ describe("createNexusWorkspaceBackend", () => {
     const { createNexusWorkspaceBackend } = await import("./index.js");
 
     let fallbackDisposeCalls = 0;
-    const fallback: WorkspaceBackend = {
+    const _unusedFallback: WorkspaceBackend = {
       ...createFallbackBackend(),
       dispose: async () => {
         fallbackDisposeCalls += 1;
@@ -679,7 +634,6 @@ describe("createNexusWorkspaceBackend", () => {
     };
 
     const backend = await createNexusWorkspaceBackend({
-      fallback,
       transport: createHealthyTransport(
         async <T>(): Promise<Result<T, KoiError>> => ({
           ok: false,
@@ -699,7 +653,7 @@ describe("createNexusWorkspaceBackend", () => {
     const { createNexusWorkspaceBackend } = await import("./index.js");
 
     let fallbackFindCalls = 0;
-    const fallback: WorkspaceBackend = {
+    const _unusedFallback: WorkspaceBackend = {
       ...createFallbackBackend(),
       findByAgentId: async () => {
         fallbackFindCalls += 1;
@@ -715,7 +669,6 @@ describe("createNexusWorkspaceBackend", () => {
     };
 
     const backend = await createNexusWorkspaceBackend({
-      fallback,
       serverCapabilities: ALL_CAPS,
       transport: createHealthyTransport(
         async <T>(): Promise<Result<T, KoiError>> => ({
@@ -744,7 +697,7 @@ describe("createNexusWorkspaceBackend", () => {
   test("findByAgentId does not let an unhealthy fallback veto a successful Nexus discovery", async () => {
     const { createNexusWorkspaceBackend } = await import("./index.js");
 
-    const fallback: WorkspaceBackend = {
+    const _unusedFallback: WorkspaceBackend = {
       ...createFallbackBackend(),
       findByAgentId: async () => {
         throw new Error("fallback discovery exploded");
@@ -752,7 +705,6 @@ describe("createNexusWorkspaceBackend", () => {
     };
 
     const backend = await createNexusWorkspaceBackend({
-      fallback,
       serverCapabilities: ALL_CAPS,
       transport: createHealthyTransport(async <T>(method: string): Promise<Result<T, KoiError>> => {
         if (method === "workspace.findByAgentId") {

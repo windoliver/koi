@@ -1,17 +1,10 @@
-import type {
-  AgentGroupId,
-  AgentId,
-  ScratchpadComponent,
-  ScratchpadEntry,
-  ScratchpadEntrySummary,
-} from "@koi/core";
+import type { AgentGroupId, AgentId, ScratchpadEntry, ScratchpadEntrySummary } from "@koi/core";
 import type { NexusTransport } from "@koi/nexus-client";
 
 export interface NexusScratchpadConfig {
   readonly groupId: AgentGroupId;
   readonly authorId: AgentId;
   readonly transport: NexusTransport;
-  readonly fallback?: ScratchpadComponent | undefined;
   readonly methodPrefix?: string | undefined;
   readonly pollIntervalMs?: number | undefined;
   readonly pageSize?: number | undefined;
