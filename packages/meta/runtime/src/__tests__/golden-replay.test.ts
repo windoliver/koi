@@ -17746,6 +17746,7 @@ describe("Golden: @koi/playbook-store-nexus", () => {
     const store = createNexusStructuredPlaybookStore({
       transport: createFakeNexusTransport(),
       basePath: "ace-golden",
+      requirePreProvisioned: false,
     });
 
     const playbook = {
@@ -17789,6 +17790,7 @@ describe("Golden: @koi/playbook-store-nexus", () => {
     const store = createNexusStructuredPlaybookStore({
       transport: createFakeNexusTransport(),
       basePath: "ace-golden",
+      requirePreProvisioned: false,
     });
 
     const base = {
@@ -17815,6 +17817,7 @@ describe("Golden: @koi/playbook-store-nexus", () => {
     const store = createNexusStructuredPlaybookStore({
       transport: createFakeNexusTransport(),
       basePath: "ace-golden",
+      requirePreProvisioned: false,
     });
 
     expect(store.lineageSupported).toBe(false);

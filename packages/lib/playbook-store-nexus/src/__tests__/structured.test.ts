@@ -42,7 +42,10 @@ function spb(id: string, tags: readonly string[] = []): StructuredPlaybook {
 }
 
 function newStore() {
-  return createNexusStructuredPlaybookStore({ transport: createFakeNexusTransport() });
+  return createNexusStructuredPlaybookStore({
+    transport: createFakeNexusTransport(),
+    requirePreProvisioned: false,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +154,10 @@ describe("createNexusStructuredPlaybookStore", () => {
     // Scenario: one structured playbook is written normally. Then a transport
     // wrapper injects EXTERNAL on the read of that file during list(). Must throw.
     const baseTransport = createFakeNexusTransport();
-    const baseStore = createNexusStructuredPlaybookStore({ transport: baseTransport });
+    const baseStore = createNexusStructuredPlaybookStore({
+      transport: baseTransport,
+      requirePreProvisioned: false,
+    });
     await baseStore.save(spb("spb-list-err"));
 
     let listCallDone = false;
@@ -180,7 +186,10 @@ describe("createNexusStructuredPlaybookStore", () => {
       close: baseTransport.close.bind(baseTransport),
     };
 
-    const wrappedStore = createNexusStructuredPlaybookStore({ transport: wrappedTransport });
+    const wrappedStore = createNexusStructuredPlaybookStore({
+      transport: wrappedTransport,
+      requirePreProvisioned: false,
+    });
     await expect(wrappedStore.list()).rejects.toThrow("simulated backend failure");
   });
 
@@ -223,6 +232,7 @@ describe("createNexusStructuredPlaybookStore", () => {
     const structuredStore = createNexusStructuredPlaybookStore({
       transport: wrapTransport(baseTransport),
       lockScope: "shared-structured-backend",
+      requirePreProvisioned: false,
     });
     const proposalStore = createNexusPlaybookProposalStore({
       transport: wrapTransport(baseTransport),

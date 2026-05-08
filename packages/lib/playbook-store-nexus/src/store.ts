@@ -20,7 +20,8 @@ export interface NexusPlaybookStoreBundle {
   readonly playbooks: PlaybookStore;
   readonly structuredPlaybooks: Required<
     Pick<StructuredPlaybookStore, "get" | "list" | "save" | "remove" | "getVersion">
-  >;
+  > &
+    Pick<StructuredPlaybookStore, "lineageSupported">;
   readonly trajectories: TrajectoryStore;
   readonly proposals: PlaybookProposalStore;
   /** Stable identity for resume guards — derived from basePath. */
@@ -48,6 +49,10 @@ export function createPlaybookStoreNexus(
       save: structured.save,
       remove: structured.remove,
       getVersion: structured.getVersion ?? noopGetVersion,
+      // Preserve the lineage-capability flag so middleware fail-closed checks
+      // (e.g. ACE rollback path) reject Nexus before attempting commits.
+      // Default to false here — Nexus has no version history.
+      lineageSupported: structured.lineageSupported ?? false,
     },
     trajectories: createNexusTrajectoryStore(config),
     proposals: createNexusPlaybookProposalStore(config),

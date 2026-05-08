@@ -18,6 +18,8 @@ import type {
 } from "@koi/ace-types";
 import type { SessionContext, TurnContext } from "@koi/core";
 import { runId, sessionId, turnId } from "@koi/core";
+import { createFakeNexusTransport } from "@koi/fs-nexus/testing";
+import { createPlaybookStoreNexus } from "@koi/playbook-store-nexus";
 import { createSqlitePlaybookStore } from "@koi/playbook-store-sqlite";
 
 import {
@@ -676,11 +678,332 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
 
       expect(observed.length).toBe(1);
       const wrapped = observed[0] as { cause?: unknown; stage?: unknown };
-      expect(wrapped.stage).toBe("rollback-rejected");
-      expect(String(wrapped.cause)).toMatch(/rollback.*pipeline only handles promote\/reject/);
+      expect(wrapped.stage).toBe("rollback-decline");
+      expect(String(wrapped.cause)).toMatch(/no resolveRollbackTarget handler is configured/);
 
       const head = await store.structuredPlaybooks.get(PLAYBOOK_ID);
       expect(head?.version).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("session-id reuse: onSessionStart serializes — second lifecycle waits for first teardown", async () => {
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+
+      // Block the first lifecycle's teardown on a deferred promise so we can
+      // start a second lifecycle (same id) while it's still running.
+      let releaseFirst: () => void;
+      const firstBlocker = new Promise<void>((r) => {
+        releaseFirst = r;
+      });
+      let firstReflectorCalls = 0;
+      let secondReflectorCalls = 0;
+
+      const sharedId = "sess-reuse";
+      let counter = 0;
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: async () => {
+            const which = ++counter;
+            if (which === 1) {
+              firstReflectorCalls++;
+              await firstBlocker;
+            } else {
+              secondReflectorCalls++;
+            }
+            return reflection;
+          },
+          curator: stubCurator,
+          evaluator: makeEvaluator("reject"),
+          thresholds,
+          idGenerator: () => `id-reuse-${counter}`,
+        },
+      });
+
+      // Lifecycle 1: start, record, end (teardown will block on firstBlocker).
+      const ctx1 = sessionCtx(sharedId);
+      await mw.onSessionStart?.(ctx1);
+      const t1 = turnCtx(sharedId, 0);
+      await mw.wrapToolCall?.(t1, { toolId: "search", input: {} }, async () => ({
+        output: "ok",
+        isError: false,
+      }));
+      const teardown1 = mw.onSessionEnd?.(ctx1);
+
+      // Lifecycle 2 attempts to start with the same id while teardown1 is
+      // still pending. The middleware must serialize: onSessionStart awaits
+      // the prior teardown so callbacks for the new lifecycle cannot collide
+      // with stale state from the old one.
+      const ctx2 = sessionCtx(sharedId);
+      const start2 = mw.onSessionStart?.(ctx2);
+
+      // Release the first teardown so the second start can proceed.
+      releaseFirst!();
+      await teardown1;
+      await start2;
+
+      const t2 = turnCtx(sharedId, 0);
+      await mw.wrapToolCall?.(t2, { toolId: "search", input: {} }, async () => ({
+        output: "ok",
+        isError: false,
+      }));
+      await mw.onSessionEnd?.(ctx2);
+
+      // BOTH lifecycles ran independently — second session reflector fired
+      // exactly once with its own state.
+      expect(firstReflectorCalls).toBe(1);
+      expect(secondReflectorCalls).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("late wrapToolCall after onSessionEnd starts is dropped (state closed)", async () => {
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+
+      // Block teardown's reflector so we have a window to fire late events.
+      let releaseReflector: () => void;
+      const reflectorBlocker = new Promise<void>((r) => {
+        releaseReflector = r;
+      });
+      let observedEntryCount = 0;
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: async ({ trajectory }) => {
+            observedEntryCount = trajectory.length;
+            await reflectorBlocker;
+            return reflection;
+          },
+          curator: stubCurator,
+          evaluator: makeEvaluator("reject"),
+          thresholds,
+        },
+      });
+
+      const ctx = sessionCtx("sess-late");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-late", 0);
+      await mw.wrapToolCall?.(t, { toolId: "search", input: {} }, async () => ({
+        output: "ok",
+        isError: false,
+      }));
+      // Trigger teardown but do not await — it will pause inside reflector.
+      const teardown = mw.onSessionEnd?.(ctx);
+
+      // Fire a late wrapToolCall AFTER teardown started. With state.closed=true
+      // this entry must NOT be appended to state.entries; reflector should
+      // have observed exactly the 1 pre-end entry.
+      await mw.wrapToolCall?.(t, { toolId: "late-search", input: {} }, async () => ({
+        output: "late",
+        isError: false,
+      }));
+
+      releaseReflector!();
+      await teardown;
+
+      expect(observedEntryCount).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("public Nexus bundle preserves lineageSupported=false → rollback fails closed via gate", async () => {
+    // Wire a real public-bundle structured store into the middleware. The
+    // bundle MUST surface lineageSupported so rollbackPromotion's gate check
+    // fails closed at the right level instead of producing an opaque commit
+    // failure later.
+    const transport = createFakeNexusTransport();
+    const bundle = createPlaybookStoreNexus({
+      transport,
+      basePath: "ace-bundle-rb",
+      requirePreProvisioned: false,
+    });
+    try {
+      // Pre-provision a v1 playbook through the bundle.
+      await bundle.structuredPlaybooks.save({
+        id: PLAYBOOK_ID,
+        title: "v1",
+        sections: [],
+        tags: [],
+        source: "curated",
+        createdAt: 0,
+        updatedAt: 0,
+        sessionCount: 0,
+        version: 1,
+      });
+
+      const observed: unknown[] = [];
+      const mw = createAceMiddleware({
+        playbookStore: bundle.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: bundle.structuredPlaybooks,
+          proposalStore: bundle.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: stubReflector,
+          curator: stubCurator,
+          evaluator: makeEvaluator("rollback"),
+          thresholds,
+          resolveRollbackTarget: async (): Promise<number | null> => 1,
+          onError: (e) => observed.push(e),
+        },
+      });
+
+      const ctx = sessionCtx("sess-bundle-rb");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-bundle-rb", 0);
+      await mw.wrapToolCall?.(t, { toolId: "search", input: {} }, async () => ({
+        output: "ok",
+        isError: false,
+      }));
+      await mw.onSessionEnd?.(ctx);
+
+      expect(bundle.structuredPlaybooks.lineageSupported).toBe(false);
+      // Gate check inside rollbackPromotion fires → stage="rollback-commit",
+      // cause includes the lineage-support error.
+      expect(observed.length).toBe(1);
+      const wrapped = observed[0] as { stage?: unknown; cause?: unknown };
+      expect(wrapped.stage).toBe("rollback-commit");
+      expect(String(wrapped.cause)).toMatch(/lineage support/i);
+    } finally {
+      bundle.close();
+    }
+  });
+
+  test("rollback-commit failure surfaces as distinct stage (not rollback-decline)", async () => {
+    // No lineage on the structured store → rollbackPromotion throws. Stage
+    // must be `rollback-commit` so operators can distinguish operational
+    // failure from a caller's benign decline.
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+      const observed: unknown[] = [];
+      // Wrap the structured store to disable lineage, forcing rollbackPromotion
+      // to throw at the lineage-support gate.
+      const noLineageStore: typeof store.structuredPlaybooks = {
+        ...store.structuredPlaybooks,
+        lineageSupported: false,
+      };
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: noLineageStore,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: stubReflector,
+          curator: stubCurator,
+          evaluator: makeEvaluator("rollback"),
+          thresholds,
+          resolveRollbackTarget: async (): Promise<number | null> => 1,
+          onError: (e) => observed.push(e),
+        },
+      });
+
+      const ctx = sessionCtx("sess-rb-fail");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-rb-fail", 0);
+      await mw.wrapToolCall?.(t, { toolId: "search", input: {} }, async () => ({
+        output: "ok",
+        isError: false,
+      }));
+      await mw.onSessionEnd?.(ctx);
+
+      expect(observed.length).toBe(1);
+      const wrapped = observed[0] as { stage?: unknown };
+      expect(wrapped.stage).toBe("rollback-commit");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("rollback verdict + resolveRollbackTarget → gate-enforced rollback runs", async () => {
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    try {
+      // Seed v1, then advance to v2 via a manual save so a prior version
+      // exists for rollback to target.
+      const v1 = seedStructuredPlaybook();
+      await store.structuredPlaybooks.save(v1);
+      const v2: StructuredPlaybook = {
+        ...v1,
+        version: 2,
+        title: "v2",
+        sections: [
+          {
+            ...v1.sections[0]!,
+            bullets: [
+              ...v1.sections[0]!.bullets,
+              {
+                id: "b2",
+                content: "v2 bullet",
+                helpful: 0,
+                harmful: 0,
+                createdAt: 1,
+                updatedAt: 1,
+              },
+            ],
+          },
+        ],
+      };
+      await store.structuredPlaybooks.save(v2);
+
+      let counter = 0;
+      let onRollbackInvoked = false;
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: stubReflector,
+          curator: stubCurator,
+          evaluator: makeEvaluator("rollback"),
+          thresholds,
+          idGenerator: () => `id-${++counter}`,
+          resolveRollbackTarget: async ({ playbookBefore }): Promise<number | null> => {
+            onRollbackInvoked = true;
+            expect(playbookBefore.version).toBe(2);
+            // Caller-supplied policy: roll back to v1.
+            return 1;
+          },
+        },
+      });
+
+      const ctx = sessionCtx("sess-rb-handled");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-rb-handled", 0);
+      await mw.wrapToolCall?.(t, { toolId: "search", input: {} }, async () => ({
+        output: "ok",
+        isError: false,
+      }));
+      await mw.onSessionEnd?.(ctx);
+
+      expect(onRollbackInvoked).toBe(true);
+      // rollbackPromotion advances head to a NEW version that mirrors v1's
+      // content; gate enforces version monotonicity (cannot literally write
+      // version=1 over version=2).
+      const head = await store.structuredPlaybooks.get(PLAYBOOK_ID);
+      expect(head?.version ?? 0).toBeGreaterThan(2);
+      expect(head?.title).toBe("v");
+      expect(head?.sections[0]?.bullets.length).toBe(1);
     } finally {
       store.close();
     }

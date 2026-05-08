@@ -43,7 +43,7 @@ import type {
 import type { ConsolidateFn } from "./consolidator.js";
 import { createDefaultConsolidator } from "./consolidator.js";
 import { formatActivePlaybooksMessage, selectPlaybooks } from "./injector.js";
-import { commitPromotion } from "./promotion-gate.js";
+import { commitPromotion, rollbackPromotion } from "./promotion-gate.js";
 import { aggregateTrajectoryStats, curateTrajectorySummary } from "./stats-aggregator.js";
 
 const DEFAULT_MAX_INJECTED_TOKENS = 800;
@@ -99,6 +99,25 @@ export interface AceStructuredPipelineConfig {
    * swallowed by design).
    */
   readonly onError?: (err: unknown) => void;
+  /**
+   * Optional resolver invoked when an evaluator returns a `rollback` verdict.
+   *
+   * Returns the historical version number to roll back to (or `null` to
+   * decline). The middleware itself runs `rollbackPromotion()` against that
+   * target, so all gate invariants (lineage support check, base-version
+   * match, idempotent retry, provenance + audit recording) are enforced on
+   * the rollback path the same way as on commit. The caller does NOT mutate
+   * the structured store directly.
+   *
+   * If unset, a rollback verdict surfaces as a `StagedPipelineError` via the
+   * standard onError path so the active head stays in place AND the failure
+   * is visible to operators (no silent drop).
+   */
+  readonly resolveRollbackTarget?: (input: {
+    readonly proposal: PlaybookProposal;
+    readonly evaluation: PlaybookEvaluation;
+    readonly playbookBefore: StructuredPlaybook;
+  }) => Promise<number | null>;
 }
 
 /** Pluggable, mostly-optional config for the ACE middleware. */
@@ -133,6 +152,21 @@ interface AceSessionState {
   entries: readonly TrajectoryEntry[];
   playbooks: readonly Playbook[];
   turnIndex: number;
+  /**
+   * Once teardown begins, the in-flight promise is stored here so concurrent
+   * `onSessionEnd` calls for the same lifecycle dedupe onto it. Storing on
+   * the state (not a sessionId-keyed map) means a recycled session id with
+   * a fresh `onSessionStart` gets its own teardownPromise — it cannot be
+   * shadowed by a still-running teardown of the prior lifecycle.
+   */
+  teardownPromise?: Promise<void>;
+  /**
+   * Set true at the start of teardown. recordEntry() ignores writes after
+   * this flips so late wrapToolCall / wrapModelCall callbacks cannot mutate
+   * `entries` mid-flush (which would otherwise produce partial-include /
+   * lost-event races).
+   */
+  closed?: boolean;
 }
 
 /**
@@ -154,6 +188,9 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
 
   function recordEntry(state: AceSessionState | undefined, entry: TrajectoryEntry): void {
     if (state === undefined) return;
+    // Drop late events after onSessionEnd has started teardown — preserves
+    // the snapshotted entries seen by trajectory append + structured pipeline.
+    if (state.closed === true) return;
     state.entries = [...state.entries, entry];
   }
 
@@ -163,6 +200,14 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
     priority: 800,
 
     async onSessionStart(ctx: SessionContext): Promise<void> {
+      // Serialize per-id lifecycles: if a prior lifecycle for this sessionId
+      // is still tearing down, wait for it before replacing the state. This
+      // prevents stale callbacks from the prior lifecycle from mutating the
+      // new one's entries / turnIndex when the host runtime reuses ids.
+      const existing = sessions.get(ctx.sessionId);
+      if (existing?.teardownPromise !== undefined) {
+        await existing.teardownPromise;
+      }
       const playbooks = await config.playbookStore.list();
       sessions.set(ctx.sessionId, {
         entries: [],
@@ -172,53 +217,67 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
+      // onSessionEnd is contractually one-shot per lifecycle: callers must not
+      // retry after a failure because trajectoryStore.append() is documented
+      // as non-idempotent. Concurrent / duplicate calls dedupe via a promise
+      // stored on the state object itself — keying dedupe by `sessionId`
+      // alone would let a still-running teardown shadow a fresh lifecycle
+      // (same id, new onSessionStart) and silently drop the new session.
       const state = sessions.get(ctx.sessionId);
-      sessions.delete(ctx.sessionId);
-      if (state === undefined || state.entries.length === 0) return;
-
-      if (config.trajectoryStore !== undefined) {
-        await config.trajectoryStore.append(ctx.sessionId, state.entries);
+      if (state === undefined) return;
+      if (state.teardownPromise !== undefined) return state.teardownPromise;
+      if (state.entries.length === 0) {
+        sessions.delete(ctx.sessionId);
+        return;
       }
-
-      const stats = aggregateTrajectoryStats(state.entries);
-      const candidates = curateTrajectorySummary(stats, 1, {
-        minScore,
-        nowMs: clock(),
-        lambda,
-      });
-      const updated = consolidate(candidates, state.playbooks);
-      for (const pb of updated) {
-        await config.playbookStore.save(pb);
-      }
-
-      if (config.structuredPipeline !== undefined) {
+      // Close the state so any in-flight wrapToolCall/wrapModelCall callbacks
+      // arriving after this point cannot mutate `entries` mid-teardown.
+      state.closed = true;
+      const promise = (async (): Promise<void> => {
         try {
-          await runStructuredPipeline(
-            ctx.sessionId,
-            state.entries,
-            config.structuredPipeline,
-            clock,
-          );
-        } catch (err: unknown) {
-          // Structured pipeline failures must NEVER block session end. Surface
-          // through onError if wired; emit a sanitized synchronous fallback
-          // log unconditionally so a durable failure record exists even when
-          // an async telemetry sink is later abandoned during teardown.
-          const failureCtx: FailureContext = {
-            stage: extractStageSafe(err),
-            playbookId: config.structuredPipeline.playbookId,
-            sessionId: ctx.sessionId,
-          };
-          // Always emit the metadata-only fallback first.
-          logFailureSafe(err, undefined, failureCtx);
-          if (config.structuredPipeline.onError !== undefined) {
-            // Fire-and-forget by design: session end must not block on
-            // user-supplied telemetry sinks. Handler throws AND async
-            // rejections are still routed back through logFailureSafe.
-            invokeOnErrorDetached(config.structuredPipeline.onError, err, failureCtx);
+          if (config.trajectoryStore !== undefined) {
+            await config.trajectoryStore.append(ctx.sessionId, state.entries);
+          }
+          const stats = aggregateTrajectoryStats(state.entries);
+          const candidates = curateTrajectorySummary(stats, 1, {
+            minScore,
+            nowMs: clock(),
+            lambda,
+          });
+          const updated = consolidate(candidates, state.playbooks);
+          for (const pb of updated) {
+            await config.playbookStore.save(pb);
+          }
+          if (config.structuredPipeline !== undefined) {
+            try {
+              await runStructuredPipeline(
+                ctx.sessionId,
+                state.entries,
+                config.structuredPipeline,
+                clock,
+              );
+            } catch (err: unknown) {
+              const failureCtx: FailureContext = {
+                stage: extractStageSafe(err),
+                playbookId: config.structuredPipeline.playbookId,
+                sessionId: ctx.sessionId,
+              };
+              logFailureSafe(err, undefined, failureCtx);
+              if (config.structuredPipeline.onError !== undefined) {
+                invokeOnErrorDetached(config.structuredPipeline.onError, err, failureCtx);
+              }
+            }
+          }
+        } finally {
+          // Only drop the slot if it still references US — a fresh
+          // onSessionStart with the same sessionId may have replaced it.
+          if (sessions.get(ctx.sessionId) === state) {
+            sessions.delete(ctx.sessionId);
           }
         }
-      }
+      })();
+      state.teardownPromise = promise;
+      return promise;
     },
 
     async onBeforeTurn(ctx: TurnContext): Promise<void> {
@@ -483,7 +542,9 @@ type PipelineStage =
   | "curate"
   | "record-proposal"
   | "evaluate"
-  | "rollback-rejected"
+  | "resolve-rollback-target"
+  | "rollback-decline"
+  | "rollback-commit"
   | "commit";
 
 /** Internal error wrapper carrying the pipeline stage for diagnostic logging. */
@@ -522,7 +583,9 @@ const KNOWN_STAGES: readonly PipelineStage[] = [
   "curate",
   "record-proposal",
   "evaluate",
-  "rollback-rejected",
+  "resolve-rollback-target",
+  "rollback-decline",
+  "rollback-commit",
   "commit",
 ];
 
@@ -623,12 +686,43 @@ async function runStructuredPipeline(
   // are not produced by the consolidation pipeline; an explicit rollback
   // operator drives those through rollbackPromotion() directly.
   if (evaluation.verdict === "rollback") {
-    throw new StagedPipelineError(
-      "rollback-rejected",
-      new Error(
-        "evaluator returned 'rollback' verdict; consolidation pipeline only handles promote/reject. Use rollbackPromotion() directly for rollback flows.",
+    const resolveRollbackTarget = pipe.resolveRollbackTarget;
+    if (resolveRollbackTarget === undefined) {
+      // No handler wired: declined-by-config. Distinct from "handler ran and
+      // chose to decline" and from "rollback commit failed downstream".
+      throw new StagedPipelineError(
+        "rollback-decline",
+        new Error(
+          "evaluator returned 'rollback' verdict but no resolveRollbackTarget handler is configured; head is unchanged.",
+        ),
+      );
+    }
+    const targetVersion = await runStage("resolve-rollback-target", () =>
+      resolveRollbackTarget({ proposal, evaluation, playbookBefore: playbook }),
+    );
+    if (targetVersion === null) {
+      // Handler ran and explicitly declined.
+      throw new StagedPipelineError(
+        "rollback-decline",
+        new Error("resolveRollbackTarget returned null; head unchanged"),
+      );
+    }
+    // Real rollback commit — failures here are operational outages
+    // (missing lineage support, missing target version, save conflicts),
+    // distinct from a benign decline.
+    await runStage("rollback-commit", () =>
+      rollbackPromotion(
+        {
+          structuredStore: pipe.structuredStore,
+          proposalStore: pipe.proposalStore,
+          clock,
+        },
+        proposal,
+        targetVersion,
+        evaluation,
       ),
     );
+    return;
   }
 
   await runStage("commit", () =>

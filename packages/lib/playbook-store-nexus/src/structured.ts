@@ -33,6 +33,9 @@ export function createNexusStructuredPlaybookStore(
   // createNexusPlaybookProposalStore pointing at the same backend so that
   // save/recordProposal interleaving is serialised across instances.
   const scope = config.lockScope ?? base;
+  // Fail-closed by default: refuse to create new playbooks unless the caller
+  // explicitly opts in to the unsafe path (see initial-create race below).
+  const requirePreProvisioned = config.requirePreProvisioned ?? true;
   const path = (id: string): string => `${dir}/${encodeAceId(id)}.json`;
 
   return {
@@ -135,23 +138,20 @@ export function createNexusStructuredPlaybookStore(
           }
         }
 
+        // Refuse to create on first save when fail-closed is enabled.
+        // The Nexus transport lacks create-only CAS, so two coordinators
+        // racing on the initial write would both succeed (last-writer-wins),
+        // silently losing one initial payload. Pre-provisioning eliminates
+        // the race by ensuring at most one create ever runs.
+        if (current === undefined && requirePreProvisioned) {
+          throw new Error(
+            `playbook-store-nexus: refusing to create playbook ${playbook.id} on first save (transport lacks create-only CAS). Pre-provision via single-coordinator path, or set requirePreProvisioned: false in deployments where single-writer is guaranteed.`,
+          );
+        }
         const writeParams: Record<string, unknown> = {
           path: path(playbook.id),
           content: JSON.stringify(playbook),
         };
-        // Only set if_match when we have an etag for an existing file.
-        //
-        // INITIAL-CREATE RACE: when no file exists yet, the underlying Nexus
-        // transport does not currently expose create-if-absent (no
-        // if_none_match), so two coordinators racing on the very first save
-        // for a playbook id can both succeed and last-writer-wins. The
-        // monotonic version check on the NEXT save catches divergent
-        // continuations, but if the two initial payloads differ at the same
-        // initial version the loser is silently lost. Distributed
-        // deployments must funnel initial structured-playbook creation
-        // through a single coordinator (or through the sqlite adapter which
-        // has DB-level transactional CAS) until the transport exposes
-        // create-only writes.
         if (etag !== undefined) {
           writeParams.if_match = etag;
         }

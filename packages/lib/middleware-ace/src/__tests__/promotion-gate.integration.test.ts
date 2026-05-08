@@ -117,7 +117,11 @@ function makeSqlite(): AdapterCtx {
 function makeNexus(): AdapterCtx {
   const transport = createFakeNexusTransport();
   return {
-    structuredStore: createNexusStructuredPlaybookStore({ transport, basePath: "ace-it" }),
+    structuredStore: createNexusStructuredPlaybookStore({
+      transport,
+      basePath: "ace-it",
+      requirePreProvisioned: false,
+    }),
     proposalStore: createNexusPlaybookProposalStore({ transport, basePath: "ace-it" }),
   };
 }
@@ -327,7 +331,11 @@ describe.each(adapters)("promotion-gate integration: %s", (label, mk) => {
 describe("nexus structured store: corner cases", () => {
   test("concurrent save() at same version — exactly one wins via etag CAS", async () => {
     const transport = createFakeNexusTransport();
-    const store = createNexusStructuredPlaybookStore({ transport, basePath: "ace-conc" });
+    const store = createNexusStructuredPlaybookStore({
+      transport,
+      basePath: "ace-conc",
+      requirePreProvisioned: false,
+    });
 
     // Bootstrap v1 so both racers see the same etag.
     await store.save(structuredPlaybook({ id: "race", version: 1 }));
@@ -335,8 +343,16 @@ describe("nexus structured store: corner cases", () => {
     // Two store instances over the SAME transport (shared file map) racing
     // both attempt to advance v1 -> v2 with different content. Server-side
     // if_match etag must reject one with CONFLICT.
-    const storeA = createNexusStructuredPlaybookStore({ transport, basePath: "ace-conc" });
-    const storeB = createNexusStructuredPlaybookStore({ transport, basePath: "ace-conc" });
+    const storeA = createNexusStructuredPlaybookStore({
+      transport,
+      basePath: "ace-conc",
+      requirePreProvisioned: false,
+    });
+    const storeB = createNexusStructuredPlaybookStore({
+      transport,
+      basePath: "ace-conc",
+      requirePreProvisioned: false,
+    });
 
     const [resA, resB] = await Promise.allSettled([
       storeA.save(structuredPlaybook({ id: "race", version: 2, title: "A" })),
@@ -359,7 +375,11 @@ describe("nexus structured store: corner cases", () => {
 
   test("below-head save rejected (monotonic version check)", async () => {
     const transport = createFakeNexusTransport();
-    const store = createNexusStructuredPlaybookStore({ transport, basePath: "ace-mono" });
+    const store = createNexusStructuredPlaybookStore({
+      transport,
+      basePath: "ace-mono",
+      requirePreProvisioned: false,
+    });
     await store.save(structuredPlaybook({ id: "m", version: 2 }));
     await expect(store.save(structuredPlaybook({ id: "m", version: 1 }))).rejects.toThrow(
       /below current version/i,
@@ -368,7 +388,11 @@ describe("nexus structured store: corner cases", () => {
 
   test("same-version idempotent re-save with REORDERED keys is accepted (canonical JSON)", async () => {
     const transport = createFakeNexusTransport();
-    const store = createNexusStructuredPlaybookStore({ transport, basePath: "ace-canon" });
+    const store = createNexusStructuredPlaybookStore({
+      transport,
+      basePath: "ace-canon",
+      requirePreProvisioned: false,
+    });
 
     const original = structuredPlaybook({ id: "k", version: 1 });
     await store.save(original);
@@ -391,7 +415,11 @@ describe("nexus structured store: corner cases", () => {
 
   test("same-version DIVERGENT content rejected (canonical JSON)", async () => {
     const transport = createFakeNexusTransport();
-    const store = createNexusStructuredPlaybookStore({ transport, basePath: "ace-div" });
+    const store = createNexusStructuredPlaybookStore({
+      transport,
+      basePath: "ace-div",
+      requirePreProvisioned: false,
+    });
     await store.save(structuredPlaybook({ id: "d", version: 1, title: "A" }));
     await expect(
       store.save(structuredPlaybook({ id: "d", version: 1, title: "B" })),
@@ -404,6 +432,7 @@ describe("nexus structured store: corner cases", () => {
     const seedStore = createNexusStructuredPlaybookStore({
       transport: baseTransport,
       basePath: "ace-deg",
+      requirePreProvisioned: false,
     });
     await seedStore.save(structuredPlaybook({ id: "deg", version: 1 }));
 
@@ -425,6 +454,7 @@ describe("nexus structured store: corner cases", () => {
     const wrappedStore = createNexusStructuredPlaybookStore({
       transport: wrapped,
       basePath: "ace-deg",
+      requirePreProvisioned: false,
     });
     await expect(
       wrappedStore.save(structuredPlaybook({ id: "deg", version: 2, title: "v2" })),
@@ -438,8 +468,16 @@ describe("nexus structured store: corner cases", () => {
     // create-if-absent semantics. Distributed deployments must funnel
     // initial creation through a single coordinator.
     const transport = createFakeNexusTransport();
-    const storeA = createNexusStructuredPlaybookStore({ transport, basePath: "ace-init" });
-    const storeB = createNexusStructuredPlaybookStore({ transport, basePath: "ace-init" });
+    const storeA = createNexusStructuredPlaybookStore({
+      transport,
+      basePath: "ace-init",
+      requirePreProvisioned: false,
+    });
+    const storeB = createNexusStructuredPlaybookStore({
+      transport,
+      basePath: "ace-init",
+      requirePreProvisioned: false,
+    });
 
     const [resA, resB] = await Promise.allSettled([
       storeA.save(structuredPlaybook({ id: "init", version: 1, title: "A" })),
