@@ -1,5 +1,5 @@
 import type { ForgeDemandSignal } from "@koi/core";
-import type { PolicyCacheHandle } from "../../../lib/middleware-policy-cache/src/index.js";
+import type { PolicyCacheHandle } from "@koi/middleware-policy-cache";
 import {
   type AutoHarnessConfig,
   type AutoHarnessStack,

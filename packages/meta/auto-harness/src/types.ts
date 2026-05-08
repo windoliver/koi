@@ -10,7 +10,7 @@ import type {
   KoiMiddleware,
   StoreChangeNotifier,
 } from "@koi/core";
-import type { PolicyCacheHandle } from "../../../lib/middleware-policy-cache/src/index.js";
+import type { PolicyCacheHandle } from "@koi/middleware-policy-cache";
 
 export const DEFAULT_MAX_SYNTHESES_PER_SESSION = 3;
 
