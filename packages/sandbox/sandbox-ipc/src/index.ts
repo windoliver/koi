@@ -1,3 +1,4 @@
+export { bridgeToExecutor } from "./adapter.js";
 export { createSandboxBridge } from "./bridge.js";
 export { createSandboxIpcParseError, SandboxIpcParseError } from "./errors.js";
 export {
