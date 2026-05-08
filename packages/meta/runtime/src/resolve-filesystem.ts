@@ -830,23 +830,14 @@ export async function resolveFileSystemAsync(
                 if (!listed.ok) {
                   // Cannot verify safety. The bridge committed *something* and
                   // we have no authoritative way to know if it overlays a
-                  // protected root. Best-effort rollback by attempting to
-                  // remove the URI directly (some bridges accept URI as a
-                  // remove target), then quarantine the transport so further
-                  // mutations are refused until session restart.
-                  let cleanupAttempted = false;
-                  let cleanupOk = false;
-                  if (innerRemove !== undefined) {
-                    cleanupAttempted = true;
-                    try {
-                      const rb = await innerRemove(uri);
-                      cleanupOk = rb.ok;
-                    } catch {
-                      cleanupOk = false;
-                    }
-                  }
+                  // protected root. We do NOT attempt URI-based rollback: the
+                  // NexusTransport contract advertises removeMount(path), not
+                  // URI removal, so calling innerRemove(uri) targets an
+                  // identifier that may not name the committed mount at all
+                  // and could mis-remove an unrelated path or no-op while we
+                  // claim cleanup. Quarantine and require operator recovery.
                   transportQuarantined = true;
-                  quarantineReason = `addMount(${uri}) returned pathUnknown and listMounts verification failed (${listed.error.message}); cleanup ${cleanupAttempted ? (cleanupOk ? "succeeded but unverified" : "failed") : "unavailable"}. Restart the session to recover.`;
+                  quarantineReason = `addMount(${uri}) returned pathUnknown and listMounts verification failed (${listed.error.message}); rollback is not safely targetable from a URI. Run /mounts after restart and manually /unmount any offending paths.`;
                   return {
                     ok: false,
                     error: {
@@ -857,6 +848,28 @@ export async function resolveFileSystemAsync(
                   };
                 }
                 const candidates = listed.value.filter((p) => !preMounts.has(p));
+                // Fail-closed on ambiguous post-state: pathUnknown + an
+                // unchanged mount set means the bridge committed a mutation
+                // we cannot localize to any new path. The most dangerous
+                // interpretation — that the backend resolved the URI onto an
+                // already-existing live/protected mount and silently replaced
+                // its routing — is indistinguishable from a benign no-op
+                // here, so we must refuse to confirm success. Quarantine and
+                // require operator recovery rather than handing the caller a
+                // pathUnknown payload that the TUI would treat as "merely a
+                // refresh prompt".
+                if (candidates.length === 0) {
+                  transportQuarantined = true;
+                  quarantineReason = `addMount(${uri}) returned pathUnknown but post-mutation listMounts is unchanged; cannot prove the new mount did not replace an existing live or protected path. Run /mounts after restart and manually /unmount any offending paths.`;
+                  return {
+                    ok: false,
+                    error: {
+                      code: "INTERNAL",
+                      message: quarantineReason,
+                      retryable: RETRYABLE_DEFAULTS.INTERNAL,
+                    },
+                  };
+                }
                 // Two ways a candidate is "offending":
                 // (1) it overlays a protected root (active backend / scope /
                 //     glob-static-prefix), or
