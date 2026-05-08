@@ -25,7 +25,7 @@ import type {
   TransitionReason,
   VisibilityContext,
 } from "@koi/core";
-import { agentId, matchesFilter, VALID_TRANSITIONS, zoneId } from "@koi/core";
+import { matchesFilter, VALID_TRANSITIONS, zoneId } from "@koi/core";
 import { createListenerSet } from "@koi/event-delivery";
 import type { NexusRegistryConfig } from "./config.js";
 import { DEFAULT_NEXUS_REGISTRY_CONFIG, validateNexusRegistryConfig } from "./config.js";
@@ -37,6 +37,7 @@ import {
   nexusTransition,
   nexusUpdateMetadata,
 } from "./nexus-rpc.js";
+import { runPoll } from "./poll.js";
 import { freezeEntry, mapNexusAgentToEntry, RESERVED_METADATA_KEYS } from "./projection.js";
 import { encodeKoiStatus, mapKoiToNexus } from "./state-mapping.js";
 
@@ -92,7 +93,6 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
   // Per-agent poll hydration failures — a single agent that fails to
   // refetch repeatedly is tombstoned so callers don't read stale state.
   const perAgentGetFailures = new Map<AgentId, number>();
-  const MAX_PER_AGENT_GET_FAILURES = 3;
 
   function assertHealthy(): void {
     if (broken !== undefined) {
@@ -153,143 +153,38 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     }
   }
 
-  async function poll(): Promise<void> {
-    if (disposed) return;
-
-    const listResult = await nexusListAgents(transport, config.zoneId);
-    if (!listResult.ok) {
-      recordPollFailure("list_agents", listResult.error);
-      return;
-    }
-
-    const remoteIds = new Set<string>();
-    // let: tracks per-agent get_agent failures within this tick; one failure
-    // doesn't trip the broken flag, but we still surface visibility.
-    let perTickGetFailures = 0;
-
-    for (const nexusAgent of listResult.value) {
-      remoteIds.add(nexusAgent.agent_id);
-      const id = agentId(nexusAgent.agent_id);
-      const existing = projection.get(id);
-      const remoteGen = nexusAgent.generation ?? 0;
-      const localNexusGen = nexusGens.get(id) ?? -1;
-
-      // Force hydration for tombstoned entries even if the generation
-      // hasn't changed — otherwise a transient outage that produced a
-      // stale tombstone keeps the agent permanently invisible until
-      // some unrelated remote mutation bumps its generation.
-      if (localNexusGen === remoteGen && existing !== undefined && !stale.has(id)) continue;
-
-      const detail = await nexusGetAgent(transport, nexusAgent.agent_id);
-      if (!detail.ok) {
-        perTickGetFailures += 1;
-        const prev = perAgentGetFailures.get(id) ?? 0;
-        const next = prev + 1;
-        perAgentGetFailures.set(id, next);
-        console.warn(
-          `[registry-nexus] poll get_agent ${nexusAgent.agent_id} failed (${String(next)}/${String(MAX_PER_AGENT_GET_FAILURES)}): ${detail.error.message}`,
-        );
-        // Fail closed immediately when the remote generation has
-        // advanced: the local projection is provably stale, so reads
-        // must not keep serving the old phase. The retry counter still
-        // governs how long we keep trying to refetch; the tombstone is
-        // cleared on the first successful hydration.
-        const generationAdvanced = existing !== undefined && remoteGen !== localNexusGen;
-        if (generationAdvanced || next >= MAX_PER_AGENT_GET_FAILURES) {
-          stale.add(id);
-          console.error(
-            `[registry-nexus] tombstoning ${nexusAgent.agent_id} (${generationAdvanced ? "generation advanced; local mirror stale" : `${String(MAX_PER_AGENT_GET_FAILURES)} consecutive get_agent failures`}) — reads will return undefined until refetch succeeds`,
-          );
-        }
-        continue;
-      }
-      perAgentGetFailures.delete(id);
-
-      if (projection.size >= maxEntries && existing === undefined) {
-        // Fail closed: a partial mirror would silently hide live remote
-        // agents from list()/lookup() forever. Mark broken so callers
-        // see an error instead of an incomplete view.
-        broken = `poll observed remote agent ${nexusAgent.agent_id} but projection is at capacity (${String(maxEntries)}); raise maxEntries or scale out`;
+  function poll(): Promise<void> {
+    return runPoll({
+      transport,
+      zoneId: config.zoneId,
+      maxEntries,
+      projection,
+      nexusGens,
+      stale,
+      perAgentGetFailures,
+      notify,
+      recordPollFailure,
+      setBroken: (msg) => {
+        broken = msg;
         console.error(`[registry-nexus] ${broken}`);
         if (pollTimer !== undefined) {
           clearTimeout(pollTimer);
           pollTimer = undefined;
         }
-        return;
-      }
-
-      // mapNexusAgentToEntry throws on unknown Nexus state — treat that
-      // as a per-agent hydration failure (tombstone after threshold)
-      // rather than letting an uncaught throw kill the poll loop.
-      let entry: RegistryEntry;
-      try {
-        entry = freezeEntry(mapNexusAgentToEntry(detail.value));
-      } catch (err) {
-        const prev = perAgentGetFailures.get(id) ?? 0;
-        perAgentGetFailures.set(id, prev + 1);
-        console.warn(
-          `[registry-nexus] failed to map Nexus agent ${nexusAgent.agent_id}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-        if ((perAgentGetFailures.get(id) ?? 0) >= MAX_PER_AGENT_GET_FAILURES) {
-          stale.add(id);
+      },
+      isDisposed: () => disposed,
+      onPollComplete: (perTickGetFailures, remoteAgentCount) => {
+        if (perTickGetFailures === 0) {
+          consecutivePollFailures = 0;
+        } else if (perTickGetFailures === remoteAgentCount && remoteAgentCount > 0) {
+          recordPollFailure("all get_agent calls failed", {
+            code: "EXTERNAL",
+            message: "all per-agent fetches failed",
+            retryable: true,
+          });
         }
-        continue;
-      }
-      projection.set(id, entry);
-      nexusGens.set(id, detail.value.generation ?? 0);
-      stale.delete(id);
-
-      if (existing === undefined) {
-        notify({ kind: "registered", entry });
-      } else if (existing.status.phase !== entry.status.phase) {
-        notify({
-          kind: "transitioned",
-          agentId: id,
-          from: existing.status.phase,
-          to: entry.status.phase,
-          generation: entry.status.generation,
-          reason: entry.status.reason ?? { kind: "assembly_complete" },
-        });
-      } else {
-        // Phase unchanged but other mutable fields may have shifted (a
-        // remote patch from another node updated metadata or priority).
-        // Watchers must learn about these so caches/UIs don't keep
-        // serving stale priority/skills.
-        const priorityChanged = existing.priority !== entry.priority;
-        const metadataChanged =
-          JSON.stringify(existing.metadata) !== JSON.stringify(entry.metadata);
-        if (priorityChanged || metadataChanged) {
-          const fields: PatchableRegistryFields = {
-            ...(priorityChanged ? { priority: entry.priority } : {}),
-            ...(metadataChanged ? { metadata: entry.metadata } : {}),
-          };
-          notify({ kind: "patched", agentId: id, fields, entry });
-        }
-      }
-    }
-
-    for (const [id] of projection) {
-      if (!remoteIds.has(id)) {
-        projection.delete(id);
-        nexusGens.delete(id);
-        stale.delete(id);
-        perAgentGetFailures.delete(id);
-        notify({ kind: "deregistered", agentId: id });
-      }
-    }
-
-    if (perTickGetFailures === 0) {
-      // List succeeded and every observed agent hydrated cleanly — reset
-      // the rolling counter so transient blips don't add up.
-      consecutivePollFailures = 0;
-    } else if (perTickGetFailures > 0 && perTickGetFailures === listResult.value.length) {
-      // Every per-agent fetch failed — treat as a list-equivalent failure.
-      recordPollFailure("all get_agent calls failed", {
-        code: "EXTERNAL",
-        message: "all per-agent fetches failed",
-        retryable: true,
-      });
-    }
+      },
+    });
   }
 
   async function register(entry: RegistryEntry): Promise<RegistryEntry> {

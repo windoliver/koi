@@ -764,7 +764,7 @@ jobs:
         # tracking, registry sync, kill quarantine) — splitting it would
         # leak the per-session generation fence and ps-fingerprint cache
         # through public seams.
-        run: bun run check:complexity --max-violations 780
+        run: bun run check:complexity --max-violations 778
 
       - name: Check TUI single-writer output policy
         run: bun run check:tui-single-writer
