@@ -1,3 +1,4 @@
+import type { JsonObject } from "@koi/core";
 import type {
   ExecutionContext,
   SandboxError,
@@ -5,11 +6,21 @@ import type {
   SandboxResult,
 } from "@koi/core/sandbox-executor";
 import { createSandboxBridge } from "./bridge.js";
-import type { BridgeConfig, IpcError, SandboxBridge } from "./types.js";
+import type { BridgeConfig, IpcError, IpcErrorCode, SandboxBridge } from "./types.js";
 
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
+const EXECUTOR_INPUT_KEY = "__koi_executor_input";
+const KNOWN_IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
+  "TIMEOUT",
+  "OOM",
+  "PERMISSION",
+  "CRASH",
+  "SPAWN_FAILED",
+  "DESERIALIZE",
+  "RESULT_TOO_LARGE",
+  "WORKER_ERROR",
+  "DISPOSED",
+]);
+const SYSTEM_PERMISSION_CODES = new Set(["EACCES", "EPERM"]);
 
 function mapIpcErrorToSandboxError(error: IpcError): SandboxError {
   const durationMs = error.durationMs ?? 0;
@@ -31,29 +42,76 @@ function mapIpcErrorToSandboxError(error: IpcError): SandboxError {
   }
 }
 
-function invalidInputError(input: unknown): SandboxError {
-  return {
-    code: "CRASH",
-    message: `sandbox-ipc bridgeToExecutor expects a plain object input, got ${Array.isArray(input) ? "array" : typeof input}`,
-    durationMs: 0,
-  };
+function extractErrorCode(error: unknown): string | undefined {
+  if (error === null || typeof error !== "object" || !("code" in error)) {
+    return undefined;
+  }
+
+  return typeof error.code === "string" ? error.code : undefined;
 }
 
-function mapUnknownErrorToSandboxError(error: unknown): SandboxError {
+function extractErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
   if (
     error !== null &&
     typeof error === "object" &&
-    "code" in error &&
-    typeof error.code === "string" &&
     "message" in error &&
     typeof error.message === "string"
   ) {
-    return mapIpcErrorToSandboxError(error as IpcError);
+    return error.message;
+  }
+
+  return String(error);
+}
+
+function wrapExecutorCode(code: string): string {
+  return `return (function(input) {\n${code}\n})(input[${JSON.stringify(EXECUTOR_INPUT_KEY)}]);`;
+}
+
+function wrapExecutorInput(input: unknown): JsonObject {
+  return {
+    [EXECUTOR_INPUT_KEY]: input,
+  } as JsonObject;
+}
+
+function isKnownIpcError(error: unknown): error is IpcError {
+  if (
+    error === null ||
+    typeof error !== "object" ||
+    !("code" in error) ||
+    typeof error.code !== "string" ||
+    !KNOWN_IPC_ERROR_CODES.has(error.code as IpcErrorCode) ||
+    !("message" in error) ||
+    typeof error.message !== "string"
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function mapUnknownErrorToSandboxError(error: unknown): SandboxError {
+  if (isKnownIpcError(error)) {
+    return mapIpcErrorToSandboxError(error);
+  }
+
+  const code = extractErrorCode(error);
+  const message = extractErrorMessage(error);
+  if (code !== undefined && SYSTEM_PERMISSION_CODES.has(code)) {
+    return {
+      code: "PERMISSION",
+      message,
+      durationMs: 0,
+      ...(error instanceof Error && error.stack !== undefined ? { stack: error.stack } : {}),
+    };
   }
 
   return {
     code: "CRASH",
-    message: error instanceof Error ? error.message : String(error),
+    message,
     durationMs: 0,
     ...(error instanceof Error && error.stack !== undefined ? { stack: error.stack } : {}),
   };
@@ -70,19 +128,19 @@ export function bridgeToExecutor(config: BridgeConfig): SandboxExecutor {
       | { readonly ok: true; readonly value: SandboxResult }
       | { readonly ok: false; readonly error: SandboxError }
     > {
-      if (!isJsonObject(input)) {
-        return { ok: false, error: invalidInputError(input) };
-      }
-
       let bridge: SandboxBridge | undefined;
       let mappedResult:
         | { readonly ok: true; readonly value: SandboxResult }
-        | { readonly ok: false; readonly error: SandboxError };
+        | { readonly ok: false; readonly error: SandboxError }
+        | undefined;
 
       try {
         bridge = await createSandboxBridge(config);
 
-        const result = await bridge.execute(code, input, { timeoutMs, context });
+        const result = await bridge.execute(wrapExecutorCode(code), wrapExecutorInput(input), {
+          timeoutMs,
+          context,
+        });
         if (!result.ok) {
           mappedResult = {
             ok: false,
@@ -110,15 +168,26 @@ export function bridgeToExecutor(config: BridgeConfig): SandboxExecutor {
           try {
             await bridge.dispose();
           } catch (error) {
-            mappedResult = {
-              ok: false,
-              error: mapUnknownErrorToSandboxError(error),
-            };
+            if (mappedResult === undefined || mappedResult.ok) {
+              mappedResult = {
+                ok: false,
+                error: mapUnknownErrorToSandboxError(error),
+              };
+            }
           }
         }
       }
 
-      return mappedResult;
+      return (
+        mappedResult ?? {
+          ok: false,
+          error: {
+            code: "CRASH",
+            message: "sandbox-ipc bridgeToExecutor reached an unreachable state",
+            durationMs: 0,
+          },
+        }
+      );
     },
   };
 }

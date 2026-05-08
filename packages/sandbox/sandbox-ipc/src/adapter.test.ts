@@ -101,17 +101,63 @@ test("bridgeToExecutor preserves TIMEOUT failures", async () => {
   expect(result.error.code).toBe("TIMEOUT");
 });
 
-test("bridgeToExecutor rejects non-object input", async () => {
+test("bridgeToExecutor preserves primitive input semantics", async () => {
   const executor = bridgeToExecutor(validBridgeConfig());
-  const result = await executor.execute("return input", "not-an-object", 500);
+  const result = await executor.execute("return input + 1", 41, 500);
+
+  expect(result.ok).toBe(true);
+  if (!result.ok) {
+    throw new Error("expected primitive input to succeed");
+  }
+
+  expect(result.value.output).toBe(42);
+});
+
+test("bridgeToExecutor preserves null input semantics", async () => {
+  const executor = bridgeToExecutor(validBridgeConfig());
+  const result = await executor.execute("return input === null", null, 500);
+
+  expect(result.ok).toBe(true);
+  if (!result.ok) {
+    throw new Error("expected null input to succeed");
+  }
+
+  expect(result.value.output).toBe(true);
+});
+
+test("bridgeToExecutor preserves array input semantics", async () => {
+  const executor = bridgeToExecutor(validBridgeConfig());
+  const result = await executor.execute(
+    "return Array.isArray(input) ? input[0] + input[1] : -1",
+    [19, 23],
+    500,
+  );
+
+  expect(result.ok).toBe(true);
+  if (!result.ok) {
+    throw new Error("expected array input to succeed");
+  }
+
+  expect(result.value.output).toBe(42);
+});
+
+test("bridgeToExecutor maps non-IPC code exceptions into valid SandboxError results", async () => {
+  mock.module("./bridge.js", () => ({
+    createSandboxBridge: mock(async () => {
+      throw { code: "EACCES", message: "permission denied" };
+    }),
+  }));
+  const { bridgeToExecutor } = await importAdapter();
+  const executor = bridgeToExecutor(validBridgeConfig());
+  const result = await executor.execute("return 1", {}, 500);
 
   expect(result.ok).toBe(false);
   if (result.ok) {
-    throw new Error("expected invalid-input failure");
+    throw new Error("expected create failure");
   }
 
-  expect(result.error.code).toBe("CRASH");
-  expect(result.error.message).toContain("plain object input");
+  expect(result.error.code).toBe("PERMISSION");
+  expect(result.error.message).toContain("permission denied");
 });
 
 test("bridgeToExecutor maps bridge creation failures into SandboxError results", async () => {
@@ -154,4 +200,32 @@ test("bridgeToExecutor maps bridge disposal failures into SandboxError results",
       durationMs: 0,
     },
   });
+});
+
+test("bridgeToExecutor preserves an execution failure when dispose also fails", async () => {
+  mock.module("./bridge.js", () => ({
+    createSandboxBridge: mock(async () =>
+      makeMockBridge({
+        execute: async () => ({
+          ok: false,
+          error: { code: "TIMEOUT", message: "execution timed out", durationMs: 17 },
+        }),
+        dispose: async () => {
+          throw new Error("bridge disposal exploded");
+        },
+      }),
+    ),
+  }));
+  const { bridgeToExecutor } = await importAdapter();
+  const executor = bridgeToExecutor(validBridgeConfig());
+  const result = await executor.execute("return 1", {}, 500);
+
+  expect(result.ok).toBe(false);
+  if (result.ok) {
+    throw new Error("expected execution failure");
+  }
+
+  expect(result.error.code).toBe("TIMEOUT");
+  expect(result.error.message).toBe("execution timed out");
+  expect(result.error.durationMs).toBe(17);
 });
