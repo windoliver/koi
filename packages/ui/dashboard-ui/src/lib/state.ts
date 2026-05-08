@@ -549,9 +549,13 @@ export function applyDashboardEvent(
     }
 
     case "trace.received": {
-      const sessionId = findTargetSessionId(state, event.trace.agentId);
-      if (sessionId === null) return state;
-      const existingSession = state.sessionsById[sessionId];
+      // Trace events carry turnId/agentId but no sessionId. Without a turnId→sessionId
+      // mapping we cannot safely route a trace when an agent has multiple sessions —
+      // doing so would attach a trace to the wrong session. Apply only when the agent
+      // has exactly one known session; otherwise drop the update.
+      const agentSessions = state.sessionsByAgentId[event.trace.agentId] ?? [];
+      if (agentSessions.length !== 1) return state;
+      const existingSession = agentSessions[0];
       if (!existingSession) return state;
 
       return replaceSession(state, {

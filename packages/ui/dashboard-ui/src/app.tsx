@@ -55,17 +55,6 @@ export interface DashboardClient {
   ): () => void;
 }
 
-async function defaultDashboardClient(): Promise<DashboardClient> {
-  const baseUrl =
-    typeof window === "undefined" ? "http://localhost:3100" : window.location.origin;
-  const loadClientModule = new Function(
-    "specifier",
-    "return import(specifier);",
-  ) as (specifier: string) => Promise<{ createDashboardClient: (config: { baseUrl: string }) => DashboardClient }>;
-  const module = await loadClientModule("../../../lib/dashboard-client/src/index.js");
-  return module.createDashboardClient({ baseUrl });
-}
-
 function getErrorMessage(error: { readonly message?: string | undefined } | unknown, fallback: string): string {
   if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string") {
     return error.message;
@@ -173,23 +162,25 @@ export function DashboardView({
 export function DashboardApp({
   client,
 }: {
-  client?: DashboardClient;
-} = {}): ReactElement {
+  client: DashboardClient;
+}): ReactElement {
   const [state, dispatch] = useReducer(applyDashboardEvent, undefined, createEmptyDashboardViewModel);
-  const clientRef = useRef<DashboardClient | null>(client ?? null);
+  const clientRef = useRef<DashboardClient>(client);
+  clientRef.current = client;
 
   useEffect(() => {
     let disposed = false;
+    let unsubscribe: () => void = () => {};
     dispatch({ type: "loading.set", isLoading: true });
     dispatch({ type: "error.set", message: null });
 
-    let unsubscribe: () => void = () => {};
-
-    void Promise.resolve(clientRef.current ?? defaultDashboardClient())
-      .then((resolvedClient) => {
+    void (async () => {
+      try {
+        const snapshot = await loadDashboardSnapshot(clientRef.current);
         if (disposed) return;
-        clientRef.current = resolvedClient;
-        unsubscribe = resolvedClient.subscribe(
+        dispatch({ type: "snapshot.loaded", snapshot });
+
+        unsubscribe = clientRef.current.subscribe(
           ["agent-status", "session-summary", "metric", "trace"],
           {
             onEvent: (event) => {
@@ -222,24 +213,18 @@ export function DashboardApp({
             },
           },
         );
-
-        return loadDashboardSnapshot(resolvedClient);
-      })
-      .then((snapshot) => {
-        if (disposed || snapshot === undefined) return;
-        dispatch({ type: "snapshot.loaded", snapshot });
-      })
-      .catch((error: unknown) => {
+      } catch (error: unknown) {
         if (disposed) return;
         dispatch({
           type: "error.set",
           message: error instanceof Error ? error.message : "Unable to load dashboard data.",
         });
-      })
-      .finally(() => {
-        if (disposed) return;
-        dispatch({ type: "loading.set", isLoading: false });
-      });
+      } finally {
+        if (!disposed) {
+          dispatch({ type: "loading.set", isLoading: false });
+        }
+      }
+    })();
 
     return () => {
       disposed = true;
