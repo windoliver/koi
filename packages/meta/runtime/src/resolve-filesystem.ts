@@ -767,9 +767,48 @@ export async function resolveFileSystemAsync(
         // empty (namespace-root + no scope), addMount still needs to refuse
         // overlap with existing live mounts so a runtime /mount cannot
         // shadow an already-approved routing path.
-        if (innerAdd === undefined && innerRemove === undefined) return transport;
+        // Engage the wrapper whenever there is anything to enforce: a
+        // mutation API to gate, a listMounts to scope-filter, or a
+        // describeMount to scope-check. Only short-circuit when the
+        // transport exposes none of these.
+        if (
+          innerAdd === undefined &&
+          innerRemove === undefined &&
+          transport.listMounts === undefined &&
+          transport.describeMount === undefined
+        ) {
+          return transport;
+        }
         const wrapped: Record<string, unknown> = { ...transport };
-        if (innerRemove !== undefined) {
+        // Read-only / unprotectable-scope policy enforcement at the
+        // transport layer. The TUI hides /mount and /unmount when
+        // `mutationsSupported` is false, but non-TUI callers using the
+        // returned transport directly would otherwise bypass the policy.
+        // When mutationsSupported is false (read-only operations grant,
+        // unprotectable wildcard scope, or stale-root single-mount mode),
+        // refuse all mutations at the wrapper itself.
+        if (!mutationsSupported) {
+          const refuseMutation = (
+            verb: string,
+          ): Promise<Result<never, import("@koi/core").KoiError>> =>
+            Promise.resolve({
+              ok: false,
+              error: {
+                code: "VALIDATION",
+                message: `${verb} refused: runtime mount mutations are disabled for this session (read-only operations, unprotectable wildcard scope, or fixed single-mount root).`,
+                retryable: RETRYABLE_DEFAULTS.VALIDATION,
+              },
+            });
+          if (innerAdd !== undefined) {
+            wrapped.addMount = (): ReturnType<typeof innerAdd> =>
+              refuseMutation("addMount") as ReturnType<typeof innerAdd>;
+          }
+          if (innerRemove !== undefined) {
+            wrapped.removeMount = (): ReturnType<typeof innerRemove> =>
+              refuseMutation("removeMount") as ReturnType<typeof innerRemove>;
+          }
+        }
+        if (mutationsSupported && innerRemove !== undefined) {
           const removeImpl = async (path: string) => {
             if (transportQuarantined) {
               return {
@@ -809,7 +848,7 @@ export async function resolveFileSystemAsync(
           };
           wrapped.removeMount = (path: string) => serializeMutation(() => removeImpl(path));
         }
-        if (innerAdd !== undefined) {
+        if (mutationsSupported && innerAdd !== undefined) {
           const addImpl = async (uri: string, at?: string | undefined) => {
             if (transportQuarantined) {
               return {
@@ -1119,21 +1158,31 @@ export async function resolveFileSystemAsync(
         // scoped session could enumerate every live mount via listMounts
         // or fetch README content for sibling mounts via describeMount.
         const innerListMounts = transport.listMounts;
-        if (innerListMounts !== undefined && protectedRoots.length > 0) {
+        if (innerListMounts !== undefined && (protectedRoots.length > 0 || hasUnprotectableScope)) {
           wrapped.listMounts = async (): Promise<
             Result<readonly string[], import("@koi/core").KoiError>
           > => {
+            // Wildcard-only scope: cannot prove any path is in scope, so
+            // fail closed — return an empty list rather than leaking
+            // sibling mount identifiers.
+            if (hasUnprotectableScope) return { ok: true, value: [] };
             const raw = await innerListMounts();
             if (!raw.ok) return raw;
             return { ok: true, value: raw.value.filter(isPathVisibleInScope) };
           };
         }
         const innerDescribeMount = transport.describeMount;
-        if (innerDescribeMount !== undefined && protectedRoots.length > 0) {
+        if (
+          innerDescribeMount !== undefined &&
+          (protectedRoots.length > 0 || hasUnprotectableScope)
+        ) {
           wrapped.describeMount = async (
             path: string,
           ): Promise<Result<MountDescription, import("@koi/core").KoiError>> => {
-            if (!isPathVisibleInScope(path)) {
+            // Wildcard-only scope: refuse all describe requests; we cannot
+            // prove the path is in scope, and the bridge would otherwise
+            // return connector-controlled README content for sibling mounts.
+            if (hasUnprotectableScope || !isPathVisibleInScope(path)) {
               return {
                 ok: false,
                 error: {
@@ -1150,6 +1199,7 @@ export async function resolveFileSystemAsync(
           enumerable: true,
           get(): readonly string[] {
             const raw = transport.mounts ?? [];
+            if (hasUnprotectableScope) return [];
             if (protectedRoots.length === 0) return raw;
             return raw.filter(isPathVisibleInScope);
           },
