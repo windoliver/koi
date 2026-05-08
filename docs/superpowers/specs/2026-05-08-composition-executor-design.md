@@ -96,19 +96,43 @@ The executor accepts both `trigger` and `plan` because:
 ### CompositionExecutionResult
 
 ```ts
-export interface CompositionExecutionResult {
-  readonly triggerId: string;
-  readonly status: "executed" | "requires_approval" | "unsupported" | "failed";
-  readonly stepResults: readonly CompositionStepResult[];
-  readonly executedCount: number;
-  readonly error?: CompositionExecutionError | undefined;
-}
+export type CompositionExecutionResult =
+  | {
+      readonly triggerId: string;
+      readonly status: "executed";
+      readonly stepResults: readonly SuccessfulCompositionStepResult[];
+      readonly executedCount: number;
+      readonly error?: undefined;
+    }
+  | {
+      readonly triggerId: string;
+      readonly status: "requires_approval";
+      readonly stepResults: readonly [];
+      readonly executedCount: 0;
+      readonly error: CompositionExecutionError & { readonly code: "APPROVAL_REQUIRED" };
+    }
+  | {
+      readonly triggerId: string;
+      readonly status: "unsupported";
+      readonly stepResults: readonly CompositionStepResult[];
+      readonly executedCount: number;
+      readonly error: CompositionExecutionError & {
+        readonly code: "STEP_UNSUPPORTED" | "INVALID_PLAN";
+      };
+    }
+  | {
+      readonly triggerId: string;
+      readonly status: "failed";
+      readonly stepResults: readonly CompositionStepResult[];
+      readonly executedCount: number;
+      readonly error: CompositionExecutionError & { readonly code: "STEP_FAILED" | "INVALID_PLAN" };
+    };
 ```
 
 Semantics:
 
 - `executed`
-  - all attempted steps in the plan were successfully executed
+  - all step results are successful (`executed` or `skipped`) and no failure metadata is present
 - `requires_approval`
   - the plan was not executed because `plan.requiresApproval === true`
 - `unsupported`
@@ -121,12 +145,38 @@ Semantics:
 ### CompositionStepResult
 
 ```ts
-export interface CompositionStepResult {
-  readonly step: CompositionStep;
-  readonly status: "executed" | "skipped" | "unsupported" | "failed";
-  readonly output?: unknown;
-  readonly error?: CompositionExecutionError | undefined;
-}
+export type CompositionStepResult =
+  | {
+      readonly step: CompositionStep;
+      readonly status: "executed";
+      readonly output?: unknown;
+      readonly error?: undefined;
+    }
+  | {
+      readonly step: CompositionStep;
+      readonly status: "skipped";
+      readonly output?: undefined;
+      readonly error?: undefined;
+    }
+  | {
+      readonly step: CompositionStep;
+      readonly status: "unsupported";
+      readonly output?: undefined;
+      readonly error: CompositionExecutionError & {
+        readonly code: "STEP_UNSUPPORTED" | "INVALID_PLAN";
+      };
+    }
+  | {
+      readonly step: CompositionStep;
+      readonly status: "failed";
+      readonly output?: undefined;
+      readonly error: CompositionExecutionError & { readonly code: "STEP_FAILED" | "INVALID_PLAN" };
+    };
+
+export type SuccessfulCompositionStepResult = Extract<
+  CompositionStepResult,
+  { readonly status: "executed" | "skipped" }
+>;
 ```
 
 Notes:
@@ -164,6 +214,7 @@ Export it from:
 
 ```ts
 export interface CompositionExecutionContext {
+  readonly agentId: AgentId;
   readonly scheduler: SchedulerComponent;
   readonly notify: (notification: CompositionNotification) => Promise<unknown>;
   readonly spawn?: ((request: CompositionSpawnRequest) => Promise<unknown>) | undefined;
@@ -217,9 +268,12 @@ The first implementation supports:
 
 Supported.
 
-Maps directly to `context.scheduler.submit(...)` using the step’s:
+`SchedulerComponent` is already agent-pinned, so the executor must first validate:
 
-- `agentId`
+- `step.agentId === context.agentId`
+
+Then it maps to `context.scheduler.submit(...)` using only the step’s:
+
 - `mode`
 - `input`
 - `taskOptions`
@@ -230,10 +284,13 @@ The returned scheduler result is stored in `CompositionStepResult.output`.
 
 Supported.
 
-Maps directly to `context.scheduler.schedule(...)` using the step’s:
+`SchedulerComponent` is already agent-pinned, so the executor must first validate:
+
+- `step.agentId === context.agentId`
+
+Then it maps directly to `context.scheduler.schedule(...)` using the step’s:
 
 - `expression`
-- `agentId`
 - `mode`
 - `input`
 - `timezone`
@@ -363,6 +420,7 @@ Cover:
 
 - approval-required plan returns without executing steps
 - `submit_task` delegates to scheduler and records output
+- `submit_task` rejects mismatched `agentId` against `context.agentId`
 - `create_schedule` delegates to scheduler and records output
 - `notify_user` delegates to `notify()` and records output
 - unsupported `spawn_agent` stops execution with `unsupported`

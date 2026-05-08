@@ -9,6 +9,13 @@ export {
   computeCompositionApproval,
   DEFAULT_COMPOSITION_APPROVAL_POLICY,
 } from "./composition-approval.js";
+export {
+  type CompositionExecutionContext,
+  type CompositionForgeRequest,
+  type CompositionNotification,
+  type CompositionSpawnRequest,
+  createCompositionExecutor,
+} from "./composition-executor.js";
 export { mapSystemSignalToCompositionTrigger } from "./composition-trigger.js";
 export { createProactiveTools } from "./create-proactive-tools.js";
 export {

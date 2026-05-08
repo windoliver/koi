@@ -15,6 +15,13 @@
 import type { AnomalyDetail, AnomalySignal } from "./agent-anomaly.js";
 import type { AgentDefinition } from "./agent-definition.js";
 import type {
+  CompositionExecutionError,
+  CompositionExecutionResult,
+  CompositionExecutor,
+  CompositionStepResult,
+  SuccessfulCompositionStepResult,
+} from "./composition-executor.js";
+import type {
   CompositionCapabilities,
   CompositionMoment,
   CompositionPlan,
@@ -270,3 +277,188 @@ const _plannerConformance: CompositionPlanner = {
   },
 };
 void _plannerConformance;
+
+const _stepResultConformance: CompositionStepResult = {
+  step: {
+    kind: "notify_user",
+    channel: "inbox",
+    message: "hello",
+    priority: "normal",
+  },
+  status: "executed",
+  output: { delivered: true },
+};
+void _stepResultConformance;
+
+const _unsupportedStepResultConformance: CompositionStepResult = {
+  step: {
+    kind: "forge_skill",
+    demand: {
+      id: "forge-demand-1",
+      kind: "forge_demand",
+      trigger: {
+        kind: "capability_gap",
+        requiredCapability: "forge_skill",
+      },
+      confidence: 0.6,
+      suggestedBrickKind: "tool",
+      context: {
+        failureCount: 1,
+        failedToolCalls: ["forge_skill"],
+        taskDescription: "missing capability",
+      },
+      emittedAt: 2,
+    },
+  },
+  status: "unsupported",
+  error: {
+    code: "STEP_UNSUPPORTED",
+    message: "forge_skill is unsupported",
+    stepKind: "forge_skill",
+  },
+};
+void _unsupportedStepResultConformance;
+
+const _failedStepResultConformance: CompositionStepResult = {
+  step: {
+    kind: "notify_user",
+    channel: "inbox",
+    message: "boom",
+    priority: "normal",
+  },
+  status: "failed",
+  error: {
+    code: "STEP_FAILED",
+    message: "notify failed",
+    stepKind: "notify_user",
+  },
+};
+void _failedStepResultConformance;
+
+const _executionResultConformance: CompositionExecutionResult = {
+  triggerId: "trigger-1",
+  status: "executed",
+  stepResults: [_stepResultConformance],
+  executedCount: 1,
+};
+void _executionResultConformance;
+
+const _executionErrorConformance: CompositionExecutionError = {
+  code: "STEP_UNSUPPORTED",
+  message: "spawn_agent is unsupported",
+  stepKind: "spawn_agent",
+};
+void _executionErrorConformance;
+
+type _ExecutedBranch = Extract<CompositionExecutionResult, { status: "executed" }>;
+type _ApprovalBranch = Extract<CompositionExecutionResult, { status: "requires_approval" }>;
+type _UnsupportedBranch = Extract<CompositionExecutionResult, { status: "unsupported" }>;
+type _FailedBranch = Extract<CompositionExecutionResult, { status: "failed" }>;
+type _ExecutedStepBranch = Extract<CompositionStepResult, { status: "executed" }>;
+type _SkippedStepBranch = Extract<CompositionStepResult, { status: "skipped" }>;
+type _UnsupportedStepBranch = Extract<CompositionStepResult, { status: "unsupported" }>;
+type _FailedStepBranch = Extract<CompositionStepResult, { status: "failed" }>;
+
+type _ExecutedBranchHasNoError = _ExecutedBranch extends { error?: undefined } ? true : false;
+type _ExecutedBranchHasOnlySuccessfulSteps =
+  _ExecutedBranch["stepResults"][number] extends SuccessfulCompositionStepResult ? true : false;
+type _SuccessfulStepSubsetCoversExecuted =
+  _ExecutedStepBranch extends SuccessfulCompositionStepResult ? true : false;
+type _SuccessfulStepSubsetCoversSkipped = _SkippedStepBranch extends SuccessfulCompositionStepResult
+  ? true
+  : false;
+type _ApprovalBranchHasApprovalError = _ApprovalBranch extends {
+  error: { code: "APPROVAL_REQUIRED" };
+}
+  ? true
+  : false;
+type _ApprovalBranchIsFailClosed = _ApprovalBranch extends {
+  stepResults: readonly [];
+  executedCount: 0;
+}
+  ? true
+  : false;
+type _UnsupportedBranchHasStructuredError = _UnsupportedBranch extends {
+  error: { code: "STEP_UNSUPPORTED" | "INVALID_PLAN" };
+}
+  ? true
+  : false;
+type _FailedBranchHasStructuredError = _FailedBranch extends {
+  error: { code: "STEP_FAILED" | "INVALID_PLAN" };
+}
+  ? true
+  : false;
+type _UnsupportedStepHasStructuredError = _UnsupportedStepBranch extends {
+  error: { code: "STEP_UNSUPPORTED" | "INVALID_PLAN" };
+}
+  ? true
+  : false;
+type _FailedStepHasStructuredError = _FailedStepBranch extends {
+  error: { code: "STEP_FAILED" | "INVALID_PLAN" };
+}
+  ? true
+  : false;
+
+const _executedBranchHasNoError: _ExecutedBranchHasNoError = true;
+const _executedBranchHasOnlySuccessfulSteps: _ExecutedBranchHasOnlySuccessfulSteps = true;
+const _successfulStepSubsetCoversExecuted: _SuccessfulStepSubsetCoversExecuted = true;
+const _successfulStepSubsetCoversSkipped: _SuccessfulStepSubsetCoversSkipped = true;
+const _approvalBranchHasApprovalError: _ApprovalBranchHasApprovalError = true;
+const _approvalBranchIsFailClosed: _ApprovalBranchIsFailClosed = true;
+const _unsupportedBranchHasStructuredError: _UnsupportedBranchHasStructuredError = true;
+const _failedBranchHasStructuredError: _FailedBranchHasStructuredError = true;
+const _unsupportedStepHasStructuredError: _UnsupportedStepHasStructuredError = true;
+const _failedStepHasStructuredError: _FailedStepHasStructuredError = true;
+void _executedBranchHasNoError;
+void _executedBranchHasOnlySuccessfulSteps;
+void _successfulStepSubsetCoversExecuted;
+void _successfulStepSubsetCoversSkipped;
+void _approvalBranchHasApprovalError;
+void _approvalBranchIsFailClosed;
+void _unsupportedBranchHasStructuredError;
+void _failedBranchHasStructuredError;
+void _unsupportedStepHasStructuredError;
+void _failedStepHasStructuredError;
+
+// @ts-expect-error unsupported results must carry structured error metadata
+const _invalidUnsupportedResult: CompositionExecutionResult = {
+  triggerId: "trigger-invalid-unsupported",
+  status: "unsupported",
+  stepResults: [],
+  executedCount: 0,
+};
+void _invalidUnsupportedResult;
+
+// @ts-expect-error executed results cannot include unsupported step outcomes
+const _invalidExecutedResultWithUnsupportedStep: CompositionExecutionResult = {
+  triggerId: "trigger-invalid-executed-unsupported",
+  status: "executed",
+  stepResults: [_unsupportedStepResultConformance],
+  executedCount: 0,
+};
+void _invalidExecutedResultWithUnsupportedStep;
+
+// @ts-expect-error executed results cannot include failed step outcomes
+const _invalidExecutedResultWithFailedStep: CompositionExecutionResult = {
+  triggerId: "trigger-invalid-executed-failed",
+  status: "executed",
+  stepResults: [_failedStepResultConformance],
+  executedCount: 0,
+};
+void _invalidExecutedResultWithFailedStep;
+
+const _executorConformance: CompositionExecutor = {
+  async execute(trigger, _plan): Promise<CompositionExecutionResult> {
+    return {
+      triggerId: trigger.id,
+      status: "requires_approval",
+      stepResults: [],
+      executedCount: 0,
+      error: {
+        code: "APPROVAL_REQUIRED",
+        message: "plan requires approval",
+      },
+    };
+  },
+};
+void _executorConformance;
