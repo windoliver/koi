@@ -32,6 +32,18 @@ export {
   type SpawnLedgerSnapshot,
   type TemporalSpawnLedgerConfig,
 } from "./temporal-spawn-ledger.js";
+export {
+  AGENT_MESSAGE_SIGNAL,
+  AGENT_SHUTDOWN_SIGNAL,
+  AGENT_STATE_QUERY,
+  AGENT_STATUS_QUERY,
+  AGENT_WORKFLOW_NAME,
+  RETRY_WORKFLOW_NAME,
+  SCHEDULED_TASK_WORKFLOW_NAME,
+  agentWorkflow,
+  retryWorkflow,
+  scheduledTaskWorkflow,
+} from "./workflows/index.js";
 export type {
   AgentStateRefs,
   AgentWorkflowConfig,
