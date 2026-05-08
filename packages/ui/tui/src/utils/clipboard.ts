@@ -47,6 +47,10 @@ export interface ClipboardImage {
   readonly mime: string;
 }
 
+interface ReadClipboardImageOptions {
+  readonly platform?: ReturnType<typeof platform>;
+}
+
 /**
  * Read an image from the system clipboard using platform-native APIs.
  *
@@ -57,8 +61,10 @@ export interface ClipboardImage {
  * Returns null if no image is in the clipboard or the platform is unsupported.
  * Modeled after OpenCode's clipboard.ts approach.
  */
-export async function readClipboardImage(): Promise<ClipboardImage | null> {
-  const os = platform();
+export async function readClipboardImage(
+  options: ReadClipboardImageOptions = {},
+): Promise<ClipboardImage | null> {
+  const os = options.platform ?? platform();
   try {
     if (os === "darwin") return await readImageMacOS();
     if (os === "linux") return await readImageLinux();

@@ -1,48 +1,48 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/core API surface . has stable type surface 1`] = `
-"export { AdapterCapabilities, AdapterCapability, BackendDescriptor, BackendState, CapabilityRequirements } from './adapter-HASH.js';
-import { S as SessionId, A as AgentId, E as EngineState, P as ProcessState, B as BrickRef, a as PatchableRegistryFields, b as AgentGroupId, T as TransitionReason, c as AgentCondition, d as AgentStatus, R as RegistryEntry, e as Tool, f as SkillComponent, g as AgentDescriptor, I as ImplementationArtifact, h as BrickArtifact, D as DelegationDenyReason, i as PermissionConfig, C as CapabilityProof, j as BrickKind, k as BrickId, l as ToolDescriptor, m as CronSchedule, F as ForgeStore, n as TaskId, o as EngineInput, p as DeliveryPolicy, q as TaskOptions, r as SubsystemToken, s as ToolPolicy, t as Agent, u as ComponentProvider, v as TaskBoardSnapshot, w as AgentManifest, K as KoiMiddleware, x as AgentRegistry, y as ToolCallId, z as EngineEvent, G as SupervisionConfig, M as ModelChunk, H as TaskItemId } from './assembly-HASH.js';
-export { J as AGENT_SIGNALS, L as ALL_BRICK_KINDS, N as ANS_SCOPE_PRIORITY, O as AbortReason, Q as AdvisoryLock, U as AgentArtifact, V as AgentEnv, W as AgentMessage, X as AgentMessageInput, Y as AgentSignal, Z as AnsConfig, _ as ApprovalDecision, $ as ApprovalHandler, a0 as ApprovalRequest, a1 as ArtifactId, a2 as ArtifactRef, a3 as AskId, a4 as AttachResult, a5 as BROWSER, a6 as BrickArtifactBase, a7 as BrickComposition, a8 as BrickDisclosureLevel, a9 as BrickDriftContext, aa as BrickFitnessMetrics, ab as BrickLifecycle, ac as BrickPage, ad as BrickPort, ae as BrickRegistryBackend, af as BrickRegistryChangeEvent, ag as BrickRegistryChangeKind, ah as BrickRegistryReader, ai as BrickRegistryWriter, aj as BrickRequires, ak as BrickSearchQuery, al as BrickSignature, am as BrickSnapshot, an as BrickSource, ao as BrickSummary, ap as BrickUpdate, aq as BrowserActionOptions, ar as BrowserConsoleEntry, as as BrowserConsoleLevel, at as BrowserConsoleOptions, au as BrowserConsoleResult, av as BrowserDriver, aw as BrowserEvaluateOptions, ax as BrowserEvaluateResult, ay as BrowserFormField, az as BrowserNavigateOptions, aA as BrowserNavigateResult, aB as BrowserRefInfo, aC as BrowserScreenshotOptions, aD as BrowserScreenshotResult, aE as BrowserScrollOptions, aF as BrowserSnapshotOptions, aG as BrowserSnapshotResult, aH as BrowserTabCloseOptions, aI as BrowserTabFocusOptions, aJ as BrowserTabInfo, aK as BrowserTabNewOptions, aL as BrowserTraceOptions, aM as BrowserTraceResult, aN as BrowserTypeOptions, aO as BrowserUploadFile, aP as BrowserUploadOptions, aQ as BrowserWaitOptions, aR as BrowserWaitUntil, aS as COLLECTIVE_MEMORY_DEFAULTS, aT as COMPONENT_PRIORITY, aU as CREDENTIALS, aV as CapabilityConfig, aW as CapabilityFragment, aX as ChangeNotifier, aY as ChannelConfig, aZ as ChannelIdentity, a_ as ChildCompletionResult, a$ as ChildHandle, b0 as ChildIsolation, b1 as ChildLifecycleEvent, b2 as ChildSpec, b3 as CircuitBreakerConfig, b4 as CleanupPolicy, b5 as CollectiveMemory, b6 as CollectiveMemoryCategory, b7 as CollectiveMemoryDefaults, b8 as CollectiveMemoryEntry, b9 as CollectiveMemorySource, ba as CompanionSkillDefinition, bb as ComplianceRecord, bc as ComplianceRecorder, bd as ComponentEvent, be as ComponentEventKind, bf as ComposedCallHandlers, bg as CompositeArtifact, bh as CompositionCheck, bi as CompositionError, bj as CompositionErrorKind, bk as CompositionOperator, bl as CompositionPort, bm as CompositionWire, bn as CompositionWireEndpoint, bo as ConfigChange, bp as ConstraintChecker, bq as ConstraintQuery, br as ContentMarker, bs as ContextManifestConfig, bt as ContextPressureTrend, bu as CorrelationIds, bv as CounterExample, bw as CredentialComponent, bx as CredentialKind, by as CredentialRequirement, bz as DATA_SOURCES, bA as DEFAULT_ANS_CONFIG, bB as DEFAULT_BRICK_FITNESS, bC as DEFAULT_BRICK_SEARCH_LIMIT, bD as DEFAULT_CHILD_ISOLATION, bE as DEFAULT_CIRCUIT_BREAKER_CONFIG, bF as DEFAULT_CLEANUP_POLICY, bG as DEFAULT_CLEANUP_TIMEOUT_MS, bH as DEFAULT_COLLECTIVE_MEMORY, bI as DEFAULT_DEGENERACY_CONFIG, bJ as DEFAULT_DELIVERY_POLICY, bK as DEFAULT_FORK_MAX_TURNS, bL as DEFAULT_INBOX_POLICY, bM as DEFAULT_MUTATION_PRESSURE_POLICY, bN as DEFAULT_REPUTATION_QUERY_LIMIT, bO as DEFAULT_SANDBOXED_POLICY, bP as DEFAULT_SCHEDULER_CONFIG, bQ as DEFAULT_SKILL_SEARCH_LIMIT, bR as DEFAULT_SUPERVISION_CONFIG, bS as DEFAULT_TASK_BOARD_CONFIG, bT as DEFAULT_TRAIL_CONFIG, bU as DEFAULT_TRAIL_STRENGTH, bV as DEFAULT_UNSANDBOXED_POLICY, bW as DEFAULT_VIOLATION_QUERY_LIMIT, bX as DELEGATION, bY as DataClassification, bZ as DataSourceDescriptor, b_ as DataSourceProtocol, b$ as DecisionRecord, c0 as DeferredDeliveryPolicy, c1 as DegeneracyConfig, c2 as DelegationBackend, c3 as DelegationComponent, c4 as DelegationConfig, c5 as DelegationEvent, c6 as DelegationGrant, c7 as DelegationId, c8 as DelegationManagerConfig, c9 as DelegationScope, ca as DelegationVerifyResult, cb as ENV, cc as EVENTS, cd as EXTERNAL_AGENTS, ce as EngineAdapter, cf as EngineCapabilities, cg as EngineInputBase, ch as EngineMetrics, ci as EngineOutput, cj as EngineStopReason, ck as EventComponent, cl as EvolutionKind, cm as ExternalAgentDescriptor, cn as ExternalAgentProtocol, co as ExternalAgentSource, cp as ExternalAgentTransport, cq as FILESYSTEM, cr as FeedbackKind, cs as FileSystemConfig, ct as FilesystemCapability, cu as FilesystemSkillSource, cv as ForgeAttestationSignature, cw as ForgeBuildDefinition, cx as ForgeBuilder, cy as ForgeProvenance, cz as ForgeQuery, cA as ForgeResourceRef, cB as ForgeRunMetadata, cC as ForgeScope, cD as ForgeStageDigest, cE as ForgeVerificationSummary, cF as ForgedSkillSource, cG as GOVERNANCE, cH as GOVERNANCE_ALLOW, cI as GOVERNANCE_BACKEND, cJ as GOVERNANCE_VARIABLES, cK as GovernanceBackend, cL as GovernanceCheck, cM as GovernanceController, cN as GovernanceEvent, cO as GovernanceSnapshot, cP as GovernanceVariable, cQ as GovernanceVariableContributor, cR as GovernanceVerdict, cS as HANDOFF, cT as HandoffAcceptError, cU as HandoffAcceptResult, cV as HandoffComponent, cW as HandoffEnvelope, cX as HandoffEvent, cY as HandoffId, cZ as HandoffStatus, c_ as INBOX, c$ as InTotoStatementV1, d0 as InTotoSubject, d1 as InboxComponent, d2 as InboxItem, d3 as InboxMode, d4 as InboxPolicy, d5 as LatencySampler, d6 as LockHandle, d7 as LockMode, d8 as LockRequest, d9 as MAILBOX, da as MAX_PIPELINE_LENGTH, db as MAX_PIPELINE_STEPS, dc as MEMORY, dd as MailboxComponent, de as ManagedTaskBoard, df as ManifestSandboxConfig, dg as ManifestSandboxPersistence, dh as ManifestSpawnConfig, di as MemoryComponent, dj as MemoryRecallOptions, dk as MemoryResult, dl as MemoryStoreOptions, dm as MemoryTier, dn as MessageFilter, dp as MessageId, dq as MessageKind, dr as MiddlewareBundle, ds as MiddlewareConfig, dt as MiddlewarePhase, du as ModelAdapter, dv as ModelConfig, dw as ModelContentBlock, dx as ModelHandler, dy as ModelRequest, dz as ModelResponse, dA as ModelStopReason, dB as ModelStreamHandler, dC as ModelTextBlock, dD as ModelThinkingBlock, dE as ModelToolCallBlock, dF as MutationPressure, dG as MutationPressurePolicy, dH as NAME_SERVICE, dI as NameBinding, dJ as NameChangeEvent, dK as NameChangeKind, dL as NameQuery, dM as NameRecord, dN as NameRegistration, dO as NameResolution, dP as NameServiceBackend, dQ as NameServiceReader, dR as NameServiceWriter, dS as NameSuggestion, dT as NamespaceMode, dU as NetworkCapability, dV as OnDemandDeliveryPolicy, dW as PersistentGrant, dX as PersistentGrantCallback, dY as PipelineComposition, dZ as PipelineStep, d_ as PolicyEvaluator, d$ as PolicyRequest, e0 as PolicyRequestKind, e1 as PolicyValidationResult, e2 as ProcessAccounter, e3 as ProcessDescriptor, e4 as ProcessId, e5 as PublisherId, e6 as REGISTRY, e7 as REPUTATION, e8 as REPUTATION_LEVEL_ORDER, e9 as RESET_BOUNDARIES, ea as RegistryComponent, eb as RegistryEvent, ec as RegistryFilter, ed as ReputationBackend, ee as ReputationFeedback, ef as ReputationLevel, eg as ReputationQuery, eh as ReputationQueryResult, ei as ReputationScore, ej as ResolvedWorkspaceConfig, ek as ResourceCapability, el as RestartType, em as RevocationRegistry, en as RuleDescriptor, eo as RunId, ep as SANDBOX_REQUIRED_BY_KIND, eq as SCHEDULER, er as SCRATCHPAD, es as SCRATCHPAD_DEFAULTS, et as ScheduleId, eu as ScheduleStore, ev as ScheduledTask, ew as ScheduledTaskStatus, ex as SchedulerComponent, ey as SchedulerConfig, ez as SchedulerEvent, eA as SchedulerStats, eB as ScopeChecker, eC as ScratchpadChangeEvent, eD as ScratchpadComponent, eE as ScratchpadEntry, eF as ScratchpadEntrySummary, eG as ScratchpadFilter, eH as ScratchpadGeneration, eI as ScratchpadPath, eJ as ScratchpadWriteInput, eK as ScratchpadWriteResult, eL as SearchConfig, eM as SelectionStrategy, eN as SensorReading, eO as SessionContext, eP as ShadowWarning, eQ as SignalSink, eR as SignalSource, eS as SigningBackend, eT as SkillArtifact, eU as SkillConfig, eV as SkillExecutionMode, eW as SkillId, eX as SkillMetadata, eY as SkillPage, eZ as SkillPublishRequest, e_ as SkillRegistryBackend, e$ as SkillRegistryChangeEvent, f0 as SkillRegistryChangeKind, f1 as SkillRegistryEntry, f2 as SkillRegistryReader, f3 as SkillRegistryWriter, f4 as SkillSearchQuery, f5 as SkillSource, f6 as SkillVersion, f7 as SkippedComponent, f8 as SnapshotEvent, f9 as SnapshotId, fa as SnapshotQuery, fb as SnapshotStore, fc as SpawnFn, fd as SpawnInheritanceConfig, fe as SpawnLedger, ff as SpawnRequest, fg as SpawnResult, fh as StopGateResult, fi as StoreChangeEvent, fj as StoreChangeKind, fk as StoreChangeNotifier, fl as StreamingDeliveryPolicy, fm as SupervisionStrategy, fn as TASK_KIND_NAMES, fo as Task, fp as TaskBoard, fq as TaskBoardConfig, fr as TaskBoardEvent, fs as TaskBoardStore, ft as TaskBoardStoreEvent, fu as TaskBoardStoreFilter, fv as TaskBoardStoreNotifier, fw as TaskFilter, fx as TaskHistoryFilter, fy as TaskInput, fz as TaskItem, fA as TaskItemInput, fB as TaskItemPatch, fC as TaskItemStatus, fD as TaskKindName, fE as TaskPatch, fF as TaskQueueBackend, fG as TaskReconcileAction, fH as TaskReconciler, fI as TaskResult, fJ as TaskRunRecord, fK as TaskScheduler, fL as TaskSchedulingHints, fM as TaskStatus, fN as TaskStore, fO as TerminationOutcome, fP as TestCase, fQ as ToolArtifact, fR as ToolCapabilities, fS as ToolConfig, fT as ToolExecuteOptions, fU as ToolFilterSpec, fV as ToolHandler, fW as ToolOrigin, fX as ToolRequest, fY as ToolResponse, fZ as ToolSummary, f_ as TrailConfig, f$ as TrustTier, g0 as TrustTransitionCaller, g1 as TurnContext, g2 as TurnId, g3 as USER_MODEL, g4 as UserModelComponent, g5 as UserSignal, g6 as UserSnapshot, g7 as VALID_LIFECYCLE_TRANSITIONS, g8 as VALID_TASK_KIND_NAMES, g9 as VALID_TASK_TRANSITIONS, ga as VALID_TRANSITIONS, gb as VIOLATION_SEVERITY_ORDER, gc as VariantAttempt, gd as VersionChangeEvent, ge as VersionChangeKind, gf as VersionEntry, gg as VersionIndexBackend, gh as VersionIndexReader, gi as VersionIndexWriter, gj as VersionedBrickRef, gk as Violation, gl as ViolationFilter, gm as ViolationPage, gn as ViolationSeverity, go as ViolationStore, gp as VisibilityContext, gq as WEBHOOK, gr as WORKSPACE, gs as WorkspaceBackend, gt as WorkspaceComponent, gu as WorkspaceId, gv as WorkspaceInfo, gw as ZONE_REGISTRY, gx as agentGroupId, gy as agentId, gz as agentToken, gA as artifactId, gB as askId, gC as brickId, gD as channelToken, gE as delegationId, gF as exitCodeForTransitionReason, gG as forgedSkill, gH as fsSkill, gI as governanceContributorToken, gJ as handoffId, gK as intersectPermissions, gL as isAskVerdict, gM as isAttachResult, gN as isBrickKind, gO as isDeliveryPolicy, gP as isPermissionSubset, gQ as isTerminalTaskStatus, gR as isValidTaskKindName, gS as isValidTransition, gT as mapContentBlocksForEngine, gU as mapRegistryEntryToDescriptor, gV as mapScheduledTaskStatusToProcessState, gW as mapStopReasonToOutcome, gV as mapTaskStatusToProcessState, gX as matchesFilter, gY as messageId, gZ as middlewareToken, g_ as publisherId, g$ as runId, h0 as scheduleId, h1 as scratchpadPath, h2 as searchSummariesWithFallback, h3 as sessionId, h4 as skillId, h5 as skillToken, h6 as snapshotId, h7 as taskId, h8 as taskItemId, h9 as token, ha as toolCallId, hb as toolFilterFromManifest, hc as toolFilterFromSpawnRequest, hd as toolToken, he as turnId, hf as unionDenyLists, hg as validatePolicyForKind, hh as validateSpawnRequest, hi as workspaceId } from './assembly-HASH.js';
-import { AgentDefinition } from './agent-HASH.js';
-export { AGENT_DEFINITION_PRIORITY, AgentDefinitionSource } from './agent-HASH.js';
-export { AgentResolver, AgentResolverQuery, LiveAgentHandle, TaskableAgent, TaskableAgentSummary } from './agent-HASH.js';
+"export { AdapterCapabilities, AdapterCapability, BackendDescriptor, BackendState, CapabilityRequirements } from './chunk-HASH.js';
+import { ALIAS as SessionId, ALIAS as AgentId, ALIAS as EngineState, ALIAS as ProcessState, ALIAS as BrickRef, ALIAS as PatchableRegistryFields, ALIAS as AgentGroupId, ALIAS as TransitionReason, ALIAS as AgentCondition, ALIAS as AgentStatus, ALIAS as RegistryEntry, ALIAS as Tool, ALIAS as SkillComponent, ALIAS as AgentDescriptor, ALIAS as ImplementationArtifact, ALIAS as BrickArtifact, ALIAS as DelegationDenyReason, ALIAS as PermissionConfig, ALIAS as CapabilityProof, ALIAS as BrickKind, ALIAS as BrickId, ALIAS as ToolDescriptor, ALIAS as CronSchedule, ALIAS as ForgeStore, ALIAS as TaskId, ALIAS as EngineInput, ALIAS as DeliveryPolicy, ALIAS as TaskOptions, ALIAS as SubsystemToken, ALIAS as ToolPolicy, ALIAS as Agent, ALIAS as ComponentProvider, ALIAS as TaskBoardSnapshot, ALIAS as AgentManifest, ALIAS as KoiMiddleware, ALIAS as AgentRegistry, ALIAS as ToolCallId, ALIAS as EngineEvent, ALIAS as SupervisionConfig, ALIAS as ModelChunk, ALIAS as TaskItemId } from './chunk-HASH.js';
+export { ALIAS as AGENT_SIGNALS, ALIAS as ALL_BRICK_KINDS, ALIAS as ANS_SCOPE_PRIORITY, ALIAS as AbortReason, ALIAS as AdvisoryLock, ALIAS as AgentArtifact, ALIAS as AgentEnv, ALIAS as AgentMessage, ALIAS as AgentMessageInput, ALIAS as AgentSignal, ALIAS as AnsConfig, ALIAS as ApprovalDecision, ALIAS as ApprovalHandler, ALIAS as ApprovalRequest, ALIAS as ArtifactId, ALIAS as ArtifactRef, ALIAS as AskId, ALIAS as AttachResult, ALIAS as BROWSER, ALIAS as BrickArtifactBase, ALIAS as BrickComposition, ALIAS as BrickDisclosureLevel, ALIAS as BrickDriftContext, ALIAS as BrickFitnessMetrics, ALIAS as BrickLifecycle, ALIAS as BrickPage, ALIAS as BrickPort, ALIAS as BrickRegistryBackend, ALIAS as BrickRegistryChangeEvent, ALIAS as BrickRegistryChangeKind, ALIAS as BrickRegistryReader, ALIAS as BrickRegistryWriter, ALIAS as BrickRequires, ALIAS as BrickSearchQuery, ALIAS as BrickSignature, ALIAS as BrickSnapshot, ALIAS as BrickSource, ALIAS as BrickSummary, ALIAS as BrickUpdate, ALIAS as BrowserActionOptions, ALIAS as BrowserConsoleEntry, ALIAS as BrowserConsoleLevel, ALIAS as BrowserConsoleOptions, ALIAS as BrowserConsoleResult, ALIAS as BrowserDriver, ALIAS as BrowserEvaluateOptions, ALIAS as BrowserEvaluateResult, ALIAS as BrowserFormField, ALIAS as BrowserNavigateOptions, ALIAS as BrowserNavigateResult, ALIAS as BrowserRefInfo, ALIAS as BrowserScreenshotOptions, ALIAS as BrowserScreenshotResult, ALIAS as BrowserScrollOptions, ALIAS as BrowserSnapshotOptions, ALIAS as BrowserSnapshotResult, ALIAS as BrowserTabCloseOptions, ALIAS as BrowserTabFocusOptions, ALIAS as BrowserTabInfo, ALIAS as BrowserTabNewOptions, ALIAS as BrowserTraceOptions, ALIAS as BrowserTraceResult, ALIAS as BrowserTypeOptions, ALIAS as BrowserUploadFile, ALIAS as BrowserUploadOptions, ALIAS as BrowserWaitOptions, ALIAS as BrowserWaitUntil, ALIAS as COLLECTIVE_MEMORY_DEFAULTS, ALIAS as COMPONENT_PRIORITY, ALIAS as CREDENTIALS, ALIAS as CapabilityConfig, ALIAS as CapabilityFragment, ALIAS as ChangeNotifier, ALIAS as ChannelConfig, ALIAS as ChannelIdentity, ALIAS as ChildCompletionResult, ALIAS as ChildHandle, ALIAS as ChildIsolation, ALIAS as ChildLifecycleEvent, ALIAS as ChildSpec, ALIAS as CircuitBreakerConfig, ALIAS as CleanupPolicy, ALIAS as CollectiveMemory, ALIAS as CollectiveMemoryCategory, ALIAS as CollectiveMemoryDefaults, ALIAS as CollectiveMemoryEntry, ALIAS as CollectiveMemorySource, ALIAS as CompanionSkillDefinition, ALIAS as ComplianceRecord, ALIAS as ComplianceRecorder, ALIAS as ComponentEvent, ALIAS as ComponentEventKind, ALIAS as ComposedCallHandlers, ALIAS as CompositeArtifact, ALIAS as CompositionCheck, ALIAS as CompositionError, ALIAS as CompositionErrorKind, ALIAS as CompositionOperator, ALIAS as CompositionPort, ALIAS as CompositionWire, ALIAS as CompositionWireEndpoint, ALIAS as ConfigChange, ALIAS as ConstraintChecker, ALIAS as ConstraintQuery, ALIAS as ContentMarker, ALIAS as ContextManifestConfig, ALIAS as ContextPressureTrend, ALIAS as CorrelationIds, ALIAS as CounterExample, ALIAS as CredentialComponent, ALIAS as CredentialKind, ALIAS as CredentialRequirement, ALIAS as DATA_SOURCES, ALIAS as DEFAULT_ANS_CONFIG, ALIAS as DEFAULT_BRICK_FITNESS, ALIAS as DEFAULT_BRICK_SEARCH_LIMIT, ALIAS as DEFAULT_CHILD_ISOLATION, ALIAS as DEFAULT_CIRCUIT_BREAKER_CONFIG, ALIAS as DEFAULT_CLEANUP_POLICY, ALIAS as DEFAULT_CLEANUP_TIMEOUT_MS, ALIAS as DEFAULT_COLLECTIVE_MEMORY, ALIAS as DEFAULT_DEGENERACY_CONFIG, ALIAS as DEFAULT_DELIVERY_POLICY, ALIAS as DEFAULT_FORK_MAX_TURNS, ALIAS as DEFAULT_INBOX_POLICY, ALIAS as DEFAULT_MUTATION_PRESSURE_POLICY, ALIAS as DEFAULT_REPUTATION_QUERY_LIMIT, ALIAS as DEFAULT_SANDBOXED_POLICY, ALIAS as DEFAULT_SCHEDULER_CONFIG, ALIAS as DEFAULT_SKILL_SEARCH_LIMIT, ALIAS as DEFAULT_SUPERVISION_CONFIG, ALIAS as DEFAULT_TASK_BOARD_CONFIG, ALIAS as DEFAULT_TRAIL_CONFIG, ALIAS as DEFAULT_TRAIL_STRENGTH, ALIAS as DEFAULT_UNSANDBOXED_POLICY, ALIAS as DEFAULT_VIOLATION_QUERY_LIMIT, ALIAS as DELEGATION, ALIAS as DataClassification, ALIAS as DataSourceDescriptor, ALIAS as DataSourceProtocol, ALIAS as DecisionRecord, ALIAS as DeferredDeliveryPolicy, ALIAS as DegeneracyConfig, ALIAS as DelegationBackend, ALIAS as DelegationComponent, ALIAS as DelegationConfig, ALIAS as DelegationEvent, ALIAS as DelegationGrant, ALIAS as DelegationId, ALIAS as DelegationManagerConfig, ALIAS as DelegationScope, ALIAS as DelegationVerifyResult, ALIAS as ENV, ALIAS as EVENTS, ALIAS as EXTERNAL_AGENTS, ALIAS as EngineAdapter, ALIAS as EngineCapabilities, ALIAS as EngineInputBase, ALIAS as EngineMetrics, ALIAS as EngineOutput, ALIAS as EngineStopReason, ALIAS as EventComponent, ALIAS as EvolutionKind, ALIAS as ExternalAgentDescriptor, ALIAS as ExternalAgentProtocol, ALIAS as ExternalAgentSource, ALIAS as ExternalAgentTransport, ALIAS as FILESYSTEM, ALIAS as FeedbackKind, ALIAS as FileSystemConfig, ALIAS as FilesystemCapability, ALIAS as FilesystemSkillSource, ALIAS as ForgeAttestationSignature, ALIAS as ForgeBuildDefinition, ALIAS as ForgeBuilder, ALIAS as ForgeProvenance, ALIAS as ForgeQuery, ALIAS as ForgeResourceRef, ALIAS as ForgeRunMetadata, ALIAS as ForgeScope, ALIAS as ForgeStageDigest, ALIAS as ForgeVerificationSummary, ALIAS as ForgedSkillSource, ALIAS as GOVERNANCE, ALIAS as GOVERNANCE_ALLOW, ALIAS as GOVERNANCE_BACKEND, ALIAS as GOVERNANCE_VARIABLES, ALIAS as GovernanceBackend, ALIAS as GovernanceCheck, ALIAS as GovernanceController, ALIAS as GovernanceEvent, ALIAS as GovernanceSnapshot, ALIAS as GovernanceVariable, ALIAS as GovernanceVariableContributor, ALIAS as GovernanceVerdict, ALIAS as HANDOFF, ALIAS as HandoffAcceptError, ALIAS as HandoffAcceptResult, ALIAS as HandoffComponent, ALIAS as HandoffEnvelope, ALIAS as HandoffEvent, ALIAS as HandoffId, ALIAS as HandoffStatus, ALIAS as INBOX, ALIAS as InTotoStatementV1, ALIAS as InTotoSubject, ALIAS as InboxComponent, ALIAS as InboxItem, ALIAS as InboxMode, ALIAS as InboxPolicy, ALIAS as LatencySampler, ALIAS as LockHandle, ALIAS as LockMode, ALIAS as LockRequest, ALIAS as MAILBOX, ALIAS as MAX_PIPELINE_LENGTH, ALIAS as MAX_PIPELINE_STEPS, ALIAS as MEMORY, ALIAS as MailboxComponent, ALIAS as ManagedTaskBoard, ALIAS as ManifestSandboxConfig, ALIAS as ManifestSandboxPersistence, ALIAS as ManifestSpawnConfig, ALIAS as MemoryComponent, ALIAS as MemoryRecallOptions, ALIAS as MemoryResult, ALIAS as MemoryStoreOptions, ALIAS as MemoryTier, ALIAS as MessageFilter, ALIAS as MessageId, ALIAS as MessageKind, ALIAS as MiddlewareBundle, ALIAS as MiddlewareConfig, ALIAS as MiddlewarePhase, ALIAS as ModelAdapter, ALIAS as ModelConfig, ALIAS as ModelContentBlock, ALIAS as ModelHandler, ALIAS as ModelRequest, ALIAS as ModelResponse, ALIAS as ModelStopReason, ALIAS as ModelStreamHandler, ALIAS as ModelTextBlock, ALIAS as ModelThinkingBlock, ALIAS as ModelToolCallBlock, ALIAS as MutationPressure, ALIAS as MutationPressurePolicy, ALIAS as NAME_SERVICE, ALIAS as NameBinding, ALIAS as NameChangeEvent, ALIAS as NameChangeKind, ALIAS as NameQuery, ALIAS as NameRecord, ALIAS as NameRegistration, ALIAS as NameResolution, ALIAS as NameServiceBackend, ALIAS as NameServiceReader, ALIAS as NameServiceWriter, ALIAS as NameSuggestion, ALIAS as NamespaceMode, ALIAS as NetworkCapability, ALIAS as OnDemandDeliveryPolicy, ALIAS as PersistentGrant, ALIAS as PersistentGrantCallback, ALIAS as PipelineComposition, ALIAS as PipelineStep, ALIAS as PolicyEvaluator, ALIAS as PolicyRequest, ALIAS as PolicyRequestKind, ALIAS as PolicyValidationResult, ALIAS as ProcessAccounter, ALIAS as ProcessDescriptor, ALIAS as ProcessId, ALIAS as PublisherId, ALIAS as REGISTRY, ALIAS as REPUTATION, ALIAS as REPUTATION_LEVEL_ORDER, ALIAS as RESET_BOUNDARIES, ALIAS as RegistryComponent, ALIAS as RegistryEvent, ALIAS as RegistryFilter, ALIAS as ReputationBackend, ALIAS as ReputationFeedback, ALIAS as ReputationLevel, ALIAS as ReputationQuery, ALIAS as ReputationQueryResult, ALIAS as ReputationScore, ALIAS as ResolvedWorkspaceConfig, ALIAS as ResourceCapability, ALIAS as RestartType, ALIAS as RevocationRegistry, ALIAS as RuleDescriptor, ALIAS as RunId, ALIAS as SANDBOX_REQUIRED_BY_KIND, ALIAS as SCHEDULER, ALIAS as SCRATCHPAD, ALIAS as SCRATCHPAD_DEFAULTS, ALIAS as ScheduleId, ALIAS as ScheduleStore, ALIAS as ScheduledTask, ALIAS as ScheduledTaskStatus, ALIAS as SchedulerComponent, ALIAS as SchedulerConfig, ALIAS as SchedulerEvent, ALIAS as SchedulerStats, ALIAS as ScopeChecker, ALIAS as ScratchpadChangeEvent, ALIAS as ScratchpadComponent, ALIAS as ScratchpadEntry, ALIAS as ScratchpadEntrySummary, ALIAS as ScratchpadFilter, ALIAS as ScratchpadGeneration, ALIAS as ScratchpadPath, ALIAS as ScratchpadWriteInput, ALIAS as ScratchpadWriteResult, ALIAS as SearchConfig, ALIAS as SelectionStrategy, ALIAS as SensorReading, ALIAS as SessionContext, ALIAS as ShadowWarning, ALIAS as SignalSink, ALIAS as SignalSource, ALIAS as SigningBackend, ALIAS as SkillArtifact, ALIAS as SkillConfig, ALIAS as SkillExecutionMode, ALIAS as SkillId, ALIAS as SkillMetadata, ALIAS as SkillPage, ALIAS as SkillPublishRequest, ALIAS as SkillRegistryBackend, ALIAS as SkillRegistryChangeEvent, ALIAS as SkillRegistryChangeKind, ALIAS as SkillRegistryEntry, ALIAS as SkillRegistryReader, ALIAS as SkillRegistryWriter, ALIAS as SkillSearchQuery, ALIAS as SkillSource, ALIAS as SkillVersion, ALIAS as SkippedComponent, ALIAS as SnapshotEvent, ALIAS as SnapshotId, ALIAS as SnapshotQuery, ALIAS as SnapshotStore, ALIAS as SpawnFn, ALIAS as SpawnInheritanceConfig, ALIAS as SpawnLedger, ALIAS as SpawnRequest, ALIAS as SpawnResult, ALIAS as StopGateResult, ALIAS as StoreChangeEvent, ALIAS as StoreChangeKind, ALIAS as StoreChangeNotifier, ALIAS as StreamingDeliveryPolicy, ALIAS as SupervisionStrategy, ALIAS as TASK_KIND_NAMES, ALIAS as Task, ALIAS as TaskBoard, ALIAS as TaskBoardConfig, ALIAS as TaskBoardEvent, ALIAS as TaskBoardStore, ALIAS as TaskBoardStoreEvent, ALIAS as TaskBoardStoreFilter, ALIAS as TaskBoardStoreNotifier, ALIAS as TaskFilter, ALIAS as TaskHistoryFilter, ALIAS as TaskInput, ALIAS as TaskItem, ALIAS as TaskItemInput, ALIAS as TaskItemPatch, ALIAS as TaskItemStatus, ALIAS as TaskKindName, ALIAS as TaskPatch, ALIAS as TaskQueueBackend, ALIAS as TaskReconcileAction, ALIAS as TaskReconciler, ALIAS as TaskResult, ALIAS as TaskRunRecord, ALIAS as TaskScheduler, ALIAS as TaskSchedulingHints, ALIAS as TaskStatus, ALIAS as TaskStore, ALIAS as TerminationOutcome, ALIAS as TestCase, ALIAS as ToolArtifact, ALIAS as ToolCapabilities, ALIAS as ToolConfig, ALIAS as ToolExecuteOptions, ALIAS as ToolFilterSpec, ALIAS as ToolHandler, ALIAS as ToolOrigin, ALIAS as ToolRequest, ALIAS as ToolResponse, ALIAS as ToolSummary, ALIAS as TrailConfig, ALIAS as TrustTier, ALIAS as TrustTransitionCaller, ALIAS as TurnContext, ALIAS as TurnId, ALIAS as USER_MODEL, ALIAS as UserModelComponent, ALIAS as UserSignal, ALIAS as UserSnapshot, ALIAS as VALID_LIFECYCLE_TRANSITIONS, ALIAS as VALID_TASK_KIND_NAMES, ALIAS as VALID_TASK_TRANSITIONS, ALIAS as VALID_TRANSITIONS, ALIAS as VIOLATION_SEVERITY_ORDER, ALIAS as VariantAttempt, ALIAS as VersionChangeEvent, ALIAS as VersionChangeKind, ALIAS as VersionEntry, ALIAS as VersionIndexBackend, ALIAS as VersionIndexReader, ALIAS as VersionIndexWriter, ALIAS as VersionedBrickRef, ALIAS as Violation, ALIAS as ViolationFilter, ALIAS as ViolationPage, ALIAS as ViolationSeverity, ALIAS as ViolationStore, ALIAS as VisibilityContext, ALIAS as WEBHOOK, ALIAS as WORKSPACE, ALIAS as WorkspaceBackend, ALIAS as WorkspaceComponent, ALIAS as WorkspaceId, ALIAS as WorkspaceInfo, ALIAS as ZONE_REGISTRY, ALIAS as agentGroupId, ALIAS as agentId, ALIAS as agentToken, ALIAS as artifactId, ALIAS as askId, ALIAS as brickId, ALIAS as channelToken, ALIAS as delegationId, ALIAS as exitCodeForTransitionReason, ALIAS as forgedSkill, ALIAS as fsSkill, ALIAS as governanceContributorToken, ALIAS as handoffId, ALIAS as intersectPermissions, ALIAS as isAskVerdict, ALIAS as isAttachResult, ALIAS as isBrickKind, ALIAS as isDeliveryPolicy, ALIAS as isPermissionSubset, ALIAS as isTerminalTaskStatus, ALIAS as isValidTaskKindName, ALIAS as isValidTransition, ALIAS as mapContentBlocksForEngine, ALIAS as mapRegistryEntryToDescriptor, ALIAS as mapScheduledTaskStatusToProcessState, ALIAS as mapStopReasonToOutcome, ALIAS as mapTaskStatusToProcessState, ALIAS as matchesFilter, ALIAS as messageId, ALIAS as middlewareToken, ALIAS as publisherId, ALIAS as runId, ALIAS as scheduleId, ALIAS as scratchpadPath, ALIAS as searchSummariesWithFallback, ALIAS as sessionId, ALIAS as skillId, ALIAS as skillToken, ALIAS as snapshotId, ALIAS as taskId, ALIAS as taskItemId, ALIAS as token, ALIAS as toolCallId, ALIAS as toolFilterFromManifest, ALIAS as toolFilterFromSpawnRequest, ALIAS as toolToken, ALIAS as turnId, ALIAS as unionDenyLists, ALIAS as validatePolicyForKind, ALIAS as validateSpawnRequest, ALIAS as workspaceId } from './chunk-HASH.js';
+import { AgentDefinition } from './chunk-HASH.js';
+export { AGENT_DEFINITION_PRIORITY, AgentDefinitionSource } from './chunk-HASH.js';
+export { AgentResolver, AgentResolverQuery, LiveAgentHandle, TaskableAgent, TaskableAgentSummary } from './chunk-HASH.js';
 import { Result, KoiError } from './errors.js';
 export { BackendErrorMapper, KoiErrorCode, RETRYABLE_DEFAULTS } from './errors.js';
 import { ZoneId } from './zone.js';
 export { ZoneDescriptor, ZoneEvent, ZoneFilter, ZoneRegistry, ZoneStatus, zoneId } from './zone.js';
 import { JsonObject } from './common.js';
-export { BashArgMatcher, BashRulePattern } from './bash-rule-HASH.js';
+export { BashArgMatcher, BashRulePattern } from './chunk-HASH.js';
 export { ChannelAdapter, ChannelCapabilities, ChannelInheritMode, ChannelStatus, ChannelStatusKind, DEFAULT_SPAWN_CHANNEL_POLICY, MessageHandler, SpawnChannelPolicy } from './channel.js';
 export { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, FeatureFlags, ForgeConfigSection, KoiConfig, LimitsConfig, LogLevel, LoopDetectionConfigSection, ModelRouterConfigSection, ModelTargetConfigEntry, SpawnConfig, TelemetryConfig } from './config.js';
 export { CompactionResult, ContextCompactor, TokenEstimator } from './context.js';
-export { CONTEXT_ENGINE, ContextEngine, ContextEngineIdentity, ContextEngineSwapEvent, ContextOccupancy } from './context-HASH.js';
-export { AgentCostBreakdown, BudgetTracker, CostBreakdown, CostCalculator, CostEntry, CostTokenBreakdown, ModelCostBreakdown, ProviderCostBreakdown, ToolCostBreakdown, UsageInfo, formatCost, formatTokens } from './cost-HASH.js';
+export { CONTEXT_ENGINE, ContextEngine, ContextEngineIdentity, ContextEngineSwapEvent, ContextOccupancy } from './chunk-HASH.js';
+export { AgentCostBreakdown, BudgetTracker, CostBreakdown, CostCalculator, CostEntry, CostTokenBreakdown, ModelCostBreakdown, ProviderCostBreakdown, ToolCostBreakdown, UsageInfo, formatCost, formatTokens } from './chunk-HASH.js';
 export { BackgroundSessionEvent, BackgroundSessionRecord, BackgroundSessionRegistry, BackgroundSessionStatus, BackgroundSessionUpdate, DEFAULT_HEARTBEAT_CONFIG, DEFAULT_WORKER_RESTART_POLICY, HeartbeatConfig, SUPERVISOR_HEALTH_STATUS, Supervisor, SupervisorConfig, SupervisorHealth, SupervisorHealthMetrics, SupervisorHealthStatus, WorkerBackend, WorkerBackendKind, WorkerEvent, WorkerHandle, WorkerHealth, WorkerId, WorkerRestartPolicy, WorkerSpawnRequest, validateBackgroundSessionRecord, validateSupervisorConfig, workerId } from './daemon.js';
 export { Breakpoint, BreakpointId, BreakpointOptions, BreakpointPredicate, ComponentMetadata, ComponentSnapshot, DEFAULT_DEBUG_BUFFER_SIZE, DEFAULT_INSPECT_LIMIT, DebugEvent, DebugObserver, DebugSession, DebugSessionId, DebugSnapshot, DebugState, InspectComponentOptions, StepOptions, breakpointId, debugSessionId } from './debug.js';
-export { EdgeDestroyOutcome, EdgeFunctionAdapter, EdgeFunctionCreateConfig, EdgeFunctionInstance, EdgeIntegrityVerification, EdgeInvokeRequest, EdgeInvokeResult, EdgeWorkloadClass } from './edge-function-HASH.js';
+export { EdgeDestroyOutcome, EdgeFunctionAdapter, EdgeFunctionCreateConfig, EdgeFunctionInstance, EdgeIntegrityVerification, EdgeInvokeRequest, EdgeInvokeResult, EdgeWorkloadClass } from './chunk-HASH.js';
 export { ElicitationOption, ElicitationQuestion, ElicitationResult } from './elicitation.js';
-export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, EventEnvelope, EventInput, ReadOptions, ReadResult, SubscribeOptions, SubscriptionHandle } from './event-HASH.js';
+export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, EventEnvelope, EventInput, ReadOptions, ReadResult, SubscribeOptions, SubscriptionHandle } from './chunk-HASH.js';
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
-export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-HASH.js';
+export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './chunk-HASH.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
 export { AgentHookConfig, CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOUT_MS, DEFAULT_AGENT_MAX_TOKENS, DEFAULT_AGENT_MAX_TURNS, DEFAULT_AGENT_SESSION_TOKEN_BUDGET, DEFAULT_HOOK_TIMEOUT_MS, DEFAULT_MAX_STOP_RETRIES, DEFAULT_PROMPT_HOOK_TIMEOUT_MS, DEFAULT_PROMPT_MAX_TOKENS, DEFAULT_PROMPT_SESSION_TOKEN_BUDGET, HOOK_EVENT_KINDS, HookConfig, HookDecision, HookEnvPolicy, HookEvent, HookEventKind, HookEventName, HookExecutionResult, HookFilter, HookPolicy, HookRedactionConfig, HookType, HttpHookConfig, PromptHookConfig } from './hook.js';
-export { CapsuleId, CapsulePayloadVersion, CapsuleVerifier, CapsuleVerifyResult, CapsuleViolationReason, IntentCapsule, capsuleId, isIntentCapsule } from './intent-HASH.js';
+export { CapsuleId, CapsulePayloadVersion, CapsuleVerifier, CapsuleVerifyResult, CapsuleViolationReason, IntentCapsule, capsuleId, isIntentCapsule } from './chunk-HASH.js';
 export { ALL_MEMORY_TYPES, MEMORY_INDEX_MAX_LINES, MemoryFrontmatter, MemoryIndex, MemoryIndexEntry, MemoryRecord, MemoryRecordId, MemoryRecordInput, MemoryRecordPatch, MemoryType, MemoryValidationError, formatMemoryIndexEntry, hasFrontmatterUnsafeChars, isMemoryType, memoryRecordId, parseMemoryFrontmatter, parseMemoryIndexEntry, serializeMemoryFrontmatter, validateMemoryFilePath, validateMemoryRecordInput } from './memory.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
-export { ModelCapabilities, ModelProvider, ModelTarget } from './model-HASH.js';
-export { PermissionBackend, PermissionDecision, PermissionQuery } from './permission-HASH.js';
+export { ModelCapabilities, ModelProvider, ModelTarget } from './chunk-HASH.js';
+export { PermissionBackend, PermissionDecision, PermissionQuery } from './chunk-HASH.js';
 export { ProcEntry, ProcFs, WritableProcEntry } from './procfs.js';
 export { ReplacementRef, ReplacementStore, replacementRef } from './replacement.js';
 export { Resolver, SourceBundle, SourceLanguage } from './resolver.js';
-export { RetrySignal, RetrySignalBroker, RetrySignalReader, RetrySignalWriter } from './retry-HASH.js';
-export { DecisionSignal, DecisionSignalKind, RichContent, RichStepMetrics, RichTrajectoryStep, RichTrajectoryStore, TrajectoryDocumentStore } from './rich-HASH.js';
-export { ActionEntry, IssueEntry, ReportStore, ReportSummary, RunCost, RunDuration, RunReport } from './run-HASH.js';
-export { RUNTIME_FENCE_TARGETS, RUNTIME_FENCE_TOP_LEVEL_IDENTIFIERS } from './runtime-fence-HASH.js';
-export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance, SandboxInstanceState, SandboxProcessHandle, SandboxSpawnOptions, SandboxStdinPipe } from './sandbox-HASH.js';
-export { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult } from './sandbox-HASH.js';
-export { FilesystemPolicy, NetworkPolicy, NexusFuseMount, ResourceLimits, SandboxProfile, SandboxSshTarget } from './sandbox-HASH.js';
-export { RISK_ANALYSIS_UNKNOWN, RISK_LEVEL_ORDER, RiskAnalysis, RiskFinding, RiskLevel, SecurityAnalyzer } from './security-HASH.js';
+export { RetrySignal, RetrySignalBroker, RetrySignalReader, RetrySignalWriter } from './chunk-HASH.js';
+export { DecisionSignal, DecisionSignalKind, RichContent, RichStepMetrics, RichTrajectoryStep, RichTrajectoryStore, TrajectoryDocumentStore } from './chunk-HASH.js';
+export { ActionEntry, IssueEntry, ReportStore, ReportSummary, RunCost, RunDuration, RunReport } from './chunk-HASH.js';
+export { RUNTIME_FENCE_TARGETS, RUNTIME_FENCE_TOP_LEVEL_IDENTIFIERS } from './chunk-HASH.js';
+export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance, SandboxInstanceState, SandboxProcessHandle, SandboxSpawnOptions, SandboxStdinPipe } from './chunk-HASH.js';
+export { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult } from './chunk-HASH.js';
+export { FilesystemPolicy, NetworkPolicy, NexusFuseMount, ResourceLimits, SandboxProfile, SandboxSshTarget } from './chunk-HASH.js';
+export { RISK_ANALYSIS_UNKNOWN, RISK_LEVEL_ORDER, RiskAnalysis, RiskFinding, RiskLevel, SecurityAnalyzer } from './chunk-HASH.js';
 export { OutboundWebhookConfig, WebhookComponent, WebhookDeliveryStatus, WebhookEndpointHealth, WebhookEventKind, WebhookPayload, WebhookSummary } from './webhook.js';
 
 /**
@@ -3208,20 +3208,20 @@ export { ALL_CATALOG_SOURCES, ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, ty
 `;
 
 exports[`@koi/core API surface ./agent-definition has stable type surface 1`] = `
-"import { TaskableAgent } from './agent-HASH.js';
-import './assembly-HASH.js';
+"import { TaskableAgent } from './chunk-HASH.js';
+import './chunk-HASH.js';
 import './errors.js';
 import './common.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 
 /**
@@ -3273,19 +3273,19 @@ export { AGENT_DEFINITION_PRIORITY, type AgentDefinition, type AgentDefinitionSo
 `;
 
 exports[`@koi/core API surface ./agent-resolver has stable type surface 1`] = `
-"import { w as AgentManifest, k as BrickId, A as AgentId } from './assembly-HASH.js';
+"import { ALIAS as AgentManifest, ALIAS as BrickId, ALIAS as AgentId } from './chunk-HASH.js';
 import { Result, KoiError } from './errors.js';
 import './common.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 
 /**
@@ -3514,20 +3514,20 @@ export type { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, Feat
 `;
 
 exports[`@koi/core API surface ./assembly has stable type surface 1`] = `
-"export { w as AgentManifest, aV as CapabilityConfig, aY as ChannelConfig, aZ as ChannelIdentity, bs as ContextManifestConfig, cs as FileSystemConfig, cu as FilesystemSkillSource, cF as ForgedSkillSource, df as ManifestSandboxConfig, dg as ManifestSandboxPersistence, dh as ManifestSpawnConfig, ds as MiddlewareConfig, dv as ModelConfig, i as PermissionConfig, eL as SearchConfig, eU as SkillConfig, f5 as SkillSource, fS as ToolConfig, gG as forgedSkill, gH as fsSkill } from './assembly-HASH.js';
+"export { ALIAS as AgentManifest, ALIAS as CapabilityConfig, ALIAS as ChannelConfig, ALIAS as ChannelIdentity, ALIAS as ContextManifestConfig, ALIAS as FileSystemConfig, ALIAS as FilesystemSkillSource, ALIAS as ForgedSkillSource, ALIAS as ManifestSandboxConfig, ALIAS as ManifestSandboxPersistence, ALIAS as ManifestSpawnConfig, ALIAS as MiddlewareConfig, ALIAS as ModelConfig, ALIAS as PermissionConfig, ALIAS as SearchConfig, ALIAS as SkillConfig, ALIAS as SkillSource, ALIAS as ToolConfig, ALIAS as forgedSkill, ALIAS as fsSkill } from './chunk-HASH.js';
 import './channel.js';
 import './common.js';
 import './hook.js';
-import './sandbox-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './errors.js';
 import './message.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
 "
 `;
 
@@ -3641,19 +3641,19 @@ export type { CompactionResult, ContextCompactor, TokenEstimator };
 `;
 
 exports[`@koi/core API surface ./context-engine has stable type surface 1`] = `
-"import { r as SubsystemToken, g1 as TurnContext, g2 as TurnId } from './assembly-HASH.js';
+"import { ALIAS as SubsystemToken, ALIAS as TurnContext, ALIAS as TurnId } from './chunk-HASH.js';
 import { InboundMessage } from './message.js';
 import './errors.js';
 import './common.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 
 /**
@@ -3753,37 +3753,37 @@ export { CONTEXT_ENGINE, type ContextEngine, type ContextEngineIdentity, type Co
 `;
 
 exports[`@koi/core API surface ./delegation has stable type surface 1`] = `
-"export { C as CapabilityProof, b3 as CircuitBreakerConfig, bE as DEFAULT_CIRCUIT_BREAKER_CONFIG, c2 as DelegationBackend, c3 as DelegationComponent, c4 as DelegationConfig, D as DelegationDenyReason, c5 as DelegationEvent, c6 as DelegationGrant, c7 as DelegationId, c8 as DelegationManagerConfig, c9 as DelegationScope, ca as DelegationVerifyResult, dT as NamespaceMode, em as RevocationRegistry, eB as ScopeChecker, gE as delegationId, gK as intersectPermissions, gP as isPermissionSubset, hf as unionDenyLists } from './assembly-HASH.js';
+"export { ALIAS as CapabilityProof, ALIAS as CircuitBreakerConfig, ALIAS as DEFAULT_CIRCUIT_BREAKER_CONFIG, ALIAS as DelegationBackend, ALIAS as DelegationComponent, ALIAS as DelegationConfig, ALIAS as DelegationDenyReason, ALIAS as DelegationEvent, ALIAS as DelegationGrant, ALIAS as DelegationId, ALIAS as DelegationManagerConfig, ALIAS as DelegationScope, ALIAS as DelegationVerifyResult, ALIAS as NamespaceMode, ALIAS as RevocationRegistry, ALIAS as ScopeChecker, ALIAS as delegationId, ALIAS as intersectPermissions, ALIAS as isPermissionSubset, ALIAS as unionDenyLists } from './chunk-HASH.js';
 import './errors.js';
 import './common.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 "
 `;
 
 exports[`@koi/core API surface ./daemon has stable type surface 1`] = `
 "import { JsonObject } from './common.js';
-import { A as AgentId, el as RestartType, e3 as ProcessDescriptor, P as ProcessState } from './assembly-HASH.js';
+import { ALIAS as AgentId, ALIAS as RestartType, ALIAS as ProcessDescriptor, ALIAS as ProcessState } from './chunk-HASH.js';
 import { Result, KoiError } from './errors.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 
 /**
@@ -4167,55 +4167,55 @@ export { type BackgroundSessionEvent, type BackgroundSessionRecord, type Backgro
 `;
 
 exports[`@koi/core API surface ./ecs has stable type surface 1`] = `
-"export { J as AGENT_SIGNALS, t as Agent, g as AgentDescriptor, V as AgentEnv, b as AgentGroupId, A as AgentId, Y as AgentSignal, a1 as ArtifactId, a4 as AttachResult, a5 as BROWSER, aT as COMPONENT_PRIORITY, aU as CREDENTIALS, a$ as ChildHandle, b1 as ChildLifecycleEvent, ba as CompanionSkillDefinition, bd as ComponentEvent, be as ComponentEventKind, u as ComponentProvider, bw as CredentialComponent, bz as DATA_SOURCES, bO as DEFAULT_SANDBOXED_POLICY, bV as DEFAULT_UNSANDBOXED_POLICY, bX as DELEGATION, cb as ENV, cc as EVENTS, cd as EXTERNAL_AGENTS, ck as EventComponent, cq as FILESYSTEM, ct as FilesystemCapability, cG as GOVERNANCE, cI as GOVERNANCE_BACKEND, cS as HANDOFF, c_ as INBOX, d9 as MAILBOX, dc as MEMORY, di as MemoryComponent, dj as MemoryRecallOptions, dk as MemoryResult, dl as MemoryStoreOptions, dm as MemoryTier, dH as NAME_SERVICE, dU as NetworkCapability, e2 as ProcessAccounter, e4 as ProcessId, P as ProcessState, e6 as REGISTRY, e7 as REPUTATION, ea as RegistryComponent, ek as ResourceCapability, eo as RunId, eq as SCHEDULER, er as SCRATCHPAD, S as SessionId, f as SkillComponent, eV as SkillExecutionMode, eX as SkillMetadata, f7 as SkippedComponent, fe as SpawnLedger, r as SubsystemToken, e as Tool, y as ToolCallId, fR as ToolCapabilities, l as ToolDescriptor, fT as ToolExecuteOptions, fW as ToolOrigin, s as ToolPolicy, fZ as ToolSummary, g2 as TurnId, g3 as USER_MODEL, gq as WEBHOOK, gr as WORKSPACE, gt as WorkspaceComponent, gw as ZONE_REGISTRY, gx as agentGroupId, gy as agentId, gz as agentToken, gA as artifactId, gD as channelToken, gM as isAttachResult, gZ as middlewareToken, g$ as runId, h3 as sessionId, h5 as skillToken, h9 as token, ha as toolCallId, hd as toolToken, he as turnId } from './assembly-HASH.js';
+"export { ALIAS as AGENT_SIGNALS, ALIAS as Agent, ALIAS as AgentDescriptor, ALIAS as AgentEnv, ALIAS as AgentGroupId, ALIAS as AgentId, ALIAS as AgentSignal, ALIAS as ArtifactId, ALIAS as AttachResult, ALIAS as BROWSER, ALIAS as COMPONENT_PRIORITY, ALIAS as CREDENTIALS, ALIAS as ChildHandle, ALIAS as ChildLifecycleEvent, ALIAS as CompanionSkillDefinition, ALIAS as ComponentEvent, ALIAS as ComponentEventKind, ALIAS as ComponentProvider, ALIAS as CredentialComponent, ALIAS as DATA_SOURCES, ALIAS as DEFAULT_SANDBOXED_POLICY, ALIAS as DEFAULT_UNSANDBOXED_POLICY, ALIAS as DELEGATION, ALIAS as ENV, ALIAS as EVENTS, ALIAS as EXTERNAL_AGENTS, ALIAS as EventComponent, ALIAS as FILESYSTEM, ALIAS as FilesystemCapability, ALIAS as GOVERNANCE, ALIAS as GOVERNANCE_BACKEND, ALIAS as HANDOFF, ALIAS as INBOX, ALIAS as MAILBOX, ALIAS as MEMORY, ALIAS as MemoryComponent, ALIAS as MemoryRecallOptions, ALIAS as MemoryResult, ALIAS as MemoryStoreOptions, ALIAS as MemoryTier, ALIAS as NAME_SERVICE, ALIAS as NetworkCapability, ALIAS as ProcessAccounter, ALIAS as ProcessId, ALIAS as ProcessState, ALIAS as REGISTRY, ALIAS as REPUTATION, ALIAS as RegistryComponent, ALIAS as ResourceCapability, ALIAS as RunId, ALIAS as SCHEDULER, ALIAS as SCRATCHPAD, ALIAS as SessionId, ALIAS as SkillComponent, ALIAS as SkillExecutionMode, ALIAS as SkillMetadata, ALIAS as SkippedComponent, ALIAS as SpawnLedger, ALIAS as SubsystemToken, ALIAS as Tool, ALIAS as ToolCallId, ALIAS as ToolCapabilities, ALIAS as ToolDescriptor, ALIAS as ToolExecuteOptions, ALIAS as ToolOrigin, ALIAS as ToolPolicy, ALIAS as ToolSummary, ALIAS as TurnId, ALIAS as USER_MODEL, ALIAS as WEBHOOK, ALIAS as WORKSPACE, ALIAS as WorkspaceComponent, ALIAS as ZONE_REGISTRY, ALIAS as agentGroupId, ALIAS as agentId, ALIAS as agentToken, ALIAS as artifactId, ALIAS as channelToken, ALIAS as isAttachResult, ALIAS as middlewareToken, ALIAS as runId, ALIAS as sessionId, ALIAS as skillToken, ALIAS as token, ALIAS as toolCallId, ALIAS as toolToken, ALIAS as turnId } from './chunk-HASH.js';
 import './channel.js';
 import './common.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 import './webhook.js';
 import './zone.js';
 import './errors.js';
 import './message.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 "
 `;
 
 exports[`@koi/core API surface ./handoff has stable type surface 1`] = `
 "import './common.js';
-export { a2 as ArtifactRef, b$ as DecisionRecord, cT as HandoffAcceptError, cU as HandoffAcceptResult, cV as HandoffComponent, cW as HandoffEnvelope, cX as HandoffEvent, cY as HandoffId, cZ as HandoffStatus, gJ as handoffId } from './assembly-HASH.js';
+export { ALIAS as ArtifactRef, ALIAS as DecisionRecord, ALIAS as HandoffAcceptError, ALIAS as HandoffAcceptResult, ALIAS as HandoffComponent, ALIAS as HandoffEnvelope, ALIAS as HandoffEvent, ALIAS as HandoffId, ALIAS as HandoffStatus, ALIAS as handoffId } from './chunk-HASH.js';
 import './errors.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 "
 `;
 
 exports[`@koi/core API surface ./engine has stable type surface 1`] = `
 "import './common.js';
-export { O as AbortReason, bf as ComposedCallHandlers, ce as EngineAdapter, cf as EngineCapabilities, z as EngineEvent, o as EngineInput, cg as EngineInputBase, ch as EngineMetrics, ci as EngineOutput, E as EngineState, cj as EngineStopReason, fO as TerminationOutcome, gT as mapContentBlocksForEngine, gW as mapStopReasonToOutcome } from './assembly-HASH.js';
+export { ALIAS as AbortReason, ALIAS as ComposedCallHandlers, ALIAS as EngineAdapter, ALIAS as EngineCapabilities, ALIAS as EngineEvent, ALIAS as EngineInput, ALIAS as EngineInputBase, ALIAS as EngineMetrics, ALIAS as EngineOutput, ALIAS as EngineState, ALIAS as EngineStopReason, ALIAS as TerminationOutcome, ALIAS as mapContentBlocksForEngine, ALIAS as mapStopReasonToOutcome } from './chunk-HASH.js';
 import './message.js';
 import './errors.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 "
 `;
@@ -4371,37 +4371,37 @@ export type { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfi
 `;
 
 exports[`@koi/core API surface ./governance has stable type surface 1`] = `
-"export { bt as ContextPressureTrend, cJ as GOVERNANCE_VARIABLES, cL as GovernanceCheck, cM as GovernanceController, cN as GovernanceEvent, cO as GovernanceSnapshot, cP as GovernanceVariable, cQ as GovernanceVariableContributor, e9 as RESET_BOUNDARIES, eN as SensorReading, gI as governanceContributorToken } from './assembly-HASH.js';
+"export { ALIAS as ContextPressureTrend, ALIAS as GOVERNANCE_VARIABLES, ALIAS as GovernanceCheck, ALIAS as GovernanceController, ALIAS as GovernanceEvent, ALIAS as GovernanceSnapshot, ALIAS as GovernanceVariable, ALIAS as GovernanceVariableContributor, ALIAS as RESET_BOUNDARIES, ALIAS as SensorReading, ALIAS as governanceContributorToken } from './chunk-HASH.js';
 import './errors.js';
 import './common.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 "
 `;
 
 exports[`@koi/core API surface ./governance-backend has stable type surface 1`] = `
 "import './common.js';
-export { a3 as AskId, bb as ComplianceRecord, bc as ComplianceRecorder, bp as ConstraintChecker, bq as ConstraintQuery, bW as DEFAULT_VIOLATION_QUERY_LIMIT, cH as GOVERNANCE_ALLOW, cK as GovernanceBackend, cR as GovernanceVerdict, dW as PersistentGrant, dX as PersistentGrantCallback, d_ as PolicyEvaluator, d$ as PolicyRequest, e0 as PolicyRequestKind, en as RuleDescriptor, gb as VIOLATION_SEVERITY_ORDER, gk as Violation, gl as ViolationFilter, gm as ViolationPage, gn as ViolationSeverity, go as ViolationStore, gB as askId, gL as isAskVerdict } from './assembly-HASH.js';
+export { ALIAS as AskId, ALIAS as ComplianceRecord, ALIAS as ComplianceRecorder, ALIAS as ConstraintChecker, ALIAS as ConstraintQuery, ALIAS as DEFAULT_VIOLATION_QUERY_LIMIT, ALIAS as GOVERNANCE_ALLOW, ALIAS as GovernanceBackend, ALIAS as GovernanceVerdict, ALIAS as PersistentGrant, ALIAS as PersistentGrantCallback, ALIAS as PolicyEvaluator, ALIAS as PolicyRequest, ALIAS as PolicyRequestKind, ALIAS as RuleDescriptor, ALIAS as VIOLATION_SEVERITY_ORDER, ALIAS as Violation, ALIAS as ViolationFilter, ALIAS as ViolationPage, ALIAS as ViolationSeverity, ALIAS as ViolationStore, ALIAS as askId, ALIAS as isAskVerdict } from './chunk-HASH.js';
 import './errors.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 "
 `;
@@ -4543,19 +4543,19 @@ export { type BackendErrorMapper, type KoiError, type KoiErrorCode, RETRYABLE_DE
 `;
 
 exports[`@koi/core API surface ./intent-capsule has stable type surface 1`] = `
-"import { A as AgentId, S as SessionId } from './assembly-HASH.js';
+"import { ALIAS as AgentId, ALIAS as SessionId } from './chunk-HASH.js';
 import './errors.js';
 import './common.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 
 /**
@@ -4753,35 +4753,35 @@ export { type ButtonBlock, type ContentBlock, type CustomBlock, type Displayable
 exports[`@koi/core API surface ./middleware has stable type surface 1`] = `
 "import './channel.js';
 import './common.js';
-export { _ as ApprovalDecision, $ as ApprovalHandler, a0 as ApprovalRequest, aW as CapabilityFragment, bo as ConfigChange, K as KoiMiddleware, dr as MiddlewareBundle, dt as MiddlewarePhase, M as ModelChunk, dx as ModelHandler, dy as ModelRequest, dz as ModelResponse, dB as ModelStreamHandler, eO as SessionContext, fh as StopGateResult, fV as ToolHandler, fX as ToolRequest, fY as ToolResponse, g1 as TurnContext } from './assembly-HASH.js';
+export { ALIAS as ApprovalDecision, ALIAS as ApprovalHandler, ALIAS as ApprovalRequest, ALIAS as CapabilityFragment, ALIAS as ConfigChange, ALIAS as KoiMiddleware, ALIAS as MiddlewareBundle, ALIAS as MiddlewarePhase, ALIAS as ModelChunk, ALIAS as ModelHandler, ALIAS as ModelRequest, ALIAS as ModelResponse, ALIAS as ModelStreamHandler, ALIAS as SessionContext, ALIAS as StopGateResult, ALIAS as ToolHandler, ALIAS as ToolRequest, ALIAS as ToolResponse, ALIAS as TurnContext } from './chunk-HASH.js';
 import './errors.js';
 import './message.js';
-import './permission-HASH.js';
-import './model-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 "
 `;
 
 exports[`@koi/core API surface ./eviction has stable type surface 1`] = `
-"import { A as AgentId, P as ProcessState } from './assembly-HASH.js';
+"import { ALIAS as AgentId, ALIAS as ProcessState } from './chunk-HASH.js';
 import './errors.js';
 import './common.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 
 /**
@@ -4829,19 +4829,19 @@ export type { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult 
 `;
 
 exports[`@koi/core API surface ./health has stable type surface 1`] = `
-"import { A as AgentId } from './assembly-HASH.js';
+"import { ALIAS as AgentId } from './chunk-HASH.js';
 import './errors.js';
 import './common.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 
 /**
@@ -5333,37 +5333,37 @@ export { type AgentHookConfig, type CommandHookConfig, DEFAULT_AGENT_HOOK_TIMEOU
 `;
 
 exports[`@koi/core API surface ./lifecycle has stable type surface 1`] = `
-"export { c as AgentCondition, x as AgentRegistry, d as AgentStatus, a_ as ChildCompletionResult, a as PatchableRegistryFields, R as RegistryEntry, eb as RegistryEvent, ec as RegistryFilter, T as TransitionReason, ga as VALID_TRANSITIONS, gp as VisibilityContext, gF as exitCodeForTransitionReason, gX as matchesFilter } from './assembly-HASH.js';
+"export { ALIAS as AgentCondition, ALIAS as AgentRegistry, ALIAS as AgentStatus, ALIAS as ChildCompletionResult, ALIAS as PatchableRegistryFields, ALIAS as RegistryEntry, ALIAS as RegistryEvent, ALIAS as RegistryFilter, ALIAS as TransitionReason, ALIAS as VALID_TRANSITIONS, ALIAS as VisibilityContext, ALIAS as exitCodeForTransitionReason, ALIAS as matchesFilter } from './chunk-HASH.js';
 import './errors.js';
 import './zone.js';
 import './common.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 "
 `;
 
 exports[`@koi/core API surface ./model-adapter has stable type surface 1`] = `
 "import './common.js';
-export { du as ModelAdapter, dw as ModelContentBlock, dA as ModelStopReason, dC as ModelTextBlock, dD as ModelThinkingBlock, dE as ModelToolCallBlock } from './assembly-HASH.js';
-import './model-HASH.js';
+export { ALIAS as ModelAdapter, ALIAS as ModelContentBlock, ALIAS as ModelStopReason, ALIAS as ModelTextBlock, ALIAS as ModelThinkingBlock, ALIAS as ModelToolCallBlock } from './chunk-HASH.js';
+import './chunk-HASH.js';
 import './errors.js';
 import './message.js';
 import './channel.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 "
 `;
@@ -5619,36 +5619,36 @@ export type { RetrySignal, RetrySignalBroker, RetrySignalReader, RetrySignalWrit
 
 exports[`@koi/core API surface ./brick-snapshot has stable type surface 1`] = `
 "import './errors.js';
-export { k as BrickId, B as BrickRef, am as BrickSnapshot, an as BrickSource, f8 as SnapshotEvent, f9 as SnapshotId, fa as SnapshotQuery, fb as SnapshotStore, gC as brickId, h6 as snapshotId } from './assembly-HASH.js';
+export { ALIAS as BrickId, ALIAS as BrickRef, ALIAS as BrickSnapshot, ALIAS as BrickSource, ALIAS as SnapshotEvent, ALIAS as SnapshotId, ALIAS as SnapshotQuery, ALIAS as SnapshotStore, ALIAS as brickId, ALIAS as snapshotId } from './chunk-HASH.js';
 import './common.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 "
 `;
 
 exports[`@koi/core API surface ./brick-store has stable type surface 1`] = `
-"export { Q as AdvisoryLock, U as AgentArtifact, h as BrickArtifact, a6 as BrickArtifactBase, a8 as BrickDisclosureLevel, a9 as BrickDriftContext, aa as BrickFitnessMetrics, ad as BrickPort, aj as BrickRequires, ao as BrickSummary, ap as BrickUpdate, aS as COLLECTIVE_MEMORY_DEFAULTS, b5 as CollectiveMemory, b6 as CollectiveMemoryCategory, b7 as CollectiveMemoryDefaults, b8 as CollectiveMemoryEntry, b9 as CollectiveMemorySource, bg as CompositeArtifact, bv as CounterExample, bx as CredentialKind, by as CredentialRequirement, bB as DEFAULT_BRICK_FITNESS, bH as DEFAULT_COLLECTIVE_MEMORY, bT as DEFAULT_TRAIL_CONFIG, bU as DEFAULT_TRAIL_STRENGTH, cz as ForgeQuery, F as ForgeStore, I as ImplementationArtifact, d5 as LatencySampler, d6 as LockHandle, d7 as LockMode, d8 as LockRequest, dZ as PipelineStep, eT as SkillArtifact, fi as StoreChangeEvent, fj as StoreChangeKind, fk as StoreChangeNotifier, fP as TestCase, fQ as ToolArtifact, f_ as TrailConfig, h2 as searchSummariesWithFallback } from './assembly-HASH.js';
+"export { ALIAS as AdvisoryLock, ALIAS as AgentArtifact, ALIAS as BrickArtifact, ALIAS as BrickArtifactBase, ALIAS as BrickDisclosureLevel, ALIAS as BrickDriftContext, ALIAS as BrickFitnessMetrics, ALIAS as BrickPort, ALIAS as BrickRequires, ALIAS as BrickSummary, ALIAS as BrickUpdate, ALIAS as COLLECTIVE_MEMORY_DEFAULTS, ALIAS as CollectiveMemory, ALIAS as CollectiveMemoryCategory, ALIAS as CollectiveMemoryDefaults, ALIAS as CollectiveMemoryEntry, ALIAS as CollectiveMemorySource, ALIAS as CompositeArtifact, ALIAS as CounterExample, ALIAS as CredentialKind, ALIAS as CredentialRequirement, ALIAS as DEFAULT_BRICK_FITNESS, ALIAS as DEFAULT_COLLECTIVE_MEMORY, ALIAS as DEFAULT_TRAIL_CONFIG, ALIAS as DEFAULT_TRAIL_STRENGTH, ALIAS as ForgeQuery, ALIAS as ForgeStore, ALIAS as ImplementationArtifact, ALIAS as LatencySampler, ALIAS as LockHandle, ALIAS as LockMode, ALIAS as LockRequest, ALIAS as PipelineStep, ALIAS as SkillArtifact, ALIAS as StoreChangeEvent, ALIAS as StoreChangeKind, ALIAS as StoreChangeNotifier, ALIAS as TestCase, ALIAS as ToolArtifact, ALIAS as TrailConfig, ALIAS as searchSummariesWithFallback } from './chunk-HASH.js';
 import './errors.js';
 import './common.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 "
 `;
@@ -5708,9 +5708,9 @@ export type { AdapterCapabilities, AdapterCapability, BackendDescriptor, Backend
 
 exports[`@koi/core API surface ./edge-function-adapter has stable type surface 1`] = `
 "import { Result, KoiError } from './errors.js';
-import { SandboxProfile } from './sandbox-HASH.js';
+import { SandboxProfile } from './chunk-HASH.js';
 import './common.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
 
 /**
  * Edge function adapter contract — package-local L2 contract for JS-only edge runtimes.
@@ -5862,8 +5862,8 @@ export { RUNTIME_FENCE_TARGETS, RUNTIME_FENCE_TOP_LEVEL_IDENTIFIERS };
 `;
 
 exports[`@koi/core API surface ./sandbox-adapter has stable type surface 1`] = `
-"import { AdapterCapabilities } from './adapter-HASH.js';
-import { SandboxProfile } from './sandbox-HASH.js';
+"import { AdapterCapabilities } from './chunk-HASH.js';
+import { SandboxProfile } from './chunk-HASH.js';
 
 /**
  * Sandbox adapter contract — pluggable sandbox backends for isolated execution.
@@ -6075,7 +6075,7 @@ export type { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor,
 `;
 
 exports[`@koi/core API surface ./sandbox-profile has stable type surface 1`] = `
-"import { CapabilityRequirements } from './adapter-HASH.js';
+"import { CapabilityRequirements } from './chunk-HASH.js';
 
 /**
  * Sandbox profile contract — platform-agnostic isolation policy.
@@ -6149,19 +6149,19 @@ export type { FilesystemPolicy, NetworkPolicy, NexusFuseMount, ResourceLimits, S
 `;
 
 exports[`@koi/core API surface ./skill-registry has stable type surface 1`] = `
-"export { bQ as DEFAULT_SKILL_SEARCH_LIMIT, eW as SkillId, eY as SkillPage, eZ as SkillPublishRequest, e_ as SkillRegistryBackend, e$ as SkillRegistryChangeEvent, f0 as SkillRegistryChangeKind, f1 as SkillRegistryEntry, f2 as SkillRegistryReader, f3 as SkillRegistryWriter, f4 as SkillSearchQuery, f6 as SkillVersion, h4 as skillId } from './assembly-HASH.js';
+"export { ALIAS as DEFAULT_SKILL_SEARCH_LIMIT, ALIAS as SkillId, ALIAS as SkillPage, ALIAS as SkillPublishRequest, ALIAS as SkillRegistryBackend, ALIAS as SkillRegistryChangeEvent, ALIAS as SkillRegistryChangeKind, ALIAS as SkillRegistryEntry, ALIAS as SkillRegistryReader, ALIAS as SkillRegistryWriter, ALIAS as SkillSearchQuery, ALIAS as SkillVersion, ALIAS as skillId } from './chunk-HASH.js';
 import './errors.js';
 import './common.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 "
 `;
@@ -6236,55 +6236,55 @@ export type { PermissionBackend, PermissionDecision, PermissionQuery };
 `;
 
 exports[`@koi/core API surface ./version-index has stable type surface 1`] = `
-"export { gg as VersionIndexBackend, gh as VersionIndexReader, gi as VersionIndexWriter } from './assembly-HASH.js';
+"export { ALIAS as VersionIndexBackend, ALIAS as VersionIndexReader, ALIAS as VersionIndexWriter } from './chunk-HASH.js';
 import './errors.js';
 import './common.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 "
 `;
 
 exports[`@koi/core API surface ./version-types has stable type surface 1`] = `
-"export { e5 as PublisherId, eP as ShadowWarning, gd as VersionChangeEvent, ge as VersionChangeKind, gf as VersionEntry, gj as VersionedBrickRef, g_ as publisherId } from './assembly-HASH.js';
+"export { ALIAS as PublisherId, ALIAS as ShadowWarning, ALIAS as VersionChangeEvent, ALIAS as VersionChangeKind, ALIAS as VersionEntry, ALIAS as VersionedBrickRef, ALIAS as publisherId } from './chunk-HASH.js';
 import './errors.js';
 import './common.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 "
 `;
 
 exports[`@koi/core API surface ./run-report has stable type surface 1`] = `
 "import { JsonObject } from './common.js';
-import { A as AgentId, S as SessionId, eo as RunId, a2 as ArtifactRef } from './assembly-HASH.js';
+import { ALIAS as AgentId, ALIAS as SessionId, ALIAS as RunId, ALIAS as ArtifactRef } from './chunk-HASH.js';
 import './errors.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 
 /**
@@ -6404,18 +6404,18 @@ export type { ElicitationOption, ElicitationQuestion, ElicitationResult };
 
 exports[`@koi/core API surface ./mailbox has stable type surface 1`] = `
 "import './common.js';
-export { W as AgentMessage, X as AgentMessageInput, dd as MailboxComponent, dn as MessageFilter, dp as MessageId, dq as MessageKind, gY as messageId } from './assembly-HASH.js';
+export { ALIAS as AgentMessage, ALIAS as AgentMessageInput, ALIAS as MailboxComponent, ALIAS as MessageFilter, ALIAS as MessageId, ALIAS as MessageKind, ALIAS as messageId } from './chunk-HASH.js';
 import './errors.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 "
 `;
@@ -6788,37 +6788,37 @@ export type { ProcEntry, ProcFs, WritableProcEntry };
 `;
 
 exports[`@koi/core API surface ./process-descriptor has stable type surface 1`] = `
-"export { e3 as ProcessDescriptor, gU as mapRegistryEntryToDescriptor } from './assembly-HASH.js';
+"export { ALIAS as ProcessDescriptor, ALIAS as mapRegistryEntryToDescriptor } from './chunk-HASH.js';
 import './errors.js';
 import './common.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 "
 `;
 
 exports[`@koi/core API surface ./user-model has stable type surface 1`] = `
-"export { eQ as SignalSink, eR as SignalSource, g4 as UserModelComponent, g5 as UserSignal, g6 as UserSnapshot } from './assembly-HASH.js';
+"export { ALIAS as SignalSink, ALIAS as SignalSource, ALIAS as UserModelComponent, ALIAS as UserSignal, ALIAS as UserSnapshot } from './chunk-HASH.js';
 import './errors.js';
 import './common.js';
 import './message.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 "
 `;
@@ -7074,19 +7074,19 @@ export { ALL_MEMORY_TYPES, MEMORY_INDEX_MAX_LINES, type MemoryFrontmatter, type 
 `;
 
 exports[`@koi/core API surface ./worker-protocol has stable type surface 1`] = `
-"import { E as EngineState, _ as ApprovalDecision, z as EngineEvent, a0 as ApprovalRequest } from './assembly-HASH.js';
+"import { ALIAS as EngineState, ALIAS as ApprovalDecision, ALIAS as EngineEvent, ALIAS as ApprovalRequest } from './chunk-HASH.js';
 import { InboundMessage } from './message.js';
 import './errors.js';
 import './common.js';
 import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './hook.js';
-import './sandbox-HASH.js';
-import './adapter-HASH.js';
+import './chunk-HASH.js';
+import './chunk-HASH.js';
 import './webhook.js';
 import './zone.js';
-import './filesystem-HASH.js';
+import './chunk-HASH.js';
 import './memory.js';
 
 /**

@@ -2,7 +2,7 @@
  * Slash command detection and matching — pure functions for the TUI.
  *
  * Decision 3A: TUI owns slash command dispatch. Channel-cli defers.
- * Decision 14A: Simple prefix/startsWith match for ~20 commands.
+ * Decision 14A: Simple prefix/startsWith match for the implemented command set.
  */
 
 // ---------------------------------------------------------------------------

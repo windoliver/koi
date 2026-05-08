@@ -1,311 +1,270 @@
 # Package Coverage Map
 
-This appendix is generated from the current workspace `package.json` files and local package test files. Use it with `docs/user-guide.md` when the main guide gets too high-level and you need package-by-package coverage.
+Generated from active workspace packages with `bun scripts/generate-package-coverage-map.ts`.
 
 Current snapshot:
 
-- 226 workspace packages
-- 17 package families
-- 226 packages with local test files
-- 130 packages with dedicated package docs
+- 207 workspace packages
+- 11 package families
+- 207 packages with local test files
+- 185 packages with dedicated package docs
 
 ## Family Summary
 
 | Family | Packages | Test files | Dedicated package docs |
 | --- | ---: | ---: | ---: |
-| kernel | 8 | 134 | 3 |
-| meta | 20 | 113 | 19 |
-| ui | 1 | 10 | 0 |
-| middleware | 18 | 110 | 13 |
-| security | 22 | 158 | 17 |
-| forge | 9 | 33 | 4 |
-| fs | 29 | 215 | 16 |
-| mm | 16 | 114 | 12 |
-| ipc | 9 | 78 | 6 |
-| net | 30 | 199 | 19 |
-| drivers | 8 | 82 | 5 |
-| virt | 11 | 70 | 2 |
-| observability | 11 | 104 | 5 |
-| sched | 6 | 56 | 4 |
-| deploy | 4 | 45 | 2 |
-| exec | 1 | 8 | 0 |
-| lib | 23 | 94 | 3 |
+| drivers | 2 | 41 | 2 |
+| exec | 2 | 12 | 2 |
+| kernel | 4 | 126 | 0 |
+| lib | 138 | 715 | 120 |
+| meta | 3 | 107 | 3 |
+| mm | 12 | 54 | 12 |
+| net | 10 | 89 | 10 |
+| sandbox | 11 | 58 | 11 |
+| sched | 5 | 22 | 5 |
+| security | 19 | 105 | 19 |
+| ui | 1 | 54 | 1 |
 
 ## Package Inventory
 
-Each line shows package name, package description, test-file count, and any existing package doc paths.
+Each line shows package name, package directory, package description, test-file count, and existing package doc paths.
 
-## kernel (8)
+## drivers (2)
 
-- `@koi/bootstrap` (packages/kernel/bootstrap) - Resolve .koi/{INSTRUCTIONS,TOOLS,CONTEXT}.md files for agent bootstrap context. Tests: 3. Docs: docs/L2/bootstrap.md.
-- `@koi/config` (packages/kernel/config) - Provide runtime policy configuration with hot-reload, validation, and engine integration. Tests: 12. Docs: docs/L2/config.md.
-- `@koi/core` (packages/kernel/core) - Define interfaces-only kernel with 7 core contracts and ECS compositional layer. Tests: 29.
-- `@koi/engine` (packages/kernel/engine) - Manage kernel runtime including guards, lifecycle, middleware composition, and adapters. Tests: 49.
-- `@koi/engine-compose` (packages/kernel/engine-compose) - Middleware composition and guard factories for the Koi kernel. Tests: 3.
-- `@koi/engine-reconcile` (packages/kernel/engine-reconcile) - Reconciliation, supervision, and process management for the Koi kernel. Tests: 20.
-- `@koi/manifest` (packages/kernel/manifest) - Load and validate YAML agent definitions with environment interpolation. Tests: 10.
-- `@koi/soul` (packages/kernel/soul) - Inject unified agent personality through system prompts across soul, identity, and user layers. Tests: 8. Docs: docs/L2/soul.md.
+- `@koi/browser-ext` (packages/drivers/browser-ext) - MV3 extension + native-messaging host for attaching to user's live Chrome. Tests: 37. Docs: docs/L2/browser-ext.md.
+- `@koi/browser-playwright` (packages/drivers/browser-playwright) - Playwright BrowserDriver with CDP + wsEndpoint transports. Tests: 4. Docs: docs/L2/browser-playwright.md.
 
-## meta (20)
+## exec (2)
 
-- `@koi/agent-spawner` (packages/meta/agent-spawner) - Spawn external coding agents inside sandboxed containers with ACP or stdio communication. Tests: 4. Docs: docs/L2/agent-spawner.md, docs/L3/agent-spawner.md.
-- `@koi/autonomous` (packages/meta/autonomous) - Compose long-running harness, scheduler, and checkpoint/inbox middleware into autonomous agents. Tests: 6. Docs: docs/L2/autonomous.md.
-- `@koi/channels` (packages/meta/channels) - Channel adapter registry and manifest-driven channel resolution. Tests: 4. Docs: docs/L3/channels.md.
-- `@koi/cli` (packages/meta/cli) - Interactive command-line interface for agent initialization and local execution. Tests: 17. Docs: docs/L3/cli.md.
-- `@koi/context-arena` (packages/meta/context-arena) - Compose all context sources - personality, bootstrap, conversation, memory - with budget allocation. Tests: 5. Docs: docs/L3/context-arena.md.
-- `@koi/forge` (packages/meta/forge) - Self-extending system for agent composition, verification, integrity attestation, and policy enforcement. Tests: 20. Docs: docs/L2/forge.md.
-- `@koi/governance` (packages/meta/governance) - Enterprise compliance stack composing 11 middleware for permissions, approvals, auditing, and guardrails. Tests: 7. Docs: docs/L3/governance.md.
-- `@koi/ipc-stack` (packages/meta/ipc-stack) - IPC meta-package composing messaging, delegation, workspace, scratchpad, and federation via createIpcStack(). Tests: 4. Docs: docs/L3/ipc-stack.md.
-- `@koi/nexus` (packages/meta/nexus) - One-line Nexus wiring: single config, all backends auto-wired, auto-provisioned, auto-scoped per agent. Tests: 6. Docs: docs/L3/nexus.md.
-- `@koi/node-stack` (packages/meta/node-stack) - Convenience bundle wiring @koi/node with agent-discovery, procfs, debug, and tracing.. Tests: 2. Docs: docs/L3/node-stack.md.
-- `@koi/quality-gate` (packages/meta/quality-gate) - Output quality assurance middleware bundle for Koi agents. Tests: 6. Docs: docs/L3/quality-gate.md.
-- `@koi/retry-stack` (packages/meta/retry-stack) - Intelligent retry and recovery middleware bundle for Koi agents. Tests: 5. Docs: docs/L3/retry-stack.md.
-- `@koi/rlm-stack` (packages/meta/rlm-stack) - Wire code-execution sandbox into RLM middleware for script-based input analysis. Tests: 3. Docs: docs/L3/rlm-stack.md.
-- `@koi/sandbox-stack` (packages/meta/sandbox-stack) - Unified L3 bundle for sandboxed code execution - cloud dispatch, stack composition, timeout guards, and middleware. Tests: 5. Docs: docs/L3/sandbox-stack.md.
-- `@koi/skill-stack` (packages/meta/skill-stack) - Compose skill providers with progressive loading, gating, hot-plug, and file watching. Tests: 3. Docs: docs/L3/skill-stack.md.
-- `@koi/starter` (packages/meta/starter) - Auto-wire manifest-declared middleware without manual factory calls, with callback customization. Tests: 3.
-- `@koi/tool-stack` (packages/meta/tool-stack) - Tool lifecycle stack composing 7 middleware for audit, limits, recovery, dedup, and sandbox. Tests: 2. Docs: docs/L3/tool-stack.md.
-- `@koi/workspace-stack` (packages/meta/workspace-stack) - Backend factory for Nexus-backed agent workspaces. Tests: 1. Docs: docs/L3/workspace-stack.md.
-- `koi` (packages/meta/koi) - Self-extending agent engine - single package distribution. Tests: 6. Docs: docs/L4/koi.md.
+- `@koi/hook-prompt` (packages/exec/hook-prompt) - Prompt hook executor — single-shot LLM verification for agent hooks. Tests: 2. Docs: docs/L2/hook-prompt.md.
+- `@koi/temporal` (packages/exec/temporal) - Durable agent execution via Temporal — SpawnLedger + TaskScheduler over Temporal Workflows and Schedules. Tests: 10. Docs: docs/L2/temporal.md.
+
+## kernel (4)
+
+- `@koi/core` (packages/kernel/core) - Interfaces-only kernel with 7 core contracts, ECS compositional layer, and stop-gate lifecycle types. Tests: 43. Docs: -.
+- `@koi/engine` (packages/kernel/engine) - Manage kernel runtime including guards, lifecycle, middleware composition, and adapters. Tests: 54. Docs: -.
+- `@koi/engine-compose` (packages/kernel/engine-compose) - Middleware composition and guard factories for the Koi kernel. Tests: 7. Docs: -.
+- `@koi/engine-reconcile` (packages/kernel/engine-reconcile) - Reconciliation, supervision, and process management for the Koi kernel. Tests: 22. Docs: -.
+
+## lib (138)
+
+- `@koi/ace-types` (packages/lib/ace-types) - Shared domain types for ACE (Adaptive Continuous Enhancement) middleware and stores. Tests: 1. Docs: -.
+- `@koi/agent-discovery` (packages/lib/agent-discovery) - Runtime discovery of external coding agents (CLI, filesystem registry, MCP). Tests: 8. Docs: docs/L2/agent-discovery.md.
+- `@koi/agent-monitor` (packages/lib/agent-monitor) - Adversarial agent behavior detection — 12 OWASP-ASI10 anomaly signals (pure observer middleware). Tests: 5. Docs: docs/L2/agent-monitor.md.
+- `@koi/agent-procfs` (packages/lib/agent-procfs) - Virtual /proc-style filesystem for inspecting running agent state. Tests: 3. Docs: docs/L2/agent-procfs.md.
+- `@koi/agent-runtime` (packages/lib/agent-runtime) - Agent definition model — built-in and custom agent loading with validation. Tests: 7. Docs: docs/L2/agent-runtime.md.
+- `@koi/agent-summary` (packages/lib/agent-summary) - Structured session summaries with untrusted-cache validation and three-variant integrity envelope. Tests: 9. Docs: docs/L2/agent-summary.md.
+- `@koi/artifacts` (packages/lib/artifacts) - Versioned file lifecycle for agent-created artifacts (metadata + lifecycle via @koi/blob-cas blobs). Tests: 19. Docs: docs/L2/artifacts.md.
+- `@koi/artifacts-s3` (packages/lib/artifacts-s3) - S3-backed BlobStore implementation for @koi/artifacts (AWS S3 and S3-compatible stores). Tests: 3. Docs: docs/L2/artifacts-s3.md.
+- `@koi/bash-ast` (packages/lib/bash-ast) - AST-based bash command analysis for permission matching. Tests: 31. Docs: docs/L2/bash-ast.md.
+- `@koi/bash-classifier` (packages/lib/bash-classifier) - ARITY-based command-prefix extraction and structural dangerous-pattern registry for bash permission policy. Tests: 3. Docs: docs/L2/bash-classifier.md.
+- `@koi/bash-security` (packages/lib/bash-security) - Bash command security classifiers: injection detection, path validation, and TTP-based command classification. Tests: 3. Docs: docs/L2/bash-security.md.
+- `@koi/blob-cas` (packages/lib/blob-cas) - Content-addressed blob storage (SHA-256) with pluggable BlobStore interface. Tests: 3. Docs: -.
+- `@koi/browser-a11y` (packages/lib/browser-a11y) - Accessibility-tree serializer + Playwright error translator (L0u). Tests: 3. Docs: docs/L2/browser-a11y.md.
+- `@koi/channel-base` (packages/lib/channel-base) - Shared ChannelAdapter factory with lifecycle, capability-aware block rendering, and handler dispatch. Tests: 14. Docs: docs/L2/channel-base.md.
+- `@koi/channel-cli` (packages/lib/channel-cli) - Read user input via readline, write output to stdout. Tests: 1. Docs: docs/L2/channel-cli.md.
+- `@koi/channel-discord` (packages/lib/channel-discord) - Connect Discord bots via discord.js (text, slash commands, embeds, threads). Tests: 3. Docs: docs/L2/channel-discord.md.
+- `@koi/channel-email` (packages/lib/channel-email) - Email channel: IMAP IDLE inbound + SMTP outbound with durable threading. Tests: 10. Docs: docs/L2/channel-email.md.
+- `@koi/channel-fallback` (packages/lib/channel-fallback) - Decorator that downgrades unsupported content blocks to text for any ChannelAdapter. Tests: 1. Docs: docs/L2/channel-fallback.md.
+- `@koi/channel-ide` (packages/lib/channel-ide) - IDE channel adapter — JSON-RPC frames over a duplex socket for editor plugins. Tests: 1. Docs: docs/L2/channel-ide.md.
+- `@koi/channel-mobile` (packages/lib/channel-mobile) - Mobile channel adapter — WebSocket gateway with offline message queue. Tests: 1. Docs: docs/L2/channel-mobile.md.
+- `@koi/channel-signal` (packages/lib/channel-signal) - Connect Signal bots via signal-cli subprocess (JSON-RPC, DMs + groups, E.164). Tests: 5. Docs: docs/L2/channel-signal.md.
+- `@koi/channel-slack` (packages/lib/channel-slack) - Connect Slack bots via Socket Mode or HTTP Events API. Tests: 3. Docs: docs/L2/channel-slack.md.
+- `@koi/channel-teams` (packages/lib/channel-teams) - Microsoft Teams channel: Bot Framework webhook + Adaptive Cards. Tests: 9. Docs: docs/L2/channel-teams.md.
+- `@koi/channel-telegram` (packages/lib/channel-telegram) - Connect Telegram bots via grammy (polling + webhook, inline keyboards, media). Tests: 3. Docs: docs/L2/channel-telegram.md.
+- `@koi/channel-voice` (packages/lib/channel-voice) - Voice channel adapter — bridges abstract STT/TTS/transport into ChannelAdapter. Tests: 1. Docs: docs/L2/channel-voice.md.
+- `@koi/channel-web` (packages/lib/channel-web) - Browser/HTTP ChannelAdapter (Bun.serve WS push + REST inbound + SSE fallback). Tests: 1. Docs: docs/L2/channel-web.md.
+- `@koi/channel-whatsapp` (packages/lib/channel-whatsapp) - WhatsApp channel via Meta Cloud API (HTTP webhook + Graph API). Tests: 8. Docs: docs/L2/channel-whatsapp.md.
+- `@koi/checkpoint` (packages/lib/checkpoint) - End-of-turn capture middleware + CAS blob store for session-level rollback. Tests: 11. Docs: docs/L2/checkpoint.md.
+- `@koi/config` (packages/lib/config) - Runtime policy configuration: Zod schemas, YAML/JSON loading, reactive store, hot-reload. Tests: 15. Docs: docs/L2/config.md.
+- `@koi/context-manager` (packages/lib/context-manager) - Context window compaction policy with tiered thresholds, microcompact, and exponential backoff. Tests: 20. Docs: docs/L2/context-manager.md.
+- `@koi/cost-aggregator` (packages/lib/cost-aggregator) - Real-time cost aggregation with per-model/tool/agent/provider breakdowns and budget thresholds. Tests: 7. Docs: docs/L2/cost-aggregator.md.
+- `@koi/crystallize` (packages/lib/crystallize) - Pattern detection over agent turn traces — surfaces repeating tool sequences as scored forge candidates.. Tests: 4. Docs: docs/L2/crystallize.md.
+- `@koi/dashboard-api` (packages/lib/dashboard-api) - Dashboard HTTP API — headless REST + SSE handler over Bun.serve, bearer-auth, cursor pagination, and query filters. Tests: 7. Docs: docs/L2/dashboard-api.md.
+- `@koi/dashboard-client` (packages/lib/dashboard-client) - Typed HTTP + WebSocket client SDK for the Koi dashboard API. Tests: 4. Docs: docs/L2/dashboard-client.md.
+- `@koi/dashboard-types` (packages/lib/dashboard-types) - Dashboard contracts: AgentStatus, SessionSummary, MetricPoint, TraceView, REST envelope, WS subscribe protocol. Tests: 1. Docs: docs/L2/dashboard-types.md.
+- `@koi/debug` (packages/lib/debug) - Debug package — step-through agent execution, breakpoints, and state inspection. Tests: 4. Docs: docs/L2/debug.md.
+- `@koi/decision-ledger` (packages/lib/decision-ledger) - Per-session decision ledger projection — read-only join over trajectory + audit with run report as a sidecar summary. Tests: 1. Docs: docs/L2/decision-ledger.md.
+- `@koi/edit-match` (packages/lib/edit-match) - Search and replace files using cascading match strategies from exact to fuzzy. Tests: 4. Docs: -.
+- `@koi/errors` (packages/lib/errors) - Provide KoiRuntimeError class, circuit breaker, retry logic, and filesystem error mapping. Tests: 7. Docs: -.
+- `@koi/eval` (packages/lib/eval) - Agent eval framework: run suites, score transcripts, persist runs, detect regressions, self-test capabilities. Tests: 8. Docs: docs/L2/eval.md.
+- `@koi/event-delivery` (packages/lib/event-delivery) - Manage event subscriptions with serialized delivery, retry, dead letter queue, and replay. Tests: 2. Docs: -.
+- `@koi/event-trace` (packages/lib/event-trace) - ATIF trajectory recording middleware — records every model/tool call to an inspectable trajectory document. Tests: 5. Docs: docs/L2/event-trace.md.
+- `@koi/execution-context` (packages/lib/execution-context) - Store and retrieve session context via AsyncLocalStorage for tool execution. Tests: 4. Docs: -.
+- `@koi/federation` (packages/lib/federation) - Multi-zone agent coordination — zone registry, sequence-cursor sync, cross-zone tool routing. Tests: 6. Docs: docs/L2/federation.md.
+- `@koi/file-resolution` (packages/lib/file-resolution) - Read markdown files, resolve directory structures, enforce token budgets. Tests: 7. Docs: docs/L2/file-resolution.md.
+- `@koi/file-type` (packages/lib/file-type) - Magic-byte MIME detection for user-originated file content — clipboard, @-reference, upload. Tests: 1. Docs: docs/L2/file-type.md.
+- `@koi/forge-demand` (packages/lib/forge-demand) - Demand-triggered forge detection: capability gaps, repeated failures, latency degradation, user corrections.. Tests: 4. Docs: docs/L2/forge-demand.md.
+- `@koi/forge-exaptation` (packages/lib/forge-exaptation) - Purpose-drift detection for forge artifacts: pure functions over usage observations.. Tests: 3. Docs: docs/L2/forge-exaptation.md.
+- `@koi/forge-integrity` (packages/lib/forge-integrity) - Content-addressable integrity, provenance, and lineage helpers for forged bricks. L2.. Tests: 3. Docs: docs/L2/forge-integrity.md.
+- `@koi/forge-optimizer` (packages/lib/forge-optimizer) - Advisory artifact-optimization helpers: scoring, merge/simplify/retirement suggestions, lifecycle validation (L2).. Tests: 7. Docs: docs/L2/forge-optimizer.md.
+- `@koi/forge-policy` (packages/lib/forge-policy) - Sync deterministic policy evaluator + audit log for forge candidates. L2.. Tests: 6. Docs: docs/L2/forge-policy.md.
+- `@koi/forge-tools` (packages/lib/forge-tools) - Primordial forge tools and in-memory ForgeStore (L2). Tests: 6. Docs: docs/L2/forge-tools.md.
+- `@koi/forge-types` (packages/lib/forge-types) - Shared type + contract surfaces for @koi/forge-* L2 packages. L0u types-only.. Tests: 1. Docs: docs/L2/forge-types.md.
+- `@koi/forge-verifier` (packages/lib/forge-verifier) - Sequential short-circuiting verification pipeline for forge artifacts with pluggable stages and caching.. Tests: 2. Docs: docs/L2/forge-verifier.md.
+- `@koi/fs-local` (packages/lib/fs-local) - Local filesystem FileSystemBackend using Bun.file/node:fs. Tests: 1. Docs: docs/L2/fs-local.md.
+- `@koi/fs-nexus` (packages/lib/fs-nexus) - Nexus-backed FileSystemBackend via JSON-RPC. Tests: 8. Docs: docs/L2/fs-nexus.md.
+- `@koi/fs-scoped` (packages/lib/fs-scoped) - Scoped filesystem wrapper — restricts a FileSystemBackend to a root with configurable ro/rw access. Tests: 1. Docs: -.
+- `@koi/gateway-types` (packages/lib/gateway-types) - Shared gateway wire-protocol types (GatewayFrame, Session, RoutingContext). L0u — no logic, no deps beyond @koi/core.. Tests: 1. Docs: -.
+- `@koi/git-utils` (packages/lib/git-utils) - Wrap git CLI commands and resolve worktree paths via Bun.spawn. Tests: 4. Docs: -.
+- `@koi/handoff` (packages/lib/handoff) - Structured context relay between agents — typed envelopes + auto-injecting middleware. Tests: 9. Docs: docs/L2/handoff.md.
+- `@koi/harness` (packages/lib/harness) - CLI harness assembly: wires a KoiRuntime to a ChannelAdapter for REPL and single-prompt execution. Tests: 2. Docs: docs/L2/harness.md.
+- `@koi/harness-search` (packages/lib/harness-search) - Iterative refinement search over synthesized forge variants with Thompson sampling (L2). Tests: 4. Docs: docs/L2/harness-search.md.
+- `@koi/harness-synth` (packages/lib/harness-synth) - LLM-driven single-candidate forge synthesis with verifier-driven retry (L2). Tests: 2. Docs: docs/L2/harness-synth.md.
+- `@koi/hash` (packages/lib/hash) - Compute brick IDs, content hashes, HMACs, and ULIDs for L1 and L2 packages. Tests: 7. Docs: -.
+- `@koi/hooks` (packages/lib/hooks) - Hook loader, schema validation, session-scoped hook lifecycle management, and stop-gate coordination. Tests: 20. Docs: docs/L2/hooks.md.
+- `@koi/ipc-local` (packages/lib/ipc-local) - In-process mailbox IPC: in-memory MailboxComponent with microtask dispatch and MailboxRouter for multi-agent routing. Tests: 3. Docs: docs/L2/ipc-local.md.
+- `@koi/ipc-nexus` (packages/lib/ipc-nexus) - Nexus-backed MailboxComponent with optional local fallback. Tests: 2. Docs: docs/L2/ipc-nexus.md.
+- `@koi/long-running` (packages/lib/long-running) - Long-running harness — multi-turn agent lifecycle with soft checkpointing, pause/resume, and crash recovery. Tests: 1. Docs: docs/L2/long-running.md.
+- `@koi/loop` (packages/lib/loop) - Convergence loop primitive — re-runs an agent until a deterministic verifier passes or a budget is exhausted. Tests: 8. Docs: docs/L2/loop.md.
+- `@koi/lsp` (packages/lib/lsp) - LSP client tools: hover, definition, references, diagnostics, symbols. Tests: 9. Docs: docs/L2/lsp.md.
+- `@koi/middleware-ace` (packages/lib/middleware-ace) - Adaptive Continuous Enhancement — trajectory-to-playbook self-improvement loop (stat pipeline + injection). Tests: 6. Docs: docs/L2/middleware-ace.md.
+- `@koi/middleware-call-dedup` (packages/lib/middleware-call-dedup) - Cache deterministic tool call results within a session by content-hashed key. Tests: 3. Docs: docs/L2/middleware-call-dedup.md.
+- `@koi/middleware-call-limits` (packages/lib/middleware-call-limits) - Per-session tool and model call caps with atomic increment-if-below counters. Tests: 4. Docs: docs/L2/middleware-call-limits.md.
+- `@koi/middleware-circuit-breaker` (packages/lib/middleware-circuit-breaker) - Per-provider circuit breaker for model calls — fail fast on unhealthy providers. Tests: 1. Docs: docs/L2/middleware-circuit-breaker.md.
+- `@koi/middleware-degenerate` (packages/lib/middleware-degenerate) - Variant selection + failover middleware for capabilities with multiple degenerate tool implementations. Tests: 1. Docs: docs/L2/middleware-degenerate.md.
+- `@koi/middleware-event-rules` (packages/lib/middleware-event-rules) - Declarative YAML rules mapping engine events (tools/turns/sessions) to actions (escalate/notify/log/skip_tool). Tests: 6. Docs: docs/L2/middleware-event-rules.md.
+- `@koi/middleware-feedback-loop` (packages/lib/middleware-feedback-loop) - Model output validation, structured feedback injection, and tool health tracking middleware. Tests: 7. Docs: docs/L2/middleware-feedback-loop.md.
+- `@koi/middleware-fs-rollback` (packages/lib/middleware-fs-rollback) - Snapshot/restore the target file around protected tool calls (L2). Tests: 1. Docs: docs/L2/middleware-fs-rollback.md.
+- `@koi/middleware-otel` (packages/lib/middleware-otel) - OpenTelemetry GenAI semantic convention middleware — emits spans for model calls, tool invocations, and agent sessions. Tests: 2. Docs: docs/L2/middleware-otel.md.
+- `@koi/middleware-output-verifier` (packages/lib/middleware-output-verifier) - Two-stage output quality gate: deterministic checks + optional LLM-as-judge with revise loop and streaming. Tests: 3. Docs: docs/L2/middleware-output-verifier.md.
+- `@koi/middleware-plan-persist` (packages/lib/middleware-plan-persist) - File-backed persistence for write_plan — saves plans to .koi/plans/<ts>-<slug>.md and loads them back. Tests: 5. Docs: docs/L2/middleware-plan-persist.md.
+- `@koi/middleware-planning` (packages/lib/middleware-planning) - Planning middleware — injects write_plan tool for structured multi-step task tracking. Tests: 1. Docs: docs/L2/middleware-planning.md.
+- `@koi/middleware-policy-cache` (packages/lib/middleware-policy-cache) - Short-circuit tool calls for forge-verified bricks promoted to policy mode. Tests: 1. Docs: docs/L2/middleware-policy-cache.md.
+- `@koi/middleware-prompt-cache` (packages/lib/middleware-prompt-cache) - Reorder messages for cache-friendly prefix; emit CacheHints for engine adapters. Tests: 2. Docs: docs/L2/middleware-prompt-cache.md.
+- `@koi/middleware-reflex` (packages/lib/middleware-reflex) - Rule-based short-circuit middleware — canned responses for known message patterns, skipping the model. Tests: 1. Docs: docs/L2/middleware-reflex.md.
+- `@koi/middleware-report` (packages/lib/middleware-report) - Activity reporting middleware with bounded ring buffer and structured run reports. Tests: 4. Docs: docs/L2/middleware-report.md.
+- `@koi/middleware-rlm` (packages/lib/middleware-rlm) - Segment oversized model requests into chunks and reassemble responses. Tests: 4. Docs: docs/L2/middleware-rlm.md.
+- `@koi/middleware-semantic-retry` (packages/lib/middleware-semantic-retry) - Context-aware prompt rewriting on agent failure with pluggable failure analysis and retry actions. Tests: 2. Docs: docs/L2/middleware-semantic-retry.md.
+- `@koi/middleware-strict-agentic` (packages/lib/middleware-strict-agentic) - Stop-gate middleware that blocks premature completion on filler/plan-only turns in agentic mode. Tests: 5. Docs: docs/L2/middleware-strict-agentic.md.
+- `@koi/middleware-task-anchor` (packages/lib/middleware-task-anchor) - Injects a system-reminder with the live task board after K idle turns. Tests: 3. Docs: docs/L2/middleware-task-anchor.md.
+- `@koi/middleware-tool-audit` (packages/lib/middleware-tool-audit) - Tool usage tracking and lifecycle signals (unused, low adoption, high failure, high value). Tests: 3. Docs: docs/L2/middleware-tool-audit.md.
+- `@koi/middleware-tool-disclosure` (packages/lib/middleware-tool-disclosure) - Progressive tool disclosure: swap full descriptors for summaries above a threshold; promote on demand. Tests: 2. Docs: docs/L2/middleware-tool-disclosure.md.
+- `@koi/middleware-tool-error-formatter` (packages/lib/middleware-tool-error-formatter) - Format tool errors into actionable model feedback with pluggable formatters. Tests: 1. Docs: docs/L2/middleware-tool-error-formatter.md.
+- `@koi/middleware-tool-recovery` (packages/lib/middleware-tool-recovery) - Recover structured tool calls from text patterns in model responses (Hermes / Llama 3.1 / JSON fence). Tests: 4. Docs: docs/L2/middleware-tool-recovery.md.
+- `@koi/middleware-tool-selector` (packages/lib/middleware-tool-selector) - Pre-filter tools before model calls — reduces token usage and improves selection accuracy. Tests: 4. Docs: docs/L2/middleware-tool-selector.md.
+- `@koi/middleware-turn-ack` (packages/lib/middleware-turn-ack) - Two-stage turn acknowledgement — debounced 'processing' + 'idle' status via channel.sendStatus. Tests: 1. Docs: docs/L2/middleware-turn-ack.md.
+- `@koi/middleware-turn-prelude` (packages/lib/middleware-turn-prelude) - Injects reactive background-task match notifications as user-role prelude before each model turn. Tests: 4. Docs: docs/L2/middleware-turn-prelude.md.
+- `@koi/middleware-user-model` (packages/lib/middleware-user-model) - Unified user-model middleware: pre/post-action channels + sensor enrichment fused into one [User Context] block. Tests: 4. Docs: docs/L2/middleware-user-model.md.
+- `@koi/model-registry` (packages/lib/model-registry) - Per-model context window registry and resolution utilities for L1 and L2 packages. Tests: 1. Docs: -.
+- `@koi/model-router` (packages/lib/model-router) - Multi-provider LLM routing with ordered fallback, circuit breakers, and latency health monitoring. Tests: 7. Docs: docs/L2/model-router.md.
+- `@koi/nexus-client` (packages/lib/nexus-client) - Shared JSON-RPC 2.0 HTTP transport for Nexus server communication. Tests: 4. Docs: docs/L2/nexus-client.md.
+- `@koi/outcome-evaluator` (packages/lib/outcome-evaluator) - LLM-as-judge rubric evaluator: grades agent output per criterion, re-prompts until criteria pass or budget is exhausted. Tests: 4. Docs: docs/L2/outcome-evaluator.md.
+- `@koi/playbook-store-nexus` (packages/lib/playbook-store-nexus) - L2 storage adapter: ACE PlaybookStore/StructuredPlaybookStore/TrajectoryStore/PlaybookProposalStore over Nexus. Tests: 5. Docs: docs/L2/playbook-store-nexus.md.
+- `@koi/playbook-store-sqlite` (packages/lib/playbook-store-sqlite) - L2 storage adapter: persistent ACE PlaybookStore + TrajectoryStore + PlaybookProposalStore over SQLite. Tests: 1. Docs: docs/L2/playbook-store-sqlite.md.
+- `@koi/plugins` (packages/lib/plugins) - Plugin manifest validation, multi-source discovery, and in-memory registry. Tests: 7. Docs: docs/L2/plugins.md.
+- `@koi/proactive` (packages/lib/proactive) - Proactive/autonomous tool surfaces — sleep, wake, and cron tools over SchedulerComponent. Tests: 11. Docs: docs/L2/proactive.md.
+- `@koi/query-engine` (packages/lib/query-engine) - Stream consumer that maps ModelChunk to EngineEvent with tool-call argument accumulation. Tests: 6. Docs: docs/L2/query-engine.md.
+- `@koi/replay` (packages/lib/replay) - Deterministic cassette recording and replay for Koi agent tests. Tests: 3. Docs: docs/L2/replay.md.
+- `@koi/rules-loader` (packages/lib/rules-loader) - Hierarchical project rules file discovery, loading, merging, and system prompt injection. Tests: 6. Docs: docs/L2/rules-loader.md.
+- `@koi/scratchpad-local` (packages/lib/scratchpad-local) - In-memory ScratchpadComponent with CAS, TTL, and glob filtering. Tests: 1. Docs: docs/L2/scratchpad-local.md.
+- `@koi/secure-storage` (packages/lib/secure-storage) - OS keychain token storage with file-based locking for concurrent access. Tests: 3. Docs: -.
+- `@koi/session` (packages/lib/session) - Session persistence (SQLite/WAL) and transcript (append-only JSONL) for crash recovery. Tests: 9. Docs: docs/L2/session.md.
+- `@koi/settings` (packages/lib/settings) - Hierarchical settings cascade: user → project → local → flag → policy. Tests: 4. Docs: docs/L2/settings.md.
+- `@koi/shutdown` (packages/lib/shutdown) - Handle graceful shutdown signals and map exit codes for CLI and deploy. Tests: 3. Docs: -.
+- `@koi/skill-distiller` (packages/lib/skill-distiller) - Distill reusable skill drafts from successful task traces with content-hash dedupe and provenance audit. Tests: 12. Docs: docs/L2/skill-distiller.md.
+- `@koi/skill-tool` (packages/lib/skill-tool) - SkillTool meta-tool — on-demand skill loading, advertising, and fork dispatch. Tests: 4. Docs: docs/L2/skill-tool.md.
+- `@koi/skills-runtime` (packages/lib/skills-runtime) - Multi-source skill discovery and loading for Koi agents. Tests: 15. Docs: docs/L2/skills-runtime.md.
+- `@koi/snapshot-store-nexus` (packages/lib/snapshot-store-nexus) - L2 storage adapter: SnapshotChainStore<T> over Nexus JSON-RPC. Tests: 4. Docs: docs/L2/snapshot-store-nexus.md.
+- `@koi/snapshot-store-sqlite` (packages/lib/snapshot-store-sqlite) - L2 storage adapter: SnapshotChainStore<T> over SQLite with recursive-CTE walks and mark-sweep GC. Tests: 5. Docs: docs/L2/snapshot-store-sqlite.md.
+- `@koi/spawn-tools` (packages/lib/spawn-tools) - LLM-callable agent spawn tool + TaskCascade helper for coordinator orchestration (L2). Tests: 6. Docs: docs/L2/spawn-tools.md.
+- `@koi/task-board` (packages/lib/task-board) - Immutable TaskBoard with DAG validation, cycle detection, and topological sort. Tests: 3. Docs: -.
+- `@koi/task-spawn` (packages/lib/task-spawn) - Lightweight task tool for zero-friction subagent spawning + copilot routing. Tests: 6. Docs: docs/L2/task-spawn.md.
+- `@koi/task-tools` (packages/lib/task-tools) - LLM-callable task management tools — create, get, update, list, stop, output (L2). Tests: 2. Docs: docs/L2/task-tools.md.
+- `@koi/tasks` (packages/lib/tasks) - Pluggable task board persistence — in-memory and file-based backends. Tests: 12. Docs: docs/L2/tasks.md.
+- `@koi/test` (packages/lib/test) - Test doubles, context factories, event collectors, and assertion helpers for Koi agent tests. Tests: 11. Docs: -.
+- `@koi/tool-browser` (packages/lib/tool-browser) - Browser automation tools via accessibility-tree-first BrowserDriver. Tests: 20. Docs: docs/L2/tool-browser.md.
+- `@koi/tool-exec` (packages/lib/tool-exec) - execute_code: runs model scripts via Koi tools in an isolated Bun Worker, returning only the final result (L2). Tests: 3. Docs: docs/L2/tool-exec.md.
+- `@koi/tool-notebook` (packages/lib/tool-notebook) - Built-in notebook tool: read and edit .ipynb cells. Tests: 6. Docs: docs/L2/tool-notebook.md.
+- `@koi/tools-bash` (packages/lib/tools-bash) - Bash shell execution tool with security classifiers. Tests: 4. Docs: docs/L2/tools-bash.md.
+- `@koi/tools-builtin` (packages/lib/tools-builtin) - Built-in tools: filesystem (read, edit, write) + search (glob, grep, tool-search). Tests: 4. Docs: docs/L2/tools-builtin.md.
+- `@koi/tools-core` (packages/lib/tools-core) - Tool type bridge, registry, and ComponentProvider adapter. Tests: 3. Docs: docs/L2/tools-core.md.
+- `@koi/tools-web` (packages/lib/tools-web) - Fetch and search the web with SSRF protection and result caching. Tests: 7. Docs: docs/L2/tools-web.md.
+- `@koi/toolsets` (packages/lib/toolsets) - Named composable tool presets — reusable tool groups for agents, spawn, and channels. Tests: 1. Docs: docs/L2/toolsets.md.
+- `@koi/url-safety` (packages/lib/url-safety) - SSRF / private-IP / metadata-endpoint blocklist for outbound HTTP — shared safe-fetch utility. Tests: 5. Docs: -.
+- `@koi/validation` (packages/lib/validation) - Validate brick artifacts, pipelines, fitness scores, and config schemas. Tests: 17. Docs: -.
+- `@koi/variant-selection` (packages/lib/variant-selection) - Selection strategies for degenerate tool/brick variants. L0u utility package.. Tests: 7. Docs: -.
+- `@koi/watch-patterns` (packages/lib/watch-patterns) - Linear-time regex matcher, line buffer, and pending-match store for reactive shell notifications. Tests: 5. Docs: docs/L2/watch-patterns.md.
+- `@koi/workspace` (packages/lib/workspace) - Git worktree WorkspaceBackend and ComponentProvider for agent isolation. Tests: 2. Docs: docs/L2/workspace.md.
+
+## meta (3)
+
+- `@koi-agent/cli` (packages/meta/cli) - Interactive command-line interface for agent initialization and local execution. Tests: 66. Docs: docs/L3/cli.md.
+- `@koi/rlm-stack` (packages/meta/rlm-stack) - L3 composition wiring @koi/middleware-rlm with @koi/context-manager threshold coordination. Tests: 3. Docs: docs/L2/rlm-stack.md, docs/L3/rlm-stack.md.
+- `@koi/runtime` (packages/meta/runtime) - L3 meta-package: wires Phase 1 kernel + L2 packages into a bootable runtime with progressive stub replacement. Tests: 38. Docs: docs/L3/runtime.md.
+
+## mm (12)
+
+- `@koi/dream` (packages/mm/dream) - Dream consolidation — offline memory merging, pruning, and upgrade. Tests: 3. Docs: docs/L2/dream.md.
+- `@koi/memory` (packages/mm/memory) - Session-start memory recall — scan, score, budget, and format persisted memories. Tests: 4. Docs: docs/L2/memory.md.
+- `@koi/memory-fs` (packages/mm/memory-fs) - File-based memory storage with CRUD, MEMORY.md indexing, and Jaccard deduplication. Tests: 8. Docs: docs/L2/memory-fs.md.
+- `@koi/memory-team-sync` (packages/mm/memory-team-sync) - Team memory sync — type filtering, secret scanning, and fail-closed sync boundary. Tests: 2. Docs: docs/L2/memory-team-sync.md.
+- `@koi/memory-tools` (packages/mm/memory-tools) - Memory tools for LLM agent execution — store, recall, search, delete. Tests: 8. Docs: docs/L2/memory-tools.md.
+- `@koi/middleware-collective-memory` (packages/mm/middleware-collective-memory) - Cross-spawn learning injection — extracts and injects collective memory from brick artifacts. Tests: 6. Docs: docs/L2/middleware-collective-memory.md.
+- `@koi/middleware-dream` (packages/mm/middleware-dream) - Dream consolidation middleware — fires memory consolidation in the background after session end. Tests: 2. Docs: docs/L2/middleware-dream.md.
+- `@koi/middleware-extraction` (packages/mm/middleware-extraction) - Post-turn learning extraction middleware — extracts reusable knowledge from agent tool outputs. Tests: 4. Docs: docs/L2/middleware-extraction.md.
+- `@koi/middleware-memory-recall` (packages/mm/middleware-memory-recall) - Frozen-snapshot memory recall middleware — injects recalled memories at session start. Tests: 2. Docs: docs/L2/middleware-memory-recall.md.
+- `@koi/model-openai-compat` (packages/mm/model-openai-compat) - Thin OpenAI-compatible model adapter for OpenAI-compatible and other Chat Completions APIs. Tests: 10. Docs: docs/L2/model-openai-compat.md.
+- `@koi/session-repair` (packages/mm/session-repair) - Validate and repair message history through orphan repair, dedup, and merge phases. Tests: 3. Docs: docs/L2/session-repair.md.
+- `@koi/token-estimator` (packages/mm/token-estimator) - Estimate tokens using configurable heuristics (default: 4 chars per token). Tests: 2. Docs: docs/L2/token-estimator.md.
+
+## net (10)
+
+- `@koi/daemon` (packages/net/daemon) - OS-process supervisor and worker backends (subprocess) for long-running agent workers. Tests: 14. Docs: docs/L2/daemon.md.
+- `@koi/gateway` (packages/net/gateway) - WebSocket gateway core — routing, auth, sequencing, backpressure (v2 minimal, no node registry or tool routing). Tests: 9. Docs: docs/L2/gateway.md.
+- `@koi/gateway-canvas` (packages/net/gateway-canvas) - Canvas HTTP server: surface CRUD with ETag CAS and SSE streaming for real-time agent-rendered content. Tests: 3. Docs: docs/L2/gateway-canvas.md.
+- `@koi/gateway-http` (packages/net/gateway-http) - Production HTTP/WS gateway: HMAC auth, replay/idempotency, rate limits, CORS, audit log, graceful shutdown. Tests: 22. Docs: docs/L2/gateway-http.md.
+- `@koi/gateway-nexus` (packages/net/gateway-nexus) - Nexus-backed SessionStore for HA gateway: write-through cache, coalesced async writes, degradation state machine. Tests: 4. Docs: docs/L2/gateway-nexus.md.
+- `@koi/gateway-stack` (packages/net/gateway-stack) - L3 gateway stack: wires gateway + canvas + webhook + optional Nexus HA into one lifecycle plus health endpoint. Tests: 1. Docs: docs/L3/gateway-stack.md.
+- `@koi/gateway-webhook` (packages/net/gateway-webhook) - Webhook HTTP ingestion — POST requests to GatewayFrames with signature verification and idempotency.. Tests: 4. Docs: docs/L2/gateway-webhook.md.
+- `@koi/mcp` (packages/net/mcp) - MCP transport layer, connection lifecycle, and state management. Tests: 25. Docs: docs/L2/mcp.md.
+- `@koi/mcp-server` (packages/net/mcp-server) - Expose agent tools and platform capabilities via Model Context Protocol. Tests: 3. Docs: docs/L2/mcp-server.md.
+- `@koi/nexus-sandbox` (packages/net/nexus-sandbox) - Spawn local nexus-ai-fs[sandbox] subprocess: zero external services, SQLite + LRU + BM25S. Tests: 4. Docs: docs/L2/nexus-sandbox.md.
+
+## sandbox (11)
+
+- `@koi/sandbox-cloudflare` (packages/sandbox/sandbox-cloudflare) - Cloudflare Workers EdgeFunctionAdapter — durable per-(ownerId, operationId) dedupe via Durable Objects. Tests: 11. Docs: docs/L2/sandbox-cloudflare.md.
+- `@koi/sandbox-conformance` (packages/sandbox/sandbox-conformance) - Shared bun:test conformance suite for SandboxAdapter implementations. Tests: 5. Docs: docs/L2/sandbox-conformance.md.
+- `@koi/sandbox-daytona` (packages/sandbox/sandbox-daytona) - Daytona hosted-cloud SandboxAdapter for managed workspace execution. Tests: 3. Docs: docs/L2/sandbox-daytona.md.
+- `@koi/sandbox-docker` (packages/sandbox/sandbox-docker) - Docker-backed SandboxAdapter for containerized command execution. Tests: 10. Docs: docs/L2/sandbox-docker.md.
+- `@koi/sandbox-e2b` (packages/sandbox/sandbox-e2b) - E2B hosted-cloud SandboxAdapter for remote microVM execution. Tests: 3. Docs: docs/L2/sandbox-e2b.md.
+- `@koi/sandbox-executor` (packages/sandbox/sandbox-executor) - Subprocess-backed SandboxExecutor for isolated code execution. Tests: 2. Docs: docs/L2/sandbox-executor.md.
+- `@koi/sandbox-os` (packages/sandbox/sandbox-os) - OS-level sandbox adapter with seatbelt and bubblewrap backends. Tests: 8. Docs: docs/L2/sandbox-os.md.
+- `@koi/sandbox-router` (packages/sandbox/sandbox-router) - Capability-based selection over SandboxAdapter instances with create-time fallback and lifecycle tracking. Tests: 3. Docs: docs/L2/sandbox-router.md.
+- `@koi/sandbox-ssh` (packages/sandbox/sandbox-ssh) - SSH-backed SandboxAdapter for remote command execution via ssh2. Tests: 3. Docs: docs/L2/sandbox-ssh.md.
+- `@koi/sandbox-vercel` (packages/sandbox/sandbox-vercel) - Vercel Functions EdgeFunctionAdapter (DESIGN-ONLY in v1) — KV-backed dedupe per (ownerId, operationId).. Tests: 7. Docs: docs/L2/sandbox-vercel.md.
+- `@koi/sandbox-wasm` (packages/sandbox/sandbox-wasm) - In-process WebAssembly executor (package-local WasmExecutor contract; NOT SandboxExecutor). Tests: 3. Docs: docs/L2/sandbox-wasm.md.
+
+## sched (5)
+
+- `@koi/harness-scheduler` (packages/sched/harness-scheduler) - Auto-resume scheduler for suspended harnesses. Tests: 2. Docs: docs/L2/harness-scheduler.md.
+- `@koi/scheduler` (packages/sched/scheduler) - Task scheduler with cron, priority queue, retry, and SQLite persistence. Tests: 8. Docs: docs/L2/scheduler.md.
+- `@koi/scheduler-nexus` (packages/sched/scheduler-nexus) - Nexus-backed distributed task store, schedule store, and priority queue for cross-node scheduling. Tests: 6. Docs: docs/L2/scheduler-nexus.md.
+- `@koi/scheduler-provider` (packages/sched/scheduler-provider) - Agent-facing tools for scheduler interaction (9 tools via SchedulerComponent). Tests: 1. Docs: docs/L2/scheduler-provider.md.
+- `@koi/verified-loop` (packages/sched/verified-loop) - External verification loop — iterate agent against objective gates instead of LLM self-assessment. Tests: 5. Docs: docs/L2/verified-loop.md.
+
+## security (19)
+
+- `@koi/audit-sink-ndjson` (packages/security/audit-sink-ndjson) - Buffered NDJSON file sink for @koi/middleware-audit. Tests: 1. Docs: docs/L2/audit-sink-ndjson.md.
+- `@koi/audit-sink-nexus` (packages/security/audit-sink-nexus) - Nexus-backed AuditSink — batched writes with interval and size triggers. Tests: 2. Docs: docs/L2/audit-sink-nexus.md.
+- `@koi/audit-sink-sqlite` (packages/security/audit-sink-sqlite) - SQLite sink with WAL mode and time+kind index for @koi/middleware-audit. Tests: 1. Docs: docs/L2/audit-sink-sqlite.md.
+- `@koi/governance-approval-tiers` (packages/security/governance-approval-tiers) - Persistent approval allowlist (JSON-lines) with scope tiers, aliasing, and delta audit. Tests: 7. Docs: docs/L2/governance-approval-tiers.md.
+- `@koi/governance-core` (packages/security/governance-core) - Governance middleware bundle — policy gate, setpoint enforcement, cost recording. Tests: 8. Docs: docs/L2/governance-core.md.
+- `@koi/governance-defaults` (packages/security/governance-defaults) - Out-of-box GovernanceController + GovernanceBackend + pricing defaults for @koi/governance-core. Tests: 5. Docs: docs/L2/governance-defaults.md.
+- `@koi/governance-delegation` (packages/security/governance-delegation) - Capability tokens + delegation chains. L2 verifier, signer, and in-memory revocation registry over @koi/core.. Tests: 10. Docs: docs/L2/governance-delegation.md.
+- `@koi/governance-scope` (packages/security/governance-scope) - Capability-attenuation wrappers: scoped filesystem, fetcher, and credentials (glob/URLPattern/key allowlists). Tests: 5. Docs: docs/L2/governance-scope.md.
+- `@koi/governance-security` (packages/security/governance-security) - Security analysis helpers — injection detection, PII finders, anomaly monitor, security scorer. Tests: 5. Docs: docs/L2/governance-security.md.
+- `@koi/middleware-audit` (packages/security/middleware-audit) - Security-grade audit logging middleware with hash chain tamper-detection, Ed25519 signing, and bounded backpressure. Tests: 4. Docs: docs/L2/middleware-audit.md.
+- `@koi/middleware-exfiltration-guard` (packages/security/middleware-exfiltration-guard) - Scan tool inputs and model output for secret exfiltration (base64/URL-encoded secrets). Tests: 2. Docs: docs/L2/middleware-exfiltration-guard.md.
+- `@koi/middleware-intent-capsule` (packages/security/middleware-intent-capsule) - Cryptographic mandate binding middleware — Ed25519 session signing for OWASP ASI01 goal-hijack defense. Tests: 2. Docs: docs/L2/middleware-intent-capsule.md.
+- `@koi/middleware-permissions` (packages/security/middleware-permissions) - Tool-level access control middleware with pattern-based classifier, denial tracking, and human-in-the-loop approval. Tests: 13. Docs: docs/L2/middleware-permissions.md.
+- `@koi/nexus-delegation` (packages/security/nexus-delegation) - Nexus-backed DelegationComponent: per-child API key grant/revoke over Nexus REST. L2.. Tests: 6. Docs: docs/L2/nexus-delegation.md.
+- `@koi/permissions` (packages/security/permissions) - Rule-based tool access control implementing PermissionBackend. Tests: 7. Docs: docs/L2/permissions.md.
+- `@koi/permissions-nexus` (packages/security/permissions-nexus) - Nexus-backed permission persistence, cross-node sync, and delegation hooks. Tests: 4. Docs: docs/L2/permissions-nexus.md.
+- `@koi/redaction` (packages/security/redaction) - Mask secrets (API keys, credentials, tokens) in logs with 13 built-in pattern detectors. Tests: 13. Docs: docs/L2/redaction.md.
+- `@koi/skill-scanner` (packages/security/skill-scanner) - AST-based security scanner for SKILL.md files. Tests: 7. Docs: docs/L2/skill-scanner.md.
+- `@koi/violation-store-sqlite` (packages/security/violation-store-sqlite) - Append-only SQLite-backed ViolationStore with WAL mode and indexed queries. Tests: 3. Docs: docs/L2/violation-store-sqlite.md.
 
 ## ui (1)
 
-- `@koi/tui` (packages/ui/tui) - Admin-panel-connected terminal console for operators. Tests: 10.
-
-## middleware (18)
-
-- `@koi/middleware-call-dedup` (packages/middleware/middleware-call-dedup) - Cache identical tool call results per session to avoid redundant re-execution. Tests: 4. Docs: docs/L2/middleware-call-dedup.md.
-- `@koi/middleware-call-limits` (packages/middleware/middleware-call-limits) - Enforce per-session and per-tool call count limits with configurable exit behavior. Tests: 5.
-- `@koi/middleware-degenerate` (packages/middleware/middleware-degenerate) - Select primary implementation for capabilities with multiple variants and handle failover. Tests: 1. Docs: docs/L2/middleware-degenerate.md.
-- `@koi/middleware-event-rules` (packages/middleware/middleware-event-rules) - Declarative YAML rule engine mapping engine events to actions - no middleware code needed. Tests: 7. Docs: docs/L2/middleware-event-rules.md.
-- `@koi/middleware-feedback-loop` (packages/middleware/middleware-feedback-loop) - Validate model and tool outputs, retry with error feedback, enforce quality gates. Tests: 17. Docs: docs/L2/middleware-feedback-loop.md.
-- `@koi/middleware-fs-rollback` (packages/middleware/middleware-fs-rollback) - Capture filesystem snapshots during tool calls and enable rollback to prior states. Tests: 4.
-- `@koi/middleware-guided-retry` (packages/middleware/middleware-guided-retry) - Inject constraint hints into model calls after backtrack or fork events. Tests: 4.
-- `@koi/middleware-output-verifier` (packages/middleware/middleware-output-verifier) - Run deterministic and LLM-as-judge quality checks before delivering model outputs. Tests: 4. Docs: docs/L2/middleware-output-verifier.md.
-- `@koi/middleware-reflex` (packages/middleware/middleware-reflex) - Rule-based short-circuit middleware for known message patterns. Tests: 4. Docs: docs/L2/middleware-reflex.md.
-- `@koi/middleware-report` (packages/middleware/middleware-report) - Generate human-readable summaries of autonomous agent run activities and outcomes. Tests: 6. Docs: docs/L2/middleware-report.md.
-- `@koi/middleware-rlm` (packages/middleware/middleware-rlm) - Virtualize unbounded input as middleware - any engine can process inputs larger than context window. Tests: 12. Docs: docs/L2/middleware-rlm.md.
-- `@koi/middleware-sandbox` (packages/middleware/middleware-sandbox) - Enforce timeout, output truncation, and error classification for sandboxed tools. Tests: 3.
-- `@koi/middleware-semantic-retry` (packages/middleware/middleware-semantic-retry) - Analyze failure root causes and rewrite prompts with context-aware retry actions. Tests: 4. Docs: docs/L2/middleware-semantic-retry.md.
-- `@koi/middleware-tool-audit` (packages/middleware/middleware-tool-audit) - Track per-tool usage, latency, success rates and emit lifecycle signals. Tests: 4. Docs: docs/L2/middleware-tool-audit.md.
-- `@koi/middleware-tool-recovery` (packages/middleware/middleware-tool-recovery) - Recover structured tool calls from text patterns in model responses. Tests: 8. Docs: docs/L2/middleware-tool-recovery.md.
-- `@koi/middleware-tool-selector` (packages/middleware/middleware-tool-selector) - Pre-filter tools before model calls using profile or selector function. Tests: 9. Docs: docs/L2/middleware-tool-selector.md.
-- `@koi/middleware-turn-ack` (packages/middleware/middleware-turn-ack) - Send processing and idle status signals for long-running agent turns. Tests: 3.
-
-## security (22)
-
-- `@koi/audit-sink-local` (packages/security/audit-sink-local) - Persist audit events to SQLite or NDJSON files for offline operation. Tests: 3.
-- `@koi/audit-sink-nexus` (packages/security/audit-sink-nexus) - Batch and forward audit entries to Nexus server via JSON-RPC with retry. Tests: 2. Docs: docs/L2/audit-sink-nexus.md.
-- `@koi/capability-verifier` (packages/security/capability-verifier) - Verify HMAC and Ed25519 capability tokens, track session revocation, validate delegation chains. Tests: 6. Docs: docs/L2/capability-verifier.md.
-- `@koi/collusion-detector` (packages/security/collusion-detector) - Detect agent collusion via synchronous moves, variance collapse, concentration, specialization. Tests: 4. Docs: docs/L2/collusion-detector.md.
-- `@koi/delegation` (packages/security/delegation) - Create monotonically attenuated delegation tokens with scope checking and cascading revocation. Tests: 28. Docs: docs/L2/delegation.md.
-- `@koi/doctor` (packages/security/doctor) - Static security analysis of agent manifests aligned with OWASP Agentic Top 10. Tests: 21. Docs: docs/L2/doctor.md.
-- `@koi/exec-approvals` (packages/security/exec-approvals) - Enforce progressive command allowlisting with user approval decisions across session. Tests: 10. Docs: docs/L2/exec-approvals.md.
-- `@koi/governance-memory` (packages/security/governance-memory) - Evaluate Cedar-inspired constraint DAGs with adaptive thresholds and anomaly integration. Tests: 8. Docs: docs/L2/governance-memory.md.
-- `@koi/middleware-audit` (packages/security/middleware-audit) - Log structured audit entries for all model/tool calls with PII redaction support. Tests: 4.
-- `@koi/middleware-delegation-escalation` (packages/security/middleware-delegation-escalation) - Escalate to humans when delegatee circuit breakers exhaust via bidirectional channel. Tests: 4. Docs: docs/L2/middleware-delegation-escalation.md.
-- `@koi/middleware-governance-backend` (packages/security/middleware-governance-backend) - Wrap model/tool calls with fail-closed policy evaluation gate. Tests: 3. Docs: docs/L2/middleware-governance-backend.md.
-- `@koi/middleware-guardrails` (packages/security/middleware-guardrails) - Validate agent outputs against Zod schemas to prevent malformed responses and data leaks. Tests: 6.
-- `@koi/middleware-intent-capsule` (packages/security/middleware-intent-capsule) - Sign and verify agent mandate (system prompt + objectives) to defend against goal hijacking. Tests: 2. Docs: docs/L2/middleware-intent-capsule.md.
-- `@koi/middleware-pay` (packages/security/middleware-pay) - Track token costs per call, enforce budget limits, and alert on threshold crossings. Tests: 4. Docs: docs/L2/middleware-pay.md.
-- `@koi/middleware-permissions` (packages/security/middleware-permissions) - Check tool access via pluggable backend with human-in-the-loop approval support. Tests: 7. Docs: docs/L2/middleware-permissions.md.
-- `@koi/middleware-pii` (packages/security/middleware-pii) - Detect and redact PII (email, SSN, card, IP, MAC, phone, URL) in agent I/O. Tests: 5.
-- `@koi/middleware-sanitize` (packages/security/middleware-sanitize) - Strip injection patterns, control characters, HTML tags, and zero-width chars from content. Tests: 8.
-- `@koi/permissions-nexus` (packages/security/permissions-nexus) - Forward permission queries to Nexus ReBAC server with typed contract implementations. Tests: 7. Docs: docs/L2/permissions-nexus.md.
-- `@koi/redaction` (packages/security/redaction) - Mask secrets (API keys, credentials, tokens) in logs with 13 built-in pattern detectors. Tests: 12. Docs: docs/L2/redaction.md.
-- `@koi/reputation` (packages/security/reputation) - Calculate weighted trust scores from feedback for pluggable agent reputation backend. Tests: 3. Docs: docs/L2/reputation.md.
-- `@koi/scope` (packages/security/scope) - Wrap infrastructure tokens with capability-attenuation scopes (filesystem, browser, credentials, memory). Tests: 7. Docs: docs/L2/scope.md.
-- `@koi/security-analyzer` (packages/security/security-analyzer) - Classify tool call risk via pattern matching and multi-analyzer aggregation with anomaly elevation. Tests: 4. Docs: docs/L2/security-analyzer.md.
-
-## forge (9)
-
-- `@koi/crystallize` (packages/forge/crystallize) - Detect repeating tool patterns and surface crystallization candidates for forging. Tests: 8. Docs: docs/L2/crystallize.md.
-- `@koi/forge-demand` (packages/forge/forge-demand) - Detect capability gaps and repeated failures that demand new tool creation. Tests: 7. Docs: docs/L2/forge-demand.md.
-- `@koi/forge-exaptation` (packages/forge/forge-exaptation) - Monitor tool usage for purpose drift when bricks diverge from design. Tests: 6. Docs: docs/L2/forge-exaptation.md.
-- `@koi/forge-integrity` (packages/forge/forge-integrity) - Verify provenance, sign attestations, and serialize SLSA v1.0 predicates. Tests: 1.
-- `@koi/forge-optimizer` (packages/forge/forge-optimizer) - Evaluate composite bricks against components and auto-deprecate underperforming ones. Tests: 2. Docs: docs/L2/forge-optimizer.md.
-- `@koi/forge-policy` (packages/forge/forge-policy) - Enforce governance, track usage, detect drift, and re-verify brick changes. Tests: 1.
-- `@koi/forge-tools` (packages/forge/forge-tools) - Provide primordial tools, component provider, resolver, and store utilities. Tests: 6.
-- `@koi/forge-types` (packages/forge/forge-types) - Define shared types, errors, config, and interfaces for the forge subsystem. Tests: 1.
-- `@koi/forge-verifier` (packages/forge/forge-verifier) - Verify bricks with adversarial probes, dependency audits, and test generation. Tests: 1.
-
-## fs (29)
-
-- `@koi/catalog` (packages/fs/catalog) - Search bundled packages, forged bricks, MCP tools, and skill registry entries via unified discovery. Tests: 10.
-- `@koi/code-mode` (packages/fs/code-mode) - Propose and apply atomic code plans through a two-phase workflow with filesystem validation. Tests: 13.
-- `@koi/events-memory` (packages/fs/events-memory) - Store events in memory with replay, named subscriptions, and dead letter queue capability. Tests: 1.
-- `@koi/events-sqlite` (packages/fs/events-sqlite) - Persist durable events using SQLite with WAL mode, crash recovery, and TTL-based eviction. Tests: 2. Docs: docs/L2/events-sqlite.md.
-- `@koi/filesystem` (packages/fs/filesystem) - Expose filesystem backend operations as discoverable Tool components across all engines. Tests: 8. Docs: docs/L2/filesystem.md.
-- `@koi/filesystem-nexus` (packages/fs/filesystem-nexus) - Nexus-backed FileSystemBackend implementation via JSON-RPC. Tests: 1. Docs: docs/L2/filesystem-nexus.md.
-- `@koi/lsp` (packages/fs/lsp) - Bridge any LSP server (TypeScript, Python, Go, Rust, etc.) into Koi's ECS tool system. Tests: 14.
-- `@koi/nexus-store` (packages/fs/nexus-store) - Consolidate Nexus-backed persistence adapters for forge, events, snapshots, sessions, and memory. Tests: 5. Docs: docs/L2/nexus-store.md.
-- `@koi/pay-local` (packages/fs/pay-local) - Track credits with fully-functional in-memory ledger and optional SQLite persistence. Tests: 2.
-- `@koi/pay-nexus` (packages/fs/pay-nexus) - Persist credits to Nexus via TigerBeetle + PostgreSQL payment ledger backend. Tests: 5. Docs: docs/L2/pay-nexus.md.
-- `@koi/registry-http` (packages/fs/registry-http) - Read skill registry via REST with LRU + TTL cache; fail-open search. Tests: 2.
-- `@koi/registry-memory` (packages/fs/registry-memory) - In-memory AgentRegistry backed by event sourcing. Tests: 2. Docs: docs/L2/registry-memory.md.
-- `@koi/registry-nexus` (packages/fs/registry-nexus) - Keep agent state in sync with Nexus via periodic polling projection cache. Tests: 8. Docs: docs/L2/registry-nexus.md.
-- `@koi/registry-sqlite` (packages/fs/registry-sqlite) - Store bricks, skills, and versions in SQLite with FTS5 search and keyset pagination. Tests: 14.
-- `@koi/resolve` (packages/fs/resolve) - Auto-resolve koi.yaml manifest to runtime instances via BrickDescriptor registry. Tests: 15.
-- `@koi/search` (packages/fs/search) - Provide pluggable BM25 (keyword), vector (semantic), and hybrid search backends. Tests: 15.
-- `@koi/search-brave` (packages/fs/search-brave) - Query Brave Search API via SearchProvider contract for manifest auto-resolution. Tests: 1. Docs: docs/L2/search-brave.md.
-- `@koi/search-nexus` (packages/fs/search-nexus) - Plug Nexus search API v2 as backend for @koi/search hybrid retrieval. Tests: 6. Docs: docs/L2/search-nexus.md.
-- `@koi/search-provider` (packages/fs/search-provider) - Define contracts for web search, index search, embedders, indexers, and retrievers. Tests: 2. Docs: docs/L2/search-provider.md.
-- `@koi/skill-scanner` (packages/fs/skill-scanner) - Detect malicious code in Koi forge via AST analysis with built-in rule library. Tests: 16.
-- `@koi/skills` (packages/fs/skills) - Parse SKILL.md files with 3-level progressive loading to minimize context usage. Tests: 14. Docs: docs/L2/skills.md.
-- `@koi/store-fs` (packages/fs/store-fs) - Hash-sharded filesystem storage with hybrid metadata indexing and 4-tier overlay. Tests: 9.
-- `@koi/store-sqlite` (packages/fs/store-sqlite) - Persist bricks to SQLite with WAL mode and parameterized STRICT table schema. Tests: 1.
-- `@koi/tool-ask-guide` (packages/fs/tool-ask-guide) - Query knowledge sources within token budget and return results for guidance. Tests: 3.
-- `@koi/tool-ask-user` (packages/fs/tool-ask-user) - Elicit structured responses (multi-choice or free-text) mid-execution. Tests: 3. Docs: docs/L2/tool-ask-user.md.
-- `@koi/tool-browser` (packages/fs/tool-browser) - Automate browser via accessibility tree snapshots (100x cheaper than screenshots). Tests: 22. Docs: docs/L2/tool-browser.md.
-- `@koi/tool-exec` (packages/fs/tool-exec) - Execute ephemeral code in sandbox with input validation and timeout enforcement. Tests: 2. Docs: docs/L2/tool-exec.md.
-- `@koi/tools-github` (packages/fs/tools-github) - Manage PR lifecycle (create, review, merge) and CI waits via GitHub CLI. Tests: 9. Docs: docs/L2/tools-github.md.
-- `@koi/tools-web` (packages/fs/tools-web) - Fetch and search the web with SSRF protection and result caching. Tests: 10. Docs: docs/L2/tools-web.md.
-
-## mm (16)
-
-- `@koi/context` (packages/mm/context) - Hydrate agent context from multiple sources at session start and inject as system message. Tests: 10.
-- `@koi/memory-fs` (packages/mm/memory-fs) - Store and retrieve memories using filesystem-backed categorized fact store with search. Tests: 23. Docs: docs/L2/memory-fs.md.
-- `@koi/middleware-ace` (packages/mm/middleware-ace) - Record trajectories and consolidate learnings into persistent playbooks per session. Tests: 20.
-- `@koi/middleware-collective-memory` (packages/mm/middleware-collective-memory) - Middleware for cross-run learning persistence via brick collective memory.. Tests: 5. Docs: docs/L2/middleware-collective-memory.md.
-- `@koi/middleware-compactor` (packages/mm/middleware-compactor) - Compact old conversation history into structured summaries at configurable thresholds. Tests: 18. Docs: docs/L2/middleware-compactor.md.
-- `@koi/middleware-context-editing` (packages/mm/middleware-context-editing) - Replace old tool results with placeholders when token count exceeds threshold. Tests: 2.
-- `@koi/middleware-conversation` (packages/mm/middleware-conversation) - Link stateless channel sessions by loading thread history and persisting new turns. Tests: 6. Docs: docs/L2/middleware-conversation.md.
-- `@koi/middleware-hot-memory` (packages/mm/middleware-hot-memory) - Inject hot-tier memories into model calls at configurable intervals. Tests: 1. Docs: docs/L2/middleware-hot-memory.md.
-- `@koi/middleware-user-model` (packages/mm/middleware-user-model) - Unified user modeling middleware combining preference learning, drift detection, and sensor enrichment. Tests: 9. Docs: docs/L2/middleware-user-model.md.
-- `@koi/session-repair` (packages/mm/session-repair) - Validate and repair message history through orphan repair, dedup, and merge phases. Tests: 3. Docs: docs/L2/session-repair.md.
-- `@koi/session-store` (packages/mm/session-store) - Persist sessions durably to enable crash recovery and resume capabilities. Tests: 2. Docs: docs/L2/session-store.md.
-- `@koi/snapshot-chain-store` (packages/mm/snapshot-chain-store) - Store snapshot chains in memory with full DAG topology and ancestor walking. Tests: 3.
-- `@koi/snapshot-store-sqlite` (packages/mm/snapshot-store-sqlite) - Persist snapshot chains durably with WAL-mode storage and content-hash dedup. Tests: 2. Docs: docs/L2/snapshot-store-sqlite.md.
-- `@koi/token-estimator` (packages/mm/token-estimator) - Estimate tokens using configurable heuristics (default: 4 chars per token). Tests: 2. Docs: docs/L2/token-estimator.md.
-- `@koi/tool-squash` (packages/mm/tool-squash) - Compress old messages with agent-provided summary and archive originals to store. Tests: 5. Docs: docs/L2/tool-squash.md.
-- `@koi/transcript` (packages/mm/transcript) - Log messages durably as append-only JSONL or in-memory transcript for recovery. Tests: 3. Docs: docs/L2/transcript.md.
-
-## ipc (9)
-
-- `@koi/federation` (packages/ipc/federation) - Coordinate multi-zone agents with vector clock sync and conflict resolution. Tests: 14. Docs: docs/L2/federation.md.
-- `@koi/handoff` (packages/ipc/handoff) - Relay typed context between agents via structured handoff tools and middleware. Tests: 12. Docs: docs/L2/handoff.md.
-- `@koi/ipc-local` (packages/ipc/ipc-local) - Route messages between in-process agents using in-memory mailbox dispatch. Tests: 3.
-- `@koi/ipc-nexus` (packages/lib/ipc-nexus) - Route agent messages through Nexus transport with polling-based inbox delivery and optional fallback to another MailboxComponent. Tests: 5. Docs: docs/L2/ipc-nexus.md.
-- `@koi/scratchpad-local` (packages/ipc/scratchpad-local) - Store versioned files with CAS and TTL in in-memory scratchpad. Tests: 2.
-- `@koi/scratchpad-nexus` (packages/ipc/scratchpad-nexus) - Persist agent scratchpad state across zones via Nexus group-scoped storage. Tests: 4. Docs: docs/L2/scratchpad-nexus.md.
-- `@koi/task-spawn` (packages/ipc/task-spawn) - Inject task tool for zero-friction delegation to pre-registered subagent types. Tests: 16. Docs: docs/L2/task-spawn.md.
-- `@koi/workspace` (packages/ipc/workspace) - Isolate agent workspaces via pluggable backends (git worktrees, Docker, etc.). Tests: 12.
-- `@koi/workspace-nexus` (packages/ipc/workspace-nexus) - Sync workspace metadata across devices via Nexus Raft-replicated store. Tests: 2. Docs: docs/L2/workspace-nexus.md.
-
-## net (30)
-
-- `@koi/acp` (packages/net/acp) - Serve agent via IDE Agent Client Protocol (ACP v0.10.x) over stdin/stdout. Tests: 9. Docs: docs/L2/acp.md.
-- `@koi/acp-protocol` (packages/net/acp-protocol) - Define ACP wire types, JSON-RPC parser, transport interface, and content/event mapping. Tests: 6. Docs: docs/L2/acp-protocol.md.
-- `@koi/canvas` (packages/net/canvas) - Implement A2UI v0.9 headless protocol for agent-generated visual workspaces. Tests: 10. Docs: docs/L2/canvas.md.
-- `@koi/channel-agui` (packages/net/channel-agui) - AG-UI SSE channel adapter - connect CopilotKit-compatible web frontends to Koi agents. Tests: 7.
-- `@koi/channel-base` (packages/net/channel-base) - Build ChannelAdapters with lifecycle, capability-aware rendering, and retry handling. Tests: 11. Docs: docs/L2/channel-base.md.
-- `@koi/channel-canvas-fallback` (packages/net/channel-canvas-fallback) - Replace A2UI blocks with text links for text-only channels. Tests: 5.
-- `@koi/channel-chat-sdk` (packages/net/channel-chat-sdk) - Wrap Slack, Discord, Teams, Google Chat, GitHub, Linear into unified adapters. Tests: 8. Docs: docs/L2/channel-chat-sdk.md.
-- `@koi/channel-cli` (packages/net/channel-cli) - Read user input via readline, write output to stdout. Tests: 1.
-- `@koi/channel-discord` (packages/net/channel-discord) - Connect Discord bots with text, voice, buttons, and embeds. Tests: 13. Docs: docs/L2/channel-discord.md.
-- `@koi/channel-email` (packages/net/channel-email) - Receive email via IMAP IDLE and send via SMTP. Tests: 8.
-- `@koi/channel-matrix` (packages/net/channel-matrix) - Connect Matrix homeservers with auto-join and debouncing. Tests: 4. Docs: docs/L2/channel-matrix.md.
-- `@koi/channel-mobile` (packages/net/channel-mobile) - Serve native mobile apps via WebSocket with JSON frames. Tests: 6. Docs: docs/L2/channel-mobile.md.
-- `@koi/channel-signal` (packages/net/channel-signal) - Communicate via signal-cli JSON-RPC subprocess. Tests: 6. Docs: docs/L2/channel-signal.md.
-- `@koi/channel-slack` (packages/net/channel-slack) - Connect Slack bots via Socket Mode or HTTP Events API. Tests: 8.
-- `@koi/channel-teams` (packages/net/channel-teams) - Connect Microsoft Teams bots via Bot Framework HTTP webhooks. Tests: 4. Docs: docs/L2/channel-teams.md.
-- `@koi/channel-telegram` (packages/net/channel-telegram) - Connect Telegram bots with polling or webhook deployment. Tests: 4.
-- `@koi/channel-voice` (packages/net/channel-voice) - Bridge real-time voice I/O via LiveKit with STT/TTS. Tests: 8. Docs: docs/L2/channel-voice.md.
-- `@koi/channel-whatsapp` (packages/net/channel-whatsapp) - Connect WhatsApp bots via Baileys Web emulation. Tests: 6.
-- `@koi/gateway` (packages/net/gateway) - Route messages, authenticate sessions, dispatch webhooks, and register nodes. Tests: 20. Docs: docs/L2/gateway.md.
-- `@koi/gateway-canvas` (packages/net/gateway-canvas) - Canvas HTTP routes, SSE manager, and surface store for the Koi gateway.. Tests: 5. Docs: docs/L2/gateway-canvas.md.
-- `@koi/gateway-nexus` (packages/net/gateway-nexus) - Nexus-backed gateway state stores for multi-instance HA deployment.. Tests: 7. Docs: docs/L2/gateway-nexus.md.
-- `@koi/gateway-stack` (packages/net/gateway-stack) - Convenience bundle that wires gateway, canvas, and webhook with unified lifecycle.. Tests: 1. Docs: docs/L3/gateway-stack.md.
-- `@koi/gateway-types` (packages/net/gateway-types) - Wire protocol types, session model, and config defaults for the Koi gateway.. Tests: 1.
-- `@koi/gateway-webhook` (packages/net/gateway-webhook) - Webhook HTTP server and ingestion for the Koi gateway.. Tests: 2. Docs: docs/L2/gateway-webhook.md.
-- `@koi/mcp` (packages/net/mcp) - Bridge MCP tool servers and attach discovered tools as Koi components. Tests: 14.
-- `@koi/mcp-server` (packages/net/mcp-server) - Expose agent tools via Model Context Protocol. Tests: 1. Docs: docs/L2/mcp-server.md.
-- `@koi/name-service` (packages/net/name-service) - Register and resolve agent names with TTL expiry and fuzzy suggestions. Tests: 6. Docs: docs/L2/name-service.md.
-- `@koi/name-service-nexus` (packages/net/name-service-nexus) - Nexus-backed ANS backend with poll-based projection sync. Tests: 5. Docs: docs/L2/name-service-nexus.md.
-- `@koi/webhook-delivery` (packages/net/webhook-delivery) - Deliver agent events as signed HTTP POSTs with retry and circuit breaking. Tests: 9.
-- `@koi/webhook-provider` (packages/net/webhook-provider) - Expose read-only webhook health and configuration as agent tools. Tests: 4.
-
-## drivers (8)
-
-- `@koi/browser-playwright` (packages/drivers/browser-playwright) - Implement Playwright-based browser driver with accessibility tree serialization and stealth initialization. Tests: 5. Docs: docs/L2/browser-playwright.md.
-- `@koi/engine-acp` (packages/drivers/engine-acp) - Orchestrate ACP-compatible coding agents as Koi backends via JSON-RPC over stdin/stdout. Tests: 4.
-- `@koi/engine-claude` (packages/drivers/engine-claude) - Delegate to Claude Agent SDK query() with in-process MCP bridge for Koi tool execution. Tests: 10.
-- `@koi/engine-external` (packages/drivers/engine-external) - Wrap any external process as engine adapter with single-shot, long-lived, and PTY modes. Tests: 14. Docs: docs/L2/engine-external.md.
-- `@koi/engine-loop` (packages/drivers/engine-loop) - Execute pure TypeScript ReAct loop with parallel tool calls and iterative Reason+Act cycles. Tests: 3.
-- `@koi/engine-pi` (packages/drivers/engine-pi) - Wrap pi-agent-core with full middleware interposition on model and tool calls. Tests: 10. Docs: docs/L2/engine-pi.md.
-- `@koi/engine-rlm` (packages/drivers/engine-rlm) - Virtualize unbounded input outside context window with recursive chunking and sub-querying. Tests: 9. Docs: docs/L2/engine-rlm.md.
-- `@koi/model-router` (packages/drivers/model-router) - Route model calls across multiple LLM providers with retry, fallback, cascade, and circuit breaker. Tests: 27. Docs: docs/L2/model-router.md.
-
-## virt (11)
-
-- `@koi/code-executor` (packages/virt/code-executor) - Execute scripts via Wasm sandbox for multi-tool orchestration in a single turn. Tests: 6. Docs: docs/L2/code-executor.md.
-- `@koi/sandbox` (packages/virt/sandbox) - Provide OS-level sandboxing with macOS Seatbelt and Linux bubblewrap isolation. Tests: 13.
-- `@koi/sandbox-cloud-base` (packages/virt/sandbox-cloud-base) - Share cloud sandbox utilities: bridge caching, error classification, truncation, tests. Tests: 9.
-- `@koi/sandbox-cloudflare` (packages/virt/sandbox-cloudflare) - Execute code in Cloudflare Workers with optional R2 FUSE mount support. Tests: 5.
-- `@koi/sandbox-daytona` (packages/virt/sandbox-daytona) - Execute code in Daytona cloud with native FUSE volume support. Tests: 5.
-- `@koi/sandbox-docker` (packages/virt/sandbox-docker) - Execute code in Docker containers with offline support and iptables enforcement. Tests: 7.
-- `@koi/sandbox-e2b` (packages/virt/sandbox-e2b) - Execute code in E2B Firecracker microVMs for remote sandboxed execution. Tests: 5.
-- `@koi/sandbox-executor` (packages/virt/sandbox-executor) - Provide subprocess and promoted (in-process) executors for sandbox verification. Tests: 3. Docs: docs/L2/sandbox-executor.md.
-- `@koi/sandbox-ipc` (packages/virt/sandbox-ipc) - Bridge OS-level sandboxing with forge verification via structured IPC. Tests: 9.
-- `@koi/sandbox-vercel` (packages/virt/sandbox-vercel) - Execute code in Vercel Firecracker microVMs for remote sandboxed execution. Tests: 5.
-- `@koi/sandbox-wasm` (packages/virt/sandbox-wasm) - Execute code in Wasm sandboxes with sync and async executor variants. Tests: 3.
-
-## observability (11)
-
-- `@koi/agent-discovery` (packages/observability/agent-discovery) - Discover external coding agents from PATH, filesystem, and MCP servers. Tests: 9. Docs: docs/L2/agent-discovery.md.
-- `@koi/agent-monitor` (packages/observability/agent-monitor) - Detect anomalous agent behavior via adversarial middleware (excessive calls, errors). Tests: 6. Docs: docs/L2/agent-monitor.md.
-- `@koi/agent-procfs` (packages/observability/agent-procfs) - Expose agent runtime state via virtual filesystem mounts with TTL microcache. Tests: 3. Docs: docs/L2/agent-procfs.md.
-- `@koi/dashboard-api` (packages/observability/dashboard-api) - Serve REST endpoints + SSE events for agent/channel/skill dashboard metrics. Tests: 23.
-- `@koi/dashboard-types` (packages/observability/dashboard-types) - Define shared dashboard event discriminated unions and REST API types. Tests: 2.
-- `@koi/dashboard-ui` (packages/observability/dashboard-ui) - Web dashboard for observing agents, channels, skills, and system metrics. Tests: 26.
-- `@koi/debug` (packages/observability/debug) - Attach runtime debugger with breakpoints, step/pause, and component inspection. Tests: 3. Docs: docs/L2/debug.md.
-- `@koi/eval` (packages/observability/eval) - Run agent evaluation scenarios with graders, regression detection, and scoring. Tests: 14.
-- `@koi/middleware-event-trace` (packages/observability/middleware-event-trace) - Trace individual LLM/tool calls for fine-grained mid-turn event replay. Tests: 3.
-- `@koi/self-test` (packages/observability/self-test) - Execute pre-deployment smoke tests validating manifests, middleware, and E2E flows. Tests: 9.
-- `@koi/tracing` (packages/observability/tracing) - Emit OpenTelemetry spans for session, turn, model, and tool lifecycle events. Tests: 6. Docs: docs/L2/tracing.md.
-
-## sched (6)
-
-- `@koi/harness-scheduler` (packages/sched/harness-scheduler) - Auto-resume suspended harness with poll-based scheduling and backoff. Tests: 2. Docs: docs/L2/harness-scheduler.md.
-- `@koi/long-running` (packages/sched/long-running) - Manage agents over hours/days across sessions with checkpointing and context. Tests: 17. Docs: docs/L2/long-running.md.
-- `@koi/scheduler` (packages/sched/scheduler) - Schedule tasks with priority queue, cron, retry, dead-letter, and concurrency. Tests: 12.
-- `@koi/scheduler-nexus` (packages/sched/scheduler-nexus) - Nexus-backed distributed task store, schedule store, and priority queue for cross-node scheduling. Tests: 6. Docs: docs/L2/scheduler-nexus.md.
-- `@koi/scheduler-provider` (packages/sched/scheduler-provider) - Expose scheduler as agent-facing tools scoped to individual agent identity. Tests: 13. Docs: docs/L2/scheduler-provider.md.
-- `@koi/verified-loop` (packages/sched/verified-loop) - Shift control from LLM self-assessment to external objective verification loops. Tests: 6.
-
-## deploy (4)
-
-- `@koi/bundle` (packages/deploy/bundle) - Serialize and import portable agent bundles with integrity verification and deduplication. Tests: 6. Docs: docs/L2/bundle.md.
-- `@koi/deploy` (packages/deploy/deploy) - Generate OS-native service files and manage agent lifecycle (systemd/launchd, health checks). Tests: 8.
-- `@koi/nexus-embed` (packages/deploy/nexus-embed) - Auto-start local Nexus server for embed mode - spawn, health-check, PID management. Tests: 6. Docs: docs/L2/nexus-embed.md.
-- `@koi/node` (packages/deploy/node) - Host multiplexed agents on local machines with WebSocket gateway, tool resolution, mDNS discovery. Tests: 25.
-
-## exec (1)
-
-- `@koi/temporal` (packages/exec/temporal) - Optional durable agent execution via Temporal - L3 package wrapping createKoi() with Entity Workflows. Tests: 8.
-
-## lib (23)
-
-- `@koi/crypto-utils` (packages/lib/crypto-utils) - Generate Ed25519 keys, sign and verify messages, compute SHA-256 hashes. Tests: 3. Docs: docs/L2/crypto-utils.md.
-- `@koi/edit-match` (packages/lib/edit-match) - Search and replace files using cascading match strategies from exact to fuzzy. Tests: 4.
-- `@koi/errors` (packages/lib/errors) - Provide KoiRuntimeError class, circuit breaker, retry logic, and filesystem error mapping. Tests: 6.
-- `@koi/event-delivery` (packages/lib/event-delivery) - Manage event subscriptions with serialized delivery, retry, dead letter queue, and replay. Tests: 2.
-- `@koi/execution-context` (packages/lib/execution-context) - Store and retrieve session context via AsyncLocalStorage for tool execution. Tests: 1.
-- `@koi/failure-context` (packages/lib/failure-context) - Shared failure classification primitives: bounded history, running stats, detector interface. Tests: 2.
-- `@koi/file-resolution` (packages/lib/file-resolution) - Read markdown files, resolve directory structures, enforce token budgets. Tests: 7. Docs: docs/L2/file-resolution.md.
-- `@koi/git-utils` (packages/lib/git-utils) - Wrap git CLI commands and resolve worktree paths via Bun.spawn. Tests: 4.
-- `@koi/hash` (packages/lib/hash) - Compute brick IDs, content hashes, HMACs, and ULIDs for L1 and L2 packages. Tests: 6.
-- `@koi/name-resolution` (packages/lib/name-resolution) - Pure ANS algorithms: composite keys, name validation, scope resolution, fuzzy matching. Tests: 5.
-- `@koi/nexus-client` (packages/lib/nexus-client) - Provide JSON-RPC 2.0 transport and path builders for Nexus services. Tests: 5. Docs: docs/L2/nexus-client.md.
-- `@koi/preset-resolver` (packages/lib/preset-resolver) - Generic 3-layer config resolution: defaults -> preset -> user overrides. Tests: 3.
-- `@koi/session-state` (packages/lib/session-state) - Per-session state management with FIFO eviction for middleware authors. Tests: 1.
-- `@koi/shutdown` (packages/lib/shutdown) - Handle graceful shutdown signals and map exit codes for CLI and deploy. Tests: 3.
-- `@koi/sqlite-utils` (packages/lib/sqlite-utils) - Wrap SQLite operations, map errors, open databases with optimized PRAGMAs. Tests: 1.
-- `@koi/task-board` (packages/lib/task-board) - Immutable TaskBoard implementation with DAG validation, topological sort, and board helpers. Tests: 4.
-- `@koi/test-utils` (packages/lib/test-utils) - Provide mock agents, contract test suites, and spy utilities for testing. Tests: 1.
-- `@koi/test-utils-contracts` (packages/lib/test-utils-contracts) - Interface conformance contract test suites for Koi. Tests: 3.
-- `@koi/test-utils-mocks` (packages/lib/test-utils-mocks) - Mock factories and spy helpers for Koi testing. Tests: 5.
-- `@koi/test-utils-store-contracts` (packages/lib/test-utils-store-contracts) - Store backend contract test suites for Koi. Tests: 5.
-- `@koi/validation` (packages/lib/validation) - Validate brick artifacts, pipelines, fitness scores, and config schemas. Tests: 16.
-- `@koi/variant-selection` (packages/lib/variant-selection) - Select degenerate tool variants by context, fitness, round-robin, or failover. Tests: 6.
-- `@koi/welford-stats` (packages/lib/welford-stats) - Welford's online algorithm for running mean, variance, and standard deviation. Tests: 1.
+- `@koi/tui` (packages/ui/tui) - OpenTUI-based terminal UI for Koi agent conversations. Tests: 54. Docs: docs/L2/tui.md.

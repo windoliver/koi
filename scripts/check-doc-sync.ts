@@ -15,6 +15,7 @@ import {
   generateLabelerYml,
   patchL0uParagraph,
 } from "./generate-layer-docs.js";
+import { generatePackageCoverageMap } from "./generate-package-coverage-map.js";
 import { L0U_PACKAGES, L3_PACKAGES } from "./layers.js";
 
 const repoRoot = new URL("../", import.meta.url).pathname;
@@ -45,10 +46,17 @@ async function checkKoiMdL0uParagraph(): Promise<SyncError | null> {
   };
 }
 
+async function checkPackageCoverageMap(): Promise<SyncError | null> {
+  const expected = await generatePackageCoverageMap();
+  const actual = await Bun.file(`${repoRoot}docs/package-coverage-map.md`).text();
+  if (actual === expected) return null;
+  return { file: "docs/package-coverage-map.md", expected, actual };
+}
+
 async function main(): Promise<void> {
-  const errors = (await Promise.all([checkLabelerYml(), checkKoiMdL0uParagraph()])).filter(
-    (e): e is SyncError => e !== null,
-  );
+  const errors = (
+    await Promise.all([checkLabelerYml(), checkKoiMdL0uParagraph(), checkPackageCoverageMap()])
+  ).filter((e): e is SyncError => e !== null);
 
   if (errors.length === 0) {
     console.log("✅ Doc sync check passed — all generated files are up to date.");

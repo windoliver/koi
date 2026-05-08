@@ -20,6 +20,10 @@ This middleware solves both:
 
 Without this package, every agent with a large tool surface would reimplement tool scoring, tag filtering, and threshold logic.
 
+## Recent additions
+
+- **Session-end cleanup for unfinished turns (#2139)**: `createToolSelectorMiddleware()` now records the owning `SessionId` for retained turn snapshots, per-call allowlists, and bounded evicted-turn tombstones. `onAfterTurn` remains the normal fast cleanup path, and `onSessionEnd` now clears any retained state for the ended session so interrupted runs or session teardown cannot leave raw Maps/Sets alive until the local retention caps are hit. Tombstones remain fail-closed while retained, but they are also removed at session end.
+
 ---
 
 ## Architecture
@@ -528,4 +532,3 @@ L2  @koi/middleware-tool-selector ◄──────┘
 - **Round 47 F1** — Per-turn snapshot maps are now bounded by `MAX_RETAINED_TURNS` (64). Older turns are evicted in insertion order on first-touch of a new turn, since `onAfterTurn` is not reliably fired by the engine on every successful terminal turn.
 - **Round 48 F1** — Evicted turns are tombstoned in `evictedTurns` so a delayed/retried tool call from an aged-out turn fails closed instead of falling through.
 - **Round 49 F2** — Per-turn state itself is bounded (`MAX_SNAPSHOTS_PER_TURN` = 256, `MAX_CALL_BINDINGS_PER_TURN` = 1024) so a single pathological turn that re-prompts or emits many tool calls cannot poison a long-lived runtime.
-

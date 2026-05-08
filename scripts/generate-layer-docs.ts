@@ -1,10 +1,12 @@
 #!/usr/bin/env bun
+
 /**
  * Generates documentation and CI configuration from the canonical layer registry.
  *
  * Outputs:
  *   1. .github/labeler.yml   — PR auto-labeler config (layer:L0, L1, L0u, L2, L3 globs)
  *   2. Koi.md L0u paragraph  — the auto-generated L0u package list section
+ *   3. docs/package-coverage-map.md — active workspace package inventory
  *
  * Both outputs are deterministic (alphabetically sorted).
  *
@@ -13,6 +15,7 @@
  *   bun scripts/check-doc-sync.ts               # verify outputs match disk (CI gate)
  */
 
+import { generatePackageCoverageMap } from "./generate-package-coverage-map.js";
 import { L0U_PACKAGES, L3_PACKAGES } from "./layers.js";
 
 // ---------------------------------------------------------------------------
@@ -118,6 +121,7 @@ async function main(): Promise<void> {
 
   const labelerPath = `${repoRoot}.github/labeler.yml`;
   const koiMdPath = `${repoRoot}docs/architecture/Koi.md`;
+  const packageCoveragePath = `${repoRoot}docs/package-coverage-map.md`;
 
   // Write labeler.yml
   const labelerContent = generateLabelerYml(L0U_PACKAGES, L3_PACKAGES);
@@ -137,6 +141,9 @@ async function main(): Promise<void> {
     await Bun.write(koiMdPath, patchedMd);
     console.log(`✅ Updated: docs/architecture/Koi.md L0u paragraph`);
   }
+
+  await Bun.write(packageCoveragePath, await generatePackageCoverageMap());
+  console.log("✅ Written: docs/package-coverage-map.md");
 }
 
 /**

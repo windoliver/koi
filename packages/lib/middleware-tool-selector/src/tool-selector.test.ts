@@ -958,6 +958,26 @@ describe("createToolSelectorMiddleware — execution-time enforcement", () => {
       wrapTool(ctx, { toolId: "anything", input: {} }, toolNext as never),
     ).resolves.toEqual({ output: "passed-through" });
   });
+
+  test("onSessionEnd cleans snapshots for unfinished turns", async () => {
+    const tools = [tool("safe")];
+    const mw = createToolSelectorMiddleware({
+      selectTools: async () => ["safe"],
+      minTools: 0,
+    });
+    const ctx = turnCtx();
+    await getWrap(mw)(ctx, { messages: [userMsg("go")], tools }, async () => modelResponse());
+    await mw.onSessionEnd?.(ctx.session);
+
+    const wrapTool = mw.wrapToolCall;
+    if (!wrapTool) throw new Error("wrapToolCall missing");
+    const toolNext = mock<(req: { readonly toolId: string }) => Promise<{ output: string }>>(
+      async () => ({ output: "passed-through" }),
+    );
+    await expect(
+      wrapTool(ctx, { toolId: "anything", input: {} }, toolNext as never),
+    ).resolves.toEqual({ output: "passed-through" });
+  });
 });
 
 describe("createToolSelectorMiddleware — streaming hook", () => {

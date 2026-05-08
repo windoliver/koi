@@ -1,10 +1,10 @@
 /**
- * Command palette definitions for v2 — ~15 core commands.
+ * Command palette definitions for the implemented TUI command surface.
  *
  * Pure data: no dispatch logic, no router, no side effects.
  * Filtering (progressive disclosure) is a separate pure function below.
  *
- * v2 starts lean: navigation + agent + session + system.
+ * The current surface is navigation + agent + session + system.
  * v1 reference: archive/v1/packages/ui/tui/src/command-registry.ts (40+ cmds).
  */
 
@@ -34,7 +34,7 @@ export interface CommandDef {
 }
 
 // ---------------------------------------------------------------------------
-// Definitions — v2 core set (~15 commands)
+// Definitions — implemented command set
 // ---------------------------------------------------------------------------
 
 export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
