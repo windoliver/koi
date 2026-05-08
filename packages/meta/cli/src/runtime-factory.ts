@@ -4120,6 +4120,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             }),
           )
         : allMiddleware;
+    const installedAutoHarnessMiddleware =
+      sharedRuntimeHandle?.autoHarness !== undefined
+        ? tracedMiddleware.find((mw) => mw.name === "policy-cache")
+        : undefined;
 
     // --- Assemble runtime via createKoi ---
     // When a session is configured, thread `config.session.sessionId` into
@@ -4396,7 +4400,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     handleOwnershipTransferred = true;
     return {
       runtime: wrappedRuntime,
-      autoHarness: sharedRuntimeHandle?.autoHarness,
+      autoHarness:
+        sharedRuntimeHandle?.autoHarness !== undefined &&
+        installedAutoHarnessMiddleware !== undefined
+          ? {
+              ...sharedRuntimeHandle.autoHarness,
+              middleware: installedAutoHarnessMiddleware,
+            }
+          : undefined,
       checkpoint: checkpointHandle,
       transcript,
       sandboxActive,

@@ -215,6 +215,25 @@ describe("createKoiRuntime — assembly", () => {
     expect(deployed).toBe(false);
   });
 
+  test("exposes the installed policy-cache middleware when one is already present", async () => {
+    const providedPolicyCache = { name: "policy-cache" } as KoiMiddleware;
+
+    runtimeHandle = await createKoiRuntime({
+      ...makeConfig(),
+      extraMiddleware: [providedPolicyCache],
+      autoHarness: {
+        forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+        generate: async () => "candidate-code",
+        verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-6" } as never }),
+        evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+        deployCandidate: async () => ({ ok: true }),
+      },
+    });
+
+    expect(runtimeHandle.autoHarness).toBeDefined();
+    expect(runtimeHandle.autoHarness?.middleware).toBe(providedPolicyCache);
+  });
+
   test("returns a mutable transcript array", async () => {
     runtimeHandle = await createKoiRuntime(makeConfig());
     const { transcript } = runtimeHandle;
