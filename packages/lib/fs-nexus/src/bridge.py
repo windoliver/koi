@@ -674,7 +674,14 @@ async def dispatch(fs, method, params):
             raise ValueError("add_mount requires a non-empty string uri")
         if at is not None and (not isinstance(at, str) or len(at) == 0):
             raise ValueError("add_mount at must be a non-empty string when provided")
-        before = set(await _maybe_await(fs.list_mounts()))
+        # Snapshot mounts before mutation so we can diff to discover the
+        # resulting path when `at` was not specified. If list_mounts fails
+        # before mutation, fall back to an empty snapshot — the actual
+        # mutation can still proceed and we'll handle missing diff below.
+        try:
+            before = set(await _maybe_await(fs.list_mounts()))
+        except Exception:
+            before = set()
         targets = _mount_targets(fs)
         if at is None:
             await _call_first(targets, ("add_mount", "mount"), uri)
@@ -683,15 +690,36 @@ async def dispatch(fs, method, params):
                 await _call_first(targets, ("add_mount",), uri, at=at)
             except NotImplementedError:
                 await _call_first(targets, ("mount",), uri, at)
-        after = list(await _maybe_await(fs.list_mounts()))
+        # The mount has now been committed. Everything below here is
+        # post-commit enrichment and MUST NOT raise — surfacing an error
+        # would trick callers into retrying a non-idempotent mutation that
+        # already succeeded. Each enrichment step is wrapped so its failure
+        # degrades the response payload rather than the call result.
         resolved_path = at if isinstance(at, str) else None
         if resolved_path is None:
-            new_mounts = [mount for mount in after if mount not in before]
-            if len(new_mounts) == 1:
-                resolved_path = new_mounts[0]
+            try:
+                after = list(await _maybe_await(fs.list_mounts()))
+                new_mounts = [mount for mount in after if mount not in before]
+                if len(new_mounts) == 1:
+                    resolved_path = new_mounts[0]
+            except Exception:
+                resolved_path = None
         if resolved_path is None:
-            raise RuntimeError("Mount was added but the resulting path could not be determined")
-        return await _describe_mount(fs, resolved_path)
+            # Best-effort fallback: derive a connector hint from the URI scheme
+            # so callers still get a stable success payload. The mount IS live
+            # in the bridge; the path discovery just failed.
+            scheme = uri.split("://", 1)[0] if "://" in uri else "unknown"
+            return {"path": uri, "connector": scheme}
+        try:
+            return await _describe_mount(fs, resolved_path)
+        except Exception:
+            # README generation / connector metadata can fail for OAuth-backed
+            # or remote connectors. Return a minimal success payload so the
+            # caller sees the new mount path without confusing errors.
+            return {
+                "path": resolved_path,
+                "connector": _mount_connector_from_path(resolved_path),
+            }
 
     if method == "remove_mount":
         mount_path = params.get("path")

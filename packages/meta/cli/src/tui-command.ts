@@ -2144,6 +2144,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // fixed at startup and runtime /mount /unmount mutations would point the
   // session at a stale path. See resolveFileSystemAsync for full rationale.
   let runtimeMountMutationsSupported = false;
+  // The mount path the backend resolves bare paths against, when one is fixed
+  // at construction time. Unmounting this path would strand the session on a
+  // dead root, so /unmount must refuse it. Undefined = namespace-root mode
+  // (no fixed root), in which case any mount can be unmounted safely.
+  let backendActiveRoot: string | undefined;
 
   // Single OAuthChannel — shared by nexus and MCP. Created unconditionally so
   // nav:mcp-auth and MCP onAuthNeeded always have a renderer regardless of whether
@@ -2165,6 +2170,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     );
     resolvedFilesystemBackend = fsResolved.backend;
     runtimeMountMutationsSupported = fsResolved.runtimeMountMutationsSupported;
+    backendActiveRoot = fsResolved.backendActiveRoot;
     mountDescriptionsState.setManifest(fsResolved.mountDescriptions);
     // If `fsResolved.operations` is set, it overrides the manifest-derived ops
     // (the two should agree, but resolveFileSystemAsync is authoritative).
@@ -6286,6 +6292,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 code: "UNMOUNT_UNAVAILABLE",
                 message:
                   "Runtime /unmount is disabled because this session inferred a single-mount root for backward compat. Set filesystem.options.mountPoint explicitly in the manifest to enable runtime mount changes.",
+              });
+              return;
+            }
+            // Refuse to unmount the path the backend resolves bare paths
+            // against — removing it leaves all subsequent fs operations
+            // pointing at a dead root with no way to recover short of restart.
+            if (backendActiveRoot !== undefined && path === backendActiveRoot) {
+              store.dispatch({
+                kind: "add_error",
+                code: "UNMOUNT_ACTIVE_ROOT",
+                message: `Cannot /unmount ${path}: it is the active backend root for this session. Restart with a different filesystem.options.mountPoint to remove it.`,
               });
               return;
             }

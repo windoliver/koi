@@ -413,6 +413,16 @@ export async function resolveFileSystemAsync(
    * namespace-root default).
    */
   readonly runtimeMountMutationsSupported: boolean;
+  /**
+   * The mount path the backend resolves bare paths against, when one is
+   * fixed at construction time. Callers MUST refuse `/unmount <path>` when
+   * `path === backendActiveRoot` — removing the active root strands the
+   * session on a dead mount because the backend cannot retarget itself.
+   *
+   * Undefined when no fixed root exists (namespace-root mode or non-bridge
+   * backends), in which case unmounting any path is safe.
+   */
+  readonly backendActiveRoot: string | undefined;
 }> {
   const fsBackend = config?.backend ?? "local";
   // Preserve operation grants from the config — callers must forward these to
@@ -458,6 +468,7 @@ export async function resolveFileSystemAsync(
       mountDescriptions: [],
       transport: undefined,
       runtimeMountMutationsSupported: false,
+      backendActiveRoot: undefined,
     };
   }
 
@@ -491,17 +502,16 @@ export async function resolveFileSystemAsync(
     let nexusBackend: ReturnType<typeof createNexusFileSystem>;
     let unsubscribe: () => void;
     let mutationsSupported = false;
+    // Single-mount default: when no explicit mountPoint is configured and
+    // exactly one mount was discovered, root the backend at that mount so
+    // bare paths like "/foo.txt" resolve under the mounted workspace
+    // (preserves pre-multi-mount behavior). For multi-mount sessions we
+    // keep namespace-root so callers must address mounts explicitly.
+    const transportMounts = transport.mounts ?? [];
+    const inferredMountPoint =
+      options.mountPoint ?? (transportMounts.length === 1 ? transportMounts[0] : undefined);
     try {
       unsubscribe = onNotification !== undefined ? transport.subscribe(onNotification) : () => {};
-
-      // Single-mount default: when no explicit mountPoint is configured and
-      // exactly one mount was discovered, root the backend at that mount so
-      // bare paths like "/foo.txt" resolve under the mounted workspace
-      // (preserves pre-multi-mount behavior). For multi-mount sessions we
-      // keep namespace-root so callers must address mounts explicitly.
-      const transportMounts = transport.mounts ?? [];
-      const inferredMountPoint =
-        options.mountPoint ?? (transportMounts.length === 1 ? transportMounts[0] : undefined);
       nexusBackend = createNexusFileSystem({
         url: "local://bridge",
         transport,
@@ -546,6 +556,7 @@ export async function resolveFileSystemAsync(
       mountDescriptions: seedManifestMountDescriptions(transport),
       transport,
       runtimeMountMutationsSupported: mutationsSupported,
+      backendActiveRoot: inferredMountPoint,
     };
   }
 
@@ -567,5 +578,6 @@ export async function resolveFileSystemAsync(
     mountDescriptions: [],
     transport: undefined,
     runtimeMountMutationsSupported: false,
+    backendActiveRoot: undefined,
   };
 }
