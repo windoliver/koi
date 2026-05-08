@@ -251,7 +251,6 @@ export interface NexusWorkspaceBackendConfig {
   readonly transport: NexusTransport;
   readonly fallback?: WorkspaceBackend | undefined;
   readonly methodPrefix?: string | undefined;
-  readonly basePath?: string | undefined;
 }
 
 export function createNexusWorkspaceBackend(

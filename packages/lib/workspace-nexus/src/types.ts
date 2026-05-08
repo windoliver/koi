@@ -12,7 +12,6 @@ export interface NexusWorkspaceServerCapabilities {
 export interface NexusWorkspaceBackendConfig {
   readonly transport: NexusTransport;
   readonly methodPrefix?: string | undefined;
-  readonly basePath?: string | undefined;
   /**
    * Optional local backend used as a startup-only escape hatch when the
    * configured Nexus transport fails its initial health probe. Once
