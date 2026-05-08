@@ -101,6 +101,16 @@ function stepsForThresholdCrossed(
     return [];
   }
   const steps: CompositionStep[] = [];
+  // notify_user FIRST so the operator-facing notification fires even when
+  // a later spawn_agent step is unsupported by the executor: the executor
+  // fail-closes on the first unsupported step, so any safe-to-run user
+  // notification must precede unsupported diagnostic spawning.
+  steps.push({
+    kind: "notify_user",
+    channel: "inbox",
+    message: "Error rate crossed its configured threshold.",
+    priority: "high",
+  });
   if (hasAgentType(capabilities, "diagnostic")) {
     steps.push({
       kind: "spawn_agent",
@@ -112,12 +122,6 @@ function stepsForThresholdCrossed(
       delivery: DEFAULT_DELIVERY_POLICY,
     });
   }
-  steps.push({
-    kind: "notify_user",
-    channel: "inbox",
-    message: "Error rate crossed its configured threshold.",
-    priority: "high",
-  });
   return steps;
 }
 
@@ -197,6 +201,7 @@ export function createRuleBasedCompositionPlanner(
       const estimatedCost = estimateCost(steps);
       return {
         triggerId: trigger.id,
+        triggerEmittedAt: trigger.emittedAt,
         steps,
         estimatedCost,
         requiresApproval:

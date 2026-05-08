@@ -26,6 +26,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "gov-1",
+      triggerEmittedAt: 1,
             steps: [
               {
                 kind: "notify_user",
@@ -65,6 +66,7 @@ describe("createLlmCompositionPlanner", () => {
 
     expect(plan).toEqual({
       triggerId: "gov-1",
+      triggerEmittedAt: 1,
       steps: [
         {
           kind: "notify_user",
@@ -112,6 +114,12 @@ describe("createLlmCompositionPlanner", () => {
 
     expect(plan.steps).toEqual([
       {
+        kind: "notify_user",
+        channel: "inbox",
+        message: "Error rate crossed its configured threshold.",
+        priority: "high",
+      },
+      {
         kind: "spawn_agent",
         agentType: "diagnostic",
         input: {
@@ -119,12 +127,6 @@ describe("createLlmCompositionPlanner", () => {
           text: "Investigate elevated error_rate and summarize root causes.",
         },
         delivery: DEFAULT_DELIVERY_POLICY,
-      },
-      {
-        kind: "notify_user",
-        channel: "inbox",
-        message: "Error rate crossed its configured threshold.",
-        priority: "high",
       },
     ]);
     expect(plan.estimatedCost).toBe(6);
@@ -137,6 +139,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "wrong-id",
+      triggerEmittedAt: 1,
             steps: [],
             estimatedCost: 0,
           });
@@ -167,6 +170,7 @@ describe("createLlmCompositionPlanner", () => {
 
     expect(plan).toEqual({
       triggerId: "event-1",
+      triggerEmittedAt: 1,
       steps: [],
       estimatedCost: 0,
       requiresApproval: false,
@@ -179,6 +183,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "event-2",
+      triggerEmittedAt: 1,
             steps: "not-an-array",
             estimatedCost: 0,
           });
@@ -209,6 +214,7 @@ describe("createLlmCompositionPlanner", () => {
 
     expect(plan).toEqual({
       triggerId: "event-2",
+      triggerEmittedAt: 1,
       steps: [],
       estimatedCost: 0,
       requiresApproval: false,
@@ -221,6 +227,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "event-3",
+      triggerEmittedAt: 1,
             steps: [],
             estimatedCost: -1,
           });
@@ -251,6 +258,7 @@ describe("createLlmCompositionPlanner", () => {
 
     expect(plan).toEqual({
       triggerId: "event-3",
+      triggerEmittedAt: 1,
       steps: [],
       estimatedCost: 0,
       requiresApproval: false,
@@ -305,6 +313,12 @@ describe("createLlmCompositionPlanner", () => {
 
     expect(plan.steps).toEqual([
       {
+        kind: "notify_user",
+        channel: "inbox",
+        message: "Error rate crossed its configured threshold.",
+        priority: "high",
+      },
+      {
         kind: "spawn_agent",
         agentType: "diagnostic",
         input: {
@@ -312,12 +326,6 @@ describe("createLlmCompositionPlanner", () => {
           text: "Investigate elevated error_rate and summarize root causes.",
         },
         delivery: DEFAULT_DELIVERY_POLICY,
-      },
-      {
-        kind: "notify_user",
-        channel: "inbox",
-        message: "Error rate crossed its configured threshold.",
-        priority: "high",
       },
     ]);
     expect(plan.estimatedCost).toBe(6);
@@ -330,6 +338,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "bad-nested-1",
+      triggerEmittedAt: 1,
             steps: [
               {
                 kind: "spawn_agent",
@@ -382,6 +391,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "low-1",
+      triggerEmittedAt: 1,
             steps: [
               {
                 kind: "notify_user",
@@ -430,6 +440,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "tc-1",
+      triggerEmittedAt: 1,
             steps: [
               {
                 kind: "tool_call",
@@ -465,6 +476,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "st-1",
+      triggerEmittedAt: 1,
             steps: [
               {
                 kind: "submit_task",
@@ -509,6 +521,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "cs-1",
+      triggerEmittedAt: 1,
             steps: [
               {
                 kind: "create_schedule",
@@ -554,6 +567,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "fs-1",
+      triggerEmittedAt: 1,
             steps: [
               {
                 kind: "forge_skill",
@@ -602,6 +616,7 @@ describe("createLlmCompositionPlanner", () => {
         async plan(): Promise<string> {
           return JSON.stringify({
             triggerId: "local-bug-1",
+      triggerEmittedAt: 1,
             steps: [],
             estimatedCost: 0,
           });

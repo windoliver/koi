@@ -247,13 +247,20 @@ function stepFingerprint(step: CompositionStep): string {
 // distinguishes two semantically identical steps in the same plan so they
 // each fire (rather than collapsing into one).
 function deriveStepIdempotencyKey(
+  agentId: AgentId,
   trigger: CompositionTrigger,
   occurrenceIndex: number,
   step: CompositionStep,
 ): string {
+  // agentId is folded into the hash so two different agents handling the
+  // same trigger never collide on a shared executionLog backend. submit_task
+  // and create_schedule already carry agentId on the step, but notify_user
+  // does not — without this, two agents notifying the same user about the
+  // same trigger emission would dedupe to a single delivery.
   const hasher = new Bun.CryptoHasher("sha256");
   hasher.update(
     JSON.stringify({
+      agentId: String(agentId),
       triggerId: trigger.id,
       emittedAt: trigger.emittedAt,
       occurrenceIndex,
@@ -489,7 +496,7 @@ export function createCompositionExecutor(
         const fingerprint = stepFingerprint(step);
         const occurrenceIndex = occurrenceCounts.get(fingerprint) ?? 0;
         occurrenceCounts.set(fingerprint, occurrenceIndex + 1);
-        const stepIdempotencyKey = deriveStepIdempotencyKey(trigger, occurrenceIndex, step);
+        const stepIdempotencyKey = deriveStepIdempotencyKey(context.agentId, trigger, occurrenceIndex, step);
         // Track whether this step has acquired the executionLog claim so the
         // outer catch can release on pre-commit rejection or surface the key
         // on ambiguous failure. Only set after claim() returns "claimed".

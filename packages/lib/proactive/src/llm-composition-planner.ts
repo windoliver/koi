@@ -315,6 +315,7 @@ function parseAdapterResponse(
 
     return {
       triggerId: plan.triggerId,
+      triggerEmittedAt: trigger.emittedAt,
       steps: plan.steps as readonly CompositionStep[],
       estimatedCost: plan.estimatedCost,
     };

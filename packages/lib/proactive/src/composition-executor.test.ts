@@ -1371,6 +1371,48 @@ describe("createCompositionExecutor", () => {
     expect(notifyKeys[0]).not.toBe(notifyKeys[1]);
   });
 
+  test("notify_user keys are scoped per agent on a shared executionLog", async () => {
+    const { scheduler } = schedulerStub();
+    const { log } = inMemoryExecutionLog();
+    const notifsA: unknown[] = [];
+    const notifsB: unknown[] = [];
+    const executorA = createCompositionExecutor({
+      agentId: agentId("agent-A"),
+      scheduler,
+      notify: async (n) => {
+        notifsA.push(n);
+        return { delivered: true };
+      },
+      executionLog: log,
+    });
+    const executorB = createCompositionExecutor({
+      agentId: agentId("agent-B"),
+      scheduler,
+      notify: async (n) => {
+        notifsB.push(n);
+        return { delivered: true };
+      },
+      executionLog: log,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [{ kind: "notify_user", channel: "inbox", message: "hi", priority: "normal" }],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const resA = await executorA.execute(trigger(), plan);
+    const resB = await executorB.execute(trigger(), plan);
+
+    // Each agent must deliver its own notification — the shared log must
+    // not collapse cross-agent dispatches into one.
+    expect(resA.status).toBe("executed");
+    expect(resB.status).toBe("executed");
+    expect(notifsA).toHaveLength(1);
+    expect(notifsB).toHaveLength(1);
+  });
+
   test("plan without triggerEmittedAt is rejected as INVALID_PLAN", async () => {
     const { scheduler, calls } = schedulerStub();
     const { log } = inMemoryExecutionLog();

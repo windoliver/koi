@@ -54,6 +54,12 @@ describe("composition pipeline (signal → trigger → plan → approval)", () =
     expect(plan.triggerId).toBe(trigger.id);
     expect(plan.steps).toEqual([
       {
+        kind: "notify_user",
+        channel: "inbox",
+        message: "Error rate crossed its configured threshold.",
+        priority: "high",
+      },
+      {
         kind: "spawn_agent",
         agentType: "diagnostic",
         input: {
@@ -61,12 +67,6 @@ describe("composition pipeline (signal → trigger → plan → approval)", () =
           text: "Investigate elevated error_rate and summarize root causes.",
         },
         delivery: DEFAULT_DELIVERY_POLICY,
-      },
-      {
-        kind: "notify_user",
-        channel: "inbox",
-        message: "Error rate crossed its configured threshold.",
-        priority: "high",
       },
     ]);
     expect(plan.requiresApproval).toBe(false);
