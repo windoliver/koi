@@ -4093,6 +4093,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // layers, regardless of array position here.
       presetExtras: [
         ...dropCallerPolicyCache(stackContribution.middleware),
+        // Splice the shared runtime's forge-demand detector into the live
+        // CLI chain so real demand traffic actually flows into auto-harness.
+        // Without this, the detector lives only inside sharedRuntimeHandle
+        // and never observes host-level model/tool calls.
+        ...(sharedRuntimeHandle?.forgeDemand !== undefined
+          ? [sharedRuntimeHandle.forgeDemand.middleware]
+          : []),
         ...(sharedRuntimeHandle?.autoHarness !== undefined
           ? [sharedRuntimeHandle.autoHarness.middleware]
           : []),

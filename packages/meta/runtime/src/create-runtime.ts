@@ -318,6 +318,11 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   let filesystemCleanedUp = false;
   let autoHarnessCleanedUp = false;
   let autoHarnessStack: ReturnType<typeof createAutoHarnessStack> | undefined;
+  // Per-session ownership map for routing forge-demand signals to the
+  // session-scoped handle that owns them. Cleared via `resetSession(id)`
+  // and on full disposal — entries would otherwise accumulate forever
+  // across session rotations and slow each demand lookup.
+  const autoHarnessSessionEntries = new Map<string, AutoHarnessSessionEntry>();
 
   try {
     const baseMiddleware: readonly KoiMiddleware[] = [
@@ -510,7 +515,6 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       // forge-demand from re-emitting after cooldown) and partition the
       // per-session synthesis budget by sessionId (preventing tenant
       // cross-talk in multi-session runtimes).
-      const sessionEntries = new Map<string, AutoHarnessSessionEntry>();
       const finalForgeConfig =
         autoHarnessStack !== undefined
           ? {
@@ -518,13 +522,13 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
               onDemand: wrapOnDemandWithAutoHarness(
                 baseConfigWithHealth.onDemand,
                 autoHarnessStack,
-                () => Array.from(sessionEntries.values()),
+                () => Array.from(autoHarnessSessionEntries.values()),
               ),
               onSessionAttached: (
                 sessionContext: SessionContext,
                 scoped: import("@koi/forge-demand").SessionScopedForgeDemandHandle,
               ): void | Promise<void> => {
-                sessionEntries.set(sessionContext.sessionId, {
+                autoHarnessSessionEntries.set(sessionContext.sessionId, {
                   sessionId: sessionContext.sessionId,
                   scoped,
                 });
@@ -1332,7 +1336,17 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
               // dispatch chain.
               middleware: installedPolicyCacheMiddleware ?? autoHarnessStack.policyCacheMiddleware,
               synthesizeHarness: autoHarnessStack.synthesizeHarness,
-              resetSession: autoHarnessStack.resetSession,
+              // Wrap to also drop session ownership entries — the stack
+              // tracks budget/dedupe state but the runtime owns the
+              // forge-demand scoped-handle map and must clean it up.
+              resetSession: (sessionId?: string) => {
+                if (sessionId === undefined) {
+                  autoHarnessSessionEntries.clear();
+                } else {
+                  autoHarnessSessionEntries.delete(sessionId);
+                }
+                autoHarnessStack?.resetSession(sessionId);
+              },
               maxSynthesesPerSession: autoHarnessStack.maxSynthesesPerSession,
             }
           : undefined,

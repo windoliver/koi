@@ -179,6 +179,11 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
         signalId: signal.id,
         message: `synthesis already in flight for trigger ${triggerKey}`,
       });
+      // Duplicate signals coalesce onto the active pipeline. Dismiss the
+      // duplicate so forge-demand doesn't keep it pending and re-emit after
+      // cooldown for a condition another in-flight pipeline is already
+      // handling.
+      safeDismiss();
       return null;
     }
     if (state.count >= maxSynthesesPerSession) {
