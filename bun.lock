@@ -720,6 +720,11 @@
         "@koi/core": "workspace:*",
         "@koi/token-estimator": "workspace:*",
       },
+      "devDependencies": {
+        "@koi/fs-nexus": "workspace:*",
+        "@koi/playbook-store-nexus": "workspace:*",
+        "@koi/playbook-store-sqlite": "workspace:*",
+      },
     },
     "packages/lib/middleware-call-dedup": {
       "name": "@koi/middleware-call-dedup",
