@@ -102,3 +102,4 @@ File count is checked after sweeping expired entries to avoid false rejections.
 ## Changelog
 
 - 2026-04-24 — Initial v2 implementation (issue #1370)
+- 2026-05-08 — Wired into shared `@koi/scratchpad-conformance` suite alongside `@koi/scratchpad-nexus`; behavior unchanged (issue #1373)

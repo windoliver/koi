@@ -291,6 +291,13 @@ L2  @koi/workspace-nexus ◄─────────────────�
 
 ---
 
+## Changelog
+
+- 2026-05-07 — Initial v2 implementation (issue #1373)
+- 2026-05-08 — Dropped unused `@koi/workspace` runtime dependency to satisfy L2-only-on-L0/L0u layer rule; wired into shared `@koi/workspace-conformance` suite to lock contract parity with `@koi/workspace`
+
+---
+
 ## Related
 
 - [Issue #394](https://github.com/windoliver/koi/issues/394) — Original feature request
