@@ -4,6 +4,8 @@ export interface UnsupportedProfileFields {
   readonly fields: readonly string[];
 }
 
+const DEFAULT_ADAPTER_NAME = "sandbox-cloud-base";
+
 export function detectUnsupportedProfileFields(
   profile: SandboxProfile,
 ): UnsupportedProfileFields | undefined {
@@ -48,11 +50,19 @@ export function detectUnsupportedProfileFields(
   return fields.length === 0 ? undefined : { fields };
 }
 
-export function formatUnsupportedProfileError(unsupported: UnsupportedProfileFields): string {
-  if (unsupported.fields.length === 0) {
-    return "Unsupported sandbox profile fields";
-  }
-  return `Unsupported sandbox profile fields: ${unsupported.fields.join(", ")}`;
+export function formatUnsupportedProfileError(
+  unsupported: UnsupportedProfileFields,
+  adapterName: string = DEFAULT_ADAPTER_NAME,
+): string {
+  const details =
+    unsupported.fields.length === 0
+      ? "requested profile fields are not supported"
+      : unsupported.fields.join(", ");
+
+  return (
+    `${adapterName} cannot enforce profile fields: ${details}. ` +
+    "Refuse to provision rather than silently weakening isolation."
+  );
 }
 
 export interface ProfileDefaults {
