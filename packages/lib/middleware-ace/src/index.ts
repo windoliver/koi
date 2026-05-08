@@ -6,7 +6,13 @@
  * evaluation/commit/rollback orchestration.
  */
 
-export type { AceConfig } from "./ace-middleware.js";
+export type {
+  AceConfig,
+  AceStructuredPipelineConfig,
+  CuratorFn,
+  EvaluatorFn,
+  ReflectorFn,
+} from "./ace-middleware.js";
 export { createAceMiddleware } from "./ace-middleware.js";
 export type { ConsolidateFn, DefaultConsolidatorOptions } from "./consolidator.js";
 export { createDefaultConsolidator } from "./consolidator.js";

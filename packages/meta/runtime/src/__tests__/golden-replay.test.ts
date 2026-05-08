@@ -17431,6 +17431,191 @@ describe("Golden: @koi/middleware-ace", () => {
     expect(addCall?.function_name).toBe("add_numbers");
     expect(toolSteps[0]?.outcome).toBe("success");
   });
+
+  // -------------------------------------------------------------------------
+  // AGP promotion-gate wiring (#1715): propose -> evaluate -> commit/reject.
+  // No LLM — stub reflector/curator/evaluator. Drives onSessionEnd through
+  // the real sqlite stores so head version, lineage, and audit are all
+  // observable end-to-end.
+  // -------------------------------------------------------------------------
+
+  test("AGP pipeline: successful promotion advances structured-playbook head + records lineage", async () => {
+    const { createAceMiddleware } = await import("@koi/middleware-ace");
+    const { createSqlitePlaybookStore } = await import("@koi/playbook-store-sqlite");
+
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    try {
+      const PB_ID = "spb-golden-agp-ok";
+      await store.structuredPlaybooks.save({
+        id: PB_ID,
+        title: "v1",
+        sections: [
+          {
+            name: "Existing",
+            slug: "existing",
+            bullets: [
+              {
+                id: "b1",
+                content: "first",
+                helpful: 1,
+                harmful: 0,
+                createdAt: 0,
+                updatedAt: 0,
+              },
+            ],
+          },
+        ],
+        tags: [],
+        source: "curated",
+        createdAt: 0,
+        updatedAt: 0,
+        sessionCount: 0,
+        version: 1,
+      });
+
+      let nextId = 0;
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PB_ID,
+          reflector: async () => ({
+            rootCause: "rc",
+            keyInsight: "ki",
+            bulletTags: [{ id: "b1", tag: "helpful" }],
+          }),
+          curator: async () => [
+            { kind: "add", section: "Existing", content: "shorten retry backoff" },
+          ],
+          evaluator: async ({ proposal }) => ({
+            id: `eval-${proposal.id}`,
+            proposalId: proposal.id,
+            verdict: "promote",
+            metrics: { helpfulRate: 0.9, harmfulRate: 0.0, trials: 5 },
+            evaluatedAt: 1,
+          }),
+          thresholds: {
+            minHelpfulRate: 0.5,
+            maxHarmfulRate: 0.5,
+            minTrials: 1,
+          },
+          idGenerator: () => `agp-id-${++nextId}`,
+        },
+      });
+
+      const ctx = {
+        agentId: "ace-agp",
+        sessionId: sessionId("ace-agp-promote"),
+        runId: runId("r-agp"),
+        metadata: {} as JsonObject,
+      };
+      await mw.onSessionStart?.(ctx);
+      await mw.wrapToolCall?.(
+        {
+          session: ctx,
+          turnIndex: 0,
+          turnId: `${runId("r-agp")}-0` as TurnContext["turnId"],
+          messages: [],
+          metadata: {},
+        },
+        { toolId: "fs.read", input: {} },
+        async () => ({ output: "ok" }),
+      );
+      await mw.onSessionEnd?.(ctx);
+
+      const head = await store.structuredPlaybooks.get(PB_ID);
+      expect(head?.version).toBe(2);
+      expect(head?.provenance?.proposalId).toBe("agp-id-1");
+      const persistedProposal = await store.proposals.getProposal("agp-id-1");
+      expect(persistedProposal?.id).toBe("agp-id-1");
+      expect(persistedProposal?.baseVersion).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("AGP pipeline: rejected proposal does NOT advance head, audit lineage still recorded", async () => {
+    const { createAceMiddleware } = await import("@koi/middleware-ace");
+    const { createSqlitePlaybookStore } = await import("@koi/playbook-store-sqlite");
+
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    try {
+      const PB_ID = "spb-golden-agp-reject";
+      await store.structuredPlaybooks.save({
+        id: PB_ID,
+        title: "v1",
+        sections: [],
+        tags: [],
+        source: "curated",
+        createdAt: 0,
+        updatedAt: 0,
+        sessionCount: 0,
+        version: 1,
+      });
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 2000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PB_ID,
+          reflector: async () => ({
+            rootCause: "rc",
+            keyInsight: "ki",
+            bulletTags: [],
+          }),
+          curator: async () => [
+            { kind: "add", section: "Existing", content: "low-evidence delta" },
+          ],
+          // verdict=reject — gate must persist evaluation but skip head save.
+          evaluator: async ({ proposal }) => ({
+            id: `eval-${proposal.id}`,
+            proposalId: proposal.id,
+            verdict: "reject",
+            metrics: { helpfulRate: 0.0, harmfulRate: 0.9, trials: 5 },
+            evaluatedAt: 1,
+          }),
+          thresholds: {
+            minHelpfulRate: 0.5,
+            maxHarmfulRate: 0.5,
+            minTrials: 1,
+          },
+          idGenerator: () => "agp-rej-1",
+        },
+      });
+
+      const ctx = {
+        agentId: "ace-agp",
+        sessionId: sessionId("ace-agp-reject"),
+        runId: runId("r-agp-rej"),
+        metadata: {} as JsonObject,
+      };
+      await mw.onSessionStart?.(ctx);
+      await mw.wrapToolCall?.(
+        {
+          session: ctx,
+          turnIndex: 0,
+          turnId: `${runId("r-agp-rej")}-0` as TurnContext["turnId"],
+          messages: [],
+          metadata: {},
+        },
+        { toolId: "fs.read", input: {} },
+        async () => ({ output: "ok" }),
+      );
+      await mw.onSessionEnd?.(ctx);
+
+      const head = await store.structuredPlaybooks.get(PB_ID);
+      expect(head?.version).toBe(1); // unchanged
+      // Proposal still recorded — explains why the evaluation ran.
+      const persistedProposal = await store.proposals.getProposal("agp-rej-1");
+      expect(persistedProposal?.id).toBe("agp-rej-1");
+    } finally {
+      store.close();
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
