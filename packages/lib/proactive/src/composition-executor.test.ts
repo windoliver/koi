@@ -1320,6 +1320,57 @@ describe("createCompositionExecutor", () => {
     expect(opts.priority).toBe(3);
   });
 
+  test("identical steps in one plan each fire (occurrence index disambiguates)", async () => {
+    const { scheduler, calls } = schedulerStub();
+    const notifications: unknown[] = [];
+    const { log } = inMemoryExecutionLog();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async (notification) => {
+        notifications.push(notification);
+        return { delivered: true };
+      },
+      executionLog: log,
+    });
+    const dupNotify = {
+      kind: "notify_user" as const,
+      channel: "inbox",
+      message: "ping",
+      priority: "normal" as const,
+    };
+    const dupSubmit = {
+      kind: "submit_task" as const,
+      agentId: agentId("agent-1"),
+      mode: "dispatch" as const,
+      input: { kind: "text" as const, text: "follow up" },
+    };
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [dupSubmit, dupSubmit, dupNotify, dupNotify],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const result = await executor.execute(trigger(), plan);
+
+    expect(result.status).toBe("executed");
+    expect(result.executedCount).toBe(4);
+    // Each duplicate step fires; submit() and notify() each receive 2 calls
+    // with distinct idempotency keys (occurrence index varies).
+    expect(calls.submit).toHaveLength(2);
+    expect(notifications).toHaveLength(2);
+    const submitKeys = (calls.submit as readonly (readonly unknown[])[]).map(
+      (call) => (call[2] as Record<string, unknown>).idempotencyKey,
+    );
+    expect(submitKeys[0]).not.toBe(submitKeys[1]);
+    const notifyKeys = (notifications as readonly Record<string, unknown>[]).map(
+      (n) => n.idempotencyKey,
+    );
+    expect(notifyKeys[0]).not.toBe(notifyKeys[1]);
+  });
+
   test("isPreCommitRejection() recognizes only the exported helper-built rejection", async () => {
     const built = preCommitRejection("nope");
     expect(isPreCommitRejection(built)).toBe(true);

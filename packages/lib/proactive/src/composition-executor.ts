@@ -208,19 +208,30 @@ function stripIgnoredFields(step: CompositionStep): CompositionStep {
   return step;
 }
 
+// Canonical-content fingerprint for a step (cached per plan via the occurrence
+// counter below — avoids re-canonicalizing identical steps).
+function stepFingerprint(step: CompositionStep): string {
+  return JSON.stringify(canonicalize(stripIgnoredFields(step)));
+}
+
 // Per-step idempotency key. Hash-based and ':' free so it is accepted by
 // scheduler backends that use ':' as their internal task-ID delimiter
 // (e.g. the Temporal scheduler). Hashes trigger id + emittedAt +
-// canonicalized step payload — `emittedAt` distinguishes distinct emissions
-// of triggers that may share an `id` (the public CompositionTrigger contract
-// does not require id uniqueness across emissions). Index is intentionally
-// excluded so a re-plan of the same emission that reorders or inserts steps
-// ahead of an already-committed step still hashes that step to the same key
-// and short-circuits via the execution log. Trade-off: two semantically
-// identical steps in a single plan dedupe to one execution; planners that
-// need distinct firings should make the steps semantically distinct.
+// occurrenceIndex + canonicalized step payload.
+//
+// `emittedAt` distinguishes distinct emissions of triggers that may share an
+// `id` (the public CompositionTrigger contract does not require id uniqueness
+// across emissions).
+//
+// `occurrenceIndex` is the count of prior steps in the same plan with
+// identical canonicalized content. It is NOT the array ordinal — it stays
+// stable when unrelated steps are reordered or inserted in a re-plan, so
+// already-committed steps short-circuit via the execution log. But it
+// distinguishes two semantically identical steps in the same plan so they
+// each fire (rather than collapsing into one).
 function deriveStepIdempotencyKey(
   trigger: CompositionTrigger,
+  occurrenceIndex: number,
   step: CompositionStep,
 ): string {
   const hasher = new Bun.CryptoHasher("sha256");
@@ -228,6 +239,7 @@ function deriveStepIdempotencyKey(
     JSON.stringify({
       triggerId: trigger.id,
       emittedAt: trigger.emittedAt,
+      occurrenceIndex,
       step: canonicalize(stripIgnoredFields(step)),
     }),
   );
@@ -399,12 +411,16 @@ export function createCompositionExecutor(
 
       const stepResults: ExecutedStepResult[] = [];
 
+      // Per-content occurrence counter — the Nth identical step in a plan
+      // gets occurrenceIndex N. Stable across reorders of unrelated steps.
+      const occurrenceCounts = new Map<string, number>();
+
       for (let index = 0; index < plan.steps.length; index += 1) {
         const step = plan.steps[index]!;
-        // Deterministic per-step key derived from trigger emission + content.
-        // Index is intentionally excluded so reorders/inserts in a re-plan of
-        // the same emission still recognize already-committed steps.
-        const stepIdempotencyKey = deriveStepIdempotencyKey(trigger, step);
+        const fingerprint = stepFingerprint(step);
+        const occurrenceIndex = occurrenceCounts.get(fingerprint) ?? 0;
+        occurrenceCounts.set(fingerprint, occurrenceIndex + 1);
+        const stepIdempotencyKey = deriveStepIdempotencyKey(trigger, occurrenceIndex, step);
         // Track whether this step has acquired the executionLog claim so the
         // outer catch can release on pre-commit rejection or surface the key
         // on ambiguous failure. Only set after claim() returns "claimed".
