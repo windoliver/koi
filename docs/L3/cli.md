@@ -6,6 +6,8 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`@koi/daemon` remote worker backend (#1871)**: `@koi/daemon` now exports `createRemoteBackend`, a Nexus-backed `WorkerBackend` driven by a `NexusTransport`. No CLI command/flag surface change — the new backend slots into `SupervisorConfig.backends` alongside subprocess/tmux, so any future `koi bg` or supervisor wiring that registers it inherits the same lifecycle, heartbeat, and respawn contract. Heartbeat is opt-in to avoid routing heartbeat-required workers to endpoints that do not emit heartbeat events. See `docs/L2/daemon.md` for the contract.
+
 - **Remote TUI gateway client (#2122)**: `koi tui --gateway-url ws://…`
   connects to a running `koi gateway-up` instead of executing the engine
   in-process. New modules `tui-gateway-client.ts` + `tui-request-stream.ts`
