@@ -183,6 +183,26 @@ function createFailingProposalStore(message = "evaluation write failed"): Playbo
   };
 }
 
+function createSaveFailingStructuredStore(
+  message = "save failed",
+  seed = createStructuredPlaybook(),
+): StructuredPlaybookStore {
+  const current = structuredClone(seed) as StructuredPlaybook;
+  return {
+    get: async (id) =>
+      id === current.id ? (structuredClone(current) as StructuredPlaybook) : undefined,
+    list: async () => [structuredClone(current) as StructuredPlaybook],
+    save: async () => {
+      throw new Error(message);
+    },
+    remove: async () => false,
+    getVersion: async (id, version) =>
+      id === current.id && version === current.version
+        ? (structuredClone(current) as StructuredPlaybook)
+        : undefined,
+  };
+}
+
 function evaluation(
   overrides: Partial<PlaybookEvaluation> & { readonly metrics?: Record<string, number> } = {},
 ): PlaybookEvaluation {
@@ -614,7 +634,7 @@ describe("commitPromotion", () => {
     expect(proposalStore.recordedEvaluations).toEqual([evaluation({ verdict: "rollback" })]);
   });
 
-  test("does not save a promoted version when evaluation recording fails", async () => {
+  test("returns the saved promoted version even when evaluation recording fails afterwards", async () => {
     const store = createStructuredStore();
     const proposalWithAdd = createProposal({
       baseVersion: 1,
@@ -635,7 +655,38 @@ describe("commitPromotion", () => {
     ).rejects.toThrow(/evaluation write failed/i);
 
     const saved = await store.get("playbook-1");
-    expect(saved).toEqual(createStructuredPlaybook());
+    expect(saved?.version).toBe(2);
+    expect(saved?.updatedAt).toBe(500);
+    expect(saved?.sections[0]?.bullets[2]?.content).toBe("newly promoted insight");
+    expect(saved?.provenance).toEqual({
+      sourceTrajectoryRange: proposal.sourceTrajectoryRange,
+      proposalId: "proposal-1",
+      evaluationId: "evaluation-1",
+      committedAt: 500,
+    });
+  });
+
+  test("does not record the evaluation when saving the promoted version fails", async () => {
+    const proposalStore = createProposalStore();
+    const proposalWithAdd = createProposal({
+      baseVersion: 1,
+      operations: [{ kind: "add", section: "Existing", content: "newly promoted insight" }],
+    });
+
+    await expect(
+      commitPromotion(
+        {
+          structuredStore: createSaveFailingStructuredStore(),
+          proposalStore,
+          clock: () => 500,
+        },
+        proposalWithAdd,
+        evaluation(),
+        thresholds,
+      ),
+    ).rejects.toThrow(/save failed/i);
+
+    expect(proposalStore.recordedEvaluations).toEqual([]);
   });
 
   test("throws when the structured playbook does not exist", async () => {
@@ -841,5 +892,39 @@ describe("rollbackPromotion", () => {
         evaluation({ verdict: "rollback" }),
       ),
     ).rejects.toThrow(/older than the current head/i);
+  });
+
+  test("does not record the evaluation when saving the rollback head fails", async () => {
+    const proposalStore = createProposalStore();
+    const current = createStructuredPlaybook({ version: 2 });
+    const previous = createStructuredPlaybook({ version: 1 });
+    const store: StructuredPlaybookStore = {
+      get: async (id) =>
+        id === current.id ? (structuredClone(current) as StructuredPlaybook) : undefined,
+      list: async () => [structuredClone(current) as StructuredPlaybook],
+      save: async () => {
+        throw new Error("rollback save failed");
+      },
+      remove: async () => false,
+      getVersion: async (id, version) =>
+        id === current.id && version === previous.version
+          ? (structuredClone(previous) as StructuredPlaybook)
+          : undefined,
+    };
+
+    await expect(
+      rollbackPromotion(
+        {
+          structuredStore: store,
+          proposalStore,
+          clock: () => 500,
+        },
+        createProposal({ baseVersion: 2 }),
+        1,
+        evaluation({ verdict: "rollback" }),
+      ),
+    ).rejects.toThrow(/rollback save failed/i);
+
+    expect(proposalStore.recordedEvaluations).toEqual([]);
   });
 });

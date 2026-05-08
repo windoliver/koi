@@ -320,15 +320,15 @@ export async function commitPromotion(
     },
   };
 
-  if (deps.proposalStore !== undefined) {
-    await deps.proposalStore.recordEvaluation(evaluation);
-  }
-
   // Store implementations are responsible for rejecting stale/equal
   // conflicting writes (for example via version monotonicity checks), so this
   // path only prepares the next versioned snapshot and relies on save() to
   // enforce the final concurrency gate.
   await deps.structuredStore.save(next);
+
+  if (deps.proposalStore !== undefined) {
+    await deps.proposalStore.recordEvaluation(evaluation);
+  }
 
   return {
     outcome: "promoted",
@@ -399,11 +399,11 @@ export async function rollbackPromotion(
     },
   };
 
+  await deps.structuredStore.save(restored);
+
   if (deps.proposalStore !== undefined) {
     await deps.proposalStore.recordEvaluation(evaluation);
   }
-
-  await deps.structuredStore.save(restored);
 
   return {
     outcome: "rolled_back",
