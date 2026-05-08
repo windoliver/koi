@@ -1,0 +1,432 @@
+import type { ExecutionContext, JsonObject, Result, SandboxProfile } from "@koi/core";
+import { unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseWorkerMessage } from "./protocol.js";
+import type {
+  BridgeConfig,
+  BridgeExecOptions,
+  BridgeResult,
+  ErrorMessage,
+  IpcError,
+  IpcErrorCode,
+  IpcProcess,
+  ResultMessage,
+  SandboxBridge,
+  SpawnFn,
+} from "./types.js";
+import { WORKER_SOURCE } from "./worker-source.js";
+
+const DEFAULT_GRACE_MS = 5_000;
+const DEFAULT_MAX_RESULT_BYTES = 10_485_760;
+const DEFAULT_SERIALIZATION = "advanced" as const;
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+const SIGNAL_NAMES: Readonly<Record<number, string>> = {
+  1: "SIGHUP",
+  2: "SIGINT",
+  3: "SIGQUIT",
+  6: "SIGABRT",
+  9: "SIGKILL",
+  11: "SIGSEGV",
+  13: "SIGPIPE",
+  14: "SIGALRM",
+  15: "SIGTERM",
+};
+
+export interface CreateSandboxBridgeOptions {
+  readonly spawnFn?: SpawnFn;
+}
+
+function createIpcError(
+  code: IpcErrorCode,
+  message: string,
+  details?: {
+    readonly exitCode?: number;
+    readonly signal?: string;
+    readonly durationMs?: number;
+  },
+): IpcError {
+  return {
+    code,
+    message,
+    ...(details?.exitCode !== undefined ? { exitCode: details.exitCode } : {}),
+    ...(details?.signal !== undefined ? { signal: details.signal } : {}),
+    ...(details?.durationMs !== undefined ? { durationMs: details.durationMs } : {}),
+  };
+}
+
+function signalNameFromNumber(signal: number | undefined): string | undefined {
+  if (signal === undefined) {
+    return undefined;
+  }
+  return SIGNAL_NAMES[signal] ?? `SIG${signal}`;
+}
+
+function classifyExitCode(exitCode: number, durationMs: number): IpcError {
+  if (exitCode === 137) {
+    return createIpcError("OOM", "Worker killed by SIGKILL (likely OOM)", {
+      exitCode,
+      signal: "SIGKILL",
+      durationMs,
+    });
+  }
+
+  if (exitCode === 124) {
+    return createIpcError("TIMEOUT", "Worker self-terminated due to timeout", {
+      exitCode,
+      durationMs,
+    });
+  }
+
+  if (exitCode !== 0) {
+    const signal = exitCode > 128 ? signalNameFromNumber(exitCode - 128) : undefined;
+    return createIpcError("CRASH", `Worker exited with code ${exitCode}`, {
+      exitCode,
+      ...(signal !== undefined ? { signal } : {}),
+      durationMs,
+    });
+  }
+
+  return createIpcError("CRASH", "Worker exited cleanly without sending a terminal message", {
+    exitCode,
+    durationMs,
+  });
+}
+
+function applyContextToProfile(
+  base: SandboxProfile,
+  context: ExecutionContext | undefined,
+): SandboxProfile {
+  if (context === undefined) {
+    return base;
+  }
+
+  const filesystem = { ...base.filesystem };
+  const network = { ...base.network };
+  const resources = { ...base.resources };
+
+  if (context.workspacePath !== undefined) {
+    filesystem.allowRead = [...(filesystem.allowRead ?? []), context.workspacePath];
+    filesystem.allowWrite = [...(filesystem.allowWrite ?? []), context.workspacePath];
+  }
+
+  if (context.entryPath !== undefined) {
+    filesystem.allowRead = [...(filesystem.allowRead ?? []), context.entryPath];
+  }
+
+  if (context.networkAllowed === true) {
+    network.allow = true;
+  }
+
+  if (context.resourceLimits?.maxMemoryMb !== undefined) {
+    resources.maxMemoryMb = context.resourceLimits.maxMemoryMb;
+  }
+  if (context.resourceLimits?.maxPids !== undefined) {
+    resources.maxPids = context.resourceLimits.maxPids;
+  }
+
+  return {
+    ...base,
+    filesystem,
+    network,
+    resources,
+    ...(context.env !== undefined ? { env: { ...(base.env ?? {}), ...context.env } } : {}),
+  };
+}
+
+function mapWorkerErrorCode(code: ErrorMessage["code"]): IpcErrorCode {
+  switch (code) {
+    case "TIMEOUT":
+      return "TIMEOUT";
+    case "OOM":
+      return "OOM";
+    case "PERMISSION":
+      return "PERMISSION";
+    case "CRASH":
+      return "WORKER_ERROR";
+  }
+}
+
+function processResultMessage(
+  message: ResultMessage,
+  maxResultBytes: number,
+  spawnDurationMs: number,
+): Result<BridgeResult, IpcError> {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(message.output ?? null);
+  } catch (error) {
+    return {
+      ok: false,
+      error: createIpcError(
+        "DESERIALIZE",
+        `Result is not JSON-serializable: ${error instanceof Error ? error.message : String(error)}`,
+        { durationMs: message.durationMs },
+      ),
+    };
+  }
+
+  const sizeBytes = Buffer.byteLength(serialized, "utf8");
+  if (sizeBytes > maxResultBytes) {
+    return {
+      ok: false,
+      error: createIpcError(
+        "RESULT_TOO_LARGE",
+        `Result size ${sizeBytes} bytes exceeds limit of ${maxResultBytes} bytes`,
+        { durationMs: message.durationMs },
+      ),
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      output: message.output,
+      durationMs: message.durationMs,
+      ...(message.memoryUsedBytes !== undefined
+        ? { memoryUsedBytes: message.memoryUsedBytes }
+        : {}),
+      exitCode: 0,
+      spawnDurationMs,
+    },
+  };
+}
+
+function defaultSpawnFn(
+  command: readonly string[],
+  options: {
+    readonly serialization: "advanced" | "json";
+  },
+): IpcProcess {
+  const messageHandlers: Array<(message: unknown) => void> = [];
+  const proc = Bun.spawn([...command], {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    serialization: options.serialization,
+    ipc(message: unknown) {
+      for (const handler of messageHandlers) {
+        handler(message);
+      }
+    },
+  });
+
+  if (proc.stdout !== null) {
+    void new Response(proc.stdout).text().catch(() => {});
+  }
+  if (proc.stderr !== null) {
+    void new Response(proc.stderr).text().catch(() => {});
+  }
+
+  return {
+    pid: proc.pid,
+    exited: proc.exited,
+    kill(signal?: number) {
+      if (signal === undefined) {
+        proc.kill();
+        return;
+      }
+
+      proc.kill(signalNameFromNumber(signal) as NodeJS.Signals);
+    },
+    send(message: unknown) {
+      proc.send(message);
+    },
+    onMessage(handler: (message: unknown) => void) {
+      messageHandlers.push(handler);
+    },
+    onExit(handler: (code: number) => void) {
+      void proc.exited.then((code) => {
+        handler(code);
+      });
+    },
+  };
+}
+
+export async function createSandboxBridge(
+  config: BridgeConfig,
+  options: CreateSandboxBridgeOptions = {},
+): Promise<SandboxBridge> {
+  const spawnFn = options.spawnFn ?? defaultSpawnFn;
+  const serialization = config.serialization ?? DEFAULT_SERIALIZATION;
+  const graceMs = config.graceMs ?? DEFAULT_GRACE_MS;
+  const defaultMaxResultBytes = config.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES;
+  const workerPath = join(tmpdir(), `koi-sandbox-ipc-worker-${crypto.randomUUID()}.ts`);
+
+  await Bun.write(workerPath, WORKER_SOURCE);
+
+  let disposed = false;
+
+  async function execute(
+    code: string,
+    input: JsonObject,
+    execOptions?: BridgeExecOptions,
+  ): Promise<Result<BridgeResult, IpcError>> {
+    if (disposed) {
+      return {
+        ok: false,
+        error: createIpcError("DISPOSED", "Bridge has been disposed"),
+      };
+    }
+
+    const requestTimeoutMs =
+      execOptions?.timeoutMs ?? config.profile.resources.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const bridgeTimeoutMs = requestTimeoutMs + graceMs;
+    const maxResultBytes = execOptions?.maxResultBytes ?? defaultMaxResultBytes;
+    const executionProfile = applyContextToProfile(config.profile, execOptions?.context);
+    const builtCommand = config.buildCommand(executionProfile, "bun", ["run", workerPath]);
+
+    if (!builtCommand.ok) {
+      return {
+        ok: false,
+        error: createIpcError("SPAWN_FAILED", builtCommand.error.message),
+      };
+    }
+
+    const startedAt = performance.now();
+    let proc: IpcProcess;
+    try {
+      proc = spawnFn([builtCommand.value.executable, ...builtCommand.value.args], {
+        serialization,
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        error: createIpcError(
+          "SPAWN_FAILED",
+          error instanceof Error ? error.message : String(error),
+          { durationMs: performance.now() - startedAt },
+        ),
+      };
+    }
+
+    const spawnDurationMs = performance.now() - startedAt;
+
+    return await new Promise<Result<BridgeResult, IpcError>>((resolve) => {
+      let settled = false;
+      let readyReceived = false;
+
+      const settle = (result: Result<BridgeResult, IpcError>): void => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        clearTimeout(timeoutHandle);
+
+        try {
+          proc.kill(9);
+        } catch {
+          // Best-effort cleanup: the worker may have exited already.
+        }
+
+        resolve(result);
+      };
+
+      const timeoutHandle = setTimeout(() => {
+        settle({
+          ok: false,
+          error: createIpcError("TIMEOUT", `Bridge timeout exceeded (${bridgeTimeoutMs}ms)`, {
+            durationMs: performance.now() - startedAt,
+          }),
+        });
+      }, bridgeTimeoutMs);
+
+      proc.onExit((exitCode) => {
+        if (settled) {
+          return;
+        }
+
+        settle({
+          ok: false,
+          error: classifyExitCode(exitCode, performance.now() - startedAt),
+        });
+      });
+
+      proc.onMessage((rawMessage) => {
+        if (settled) {
+          return;
+        }
+
+        const parsed = parseWorkerMessage(rawMessage);
+        if (!parsed.ok) {
+          settle({
+            ok: false,
+            error: createIpcError("DESERIALIZE", parsed.error.message, {
+              durationMs: performance.now() - startedAt,
+            }),
+          });
+          return;
+        }
+
+        const message = parsed.value;
+        if (message.kind === "ready") {
+          if (readyReceived) {
+            settle({
+              ok: false,
+              error: createIpcError("DESERIALIZE", "Worker sent duplicate ready messages", {
+                durationMs: performance.now() - startedAt,
+              }),
+            });
+            return;
+          }
+
+          readyReceived = true;
+          proc.send({
+            kind: "execute",
+            code,
+            input,
+            timeoutMs: requestTimeoutMs,
+          });
+          return;
+        }
+
+        if (!readyReceived) {
+          settle({
+            ok: false,
+            error: createIpcError(
+              "DESERIALIZE",
+              "Worker sent a terminal message before signaling ready",
+              { durationMs: performance.now() - startedAt },
+            ),
+          });
+          return;
+        }
+
+        if (message.kind === "result") {
+          settle(processResultMessage(message, maxResultBytes, spawnDurationMs));
+          return;
+        }
+
+        settle({
+          ok: false,
+          error: createIpcError(mapWorkerErrorCode(message.code), message.message, {
+            durationMs: message.durationMs ?? performance.now() - startedAt,
+          }),
+        });
+      });
+    });
+  }
+
+  async function dispose(): Promise<void> {
+    if (disposed) {
+      return;
+    }
+
+    disposed = true;
+    try {
+      await unlink(workerPath);
+    } catch (error) {
+      const code =
+        typeof error === "object" && error !== null && "code" in error
+          ? (error as { code?: string }).code
+          : undefined;
+      if (code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
+  return { execute, dispose };
+}
