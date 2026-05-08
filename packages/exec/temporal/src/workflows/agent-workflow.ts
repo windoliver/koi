@@ -1,6 +1,7 @@
 import { sessionId as makeSessionId } from "@koi/core";
 import {
   condition,
+  continueAsNew,
   defineQuery,
   defineSignal,
   proxyActivities,
@@ -168,7 +169,29 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
           result.spawnChild.childAgentId,
           result.turnId,
         ),
+        // ABANDON: parent may continueAsNew immediately after spawning;
+        // default TERMINATE would kill an in-flight child mid-turn.
+        parentClosePolicy: "ABANDON",
       });
+    }
+
+    // Cap workflow history before Temporal forces a hard failure. Roll over
+    // after every completed turn once the server suggests it; carry pending
+    // backlog into the new run so high-traffic workflows still rotate.
+    // Temporal buffers in-flight signals during the continueAsNew handoff,
+    // so this does not race with concurrent senders. Carried payload is
+    // typically small (per-turn drain), bounded in practice by signal rate
+    // and Temporal's per-arg size limit.
+    if (workflowInfo().continueAsNewSuggested && !shutdownRequested) {
+      const carryConfig: AgentWorkflowConfig = {
+        ...config,
+        sessionId: effectiveSessionId,
+        stateRefs,
+        initialMessage: undefined,
+        initialMessages: [...pendingMessages],
+        initialScheduledInput: undefined,
+      };
+      await continueAsNew<typeof agentWorkflow>(carryConfig);
     }
   }
 }
@@ -216,5 +239,9 @@ function buildScheduledMessageSeed(
   sessionId: AgentWorkflowConfig["sessionId"],
   batch: number,
 ): string {
-  return `scheduled:${sessionId}:${Date.now()}:${batch}`;
+  // Include workflowInfo().runId so message IDs cannot collide across
+  // continueAsNew rollovers — each Temporal run has a unique runId, so
+  // scheduledBatchCount restarting at 0 in the new run cannot mint the
+  // same IncomingMessage.id as the previous run.
+  return `scheduled:${sessionId}:${workflowInfo().runId}:${Date.now()}:${batch}`;
 }

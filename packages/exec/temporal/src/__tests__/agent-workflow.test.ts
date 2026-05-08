@@ -117,6 +117,7 @@ describe("agent workflow module", () => {
     });
 
     mock.module("@temporalio/workflow", () => ({
+      continueAsNew: async () => {},
       defineSignal: (name: string) => {
         defineSignalCalls.push(name);
         return name;
@@ -205,6 +206,7 @@ describe("agent workflow module", () => {
                 maxStopRetries: 2,
               },
             ],
+            parentClosePolicy: "ABANDON",
             workflowId: "worker:session-1:child-1:turn-1",
           },
         },
