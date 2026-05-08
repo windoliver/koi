@@ -16,17 +16,34 @@ interface MockDeps {
   readonly createHttpTransportCalls: Array<{ readonly apiKey: string; readonly url: string }>;
   readonly serveCalls: Array<{ readonly hostname: string; readonly port: number }>;
   readonly transportCloseCalls: string[];
+  readonly bunTransportCloseCalls: number;
   readonly stackStartCalls: number[];
   readonly stackStopSignals: string[];
+  readonly fetchPreStart: () => Promise<Response>;
+  readonly resolveStart: () => void;
 }
 
-function setupMocks() {
+interface SetupOptions {
+  readonly deferStart?: boolean;
+  readonly serveThrows?: Error;
+}
+
+function setupMocks(opts: SetupOptions = {}) {
   const createGatewayStackCalls: MockDeps["createGatewayStackCalls"] = [];
   const createHttpTransportCalls: MockDeps["createHttpTransportCalls"] = [];
   const serveCalls: MockDeps["serveCalls"] = [];
   const transportCloseCalls: string[] = [];
   const stackStartCalls: number[] = [];
   const stackStopSignals: string[] = [];
+  let bunTransportCloseCalls = 0;
+  let serveFetch: ((req: Request) => Response | Promise<Response>) | undefined;
+
+  let resolveStart: () => void = () => {};
+  const startGate = opts.deferStart
+    ? new Promise<void>((resolve) => {
+        resolveStart = resolve;
+      })
+    : Promise.resolve();
 
   const stack: MockStack = {
     healthHandler: async () =>
@@ -35,6 +52,7 @@ function setupMocks() {
       }),
     start: async (port) => {
       stackStartCalls.push(port);
+      await startGate;
     },
     stop: async () => {
       stackStopSignals.push("stop");
@@ -43,6 +61,9 @@ function setupMocks() {
 
   const transport = {
     port: () => 19500,
+    close: () => {
+      bunTransportCloseCalls += 1;
+    },
   };
 
   const nexusTransport = {
@@ -72,8 +93,20 @@ function setupMocks() {
     },
   }));
 
-  Bun.serve = (({ hostname, port }: { readonly hostname?: string; readonly port: number }) => {
+  Bun.serve = (({
+    hostname,
+    port,
+    fetch,
+  }: {
+    readonly hostname?: string;
+    readonly port: number;
+    readonly fetch: (req: Request) => Response | Promise<Response>;
+  }) => {
     serveCalls.push({ hostname: hostname ?? "127.0.0.1", port });
+    if (opts.serveThrows !== undefined) {
+      throw opts.serveThrows;
+    }
+    serveFetch = fetch;
     return {
       port,
       stop: () => {
@@ -90,6 +123,14 @@ function setupMocks() {
       stackStartCalls,
       stackStopSignals,
       transportCloseCalls,
+      get bunTransportCloseCalls() {
+        return bunTransportCloseCalls;
+      },
+      fetchPreStart: async () => {
+        if (serveFetch === undefined) throw new Error("Bun.serve not invoked");
+        return await serveFetch(new Request("http://127.0.0.1/health"));
+      },
+      resolveStart,
     } satisfies MockDeps,
     restore: () => {
       mock.restore();
@@ -178,6 +219,67 @@ describe("createLocalGatewayLauncher", () => {
     });
     expect(deps.stackStopSignals).toEqual(["health-stop", "stop"]);
     expect(deps.transportCloseCalls).toEqual(["close"]);
+
+    restore();
+  });
+
+  test("rejects port 65535 (health server reserves port+1)", async () => {
+    const { restore } = setupMocks();
+    const { createLocalGatewayLauncher } = await import("./local-launcher.js");
+
+    await expect(createLocalGatewayLauncher().start({ port: 65535 })).rejects.toThrow(/65534/);
+
+    restore();
+  });
+
+  test("rejects port 0", async () => {
+    const { restore } = setupMocks();
+    const { createLocalGatewayLauncher } = await import("./local-launcher.js");
+
+    await expect(createLocalGatewayLauncher().start({ port: 0 })).rejects.toThrow(/integer/);
+
+    restore();
+  });
+
+  test("/health returns 503 starting JSON before stack.start resolves", async () => {
+    const { deps, restore } = setupMocks({ deferStart: true });
+    const { createLocalGatewayLauncher } = await import("./local-launcher.js");
+
+    const startPromise = createLocalGatewayLauncher().start({ port: 19500 });
+    // Yield so Bun.serve is registered before we probe.
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    const res = await deps.fetchPreStart();
+    expect(res.status).toBe(503);
+    expect(res.headers.get("content-type")).toBe("application/json");
+    expect(await res.json()).toEqual({ status: "starting" });
+
+    deps.resolveStart();
+    await startPromise;
+
+    const after = await deps.fetchPreStart();
+    expect(after.status).toBe(200);
+
+    restore();
+  });
+
+  test("rolls back gateway transport when health-server bind fails", async () => {
+    const bindError = new Error("EADDRINUSE: 19501 in use");
+    const { deps, restore } = setupMocks({ serveThrows: bindError });
+    const { createLocalGatewayLauncher } = await import("./local-launcher.js");
+
+    await expect(
+      createLocalGatewayLauncher().start({
+        port: 19500,
+        nexusUrl: "http://127.0.0.1:4515",
+        nexusApiKey: "secret",
+      }),
+    ).rejects.toBe(bindError);
+
+    expect(deps.stackStartCalls).toEqual([]); // serve fails before stack.start
+    expect(deps.stackStopSignals).toContain("stop"); // best-effort stack.stop
+    expect(deps.bunTransportCloseCalls).toBe(1); // gateway listener released
+    expect(deps.transportCloseCalls).toEqual(["close"]); // nexus closed
 
     restore();
   });
