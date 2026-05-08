@@ -287,19 +287,15 @@ export async function commitPromotion(
     throw new Error(`ACE promotion gate: structured playbook not found: ${proposal.playbookId}`);
   }
 
-  if (current.version !== proposal.baseVersion) {
-    throw new Error(
-      `ACE promotion gate: base version mismatch for ${proposal.playbookId}; expected ${proposal.baseVersion}, got ${current.version}`,
-    );
-  }
-
   const gateDecision = await evaluatePromotion(proposal, evaluation, thresholds);
   if (gateDecision !== "promote") {
-    // Real proposal stores enforce a proposal -> evaluation foreign key
-    // (sqlite) or existence check (nexus), so the proposal must be persisted
-    // before the evaluation. recordProposal is idempotent on byte-identical
-    // retries so calling it here is safe regardless of whether the caller
-    // already wrote it.
+    // Reject path is audit-only: do NOT require current.version === baseVersion.
+    // If a concurrent promotion advanced the head after this proposal was
+    // created, we still want a durable reject evaluation against the existing
+    // proposal so the audit log explains every outcome. recordProposal is
+    // idempotent on byte-identical retries (and sqlite skips its baseVersion
+    // FK check on idempotent re-inserts), so calling it here is safe whether
+    // the caller already wrote it or not.
     await deps.proposalStore.recordProposal(proposal);
     await deps.proposalStore.recordEvaluation(evaluation);
 
@@ -311,6 +307,15 @@ export async function commitPromotion(
       fromVersion: current.version,
       toVersion: current.version,
     };
+  }
+
+  // Promote path requires the head to still equal baseVersion: otherwise the
+  // proposed operations were computed against a stale snapshot and applying
+  // them is unsafe.
+  if (current.version !== proposal.baseVersion) {
+    throw new Error(
+      `ACE promotion gate: base version mismatch for ${proposal.playbookId}; expected ${proposal.baseVersion}, got ${current.version}`,
+    );
   }
 
   const now = deps.clock?.() ?? Date.now();

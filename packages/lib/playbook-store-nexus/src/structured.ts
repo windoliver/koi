@@ -13,6 +13,23 @@ import type { NexusPlaybookStoreConfig } from "./types.js";
 
 const DEFAULT_BASE = "ace";
 
+/**
+ * Canonical JSON: stringify with deterministically-sorted object keys at every
+ * depth so semantically-equal objects compare equal regardless of key insertion
+ * order. Array order is preserved (meaningful: sections, bullets, operations).
+ */
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) => {
+    if (v === null || typeof v !== "object" || Array.isArray(v)) return v;
+    const obj = v as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const k of Object.keys(obj).sort()) {
+      sorted[k] = obj[k];
+    }
+    return sorted;
+  });
+}
+
 export function createNexusStructuredPlaybookStore(
   config: NexusPlaybookStoreConfig,
 ): StructuredPlaybookStore {
@@ -83,7 +100,7 @@ export function createNexusStructuredPlaybookStore(
           }
           if (
             playbook.version === current.version &&
-            JSON.stringify(playbook) !== JSON.stringify(current)
+            canonicalJson(playbook) !== canonicalJson(current)
           ) {
             throw new Error(
               `playbook ${playbook.id} cannot save divergent content at current version ${String(current.version)}`,
