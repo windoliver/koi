@@ -369,7 +369,10 @@ export async function createSandboxBridge(
 
     const requestTimeoutMs =
       execOptions?.timeoutMs ?? config.profile.resources.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const bridgeTimeoutMs = requestTimeoutMs + graceMs;
+    // Caller's deadline is `requestTimeoutMs`. Grace is reserved for the
+    // post-deadline kill→exit drain only (settle()), not for extending the
+    // user-visible TIMEOUT clock.
+    const bridgeTimeoutMs = requestTimeoutMs;
     const maxResultBytes = execOptions?.maxResultBytes ?? defaultMaxResultBytes;
     const executionProfile = ensureReadablePath(
       applyContextToProfile(config.profile, execOptions?.context),
@@ -438,11 +441,24 @@ export async function createSandboxBridge(
 
         // Defer resolution until the worker has actually exited. This closes
         // the race where a caller would see TIMEOUT/error and retry while the
-        // killed worker was still draining side effects.
-        void proc.exited.catch(() => undefined).finally(() => {
+        // killed worker was still draining side effects. A `graceMs` fallback
+        // prevents the host from hanging if the worker exit promise is stuck.
+        let resolvedOnce = false;
+        const finalize = (): void => {
+          if (resolvedOnce) {
+            return;
+          }
+          resolvedOnce = true;
           activeProcs.delete(proc);
           resolve(result);
-        });
+        };
+        const graceTimer = setTimeout(finalize, graceMs);
+        void proc.exited
+          .catch(() => undefined)
+          .finally(() => {
+            clearTimeout(graceTimer);
+            finalize();
+          });
       };
 
       const timeoutHandle = setTimeout(() => {

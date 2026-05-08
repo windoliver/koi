@@ -1,12 +1,42 @@
 import type { JsonObject } from "@koi/core";
-import type {
-  ExecutionContext,
-  SandboxError,
-  SandboxExecutor,
-  SandboxResult,
-} from "@koi/core/sandbox-executor";
+import type { SandboxError, SandboxResult } from "@koi/core/sandbox-executor";
 import { createSandboxBridge } from "./bridge.js";
 import type { BridgeConfig, IpcError, IpcErrorCode, SandboxBridge } from "./types.js";
+
+/**
+ * ExecutionContext shape supported by the IPC adapter. This is a strict
+ * subset of `@koi/core` `ExecutionContext`: it deliberately omits
+ * `entryPath` and `workspacePath` because the adapter wraps `code` as an
+ * async function body and never imports a module file. Callers wanting full
+ * module-source semantics should use `@koi/sandbox-executor`.
+ */
+export interface IpcExecutionContext {
+  readonly networkAllowed?: boolean;
+  readonly resourceLimits?: {
+    readonly maxMemoryMb?: number;
+    readonly maxPids?: number;
+  };
+  readonly env?: Readonly<Record<string, string>>;
+}
+
+export type IpcExecutorOutcome =
+  | { readonly ok: true; readonly value: SandboxResult }
+  | { readonly ok: false; readonly error: SandboxError };
+
+/**
+ * Narrowed executor surface returned by `bridgeToFunctionExecutor()`. The
+ * method name (`executeFunctionBody`) and context type intentionally make
+ * the function-body-only contract explicit, so this cannot be assigned to a
+ * `SandboxExecutor` and silently lose `entryPath`/`workspacePath` semantics.
+ */
+export interface IpcSandboxExecutor {
+  readonly executeFunctionBody: (
+    code: string,
+    input: unknown,
+    timeoutMs: number,
+    context?: IpcExecutionContext,
+  ) => Promise<IpcExecutorOutcome>;
+}
 
 const EXECUTOR_INPUT_KEY = "__koi_executor_input";
 const KNOWN_IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
@@ -68,7 +98,10 @@ function extractErrorMessage(error: unknown): string {
 }
 
 function wrapExecutorCode(code: string): string {
-  return `return (function(input) {\n${code}\n})(input[${JSON.stringify(EXECUTOR_INPUT_KEY)}]);`;
+  // Wrap user code in an async IIFE so `await` works inside the body. The
+  // outer worker compiles the entire payload as an `AsyncFunction`, and this
+  // wrapper preserves async semantics for the caller's body too.
+  return `return await (async function(input) {\n${code}\n})(input[${JSON.stringify(EXECUTOR_INPUT_KEY)}]);`;
 }
 
 function wrapExecutorInput(input: unknown): JsonObject {
@@ -121,34 +154,31 @@ interface BridgeToExecutorOptions {
   readonly createBridge?: (config: BridgeConfig) => Promise<SandboxBridge> | SandboxBridge;
 }
 
-export function bridgeToExecutor(
+export function bridgeToFunctionExecutor(
   config: BridgeConfig,
   options?: BridgeToExecutorOptions,
-): SandboxExecutor {
+): IpcSandboxExecutor {
   const createBridge = options?.createBridge ?? createSandboxBridge;
 
   return {
-    async execute(
+    async executeFunctionBody(
       code: string,
       input: unknown,
       timeoutMs: number,
-      context?: ExecutionContext,
-    ): Promise<
-      | { readonly ok: true; readonly value: SandboxResult }
-      | { readonly ok: false; readonly error: SandboxError }
-    > {
-      // Reject ExecutionContext fields the IPC adapter does not yet plumb
-      // through end-to-end. The adapter wraps `code` as an async function
-      // body, so module-style entries and workspace-rooted execution are not
-      // supported. Failing fast is safer than silently dropping them.
-      if (context?.entryPath !== undefined || context?.workspacePath !== undefined) {
+      context?: IpcExecutionContext,
+    ): Promise<IpcExecutorOutcome> {
+      // Defensive runtime check: even though `IpcExecutionContext` does not
+      // declare `entryPath`/`workspacePath`, callers using `unknown`-typed
+      // contexts could still pass them. Reject early with a clear pointer.
+      const cast = context as { entryPath?: unknown; workspacePath?: unknown } | undefined;
+      if (cast?.entryPath !== undefined || cast?.workspacePath !== undefined) {
         return {
           ok: false,
           error: {
             code: "CRASH",
             message:
-              "sandbox-ipc bridgeToExecutor does not support ExecutionContext.entryPath or " +
-              "ExecutionContext.workspacePath. Use @koi/sandbox-executor for module-source execution.",
+              "sandbox-ipc bridgeToFunctionExecutor does not support entryPath/workspacePath. " +
+              "Use @koi/sandbox-executor for module-source execution.",
             durationMs: 0,
           },
         };
@@ -164,8 +194,9 @@ export function bridgeToExecutor(
           error: {
             code: "CRASH",
             message:
-              "sandbox-ipc bridgeToExecutor expects an async function body, not module source. " +
-              "Detected top-level `import`/`export`. Use @koi/sandbox-executor for module execution.",
+              "sandbox-ipc bridgeToFunctionExecutor expects an async function body, not module " +
+              "source. Detected top-level `import`/`export`. Use @koi/sandbox-executor for " +
+              "module execution.",
             durationMs: 0,
           },
         };

@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
-import type { SandboxExecutor } from "@koi/core/sandbox-executor";
-import { bridgeToExecutor as createExecutor } from "./adapter.js";
+import {
+  bridgeToFunctionExecutor as createExecutor,
+  type IpcSandboxExecutor,
+} from "./adapter.js";
 import type { BridgeConfig, CommandBuilder, SandboxBridge } from "./types.js";
 
 const TEST_PROFILE: BridgeConfig["profile"] = {
@@ -33,7 +35,7 @@ function validBridgeConfig(): BridgeConfig {
 
 type CreateBridge = (config: BridgeConfig) => Promise<SandboxBridge> | SandboxBridge;
 
-function bridgeToExecutor(config: BridgeConfig, createBridge?: CreateBridge): SandboxExecutor {
+function bridgeToExecutor(config: BridgeConfig, createBridge?: CreateBridge): IpcSandboxExecutor {
   return createExecutor(config, createBridge === undefined ? undefined : { createBridge });
 }
 
@@ -50,7 +52,7 @@ function makeMockBridge(overrides: Partial<SandboxBridge> = {}): SandboxBridge {
 
 test("bridgeToExecutor adapts bridge failures into SandboxError results", async () => {
   const executor = bridgeToExecutor(validBridgeConfig());
-  const result = await executor.execute("throw new Error('boom')", {}, 500);
+  const result = await executor.executeFunctionBody("throw new Error('boom')", {}, 500);
 
   expect(result.ok).toBe(false);
   if (result.ok) {
@@ -62,7 +64,7 @@ test("bridgeToExecutor adapts bridge failures into SandboxError results", async 
 
 test("bridgeToExecutor returns SandboxResult values on success", async () => {
   const executor = bridgeToExecutor(validBridgeConfig());
-  const result = await executor.execute(
+  const result = await executor.executeFunctionBody(
     "return { total: input.left + input.right, memorySeen: 1234 };",
     { left: 19, right: 23 },
     500,
@@ -79,7 +81,7 @@ test("bridgeToExecutor returns SandboxResult values on success", async () => {
 
 test("bridgeToExecutor preserves TIMEOUT failures", async () => {
   const executor = bridgeToExecutor(validBridgeConfig());
-  const result = await executor.execute("while (true) {}", {}, 10);
+  const result = await executor.executeFunctionBody("while (true) {}", {}, 10);
 
   expect(result.ok).toBe(false);
   if (result.ok) {
@@ -91,7 +93,7 @@ test("bridgeToExecutor preserves TIMEOUT failures", async () => {
 
 test("bridgeToExecutor preserves primitive input semantics", async () => {
   const executor = bridgeToExecutor(validBridgeConfig());
-  const result = await executor.execute("return input + 1", 41, 500);
+  const result = await executor.executeFunctionBody("return input + 1", 41, 500);
 
   expect(result.ok).toBe(true);
   if (!result.ok) {
@@ -103,7 +105,7 @@ test("bridgeToExecutor preserves primitive input semantics", async () => {
 
 test("bridgeToExecutor preserves null input semantics", async () => {
   const executor = bridgeToExecutor(validBridgeConfig());
-  const result = await executor.execute("return input === null", null, 500);
+  const result = await executor.executeFunctionBody("return input === null", null, 500);
 
   expect(result.ok).toBe(true);
   if (!result.ok) {
@@ -115,7 +117,7 @@ test("bridgeToExecutor preserves null input semantics", async () => {
 
 test("bridgeToExecutor preserves array input semantics", async () => {
   const executor = bridgeToExecutor(validBridgeConfig());
-  const result = await executor.execute(
+  const result = await executor.executeFunctionBody(
     "return Array.isArray(input) ? input[0] + input[1] : -1",
     [19, 23],
     500,
@@ -133,7 +135,7 @@ test("bridgeToExecutor maps non-IPC code exceptions into valid SandboxError resu
   const executor = bridgeToExecutor(validBridgeConfig(), async () => {
     throw { code: "EACCES", message: "permission denied" };
   });
-  const result = await executor.execute("return 1", {}, 500);
+  const result = await executor.executeFunctionBody("return 1", {}, 500);
 
   expect(result.ok).toBe(false);
   if (result.ok) {
@@ -149,7 +151,7 @@ test("bridgeToExecutor maps bridge creation failures into SandboxError results",
     throw new Error("bridge creation exploded");
   });
 
-  await expect(executor.execute("return 1", {}, 500)).resolves.toMatchObject({
+  await expect(executor.executeFunctionBody("return 1", {}, 500)).resolves.toMatchObject({
     ok: false,
     error: {
       code: "CRASH",
@@ -175,7 +177,7 @@ test("bridgeToExecutor preserves a successful execution when dispose fails", asy
     }),
   );
 
-  const result = await executor.execute("return 99", {}, 500);
+  const result = await executor.executeFunctionBody("return 99", {}, 500);
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error("expected success");
   expect(result.value.output).toBe(99);
@@ -193,7 +195,7 @@ test("bridgeToExecutor preserves an execution failure when dispose also fails", 
       },
     }),
   );
-  const result = await executor.execute("return 1", {}, 500);
+  const result = await executor.executeFunctionBody("return 1", {}, 500);
 
   expect(result.ok).toBe(false);
   if (result.ok) {
