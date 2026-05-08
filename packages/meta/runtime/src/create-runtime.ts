@@ -148,12 +148,11 @@ export function wrapOnDemandWithAutoHarness(
   sessionLookup?: () => readonly AutoHarnessSessionEntry[],
 ): (signal: ForgeDemandSignal) => void {
   return (signal: ForgeDemandSignal): void => {
-    try {
-      callerOnDemand?.(signal);
-    } catch {
-      // Caller callback errors must not block auto-harness kickoff.
-    }
-
+    // Resolve session ownership FIRST, before the caller callback runs.
+    // A host that stores the scoped handle and dismisses inside its own
+    // onDemand would otherwise remove the signal id before lookup, leaving
+    // owner undefined and silently degrading per-session isolation back to
+    // the shared global bucket.
     let owner: AutoHarnessSessionEntry | undefined;
     if (sessionLookup !== undefined) {
       for (const entry of sessionLookup()) {
@@ -166,6 +165,12 @@ export function wrapOnDemandWithAutoHarness(
           // Skip broken scoped handles.
         }
       }
+    }
+
+    try {
+      callerOnDemand?.(signal);
+    } catch {
+      // Caller callback errors must not block auto-harness kickoff.
     }
 
     const sessionCtx =
@@ -532,6 +537,20 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                   sessionId: sessionContext.sessionId,
                   scoped,
                 });
+                // Defense-in-depth LRU cap: hosts that don't call
+                // resetSession on session end (long-lived per-stream
+                // sessionId runtimes) would otherwise grow this map
+                // unboundedly and slow each demand lookup. The cap is
+                // generous; CLI hosts call resetSession explicitly via
+                // the cycleSession path and rarely hit it.
+                const MAX_SESSION_ENTRIES = 256;
+                if (autoHarnessSessionEntries.size > MAX_SESSION_ENTRIES) {
+                  const oldestKey = autoHarnessSessionEntries.keys().next().value;
+                  if (oldestKey !== undefined) {
+                    autoHarnessSessionEntries.delete(oldestKey);
+                    autoHarnessStack?.resetSession(oldestKey);
+                  }
+                }
                 // Preserve caller callback's return value: forge-demand
                 // treats a returned Promise as load-bearing — async
                 // rejection keeps the session unready and triggers retry on
