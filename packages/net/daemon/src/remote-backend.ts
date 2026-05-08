@@ -29,6 +29,7 @@ interface RemoteWorkerState {
   pruneTimer: ReturnType<typeof setTimeout> | undefined;
   lastHeartbeat: WorkerEvent | undefined;
   cursor: unknown;
+  watching: boolean;
 }
 
 interface RemoteStatusResponse {
@@ -135,6 +136,7 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
         pruneTimer: undefined,
         lastHeartbeat: undefined,
         cursor: parsed.value.cursor,
+        watching: false,
       };
       workers.set(request.workerId, state);
 
@@ -201,6 +203,10 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
         return;
       }
       if (signal?.aborted || state.generationController.signal.aborted) return;
+      if (state.watching) {
+        throw new Error(`remote watch already active for ${id}`);
+      }
+      state.watching = true;
 
       let cancelResolve: (() => void) | undefined;
       const onCancel = (): void => {
@@ -271,7 +277,27 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
           }
           if (parsed.value.events.length > 0) continue;
           if (parsed.value.alive === false) {
-            state.alive = false;
+            const synthetic: WorkerEvent = state.terminatedIntentionally
+              ? {
+                  kind: "exited",
+                  workerId: id,
+                  at: now(),
+                  code: 0,
+                  state: "terminated",
+                }
+              : {
+                  kind: "crashed",
+                  workerId: id,
+                  at: now(),
+                  error: {
+                    code: "INTERNAL",
+                    message: `remote worker ${id} reported alive=false without a terminal event`,
+                    retryable: false,
+                  },
+                };
+            emit(id, state, synthetic);
+            yield synthetic;
+            settleTerminal(id, state);
             return;
           }
 
@@ -313,6 +339,7 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
           }
         }
       } finally {
+        state.watching = false;
         signal?.removeEventListener("abort", onCancel);
         state.generationController.signal.removeEventListener("abort", onCancel);
         if (cancelResolve !== undefined) {
