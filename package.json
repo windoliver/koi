@@ -13,6 +13,7 @@
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
+    "test:runtime-golden-replay": "bun scripts/run-runtime-golden-replay.ts",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "format": "biome format --write .",
