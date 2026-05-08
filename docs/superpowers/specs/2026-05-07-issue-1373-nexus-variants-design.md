@@ -146,11 +146,22 @@ If `transport.health()` is available:
 - use fallback immediately when health fails and fallback exists
 - still create the Nexus-backed implementation when health fails and no fallback exists, so the failure surface stays explicit
 
-### 3. One-way degradation
+### 3. Startup-only fallback (no runtime degrade)
 
-After a package instance enters fallback mode, it stays there for the life of that instance.
+The fallback is a STARTUP-ONLY escape hatch. Once an instance has been
+returned by `createNexusScratchpad()` / `createNexusWorkspaceBackend()`,
+the chosen authority is fixed for the lifetime of the instance —
+runtime RPC failures NEVER swap authorities.
 
-This branch does not add automatic recovery back into Nexus mode. That keeps state transitions predictable and testable.
+Adversarial review during implementation confirmed this is the safe
+choice: the two backends do not share state, so a one-way runtime
+degrade after the instance has already served Nexus state would fork
+the source of truth (scratchpad: callers see/overwrite an empty local
+store while Nexus still holds the real entries) or orphan live Nexus
+survivors (workspace: provider creates duplicates after restart
+because fallback inventory is incomplete). Runtime failures propagate
+as contract-shaped errors so callers can retry instead of silently
+operating against the wrong authority.
 
 ### 4. Contract parity over internal parity
 
@@ -215,13 +226,12 @@ The package must not keep an authoritative local cache that can diverge from Nex
 ### Error handling
 
 - validation errors should remain local and deterministic where possible
-- Nexus transport failures should degrade to fallback when available
-- without fallback, transport failures should return contract-shaped errors
+- Nexus transport failures surface to callers as contract-shaped errors; they do NOT trigger a runtime swap to the fallback (see "Startup-only fallback" above)
 
 ### First-pass simplifications
 
 - polling only, no push transport
-- no automatic rejoin to Nexus after degradation
+- no runtime degrade — fallback is wired only at construction time
 - no attempt to reproduce every archive helper if the behavior can be expressed more simply in v2
 
 ---
