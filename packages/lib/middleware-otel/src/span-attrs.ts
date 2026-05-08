@@ -128,18 +128,7 @@ export function buildModelSpanAttrs(step: RichTrajectoryStep, sessionId: string)
     if (typeof meta.modelStopReason === "string") {
       attrs[ATTR_GEN_AI_RESPONSE_FINISH_REASONS] = [meta.modelStopReason];
     }
-    if (typeof meta.retryOfTurn === "number") {
-      attrs[ATTR_KOI_RETRY_OF_TURN] = meta.retryOfTurn;
-    }
-    if (typeof meta.retryAttempt === "number") {
-      attrs[ATTR_KOI_RETRY_ATTEMPT] = meta.retryAttempt;
-    }
-    if (typeof meta.retryFailureClass === "string") {
-      attrs[ATTR_KOI_RETRY_FAILURE_CLASS] = meta.retryFailureClass;
-    }
-    if (typeof meta.retryReason === "string") {
-      attrs[ATTR_KOI_RETRY_REASON] = meta.retryReason;
-    }
+    applyRetryAttrs(attrs, meta);
   }
 
   // Token usage from step metrics
@@ -174,21 +163,28 @@ export function buildToolSpanAttrs(step: RichTrajectoryStep, sessionId: string):
     if (typeof meta.decisionCorrelationId === "string") {
       attrs[ATTR_GEN_AI_TOOL_CALL_ID] = meta.decisionCorrelationId;
     }
-    if (typeof meta.retryOfTurn === "number") {
-      attrs[ATTR_KOI_RETRY_OF_TURN] = meta.retryOfTurn;
-    }
-    if (typeof meta.retryAttempt === "number") {
-      attrs[ATTR_KOI_RETRY_ATTEMPT] = meta.retryAttempt;
-    }
-    if (typeof meta.retryFailureClass === "string") {
-      attrs[ATTR_KOI_RETRY_FAILURE_CLASS] = meta.retryFailureClass;
-    }
-    if (typeof meta.retryReason === "string") {
-      attrs[ATTR_KOI_RETRY_REASON] = meta.retryReason;
-    }
+    applyRetryAttrs(attrs, meta);
   }
 
   return attrs;
+}
+
+function applyRetryAttrs(
+  attrs: Record<string, string | number | string[]>,
+  meta: Record<string, unknown>,
+): void {
+  if (typeof meta.retryOfTurn === "number") {
+    attrs[ATTR_KOI_RETRY_OF_TURN] = meta.retryOfTurn;
+  }
+  if (typeof meta.retryAttempt === "number") {
+    attrs[ATTR_KOI_RETRY_ATTEMPT] = meta.retryAttempt;
+  }
+  if (typeof meta.retryFailureClass === "string") {
+    attrs[ATTR_KOI_RETRY_FAILURE_CLASS] = meta.retryFailureClass;
+  }
+  if (typeof meta.retryReason === "string") {
+    attrs[ATTR_KOI_RETRY_REASON] = meta.retryReason;
+  }
 }
 
 /**
