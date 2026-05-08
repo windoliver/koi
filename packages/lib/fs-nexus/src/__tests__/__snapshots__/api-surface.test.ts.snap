@@ -2,7 +2,8 @@
 
 exports[`@koi/fs-nexus API surface . has stable type surface 1`] = `
 "import { OAuthChannel, ChannelAdapter, FileSystemBackend, Result, KoiError } from '@koi/core';
-import { B as BridgeNotification, N as NexusTransport, a as NexusFileSystemConfig } from './types-Dw0nbZcy.js';
+import { B as BridgeNotification, N as NexusTransport, a as NexusFileSystemConfig } from './types-BQII0kTF.js';
+export { M as MountDescription } from './types-BQII0kTF.js';
 import { HealthCapableNexusTransport } from '@koi/nexus-client';
 export { NexusCallOptions, NexusHealth, NexusHealthOptions, NexusTransportKind } from '@koi/nexus-client';
 
@@ -180,7 +181,7 @@ export { BridgeNotification, type LocalTransportConfig, NexusFileSystemConfig, t
 
 exports[`@koi/fs-nexus API surface ./testing has stable type surface 1`] = `
 "import { FileSystemBackend } from '@koi/core';
-import { N as NexusTransport } from './types-Dw0nbZcy.js';
+import { N as NexusTransport } from './types-BQII0kTF.js';
 import '@koi/nexus-client';
 
 /**

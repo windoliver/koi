@@ -699,15 +699,23 @@ async def dispatch(fs, method, params):
         # would trick callers into retrying a non-idempotent mutation that
         # already succeeded. Each enrichment step is wrapped so its failure
         # degrades the response payload rather than the call result.
-        resolved_path = at if isinstance(at, str) else None
-        if resolved_path is None:
-            try:
-                after = list(await _call_first(_mount_targets(fs), ("list_mounts",)))
-                new_mounts = [mount for mount in after if mount not in before]
-                if len(new_mounts) == 1:
-                    resolved_path = new_mounts[0]
-            except Exception:
-                resolved_path = None
+        #
+        # Resolve the committed path authoritatively from `list_mounts`,
+        # not from the caller-supplied `at`. The backend may normalize the
+        # mount target (e.g. strip trailing slash, add a leading slash, or
+        # collapse duplicate slashes), so echoing `at` verbatim would let
+        # the client cache and advertise an identifier that does not match
+        # the real live mount. A subsequent /unmount keyed off the wrong
+        # identifier would silently miss the live mount, and the prompt
+        # middleware's strict path allowlist might drop the entry entirely.
+        resolved_path: str | None = None
+        try:
+            after = list(await _call_first(_mount_targets(fs), ("list_mounts",)))
+            new_mounts = [mount for mount in after if mount not in before]
+            if len(new_mounts) == 1:
+                resolved_path = new_mounts[0]
+        except Exception:
+            resolved_path = None
         if resolved_path is None:
             # Mutation IS committed but the bridge cannot determine the new
             # path. Returning the source URI as `path` would let callers treat
@@ -735,8 +743,28 @@ async def dispatch(fs, method, params):
         mount_path = params.get("path")
         if not isinstance(mount_path, str) or len(mount_path) == 0:
             raise ValueError("remove_mount requires a non-empty string path")
+        # Snapshot before mutation so we can diff to identify the
+        # authoritative removed path. The caller-supplied `mount_path` may
+        # be a non-canonical form (trailing slash, missing leading slash);
+        # echoing it verbatim would let client caches drift from list_mounts.
+        try:
+            before = set(await _call_first(_mount_targets(fs), ("list_mounts",)))
+        except Exception:
+            before = set()
         await _call_first(_mount_targets(fs), ("remove_mount", "unmount"), mount_path)
-        return {"path": mount_path, "removed": True}
+        # Resolve the actual path that disappeared. If exactly one mount was
+        # removed, return its authoritative form; otherwise fall back to the
+        # caller-supplied path (best effort — the cache update on the TS
+        # side already canonicalizes via canonicalizeMountPath()).
+        resolved_path = mount_path
+        try:
+            after = set(await _call_first(_mount_targets(fs), ("list_mounts",)))
+            removed = [m for m in before if m not in after]
+            if len(removed) == 1:
+                resolved_path = removed[0]
+        except Exception:
+            pass
+        return {"path": resolved_path, "removed": True}
 
     raise NotImplementedError(f"Unknown method: {method}")
 
