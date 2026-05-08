@@ -7,7 +7,11 @@ import {
   scheduleId,
   taskId,
 } from "../../../kernel/core/src/index.js";
-import { createCompositionExecutor, preCommitRejection } from "./composition-executor.js";
+import {
+  createCompositionExecutor,
+  isPreCommitRejection,
+  preCommitRejection,
+} from "./composition-executor.js";
 
 function trigger(): CompositionTrigger {
   return {
@@ -132,6 +136,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [{ kind: "notify_user", channel: "inbox", message: "hello", priority: "high" }],
       estimatedCost: 1,
       requiresApproval: true,
@@ -164,6 +169,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-other",
+      triggerEmittedAt: 1,
       steps: [{ kind: "notify_user", channel: "inbox", message: "hello", priority: "high" }],
       estimatedCost: 1,
       requiresApproval: false,
@@ -192,6 +198,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         {
           kind: "submit_task",
@@ -215,7 +222,7 @@ describe("createCompositionExecutor", () => {
     expect(calls.submit[0]).toEqual([
       { kind: "text", text: "follow up" },
       "dispatch",
-      { delayMs: 5, idempotencyKey: expect.stringMatching(/^cmp-0-[0-9a-f]{32}$/) },
+      { delayMs: 5, idempotencyKey: expect.stringMatching(/^cmp-[0-9a-f]{32}$/) },
     ]);
   });
 
@@ -230,6 +237,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         {
           kind: "create_schedule",
@@ -238,7 +246,6 @@ describe("createCompositionExecutor", () => {
           mode: "spawn",
           input: { kind: "text", text: "daily check-in" },
           timezone: "America/Los_Angeles",
-          taskOptions: { maxRetries: 1 },
         },
       ],
       estimatedCost: 1,
@@ -257,7 +264,7 @@ describe("createCompositionExecutor", () => {
       "0 9 * * *",
       { kind: "text", text: "daily check-in" },
       "spawn",
-      { maxRetries: 1, timezone: "America/Los_Angeles" },
+      { timezone: "America/Los_Angeles" },
     ]);
   });
 
@@ -276,6 +283,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [{ kind: "notify_user", channel: "inbox", message: "hello", priority: "normal" }],
       estimatedCost: 1,
       requiresApproval: false,
@@ -292,7 +300,7 @@ describe("createCompositionExecutor", () => {
         channel: "inbox",
         message: "hello",
         priority: "normal",
-        idempotencyKey: expect.stringMatching(/^cmp-0-[0-9a-f]{32}$/),
+        idempotencyKey: expect.stringMatching(/^cmp-[0-9a-f]{32}$/),
       },
     ]);
   });
@@ -307,6 +315,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         {
           kind: "submit_task",
@@ -340,6 +349,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         {
           kind: "submit_task",
@@ -374,6 +384,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         {
           kind: "create_schedule",
@@ -413,6 +424,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         { kind: "notify_user", channel: "inbox", message: "hello", priority: "normal" },
         {
@@ -456,6 +468,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         { kind: "notify_user", channel: "inbox", message: "hello", priority: "normal" },
         {
@@ -493,6 +506,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         {
           kind: "forge_skill",
@@ -544,6 +558,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         { kind: "notify_user", channel: "inbox", message: "hello", priority: "normal" },
         { kind: "tool_call", toolName: "search", input: { query: "koi" } },
@@ -578,6 +593,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [{ kind: "notify_user", channel: "inbox", message: "hello", priority: "normal" }],
       estimatedCost: 1,
       requiresApproval: false,
@@ -610,6 +626,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         { kind: "notify_user", channel: "inbox", message: "first", priority: "normal" },
         { kind: "notify_user", channel: "inbox", message: "second", priority: "high" },
@@ -645,6 +662,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         {
           kind: "submit_task",
@@ -685,9 +703,9 @@ describe("createCompositionExecutor", () => {
     expect(notifications).toHaveLength(1);
   });
 
-  test("create_schedule strips planner-supplied idempotencyKey from taskOptions", async () => {
+  test("create_schedule rejects unsupported taskOptions as INVALID_PLAN before claiming", async () => {
     const { scheduler, calls } = schedulerStub();
-    const { log } = inMemoryExecutionLog();
+    const { log, store } = inMemoryExecutionLog();
     const executor = createCompositionExecutor({
       agentId: agentId("agent-1"),
       scheduler,
@@ -696,6 +714,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         {
           kind: "create_schedule",
@@ -712,10 +731,12 @@ describe("createCompositionExecutor", () => {
 
     const result = await executor.execute(trigger(), plan);
 
-    expect(result.status).toBe("executed");
-    const opts = (calls.schedule[0] as readonly unknown[])[3] as Record<string, unknown>;
-    expect(opts).not.toHaveProperty("idempotencyKey");
-    expect(opts).toMatchObject({ maxRetries: 2 });
+    expect(result.status).toBe("failed");
+    expect(result.error?.code).toBe("INVALID_PLAN");
+    expect(calls.schedule).toHaveLength(0);
+    // Pre-commit validation must NOT poison the execution log with a
+    // pending claim — deterministic failures stay re-plannable.
+    expect(store.size).toBe(0);
   });
 
   test("create_schedule fails closed when prior attempt is pending (partial-failure recovery)", async () => {
@@ -729,6 +750,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         {
           kind: "create_schedule",
@@ -767,22 +789,23 @@ describe("createCompositionExecutor", () => {
       notify: async () => ({ delivered: true }),
       executionLog: inMemoryExecutionLog().log,
     });
-    const plan: CompositionPlan = {
+    const stepDef = {
+      kind: "submit_task",
+      agentId: agentId("agent-1"),
+      mode: "dispatch",
+      input: { kind: "text", text: "x" },
+    } as const;
+    const planA: CompositionPlan = {
       triggerId: "trigger-1",
-      steps: [
-        {
-          kind: "submit_task",
-          agentId: agentId("agent-1"),
-          mode: "dispatch",
-          input: { kind: "text", text: "x" },
-        },
-      ],
+      triggerEmittedAt: 1,
+      steps: [stepDef],
       estimatedCost: 1,
       requiresApproval: false,
     };
+    const planB: CompositionPlan = { ...planA, triggerEmittedAt: 2 };
 
-    await executor.execute({ ...trigger(), emittedAt: 1 }, plan);
-    await executor.execute({ ...trigger(), emittedAt: 2 }, plan);
+    await executor.execute({ ...trigger(), emittedAt: 1 }, planA);
+    await executor.execute({ ...trigger(), emittedAt: 2 }, planB);
 
     const key0 = (calls.submit[0] as readonly unknown[])[2] as { idempotencyKey: string };
     const key1 = (calls.submit[1] as readonly unknown[])[2] as { idempotencyKey: string };
@@ -799,6 +822,7 @@ describe("createCompositionExecutor", () => {
     });
     const planA: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         {
           kind: "submit_task",
@@ -880,6 +904,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         {
           kind: "create_schedule",
@@ -973,6 +998,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         {
           kind: "create_schedule",
@@ -1047,6 +1073,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         {
           kind: "create_schedule",
@@ -1065,7 +1092,7 @@ describe("createCompositionExecutor", () => {
     expect(result.error).toMatchObject({
       code: "STEP_FAILED",
       stepKind: "create_schedule",
-      idempotencyKey: expect.stringMatching(/^cmp-0-[0-9a-f]{32}$/),
+      idempotencyKey: expect.stringMatching(/^cmp-[0-9a-f]{32}$/),
     });
   });
 
@@ -1125,6 +1152,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         {
           kind: "create_schedule",
@@ -1144,7 +1172,7 @@ describe("createCompositionExecutor", () => {
     expect(result.error?.message).toContain("invalid expression");
     expect(result.error?.message).toContain("release() also failed");
     expect(result.error).toMatchObject({
-      idempotencyKey: expect.stringMatching(/^cmp-0-[0-9a-f]{32}$/),
+      idempotencyKey: expect.stringMatching(/^cmp-[0-9a-f]{32}$/),
     });
   });
 
@@ -1159,6 +1187,7 @@ describe("createCompositionExecutor", () => {
     });
     const plan: CompositionPlan = {
       triggerId: "trigger-1",
+      triggerEmittedAt: 1,
       steps: [
         {
           kind: "create_schedule",
@@ -1187,5 +1216,121 @@ describe("createCompositionExecutor", () => {
     expect(recovered.status).toBe("executed");
     expect(recovered.stepResults[0]?.output).toBe(scheduleId("schedule-recovered"));
     expect(calls.schedule).toHaveLength(1);
+  });
+
+  test("rejects plan whose triggerEmittedAt does not match the trigger emission", async () => {
+    const { scheduler, calls } = schedulerStub();
+    const { log } = inMemoryExecutionLog();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: log,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 99, // Stale: actual trigger is emittedAt=1.
+      steps: [
+        {
+          kind: "submit_task",
+          agentId: agentId("agent-1"),
+          mode: "dispatch",
+          input: { kind: "text", text: "stale" },
+        },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    const result = await executor.execute(trigger(), plan);
+
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatchObject({
+      code: "INVALID_PLAN",
+    });
+    expect(result.error?.message).toContain("triggerEmittedAt");
+    expect(calls.submit).toHaveLength(0);
+  });
+
+  test("two submit_task steps differing only in ignored idempotencyKey hash to the same key", async () => {
+    const { scheduler, calls } = schedulerStub();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+    });
+    const baseStep = {
+      kind: "submit_task",
+      agentId: agentId("agent-1"),
+      mode: "dispatch",
+      input: { kind: "text", text: "x" },
+    } as const;
+    const planA: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [{ ...baseStep, taskOptions: { idempotencyKey: "alpha" } }],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+    const planB: CompositionPlan = {
+      ...planA,
+      steps: [{ ...baseStep, taskOptions: { idempotencyKey: "beta" } }],
+    };
+
+    await executor.execute(trigger(), planA);
+    await executor.execute(trigger(), planB);
+
+    const k0 = (calls.submit[0] as readonly unknown[])[2] as { idempotencyKey: string };
+    const k1 = (calls.submit[1] as readonly unknown[])[2] as { idempotencyKey: string };
+    expect(k0.idempotencyKey).toBe(k1.idempotencyKey);
+  });
+
+  test("submit_task ignores planner-supplied taskOptions.idempotencyKey", async () => {
+    const { scheduler, calls } = schedulerStub();
+    const { log } = inMemoryExecutionLog();
+    const executor = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler,
+      notify: async () => ({ delivered: true }),
+      executionLog: log,
+    });
+    const plan: CompositionPlan = {
+      triggerId: "trigger-1",
+      triggerEmittedAt: 1,
+      steps: [
+        {
+          kind: "submit_task",
+          agentId: agentId("agent-1"),
+          mode: "dispatch",
+          input: { kind: "text", text: "x" },
+          taskOptions: { idempotencyKey: "planner-collision-key", priority: 3 },
+        },
+      ],
+      estimatedCost: 1,
+      requiresApproval: false,
+    };
+
+    await executor.execute(trigger(), plan);
+
+    const opts = (calls.submit[0] as readonly unknown[])[2] as Record<string, unknown>;
+    expect(opts.idempotencyKey).not.toBe("planner-collision-key");
+    expect(opts.idempotencyKey).toMatch(/^cmp-[0-9a-f]{32}$/);
+    // Other options pass through unchanged.
+    expect(opts.priority).toBe(3);
+  });
+
+  test("isPreCommitRejection() recognizes only the exported helper-built rejection", async () => {
+    const built = preCommitRejection("nope");
+    expect(isPreCommitRejection(built)).toBe(true);
+
+    // Forged plain-property errors are NOT recognized — the brand is
+    // unforgeable so a misclassified or adversarial adapter cannot trick
+    // the executor into releasing a claimed key.
+    const forged = Object.assign(new Error("forged"), { preCommitRejection: true });
+    expect(isPreCommitRejection(forged)).toBe(false);
+
+    expect(isPreCommitRejection(new Error("boom"))).toBe(false);
+    expect(isPreCommitRejection({})).toBe(false);
   });
 });

@@ -88,7 +88,18 @@ export interface CompositionExecutionContext {
    * send a duplicate user notification.
    */
   readonly executionLog: CompositionExecutionLog;
+  /**
+   * Allowlist of channel names the executor will dispatch `notify_user`
+   * steps to. Channels outside this set are rejected as INVALID_PLAN
+   * BEFORE the execution-log claim, so a planner-controlled (LLM) channel
+   * string cannot route operator-facing messages to unintended
+   * destinations. Defaults to `["inbox"]` for the MVP — hosts that wire
+   * `notify` to additional channels MUST opt those channels in explicitly.
+   */
+  readonly allowedNotifyChannels?: readonly string[] | undefined;
 }
+
+const DEFAULT_ALLOWED_NOTIFY_CHANNELS: readonly string[] = ["inbox"];
 
 type ExecutedStepResult = Extract<CompositionStepResult, { status: "executed" }>;
 
@@ -100,9 +111,22 @@ type ExecutedStepResult = Extract<CompositionStepResult, { status: "executed" }>
  * reconciliation. Plain `Error` throws are treated as ambiguous and leave
  * the claim pending.
  */
-const PRE_COMMIT_BRAND: unique symbol = Symbol.for("@koi/proactive/CompositionPreCommitRejection");
+// Cross-realm brand keyed by a well-known string. Symbol.for() returns the
+// same symbol across module/bundle/version-skew copies, so a rejection
+// thrown by another instance of @koi/proactive (or any package that
+// imports preCommitRejection() from any copy of this module) is still
+// recognized. Plain Error objects cannot accidentally carry this key —
+// they would have to call Symbol.for("@koi/proactive/preCommitRejection")
+// explicitly, which is treated as opt-in to the contract.
+const PRE_COMMIT_BRAND_KEY = "@koi/proactive/preCommitRejection" as const;
+const PRE_COMMIT_BRAND: unique symbol = Symbol.for(PRE_COMMIT_BRAND_KEY) as never;
 
-export type CompositionPreCommitRejection = Error & { readonly preCommitRejection: true };
+// Opaque exported type — produced only by `preCommitRejection(...)` and
+// recognized only by `isPreCommitRejection(...)`. Consumers cannot
+// synthesize one from a plain Error.
+export interface CompositionPreCommitRejection extends Error {
+  readonly [PRE_COMMIT_BRAND]: true;
+}
 
 export function preCommitRejection(
   message: string,
@@ -112,6 +136,8 @@ export function preCommitRejection(
   Object.defineProperty(error, PRE_COMMIT_BRAND, {
     value: true,
     enumerable: false,
+    configurable: false,
+    writable: false,
   });
   return error as CompositionPreCommitRejection;
 }
@@ -160,15 +186,41 @@ function canonicalize(value: unknown): unknown {
   return value;
 }
 
+// Strip planner-supplied `taskOptions.idempotencyKey` from a step before
+// hashing — it's intentionally ignored at dispatch (the executor always
+// uses its own derived key), so two otherwise-identical steps that differ
+// only in this field MUST hash to the same dedupe key. When stripping
+// leaves taskOptions empty, drop the field entirely so a step with no
+// taskOptions at all hashes the same as one whose taskOptions only
+// contained the ignored key.
+function stripIgnoredFields(step: CompositionStep): CompositionStep {
+  if (
+    (step.kind === "submit_task" || step.kind === "create_schedule") &&
+    step.taskOptions?.idempotencyKey !== undefined
+  ) {
+    const { idempotencyKey: _ignored, ...rest } = step.taskOptions;
+    if (Object.keys(rest).length === 0) {
+      const { taskOptions: _dropped, ...withoutOptions } = step;
+      return withoutOptions as CompositionStep;
+    }
+    return { ...step, taskOptions: rest };
+  }
+  return step;
+}
+
 // Per-step idempotency key. Hash-based and ':' free so it is accepted by
 // scheduler backends that use ':' as their internal task-ID delimiter
-// (e.g. the Temporal scheduler). Hashes trigger id + emittedAt + ordinal +
+// (e.g. the Temporal scheduler). Hashes trigger id + emittedAt +
 // canonicalized step payload — `emittedAt` distinguishes distinct emissions
 // of triggers that may share an `id` (the public CompositionTrigger contract
-// does not require id uniqueness across emissions).
+// does not require id uniqueness across emissions). Index is intentionally
+// excluded so a re-plan of the same emission that reorders or inserts steps
+// ahead of an already-committed step still hashes that step to the same key
+// and short-circuits via the execution log. Trade-off: two semantically
+// identical steps in a single plan dedupe to one execution; planners that
+// need distinct firings should make the steps semantically distinct.
 function deriveStepIdempotencyKey(
   trigger: CompositionTrigger,
-  index: number,
   step: CompositionStep,
 ): string {
   const hasher = new Bun.CryptoHasher("sha256");
@@ -176,11 +228,33 @@ function deriveStepIdempotencyKey(
     JSON.stringify({
       triggerId: trigger.id,
       emittedAt: trigger.emittedAt,
-      index,
-      step: canonicalize(step),
+      step: canonicalize(stripIgnoredFields(step)),
     }),
   );
-  return `cmp-${index}-${hasher.digest("hex").slice(0, 32)}`;
+  return `cmp-${hasher.digest("hex").slice(0, 32)}`;
+}
+
+// Options that scheduler.schedule() backends (notably Temporal) reject as
+// pre-commit validation errors. Validate in the executor before claiming the
+// log key so a malformed plan surfaces as INVALID_PLAN (re-plannable) rather
+// than wedging the log with a pending claim from a deterministic failure.
+const UNSUPPORTED_SCHEDULE_OPTION_KEYS = [
+  "timeoutMs",
+  "maxRetries",
+  "delayMs",
+  "priority",
+  "metadata",
+  "idempotencyKey",
+] as const;
+
+function unsupportedScheduleOption(
+  step: Extract<CompositionStep, { kind: "create_schedule" }>,
+): string | undefined {
+  if (step.taskOptions === undefined) return undefined;
+  for (const key of UNSUPPORTED_SCHEDULE_OPTION_KEYS) {
+    if (step.taskOptions[key] !== undefined) return key;
+  }
+  return undefined;
 }
 
 function approvalRequired(trigger: CompositionTrigger): CompositionExecutionResult {
@@ -295,16 +369,42 @@ export function createCompositionExecutor(
         };
       }
 
+      // Bind plan to the exact trigger emission, not just `trigger.id`.
+      // Trigger ids are not guaranteed unique across emissions, so a stale
+      // plan from emission A would otherwise execute against emission B.
+      // Only enforced when the plan declares emittedAt — older planners
+      // that pre-date this field still get triggerId-only validation.
+      if (
+        plan.triggerEmittedAt !== undefined &&
+        plan.triggerEmittedAt !== trigger.emittedAt
+      ) {
+        return {
+          triggerId: trigger.id,
+          status: "failed",
+          stepResults: [],
+          executedCount: 0,
+          error: {
+            code: "INVALID_PLAN",
+            message:
+              `plan.triggerEmittedAt ${plan.triggerEmittedAt} does not match ` +
+              `trigger.emittedAt ${trigger.emittedAt} (stale plan for reused trigger id)`,
+          },
+        };
+      }
+
       if (plan.requiresApproval) return approvalRequired(trigger);
+
+      const allowedChannels =
+        context.allowedNotifyChannels ?? DEFAULT_ALLOWED_NOTIFY_CHANNELS;
 
       const stepResults: ExecutedStepResult[] = [];
 
       for (let index = 0; index < plan.steps.length; index += 1) {
         const step = plan.steps[index]!;
-        // Deterministic per-step key keyed on content as well as ordinal, so
-        // identical replays dedupe but a re-plan with different content at the
-        // same index does not collide with the prior step.
-        const stepIdempotencyKey = deriveStepIdempotencyKey(trigger, index, step);
+        // Deterministic per-step key derived from trigger emission + content.
+        // Index is intentionally excluded so reorders/inserts in a re-plan of
+        // the same emission still recognize already-committed steps.
+        const stepIdempotencyKey = deriveStepIdempotencyKey(trigger, step);
         // Track whether this step has acquired the executionLog claim so the
         // outer catch can release on pre-commit rejection or surface the key
         // on ambiguous failure. Only set after claim() returns "claimed".
@@ -320,9 +420,17 @@ export function createCompositionExecutor(
                 });
               }
 
+              // Always use the executor-derived key, even if the planner
+              // provided one. Trusting planner keys would let a buggy or
+              // adversarial plan reuse the same key across distinct steps
+              // and cause the scheduler to silently drop later submissions
+              // as duplicates. If a planner needs to influence dedupe, it
+              // should do so via the canonicalized step content (which
+              // already feeds `stepIdempotencyKey`).
+              const { idempotencyKey: _ignored, ...submitOptions } = step.taskOptions ?? {};
               const output = await context.scheduler.submit(step.input, step.mode, {
-                ...step.taskOptions,
-                idempotencyKey: step.taskOptions?.idempotencyKey ?? stepIdempotencyKey,
+                ...submitOptions,
+                idempotencyKey: stepIdempotencyKey,
               });
               stepResults.push({ step, status: "executed", output });
               break;
@@ -334,6 +442,25 @@ export function createCompositionExecutor(
                   step,
                   status: "failed",
                   error: invalidPlanError(step, context.agentId),
+                });
+              }
+
+              // Reject options that scheduler.schedule() backends deterministically
+              // throw on (e.g. Temporal rejects timeoutMs/maxRetries/delayMs/
+              // priority/metadata/idempotencyKey). Surfacing this BEFORE the
+              // execution-log claim keeps the log clean — otherwise the
+              // deterministic throw would leave the claim pending and require
+              // operator reconciliation.
+              const unsupported = unsupportedScheduleOption(step);
+              if (unsupported !== undefined) {
+                return failedResult(trigger.id, stepResults, {
+                  step,
+                  status: "failed",
+                  error: {
+                    code: "INVALID_PLAN",
+                    message: `create_schedule taskOptions.${unsupported} is not supported — scheduler backends cannot persist or enforce it on cron firings`,
+                    stepKind: "create_schedule",
+                  },
                 });
               }
 
@@ -365,9 +492,9 @@ export function createCompositionExecutor(
 
               claimedKey = stepIdempotencyKey;
 
-              // Strip idempotencyKey from forwarded TaskOptions — Temporal's
-              // schedule() rejects it whether it came from us or a planner.
-              const { idempotencyKey: _stripped, ...scheduleOptions } = step.taskOptions ?? {};
+              // Forward only `timezone` to schedule(). All other taskOptions
+              // were either rejected upstream by `unsupportedScheduleOption`
+              // or are not enforceable on scheduled firings.
               // Throw handling past this point: pre-commit rejections release
               // the claim (caller can fix and retry without operator
               // intervention); other throws leave the claim pending and
@@ -376,10 +503,7 @@ export function createCompositionExecutor(
                 step.expression,
                 step.input,
                 step.mode,
-                {
-                  ...scheduleOptions,
-                  ...(step.timezone === undefined ? {} : { timezone: step.timezone }),
-                },
+                step.timezone === undefined ? undefined : { timezone: step.timezone },
               );
               await context.executionLog.record(stepIdempotencyKey, output);
               stepResults.push({ step, status: "executed", output });
@@ -387,6 +511,22 @@ export function createCompositionExecutor(
             }
 
             case "notify_user": {
+              // Channel allowlist: reject planner-controlled (LLM) channel
+              // strings outside the host-approved set BEFORE claiming the
+              // execution-log key, so a malformed plan is re-plannable
+              // without operator intervention.
+              if (!allowedChannels.includes(step.channel)) {
+                return failedResult(trigger.id, stepResults, {
+                  step,
+                  status: "failed",
+                  error: {
+                    code: "INVALID_PLAN",
+                    message: `notify_user channel "${step.channel}" is not in the allowlist [${allowedChannels.join(", ")}]`,
+                    stepKind: "notify_user",
+                  },
+                });
+              }
+
               // Notification adapters are best-effort on dedupe, so the
               // executor enforces replay safety via the same atomic claim
               // path as create_schedule.
