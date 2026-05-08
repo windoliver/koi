@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { DashboardView, loadDashboardSnapshot, type DashboardClient } from "../app.js";
+import {
+  DashboardView,
+  fetchSessionMetrics,
+  loadDashboardSnapshot,
+  type DashboardClient,
+} from "../app.js";
 import { EmptyState } from "../components/empty-state.js";
 import { ErrorState } from "../components/error-state.js";
 import { LoadingState } from "../components/loading-state.js";
@@ -65,10 +70,17 @@ function createFakeDashboardClient(): DashboardClient {
 
 describe("DashboardApp", () => {
   test("loads snapshot data from the injected client and renders it", async () => {
-    const snapshot = await loadDashboardSnapshot(createFakeDashboardClient(), {
-      nowMs: Date.parse("2026-05-07T22:15:00.000Z"),
-    });
-    const state = createDashboardViewModel(snapshot);
+    const client = createFakeDashboardClient();
+    const nowMs = Date.parse("2026-05-07T22:15:00.000Z");
+    const snapshot = await loadDashboardSnapshot(client, { nowMs });
+    let state = createDashboardViewModel(snapshot);
+    const sessionId = state.selectedSessionId;
+    if (sessionId) {
+      const points = await fetchSessionMetrics(client, sessionId, nowMs);
+      if (points && points.length > 0) {
+        state = applyDashboardEvent(state, { type: "metric.received", points });
+      }
+    }
     const markup = renderToStaticMarkup(<DashboardView state={state} dispatch={() => undefined} />);
 
     expect(markup).toContain("Koi Dashboard");
@@ -136,6 +148,85 @@ describe("DashboardApp", () => {
 
     expect(markup).toContain("Dashboard shell smoke pass");
     expect(markup).toContain("Automation guardrail review");
+  });
+
+  test("routes trace events at agent scope for agents with multiple sessions", () => {
+    const baseTimeMs = Date.parse("2026-05-07T22:14:40.000Z");
+    const snapshot = {
+      generatedAt: new Date(baseTimeMs).toISOString(),
+      agents: [
+        {
+          id: "agent-orchid",
+          name: "Orchid",
+          role: "Copilot",
+          status: "running" as const,
+          region: "local",
+          lastSeenAt: new Date(baseTimeMs).toISOString(),
+        },
+      ],
+      sessions: [
+        {
+          id: "session-a",
+          agentId: "agent-orchid",
+          title: "Session session-a",
+          summary: "Active",
+          status: "active" as const,
+          startedAt: new Date(baseTimeMs - 60_000).toISOString(),
+          updatedAt: new Date(baseTimeMs).toISOString(),
+          durationMs: 60_000,
+          trace: [],
+          metrics: [],
+        },
+        {
+          id: "session-b",
+          agentId: "agent-orchid",
+          title: "Session session-b",
+          summary: "Active",
+          status: "active" as const,
+          startedAt: new Date(baseTimeMs - 30_000).toISOString(),
+          updatedAt: new Date(baseTimeMs).toISOString(),
+          durationMs: 30_000,
+          trace: [],
+          metrics: [],
+        },
+      ],
+    };
+    const initial = createDashboardViewModel(snapshot);
+    const traced = applyDashboardEvent(initial, {
+      type: "trace.received",
+      trace: {
+        turnId: "turn-1" as never,
+        agentId: "agent-orchid" as never,
+        turnIndex: 0,
+        startedAtMs: baseTimeMs,
+        totalDurationMs: 1_000,
+        root: {
+          spanId: "root",
+          name: "root",
+          category: "model",
+          startedAtMs: baseTimeMs,
+          durationMs: 1_000,
+          children: [
+            {
+              spanId: "child",
+              name: "model.invoke",
+              category: "model",
+              startedAtMs: baseTimeMs,
+              durationMs: 1_000,
+              children: [],
+            },
+          ],
+        },
+      },
+    });
+
+    // Trace caches at agent scope keyed by turnId regardless of session count.
+    expect(traced.tracesByTurnId["turn-1"]?.length).toBeGreaterThan(0);
+    expect(traced.latestTurnIdByAgentId["agent-orchid"]).toBe("turn-1");
+    expect(traced.selectedAgentTrace.length).toBeGreaterThan(0);
+    // Sessions remain untouched — we never guess a session for a trace.
+    expect(traced.sessionsById["session-a"]?.trace).toEqual([]);
+    expect(traced.sessionsById["session-b"]?.trace).toEqual([]);
   });
 
   test("applies a live metric event and updates the rendered UI", async () => {

@@ -107,6 +107,12 @@ export interface DashboardViewModel {
   selectedSessionId: string | null;
   visibleSessions: DashboardSession[];
   selectedSession: DashboardSession | null;
+  // Traces are server-emitted with turnId+agentId only (no sessionId), so we cache them
+  // by turnId and surface the latest turn per agent. This avoids guessing the target
+  // session for agents with multiple sessions.
+  tracesByTurnId: Record<string, DashboardTraceEntry[]>;
+  latestTurnIdByAgentId: Record<string, string>;
+  selectedAgentTrace: DashboardTraceEntry[];
   isLoading: boolean;
   errorMessage: string | null;
 }
@@ -141,7 +147,7 @@ function buildSessionsById(sessions: DashboardSession[]): Record<string, Dashboa
 }
 
 function createDerivedState(
-  baseState: Omit<DashboardViewModel, "visibleSessions" | "selectedSession">,
+  baseState: Omit<DashboardViewModel, "visibleSessions" | "selectedSession" | "selectedAgentTrace">,
 ): DashboardViewModel {
   const visibleSessions = baseState.selectedAgentId
     ? sortSessionsByUpdatedAt(baseState.sessionsByAgentId[baseState.selectedAgentId] ?? [])
@@ -149,11 +155,16 @@ function createDerivedState(
   const selectedSession = baseState.selectedSessionId
     ? (baseState.sessionsById[baseState.selectedSessionId] ?? null)
     : null;
+  const latestTurnId = baseState.selectedAgentId
+    ? baseState.latestTurnIdByAgentId[baseState.selectedAgentId]
+    : undefined;
+  const selectedAgentTrace = latestTurnId ? (baseState.tracesByTurnId[latestTurnId] ?? []) : [];
 
   return {
     ...baseState,
     visibleSessions,
     selectedSession,
+    selectedAgentTrace,
   };
 }
 
@@ -164,6 +175,8 @@ function createViewModelState(
     readonly errorMessage?: string | null;
     readonly selectedAgentId?: string | null;
     readonly selectedSessionId?: string | null;
+    readonly tracesByTurnId?: Record<string, DashboardTraceEntry[]>;
+    readonly latestTurnIdByAgentId?: Record<string, string>;
   },
 ): DashboardViewModel {
   const sessionsByAgentId = Object.fromEntries(
@@ -194,6 +207,8 @@ function createViewModelState(
     sessionsByAgentId,
     selectedAgentId: firstAgentId,
     selectedSessionId: firstSessionId,
+    tracesByTurnId: options?.tracesByTurnId ?? {},
+    latestTurnIdByAgentId: options?.latestTurnIdByAgentId ?? {},
     isLoading: options?.isLoading ?? false,
     errorMessage: options?.errorMessage ?? null,
   });
@@ -412,6 +427,8 @@ function replaceSession(state: DashboardViewModel, session: DashboardSession): D
       errorMessage: state.errorMessage,
       selectedAgentId: state.selectedAgentId,
       selectedSessionId: state.selectedSessionId,
+      tracesByTurnId: state.tracesByTurnId,
+      latestTurnIdByAgentId: state.latestTurnIdByAgentId,
     },
   );
 }
@@ -437,6 +454,8 @@ function replaceAgent(state: DashboardViewModel, agent: DashboardAgent): Dashboa
       errorMessage: state.errorMessage,
       selectedAgentId: state.selectedAgentId,
       selectedSessionId: state.selectedSessionId,
+      tracesByTurnId: state.tracesByTurnId,
+      latestTurnIdByAgentId: state.latestTurnIdByAgentId,
     },
   );
 }
@@ -486,6 +505,8 @@ export function applyDashboardEvent(
         errorMessage: null,
         selectedAgentId: state.selectedAgentId,
         selectedSessionId: state.selectedSessionId,
+        tracesByTurnId: state.tracesByTurnId,
+        latestTurnIdByAgentId: state.latestTurnIdByAgentId,
       });
 
     case "agent.status.received": {
@@ -549,19 +570,22 @@ export function applyDashboardEvent(
     }
 
     case "trace.received": {
-      // Trace events carry turnId/agentId but no sessionId. Without a turnId→sessionId
-      // mapping we cannot safely route a trace when an agent has multiple sessions —
-      // doing so would attach a trace to the wrong session. Apply only when the agent
-      // has exactly one known session; otherwise drop the update.
-      const agentSessions = state.sessionsByAgentId[event.trace.agentId] ?? [];
-      if (agentSessions.length !== 1) return state;
-      const existingSession = agentSessions[0];
-      if (!existingSession) return state;
-
-      return replaceSession(state, {
-        ...existingSession,
-        updatedAt: new Date(event.trace.startedAtMs + event.trace.totalDurationMs).toISOString(),
-        trace: mapTraceView(event.trace),
+      // Trace events carry (turnId, agentId) but no sessionId, so we cache traces by
+      // turnId and surface them at agent scope. The "latest turn per agent" view is
+      // honest about the available routing key and never misroutes to the wrong
+      // session for agents with multiple concurrent sessions.
+      const tracesByTurnId = {
+        ...state.tracesByTurnId,
+        [event.trace.turnId]: mapTraceView(event.trace),
+      };
+      const latestTurnIdByAgentId = {
+        ...state.latestTurnIdByAgentId,
+        [event.trace.agentId]: event.trace.turnId,
+      };
+      return createDerivedState({
+        ...state,
+        tracesByTurnId,
+        latestTurnIdByAgentId,
       });
     }
 

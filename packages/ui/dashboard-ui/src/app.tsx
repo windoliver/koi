@@ -93,23 +93,22 @@ export async function loadDashboardSnapshot(
   }
 
   const sessions = sessionsResult.value.map((session) => mapSessionSnapshot(session, nowMs));
-  const firstSessionId = sessions[0]?.id;
-
-  if (firstSessionId) {
-    const metricsResult = await client.getMetrics(createMetricQuery(firstSessionId, nowMs));
-    if (metricsResult.ok) {
-      const firstSession = sessions.find((session) => session.id === firstSessionId);
-      if (firstSession) {
-        firstSession.metrics = mapMetricPoints(metricsResult.value);
-      }
-    }
-  }
 
   return {
     generatedAt: new Date(nowMs).toISOString(),
     agents: agentsResult.value.map((agent) => mapAgentSnapshot(agent)),
     sessions,
   };
+}
+
+export async function fetchSessionMetrics(
+  client: DashboardClient,
+  sessionId: string,
+  nowMs: number = Date.now(),
+): Promise<readonly Parameters<typeof mapMetricPoints>[0][number][] | null> {
+  const result = await client.getMetrics(createMetricQuery(sessionId, nowMs));
+  if (!result.ok) return null;
+  return result.value;
 }
 
 export function DashboardView({
@@ -151,12 +150,34 @@ export function DashboardView({
 
           <div className="dashboard-grid">
             <MetricsPanel metrics={state.selectedSession?.metrics ?? []} />
-            <TraceViewer trace={state.selectedSession?.trace ?? []} />
+            <TraceViewer trace={state.selectedAgentTrace} />
           </div>
         </section>
       </div>
     </main>
   );
+}
+
+type LiveEvent = Parameters<Parameters<DashboardClient["subscribe"]>[1]["onEvent"]>[0];
+
+function dispatchLiveEvent(
+  dispatch: (event: DashboardEvent) => void,
+  event: LiveEvent,
+): void {
+  switch (event.kind) {
+    case "agent-status":
+      dispatch({ type: "agent.status.received", status: event.status });
+      return;
+    case "session-summary":
+      dispatch({ type: "session.summary.received", session: event.session });
+      return;
+    case "metric":
+      dispatch({ type: "metric.received", points: event.points });
+      return;
+    case "trace":
+      dispatch({ type: "trace.received", trace: event.trace });
+      return;
+  }
 }
 
 export function DashboardApp({
@@ -167,52 +188,56 @@ export function DashboardApp({
   const [state, dispatch] = useReducer(applyDashboardEvent, undefined, createEmptyDashboardViewModel);
   const clientRef = useRef<DashboardClient>(client);
   clientRef.current = client;
+  const selectedSessionId = state.selectedSessionId;
 
   useEffect(() => {
     let disposed = false;
-    let unsubscribe: () => void = () => {};
+    let snapshotApplied = false;
+    const buffer: LiveEvent[] = [];
     dispatch({ type: "loading.set", isLoading: true });
     dispatch({ type: "error.set", message: null });
+
+    // Subscribe FIRST so events emitted during the snapshot fetch window are buffered
+    // and replayed after the snapshot is applied. This eliminates the bootstrap race
+    // where live transitions arriving before subscribe() would be lost permanently.
+    const unsubscribe = clientRef.current.subscribe(
+      ["agent-status", "session-summary", "metric", "trace"],
+      {
+        onEvent: (event) => {
+          if (disposed) return;
+          if (!snapshotApplied) {
+            buffer.push(event);
+            return;
+          }
+          dispatchLiveEvent(dispatch, event);
+        },
+        onClose: () => {
+          if (disposed) return;
+          dispatch({ type: "error.set", message: "Live dashboard stream disconnected." });
+        },
+        onError: (error) => {
+          if (disposed) return;
+          dispatch({
+            type: "error.set",
+            message: getErrorMessage(error, "Live dashboard stream disconnected."),
+          });
+        },
+      },
+    );
 
     void (async () => {
       try {
         const snapshot = await loadDashboardSnapshot(clientRef.current);
         if (disposed) return;
         dispatch({ type: "snapshot.loaded", snapshot });
-
-        unsubscribe = clientRef.current.subscribe(
-          ["agent-status", "session-summary", "metric", "trace"],
-          {
-            onEvent: (event) => {
-              if (disposed) return;
-              switch (event.kind) {
-                case "agent-status":
-                  dispatch({ type: "agent.status.received", status: event.status });
-                  return;
-                case "session-summary":
-                  dispatch({ type: "session.summary.received", session: event.session });
-                  return;
-                case "metric":
-                  dispatch({ type: "metric.received", points: event.points });
-                  return;
-                case "trace":
-                  dispatch({ type: "trace.received", trace: event.trace });
-                  return;
-              }
-            },
-            onClose: () => {
-              if (disposed) return;
-              dispatch({ type: "error.set", message: "Live dashboard stream disconnected." });
-            },
-            onError: (error) => {
-              if (disposed) return;
-              dispatch({
-                type: "error.set",
-                message: getErrorMessage(error, "Live dashboard stream disconnected."),
-              });
-            },
-          },
-        );
+        snapshotApplied = true;
+        // Replay any events that arrived during snapshot loading. Live events take
+        // precedence over snapshot data because they are strictly newer.
+        for (const buffered of buffer) {
+          if (disposed) return;
+          dispatchLiveEvent(dispatch, buffered);
+        }
+        buffer.length = 0;
       } catch (error: unknown) {
         if (disposed) return;
         dispatch({
@@ -231,6 +256,21 @@ export function DashboardApp({
       unsubscribe();
     };
   }, []);
+
+  // Hydrate metrics for the currently selected session whenever it changes, so
+  // sessions other than the first also get historical detail data.
+  useEffect(() => {
+    if (!selectedSessionId) return undefined;
+    let cancelled = false;
+    void (async () => {
+      const points = await fetchSessionMetrics(clientRef.current, selectedSessionId);
+      if (cancelled || points === null || points.length === 0) return;
+      dispatch({ type: "metric.received", points });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSessionId]);
 
   return <DashboardView state={state} dispatch={dispatch} />;
 }
