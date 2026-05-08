@@ -64,6 +64,38 @@ describe("createDashboardClient", () => {
     expect(all).toContain("name=rss");
   });
 
+  test("getMetrics enforces a global limit across the fan-out, newest-first", async () => {
+    const fetchImpl = async (url: string): Promise<Response> => {
+      const u = new URL(url);
+      const name = u.searchParams.get("name");
+      const points =
+        name === "cpu"
+          ? [
+              { name: "cpu", value: 1, timestampMs: 100 },
+              { name: "cpu", value: 2, timestampMs: 200 },
+            ]
+          : [
+              { name: "mem", value: 10, timestampMs: 150 },
+              { name: "mem", value: 20, timestampMs: 250 },
+            ];
+      return jsonResponse({ ok: true, value: points });
+    };
+    const client = createDashboardClient({ baseUrl: "http://h:1", fetch: fetchImpl });
+    const result = await client.getMetrics({
+      names: ["cpu", "mem"],
+      fromMs: 0,
+      toMs: 1000,
+      limit: 2,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.length).toBe(2);
+      // Newest-first across the merged set: 250 (mem), 200 (cpu).
+      expect(result.value[0]?.timestampMs).toBe(250);
+      expect(result.value[1]?.timestampMs).toBe(200);
+    }
+  });
+
   test("getMetrics filters server response by toMs and tag predicates client-side", async () => {
     const fetchImpl = async (): Promise<Response> =>
       jsonResponse({

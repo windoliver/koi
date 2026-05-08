@@ -103,8 +103,8 @@ export function createDashboardClient(config: DashboardClientConfig): DashboardC
     getMetrics: async (query): Promise<Result<readonly MetricPoint[]>> => {
       // The dashboard-api parser only honors a single `name` plus `since`/`limit`.
       // Fan out one request per name and filter `toMs` + tag predicates client-side
-      // so the SDK's `MetricQuery` contract (multi-name, range, tags) is honored
-      // for callers, regardless of the server's narrower parser.
+      // so the SDK's `MetricQuery` contract (multi-name, range, tags, limit) is
+      // honored for callers, regardless of the server's narrower parser.
       const names = query.names.length > 0 ? query.names : [undefined];
       const responses = await Promise.all(
         names.map((name) =>
@@ -124,7 +124,15 @@ export function createDashboardClient(config: DashboardClientConfig): DashboardC
           collected.push(point);
         }
       }
-      return { ok: true, value: collected };
+      // Enforce the published `limit` across the merged set so callers get the
+      // bound they asked for even after fan-out. Sort newest-first so a small
+      // limit reliably returns the most recent samples.
+      collected.sort((left, right) => right.timestampMs - left.timestampMs);
+      const bounded =
+        query.limit !== undefined && collected.length > query.limit
+          ? collected.slice(0, query.limit)
+          : collected;
+      return { ok: true, value: bounded };
     },
 
     getTrace: (turnId): Promise<Result<TraceView | undefined>> =>

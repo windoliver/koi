@@ -296,11 +296,16 @@ export function DashboardApp({
         // fails (older servers may not implement /api/traces listing).
         const listTraces = clientRef.current.listTraces;
         if (listTraces) {
+          // The dashboard-api /traces list endpoint has no documented ordering
+          // guarantee, so requesting limit:1 could pin the agent to the *oldest*
+          // trace under an unstable backend. Pull a bounded recent page and let
+          // the trace.received reducer's monotonic startedAtMs check pick the
+          // newest turn.
           await Promise.all(
             snapshot.agents.map(async (agent) => {
               const result = await listTraces.call(clientRef.current, {
                 agentId: agent.id,
-                limit: 1,
+                limit: 50,
               });
               if (disposed || !result.ok) return;
               for (const trace of result.value.items) {
