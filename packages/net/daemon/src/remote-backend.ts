@@ -17,6 +17,7 @@ interface CreateRemoteBackendOptions {
   readonly pollIntervalMs?: number;
   readonly pruneGraceMs?: number;
   readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  readonly supportsHeartbeat?: boolean;
 }
 
 interface RemoteWorkerState {
@@ -80,15 +81,21 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
     for (const listener of pending) listener(ev);
   };
 
+  let probedHeartbeat: boolean | undefined;
   const backend: WorkerBackend = {
     kind: "remote",
     displayName: "remote",
-    supportsHeartbeat: true,
+    get supportsHeartbeat(): boolean {
+      if (options.supportsHeartbeat !== undefined) return options.supportsHeartbeat;
+      return probedHeartbeat ?? false;
+    },
     isAvailable: async (): Promise<boolean> => {
       try {
         const result = await transport.call<unknown>(method("probe"), {});
         if (!result.ok) return false;
-        return parseAvailability(result.value);
+        const probe = parseProbeResponse(result.value);
+        probedHeartbeat = probe.heartbeat;
+        return probe.available;
       } catch {
         return false;
       }
@@ -115,7 +122,39 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
           return term as Result<WorkerHandle, KoiError>;
         }
         previous.terminatedIntentionally = true;
-        markRemoteExited(request.workerId, previous, "terminated");
+        if (!term.ok) {
+          markRemoteExited(request.workerId, previous, "terminated");
+        } else {
+          const status = await transport.call<unknown>(method("status"), {
+            workerId: request.workerId,
+          });
+          if (!status.ok && status.error.code === "NOT_FOUND") {
+            markRemoteExited(request.workerId, previous, "terminated");
+          } else if (status.ok) {
+            const parsedStatus = parseStatusResponse(status.value);
+            if (parsedStatus.ok && !parsedStatus.value.alive) {
+              markRemoteExited(request.workerId, previous, "terminated");
+            } else {
+              return {
+                ok: false,
+                error: {
+                  code: "CONFLICT",
+                  message: `previous remote worker ${request.workerId} did not exit before respawn`,
+                  retryable: true,
+                },
+              };
+            }
+          } else {
+            return {
+              ok: false,
+              error: {
+                code: "CONFLICT",
+                message: `unable to confirm previous remote worker ${request.workerId} exited before respawn`,
+                retryable: true,
+              },
+            };
+          }
+        }
       }
 
       const result = await transport.call<unknown>(method("spawn"), {
@@ -198,10 +237,7 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
         }
         return { ok: true, value: undefined };
       }
-      if (result.ok && state !== undefined) {
-        state.terminatedIntentionally = true;
-        markRemoteExited(id, state, "terminated");
-      }
+      if (result.ok && state !== undefined) state.terminatedIntentionally = true;
       return result;
     },
     kill: async (id) => {
@@ -214,22 +250,23 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
         }
         return { ok: true, value: undefined };
       }
-      if (result.ok && state !== undefined) {
-        state.terminatedIntentionally = true;
-        markRemoteExited(id, state, "terminated");
-      }
+      if (result.ok && state !== undefined) state.terminatedIntentionally = true;
       return result;
     },
     isAlive: async (id) => {
       const state = workers.get(id);
-      if (state !== undefined) return state.alive;
+      if (state !== undefined && !state.terminatedIntentionally) return state.alive;
       const result = await transport.call<unknown>(method("status"), { workerId: id });
       if (!result.ok) {
-        if (result.error.code === "NOT_FOUND") return false;
-        return true;
+        if (result.error.code === "NOT_FOUND") {
+          if (state !== undefined) markRemoteExited(id, state, "terminated");
+          return false;
+        }
+        return state !== undefined ? state.alive : true;
       }
       const parsed = parseStatusResponse(result.value);
-      if (!parsed.ok) return true;
+      if (!parsed.ok) return state !== undefined ? state.alive : true;
+      if (!parsed.value.alive && state !== undefined) markRemoteExited(id, state, "terminated");
       return parsed.value.alive;
     },
     watch: async function* (id, signal) {
@@ -420,12 +457,19 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
   }
 }
 
-function parseAvailability(value: unknown): boolean {
-  if (typeof value === "boolean") return value;
-  if (value !== null && typeof value === "object" && "available" in value) {
-    return (value as Record<string, unknown>).available === true;
+function parseProbeResponse(value: unknown): {
+  readonly available: boolean;
+  readonly heartbeat: boolean;
+} {
+  if (typeof value === "boolean") return { available: value, heartbeat: false };
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return {
+      available: record.available === true,
+      heartbeat: record.supportsHeartbeat === true || record.heartbeat === true,
+    };
   }
-  return false;
+  return { available: false, heartbeat: false };
 }
 
 function parseSpawnResponse(

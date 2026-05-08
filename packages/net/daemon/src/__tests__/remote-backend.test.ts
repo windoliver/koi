@@ -176,6 +176,7 @@ describe("remote backend", () => {
   it("same-id respawn replaces the prior watcher state", async () => {
     const id = workerId("remote-respawn");
     let generation = 0;
+    let terminated = false;
     const { transport } = makeTransport(async (method, params) => {
       if (method === "workers.spawn") {
         generation += 1;
@@ -203,9 +204,12 @@ describe("remote backend", () => {
         }
         return { ok: true, value: { events: [], nextCursor: cursor, alive: true } };
       }
-      if (method === "workers.status") return { ok: true, value: { alive: true } };
+      if (method === "workers.status") return { ok: true, value: { alive: !terminated } };
       if (method === "workers.probe") return { ok: true, value: true };
-      if (method === "workers.terminate") return { ok: true, value: undefined };
+      if (method === "workers.terminate") {
+        terminated = true;
+        return { ok: true, value: undefined };
+      }
       throw new Error(`unexpected method ${method}`);
     });
 
