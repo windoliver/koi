@@ -4,17 +4,17 @@ Generated from active workspace packages with `bun scripts/generate-package-cove
 
 Current snapshot:
 
-- 216 workspace packages
+- 217 workspace packages
 - 11 package families
-- 216 packages with local test files
-- 193 packages with dedicated package docs
+- 217 packages with local test files
+- 194 packages with dedicated package docs
 
 ## Family Summary
 
 | Family | Packages | Test files | Dedicated package docs |
 | --- | ---: | ---: | ---: |
 | drivers | 2 | 41 | 2 |
-| exec | 2 | 12 | 2 |
+| exec | 3 | 16 | 3 |
 | kernel | 4 | 126 | 0 |
 | lib | 144 | 736 | 125 |
 | meta | 3 | 109 | 3 |
@@ -34,8 +34,9 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/browser-ext` (packages/drivers/browser-ext) - MV3 extension + native-messaging host for attaching to user's live Chrome. Tests: 37. Docs: docs/L2/browser-ext.md.
 - `@koi/browser-playwright` (packages/drivers/browser-playwright) - Playwright BrowserDriver with CDP + wsEndpoint transports. Tests: 4. Docs: docs/L2/browser-playwright.md.
 
-## exec (2)
+## exec (3)
 
+- `@koi/code-executor` (packages/exec/code-executor) - execute_script tool — runs language-aware scripts via an injected SandboxExecutor. Tests: 4. Docs: docs/L2/code-executor.md.
 - `@koi/hook-prompt` (packages/exec/hook-prompt) - Prompt hook executor — single-shot LLM verification for agent hooks. Tests: 2. Docs: docs/L2/hook-prompt.md.
 - `@koi/temporal` (packages/exec/temporal) - Durable agent execution via Temporal — SpawnLedger + TaskScheduler over Temporal Workflows and Schedules. Tests: 10. Docs: docs/L2/temporal.md.
 

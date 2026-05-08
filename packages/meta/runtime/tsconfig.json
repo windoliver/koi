@@ -133,6 +133,7 @@
     { "path": "../../lib/bash-ast" },
     { "path": "../../lib/bash-security" },
     { "path": "../../lib/tools-bash" },
+    { "path": "../../exec/code-executor" },
     { "path": "../../sandbox/sandbox-cloudflare" },
     { "path": "../../sandbox/sandbox-conformance" },
     { "path": "../../sandbox/sandbox-docker" },
