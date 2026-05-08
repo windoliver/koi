@@ -51,7 +51,7 @@ export function parseGatewayUpFlags(rest: readonly string[]): GatewayUpFlags {
         ? undefined
         : skipValidators
           ? undefined
-          : parseIntFlag("port", values.port, 1, 65535),
+          : parseIntFlag("port", values.port, 1, 65534),
     nexusUrl: values["nexus-url"],
     nexusApiKey: values["nexus-api-key"],
     instanceId: values["instance-id"],

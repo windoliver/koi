@@ -63,6 +63,12 @@ export function createLocalGatewayLauncher(): LocalGatewayLauncher {
         throw new Error("NEXUS_API_KEY set but NEXUS_URL missing");
       }
 
+      if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65534) {
+        throw new Error(
+          `port must be an integer in [1, 65534] (health server binds to port+1); got ${config.port}`,
+        );
+      }
+
       const hostname = config.hostname ?? DEFAULT_HOSTNAME;
       const instanceId = config.instanceId ?? `gw-${process.pid}`;
       const transport = createBunTransport({ hostname });
@@ -82,13 +88,41 @@ export function createLocalGatewayLauncher(): LocalGatewayLauncher {
         },
       );
 
-      await stack.start(config.port);
-
-      const healthServer = Bun.serve({
-        port: config.port + 1,
-        hostname,
-        fetch: (req) => stack.healthHandler(req),
-      });
+      let started = false;
+      let pendingHealthServer: ReturnType<typeof Bun.serve> | undefined;
+      try {
+        pendingHealthServer = Bun.serve({
+          port: config.port + 1,
+          hostname,
+          fetch: (req) =>
+            started
+              ? stack.healthHandler(req)
+              : new Response(JSON.stringify({ status: "starting" }), {
+                  status: 503,
+                  headers: { "content-type": "application/json" },
+                }),
+        });
+        await stack.start(config.port);
+        started = true;
+      } catch (err) {
+        try {
+          await stack.stop();
+        } catch {
+          // best-effort teardown; preserve original startup error
+        }
+        try {
+          transport.close();
+        } catch {
+          // ensure listener is released even if stack.stop() failed mid-shutdown
+        }
+        pendingHealthServer?.stop();
+        nexusTransport?.close();
+        throw err;
+      }
+      if (pendingHealthServer === undefined) {
+        throw new Error("invariant: health server not initialized after successful startup");
+      }
+      const healthServer = pendingHealthServer;
 
       let stopped = false;
 

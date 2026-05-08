@@ -85,7 +85,7 @@ Usage:
   koi gateway-up [options]
 
 Options:
-      --port <n>               WebSocket port (default 19500)
+      --port <n>               WebSocket port 1-65534 (default 19500); health binds port+1
       --nexus-url <url>        Optional Nexus base URL
       --nexus-api-key <key>    Nexus API key (required with --nexus-url)
       --instance-id <id>       Gateway instance id
