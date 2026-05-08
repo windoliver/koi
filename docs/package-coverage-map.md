@@ -16,7 +16,7 @@ Current snapshot:
 | drivers | 2 | 41 | 2 |
 | exec | 2 | 12 | 2 |
 | kernel | 4 | 126 | 0 |
-| lib | 140 | 723 | 121 |
+| lib | 140 | 724 | 121 |
 | meta | 3 | 109 | 3 |
 | mm | 12 | 54 | 12 |
 | net | 10 | 91 | 10 |
@@ -135,7 +135,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/middleware-reflex` (packages/lib/middleware-reflex) - Rule-based short-circuit middleware — canned responses for known message patterns, skipping the model. Tests: 1. Docs: docs/L2/middleware-reflex.md.
 - `@koi/middleware-report` (packages/lib/middleware-report) - Activity reporting middleware with bounded ring buffer and structured run reports. Tests: 4. Docs: docs/L2/middleware-report.md.
 - `@koi/middleware-rlm` (packages/lib/middleware-rlm) - Segment oversized model requests into chunks and reassemble responses. Tests: 4. Docs: docs/L2/middleware-rlm.md.
-- `@koi/middleware-semantic-retry` (packages/lib/middleware-semantic-retry) - Context-aware prompt rewriting on agent failure with pluggable failure analysis and retry actions. Tests: 2. Docs: docs/L2/middleware-semantic-retry.md.
+- `@koi/middleware-semantic-retry` (packages/lib/middleware-semantic-retry) - Context-aware prompt rewriting on agent failure with pluggable failure analysis and retry actions. Tests: 3. Docs: docs/L2/middleware-semantic-retry.md.
 - `@koi/middleware-strict-agentic` (packages/lib/middleware-strict-agentic) - Stop-gate middleware that blocks premature completion on filler/plan-only turns in agentic mode. Tests: 5. Docs: docs/L2/middleware-strict-agentic.md.
 - `@koi/middleware-task-anchor` (packages/lib/middleware-task-anchor) - Injects a system-reminder with the live task board after K idle turns. Tests: 3. Docs: docs/L2/middleware-task-anchor.md.
 - `@koi/middleware-tool-audit` (packages/lib/middleware-tool-audit) - Tool usage tracking and lifecycle signals (unused, low adoption, high failure, high value). Tests: 3. Docs: docs/L2/middleware-tool-audit.md.
