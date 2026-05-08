@@ -706,6 +706,26 @@ export async function resolveFileSystemAsync(
       }
       return undefined;
     };
+    // Scope-aware visibility check. The guardedTransport operates on the
+    // RAW bridge transport (created before scope wrapping), so pre/post
+    // listMounts() calls return the raw mount table. To prevent a scoped
+    // session from (a) probing or unmounting sibling mounts, or (b)
+    // adding mounts outside its visible namespace, we filter all
+    // mutation targets and overlap candidates against the session's
+    // scope. `protectedRoots` already encodes the scope (active backend
+    // root, scope.root, glob static prefixes) — re-use it as the
+    // visibility filter. When protectedRoots is empty there is no scope
+    // restriction (namespace-root + no scope), so every path is visible.
+    const isPathVisibleInScope = (rawPath: string): boolean => {
+      if (protectedRoots.length === 0) return true;
+      const path = canonicalizeMountPath(rawPath);
+      for (const root of protectedRoots) {
+        if (path === root || path.startsWith(`${root}/`) || root.startsWith(`${path}/`)) {
+          return true;
+        }
+      }
+      return false;
+    };
     // Quarantine flag: set when addMount commits a mutation we cannot prove
     // is safe (e.g. pathUnknown + listMounts verification fails) AND best-
     // effort rollback could not confirm cleanup. While quarantined, all
@@ -758,6 +778,20 @@ export async function resolveFileSystemAsync(
                 },
               };
             }
+            // Scope check: a scoped session must not be able to unmount
+            // a sibling/tenant mount it can't even see. The scope-aware
+            // bridge enforces this server-side; this is defense-in-depth
+            // and gives the operator a clearer error than a bridge fault.
+            if (!isPathVisibleInScope(path)) {
+              return {
+                ok: false,
+                error: {
+                  code: "VALIDATION",
+                  message: `Cannot unmount ${path}: path is outside this session's scope.`,
+                  retryable: RETRYABLE_DEFAULTS.VALIDATION,
+                },
+              };
+            }
             return innerRemove(path);
           };
           wrapped.removeMount = (path: string) => serializeMutation(() => removeImpl(path));
@@ -781,6 +815,19 @@ export async function resolveFileSystemAsync(
                 error: {
                   code: "VALIDATION",
                   message: `Cannot mount at ${at}: that path overlays an active filesystem root for this session, which would silently redirect already-approved paths through the new connector.`,
+                  retryable: RETRYABLE_DEFAULTS.VALIDATION,
+                },
+              };
+            }
+            // Scope check: refuse `at` values outside the session's scope
+            // so a scoped session can't add mounts in sibling tenants /
+            // namespaces. Defense-in-depth alongside the scope-aware bridge.
+            if (typeof at === "string" && !isPathVisibleInScope(at)) {
+              return {
+                ok: false,
+                error: {
+                  code: "VALIDATION",
+                  message: `Cannot mount at ${at}: path is outside this session's scope.`,
                   retryable: RETRYABLE_DEFAULTS.VALIDATION,
                 },
               };
@@ -820,11 +867,17 @@ export async function resolveFileSystemAsync(
             if (typeof at === "string") {
               const overlap = overlapsExistingMount(at, preMounts);
               if (overlap !== undefined) {
+                // Redact out-of-scope mount paths from the error message:
+                // probing candidate `at` values would otherwise enumerate
+                // hidden sibling/tenant mounts via the "overlaps X" channel.
+                const overlapVisible = isPathVisibleInScope(overlap);
                 return {
                   ok: false,
                   error: {
                     code: "VALIDATION",
-                    message: `Cannot mount at ${at}: it overlaps existing live mount ${overlap}; remove the existing mount first or choose a non-overlapping path.`,
+                    message: overlapVisible
+                      ? `Cannot mount at ${at}: it overlaps existing live mount ${overlap}; remove the existing mount first or choose a non-overlapping path.`
+                      : `Cannot mount at ${at}: it overlaps a mount outside this session's scope.`,
                     retryable: RETRYABLE_DEFAULTS.VALIDATION,
                   },
                 };
@@ -972,23 +1025,30 @@ export async function resolveFileSystemAsync(
                     rollbackMessage = `rollback threw: ${e instanceof Error ? e.message : String(e)}`;
                   }
                 }
+                const overlapVisible = isPathVisibleInScope(overlap);
                 if (rolledBack) {
                   return {
                     ok: false,
                     error: {
                       code: "VALIDATION",
-                      message: `Mount at ${committed} rejected: it overlaps existing live mount ${overlap}. Bridge mount rolled back; verify with /mounts.`,
+                      message: overlapVisible
+                        ? `Mount at ${committed} rejected: it overlaps existing live mount ${overlap}. Bridge mount rolled back; verify with /mounts.`
+                        : `Mount at ${committed} rejected: it overlaps a mount outside this session's scope. Bridge mount rolled back.`,
                       retryable: RETRYABLE_DEFAULTS.VALIDATION,
                     },
                   };
                 }
                 transportQuarantined = true;
-                quarantineReason = `addMount committed at ${committed} overlapping existing mount ${overlap} and rollback failed (${rollbackMessage}). Restart the session to recover.`;
+                quarantineReason = overlapVisible
+                  ? `addMount committed at ${committed} overlapping existing mount ${overlap} and rollback failed (${rollbackMessage}). Restart the session to recover.`
+                  : `addMount committed at ${committed} overlapping an out-of-scope mount and rollback failed (${rollbackMessage}). Restart the session to recover.`;
                 return {
                   ok: false,
                   error: {
                     code: "INTERNAL",
-                    message: `Mount at ${committed} overlaps existing mount ${overlap} and rollback was unsuccessful (${rollbackMessage}). The mount may still be live — run /mounts and manually /unmount ${committed} to repair state. Further mount mutations are now quarantined for this session.`,
+                    message: overlapVisible
+                      ? `Mount at ${committed} overlaps existing mount ${overlap} and rollback was unsuccessful (${rollbackMessage}). The mount may still be live — run /mounts and manually /unmount ${committed} to repair state. Further mount mutations are now quarantined for this session.`
+                      : `Mount at ${committed} overlaps an out-of-scope mount and rollback was unsuccessful (${rollbackMessage}). Further mount mutations are now quarantined for this session.`,
                     retryable: RETRYABLE_DEFAULTS.INTERNAL,
                   },
                 };
