@@ -53,7 +53,25 @@ const auth: GatewayAuthenticator = {
   },
 };
 
-export function createLocalGatewayLauncher(): LocalGatewayLauncher {
+export interface LocalGatewayLauncherInternals {
+  readonly createBunTransport: typeof createBunTransport;
+  readonly createHttpTransport: typeof createHttpTransport;
+  readonly createGatewayStack: typeof createGatewayStack;
+  readonly serve: typeof Bun.serve;
+}
+
+const DEFAULT_INTERNALS: LocalGatewayLauncherInternals = {
+  createBunTransport,
+  createHttpTransport,
+  createGatewayStack,
+  get serve() {
+    return Bun.serve;
+  },
+};
+
+export function createLocalGatewayLauncher(
+  internals: LocalGatewayLauncherInternals = DEFAULT_INTERNALS,
+): LocalGatewayLauncher {
   return {
     async start(config) {
       if (config.nexusUrl !== undefined && config.nexusApiKey === undefined) {
@@ -71,13 +89,13 @@ export function createLocalGatewayLauncher(): LocalGatewayLauncher {
 
       const hostname = config.hostname ?? DEFAULT_HOSTNAME;
       const instanceId = config.instanceId ?? `gw-${process.pid}`;
-      const transport = createBunTransport({ hostname });
+      const transport = internals.createBunTransport({ hostname });
       const nexusTransport: NexusTransport | undefined =
         config.nexusUrl !== undefined && config.nexusApiKey !== undefined
-          ? createHttpTransport({ url: config.nexusUrl, apiKey: config.nexusApiKey })
+          ? internals.createHttpTransport({ url: config.nexusUrl, apiKey: config.nexusApiKey })
           : undefined;
 
-      const stack: GatewayStack = createGatewayStack(
+      const stack: GatewayStack = internals.createGatewayStack(
         {
           ...(nexusTransport !== undefined ? { nexus: { instanceId } } : {}),
         },
@@ -91,7 +109,7 @@ export function createLocalGatewayLauncher(): LocalGatewayLauncher {
       let started = false;
       let pendingHealthServer: ReturnType<typeof Bun.serve> | undefined;
       try {
-        pendingHealthServer = Bun.serve({
+        pendingHealthServer = internals.serve({
           port: config.port + 1,
           hostname,
           fetch: (req) =>
