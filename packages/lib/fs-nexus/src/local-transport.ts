@@ -333,6 +333,14 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
       readonly deadlineMs?: number | undefined;
       readonly signal?: AbortSignal | undefined;
       readonly nonInteractive?: boolean | undefined;
+      /**
+       * When true, a timeout resolves with a TIMEOUT error WITHOUT closing
+       * the bridge subprocess. Use for best-effort follow-up refreshes
+       * after an already-committed mutation — a slow `list_mounts` must
+       * not tear down the entire filesystem session and strand pending
+       * requests. Default is false (legacy fail-fast behavior).
+       */
+      readonly nonFatalTimeout?: boolean | undefined;
     },
   ): Promise<Result<T, KoiError>> {
     if (closed) {
@@ -366,10 +374,13 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
         // pending entry exists when auth_required fires, so clearing all timers
         // in pendingRequests is safe and scoped to exactly this call.
         const effectiveTimeout = opts?.deadlineMs ?? callTimeout;
+        const nonFatal = opts?.nonFatalTimeout === true;
         const timer = setTimeout(() => {
           pendingRequests.delete(requestId);
-          // Kill bridge so queued calls fail fast rather than waiting.
-          close();
+          // Default: kill bridge so queued calls fail fast. Best-effort
+          // post-mutation refreshes opt out via nonFatalTimeout: a slow
+          // list_mounts must not strand the rest of the session.
+          if (!nonFatal) close();
           resolve({
             ok: false,
             error: {
@@ -553,6 +564,21 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     return { ok: true, value: mounts };
   }
 
+  // Internal best-effort refresh after a committed add_mount/remove_mount.
+  // Uses nonFatalTimeout so a slow bridge does not tear down the entire
+  // transport (the mutation already succeeded; only the local cache is
+  // stale).
+  async function listMountsNonFatal(): Promise<Result<readonly string[], KoiError>> {
+    const result = await call<{ readonly mounts?: readonly string[] }>(
+      "list_mounts",
+      {},
+      { nonFatalTimeout: true },
+    );
+    if (!result.ok) return result;
+    mounts = result.value.mounts ?? [];
+    return { ok: true, value: mounts };
+  }
+
   async function describeMount(path: string): Promise<Result<MountDescription, KoiError>> {
     return call<MountDescription>("describe_mount", { path });
   }
@@ -572,7 +598,7 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     // path so the local cache stays consistent until the next successful
     // listMounts() — but never cache an empty path (pathUnknown) since that
     // would pollute future /unmount and listing operations.
-    const refreshed = await listMounts();
+    const refreshed = await listMountsNonFatal();
     if (
       !refreshed.ok &&
       result.value.path !== "" &&
@@ -594,7 +620,7 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     // Best-effort cache refresh: see addMount() for rationale. Optimistically
     // drop the removed path so the cache reflects the committed state even
     // when list_mounts fails.
-    const refreshed = await listMounts();
+    const refreshed = await listMountsNonFatal();
     if (!refreshed.ok) {
       mounts = mounts.filter((m) => m !== path);
     }

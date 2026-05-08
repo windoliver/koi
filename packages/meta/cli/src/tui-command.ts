@@ -256,15 +256,23 @@ const ESC = String.fromCharCode(0x1b);
 const BEL = String.fromCharCode(0x07);
 const SANITIZE_CSI_OSC = new RegExp(`${ESC}[\\[\\]][^${BEL}${ESC}]*?(?:${BEL}|${ESC}\\\\)`, "g");
 const SANITIZE_BARE_ESC = new RegExp(`${ESC}.`, "g");
+// CR is intentionally included in the strip set: alone it rewinds to column
+// 0 and a connector-supplied "\rOK" can overwrite the start of an operator
+// notice. CRLF/CR pairs were already collapsed to \n above before this
+// strip, so legitimate line breaks survive while standalone CR cannot
+// reposition the cursor.
 const SANITIZE_C0_DEL = new RegExp(
-  `[${String.fromCharCode(0x00)}-${String.fromCharCode(0x08)}${String.fromCharCode(0x0b)}${String.fromCharCode(0x0c)}${String.fromCharCode(0x0e)}-${String.fromCharCode(0x1f)}${String.fromCharCode(0x7f)}]`,
+  `[${String.fromCharCode(0x00)}-${String.fromCharCode(0x08)}${String.fromCharCode(0x0b)}${String.fromCharCode(0x0c)}\\r${String.fromCharCode(0x0e)}-${String.fromCharCode(0x1f)}${String.fromCharCode(0x7f)}]`,
   "g",
 );
 function sanitizeConnectorText(value: string): string {
-  // Drop ESC-prefixed sequences first (covers CSI ESC[..., OSC ESC]...), then
-  // any remaining bare ESC + next char, then C0 controls except \t \n \r, and
-  // DEL. Tabs/newlines/CR are preserved so multi-line README excerpts render.
+  // Order matters: collapse CRLF and bare CR into \n FIRST so legitimate
+  // line breaks survive. Then drop ESC-prefixed sequences (CSI/OSC and bare
+  // ESC + next char). Finally drop remaining C0 controls (except \t and \n)
+  // and DEL. Standalone CR is in the strip set above so a connector cannot
+  // reposition the cursor inside a single rendered line.
   return value
+    .replace(/\r\n?/g, "\n")
     .replace(SANITIZE_CSI_OSC, "")
     .replace(SANITIZE_BARE_ESC, "")
     .replace(SANITIZE_C0_DEL, "");
