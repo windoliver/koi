@@ -1,4 +1,6 @@
 export const WORKER_SOURCE: string = `// @bun
+import { serialize as _v8Serialize } from "node:v8";
+
 const _send = process.send.bind(process);
 let _nonce;
 
@@ -58,12 +60,20 @@ function validateExecuteMessage(value) {
   ) {
     return "Execute message maxResultBytes must be a positive number when provided";
   }
+  if (record.serialization !== undefined && record.serialization !== "advanced" && record.serialization !== "json") {
+    return 'Execute message serialization must be "advanced" or "json"';
+  }
 
   return record;
 }
 
-function approximateResultBytes(value) {
+function measureSerializedBytes(value, mode) {
   try {
+    if (mode === "advanced") {
+      // node:v8 structured-clone serializer — closest local proxy for the byte
+      // accounting that Bun's advanced IPC will perform when shipping the value.
+      return _v8Serialize(value).byteLength;
+    }
     const serialized = JSON.stringify(value === undefined ? null : value);
     if (typeof serialized !== "string") {
       return undefined;
@@ -150,14 +160,28 @@ process.on("message", async (raw) => {
 
     const cap = message.maxResultBytes;
     if (typeof cap === "number" && cap > 0) {
-      const approximate = approximateResultBytes(output);
-      if (approximate !== undefined && approximate > cap) {
+      const measured = measureSerializedBytes(output, message.serialization || "advanced");
+      if (measured === undefined) {
+        // Fail closed when the worker cannot account for transport bytes.
         send({
           kind: "error",
           code: "CRASH",
           message:
-            "Worker rejected result: approximate size " +
-            String(approximate) +
+            "Worker rejected result: size could not be measured for transport (maxResultBytes=" +
+            String(cap) +
+            ")",
+          durationMs: performance.now() - startedAt,
+        });
+        process.exit(1);
+        return;
+      }
+      if (measured > cap) {
+        send({
+          kind: "error",
+          code: "CRASH",
+          message:
+            "Worker rejected result: serialized size " +
+            String(measured) +
             " bytes exceeds maxResultBytes " +
             String(cap),
           durationMs: performance.now() - startedAt,

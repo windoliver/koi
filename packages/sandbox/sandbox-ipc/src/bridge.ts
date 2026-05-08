@@ -231,6 +231,24 @@ function drainStream(stream: ReadableStream<Uint8Array> | null): void {
     .catch(() => {});
 }
 
+let detectedSetsidPath: string | null | undefined;
+
+function detectSetsid(): string | null {
+  if (detectedSetsidPath !== undefined) {
+    return detectedSetsidPath;
+  }
+  if (process.platform !== "linux" && process.platform !== "darwin") {
+    detectedSetsidPath = null;
+    return null;
+  }
+  try {
+    detectedSetsidPath = Bun.which("setsid");
+  } catch {
+    detectedSetsidPath = null;
+  }
+  return detectedSetsidPath ?? null;
+}
+
 function defaultSpawnFn(
   command: readonly string[],
   options: {
@@ -238,7 +256,11 @@ function defaultSpawnFn(
   },
 ): IpcProcess {
   const messageHandlers: Array<(message: unknown) => void> = [];
-  const proc = Bun.spawn([...command], {
+  const setsidPath = detectSetsid();
+  const useGroup = setsidPath !== null;
+  const spawnArgv: string[] = useGroup ? [setsidPath, "-w", ...command] : [...command];
+
+  const proc = Bun.spawn(spawnArgv, {
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -253,16 +275,26 @@ function defaultSpawnFn(
   drainStream(proc.stdout);
   drainStream(proc.stderr);
 
+  function killGroup(signalName: NodeJS.Signals): void {
+    if (useGroup) {
+      try {
+        // Negative pid signals the entire process group, terminating any
+        // descendants the worker spawned.
+        process.kill(-proc.pid, signalName);
+        return;
+      } catch {
+        // Fallthrough to direct kill if the group is already gone.
+      }
+    }
+    proc.kill(signalName);
+  }
+
   return {
     pid: proc.pid,
     exited: proc.exited,
     kill(signal?: number) {
-      if (signal === undefined) {
-        proc.kill();
-        return;
-      }
-
-      proc.kill(signalNameFromNumber(signal) as NodeJS.Signals);
+      const signalName = (signalNameFromNumber(signal ?? 15) ?? "SIGTERM") as NodeJS.Signals;
+      killGroup(signalName);
     },
     send(message: unknown) {
       proc.send(message);
@@ -291,6 +323,7 @@ export async function createSandboxBridge(
   await Bun.write(workerPath, WORKER_SOURCE);
 
   let disposed = false;
+  const activeProcs = new Set<IpcProcess>();
 
   async function execute(
     code: string,
@@ -340,6 +373,8 @@ export async function createSandboxBridge(
       };
     }
 
+    activeProcs.add(proc);
+
     const spawnDurationMs = performance.now() - startedAt;
 
     return await new Promise<Result<BridgeResult, IpcError>>((resolve) => {
@@ -353,6 +388,7 @@ export async function createSandboxBridge(
 
         settled = true;
         clearTimeout(timeoutHandle);
+        activeProcs.delete(proc);
 
         try {
           proc.kill(9);
@@ -419,6 +455,7 @@ export async function createSandboxBridge(
             timeoutMs: requestTimeoutMs,
             nonce: executeNonce,
             maxResultBytes,
+            serialization,
           });
           return;
         }
@@ -475,6 +512,23 @@ export async function createSandboxBridge(
     }
 
     disposed = true;
+
+    // Terminate any in-flight workers before declaring the bridge disposed.
+    const procs = Array.from(activeProcs);
+    activeProcs.clear();
+    const exitWaits: Array<Promise<unknown>> = [];
+    for (const proc of procs) {
+      try {
+        proc.kill(9);
+      } catch {
+        // Best-effort: worker may have already exited.
+      }
+      exitWaits.push(proc.exited.catch(() => undefined));
+    }
+    if (exitWaits.length > 0) {
+      await Promise.all(exitWaits);
+    }
+
     try {
       await unlink(workerPath);
     } catch (error) {

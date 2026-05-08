@@ -129,6 +129,7 @@ describe("createSandboxBridge", () => {
           timeoutMs: 25,
           nonce: expect.any(String),
           maxResultBytes: 1_024,
+          serialization: "json",
         });
 
         const nonce = (message as { nonce: string }).nonce;
