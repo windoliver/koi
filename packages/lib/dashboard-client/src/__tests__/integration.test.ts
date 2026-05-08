@@ -175,17 +175,20 @@ describe("HTTP integration", () => {
       tags: { env: "prod", region: "us" },
     });
     expect(r.ok).toBe(true);
-    expect(capturedQueries.length).toBe(1);
-    const [q = ""] = capturedQueries;
-    // Server only honors first `name`, `since`, and `limit` — keep the encoded
-    // query string aligned with what the parser actually consumes.
-    expect(q).toContain("name=cpu");
-    expect(q).toContain("since=100");
-    expect(q).toContain("limit=50");
-    expect(q).not.toContain("name=mem");
-    expect(q).not.toContain("from=");
-    expect(q).not.toContain("to=");
-    expect(q).not.toContain("tag=");
+    // Multi-name queries fan out one request per name; each request encodes only
+    // the filters dashboard-api actually parses (single `name`, `since`, `limit`).
+    // `to`/`tags` filtering happens client-side.
+    expect(capturedQueries.length).toBe(2);
+    for (const q of capturedQueries) {
+      expect(q).toContain("since=100");
+      expect(q).toContain("limit=50");
+      expect(q).not.toContain("from=");
+      expect(q).not.toContain("to=");
+      expect(q).not.toContain("tag=");
+    }
+    const allQueries = capturedQueries.join("|");
+    expect(allQueries).toContain("name=cpu");
+    expect(allQueries).toContain("name=mem");
   });
 
   test("getTrace returns undefined for ok:true with no value (optional payload)", async () => {

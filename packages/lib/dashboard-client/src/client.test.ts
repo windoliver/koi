@@ -47,18 +47,46 @@ describe("createDashboardClient", () => {
       tags: { agent: "a1" },
       limit: 50,
     });
-    const url = calls[0] ?? "";
-    // Server only honors first `name`, `since`, and `limit`. Multi-name + `to`
-    // + `tag` filtering must happen client-side; sending them would mislead
-    // operators into thinking the filter was enforced.
-    expect(url.startsWith("http://h:1/api/metrics?")).toBe(true);
-    expect(url).toContain("name=cpu");
-    expect(url).toContain("since=1000");
-    expect(url).toContain("limit=50");
-    expect(url).not.toContain("name=rss");
-    expect(url).not.toContain("from=");
-    expect(url).not.toContain("to=");
-    expect(url).not.toContain("tag=");
+    // Multi-name queries fan out one request per name. Each request encodes only
+    // the filters the server actually parses (single `name`, `since`, `limit`);
+    // `to`/`tag` filtering is enforced client-side before returning to caller.
+    expect(calls.length).toBe(2);
+    for (const u of calls) {
+      expect(u.startsWith("http://h:1/api/metrics?")).toBe(true);
+      expect(u).toContain("since=1000");
+      expect(u).toContain("limit=50");
+      expect(u).not.toContain("from=");
+      expect(u).not.toContain("to=");
+      expect(u).not.toContain("tag=");
+    }
+    const all = calls.join("|");
+    expect(all).toContain("name=cpu");
+    expect(all).toContain("name=rss");
+  });
+
+  test("getMetrics filters server response by toMs and tag predicates client-side", async () => {
+    const fetchImpl = async (): Promise<Response> =>
+      jsonResponse({
+        ok: true,
+        value: [
+          { name: "cpu", value: 1, timestampMs: 50, tags: { env: "prod" } },
+          { name: "cpu", value: 2, timestampMs: 150, tags: { env: "prod" } },
+          { name: "cpu", value: 3, timestampMs: 250, tags: { env: "prod" } },
+          { name: "cpu", value: 4, timestampMs: 150, tags: { env: "dev" } },
+        ],
+      });
+    const client = createDashboardClient({ baseUrl: "http://h:1", fetch: fetchImpl });
+    const result = await client.getMetrics({
+      names: ["cpu"],
+      fromMs: 100,
+      toMs: 200,
+      tags: { env: "prod" },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.length).toBe(1);
+      expect(result.value[0]?.value).toBe(2);
+    }
   });
 
   test("listAgents rejects ok:true with a malformed payload (per-endpoint validation)", async () => {

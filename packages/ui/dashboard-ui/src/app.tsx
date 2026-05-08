@@ -33,6 +33,7 @@ export interface DashboardClient {
     readonly fromMs: number;
     readonly toMs: number;
     readonly tags: Readonly<Record<string, string>>;
+    readonly limit?: number;
   }): Promise<
     | { readonly ok: true; readonly value: readonly Parameters<typeof mapMetricPoints>[0][number][] }
     | { readonly ok: false; readonly error: { readonly message?: string | undefined } }
@@ -75,21 +76,28 @@ function getErrorMessage(error: { readonly message?: string | undefined } | unkn
 
 const SESSION_METRIC_NAMES = ["token_usage", "latency_ms", "tool_calls"] as const;
 
-// The dashboard-api currently honors only `name` (single) and `since` server-side; it
-// ignores `to` and tag filters. We issue one fetch per metric name, then filter the
-// returned points to the target sessionId via point.tags?.sessionId so the panel is
-// truly per-session even though the server can't enforce that filter.
-function createMetricQuery(name: string, nowMs: number): {
+// dashboard-api caps `limit` at MAX_LIMIT (200) and the in-memory adapter has no
+// newest-first ordering guarantee. Use the server's documented max so a busy
+// session reliably surfaces the latest available samples in the 30-minute window;
+// `mergeMetrics` then takes the highest-timestamp sample per label.
+const SESSION_METRIC_LIMIT = 200;
+function createMetricQuery(
+  name: string,
+  sessionId: string,
+  nowMs: number,
+): {
   readonly names: readonly string[];
   readonly fromMs: number;
   readonly toMs: number;
   readonly tags: Readonly<Record<string, string>>;
+  readonly limit: number;
 } {
   return {
     names: [name],
     fromMs: Math.max(0, nowMs - 30 * 60_000),
     toMs: nowMs,
-    tags: {},
+    tags: { sessionId },
+    limit: SESSION_METRIC_LIMIT,
   };
 }
 
@@ -125,7 +133,9 @@ export async function fetchSessionMetrics(
 ): Promise<readonly Parameters<typeof mapMetricPoints>[0][number][] | null> {
   const fromMs = Math.max(0, nowMs - 30 * 60_000);
   const responses = await Promise.all(
-    SESSION_METRIC_NAMES.map((name) => client.getMetrics(createMetricQuery(name, nowMs))),
+    SESSION_METRIC_NAMES.map((name) =>
+      client.getMetrics(createMetricQuery(name, sessionId, nowMs)),
+    ),
   );
   const collected: Parameters<typeof mapMetricPoints>[0][number][] = [];
   let anyOk = false;

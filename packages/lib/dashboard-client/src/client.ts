@@ -100,12 +100,32 @@ export function createDashboardClient(config: DashboardClientConfig): DashboardC
         validate: isSessionSummaryList,
       }),
 
-    getMetrics: (query): Promise<Result<readonly MetricPoint[]>> =>
-      getJson<readonly MetricPoint[]>(
-        fetchImpl,
-        `${baseUrl}/api/metrics?${encodeMetricQuery(query)}`,
-        { validate: isMetricPointList },
-      ),
+    getMetrics: async (query): Promise<Result<readonly MetricPoint[]>> => {
+      // The dashboard-api parser only honors a single `name` plus `since`/`limit`.
+      // Fan out one request per name and filter `toMs` + tag predicates client-side
+      // so the SDK's `MetricQuery` contract (multi-name, range, tags) is honored
+      // for callers, regardless of the server's narrower parser.
+      const names = query.names.length > 0 ? query.names : [undefined];
+      const responses = await Promise.all(
+        names.map((name) =>
+          getJson<readonly MetricPoint[]>(
+            fetchImpl,
+            `${baseUrl}/api/metrics?${encodeSingleNameQuery(query, name)}`,
+            { validate: isMetricPointList },
+          ),
+        ),
+      );
+      const collected: MetricPoint[] = [];
+      for (const response of responses) {
+        if (!response.ok) return response;
+        for (const point of response.value) {
+          if (point.timestampMs < query.fromMs || point.timestampMs > query.toMs) continue;
+          if (query.tags && !matchesTags(point.tags, query.tags)) continue;
+          collected.push(point);
+        }
+      }
+      return { ok: true, value: collected };
+    },
 
     getTrace: (turnId): Promise<Result<TraceView | undefined>> =>
       getJson<TraceView | undefined>(
@@ -132,18 +152,22 @@ function stripTrailingSlash(url: string): string {
   return url.endsWith("/") ? url.slice(0, -1) : url;
 }
 
-function encodeMetricQuery(query: MetricQuery): string {
+function encodeSingleNameQuery(query: MetricQuery, name: string | undefined): string {
   const params = new URLSearchParams();
-  // The dashboard-api parser only accepts a single `name` plus `since`/`limit`.
-  // Send the lower bound as `since` (which the server actually honors) and the
-  // first name verbatim. Additional names and tag/`to` filters are ignored
-  // server-side; callers wanting multi-name or tag scoping must fan out and
-  // filter client-side.
-  const firstName = query.names[0];
-  if (firstName !== undefined) params.set("name", firstName);
+  if (name !== undefined) params.set("name", name);
   params.set("since", String(query.fromMs));
   if (query.limit !== undefined) params.set("limit", String(query.limit));
   return params.toString();
+}
+
+function matchesTags(
+  pointTags: Readonly<Record<string, string>> | undefined,
+  predicate: Readonly<Record<string, string>>,
+): boolean {
+  for (const [key, value] of Object.entries(predicate)) {
+    if (pointTags?.[key] !== value) return false;
+  }
+  return true;
 }
 
 function encodeTraceListQuery(query: TraceListQuery | undefined): string {
