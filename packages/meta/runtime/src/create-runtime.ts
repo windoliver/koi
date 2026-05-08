@@ -3,6 +3,7 @@ import { createAgentMonitorMiddleware } from "@koi/agent-monitor";
 import { createAgentResolver } from "@koi/agent-runtime";
 import { createNdjsonAuditSink, validateNdjsonAuditSinkConfig } from "@koi/audit-sink-ndjson";
 import { createSqliteAuditSink, validateSqliteAuditSinkConfig } from "@koi/audit-sink-sqlite";
+import { createAutoHarnessStack } from "@koi/auto-harness";
 import { type Checkpoint, type CheckpointPayload, createCheckpoint } from "@koi/checkpoint";
 import type {
   ApprovalHandler,
@@ -122,6 +123,27 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   const rawAdapter = resolveAdapter(config.adapter);
   const channel = resolveChannel(config.channel);
   const { middleware: resolvedMiddleware, stubInstances } = resolveMiddleware(config.middleware);
+  const autoHarnessStack =
+    config.autoHarness !== undefined
+      ? createAutoHarnessStack({
+          ...config.autoHarness,
+          requestDeploymentApproval: async (artifact, signal) => {
+            const decision = await config.requestApproval?.({
+              toolId: "auto-harness:deploy-candidate",
+              input: {
+                artifactId: artifact.id,
+                signalId: signal.id,
+              },
+              reason: "Approve deployment of an auto-generated harness candidate.",
+              metadata: {
+                artifactId: artifact.id,
+                signalId: signal.id,
+              },
+            });
+            return decision?.kind === "allow" || decision?.kind === "always-allow";
+          },
+        })
+      : undefined;
 
   // Prepend session transcript middleware when transcriptDir is configured.
   // Observe-phase, priority 200 — runs after event-trace (priority 100) so
@@ -423,11 +445,18 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
             forgeDemandHandle.middleware,
           ]
         : baseWithAce;
+    const baseWithAutoHarness: readonly KoiMiddleware[] =
+      autoHarnessStack !== undefined
+        ? [
+            ...baseWithForgeDemand.filter((mw) => mw.name !== "policy-cache"),
+            autoHarnessStack.policyCacheMiddleware,
+          ]
+        : baseWithForgeDemand;
 
     // Install exfiltration guard by default when: (1) not explicitly disabled,
     // (2) not already provided, and (3) the adapter has terminals so the intercept
     // phase won't be silently bypassed. Stub adapters have no terminals.
-    const providedNames = new Set(baseWithForgeDemand.map((mw) => mw.name));
+    const providedNames = new Set(baseWithAutoHarness.map((mw) => mw.name));
     const exfiltrationRequested =
       config.exfiltrationGuard !== false && !providedNames.has("exfiltration-guard");
     const canInstallExfiltrationGuard = rawAdapter.terminals !== undefined;
@@ -448,10 +477,10 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     const afterExfiltration: readonly KoiMiddleware[] =
       exfiltrationRequested && canInstallExfiltrationGuard
         ? [
-            ...baseWithForgeDemand,
+            ...baseWithAutoHarness,
             createExfiltrationGuardMiddleware(config.exfiltrationGuard ?? undefined),
           ]
-        : baseWithForgeDemand;
+        : baseWithAutoHarness;
 
     // Append model-router as the innermost model-call interceptor (after exfiltration
     // guard and semantic-retry) so each retry attempt independently benefits from
@@ -1151,6 +1180,15 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       memoryStore,
       forgeDemand:
         forgeDemandHandle !== undefined ? { middleware: forgeDemandHandle.middleware } : undefined,
+      autoHarness:
+        autoHarnessStack !== undefined
+          ? {
+              middleware: autoHarnessStack.policyCacheMiddleware,
+              synthesizeHarness: autoHarnessStack.synthesizeHarness,
+              resetSession: autoHarnessStack.resetSession,
+              maxSynthesesPerSession: autoHarnessStack.maxSynthesesPerSession,
+            }
+          : undefined,
       createDecisionLedger: decisionLedgerFactory,
       dispose: async () => {
         // Unsubscribe approval sink to prevent leak on long-lived permission handles

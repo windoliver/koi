@@ -265,6 +265,8 @@ export { createNexusOutcomeDelegate } from "./trajectory/outcome-nexus-delegate.
 // Types
 export type {
   MiddlewareDebugEntry,
+  RuntimeAutoHarnessConfig,
+  RuntimeAutoHarnessHandle,
   RuntimeConfig,
   RuntimeDebugInfo,
   RuntimeHandle,
