@@ -9,7 +9,7 @@ export function TraceViewer({ trace }: { trace: DashboardTraceEntry[] }): ReactE
     <section className="dashboard-panel" aria-label="Trace">
       <div className="panel-header">
         <div>
-          <p className="panel-eyebrow">Execution</p>
+          <p className="panel-eyebrow">Execution · Latest turn for selected agent</p>
           <h2>Trace</h2>
         </div>
       </div>
@@ -17,7 +17,7 @@ export function TraceViewer({ trace }: { trace: DashboardTraceEntry[] }): ReactE
       {trace.length === 0 ? (
         <EmptyState
           title="No trace events yet"
-          message="Trace entries will appear here once the selected session starts doing work."
+          message="Shows the most recent turn for the selected agent. Server traces don't carry a sessionId, so the trace pane is agent-scoped, not session-scoped."
         />
       ) : (
         <ol className="trace-list">

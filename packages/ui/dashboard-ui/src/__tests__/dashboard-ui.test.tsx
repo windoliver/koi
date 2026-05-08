@@ -222,11 +222,148 @@ describe("DashboardApp", () => {
 
     // Trace caches at agent scope keyed by turnId regardless of session count.
     expect(traced.tracesByTurnId["turn-1"]?.length).toBeGreaterThan(0);
-    expect(traced.latestTurnIdByAgentId["agent-orchid"]).toBe("turn-1");
+    expect(traced.latestTurnByAgentId["agent-orchid"]?.turnId).toBe("turn-1");
     expect(traced.selectedAgentTrace.length).toBeGreaterThan(0);
     // Sessions remain untouched — we never guess a session for a trace.
     expect(traced.sessionsById["session-a"]?.trace).toEqual([]);
     expect(traced.sessionsById["session-b"]?.trace).toEqual([]);
+  });
+
+  test("does not roll back the agent trace pointer when an older trace arrives later", () => {
+    const baseTimeMs = Date.parse("2026-05-07T22:14:40.000Z");
+    const snapshot = {
+      generatedAt: new Date(baseTimeMs).toISOString(),
+      agents: [
+        {
+          id: "agent-orchid",
+          name: "Orchid",
+          role: "Copilot",
+          status: "running" as const,
+          region: "local",
+          lastSeenAt: new Date(baseTimeMs).toISOString(),
+        },
+      ],
+      sessions: [],
+    };
+    const initial = createDashboardViewModel(snapshot);
+    const newer = applyDashboardEvent(initial, {
+      type: "trace.received",
+      trace: {
+        turnId: "turn-new" as never,
+        agentId: "agent-orchid" as never,
+        turnIndex: 1,
+        startedAtMs: baseTimeMs,
+        totalDurationMs: 1_000,
+        root: {
+          spanId: "root",
+          name: "root",
+          category: "model",
+          startedAtMs: baseTimeMs,
+          durationMs: 1_000,
+          children: [
+            {
+              spanId: "child-new",
+              name: "model.invoke",
+              category: "model",
+              startedAtMs: baseTimeMs,
+              durationMs: 1_000,
+              children: [],
+            },
+          ],
+        },
+      },
+    });
+    const olderArrivingLate = applyDashboardEvent(newer, {
+      type: "trace.received",
+      trace: {
+        turnId: "turn-old" as never,
+        agentId: "agent-orchid" as never,
+        turnIndex: 0,
+        startedAtMs: baseTimeMs - 60_000,
+        totalDurationMs: 1_000,
+        root: {
+          spanId: "root",
+          name: "root",
+          category: "model",
+          startedAtMs: baseTimeMs - 60_000,
+          durationMs: 1_000,
+          children: [
+            {
+              spanId: "child-old",
+              name: "model.invoke",
+              category: "model",
+              startedAtMs: baseTimeMs - 60_000,
+              durationMs: 1_000,
+              children: [],
+            },
+          ],
+        },
+      },
+    });
+
+    // Pointer must remain on the newer turn even though an older history item arrived.
+    expect(olderArrivingLate.latestTurnByAgentId["agent-orchid"]?.turnId).toBe("turn-new");
+    // Both traces are still cached for direct lookup if needed.
+    expect(olderArrivingLate.tracesByTurnId["turn-old"]).toBeDefined();
+    expect(olderArrivingLate.tracesByTurnId["turn-new"]).toBeDefined();
+  });
+
+  test("does not let an older metric sample overwrite a newer same-label sample", () => {
+    const baseTimeMs = Date.parse("2026-05-07T22:14:40.000Z");
+    const snapshot = {
+      generatedAt: new Date(baseTimeMs).toISOString(),
+      agents: [
+        {
+          id: "agent-orchid",
+          name: "Orchid",
+          role: "Copilot",
+          status: "running" as const,
+          region: "local",
+          lastSeenAt: new Date(baseTimeMs).toISOString(),
+        },
+      ],
+      sessions: [
+        {
+          id: "session-a",
+          agentId: "agent-orchid",
+          title: "Session session-a",
+          summary: "Active",
+          status: "active" as const,
+          startedAt: new Date(baseTimeMs - 60_000).toISOString(),
+          updatedAt: new Date(baseTimeMs).toISOString(),
+          durationMs: 60_000,
+          trace: [],
+          metrics: [],
+        },
+      ],
+    };
+    const initial = createDashboardViewModel(snapshot);
+    const live = applyDashboardEvent(initial, {
+      type: "metric.received",
+      points: [
+        {
+          name: "latency_ms",
+          value: 1500,
+          timestampMs: baseTimeMs + 60_000,
+          tags: { sessionId: "session-a" },
+        },
+      ],
+    });
+    const lateHistory = applyDashboardEvent(live, {
+      type: "metric.received",
+      points: [
+        {
+          name: "latency_ms",
+          value: 100,
+          timestampMs: baseTimeMs - 60_000,
+          tags: { sessionId: "session-a" },
+        },
+      ],
+    });
+    const latency = lateHistory.sessionsById["session-a"]?.metrics.find(
+      (metric) => metric.label === "Latency Ms",
+    );
+    expect(latency?.value).toBe("1,500");
   });
 
   test("ignores metric points that lack an explicit sessionId tag", () => {

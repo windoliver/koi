@@ -60,6 +60,9 @@ export interface DashboardMetric {
   value: string;
   detail: string;
   trend: MetricTrend;
+  // Timestamp of the latest sample backing this metric. Used to keep mergeMetrics
+  // monotonic when historical fetches and live SSE events race for the same label.
+  timestampMs: number;
 }
 
 export interface DashboardTraceEntry {
@@ -111,7 +114,9 @@ export interface DashboardViewModel {
   // by turnId and surface the latest turn per agent. This avoids guessing the target
   // session for agents with multiple sessions.
   tracesByTurnId: Record<string, DashboardTraceEntry[]>;
-  latestTurnIdByAgentId: Record<string, string>;
+  // Tracks the most recent turn per agent. `startedAtMs` makes the pointer monotonic
+  // so late-arriving historical hydration cannot roll the trace pane back.
+  latestTurnByAgentId: Record<string, { readonly turnId: string; readonly startedAtMs: number }>;
   selectedAgentTrace: DashboardTraceEntry[];
   isLoading: boolean;
   errorMessage: string | null;
@@ -155,10 +160,10 @@ function createDerivedState(
   const selectedSession = baseState.selectedSessionId
     ? (baseState.sessionsById[baseState.selectedSessionId] ?? null)
     : null;
-  const latestTurnId = baseState.selectedAgentId
-    ? baseState.latestTurnIdByAgentId[baseState.selectedAgentId]
+  const latestTurn = baseState.selectedAgentId
+    ? baseState.latestTurnByAgentId[baseState.selectedAgentId]
     : undefined;
-  const selectedAgentTrace = latestTurnId ? (baseState.tracesByTurnId[latestTurnId] ?? []) : [];
+  const selectedAgentTrace = latestTurn ? (baseState.tracesByTurnId[latestTurn.turnId] ?? []) : [];
 
   return {
     ...baseState,
@@ -176,7 +181,10 @@ function createViewModelState(
     readonly selectedAgentId?: string | null;
     readonly selectedSessionId?: string | null;
     readonly tracesByTurnId?: Record<string, DashboardTraceEntry[]>;
-    readonly latestTurnIdByAgentId?: Record<string, string>;
+    readonly latestTurnByAgentId?: Record<
+      string,
+      { readonly turnId: string; readonly startedAtMs: number }
+    >;
   },
 ): DashboardViewModel {
   const sessionsByAgentId = Object.fromEntries(
@@ -208,7 +216,7 @@ function createViewModelState(
     selectedAgentId: firstAgentId,
     selectedSessionId: firstSessionId,
     tracesByTurnId: options?.tracesByTurnId ?? {},
-    latestTurnIdByAgentId: options?.latestTurnIdByAgentId ?? {},
+    latestTurnByAgentId: options?.latestTurnByAgentId ?? {},
     isLoading: options?.isLoading ?? false,
     errorMessage: options?.errorMessage ?? null,
   });
@@ -279,25 +287,32 @@ export function mapAgentSnapshot(status: DashboardClientAgentStatus): DashboardA
   };
 }
 
-function createSummaryMetrics(summary: DashboardClientSessionSummary): DashboardMetric[] {
+function createSummaryMetrics(
+  summary: DashboardClientSessionSummary,
+  nowMs: number,
+): DashboardMetric[] {
+  const summaryTimestampMs = summary.endedAt ?? nowMs;
   const metrics: DashboardMetric[] = [
     {
       label: "Turns",
       value: formatCount(summary.turns),
       detail: "Completed turns in this session",
       trend: "steady",
+      timestampMs: summaryTimestampMs,
     },
     {
       label: "Input Tokens",
       value: formatCount(summary.inputTokens),
       detail: "Prompt tokens recorded so far",
       trend: "steady",
+      timestampMs: summaryTimestampMs,
     },
     {
       label: "Output Tokens",
       value: formatCount(summary.outputTokens),
       detail: "Completion tokens recorded so far",
       trend: "steady",
+      timestampMs: summaryTimestampMs,
     },
   ];
 
@@ -307,6 +322,7 @@ function createSummaryMetrics(summary: DashboardClientSessionSummary): Dashboard
       value: `$${summary.costUsd.toFixed(2)}`,
       detail: "Estimated spend to date",
       trend: "steady",
+      timestampMs: summaryTimestampMs,
     });
   }
 
@@ -329,7 +345,7 @@ export function mapSessionSnapshot(
     updatedAt: new Date(updatedAtMs).toISOString(),
     durationMs: Math.max(0, updatedAtMs - summary.startedAt),
     trace: [],
-    metrics: createSummaryMetrics(summary),
+    metrics: createSummaryMetrics(summary, nowMs),
   };
 }
 
@@ -365,6 +381,7 @@ export function mapMetricPoints(points: readonly DashboardClientMetricPoint[]): 
           ? "Latest live sample"
           : `${metricPoints.length.toLocaleString("en-US")} live samples`,
       trend,
+      timestampMs: latestPoint?.timestampMs ?? 0,
     };
   });
 }
@@ -405,7 +422,14 @@ function mergeMetrics(
   nextMetrics: DashboardMetric[],
 ): DashboardMetric[] {
   const mergedMetrics = new Map(currentMetrics.map((metric) => [metric.label, metric]));
-  for (const metric of nextMetrics) mergedMetrics.set(metric.label, metric);
+  for (const metric of nextMetrics) {
+    const existing = mergedMetrics.get(metric.label);
+    // Keep the newer sample by timestamp so a late-arriving historical fetch cannot
+    // overwrite a fresher live SSE sample for the same label.
+    if (existing === undefined || metric.timestampMs >= existing.timestampMs) {
+      mergedMetrics.set(metric.label, metric);
+    }
+  }
   return [...mergedMetrics.values()];
 }
 
@@ -428,7 +452,7 @@ function replaceSession(state: DashboardViewModel, session: DashboardSession): D
       selectedAgentId: state.selectedAgentId,
       selectedSessionId: state.selectedSessionId,
       tracesByTurnId: state.tracesByTurnId,
-      latestTurnIdByAgentId: state.latestTurnIdByAgentId,
+      latestTurnByAgentId: state.latestTurnByAgentId,
     },
   );
 }
@@ -455,7 +479,7 @@ function replaceAgent(state: DashboardViewModel, agent: DashboardAgent): Dashboa
       selectedAgentId: state.selectedAgentId,
       selectedSessionId: state.selectedSessionId,
       tracesByTurnId: state.tracesByTurnId,
-      latestTurnIdByAgentId: state.latestTurnIdByAgentId,
+      latestTurnByAgentId: state.latestTurnByAgentId,
     },
   );
 }
@@ -498,7 +522,7 @@ export function applyDashboardEvent(
         selectedAgentId: state.selectedAgentId,
         selectedSessionId: state.selectedSessionId,
         tracesByTurnId: state.tracesByTurnId,
-        latestTurnIdByAgentId: state.latestTurnIdByAgentId,
+        latestTurnByAgentId: state.latestTurnByAgentId,
       });
 
     case "agent.status.received": {
@@ -556,6 +580,9 @@ export function applyDashboardEvent(
               ...points.map((point) => point.timestampMs),
             ),
           ).toISOString(),
+          // mergeMetrics now keeps the metric with the higher per-label timestamp,
+          // so a late-arriving historical fetch cannot overwrite a newer live sample
+          // for the same label.
           metrics: mergeMetrics(existingSession.metrics, mapMetricPoints(points)),
         });
       }
@@ -564,21 +591,26 @@ export function applyDashboardEvent(
 
     case "trace.received": {
       // Trace events carry (turnId, agentId) but no sessionId, so we cache traces by
-      // turnId and surface them at agent scope. The "latest turn per agent" view is
-      // honest about the available routing key and never misroutes to the wrong
-      // session for agents with multiple concurrent sessions.
+      // turnId and surface them at agent scope. The "latest turn per agent" pointer
+      // is monotonic in startedAtMs so late-arriving historical hydration cannot
+      // roll back the agent's trace pane to an older turn.
       const tracesByTurnId = {
         ...state.tracesByTurnId,
         [event.trace.turnId]: mapTraceView(event.trace),
       };
-      const latestTurnIdByAgentId = {
-        ...state.latestTurnIdByAgentId,
-        [event.trace.agentId]: event.trace.turnId,
-      };
+      const incoming = { turnId: event.trace.turnId, startedAtMs: event.trace.startedAtMs };
+      const current = state.latestTurnByAgentId[event.trace.agentId];
+      const shouldAdvance =
+        current === undefined ||
+        current.turnId === incoming.turnId ||
+        incoming.startedAtMs >= current.startedAtMs;
+      const latestTurnByAgentId = shouldAdvance
+        ? { ...state.latestTurnByAgentId, [event.trace.agentId]: incoming }
+        : state.latestTurnByAgentId;
       return createDerivedState({
         ...state,
         tracesByTurnId,
-        latestTurnIdByAgentId,
+        latestTurnByAgentId,
       });
     }
 

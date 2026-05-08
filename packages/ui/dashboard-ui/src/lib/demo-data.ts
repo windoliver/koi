@@ -44,18 +44,21 @@ export const demoDashboardData: DashboardSnapshot = {
           value: "148K",
           detail: "Across the last 30 minutes",
           trend: "up",
+          timestampMs: 0,
         },
         {
           label: "Tool calls",
           value: "26",
           detail: "Focused on local verification",
           trend: "steady",
+          timestampMs: 0,
         },
         {
           label: "Latency",
           value: "1.2s",
           detail: "Median event turnaround",
           trend: "down",
+          timestampMs: 0,
         },
       ],
       trace: [
@@ -98,6 +101,7 @@ export const demoDashboardData: DashboardSnapshot = {
           value: "12",
           detail: "Desktop and mobile snapshots",
           trend: "steady",
+          timestampMs: 0,
         },
       ],
       trace: [
@@ -125,6 +129,7 @@ export const demoDashboardData: DashboardSnapshot = {
           value: "7",
           detail: "Pending routing decisions",
           trend: "down",
+          timestampMs: 0,
         },
       ],
       trace: [
@@ -153,12 +158,14 @@ export const demoDashboardData: DashboardSnapshot = {
           value: "3",
           detail: "Last run still red",
           trend: "up",
+          timestampMs: 0,
         },
         {
           label: "Failure window",
           value: "17m",
           detail: "Since the latest regression surfaced",
           trend: "steady",
+          timestampMs: 0,
         },
       ],
       trace: [
