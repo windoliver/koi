@@ -4,10 +4,19 @@ import {
   type AutoHarnessConfig,
   type AutoHarnessError,
   type AutoHarnessEvent,
+  type AutoHarnessSessionContext,
   type AutoHarnessStack,
   type AutoHarnessSynthesisResult,
   DEFAULT_MAX_SYNTHESES_PER_SESSION,
 } from "./types.js";
+
+/**
+ * Sentinel used to bucket calls that arrive without a session context.
+ * Multi-session runtimes wire `synthesizeHarness(signal, { sessionId, ... })`
+ * via the runtime's onSessionAttached path; out-of-band callers and stub
+ * adapters fall back to this single shared bucket.
+ */
+const GLOBAL_SESSION_BUCKET = "__global__";
 
 function formatGeneratePrompt(signal: ForgeDemandSignal): string {
   const failed =
@@ -36,6 +45,11 @@ function formatGeneratePrompt(signal: ForgeDemandSignal): string {
  */
 function triggerIdentity(signal: ForgeDemandSignal): string {
   const t = signal.trigger;
+  // Defensive: callers occasionally pass partial signals (tests, mocks).
+  // Without a usable trigger, bucket by signal id so dedupe still applies.
+  if (t === undefined || t === null || typeof t.kind !== "string") {
+    return `unknown:${signal.id}`;
+  }
   switch (t.kind) {
     case "repeated_failure":
       return `repeated_failure:${t.toolName}`;
@@ -113,11 +127,25 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
   });
   const { middleware: policyCacheMiddleware } = policyCacheHandle;
   const maxSynthesesPerSession = resolveMaxSynthesesPerSession(config.maxSynthesesPerSession);
-  // Counts synthesis attempts (any path past the gate), not only successful
-  // deployments. A persistent bad signal or unavailable dependency cannot
-  // burn unbounded model calls within a single session — every entry past
-  // the gate consumes one unit of the per-session budget.
-  let synthesesThisSession = 0;
+
+  // Per-session synthesis budgets and in-flight dedupe. Keying on sessionId
+  // prevents one tenant's repeated failures from exhausting another tenant's
+  // budget or holding the in-flight slot for an identical trigger. Calls
+  // without a session context share the GLOBAL_SESSION_BUCKET — out-of-band
+  // and single-session usage retains its original semantics.
+  interface SessionState {
+    count: number;
+    inFlightTriggers: Set<string>;
+  }
+  const sessionState = new Map<string, SessionState>();
+  const getOrCreateSession = (id: string): SessionState => {
+    let s = sessionState.get(id);
+    if (s === undefined) {
+      s = { count: 0, inFlightTriggers: new Set() };
+      sessionState.set(id, s);
+    }
+    return s;
+  };
 
   const emitEvent = (event: AutoHarnessEvent): void => {
     config.onEvent?.(event);
@@ -127,17 +155,25 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     config.onError?.(error);
   };
 
-  // Re-entrancy guard: forge-demand mints a fresh `signal.id` per emission,
-  // so id-based dedup misses cooldown re-fires and concurrent emissions for
-  // the same failing tool. Key on a stable trigger identity instead — same
-  // tool + same kind ⇒ one in-flight pipeline at a time.
-  const inFlightTriggers = new Set<string>();
-
   const synthesizeHarness = async (
     signal: ForgeDemandSignal,
+    session?: AutoHarnessSessionContext,
   ): Promise<AutoHarnessSynthesisResult> => {
+    const sessionKey = session?.sessionId ?? GLOBAL_SESSION_BUCKET;
+    const state = getOrCreateSession(sessionKey);
     const triggerKey = triggerIdentity(signal);
-    if (inFlightTriggers.has(triggerKey)) {
+
+    const safeDismiss = (): void => {
+      if (session?.dismiss === undefined) return;
+      try {
+        session.dismiss();
+      } catch (cause: unknown) {
+        // Dismiss failures must not interrupt the pipeline; surface via onError.
+        reportError({ stage: "verify", message: "dismiss callback threw", cause });
+      }
+    };
+
+    if (state.inFlightTriggers.has(triggerKey)) {
       emitEvent({
         kind: "synthesis.skipped",
         signalId: signal.id,
@@ -145,21 +181,30 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       });
       return null;
     }
-    if (synthesesThisSession >= maxSynthesesPerSession) {
+    if (state.count >= maxSynthesesPerSession) {
       emitEvent({
         kind: "synthesis.skipped",
         signalId: signal.id,
         message: "session synthesis cap reached",
       });
+      // The signal will not be processed; dismiss it so forge-demand state
+      // doesn't accumulate unprocessable signals across cooldowns.
+      safeDismiss();
       return null;
     }
-    inFlightTriggers.add(triggerKey);
-    synthesesThisSession += 1;
+    state.inFlightTriggers.add(triggerKey);
+    state.count += 1;
     emitEvent({ kind: "synthesis.started", signalId: signal.id });
     try {
-      return await runPipeline(signal);
+      const result = await runPipeline(signal);
+      // Acknowledge the signal regardless of terminal outcome (success,
+      // verification fail, policy block, approval denial, deploy error).
+      // Without dismissal, forge-demand keeps re-emitting the same condition
+      // after cooldown and burns the session emit budget.
+      safeDismiss();
+      return result;
     } finally {
-      inFlightTriggers.delete(triggerKey);
+      state.inFlightTriggers.delete(triggerKey);
     }
   };
 
@@ -306,8 +351,12 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
     policyCacheMiddleware,
     policyCacheHandle,
     synthesizeHarness,
-    resetSession: () => {
-      synthesesThisSession = 0;
+    resetSession: (sessionId?: string) => {
+      if (sessionId === undefined) {
+        sessionState.clear();
+      } else {
+        sessionState.delete(sessionId);
+      }
       emitEvent({ kind: "session.reset", message: "session synthesis state cleared" });
     },
     maxSynthesesPerSession,

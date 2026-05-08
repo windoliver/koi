@@ -115,23 +115,75 @@ const DEFAULT_AGENT_NAME = "koi-runtime";
  * 6. Return RuntimeHandle with store exposed
  */
 /**
+ * Per-session bookkeeping the runtime maintains alongside forge-demand to
+ * thread the session-scoped handle (and its `dismiss`) into auto-harness.
+ */
+interface AutoHarnessSessionEntry {
+  readonly sessionId: string;
+  readonly scoped: {
+    readonly getSignals: () => readonly { readonly id: string }[];
+    readonly dismiss: (signalId: string) => void;
+  };
+}
+
+/**
  * Wrap a caller-supplied `onDemand` callback so each demand signal is also
- * fed into the auto-harness pipeline. The caller's callback runs first; the
- * auto-harness `synthesizeHarness` call is fire-and-forget — stage errors are
- * surfaced via the auto-harness `onError`/`onEvent` callbacks.
+ * fed into the auto-harness pipeline. The caller's callback runs first
+ * (isolated in try/catch — forge-demand swallows observer exceptions, so a
+ * throwing caller must not silently disable auto-harness for this signal).
  *
- * Exported for unit testing. The runtime composes this internally when both
- * `forgeDemand` and `autoHarness` are configured.
+ * `sessionLookup` is consulted to identify which session owns the signal,
+ * threading the per-session budget and `dismiss` callback into the stack.
+ * Without a lookup, synthesis still runs — degraded (no per-session
+ * dismissal/dedupe) but not blocked.
  */
 export function wrapOnDemandWithAutoHarness(
   callerOnDemand: ((signal: ForgeDemandSignal) => void) | undefined,
-  stack: { readonly synthesizeHarness: (signal: ForgeDemandSignal) => Promise<unknown> },
+  stack: {
+    readonly synthesizeHarness: (
+      signal: ForgeDemandSignal,
+      session?: { readonly sessionId: string; readonly dismiss?: () => void },
+    ) => Promise<unknown>;
+  },
+  sessionLookup?: () => readonly AutoHarnessSessionEntry[],
 ): (signal: ForgeDemandSignal) => void {
   return (signal: ForgeDemandSignal): void => {
-    callerOnDemand?.(signal);
-    void stack.synthesizeHarness(signal).catch(() => {
-      // synthesizeHarness is internally guarded; this catch only exists to
-      // silence unhandled-rejection warnings.
+    try {
+      callerOnDemand?.(signal);
+    } catch {
+      // Caller callback errors must not block auto-harness kickoff.
+    }
+
+    let owner: AutoHarnessSessionEntry | undefined;
+    if (sessionLookup !== undefined) {
+      for (const entry of sessionLookup()) {
+        try {
+          if (entry.scoped.getSignals().some((s) => s.id === signal.id)) {
+            owner = entry;
+            break;
+          }
+        } catch {
+          // Skip broken scoped handles.
+        }
+      }
+    }
+
+    const sessionCtx =
+      owner !== undefined
+        ? {
+            sessionId: owner.sessionId,
+            dismiss: () => {
+              try {
+                owner.scoped.dismiss(signal.id);
+              } catch {
+                // Dismiss is best-effort.
+              }
+            },
+          }
+        : undefined;
+
+    void stack.synthesizeHarness(signal, sessionCtx).catch(() => {
+      // synthesizeHarness is internally guarded.
     });
   };
 }
@@ -453,6 +505,12 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       // verify→policy→approval→deploy pipeline. Caller's onDemand still runs;
       // synthesis is fire-and-forget — failures surface via the auto-harness
       // onError/onEvent callbacks, not by interrupting demand observation.
+      // We also wrap onSessionAttached to capture session-scoped handles, so
+      // the auto-harness pipeline can dismiss processed signals (preventing
+      // forge-demand from re-emitting after cooldown) and partition the
+      // per-session synthesis budget by sessionId (preventing tenant
+      // cross-talk in multi-session runtimes).
+      const sessionEntries = new Map<string, AutoHarnessSessionEntry>();
       const finalForgeConfig =
         autoHarnessStack !== undefined
           ? {
@@ -460,7 +518,23 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
               onDemand: wrapOnDemandWithAutoHarness(
                 baseConfigWithHealth.onDemand,
                 autoHarnessStack,
+                () => Array.from(sessionEntries.values()),
               ),
+              onSessionAttached: (
+                sessionContext: SessionContext,
+                scoped: import("@koi/forge-demand").SessionScopedForgeDemandHandle,
+              ) => {
+                sessionEntries.set(sessionContext.sessionId, {
+                  sessionId: sessionContext.sessionId,
+                  scoped,
+                });
+                // Forward to caller-supplied onSessionAttached if any.
+                try {
+                  baseConfigWithHealth.onSessionAttached?.(sessionContext, scoped);
+                } catch {
+                  // Caller handler is observer-only; don't disrupt detector wiring.
+                }
+              },
             }
           : baseConfigWithHealth;
       if (finalForgeConfig.healthTracker === undefined) {

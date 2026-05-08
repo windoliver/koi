@@ -117,8 +117,22 @@ export type AutoHarnessDeployCandidate = (
 
 export type AutoHarnessSynthesisResult = BrickArtifact | null;
 
+/**
+ * Per-session execution context threaded through `synthesizeHarness`. When
+ * supplied, the auto-harness budget and in-flight dedupe partition by
+ * `sessionId` so one tenant's repeated failures cannot exhaust another
+ * tenant's per-session budget. `dismiss` is invoked after any terminal
+ * outcome (success, policy block, approval denial, deploy error, etc.)
+ * so forge-demand state does not accumulate processed signals.
+ */
+export interface AutoHarnessSessionContext {
+  readonly sessionId: string;
+  readonly dismiss?: (() => void) | undefined;
+}
+
 export type AutoHarnessSynthesizeHarness = (
   signal: ForgeDemandSignal,
+  session?: AutoHarnessSessionContext,
 ) => Promise<AutoHarnessSynthesisResult>;
 
 export interface AutoHarnessConfig {
@@ -146,6 +160,11 @@ export interface AutoHarnessStack {
   readonly policyCacheMiddleware: KoiMiddleware;
   readonly policyCacheHandle: PolicyCacheHandle;
   readonly synthesizeHarness: AutoHarnessSynthesizeHarness;
-  readonly resetSession: () => void;
+  /**
+   * Reset the synthesis budget and clear in-flight dedupe state. When called
+   * with a `sessionId`, only that session's state is cleared; otherwise every
+   * tracked session (and the legacy global counter) is reset.
+   */
+  readonly resetSession: (sessionId?: string) => void;
   readonly maxSynthesesPerSession: number;
 }

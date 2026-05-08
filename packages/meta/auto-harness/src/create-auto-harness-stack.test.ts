@@ -614,6 +614,61 @@ describe("createAutoHarnessStack", () => {
     expect(generateCalls).toBe(1);
   });
 
+  test("partitions per-session synthesis budgets — one session cannot exhaust another's", async () => {
+    let generateCalls = 0;
+    const stack = createAutoHarnessStack({
+      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      generate: async () => {
+        generateCalls += 1;
+        return "candidate-code";
+      },
+      verifyCandidate: async () => ({ ok: true, artifact: makeArtifact() }),
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async () => ({ ok: true }),
+      maxSynthesesPerSession: 2,
+    });
+
+    // Session A consumes its own budget.
+    await stack.synthesizeHarness(makeSignal(), { sessionId: "session-A" });
+    await stack.synthesizeHarness(makeSignal(), { sessionId: "session-A" });
+    // Session A is exhausted; further calls under A skip.
+    const aThird = await stack.synthesizeHarness(makeSignal(), { sessionId: "session-A" });
+    expect(aThird).toBeNull();
+
+    // Session B has its own fresh budget.
+    const bFirst = await stack.synthesizeHarness(makeSignal(), { sessionId: "session-B" });
+    expect(bFirst).not.toBeNull();
+    expect(generateCalls).toBe(3);
+  });
+
+  test("calls dismiss after every terminal outcome (success and failure)", async () => {
+    const dismissed: string[] = [];
+    const dismiss = (label: string) => () => dismissed.push(label);
+
+    const stack = createAutoHarnessStack({
+      forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+      generate: async () => "candidate-code",
+      verifyCandidate: async (signal) =>
+        signal.id === "sig-fail"
+          ? { ok: false, artifact: null, reason: "no" }
+          : { ok: true, artifact: makeArtifact() },
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async () => ({ ok: true }),
+    });
+
+    // Success path dismisses
+    const sigOk = { ...makeSignal(), id: "sig-ok" };
+    await stack.synthesizeHarness(sigOk, { sessionId: "s1", dismiss: dismiss("ok") });
+    expect(dismissed).toContain("ok");
+
+    // Verification-failed path also dismisses
+    const sigFail = { ...makeSignal(), id: "sig-fail" };
+    await stack.synthesizeHarness(sigFail, { sessionId: "s1", dismiss: dismiss("fail") });
+    expect(dismissed).toContain("fail");
+  });
+
   test("sanitizes secret-shaped tokens out of the generation prompt", async () => {
     const prompts: string[] = [];
     const stack = createAutoHarnessStack({
