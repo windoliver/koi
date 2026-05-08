@@ -653,20 +653,39 @@ export async function resolveFileSystemAsync(
               result.value.pathUnknown !== true &&
               isPathProtectedByMount(committed)
             ) {
+              // removeMount returns a Result (never throws on a Nexus error);
+              // we MUST inspect rollback.ok before claiming success or the
+              // shadowing mount stays live with the operator told otherwise.
+              let rolledBack = false;
+              let rollbackMessage = "rollback unavailable (removeMount unsupported)";
               if (innerRemove !== undefined) {
                 try {
-                  await innerRemove(committed);
-                } catch {
-                  // Rollback best-effort; if it fails the error message below
-                  // tells the operator they must clean up manually.
+                  const rollback = await innerRemove(committed);
+                  if (rollback.ok) {
+                    rolledBack = true;
+                  } else {
+                    rollbackMessage = `rollback failed: ${rollback.error.message}`;
+                  }
+                } catch (e: unknown) {
+                  rollbackMessage = `rollback threw: ${e instanceof Error ? e.message : String(e)}`;
                 }
+              }
+              if (rolledBack) {
+                return {
+                  ok: false,
+                  error: {
+                    code: "VALIDATION",
+                    message: `Mount at ${committed} rejected: it overlays an active filesystem root for this session. The bridge mount has been rolled back; verify with /mounts.`,
+                    retryable: RETRYABLE_DEFAULTS.VALIDATION,
+                  },
+                };
               }
               return {
                 ok: false,
                 error: {
-                  code: "VALIDATION",
-                  message: `Mount at ${committed} rejected: it overlays an active filesystem root for this session. The bridge mount has been rolled back; verify with /mounts.`,
-                  retryable: RETRYABLE_DEFAULTS.VALIDATION,
+                  code: "INTERNAL",
+                  message: `Mount at ${committed} overlays an active filesystem root and rollback was unsuccessful (${rollbackMessage}). The mount may still be live — run /mounts and manually /unmount ${committed} (from outside the protected scope) to repair state.`,
+                  retryable: RETRYABLE_DEFAULTS.INTERNAL,
                 },
               };
             }
