@@ -13,9 +13,12 @@ the model emit a snippet of code instead of allocating a turn-per-step, and
 returns a structured result the model can read in its next turn.
 
 Isolation is delegated. The package is policy-free — it spawns nothing on its
-own; every script runs through the `SandboxExecutor` the caller injects
-(typically `@koi/sandbox-executor` for plain subprocess isolation, or
-`@koi/sandbox-ipc` / `@koi/sandbox-os` for stronger sandboxing).
+own; every script runs through the `SandboxExecutor` the caller injects.
+Today the only `SandboxExecutor` implementation in v2 is
+`@koi/sandbox-executor` (subprocess isolation); `@koi/sandbox-ipc` exposes a
+narrower `IpcSandboxExecutor` shape (`executeFunctionBody`) and is **not** a
+drop-in `SandboxExecutor` — wiring it into `code-executor` requires a separate
+adapter that is not yet provided.
 
 ## Architecture
 
