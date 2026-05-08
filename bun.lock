@@ -1039,6 +1039,13 @@
         "@koi/token-estimator": "workspace:*",
       },
     },
+    "packages/lib/sandbox-cloud-base": {
+      "name": "@koi/sandbox-cloud-base",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/scratchpad-conformance": {
       "name": "@koi/scratchpad-conformance",
       "version": "0.1.0",
@@ -1898,6 +1905,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/sandbox-cloud-base": "workspace:*",
       },
     },
     "packages/sandbox/sandbox-executor": {
@@ -1905,6 +1913,14 @@
       "version": "0.1.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+    },
+    "packages/sandbox/sandbox-ipc": {
+      "name": "@koi/sandbox-ipc",
+      "version": "0.1.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sandbox-cloud-base": "workspace:*",
       },
     },
     "packages/sandbox/sandbox-os": {
@@ -2909,6 +2925,8 @@
 
     "@koi/runtime": ["@koi/runtime@workspace:packages/meta/runtime"],
 
+    "@koi/sandbox-cloud-base": ["@koi/sandbox-cloud-base@workspace:packages/lib/sandbox-cloud-base"],
+
     "@koi/sandbox-cloudflare": ["@koi/sandbox-cloudflare@workspace:packages/sandbox/sandbox-cloudflare"],
 
     "@koi/sandbox-conformance": ["@koi/sandbox-conformance@workspace:packages/sandbox/sandbox-conformance"],
@@ -2920,6 +2938,8 @@
     "@koi/sandbox-e2b": ["@koi/sandbox-e2b@workspace:packages/sandbox/sandbox-e2b"],
 
     "@koi/sandbox-executor": ["@koi/sandbox-executor@workspace:packages/sandbox/sandbox-executor"],
+
+    "@koi/sandbox-ipc": ["@koi/sandbox-ipc@workspace:packages/sandbox/sandbox-ipc"],
 
     "@koi/sandbox-os": ["@koi/sandbox-os@workspace:packages/sandbox/sandbox-os"],
 
