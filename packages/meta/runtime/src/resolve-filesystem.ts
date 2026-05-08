@@ -627,10 +627,7 @@ export async function resolveFileSystemAsync(
         }
         if (innerAdd !== undefined) {
           wrapped.addMount = async (uri: string, at?: string | undefined) => {
-            // Only `at` (when provided) is checked: it's the explicit target.
-            // When `at` is undefined the bridge picks the path; the resulting
-            // path is policed at next /mounts reconcile via the same protected
-            // set if it lands on a protected root we'd otherwise refuse.
+            // Pre-commit guard for the explicit `at` case.
             if (typeof at === "string" && isPathProtectedByMount(at)) {
               return {
                 ok: false,
@@ -641,7 +638,39 @@ export async function resolveFileSystemAsync(
                 },
               };
             }
-            return innerAdd(uri, at);
+            const result = await innerAdd(uri, at);
+            if (!result.ok) return result;
+            // Post-commit verification: when `at` was omitted the bridge
+            // picked the path. If it landed on (or under, or above) a
+            // protected root, attempt to roll back via removeMount and
+            // surface a structural error. We deliberately call the
+            // INNER removeMount so the outer guard doesn't block the
+            // rollback. If rollback itself fails, fall through with a
+            // strong warning — the operator must intervene.
+            const committed = result.value.path;
+            if (
+              committed !== "" &&
+              result.value.pathUnknown !== true &&
+              isPathProtectedByMount(committed)
+            ) {
+              if (innerRemove !== undefined) {
+                try {
+                  await innerRemove(committed);
+                } catch {
+                  // Rollback best-effort; if it fails the error message below
+                  // tells the operator they must clean up manually.
+                }
+              }
+              return {
+                ok: false,
+                error: {
+                  code: "VALIDATION",
+                  message: `Mount at ${committed} rejected: it overlays an active filesystem root for this session. The bridge mount has been rolled back; verify with /mounts.`,
+                  retryable: RETRYABLE_DEFAULTS.VALIDATION,
+                },
+              };
+            }
+            return result;
           };
         }
         Object.defineProperty(wrapped, "mounts", {

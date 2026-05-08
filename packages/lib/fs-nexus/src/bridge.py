@@ -658,7 +658,11 @@ async def dispatch(fs, method, params):
         return {"created": True}
 
     if method == "list_mounts":
-        mounts = await _maybe_await(fs.list_mounts())
+        # Use _call_first so wrapped backends that only expose list_mounts on
+        # `fs.backend` / `fs._backend` / `fs.facade` are still discovered. The
+        # mutation RPCs (add/remove) already do this; list_mounts must too,
+        # otherwise /mounts and add_mount path discovery degrade silently.
+        mounts = await _call_first(_mount_targets(fs), ("list_mounts",))
         return {"mounts": mounts}
 
     if method == "describe_mount":
@@ -679,7 +683,7 @@ async def dispatch(fs, method, params):
         # before mutation, fall back to an empty snapshot — the actual
         # mutation can still proceed and we'll handle missing diff below.
         try:
-            before = set(await _maybe_await(fs.list_mounts()))
+            before = set(await _call_first(_mount_targets(fs), ("list_mounts",)))
         except Exception:
             before = set()
         targets = _mount_targets(fs)
@@ -698,7 +702,7 @@ async def dispatch(fs, method, params):
         resolved_path = at if isinstance(at, str) else None
         if resolved_path is None:
             try:
-                after = list(await _maybe_await(fs.list_mounts()))
+                after = list(await _call_first(_mount_targets(fs), ("list_mounts",)))
                 new_mounts = [mount for mount in after if mount not in before]
                 if len(new_mounts) == 1:
                     resolved_path = new_mounts[0]
