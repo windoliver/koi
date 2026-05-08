@@ -7,68 +7,35 @@ export interface UnsupportedProfileFields {
   readonly details: readonly string[];
 }
 
+function hasUnsupportedFilesystem(profile: SandboxProfile): boolean {
+  const fs = profile.filesystem;
+  if (fs.defaultReadAccess === "closed") return true;
+  if (fs.allowRead !== undefined && fs.allowRead.length > 0) return true;
+  if (fs.denyRead !== undefined && fs.denyRead.length > 0) return true;
+  if (fs.allowWrite !== undefined && fs.allowWrite.length > 0) return true;
+  if (fs.denyWrite !== undefined && fs.denyWrite.length > 0) return true;
+  if (profile.nexusMounts !== undefined && profile.nexusMounts.length > 0) return true;
+  return false;
+}
+
+function hasUnsupportedResources(profile: SandboxProfile): boolean {
+  const r = profile.resources;
+  return r.maxMemoryMb !== undefined || r.maxPids !== undefined || r.maxOpenFiles !== undefined;
+}
+
 export function detectUnsupportedProfileFields(
   profile: SandboxProfile,
 ): UnsupportedProfileFields | undefined {
-  let filesystem = false;
-  let network = false;
-  let resources = false;
-
-  if (profile.network.allow === false) {
-    network = true;
-  }
-
-  const filesystemPolicy = profile.filesystem;
-  if (filesystemPolicy.defaultReadAccess === "closed") {
-    filesystem = true;
-  }
-  if (filesystemPolicy.allowRead !== undefined && filesystemPolicy.allowRead.length > 0) {
-    filesystem = true;
-  }
-  if (filesystemPolicy.denyRead !== undefined && filesystemPolicy.denyRead.length > 0) {
-    filesystem = true;
-  }
-  if (filesystemPolicy.allowWrite !== undefined && filesystemPolicy.allowWrite.length > 0) {
-    filesystem = true;
-  }
-  if (filesystemPolicy.denyWrite !== undefined && filesystemPolicy.denyWrite.length > 0) {
-    filesystem = true;
-  }
-
-  if (profile.nexusMounts !== undefined && profile.nexusMounts.length > 0) {
-    filesystem = true;
-  }
-
-  const resourceLimits = profile.resources;
-  if (resourceLimits.maxMemoryMb !== undefined) {
-    resources = true;
-  }
-  if (resourceLimits.maxPids !== undefined) {
-    resources = true;
-  }
-  if (resourceLimits.maxOpenFiles !== undefined) {
-    resources = true;
-  }
+  const filesystem = hasUnsupportedFilesystem(profile);
+  const network = profile.network.allow === false;
+  const resources = hasUnsupportedResources(profile);
 
   const details: string[] = [];
-  if (filesystem) {
-    details.push("filesystem restrictions or Nexus mounts");
-  }
-  if (network) {
-    details.push("network deny (allow=false)");
-  }
-  if (resources) {
-    details.push("resource limits (maxMemoryMb/maxPids/maxOpenFiles)");
-  }
+  if (filesystem) details.push("filesystem restrictions or Nexus mounts");
+  if (network) details.push("network deny (allow=false)");
+  if (resources) details.push("resource limits (maxMemoryMb/maxPids/maxOpenFiles)");
 
-  return details.length === 0
-    ? undefined
-    : {
-        filesystem,
-        network,
-        resources,
-        details,
-      };
+  return details.length === 0 ? undefined : { filesystem, network, resources, details };
 }
 
 export function formatUnsupportedProfileError(

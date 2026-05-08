@@ -108,56 +108,45 @@ export function createCachedBridge<
     return stale;
   }
 
-  async function acquireSlot(): Promise<Slot<TLease>> {
+  async function freshAcquire(): Promise<Slot<TLease>> {
+    const stale = detachExpiredSlot();
+    if (stale !== undefined) {
+      if (stale.activeCount === 0) {
+        await runCleanup(stale.lease);
+      } else {
+        // Defer disposal until in-flight executions drain so they don't get torn
+        // down mid-call. Track the cleanup so dispose() awaits every detached slot.
+        const deferred = disposeWhenDrained(stale).catch(() => undefined);
+        deferredCleanups.add(deferred);
+        void deferred.finally(() => deferredCleanups.delete(deferred));
+      }
+    }
+    if (slot !== undefined) return slot;
+
+    const nextLease = await config.acquire();
     if (disposed) {
+      await runCleanup(nextLease);
       throw createDisposedError();
     }
+    const newSlot: Slot<TLease> = {
+      lease: nextLease,
+      expiresAt: Date.now() + Math.max(0, config.ttlMs),
+      activeCount: 0,
+      pendingDispose: false,
+      drainListeners: [],
+    };
+    slot = newSlot;
+    return newSlot;
+  }
 
-    if (slot !== undefined && !isExpired(slot, Date.now())) {
-      return slot;
-    }
-
+  async function acquireSlot(): Promise<Slot<TLease>> {
+    if (disposed) throw createDisposedError();
+    if (slot !== undefined && !isExpired(slot, Date.now())) return slot;
     if (inflight === undefined) {
-      inflight = (async () => {
-        const stale = detachExpiredSlot();
-        if (stale !== undefined) {
-          if (stale.activeCount === 0) {
-            await runCleanup(stale.lease);
-          } else {
-            // Defer disposal until in-flight executions drain so they don't get torn
-            // down mid-call. New callers can proceed against a fresh lease meanwhile.
-            // Track the cleanup promise so dispose() always awaits every detached
-            // slot, even when several have accumulated concurrently.
-            const deferred = disposeWhenDrained(stale).catch(() => undefined);
-            deferredCleanups.add(deferred);
-            void deferred.finally(() => deferredCleanups.delete(deferred));
-          }
-        }
-
-        if (slot !== undefined) {
-          return slot;
-        }
-
-        const nextLease = await config.acquire();
-        if (disposed) {
-          await runCleanup(nextLease);
-          throw createDisposedError();
-        }
-
-        const newSlot: Slot<TLease> = {
-          lease: nextLease,
-          expiresAt: Date.now() + Math.max(0, config.ttlMs),
-          activeCount: 0,
-          pendingDispose: false,
-          drainListeners: [],
-        };
-        slot = newSlot;
-        return newSlot;
-      })().finally(() => {
+      inflight = freshAcquire().finally(() => {
         inflight = undefined;
       });
     }
-
     return inflight;
   }
 
