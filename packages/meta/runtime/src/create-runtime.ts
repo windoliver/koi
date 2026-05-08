@@ -486,11 +486,34 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
             forgeDemandHandle.middleware,
           ]
         : baseWithAce;
-    const hasPolicyCache = new Set(baseWithForgeDemand.map((mw) => mw.name)).has("policy-cache");
-    const baseWithAutoHarness: readonly KoiMiddleware[] =
-      autoHarnessStack !== undefined && !hasPolicyCache
-        ? [...baseWithForgeDemand, autoHarnessStack.policyCacheMiddleware]
-        : baseWithForgeDemand;
+    // Auto-harness wiring is a single source of truth: when configured, the
+    // stack-owned policy-cache middleware is the only `policy-cache` instance
+    // the runtime composes. Any caller-supplied `policy-cache` is dropped —
+    // otherwise registrations from successful deployments would land in the
+    // stack-owned hidden cache while the live chain dispatched against the
+    // caller's instance, silently masking promoted policies (R3 finding).
+    //
+    // On adapters without terminals (stub), the runtime cannot compose
+    // intercept-phase middleware and would otherwise throw. Skip installation
+    // — the stack's `synthesizeHarness` and `policyCacheHandle` remain usable
+    // out-of-band, but no live dispatch path consults the cache. Real
+    // adapters install the middleware unconditionally.
+    const adapterHasTerminals = rawAdapter.terminals !== undefined;
+    const baseWithAutoHarness: readonly KoiMiddleware[] = (() => {
+      if (autoHarnessStack === undefined) return baseWithForgeDemand;
+      // Drop any caller-supplied `policy-cache` whether or not we install our
+      // own — leaving the caller's instance in the chain would dispatch
+      // against a cache that auto-harness's `register()` never populates.
+      const withoutCallerPolicyCache = baseWithForgeDemand.filter(
+        (mw) => mw.name !== "policy-cache",
+      );
+      // Only compose the stack-owned policy-cache when the adapter can carry
+      // intercept-phase middleware. Stub adapters (test-only) skip
+      // composition; the stack handle remains usable out-of-band.
+      return adapterHasTerminals
+        ? [...withoutCallerPolicyCache, autoHarnessStack.policyCacheMiddleware]
+        : withoutCallerPolicyCache;
+    })();
 
     // Install exfiltration guard by default when: (1) not explicitly disabled,
     // (2) not already provided, and (3) the adapter has terminals so the intercept
@@ -1221,9 +1244,15 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       forgeDemand:
         forgeDemandHandle !== undefined ? { middleware: forgeDemandHandle.middleware } : undefined,
       autoHarness:
-        autoHarnessStack !== undefined && installedPolicyCacheMiddleware !== undefined
+        autoHarnessStack !== undefined
           ? {
-              middleware: installedPolicyCacheMiddleware,
+              // The runtime composes stack-owned policy-cache as the single
+              // source of truth when the adapter supports intercept-phase
+              // middleware. On stub adapters the stack-owned reference is
+              // exposed so callers can drive `synthesizeHarness`/`register`
+              // out-of-band, even though the middleware is not in the live
+              // dispatch chain.
+              middleware: installedPolicyCacheMiddleware ?? autoHarnessStack.policyCacheMiddleware,
               synthesizeHarness: autoHarnessStack.synthesizeHarness,
               resetSession: autoHarnessStack.resetSession,
               maxSynthesesPerSession: autoHarnessStack.maxSynthesesPerSession,

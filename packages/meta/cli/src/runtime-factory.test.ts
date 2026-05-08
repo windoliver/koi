@@ -215,7 +215,7 @@ describe("createKoiRuntime — assembly", () => {
     expect(deployed).toBe(false);
   });
 
-  test("exposes the installed policy-cache middleware when one is already present", async () => {
+  test("replaces caller-supplied policy-cache with the stack-owned instance", async () => {
     const providedPolicyCache = { name: "policy-cache" } as KoiMiddleware;
 
     runtimeHandle = await createKoiRuntime({
@@ -231,7 +231,10 @@ describe("createKoiRuntime — assembly", () => {
     });
 
     expect(runtimeHandle.autoHarness).toBeDefined();
-    expect(runtimeHandle.autoHarness?.middleware).toBe(providedPolicyCache);
+    // Single source of truth: caller's policy-cache is dropped so registrations
+    // and dispatch agree. The auto-harness handle exposes the stack-owned mw.
+    expect(runtimeHandle.autoHarness?.middleware).not.toBe(providedPolicyCache);
+    expect(runtimeHandle.autoHarness?.middleware.name).toBe("policy-cache");
   });
 
   test("returns a mutable transcript array", async () => {

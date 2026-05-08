@@ -17,7 +17,7 @@ const makeDemandSignal = (id: string): ForgeDemandSignal =>
   }) as ForgeDemandSignal;
 
 describe("createRuntime autoHarness wiring", () => {
-  test("preserves caller-supplied policy-cache middleware", () => {
+  test("replaces caller-supplied policy-cache with stack-owned instance (single source of truth)", () => {
     const providedPolicyCache = { name: "policy-cache" } as never;
 
     const runtime = createRuntime({
@@ -32,13 +32,21 @@ describe("createRuntime autoHarness wiring", () => {
       },
     });
 
-    expect(runtime.middleware.filter((mw) => mw.name === "policy-cache")).toHaveLength(1);
-    expect(runtime.middleware).toContain(providedPolicyCache);
+    // Caller's policy-cache is dropped from the live chain — the auto-harness
+    // stack's own cache is the single source of truth, so registrations and
+    // dispatch always agree. (Stub adapters skip live composition; the stack
+    // middleware reference is still exposed via runtime.autoHarness.)
+    expect(runtime.middleware).not.toContain(providedPolicyCache);
     expect(runtime.autoHarness).toBeDefined();
-    expect(runtime.autoHarness?.middleware).toBe(providedPolicyCache);
+    expect(runtime.autoHarness?.middleware).not.toBe(providedPolicyCache);
   });
 
-  test("installs policy-cache middleware when autoHarness is enabled", () => {
+  test("exposes the autoHarness handle on stub adapters without composing intercept middleware", () => {
+    // Stub adapters have no terminals; composing intercept-phase middleware
+    // would throw. The runtime instead exposes the stack-owned middleware
+    // reference on the handle so callers can drive synthesizeHarness and
+    // policy-cache register out-of-band, even though no live dispatch path
+    // consults the cache.
     const runtime = createRuntime({
       requestApproval: async () => ({ kind: "allow" }),
       autoHarness: {
@@ -50,8 +58,9 @@ describe("createRuntime autoHarness wiring", () => {
       },
     });
 
-    expect(runtime.middleware.map((mw) => mw.name)).toContain("policy-cache");
     expect(runtime.autoHarness).toBeDefined();
+    expect(runtime.autoHarness?.middleware.name).toBe("policy-cache");
+    expect(typeof runtime.autoHarness?.synthesizeHarness).toBe("function");
   });
 
   test("does not deploy when runtime approval denies the request", async () => {
