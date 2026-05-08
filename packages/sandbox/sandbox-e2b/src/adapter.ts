@@ -45,7 +45,7 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
     create: async (profile: SandboxProfile) => {
       const unsupported = detectUnsupportedProfileFields(profile);
       if (unsupported !== undefined) {
-        throw new Error(formatUnsupportedProfileError(unsupported));
+        throw new Error(formatUnsupportedProfileError("sandbox-e2b", unsupported));
       }
 
       // Generate an idempotency label per create attempt. The wrapper is
