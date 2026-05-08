@@ -52,10 +52,14 @@ describe("NexusFileSystem specifics", () => {
     if (result.ok) expect(result.value.content).toBe("test");
   });
 
-  test("injected transports without an explicit mountPoint span the full Nexus namespace", async () => {
+  test("explicit empty mountPoint spans the full Nexus namespace", async () => {
+    // Namespace-root semantics must be opt-in per call (mountPoint: "") rather
+    // than the default for any injected transport — otherwise every existing
+    // injected-transport caller silently retargets from /fs/<path> to /<path>.
     const transport = createFakeNexusTransport();
     const backend = createNexusFileSystem({
       url: "http://fake",
+      mountPoint: "",
       transport,
     });
 

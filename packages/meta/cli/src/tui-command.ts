@@ -6334,15 +6334,57 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             dispatchNotice(store, "unmount-info", `[Unmounted ${path}]`);
           })();
           break;
-        case "system:mounts": {
-          const snapshot = mountDescriptionsState.getSnapshot();
-          dispatchNotice(
-            store,
-            "mounts-info",
-            formatMountedConnectors([...snapshot.manifest, ...snapshot.runtime]),
-          );
+        case "system:mounts":
+          // Real refresh: when the transport supports listMounts/describeMount
+          // we re-read the live mount set from the bridge before printing,
+          // then update mountDescriptionsState so any partial-success state
+          // (e.g. an add_mount that returned pathUnknown) is reconciled.
+          // Falls back to the cached snapshot if the transport doesn't
+          // provide a list API.
+          void (async (): Promise<void> => {
+            const transport = nexusFilesystemTransport;
+            if (transport?.listMounts === undefined) {
+              const snapshot = mountDescriptionsState.getSnapshot();
+              dispatchNotice(
+                store,
+                "mounts-info",
+                formatMountedConnectors([...snapshot.manifest, ...snapshot.runtime]),
+              );
+              return;
+            }
+            const listResult = await transport.listMounts();
+            if (!listResult.ok) {
+              const snapshot = mountDescriptionsState.getSnapshot();
+              dispatchNotice(
+                store,
+                "mounts-info",
+                formatMountedConnectors([...snapshot.manifest, ...snapshot.runtime]),
+              );
+              return;
+            }
+            // Best-effort describeMount per path. Failures degrade to a cheap
+            // {path, connector} fallback rather than abort the refresh —
+            // describe RPCs may force OAuth / README generation that we
+            // explicitly do not block /mounts on.
+            const refreshed: MountDescription[] = await Promise.all(
+              listResult.value.map(async (path): Promise<MountDescription> => {
+                if (transport.describeMount === undefined) {
+                  return { path, connector: path.split("/").filter(Boolean)[0] ?? "unknown" };
+                }
+                const described = await transport.describeMount(path);
+                if (described.ok) return described.value;
+                return { path, connector: path.split("/").filter(Boolean)[0] ?? "unknown" };
+              }),
+            );
+            mountDescriptionsState.setManifest(refreshed);
+            const snapshot = mountDescriptionsState.getSnapshot();
+            dispatchNotice(
+              store,
+              "mounts-info",
+              formatMountedConnectors([...snapshot.manifest, ...snapshot.runtime]),
+            );
+          })();
           break;
-        }
         case "system:governance-reset":
           // The TUI side already cleared its in-memory alerts via the
           // optimistic dispatch from executeGovernanceReset() in tui-root.tsx.

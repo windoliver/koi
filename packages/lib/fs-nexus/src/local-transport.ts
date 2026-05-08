@@ -570,9 +570,15 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     // If list_mounts fails (timeout, transient error), don't trick the caller
     // into retrying a non-idempotent mutation. Optimistically append the new
     // path so the local cache stays consistent until the next successful
-    // listMounts().
+    // listMounts() — but never cache an empty path (pathUnknown) since that
+    // would pollute future /unmount and listing operations.
     const refreshed = await listMounts();
-    if (!refreshed.ok && !mounts.includes(result.value.path)) {
+    if (
+      !refreshed.ok &&
+      result.value.path !== "" &&
+      result.value.pathUnknown !== true &&
+      !mounts.includes(result.value.path)
+    ) {
       mounts = [...mounts, result.value.path];
     }
     return result;

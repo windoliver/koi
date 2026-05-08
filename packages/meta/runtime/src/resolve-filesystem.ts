@@ -502,20 +502,26 @@ export async function resolveFileSystemAsync(
     let nexusBackend: ReturnType<typeof createNexusFileSystem>;
     let unsubscribe: () => void;
     let mutationsSupported = false;
-    // Single-mount default: when no explicit mountPoint is configured and
-    // exactly one mount was discovered, root the backend at that mount so
-    // bare paths like "/foo.txt" resolve under the mounted workspace
-    // (preserves pre-multi-mount behavior). For multi-mount sessions we
-    // keep namespace-root so callers must address mounts explicitly.
+    // Local-bridge mount-point selection. Three cases:
+    //   1. Operator set `options.mountPoint` explicitly  → use it as-is
+    //      (operator opted in, including `""` for namespace-root multi-mount).
+    //   2. Single bridge mount, no explicit option       → infer that mount
+    //      (legacy compat: bare `/foo.txt` resolves under the mount).
+    //   3. Multi mount, no explicit option               → namespace-root (`""`)
+    //      so callers must address mounts via their full paths.
+    // We always pass an explicit mountPoint to createNexusFileSystem here —
+    // never fall through to its default, which is `"fs"` (intended for HTTP
+    // Nexus servers, not the local bridge).
     const transportMounts = transport.mounts ?? [];
     const inferredMountPoint =
       options.mountPoint ?? (transportMounts.length === 1 ? transportMounts[0] : undefined);
+    const effectiveMountPoint = inferredMountPoint ?? "";
     try {
       unsubscribe = onNotification !== undefined ? transport.subscribe(onNotification) : () => {};
       nexusBackend = createNexusFileSystem({
         url: "local://bridge",
         transport,
-        ...(inferredMountPoint !== undefined ? { mountPoint: inferredMountPoint } : {}),
+        mountPoint: effectiveMountPoint,
       });
       // The backend root is fixed at construction time. If we inferred a
       // single-mount root (legacy compat) the operator must not /mount or
