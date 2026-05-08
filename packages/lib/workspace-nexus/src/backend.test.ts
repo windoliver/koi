@@ -377,13 +377,14 @@ describe("createNexusWorkspaceBackend", () => {
     expect(backend.findByAgentId).toBeDefined();
   });
 
-  test("optional hooks are NOT exposed by default (capability negotiation is opt-in)", async () => {
+  test("optional hooks are exposed by default so the provider can recover crash survivors", async () => {
     const { createNexusWorkspaceBackend } = await import("./index.js");
 
-    // Default-off prevents mixed-version outages: an older Nexus server
-    // without findByAgentId/attestation RPCs would otherwise fail attach
-    // outright because the provider treats method presence as a capability
-    // signal and eagerly calls these hooks.
+    // Default-on: the workspace provider depends on findByAgentId and the
+    // attestation hooks to discover and reuse Nexus survivors after a
+    // restart. Hiding them silently would push the provider into duplicate
+    // allocation under cleanupPolicy="never". Operators flip individual
+    // bits to false when they know their server lacks a specific RPC.
     const backend = await createNexusWorkspaceBackend({
       transport: createHealthyTransport(
         async <T>(): Promise<Result<T, KoiError>> => ({
@@ -393,11 +394,31 @@ describe("createNexusWorkspaceBackend", () => {
       ),
     });
 
-    expect(backend.findByAgentId).toBeUndefined();
-    expect(backend.attestSetupComplete).toBeUndefined();
-    expect(backend.verifySetupComplete).toBeUndefined();
-    expect(backend.invalidateSetupComplete).toBeUndefined();
-    expect(backend.exists).toBeUndefined();
+    expect(backend.findByAgentId).toBeDefined();
+    expect(backend.attestSetupComplete).toBeDefined();
+    expect(backend.verifySetupComplete).toBeDefined();
+    expect(backend.invalidateSetupComplete).toBeDefined();
+    expect(backend.exists).toBeDefined();
+  });
+
+  test("isSandboxed is true so the provider reuses Nexus survivors instead of recreating them", async () => {
+    const { createNexusWorkspaceBackend } = await import("./index.js");
+
+    // Nexus-managed workspaces are durable server-side resources, NOT
+    // ephemeral in-process state. The workspace provider only reuses
+    // crash survivors when the backend is sandboxed; an unsandboxed
+    // backend forces dispose-and-recreate, defeating the preservation
+    // contract of cleanupPolicy="never".
+    const backend = await createNexusWorkspaceBackend({
+      transport: createHealthyTransport(
+        async <T>(): Promise<Result<T, KoiError>> => ({
+          ok: true,
+          value: { ok: true } as T,
+        }),
+      ),
+    });
+
+    expect(backend.isSandboxed).toBe(true);
   });
 
   test("a transient findByAgentId failure does not reroute later create() calls to the fallback", async () => {

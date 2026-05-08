@@ -222,6 +222,9 @@ export async function createNexusScratchpad(
         content: input.content,
         ...(input.ttlSeconds !== undefined ? { ttlSeconds: input.ttlSeconds } : {}),
         ...(cloned !== undefined ? { metadata: cloned } : {}),
+        ...(input.expectedGeneration !== undefined
+          ? { expectedGeneration: input.expectedGeneration }
+          : {}),
       };
       const result = await client.write(groupId, authorId, sanitized);
       if (result.ok) {

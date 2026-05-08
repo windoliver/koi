@@ -14,11 +14,14 @@ export interface NexusWorkspaceBackendConfig {
   readonly basePath?: string | undefined;
   /**
    * Optional hooks the connected Nexus server is known to implement.
-   * Defaults to OFF: hooks not explicitly listed here are NOT advertised,
-   * because the provider treats method presence as a capability signal
-   * and would attempt RPCs that an older server cannot answer — turning a
-   * mixed-version rollout into a hard outage. Operators flip individual
-   * bits to `true` once they have confirmed server support.
+   * Defaults to ON: the workspace provider depends on these hooks
+   * (especially `findByAgentId` and the attestation hooks) to recover
+   * crash survivors safely after a restart, and hiding them silently
+   * pushes callers into duplicate-allocation under
+   * `cleanupPolicy="never"`. Operators who know their Nexus server
+   * lacks a specific RPC set that capability to `false` to suppress
+   * the hook; otherwise an unsupported RPC surfaces as a typed
+   * `METHOD_NOT_FOUND` error at call time.
    */
   readonly serverCapabilities?: NexusWorkspaceServerCapabilities;
 }

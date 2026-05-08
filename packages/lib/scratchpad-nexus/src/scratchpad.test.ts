@@ -131,6 +131,43 @@ describe("createNexusScratchpad", () => {
     if (readResult.ok) expect(readResult.value.content).toBe("hello");
   });
 
+  test("write preserves expectedGeneration so CAS / create-only semantics reach Nexus", async () => {
+    const { createNexusScratchpad } = await import("./index.js");
+
+    let captured: Record<string, unknown> | null = null;
+    const scratchpad = await createNexusScratchpad({
+      groupId: agentGroupId("group-a"),
+      authorId: agentId("agent-a"),
+      transport: createHealthyTransport(
+        async <T>(
+          method: string,
+          params: Record<string, unknown>,
+        ): Promise<Result<T, KoiError>> => {
+          if (method === "scratchpad.write") {
+            captured = params;
+            return { ok: true, value: { path: "p", generation: 1, sizeBytes: 1 } as T };
+          }
+          return { ok: true, value: {} as T };
+        },
+      ),
+    });
+
+    // CAS contract: expectedGeneration must reach Nexus so a stale
+    // writer gets CONFLICT instead of silently overwriting newer data.
+    await scratchpad.write({
+      path: scratchpadPath("guarded.txt"),
+      content: "v2",
+      expectedGeneration: 5,
+    });
+
+    expect(captured).not.toBeNull();
+    const params = captured as unknown as Record<string, unknown>;
+    const input = (params.input ?? params) as Record<string, unknown>;
+    // Surface the field through whichever envelope the client uses.
+    const merged = { ...params, ...input };
+    expect(merged.expectedGeneration).toBe(5);
+  });
+
   test("write rejects non-JSON-serializable metadata before crossing the RPC boundary", async () => {
     const { createNexusScratchpad } = await import("./index.js");
 

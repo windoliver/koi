@@ -37,28 +37,37 @@ export async function createNexusWorkspaceBackend(
   // backend directly.
   const client = createNexusWorkspaceBackendClient(config.transport, prefix);
 
-  // Optional hooks are opt-in via explicit `serverCapabilities`. The
-  // default is OFF: advertising these hooks against an older Nexus server
-  // that lacks the corresponding RPCs would make `attach()` fail (the
-  // workspace provider eagerly calls `findByAgentId` when present),
-  // turning a routine mixed-version rollout into a hard outage for
-  // workspace provisioning. Operators who know their server supports a
-  // hook flip its capability bit explicitly.
+  // Optional hooks default to ON because the workspace provider depends
+  // on `findByAgentId` (and the attestation hooks) to recover crash
+  // survivors after a restart. Hiding them by default would silently
+  // disable survivor discovery and push the provider into duplicate-
+  // allocation under `cleanupPolicy="never"`. Operators who know their
+  // Nexus server lacks a specific RPC opt that hook OUT explicitly via
+  // `serverCapabilities`. Per-call METHOD_NOT_FOUND from an older
+  // server still surfaces as a typed error to the caller — better a
+  // loud failure than a silent dispose-and-recreate.
   //
-  //   - serverCapabilities omitted → expose nothing optional.
-  //   - Hook listed `true` in serverCapabilities → expose.
-  //   - Hook listed `false` or absent in serverCapabilities → omit.
+  //   - serverCapabilities omitted → expose all hooks.
+  //   - Hook listed `false` in serverCapabilities → omit.
+  //   - Hook listed `true` (or absent) → expose.
   type OptionalHook =
     | "findByAgentId"
     | "attestSetupComplete"
     | "verifySetupComplete"
     | "invalidateSetupComplete"
     | "exists";
-  const exposeHook = (key: OptionalHook): boolean => config.serverCapabilities?.[key] === true;
+  const exposeHook = (key: OptionalHook): boolean => config.serverCapabilities?.[key] !== false;
 
   return {
     name: "workspace-nexus",
-    isSandboxed: false,
+    // Nexus-managed workspaces are durable, server-side resources
+    // backed by their own trust boundary — they are NOT in-process
+    // ephemeral state. Marking the backend sandboxed lets
+    // `createWorkspaceProvider()` reuse survivors after a restart
+    // instead of forcing dispose-and-recreate, which would tear down
+    // the very state that `cleanupPolicy="never"` is supposed to
+    // preserve.
+    isSandboxed: true,
     create: async (agentId: AgentId, resolved: ResolvedWorkspaceConfig) => {
       // create() does NOT fall back on a Nexus error: a transport failure is
       // ambiguous (Nexus may have committed the workspace and only lost the
