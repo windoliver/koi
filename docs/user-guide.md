@@ -158,4 +158,4 @@ middleware:
 - **Admin panel missing**: confirm you used `koi up` (not `koi start` without `--admin`)
 - **TUI can't find agent**: confirm admin is running on port 3100
 - **Nexus errors**: remove any explicit `nexus.url` / `NEXUS_URL` to fall back to local embed
-- **`bun install` fails at lefthook**: run `lefthook install --force`
+- **Manual `lefthook install` fails in a linked worktree**: run `lefthook install --force`
