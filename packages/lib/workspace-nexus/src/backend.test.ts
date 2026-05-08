@@ -164,10 +164,20 @@ describe("createNexusWorkspaceBackend", () => {
     });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
-    // Transient health failure on this Nexus-owned workspace must NOT change
-    // the routing for it or for any other workspace — disposal still goes
-    // to Nexus, the backend that actually owns it.
-    expect(await backend.isHealthy(created.value.id)).toBe(false);
+    // Transient transport failure on `workspace.health` must NOT collapse
+    // into `false`: the provider treats `!healthy` as authoritative
+    // permission to dispose. Throw so callers can distinguish "Nexus says
+    // unhealthy" (destructive cleanup) from "Nexus unreachable" (retry).
+    let caught: unknown;
+    try {
+      await backend.isHealthy(created.value.id);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+
+    // Disposal still hits Nexus — the throwing health check did not change
+    // routing for the workspace it owns.
     const disposed = await backend.dispose(created.value.id);
     expect(disposed.ok).toBe(true);
     expect(nexusDisposeCalls).toBe(1);
@@ -372,14 +382,14 @@ describe("createNexusWorkspaceBackend", () => {
     }
   });
 
-  test("findByAgentId is omitted when the fallback cannot replicate it (capability is honest)", async () => {
+  test("findByAgentId is exposed when Nexus supports it, even when the fallback lacks it", async () => {
     const { createNexusWorkspaceBackend } = await import("./index.js");
 
-    // Fallback is configured but lacks findByAgentId. We do not advertise the
-    // hook because callers (e.g. the workspace provider) treat method
-    // presence as a capability signal — a hook that throws once we degrade
-    // because the fallback can't honor it would be a contract break that
-    // turns a recoverable flow into a runtime failure.
+    // Gating exposure on fallback capability would silently disable Nexus
+    // crash-survivor discovery whenever a minimal fallback is configured,
+    // making the provider miss live Nexus survivors after a restart and
+    // create duplicate workspaces. Expose the Nexus capability; runtime
+    // failures fail closed at call time, not at construction.
     const backend = await createNexusWorkspaceBackend({
       fallback: createFallbackBackend(),
       transport: createHealthyTransport(
@@ -390,7 +400,7 @@ describe("createNexusWorkspaceBackend", () => {
       ),
     });
 
-    expect(backend.findByAgentId).toBeUndefined();
+    expect(backend.findByAgentId).toBeDefined();
   });
 
   test("a transient findByAgentId failure does not reroute later create() calls to the fallback", async () => {
@@ -551,9 +561,13 @@ describe("createNexusWorkspaceBackend", () => {
     expect(fallbackCreateCalls).toBe(0);
   });
 
-  test("attestation/invalidation hooks are omitted when the fallback cannot replicate them", async () => {
+  test("attestation/invalidation hooks are exposed when Nexus supports them regardless of fallback", async () => {
     const { createNexusWorkspaceBackend } = await import("./index.js");
 
+    // The fallback lacks these hooks, but Nexus is the authority and the
+    // provider needs them to attest setup completion of survivors. Hiding
+    // the capability would push the provider into recreating workspaces
+    // it could otherwise reuse.
     const backend = await createNexusWorkspaceBackend({
       fallback: createFallbackBackend(),
       transport: createHealthyTransport(
@@ -564,8 +578,8 @@ describe("createNexusWorkspaceBackend", () => {
       ),
     });
 
-    expect(backend.attestSetupComplete).toBeUndefined();
-    expect(backend.invalidateSetupComplete).toBeUndefined();
+    expect(backend.attestSetupComplete).toBeDefined();
+    expect(backend.invalidateSetupComplete).toBeDefined();
   });
 
   test("exposes optional hooks when no fallback is configured (Nexus is the sole authority)", async () => {

@@ -37,6 +37,13 @@ export async function createNexusScratchpad(
   const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const serverSupportsPagination = config.serverSupportsPagination ?? false;
 
+  // The up-front health probe is the ONLY failover boundary. Once we have
+  // returned the Nexus-routed component below, runtime RPC failures must
+  // NEVER swap the storage authority to the unrelated fallback: the two
+  // backends do not share state, so silently rerouting reads/writes after
+  // a transient blip would fork the source of truth — Nexus would still
+  // hold the real entries while callers see (and overwrite) an empty
+  // local store. Errors propagate to callers instead.
   if (config.transport.health !== undefined) {
     const health = await config.transport.health();
     if (!health.ok && config.fallback !== undefined) return config.fallback;
@@ -45,16 +52,8 @@ export async function createNexusScratchpad(
   const client = createNexusScratchpadClient(config.transport, prefix);
   const tracker = createChangeTracker(groupId);
 
-  // For each registered handler we track its current unsubscribe function. Pre-
-  // degrade it removes the handler from the local poll set; post-degrade it is
-  // replaced with the unsubscribe returned by `fallback.onChange()` so existing
-  // user-returned unsubscribers stay correct across the degrade boundary.
-  const subscriptions = new Map<ChangeHandler, () => void>();
   const subscribers = new Set<ChangeHandler>();
-
   const state = {
-    closed: false,
-    degraded: false,
     polling: false,
     timer: null as ReturnType<typeof setInterval> | null,
   };
@@ -66,70 +65,27 @@ export async function createNexusScratchpad(
     }
   }
 
-  function degradeToFallback(): void {
-    if (state.degraded) return;
-    state.degraded = true;
-    stopPolling();
-    if (config.fallback === undefined) {
-      // No fallback to hand off to. Mark the component closed so subscribers
-      // can be cleaned up; without a fallback there is nowhere left to deliver
-      // events from. Caller-provided handlers stay registered until they
-      // unsubscribe, but the polling timer is stopped so we do not silently
-      // hammer a broken server forever.
-      state.closed = true;
-      return;
-    }
-    // Hand active subscribers off to the fallback so existing change streams
-    // keep delivering events instead of silently going dark on degrade.
-    const fallback = config.fallback;
-    for (const handler of subscribers) {
-      const unsubscribe = fallback.onChange(handler);
-      subscriptions.set(handler, unsubscribe);
-    }
-    subscribers.clear();
-  }
-
   async function poll(): Promise<void> {
-    if (state.closed || state.degraded || state.polling) return;
+    if (state.polling) return;
     state.polling = true;
     try {
-      // Walk pages until the server reports no continuation cursor. Per the
-      // `NexusScratchpadListResponse` contract, an absent `nextCursor` means the
-      // snapshot is exhaustive — even when a page lands on exactly `pageSize`.
-      // Once the loop drains, the accumulated snapshot is complete and safe to
-      // diff for delete synthesis.
+      // Walk pages until the server reports no continuation cursor. A
+      // failing/misbehaving server is treated as a missed tick: we stop
+      // diffing for delete synthesis this round and try again next
+      // interval, rather than tearing down the storage authority.
       const accumulated: ScratchpadEntrySummary[] = [];
       let cursor: string | undefined;
       let lastPageSize = 0;
       const seenCursors = new Set<string>();
       let pageCount = 0;
       do {
-        if (pageCount >= MAX_PAGES_PER_DRAIN) {
-          // Server is handing out more pages than we will ever accept. Treat
-          // this as a transport failure so we degrade cleanly instead of
-          // wedging the poller.
-          degradeToFallback();
-          return;
-        }
-        if (cursor !== undefined && seenCursors.has(cursor)) {
-          // Repeated cursor — server is not advancing. Bail to avoid an
-          // infinite loop.
-          degradeToFallback();
-          return;
-        }
+        if (pageCount >= MAX_PAGES_PER_DRAIN) return;
+        if (cursor !== undefined && seenCursors.has(cursor)) return;
         if (cursor !== undefined) seenCursors.add(cursor);
         const listed = await client.list(groupId, undefined, pageSize, cursor);
-        if (!listed.ok) {
-          degradeToFallback();
-          return;
-        }
+        if (!listed.ok) return;
         const summaries = mapSummaries(listed.value);
-        if (summaries.length === 0 && listed.value.nextCursor !== undefined) {
-          // Zero-progress page with another cursor — guard against an empty
-          // pagination loop.
-          degradeToFallback();
-          return;
-        }
+        if (summaries.length === 0 && listed.value.nextCursor !== undefined) return;
         accumulated.push(...summaries);
         cursor = listed.value.nextCursor;
         lastPageSize = summaries.length;
@@ -139,10 +95,8 @@ export async function createNexusScratchpad(
       // Treat the snapshot as exhaustive only when we either (a) have an
       // explicit capability declaration that the server honors `nextCursor`,
       // or (b) the terminal page came back below `pageSize` so it cannot
-      // possibly be hiding more entries on a later page. This is the safe
-      // default for older Nexus servers that ignore the cursor field — we
-      // skip delete synthesis rather than risk announcing false deletions
-      // for paths that simply live beyond the first page.
+      // possibly be hiding more entries on a later page. Default-off, so
+      // legacy servers don't trigger spurious deletion events.
       const complete = serverSupportsPagination || lastPageSize < pageSize;
       for (const event of tracker.nextEvents(accumulated, { complete })) {
         for (const handler of subscribers) handler(event);
@@ -153,7 +107,7 @@ export async function createNexusScratchpad(
   }
 
   function ensurePolling(): void {
-    if (state.closed || state.degraded || state.timer !== null || subscribers.size === 0) return;
+    if (state.timer !== null || subscribers.size === 0) return;
     state.timer = setInterval(() => {
       void poll();
     }, pollIntervalMs);
@@ -163,10 +117,6 @@ export async function createNexusScratchpad(
     write: async (
       input: ScratchpadWriteInput,
     ): Promise<Result<ScratchpadWriteResult, KoiError>> => {
-      if (state.degraded && config.fallback !== undefined) {
-        return await config.fallback.write(input);
-      }
-
       const result = await client.write(groupId, authorId, input);
       if (result.ok) {
         return {
@@ -178,32 +128,14 @@ export async function createNexusScratchpad(
           },
         };
       }
-      if (config.fallback !== undefined) {
-        degradeToFallback();
-        return await config.fallback.write(input);
-      }
       return result;
     },
     read: async (path: ScratchpadPath) => {
-      if (state.degraded && config.fallback !== undefined) {
-        return await config.fallback.read(path);
-      }
-
       const result = await client.read(groupId, path as string);
-      if (result.ok) {
-        return { ok: true, value: mapEntry(result.value.entry) };
-      }
-      if (config.fallback !== undefined) {
-        degradeToFallback();
-        return await config.fallback.read(path);
-      }
+      if (result.ok) return { ok: true, value: mapEntry(result.value.entry) };
       return result;
     },
     list: async (filter?: ScratchpadFilter) => {
-      if (state.degraded && config.fallback !== undefined) {
-        return await config.fallback.list(filter);
-      }
-
       // Drain nextCursor pages so callers always see a complete snapshot.
       // `ScratchpadComponent.list` exposes no pagination surface, so partial
       // results would silently truncate user data. If the caller passes an
@@ -226,13 +158,10 @@ export async function createNexusScratchpad(
         if (cursor !== undefined) seenCursors.add(cursor);
         const result = await client.list(groupId, filter, limit, cursor);
         if (!result.ok) {
-          if (config.fallback !== undefined) {
-            degradeToFallback();
-            return await config.fallback.list(filter);
-          }
-          // No fallback: surface the transport failure. Returning `[]` would
-          // collapse a Nexus outage into a legitimate empty state and let
-          // callers perform destructive cleanup based on a false absence.
+          // Surface the transport failure. Returning `[]` (or substituting
+          // an unrelated fallback) would collapse a Nexus outage into a
+          // legitimate empty state and let callers perform destructive
+          // cleanup based on a false absence.
           throw new Error("Nexus scratchpad list failed", { cause: result.error });
         }
         const summaries = mapSummaries(result.value);
@@ -251,51 +180,19 @@ export async function createNexusScratchpad(
       return accumulated;
     },
     delete: async (path: ScratchpadPath) => {
-      if (state.degraded && config.fallback !== undefined) {
-        return await config.fallback.delete(path);
-      }
-
       const result = await client.delete(groupId, authorId, path as string);
-      if (result.ok) return result;
-      if (config.fallback !== undefined) {
-        degradeToFallback();
-        return await config.fallback.delete(path);
-      }
       return result;
     },
     flush: async () => {
-      if (state.degraded && config.fallback !== undefined) {
-        await config.fallback.flush();
-        return;
-      }
       tracker.clear();
     },
     onChange: (handler) => {
-      if (state.degraded && config.fallback !== undefined) {
-        const unsubscribe = config.fallback.onChange(handler);
-        subscriptions.set(handler, unsubscribe);
-        return () => {
-          subscriptions.get(handler)?.();
-          subscriptions.delete(handler);
-        };
-      }
-
       subscribers.add(handler);
-      const localUnsubscribe = (): void => {
-        subscribers.delete(handler);
-        if (subscribers.size === 0) {
-          stopPolling();
-        }
-      };
-      subscriptions.set(handler, localUnsubscribe);
       ensurePolling();
       void poll();
-
       return () => {
-        // Resolve at call time: if degrade happened in between, this calls the
-        // fallback's unsubscribe; otherwise it removes from the local set.
-        subscriptions.get(handler)?.();
-        subscriptions.delete(handler);
+        subscribers.delete(handler);
+        if (subscribers.size === 0) stopPolling();
       };
     },
   };

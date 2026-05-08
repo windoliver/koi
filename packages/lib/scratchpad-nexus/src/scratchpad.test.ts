@@ -159,35 +159,49 @@ describe("createNexusScratchpad", () => {
     expect(result.ok).toBe(true);
   });
 
-  test("runtime failure degrades permanently to fallback", async () => {
+  test("runtime failure does NOT swap the storage authority to the fallback", async () => {
     const { createNexusScratchpad } = await import("./index.js");
 
-    let shouldFail = true;
-    const fallback = createFallbackScratchpad();
+    // The two backends do not share state, so silently rerouting reads/
+    // writes to fallback after a transient blip would fork the source of
+    // truth — Nexus would still hold the real entries while callers see
+    // an empty local store. Errors must propagate; fallback is reserved
+    // for the up-front health probe.
+    let nexusWriteCalls = 0;
+    let fallbackWriteCalls = 0;
+    const fallback: ScratchpadComponent = {
+      ...createFallbackScratchpad(),
+      write: async () => {
+        fallbackWriteCalls += 1;
+        return {
+          ok: true,
+          value: { path: scratchpadPath("ignored.txt"), generation: 1, sizeBytes: 2 },
+        };
+      },
+    };
     const scratchpad = await createNexusScratchpad({
       groupId: agentGroupId("group-a"),
       authorId: agentId("agent-a"),
       fallback,
       transport: createHealthyTransport(async <T>(method: string): Promise<Result<T, KoiError>> => {
-        if (method === "scratchpad.write" && shouldFail) {
-          shouldFail = false;
-          return { ok: false, error: { code: "EXTERNAL", message: "down", retryable: false } };
+        if (method === "scratchpad.write") {
+          nexusWriteCalls += 1;
+          if (nexusWriteCalls === 1) {
+            return { ok: false, error: { code: "EXTERNAL", message: "blip", retryable: true } };
+          }
+          return { ok: true, value: { path: "b.txt", generation: 1, sizeBytes: 2 } as T };
         }
-        return {
-          ok: true,
-          value: { path: "ignored.txt", generation: 1, sizeBytes: 2 } as T,
-        };
+        return { ok: true, value: {} as T };
       }),
     });
 
     const first = await scratchpad.write({ path: scratchpadPath("a.txt"), content: "aa" });
-    expect(first.ok).toBe(true);
+    expect(first.ok).toBe(false);
 
     const second = await scratchpad.write({ path: scratchpadPath("b.txt"), content: "bb" });
     expect(second.ok).toBe(true);
-
-    const listed = await scratchpad.list();
-    expect(listed.some((entry) => entry.path === scratchpadPath("b.txt"))).toBe(true);
+    expect(nexusWriteCalls).toBe(2);
+    expect(fallbackWriteCalls).toBe(0);
   });
 
   test("onChange emits unseen writes once", async () => {
@@ -381,11 +395,13 @@ describe("createChangeTracker", () => {
     expect(deleted).toContain("b.txt");
   });
 
-  test("hands existing onChange subscribers off to the fallback when polling degrades", async () => {
+  test("polling failures do NOT swap subscribers onto the fallback (no hand-off)", async () => {
     const { createNexusScratchpad } = await import("./index.js");
 
-    // Fallback whose onChange actively fires events so we can prove the
-    // subscription was rebound, not silently dropped.
+    // Reroute would fork the source of truth: Nexus may still be holding
+    // the real entries while the fallback is empty. The poll just misses
+    // a tick and tries again next interval; subscribers stay bound to
+    // Nexus and resume delivery once Nexus recovers.
     const fallbackHandlers = new Set<(event: ScratchpadChangeEvent) => void>();
     const baseFallback = createFallbackScratchpad();
     const fallback = {
@@ -398,6 +414,7 @@ describe("createChangeTracker", () => {
       },
     };
 
+    let listCalls = 0;
     const scratchpad = await createNexusScratchpad({
       groupId: agentGroupId("group-a"),
       authorId: agentId("agent-a"),
@@ -410,6 +427,7 @@ describe("createChangeTracker", () => {
             error: { code: "EXTERNAL", message: "unexpected", retryable: false },
           };
         }
+        listCalls += 1;
         return {
           ok: false,
           error: { code: "EXTERNAL", message: "list down", retryable: false },
@@ -419,27 +437,15 @@ describe("createChangeTracker", () => {
 
     const events: ScratchpadChangeEvent[] = [];
     const unsubscribe = scratchpad.onChange((event) => events.push(event));
-    // Wait for the failing poll to fire and degrade.
     await Bun.sleep(40);
 
-    expect(fallbackHandlers.size).toBe(1);
-
-    // Simulate the fallback emitting a change — the original handler must receive it.
-    for (const handler of fallbackHandlers) {
-      handler({
-        kind: "written",
-        path: scratchpadPath("after.txt"),
-        generation: 1,
-        authorId: agentId("agent-a"),
-        groupId: agentGroupId("group-a"),
-        timestamp: "2026-05-07T00:00:00.000Z",
-      });
-    }
-    expect(events).toHaveLength(1);
-    expect(events[0]?.path).toBe(scratchpadPath("after.txt"));
+    // Subscriber stays on Nexus; fallback was never asked to take over.
+    expect(fallbackHandlers.size).toBe(0);
+    // Polls keep firing — the failing tick is a missed round, not a state change.
+    expect(listCalls).toBeGreaterThan(1);
+    expect(events).toHaveLength(0);
 
     unsubscribe();
-    expect(fallbackHandlers.size).toBe(0);
   });
 
   test("does not interleave overlapping polls when a poll outruns the interval", async () => {
@@ -696,12 +702,13 @@ describe("createChangeTracker", () => {
     expect((caught as Error).message).toMatch(/repeating pagination cursor/);
   });
 
-  test("polling stops the timer when pagination is broken and no fallback is configured", async () => {
+  test("polling treats a broken pagination round as a missed tick (does not wedge or fork state)", async () => {
     const { createNexusScratchpad } = await import("./index.js");
 
-    // No fallback. A repeating-cursor server would otherwise wedge polling
-    // forever; the guards must stop the timer and surface the failure rather
-    // than silently looping over a broken endpoint.
+    // Per-poll guards (repeating cursor, max pages) bound a single round so
+    // a misbehaving server cannot wedge the loop, but the timer keeps
+    // running so polling resumes once the server recovers — a transient
+    // pagination glitch must not permanently disable change delivery.
     let listCalls = 0;
     const scratchpad = await createNexusScratchpad({
       groupId: agentGroupId("group-a"),
@@ -736,14 +743,19 @@ describe("createChangeTracker", () => {
       }),
     });
 
-    const unsubscribe = scratchpad.onChange(() => {});
+    const events: ScratchpadChangeEvent[] = [];
+    const unsubscribe = scratchpad.onChange((event) => events.push(event));
     await Bun.sleep(40);
     const callsAfterFirstWindow = listCalls;
     await Bun.sleep(40);
     unsubscribe();
 
-    // After the guard trips and the timer is stopped, list-call count must
-    // not keep climbing.
-    expect(listCalls).toBe(callsAfterFirstWindow);
+    // Polls keep firing across the broken pagination — the guard prevents
+    // a single round from looping, but the timer is preserved so recovery
+    // is automatic. Crucially, no events were delivered: a broken
+    // pagination round must not be mistaken for an authoritative snapshot.
+    expect(callsAfterFirstWindow).toBeGreaterThan(0);
+    expect(listCalls).toBeGreaterThan(callsAfterFirstWindow);
+    expect(events).toHaveLength(0);
   });
 });

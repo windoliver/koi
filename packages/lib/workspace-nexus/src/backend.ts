@@ -46,30 +46,28 @@ export async function createNexusWorkspaceBackend(
 
   const client = createNexusWorkspaceBackendClient(config.transport, prefix);
 
-  // Optional hooks are exposed only when BOTH the connected Nexus server is
-  // known to implement them AND any configured fallback can also honor them.
-  // Callers (e.g. the workspace provider) treat method presence as a
-  // capability signal — advertising a hook the server cannot answer would
-  // turn attach/cleanup into a hard failure against an older or partially
-  // upgraded Nexus server, while advertising one a fallback cannot honor
-  // would break recovery flows after the up-front health-probe degrade.
-  // Policy:
+  // Optional hooks are exposed when the connected Nexus server is known to
+  // implement them, regardless of whether any configured fallback also
+  // implements them. Gating exposure on fallback capability would silently
+  // disable Nexus crash-survivor discovery (`findByAgentId`) and
+  // attestation hooks whenever a minimal fallback is configured, making
+  // the provider miss live Nexus survivors after a restart and create
+  // duplicate workspaces. If a hook later fails at runtime we fail closed
+  // on that operation — better a loud per-call error than hiding the
+  // capability up front.
+  //
   //   - serverCapabilities omitted → assume a fully-upgraded server.
   //   - Hook listed as `false` (or absent) in serverCapabilities → omit.
-  //   - Fallback configured AND lacks the hook → omit.
   type OptionalHook =
     | "findByAgentId"
     | "attestSetupComplete"
     | "verifySetupComplete"
     | "invalidateSetupComplete"
     | "exists";
-  const serverSupports = (key: OptionalHook): boolean => {
+  const exposeHook = (key: OptionalHook): boolean => {
     if (config.serverCapabilities === undefined) return true;
     return config.serverCapabilities[key] === true;
   };
-  const fallbackHas = (key: OptionalHook): boolean =>
-    config.fallback === undefined || config.fallback[key] !== undefined;
-  const exposeHook = (key: OptionalHook): boolean => serverSupports(key) && fallbackHas(key);
 
   return {
     name: "workspace-nexus",
@@ -86,9 +84,18 @@ export async function createNexusWorkspaceBackend(
     },
     dispose: async (wsId: WorkspaceId) => client.dispose(wsId),
     isHealthy: async (wsId: WorkspaceId) => {
+      // Distinguish "Nexus says unhealthy" from "transport failed" — the
+      // workspace provider treats a `false` return as authoritative
+      // permission to dispose the survivor, so collapsing a transient
+      // transport failure into `false` would let a temporary Nexus outage
+      // delete a perfectly valid workspace during crash recovery. Throw on
+      // transport errors so callers can treat them as transient and skip
+      // destructive cleanup until Nexus is reachable again.
       const result = await client.health(wsId);
       if (result.ok) return result.value.healthy;
-      return false;
+      throw new Error(`Workspace backend health check failed for ${wsId}`, {
+        cause: result.error,
+      });
     },
     ...(exposeHook("findByAgentId")
       ? {
