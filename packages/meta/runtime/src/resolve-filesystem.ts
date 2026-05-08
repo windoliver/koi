@@ -579,6 +579,19 @@ export async function resolveFileSystemAsync(
       // (explicit empty mountPoint) or set an explicit mountPoint can we
       // safely allow runtime mutations.
       mutationsSupported = options.mountPoint !== undefined || transportMounts.length !== 1;
+      // Policy gate: a session whose filesystem operations are read-only
+      // must not be able to add or remove mounts, since /mount can attach
+      // new connectors that widen what data becomes readable through
+      // approved paths and /unmount can tear down a tenant's mounts.
+      // Topology mutation is not exempt from the session's write
+      // restrictions. When `operations` is set and excludes "write" and
+      // "edit", refuse runtime mount mutations.
+      if (operations !== undefined) {
+        const writable = operations.includes("write") || operations.includes("edit");
+        if (!writable) {
+          mutationsSupported = false;
+        }
+      }
       // Defense-in-depth: if any scope (root or glob-allow) is configured
       // but the resolver cannot derive at least one concrete protected
       // namespace prefix for it, the addMount/removeMount guards have
@@ -1098,10 +1111,47 @@ export async function resolveFileSystemAsync(
           wrapped.addMount = (uri: string, at?: string | undefined) =>
             serializeMutation(() => addImpl(uri, at));
         }
+        // Scope-filter listMounts and describeMount in the TS wrapper.
+        // The bridge's _list_mounts_scoped relies on a Python-side scoped
+        // wrapper that does not exist in this build (the bridge constructs
+        // `fs` from raw nexus.fs.mount), so the ONLY enforcement of TS-side
+        // scope across these RPCs lives here. Without this wrapper a
+        // scoped session could enumerate every live mount via listMounts
+        // or fetch README content for sibling mounts via describeMount.
+        const innerListMounts = transport.listMounts;
+        if (innerListMounts !== undefined && protectedRoots.length > 0) {
+          wrapped.listMounts = async (): Promise<
+            Result<readonly string[], import("@koi/core").KoiError>
+          > => {
+            const raw = await innerListMounts();
+            if (!raw.ok) return raw;
+            return { ok: true, value: raw.value.filter(isPathVisibleInScope) };
+          };
+        }
+        const innerDescribeMount = transport.describeMount;
+        if (innerDescribeMount !== undefined && protectedRoots.length > 0) {
+          wrapped.describeMount = async (
+            path: string,
+          ): Promise<Result<MountDescription, import("@koi/core").KoiError>> => {
+            if (!isPathVisibleInScope(path)) {
+              return {
+                ok: false,
+                error: {
+                  code: "VALIDATION",
+                  message: `Cannot describe mount ${path}: path is outside this session's scope.`,
+                  retryable: RETRYABLE_DEFAULTS.VALIDATION,
+                },
+              };
+            }
+            return innerDescribeMount(path);
+          };
+        }
         Object.defineProperty(wrapped, "mounts", {
           enumerable: true,
           get(): readonly string[] {
-            return transport.mounts ?? [];
+            const raw = transport.mounts ?? [];
+            if (protectedRoots.length === 0) return raw;
+            return raw.filter(isPathVisibleInScope);
           },
         });
         return wrapped as unknown as import("@koi/fs-nexus").NexusTransport;
