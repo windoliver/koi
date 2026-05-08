@@ -595,12 +595,45 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     const adapterHasTerminals = rawAdapter.terminals !== undefined;
     const baseWithAutoHarness: readonly KoiMiddleware[] = (() => {
       if (autoHarnessStack === undefined) return baseWithForgeDemand;
-      // Drop any caller-supplied `policy-cache` whether or not we install our
-      // own — leaving the caller's instance in the chain would dispatch
-      // against a cache that auto-harness's `register()` never populates.
-      const withoutCallerPolicyCache = baseWithForgeDemand.filter(
-        (mw) => mw.name !== "policy-cache",
-      );
+      // Fail closed when the caller already composed a `policy-cache` instance:
+      // we cannot migrate its verified entries into the stack-owned cache, so
+      // silently dropping it would discard live allow/deny enforcement (R3
+      // round 3 finding). Hosts that want auto-harness must remove their own
+      // policy-cache and rely on the stack-owned one.
+      const callerHasPolicyCache = baseWithForgeDemand.some((mw) => mw.name === "policy-cache");
+      if (callerHasPolicyCache) {
+        throw new Error(
+          "createRuntime: cannot enable `autoHarness` while a caller-supplied " +
+            "`policy-cache` middleware is present in the chain. The auto-harness " +
+            "stack owns its own policy-cache; we cannot migrate verified entries " +
+            "from another instance, and dropping it would silently discard " +
+            "live allow/deny policies. Remove the caller-side policy-cache and " +
+            "let auto-harness install the stack-owned cache.",
+        );
+      }
+      // Auto-harness without a `policyVerifier` produces a live cache that is
+      // never populated (register() is skipped without a verifier). The chain
+      // still installs the middleware, so successful synthesis cannot
+      // short-circuit subsequent traffic — hot failures keep re-triggering
+      // synthesis instead of hitting the cache. Always require an explicit
+      // verifier when autoHarness is enabled — even on stub adapters, the
+      // stack handle is exposed to downstream composers (CLI/L3) that
+      // install the middleware in their real chain.
+      if (config.autoHarness?.policyVerifier === undefined) {
+        throw new Error(
+          "createRuntime: `autoHarness.policyVerifier` is required when " +
+            "autoHarness is enabled. Without a verifier the stack-owned " +
+            "`policy-cache` middleware is composed into the chain but cannot " +
+            "be populated — successful auto-harness deployments would never " +
+            "become cache hits, and the same failing traffic would keep " +
+            "re-triggering synthesis. Supply " +
+            "`autoHarness.policyVerifier` (e.g., a function backed by your " +
+            "host's verified-set or a permissive verifier in test).",
+        );
+      }
+      // No caller-supplied `policy-cache` to drop; the stack-owned instance
+      // is the sole source of truth.
+      const withoutCallerPolicyCache = baseWithForgeDemand;
       // Only compose the stack-owned policy-cache when the adapter can carry
       // intercept-phase middleware. Stub adapters (test-only) skip
       // composition; the stack handle remains usable out-of-band.

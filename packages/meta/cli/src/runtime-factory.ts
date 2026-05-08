@@ -4072,14 +4072,28 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           })
         : undefined;
     // When auto-harness is configured the stack-owned policy-cache is the
-    // single source of truth for both register() and live dispatch. Drop any
-    // caller-supplied `policy-cache` from the host-level chain — leaving it
-    // installed would dispatch against an instance that auto-harness's
-    // register() never populates, silently masking promoted policies.
-    const dropCallerPolicyCache = (mws: readonly KoiMiddleware[]): readonly KoiMiddleware[] =>
-      sharedRuntimeHandle?.autoHarness !== undefined
-        ? mws.filter((mw) => mw.name !== "policy-cache")
-        : mws;
+    // single source of truth for both register() and live dispatch. Refuse
+    // to compose a caller-supplied `policy-cache` from any host source: we
+    // cannot migrate verified entries from another instance into the stack-
+    // owned cache, and silently dropping it would discard live allow/deny
+    // policies (R3 round 3 finding). Hosts that want auto-harness must
+    // remove their own policy-cache from preset/extra middleware.
+    const rejectCallerPolicyCache = (
+      mws: readonly KoiMiddleware[],
+      source: string,
+    ): readonly KoiMiddleware[] => {
+      if (sharedRuntimeHandle?.autoHarness === undefined) return mws;
+      if (mws.some((mw) => mw.name === "policy-cache")) {
+        throw new Error(
+          `auto-harness is enabled, but ${source} contributed a \`policy-cache\` ` +
+            "middleware. The auto-harness stack owns its own policy-cache; " +
+            "we cannot migrate verified entries from another instance, and " +
+            "dropping it would silently discard live allow/deny policies. " +
+            `Remove the policy-cache from ${source} or disable autoHarness.`,
+        );
+      }
+      return mws;
+    };
 
     // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
     // The ordering (outermost → innermost) is defined in one place —
@@ -4111,7 +4125,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // slot and is composed strictly INSIDE the security core
       // layers, regardless of array position here.
       presetExtras: [
-        ...dropCallerPolicyCache(stackContribution.middleware),
+        ...rejectCallerPolicyCache(stackContribution.middleware, "preset stack contribution"),
         // Splice the shared runtime's forge-demand detector into the live
         // CLI chain so real demand traffic actually flows into auto-harness.
         // Without this, the detector lives only inside sharedRuntimeHandle
@@ -4125,7 +4139,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         ...auditPresetExtras,
         ...(governanceMw !== undefined ? [governanceMw] : []),
         ...(config.ace !== undefined ? [createAceMiddleware(config.ace)] : []),
-        ...dropCallerPolicyCache(config.extraMiddleware ?? []),
+        ...rejectCallerPolicyCache(config.extraMiddleware ?? [], "config.extraMiddleware"),
       ],
       manifestMiddleware: zoneBMiddleware,
       ...(config.skillInjector !== undefined ? { skillInjector: config.skillInjector } : {}),

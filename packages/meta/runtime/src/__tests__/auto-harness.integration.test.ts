@@ -16,29 +16,41 @@ const makeDemandSignal = (id: string): ForgeDemandSignal =>
     emittedAt: 1_700_000_000_000,
   }) as ForgeDemandSignal;
 
+const permissiveVerifier = (() => async () => ({ ok: true as const, value: undefined })) as never;
+
 describe("createRuntime autoHarness wiring", () => {
-  test("replaces caller-supplied policy-cache with stack-owned instance (single source of truth)", () => {
+  test("rejects caller-supplied policy-cache when autoHarness is enabled", () => {
     const providedPolicyCache = { name: "policy-cache" } as never;
 
-    const runtime = createRuntime({
-      middleware: [providedPolicyCache],
-      requestApproval: async () => ({ kind: "allow" }),
-      autoHarness: {
-        forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
-        generate: async () => "candidate-code",
-        verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-0" } as never }),
-        evaluatePolicy: async () => ({ ok: true, action: "allow" }),
-        deployCandidate: async () => ({ ok: true }),
-      },
-    });
+    expect(() =>
+      createRuntime({
+        middleware: [providedPolicyCache],
+        requestApproval: async () => ({ kind: "allow" }),
+        autoHarness: {
+          forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+          policyVerifier: permissiveVerifier,
+          generate: async () => "candidate-code",
+          verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-0" } as never }),
+          evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+          deployCandidate: async () => ({ ok: true }),
+        },
+      }),
+    ).toThrow(/cannot enable `autoHarness`.*caller-supplied/);
+  });
 
-    // Caller's policy-cache is dropped from the live chain — the auto-harness
-    // stack's own cache is the single source of truth, so registrations and
-    // dispatch always agree. (Stub adapters skip live composition; the stack
-    // middleware reference is still exposed via runtime.autoHarness.)
-    expect(runtime.middleware).not.toContain(providedPolicyCache);
-    expect(runtime.autoHarness).toBeDefined();
-    expect(runtime.autoHarness?.middleware).not.toBe(providedPolicyCache);
+  test("rejects autoHarness without policyVerifier (cache cannot be populated)", () => {
+    expect(() =>
+      createRuntime({
+        requestApproval: async () => ({ kind: "allow" }),
+        autoHarness: {
+          forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+          generate: async () => "candidate-code",
+          verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-x" } as never }),
+          evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+          deployCandidate: async () => ({ ok: true }),
+        },
+      }),
+    ).toThrow(/`autoHarness\.policyVerifier` is required/);
   });
 
   test("exposes the autoHarness handle on stub adapters without composing intercept middleware", () => {
@@ -51,6 +63,7 @@ describe("createRuntime autoHarness wiring", () => {
       requestApproval: async () => ({ kind: "allow" }),
       autoHarness: {
         forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+        policyVerifier: permissiveVerifier,
         generate: async () => "candidate-code",
         verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-1" } as never }),
         evaluatePolicy: async () => ({ ok: true, action: "allow" }),
@@ -69,6 +82,7 @@ describe("createRuntime autoHarness wiring", () => {
       requestApproval: async () => ({ kind: "deny", reason: "no" }),
       autoHarness: {
         forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
+        policyVerifier: permissiveVerifier,
         generate: async () => "candidate-code",
         verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-2" } as never }),
         evaluatePolicy: async () => ({ ok: true, action: "allow" }),
