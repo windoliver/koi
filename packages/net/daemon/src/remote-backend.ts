@@ -106,6 +106,17 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
       }
 
       const previous = workers.get(request.workerId);
+      if (previous !== undefined && previous.alive) {
+        const term = await transport.call<void>(method("terminate"), {
+          workerId: request.workerId,
+          reason: "respawn",
+        });
+        if (!term.ok && term.error.code !== "NOT_FOUND") {
+          return term as Result<WorkerHandle, KoiError>;
+        }
+        previous.terminatedIntentionally = true;
+        markRemoteExited(request.workerId, previous, "terminated");
+      }
 
       const result = await transport.call<unknown>(method("spawn"), {
         workerId: request.workerId,
@@ -181,22 +192,32 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
       const state = workers.get(id);
       const result = await transport.call<void>(method("terminate"), { workerId: id, reason });
       if (!result.ok && result.error.code === "NOT_FOUND") {
-        if (state !== undefined) state.terminatedIntentionally = true;
-        if (workers.get(id) === state) workers.delete(id);
+        if (state !== undefined) {
+          state.terminatedIntentionally = true;
+          markRemoteExited(id, state, "terminated");
+        }
         return { ok: true, value: undefined };
       }
-      if (result.ok && state !== undefined) state.terminatedIntentionally = true;
+      if (result.ok && state !== undefined) {
+        state.terminatedIntentionally = true;
+        markRemoteExited(id, state, "terminated");
+      }
       return result;
     },
     kill: async (id) => {
       const state = workers.get(id);
       const result = await transport.call<void>(method("kill"), { workerId: id });
       if (!result.ok && result.error.code === "NOT_FOUND") {
-        if (state !== undefined) state.terminatedIntentionally = true;
-        if (workers.get(id) === state) workers.delete(id);
+        if (state !== undefined) {
+          state.terminatedIntentionally = true;
+          markRemoteExited(id, state, "terminated");
+        }
         return { ok: true, value: undefined };
       }
-      if (result.ok && state !== undefined) state.terminatedIntentionally = true;
+      if (result.ok && state !== undefined) {
+        state.terminatedIntentionally = true;
+        markRemoteExited(id, state, "terminated");
+      }
       return result;
     },
     isAlive: async (id) => {
@@ -377,6 +398,25 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
     state.terminalDelivered = true;
     if (state.pruneTimer !== undefined) clearTimeout(state.pruneTimer);
     if (workers.get(id) === state) workers.delete(id);
+  }
+
+  function markRemoteExited(
+    id: WorkerId,
+    state: RemoteWorkerState,
+    processState: ProcessState,
+  ): void {
+    if (!state.alive) return;
+    const hasTerminal = state.events.some(isTerminalEvent);
+    if (!hasTerminal) {
+      emit(id, state, {
+        kind: "exited",
+        workerId: id,
+        at: now(),
+        code: 0,
+        state: processState,
+      });
+    }
+    state.alive = false;
   }
 }
 

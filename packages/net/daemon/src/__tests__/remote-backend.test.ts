@@ -205,6 +205,7 @@ describe("remote backend", () => {
       }
       if (method === "workers.status") return { ok: true, value: { alive: true } };
       if (method === "workers.probe") return { ok: true, value: true };
+      if (method === "workers.terminate") return { ok: true, value: undefined };
       throw new Error(`unexpected method ${method}`);
     });
 
@@ -242,7 +243,7 @@ describe("remote backend", () => {
       firstWatch,
       new Promise((_resolve, reject) => setTimeout(() => reject(new Error("timeout")), 1000)),
     ]);
-    expect(firstKinds).toEqual(["started"]);
+    expect(firstKinds).toEqual(["started", "exited"]);
 
     const secondKinds: string[] = [];
     for await (const ev of backend.watch(id)) {
