@@ -80,7 +80,7 @@ function setupMocks() {
         stackStopSignals.push("health-stop");
       },
     };
-  }) as typeof Bun.serve;
+  }) as unknown as typeof Bun.serve;
 
   return {
     deps: {
