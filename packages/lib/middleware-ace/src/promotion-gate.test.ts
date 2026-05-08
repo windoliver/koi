@@ -92,13 +92,17 @@ const structuredPlaybook: StructuredPlaybook = {
 
 function createStructuredPlaybook(overrides: Partial<StructuredPlaybook> = {}): StructuredPlaybook {
   const cloned = structuredClone(structuredPlaybook) as StructuredPlaybook;
-  return {
+  const merged: StructuredPlaybook = {
     ...cloned,
     ...overrides,
     sections: overrides.sections ?? cloned.sections,
     tags: overrides.tags ?? cloned.tags,
-    provenance: overrides.provenance ?? cloned.provenance,
   };
+  const provenance = overrides.provenance ?? cloned.provenance;
+  if (provenance !== undefined) {
+    return { ...merged, provenance };
+  }
+  return merged;
 }
 
 function createStructuredStore(
