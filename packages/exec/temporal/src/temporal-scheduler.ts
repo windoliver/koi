@@ -29,6 +29,7 @@ import type {
   TaskRunRecord,
   TaskScheduler,
 } from "@koi/core";
+import { sessionId } from "@koi/core";
 import type { AgentWorkflowConfig, IncomingMessage, ScheduledInputPayload } from "./types.js";
 import {
   SCHEDULED_INPUT_SIGNAL_NAME,
@@ -1252,7 +1253,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
             args: [
               {
                 agentId,
-                sessionId: id,
+                sessionId: sessionId(id),
                 stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
                 initialMessages: messages,
                 ...(snapshotInput.maxStopRetries !== undefined
@@ -1798,7 +1799,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         // the input after schedule() is called or a client wrapper serializes lazily.
         const spawnArgs: AgentWorkflowConfig = {
           agentId,
-          sessionId: id,
+          sessionId: sessionId(id),
           stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
           initialScheduledInput: snapshotPayload,
           ...(snapshotPayload.maxStopRetries !== undefined
