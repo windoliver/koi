@@ -33,7 +33,16 @@ describe("activity factories", () => {
     });
 
     const result = await activities.runRetriedOperation({ operation: "runAgentTurn", payload: {} });
-    expect(result.kind).toBe("failed");
+    expect(result).toEqual({ kind: "failed", error: "boom" });
+  });
+
+  test("retry activity returns serializable success results", async () => {
+    const activities = createRetryActivities({
+      runOperation: async () => "ok",
+    });
+
+    const result = await activities.runRetriedOperation({ operation: "runScheduledTask", payload: {} });
+    expect(result).toEqual({ kind: "succeeded", value: "ok" });
   });
 
   test("scheduled task activity returns the built execution", async () => {
