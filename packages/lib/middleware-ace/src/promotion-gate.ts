@@ -292,11 +292,19 @@ export async function commitPromotion(
     // Reject path is audit-only: do NOT require current.version === baseVersion.
     // If a concurrent promotion advanced the head after this proposal was
     // created, we still want a durable reject evaluation against the existing
-    // proposal so the audit log explains every outcome. recordProposal is
-    // idempotent on byte-identical retries (and sqlite skips its baseVersion
-    // FK check on idempotent re-inserts), so calling it here is safe whether
-    // the caller already wrote it or not.
-    await deps.proposalStore.recordProposal(proposal);
+    // proposal so the audit log explains every outcome.
+    //
+    // Real proposal stores reject FRESH inserts whose baseVersion no longer
+    // matches the live head (sqlite checks this after the FK insert; nexus
+    // checks before). To stay safe under concurrency, only call
+    // recordProposal when the proposal is not already persisted — that way an
+    // already-stored proposal keeps its existing record and a stale-but-never-
+    // recorded proposal surfaces a clear, distinct error instead of silently
+    // dropping the reject audit.
+    const existing = await deps.proposalStore.getProposal(proposal.id);
+    if (existing === undefined) {
+      await deps.proposalStore.recordProposal(proposal);
+    }
     await deps.proposalStore.recordEvaluation(evaluation);
 
     return {

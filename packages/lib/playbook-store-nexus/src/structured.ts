@@ -1,13 +1,6 @@
 import type { StructuredPlaybook, StructuredPlaybookStore } from "@koi/ace-types";
 
-import {
-  deleteJson,
-  encodeAceId,
-  listChildren,
-  readJson,
-  validateAceId,
-  writeJson,
-} from "./json-io.js";
+import { deleteJson, encodeAceId, listChildren, readJson, validateAceId } from "./json-io.js";
 import { withPlaybookLock } from "./playbook-locks.js";
 import type { NexusPlaybookStoreConfig } from "./types.js";
 
@@ -84,24 +77,37 @@ export function createNexusStructuredPlaybookStore(
       // in-process save + baseVersion-check interleaving. See playbook-locks.ts.
       await withPlaybookLock(scope, playbook.id, async () => {
         // Enforce monotonic version semantics required by the
-        // StructuredPlaybookStore contract (matches sqlite implementation):
-        // reject below-head replays so concurrent promotions cannot lose
-        // updates by silently overwriting a higher version. Idempotent
-        // re-save of the exact current head is permitted so retries after
-        // a successful write but failed ack do not wedge.
+        // StructuredPlaybookStore contract (matches sqlite implementation).
         //
-        // CONCURRENCY LIMITATION: The read-then-write below is only atomic
-        // within a single process via withPlaybookLock. Two processes
-        // sharing the same Nexus backend can still race: both read version
-        // N, both write N+1, last write wins. Fully closing this requires
-        // server-side conditional writes (If-Match / version CAS) on the
-        // Nexus transport, which is not yet exposed by writeJson. Until
-        // then, callers that need strict cross-process correctness must
-        // either funnel writes through a single process or use the sqlite
-        // adapter (which has DB-level transactional CAS).
-        const currentRead = await readJson<StructuredPlaybook>(transport, path(playbook.id));
-        if (!currentRead.ok) throw new Error(currentRead.error.message);
-        const current = currentRead.value;
+        // Cross-process safety: read the current file with metadata, capture
+        // its etag, then write back with if_match=etag. The Nexus backend
+        // returns CONFLICT (-32006) if the file changed between read and
+        // write, so concurrent promotions cannot both succeed at version
+        // N+1 — only the writer holding the etag of version N wins.
+        const readResult = await transport.call<unknown>("read", {
+          path: path(playbook.id),
+          return_metadata: true,
+        });
+        let etag: string | undefined;
+        let current: StructuredPlaybook | undefined;
+        if (readResult.ok) {
+          const raw = readResult.value as
+            | { content?: unknown; metadata?: { etag?: string } }
+            | undefined;
+          if (raw !== undefined && typeof raw.content === "string" && raw.content.length > 0) {
+            try {
+              current = JSON.parse(raw.content) as StructuredPlaybook;
+            } catch (e) {
+              throw new Error(`playbook-store-nexus: parse error at ${path(playbook.id)}`, {
+                cause: e,
+              });
+            }
+            etag = raw.metadata?.etag;
+          }
+        } else if (readResult.error.code !== "NOT_FOUND") {
+          throw new Error(readResult.error.message);
+        }
+
         if (current !== undefined) {
           if (playbook.version < current.version) {
             throw new Error(
@@ -117,8 +123,27 @@ export function createNexusStructuredPlaybookStore(
             );
           }
         }
-        const r = await writeJson(transport, path(playbook.id), playbook);
-        if (!r.ok) throw new Error(r.error.message);
+
+        const writeParams: Record<string, unknown> = {
+          path: path(playbook.id),
+          content: JSON.stringify(playbook),
+        };
+        // Only set if_match when we have an etag for an existing file. A
+        // missing file has no etag — concurrent first-writers race here, but
+        // both must agree on version=initial; any divergent content is
+        // rejected by the version check on the next save.
+        if (etag !== undefined) {
+          writeParams.if_match = etag;
+        }
+        const writeResult = await transport.call<unknown>("write", writeParams);
+        if (!writeResult.ok) {
+          if (writeResult.error.code === "CONFLICT") {
+            throw new Error(
+              `playbook ${playbook.id} concurrent write conflict at version ${String(current?.version ?? "(initial)")}: ${writeResult.error.message}`,
+            );
+          }
+          throw new Error(writeResult.error.message);
+        }
       });
     },
 
