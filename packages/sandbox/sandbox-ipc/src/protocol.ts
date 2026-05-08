@@ -26,19 +26,31 @@ function isRecord(value: unknown): value is RecordValue {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isPlainObjectRecord(value: unknown): value is RecordValue {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 function hasOwn(record: RecordValue, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(record, key);
 }
 
 function isJsonValue(value: unknown): value is JsonValue {
   if (value === null) return true;
-  if (typeof value === "boolean" || typeof value === "number" || typeof value === "string") {
+  if (typeof value === "boolean" || typeof value === "string") {
     return true;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value);
   }
   if (Array.isArray(value)) {
     return value.every((entry) => isJsonValue(entry));
   }
-  if (!isRecord(value)) {
+  if (!isPlainObjectRecord(value)) {
     return false;
   }
   return Object.values(value).every((entry) => isJsonValue(entry));

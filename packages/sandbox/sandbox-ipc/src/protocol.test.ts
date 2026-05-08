@@ -117,6 +117,34 @@ describe("parseExecuteMessage", () => {
     expect(parsed.error.message).toContain("input");
   });
 
+  test("rejects non-finite numeric input values", () => {
+    const parsed = parseExecuteMessage({
+      kind: "execute",
+      code: "return input.value;",
+      input: { value: Number.NaN },
+      timeoutMs: 5_000,
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.path).toBe("input");
+    expect(parsed.error.reason).toContain("JSON value");
+  });
+
+  test("rejects non-plain object input values", () => {
+    const parsed = parseExecuteMessage({
+      kind: "execute",
+      code: "return input.when;",
+      input: { when: new Date("2026-01-01T00:00:00.000Z") },
+      timeoutMs: 5_000,
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.path).toBe("input");
+    expect(parsed.error.reason).toContain("JSON value");
+  });
+
   test("rejects string timeoutMs", () => {
     const parsed = parseExecuteMessage({
       kind: "execute",
@@ -330,5 +358,15 @@ describe("parseWorkerMessage", () => {
     expect(parsed.ok).toBe(false);
     if (parsed.ok) throw new Error("expected parse failure");
     expect(parsed.error.message).toContain("kind");
+  });
+
+  test("preserves parser-specific error fields on worker parse failures", () => {
+    const parsed = parseWorkerMessage({ kind: "wat" });
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected parse failure");
+    expect(parsed.error.name).toBe("SandboxIpcParseError");
+    expect(parsed.error.path).toBe("kind");
+    expect(parsed.error.reason).toContain("expected one of");
   });
 });

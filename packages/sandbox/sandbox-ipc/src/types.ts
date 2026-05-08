@@ -1,4 +1,5 @@
 import type { ExecutionContext, JsonObject, KoiError, Result, SandboxProfile } from "@koi/core";
+import type { SandboxIpcParseError } from "./errors.js";
 
 export type JsonPrimitive = boolean | number | string | null;
 
@@ -118,7 +119,7 @@ export type ParseSuccess<T> = {
 
 export type ParseFailure = {
   readonly ok: false;
-  readonly error: Error;
+  readonly error: SandboxIpcParseError;
 };
 
 export type ParseResult<T> = ParseSuccess<T> | ParseFailure;
