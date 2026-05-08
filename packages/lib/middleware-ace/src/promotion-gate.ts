@@ -276,6 +276,22 @@ export async function evaluatePromotion(
   return "promote";
 }
 
+/**
+ * Commit a proposal/evaluation pair.
+ *
+ * Precondition (recommended): durably record the proposal via
+ * `proposalStore.recordProposal(proposal)` BEFORE generating its evaluation.
+ * The gate also calls recordProposal idempotently as a safety net, but real
+ * proposal-store adapters reject FRESH inserts of proposals whose baseVersion
+ * no longer matches the live head; if the head advanced before the proposal
+ * was first stored, neither the gate nor the caller can recover the audit.
+ *
+ * Recovery limits: indeterminate-retry resolution (proposal already recorded
+ * but the head advanced beyond baseVersion without naming it) requires the
+ * structured store to support lineage scan by provenance.proposalId. Adapters
+ * without lineage (e.g. nexus) cannot resolve this case automatically; the
+ * gate surfaces an explicit error so callers do not silently misclassify.
+ */
 export async function commitPromotion(
   deps: PromotionGateDeps,
   proposal: PlaybookProposal,
