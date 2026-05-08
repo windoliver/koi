@@ -19,5 +19,8 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/sandbox-cloud-base": "workspace:*"
+  },
+  "koi": {
+    "optional": true
   }
 }
