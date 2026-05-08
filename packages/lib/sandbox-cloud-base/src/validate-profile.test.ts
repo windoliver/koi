@@ -57,15 +57,14 @@ describe("validate-profile", () => {
   });
 
   test("adapter-specific fail-closed guidance includes the adapter name and detail", () => {
-    const message = formatUnsupportedProfileError(
-      {
-        fields: ["network.allow=false", "resources.maxMemoryMb"],
-      },
-      "sandbox-e2b",
-    );
+    const message = formatUnsupportedProfileError("sandbox-e2b", {
+      fields: ["network.allow=false", "resources.maxMemoryMb"],
+    });
 
     expect(message).toContain("sandbox-e2b");
     expect(message).toContain("network.allow=false");
     expect(message).toContain("resources.maxMemoryMb");
+    expect(message).toContain("@koi/sandbox-docker");
+    expect(message).toContain("@koi/sandbox-os");
   });
 });

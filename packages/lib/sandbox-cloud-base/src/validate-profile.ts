@@ -51,8 +51,8 @@ export function detectUnsupportedProfileFields(
 }
 
 export function formatUnsupportedProfileError(
-  unsupported: UnsupportedProfileFields,
   adapterName: string = DEFAULT_ADAPTER_NAME,
+  unsupported: UnsupportedProfileFields,
 ): string {
   const details =
     unsupported.fields.length === 0
@@ -61,6 +61,7 @@ export function formatUnsupportedProfileError(
 
   return (
     `${adapterName} cannot enforce profile fields: ${details}. ` +
+    "Use @koi/sandbox-docker or @koi/sandbox-os for policy enforcement. " +
     "Refuse to provision rather than silently weakening isolation."
   );
 }
