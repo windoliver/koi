@@ -7,10 +7,10 @@ export interface ScheduledTaskActivityDeps {
 
 export function createScheduledTaskActivities(deps: ScheduledTaskActivityDeps) {
   return {
-    async startAgentExecution(input: ScheduledTaskWorkflowArgs) {
+    async startAgentExecution(input: ScheduledTaskWorkflowArgs): Promise<string> {
       return deps.spawn(input);
     },
-    async dispatchToAgent(input: ScheduledTaskWorkflowArgs) {
+    async dispatchToAgent(input: ScheduledTaskWorkflowArgs): Promise<void> {
       await deps.dispatch(input);
     },
   };
@@ -80,7 +80,9 @@ export function materializeScheduledAgentWorkflowConfig(
   };
 }
 
-export function createDefaultScheduledTaskActivities(deps: DefaultScheduledTaskActivityDeps) {
+export function createDefaultScheduledTaskActivities(
+  deps: DefaultScheduledTaskActivityDeps,
+): ReturnType<typeof createScheduledTaskActivities> {
   return createScheduledTaskActivities({
     async spawn(input: ScheduledTaskWorkflowArgs): Promise<string> {
       const workflowId =

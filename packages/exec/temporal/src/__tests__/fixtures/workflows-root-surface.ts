@@ -2,14 +2,14 @@ import {
   AGENT_MESSAGE_SIGNAL,
   AGENT_STATE_QUERY,
   AGENT_WORKFLOW_NAME,
-  RETRY_WORKFLOW_NAME,
-  SCHEDULED_TASK_WORKFLOW_NAME,
-  agentWorkflow,
-  retryWorkflow,
-  scheduledTaskWorkflow,
   type AgentWorkflowConfig,
+  agentWorkflow,
+  RETRY_WORKFLOW_NAME,
   type RetryWorkflowArgs,
+  retryWorkflow,
+  SCHEDULED_TASK_WORKFLOW_NAME,
   type ScheduledTaskWorkflowArgs,
+  scheduledTaskWorkflow,
 } from "../../index.js";
 
 const config: AgentWorkflowConfig = {

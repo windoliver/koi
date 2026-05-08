@@ -22,7 +22,7 @@ const scheduled: ScheduledTaskWorkflowArgs = {
   input: { kind: "text", text: "hello" },
 };
 
-const retryArgs: RetryWorkflowArgs = {
+const _retryArgs: RetryWorkflowArgs = {
   operation: "runAgentTurn",
   attempt: 0,
   maxAttempts: 3,
@@ -116,6 +116,7 @@ void _scheduledArgsIsNotAny;
 void _scheduledModeIsNotAny;
 void _scheduledInputIsNotAny;
 void _scheduledResultIsNotAny;
+void _retryArgs;
 void _retryArgsIsNotAny;
 void _retryPayloadIsNotAny;
 void _retryResultIsNotAny;

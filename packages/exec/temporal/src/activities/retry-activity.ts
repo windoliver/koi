@@ -16,7 +16,6 @@ export type RetryActivitySerializableValue =
   | number
   | boolean
   | null
-  | undefined
   | readonly RetryActivitySerializableValue[]
   | { readonly [key: string]: RetryActivitySerializableValue };
 
@@ -41,7 +40,7 @@ function normalizeRetryValue(value: unknown): RetryActivitySerializableValue {
   }
 
   if (value === undefined) {
-    return undefined;
+    return null;
   }
 
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
@@ -85,7 +84,9 @@ export function createRetryActivities(deps: RetryActivityDeps) {
   };
 }
 
-export function createDefaultRetryActivities(deps: DefaultRetryActivityDeps) {
+export function createDefaultRetryActivities(
+  deps: DefaultRetryActivityDeps,
+): ReturnType<typeof createRetryActivities> {
   return createRetryActivities({
     async runOperation(input: RetryActivityInput): Promise<unknown> {
       switch (input.operation) {

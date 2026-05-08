@@ -26,7 +26,7 @@ export function getAgentWorkflowMessages(config: AgentWorkflowConfig): readonly 
   return config.initialMessage === undefined ? [] : [config.initialMessage];
 }
 
-export function createDefaultAgentActivities() {
+export function createDefaultAgentActivities(): ReturnType<typeof createAgentActivities> {
   return createAgentActivities({
     async runTurn(input: AgentWorkflowConfig): Promise<AgentTurnResult> {
       const messages = getAgentWorkflowMessages(input);

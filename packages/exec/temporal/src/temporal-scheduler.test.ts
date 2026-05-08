@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { AgentId, EngineInput } from "@koi/core";
+import type { AgentId, EngineInput, ScheduledTask, SchedulerEvent, TaskRunRecord } from "@koi/core";
 import {
   createTemporalScheduler,
   type TemporalClientLike,
@@ -91,7 +91,7 @@ describe("submit", () => {
   test("emits task:submitted event", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     const events: unknown[] = [];
-    scheduler.watch((e) => events.push(e));
+    scheduler.watch((e: SchedulerEvent) => events.push(e));
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
     expect((events[0] as { kind: string }).kind).toBe("task:submitted");
   });
@@ -392,7 +392,7 @@ describe("rollback safety", () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     const events: string[] = [];
-    scheduler.watch((e) => events.push(e.kind));
+    scheduler.watch((e: SchedulerEvent) => events.push(e.kind));
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
     expect(events).toContain("task:submitted");
     const tasks = await scheduler.query({});
@@ -442,7 +442,7 @@ describe("cancel", () => {
   test("emits task:cancelled event", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     const events: unknown[] = [];
-    scheduler.watch((e) => events.push(e));
+    scheduler.watch((e: SchedulerEvent) => events.push(e));
     const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
     await scheduler.cancel(id);
     expect(events.some((e) => (e as { kind: string }).kind === "task:cancelled")).toBe(true);
@@ -487,7 +487,7 @@ describe("schedule / unschedule", () => {
   test("emits schedule:created event", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     const events: unknown[] = [];
-    scheduler.watch((e) => events.push(e));
+    scheduler.watch((e: SchedulerEvent) => events.push(e));
     await scheduler.schedule("*/5 * * * *", AGENT_ID, TEXT_INPUT, "dispatch");
     expect(events.some((e) => (e as { kind: string }).kind === "schedule:created")).toBe(true);
   });
@@ -726,7 +726,7 @@ describe("watch", () => {
   test("unsubscribe stops event delivery", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     const events: unknown[] = [];
-    const unsub = scheduler.watch((e) => events.push(e));
+    const unsub = scheduler.watch((e: SchedulerEvent) => events.push(e));
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
     expect(events).toHaveLength(1);
     unsub();
@@ -961,7 +961,7 @@ describe("state persistence (dbPath)", () => {
     });
     const events: string[] = [];
     const scheduler = createTemporalScheduler(makeConfig(client));
-    scheduler.watch((e) => events.push(e.kind));
+    scheduler.watch((e: SchedulerEvent) => events.push(e.kind));
 
     // submit() must NOT throw — returns the stable task ID for lifecycle tracking.
     const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn", {
@@ -996,7 +996,7 @@ describe("asyncDispose — disposed guard", () => {
     const events: string[] = [];
 
     const scheduler = createTemporalScheduler(makeConfig(client));
-    scheduler.watch((e) => events.push(e.kind));
+    scheduler.watch((e: SchedulerEvent) => events.push(e.kind));
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
 
     // Dispose clears listeners and sets the disposed flag.
@@ -1138,7 +1138,7 @@ describe("dispatch durability — post-signal persist failure emits task:failed 
     const client = makeMockClient({ signal: signalMock });
     const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
     const failedEvents: unknown[] = [];
-    scheduler.watch((ev) => {
+    scheduler.watch((ev: SchedulerEvent) => {
       if (ev.kind === "task:failed") failedEvents.push(ev);
     });
     // submit() dispatch: pre-commit succeeds, signal triggers dir removal, post-persist fails
@@ -1391,7 +1391,7 @@ describe("two-phase pre-commit", () => {
       start: mock(async () => {
         // Inspect in-memory state mid-start — pre-commit must have already happened.
         pendingCount = ((await schedulerRef?.query({})) ?? []).filter(
-          (t) => t.status === "pending",
+          (t: ScheduledTask) => t.status === "pending",
         ).length;
         return { workflowId: "wf-1" };
       }),
@@ -1408,7 +1408,7 @@ describe("two-phase pre-commit", () => {
     const client = makeMockClient({
       signal: mock(async () => {
         pendingCount = ((await schedulerRef?.query({})) ?? []).filter(
-          (t) => t.status === "pending",
+          (t: ScheduledTask) => t.status === "pending",
         ).length;
       }),
     });
@@ -1628,7 +1628,7 @@ describe("idempotent spawn — definite rejection throws immediately", () => {
     });
     const events: string[] = [];
     const scheduler = createTemporalScheduler(makeConfig(client));
-    scheduler.watch((e) => events.push(e.kind));
+    scheduler.watch((e: SchedulerEvent) => events.push(e.kind));
     await expect(
       scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn", { idempotencyKey: "perm-denied" }),
     ).rejects.toThrow("PERMISSION_DENIED");
@@ -1739,7 +1739,7 @@ describe("idempotencyKey — cancel-then-retry spawn records completion", () => 
     await new Promise((r) => setTimeout(r, 20));
     // The completion must be recorded — cancelledTaskIds was cleared on retry
     const tasks = await scheduler.query({});
-    const completedTask = tasks.find((t) => t.id === id2);
+    const completedTask = tasks.find((t: ScheduledTask) => t.id === id2);
     expect(completedTask?.status ?? "completed").toBe("completed");
     await scheduler[Symbol.asyncDispose]();
   });
@@ -1795,7 +1795,7 @@ describe("dispatch deliveredDispatchIds — prevents duplicate signal after rest
     // Second scheduler: should see the deliveredDispatchIds and mark task as completed (not failed)
     const s2 = createTemporalScheduler({ ...makeConfig(client), dbPath });
     const hist = await s2.history({});
-    const record = hist.find((r) => r.taskId === taskId);
+    const record = hist.find((r: TaskRunRecord) => r.taskId === taskId);
     expect(record?.status).toBe("completed");
     // Second submit with same key must be a no-op (task is completed — not retried)
     await s2.submit(AGENT_ID, TEXT_INPUT, "dispatch", { idempotencyKey: "dedup-key" });

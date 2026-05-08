@@ -116,7 +116,7 @@ describe("activity factories", () => {
     expect(result.kind === "succeeded" ? result.value : null).not.toBe(serializableValue);
   });
 
-  test("retry activity preserves undefined fields when cloning success payloads", async () => {
+  test("retry activity normalizes undefined fields into durable null values", async () => {
     const activities = createRetryActivities({
       runOperation: async () => ({
         updatedStateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
@@ -130,7 +130,7 @@ describe("activity factories", () => {
 
     expect(result).toEqual({
       kind: "succeeded",
-      value: { updatedStateRefs: { lastTurnId: undefined, turnsProcessed: 0 } },
+      value: { updatedStateRefs: { lastTurnId: null, turnsProcessed: 0 } },
     });
   });
 

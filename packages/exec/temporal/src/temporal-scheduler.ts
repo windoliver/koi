@@ -12,7 +12,6 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname } from "node:path";
-import { AGENT_WORKFLOW_NAME, SCHEDULED_TASK_WORKFLOW_NAME } from "./workflows/index.js";
 import type {
   AgentId,
   CronSchedule,
@@ -31,6 +30,9 @@ import type {
   TaskScheduler,
 } from "@koi/core";
 import type { IncomingMessage, ScheduledInputPayload, ScheduledTaskWorkflowArgs } from "./types.js";
+import { AGENT_WORKFLOW_NAME, SCHEDULED_TASK_WORKFLOW_NAME } from "./workflows/index.js";
+
+type MessageEngineInput = Extract<EngineInput, { readonly kind: "messages" }>;
 
 // ---------------------------------------------------------------------------
 // Durable state persistence (used when config.dbPath is set)
@@ -619,7 +621,7 @@ function mapEngineInputToMessages(input: EngineInput, taskId: string): readonly 
       ];
     case "messages":
       return input.messages.map(
-        (msg, i): IncomingMessage => ({
+        (msg: MessageEngineInput["messages"][number], i: number): IncomingMessage => ({
           id: `${taskId}:${i}`,
           senderId: msg.senderId,
           content: [...msg.content],
@@ -640,6 +642,8 @@ function mapEngineInputToMessages(input: EngineInput, taskId: string): readonly 
         },
       ];
   }
+
+  throw new Error(`Unsupported EngineInput kind: ${String((input as { kind?: unknown }).kind)}`);
 }
 
 function assertJsonSafeValue(value: unknown, path: string): void {
@@ -722,6 +726,8 @@ function mapEngineInputToScheduledPayload(input: EngineInput): ScheduledInputPay
     case "resume":
       return { ...base, kind: "resume", state: input.state };
   }
+
+  throw new Error(`Unsupported EngineInput kind: ${String((input as { kind?: unknown }).kind)}`);
 }
 
 export interface TemporalClientLike {
