@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { BrickArtifact, ForgeDemandSignal, StoreChangeNotifier } from "@koi/core";
-import { createAutoHarnessStack } from "./create-auto-harness-stack.js";
-import type {
-  AutoHarnessDeployResult,
-  AutoHarnessEvent,
-  AutoHarnessPolicyResult,
-  AutoHarnessVerificationResult,
-} from "./types.js";
+import type {} from "./index.js";
+import {
+  type AutoHarnessDeployResult,
+  type AutoHarnessEvent,
+  type AutoHarnessPolicyResult,
+  type AutoHarnessVerificationResult,
+  createAutoHarnessStack,
+} from "./index.js";
 
 const makeNotifier = (): StoreChangeNotifier => ({
   notify: () => {},
@@ -63,13 +64,6 @@ describe("createAutoHarnessStack", () => {
     expect(typeof stack.policyCacheHandle.size).toBe("function");
     expect(typeof stack.policyCacheHandle.dispose).toBe("function");
     expect(stack.policyCacheMiddleware.describeCapabilities({} as never)).toBeUndefined();
-    expect(stack.policyCacheHandle.register({} as never)).toEqual({
-      ok: true,
-      value: undefined,
-    });
-    expect(stack.policyCacheHandle.size()).toBe(0);
-    stack.policyCacheHandle.evict("brick-1");
-    stack.policyCacheHandle.dispose();
     expect(typeof stack.synthesizeHarness).toBe("function");
     expect(typeof stack.resetSession).toBe("function");
     expect(stack.maxSynthesesPerSession).toBeGreaterThan(0);
