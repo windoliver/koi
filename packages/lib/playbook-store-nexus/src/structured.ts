@@ -160,7 +160,14 @@ export function createNexusStructuredPlaybookStore(
     },
 
     async getVersion(_id: string, _version: number): Promise<StructuredPlaybook | undefined> {
-      return undefined;
+      // The nexus structured store does not maintain a version-lineage table:
+      // each save overwrites a single head file. Throw a clear capability
+      // error so callers using lineage-dependent features (rollback,
+      // historical inspection, retry-by-proposal lookups) get an actionable
+      // signal instead of a misleading "version not found".
+      throw new Error(
+        "playbook-store-nexus: structured-playbook lineage is not supported by this adapter; use the sqlite adapter or skip rollback",
+      );
     },
   };
 }

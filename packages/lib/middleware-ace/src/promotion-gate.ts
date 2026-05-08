@@ -303,6 +303,14 @@ export async function commitPromotion(
     // dropping the reject audit.
     const existing = await deps.proposalStore.getProposal(proposal.id);
     if (existing === undefined) {
+      // Fresh recordProposal would be rejected by the store's baseVersion FK
+      // check when the head has advanced. Surface a precise precondition
+      // error instead of letting the caller see an opaque FK failure.
+      if (current.version !== proposal.baseVersion) {
+        throw new Error(
+          `ACE promotion gate: cannot record reject for proposal ${proposal.id} that was never durably stored once the head advanced (head=${current.version}, baseVersion=${proposal.baseVersion}); pre-record proposals before evaluation`,
+        );
+      }
       await deps.proposalStore.recordProposal(proposal);
     }
     await deps.proposalStore.recordEvaluation(evaluation);
@@ -335,10 +343,25 @@ export async function commitPromotion(
     };
   }
 
-  // Promote path requires the head to still equal baseVersion: otherwise the
-  // proposed operations were computed against a stale snapshot and applying
-  // them is unsafe.
+  // Indeterminate-retry detection: the proposal/evaluation are already
+  // durably recorded but the current head does NOT name them. Two cases
+  // produce this state, and we cannot distinguish them without lineage
+  // search:
+  //   (a) a prior commit succeeded (head advanced to N+1 with our
+  //       provenance) and a later commit superseded it (head now N+2).
+  //   (b) recordEvaluation succeeded but save() failed; head never moved
+  //       past N, then another caller advanced it to N+1.
+  // Both leave a recorded evaluation with no live-head match. Surface an
+  // explicit error so callers do not misclassify (a) as a fresh failure;
+  // resolution requires querying the structured store's lineage table for
+  // a version whose provenance.proposalId === proposal.id.
   if (current.version !== proposal.baseVersion) {
+    const priorProposal = await deps.proposalStore.getProposal(proposal.id);
+    if (priorProposal !== undefined) {
+      throw new Error(
+        `ACE promotion gate: indeterminate retry for proposal ${proposal.id} on ${proposal.playbookId}; proposal already recorded but head advanced beyond baseVersion ${String(proposal.baseVersion)} to ${String(current.version)} without naming it. Inspect structured-store lineage to determine prior commit outcome before retrying`,
+      );
+    }
     throw new Error(
       `ACE promotion gate: base version mismatch for ${proposal.playbookId}; expected ${proposal.baseVersion}, got ${current.version}`,
     );
@@ -423,7 +446,16 @@ export async function rollbackPromotion(
     };
   }
 
+  // Indeterminate-retry detection: see commitPromotion above for rationale.
+  // Surface an explicit error when the proposal is already recorded but the
+  // live head has advanced past baseVersion without naming it.
   if (current.version !== proposal.baseVersion) {
+    const priorProposal = await deps.proposalStore.getProposal(proposal.id);
+    if (priorProposal !== undefined) {
+      throw new Error(
+        `ACE promotion gate: indeterminate rollback retry for proposal ${proposal.id} on ${proposal.playbookId}; proposal already recorded but head advanced beyond baseVersion ${String(proposal.baseVersion)} to ${String(current.version)} without naming it. Inspect structured-store lineage to determine prior outcome before retrying`,
+      );
+    }
     throw new Error(
       `ACE promotion gate: base version mismatch for ${proposal.playbookId}; expected ${proposal.baseVersion}, got ${current.version}`,
     );
