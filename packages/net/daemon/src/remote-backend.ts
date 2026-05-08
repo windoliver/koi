@@ -187,9 +187,13 @@ export function createRemoteBackend(options: CreateRemoteBackendOptions): Worker
       const state = workers.get(id);
       if (state !== undefined) return state.alive;
       const result = await transport.call<unknown>(method("status"), { workerId: id });
-      if (!result.ok) return false;
+      if (!result.ok) {
+        if (result.error.code === "NOT_FOUND") return false;
+        return true;
+      }
       const parsed = parseStatusResponse(result.value);
-      return parsed.ok ? parsed.value.alive : false;
+      if (!parsed.ok) return true;
+      return parsed.value.alive;
     },
     watch: async function* (id, signal) {
       const state = workers.get(id);
