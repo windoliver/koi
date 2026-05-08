@@ -6,10 +6,27 @@ import type {
   PlaybookBullet,
   PlaybookEvaluation,
   PlaybookProposal,
+  PlaybookProposalStore,
   PlaybookSection,
   StructuredPlaybook,
+  StructuredPlaybookStore,
   PromotionThresholds,
 } from "@koi/ace-types";
+
+export interface PromotionGateDeps {
+  readonly structuredStore: StructuredPlaybookStore;
+  readonly proposalStore?: PlaybookProposalStore;
+  readonly clock?: () => number;
+}
+
+export interface PromotionDecision {
+  readonly outcome: "promoted" | "rejected";
+  readonly playbookId: string;
+  readonly proposalId: string;
+  readonly evaluationId: string;
+  readonly fromVersion: number;
+  readonly toVersion: number;
+}
 
 function slugifySectionName(section: string): string {
   const slug = section
@@ -253,4 +270,71 @@ export async function evaluatePromotion(
   }
 
   return "promote";
+}
+
+export async function commitPromotion(
+  deps: PromotionGateDeps,
+  proposal: PlaybookProposal,
+  evaluation: PlaybookEvaluation,
+  thresholds: PromotionThresholds,
+): Promise<PromotionDecision> {
+  const current = await deps.structuredStore.get(proposal.playbookId);
+  if (current === undefined) {
+    throw new Error(`ACE promotion gate: structured playbook not found: ${proposal.playbookId}`);
+  }
+
+  if (current.version !== proposal.baseVersion) {
+    throw new Error(
+      `ACE promotion gate: base version mismatch for ${proposal.playbookId}; expected ${proposal.baseVersion}, got ${current.version}`,
+    );
+  }
+
+  const gateDecision = await evaluatePromotion(proposal, evaluation, thresholds);
+  if (gateDecision !== "promote") {
+    if (deps.proposalStore !== undefined) {
+      await deps.proposalStore.recordEvaluation(evaluation);
+    }
+
+    return {
+      outcome: "rejected",
+      playbookId: proposal.playbookId,
+      proposalId: proposal.id,
+      evaluationId: evaluation.id,
+      fromVersion: current.version,
+      toVersion: current.version,
+    };
+  }
+
+  const now = deps.clock?.() ?? Date.now();
+  const nextBody = applyProposalOperations(current, proposal, now);
+  const next: StructuredPlaybook = {
+    ...nextBody,
+    updatedAt: now,
+    version: current.version + 1,
+    provenance: {
+      sourceTrajectoryRange: proposal.sourceTrajectoryRange,
+      proposalId: proposal.id,
+      evaluationId: evaluation.id,
+      committedAt: now,
+    },
+  };
+
+  if (deps.proposalStore !== undefined) {
+    await deps.proposalStore.recordEvaluation(evaluation);
+  }
+
+  // Store implementations are responsible for rejecting stale/equal
+  // conflicting writes (for example via version monotonicity checks), so this
+  // path only prepares the next versioned snapshot and relies on save() to
+  // enforce the final concurrency gate.
+  await deps.structuredStore.save(next);
+
+  return {
+    outcome: "promoted",
+    playbookId: proposal.playbookId,
+    proposalId: proposal.id,
+    evaluationId: evaluation.id,
+    fromVersion: current.version,
+    toVersion: next.version,
+  };
 }

@@ -3,11 +3,13 @@ import { describe, expect, test } from "bun:test";
 import type {
   PlaybookEvaluation,
   PlaybookProposal,
+  PlaybookProposalStore,
   StructuredPlaybook,
+  StructuredPlaybookStore,
   PromotionThresholds,
 } from "@koi/ace-types";
 
-import { applyProposalOperations, evaluatePromotion } from "./promotion-gate.js";
+import { applyProposalOperations, commitPromotion, evaluatePromotion } from "./promotion-gate.js";
 
 const proposal: PlaybookProposal = {
   id: "proposal-1",
@@ -26,6 +28,16 @@ const proposal: PlaybookProposal = {
   },
   createdAt: 1,
 };
+
+function createProposal(overrides: Partial<PlaybookProposal> = {}): PlaybookProposal {
+  return {
+    ...proposal,
+    ...overrides,
+    operations: overrides.operations ?? proposal.operations,
+    sourceTrajectoryRange: overrides.sourceTrajectoryRange ?? proposal.sourceTrajectoryRange,
+    reflection: overrides.reflection ?? proposal.reflection,
+  };
+}
 
 const thresholds: PromotionThresholds = {
   minHelpfulRate: 0.6,
@@ -72,6 +84,73 @@ const structuredPlaybook: StructuredPlaybook = {
   sessionCount: 0,
   version: 1,
 };
+
+function createStructuredPlaybook(
+  overrides: Partial<StructuredPlaybook> = {},
+): StructuredPlaybook {
+  const cloned = structuredClone(structuredPlaybook) as StructuredPlaybook;
+  return {
+    ...cloned,
+    ...overrides,
+    sections: overrides.sections ?? cloned.sections,
+    tags: overrides.tags ?? cloned.tags,
+    provenance: overrides.provenance ?? cloned.provenance,
+  };
+}
+
+function createStructuredStore(seed?: StructuredPlaybook): StructuredPlaybookStore {
+  const latestById = new Map<string, StructuredPlaybook>();
+  if (arguments.length === 0) {
+    latestById.set(structuredPlaybook.id, createStructuredPlaybook());
+  } else if (seed !== undefined) {
+    latestById.set(seed.id, seed);
+  }
+
+  return {
+    get: async (id) => {
+      const current = latestById.get(id);
+      return current !== undefined ? (structuredClone(current) as StructuredPlaybook) : undefined;
+    },
+    list: async () =>
+      [...latestById.values()].map((playbook) => structuredClone(playbook) as StructuredPlaybook),
+    save: async (playbook) => {
+      latestById.set(playbook.id, structuredClone(playbook) as StructuredPlaybook);
+    },
+    remove: async (id) => latestById.delete(id),
+    getVersion: async (id, version) => {
+      const current = latestById.get(id);
+      return current?.version === version
+        ? (structuredClone(current) as StructuredPlaybook)
+        : undefined;
+    },
+  };
+}
+
+function createProposalStore(): PlaybookProposalStore & {
+  readonly recordedEvaluations: PlaybookEvaluation[];
+} {
+  const recordedEvaluations: PlaybookEvaluation[] = [];
+  return {
+    recordedEvaluations,
+    recordProposal: async () => {},
+    recordEvaluation: async (evaluation) => {
+      recordedEvaluations.push(evaluation);
+    },
+    getProposal: async () => undefined,
+    listProposals: async () => [],
+  };
+}
+
+function createFailingProposalStore(message = "evaluation write failed"): PlaybookProposalStore {
+  return {
+    recordProposal: async () => {},
+    recordEvaluation: async () => {
+      throw new Error(message);
+    },
+    getProposal: async () => undefined,
+    listProposals: async () => [],
+  };
+}
 
 function evaluation(
   overrides: Partial<PlaybookEvaluation> & { readonly metrics?: Record<string, number> } = {},
@@ -426,5 +505,145 @@ describe("applyProposalOperations", () => {
     expect(() => applyProposalOperations(structuredPlaybook, proposalWithPrune, 99)).toThrow(
       /missing bullet/i,
     );
+  });
+});
+
+describe("commitPromotion", () => {
+  test("promotes a structured playbook, increments version, stamps provenance, and records the evaluation", async () => {
+    const store = createStructuredStore();
+    const proposalStore = createProposalStore();
+    const proposalWithAdd = createProposal({
+      baseVersion: 1,
+      operations: [{ kind: "add", section: "Existing", content: "newly promoted insight" }],
+    });
+
+    const decision = await commitPromotion(
+      { structuredStore: store, proposalStore, clock: () => 500 },
+      proposalWithAdd,
+      evaluation(),
+      thresholds,
+    );
+
+    expect(decision).toEqual({
+      outcome: "promoted",
+      playbookId: "playbook-1",
+      proposalId: "proposal-1",
+      evaluationId: "evaluation-1",
+      fromVersion: 1,
+      toVersion: 2,
+    });
+
+    const saved = await store.get("playbook-1");
+    expect(saved?.version).toBe(2);
+    expect(saved?.updatedAt).toBe(500);
+    expect(saved?.sections[0]?.bullets).toHaveLength(3);
+    expect(saved?.sections[0]?.bullets[2]?.content).toBe("newly promoted insight");
+    expect(saved?.provenance).toEqual({
+      sourceTrajectoryRange: proposal.sourceTrajectoryRange,
+      proposalId: "proposal-1",
+      evaluationId: "evaluation-1",
+      committedAt: 500,
+    });
+    expect(proposalStore.recordedEvaluations).toEqual([evaluation()]);
+  });
+
+  test("rejects without mutating the playbook and records the evaluation when evidence is insufficient", async () => {
+    const store = createStructuredStore();
+    const proposalStore = createProposalStore();
+
+    const decision = await commitPromotion(
+      { structuredStore: store, proposalStore, clock: () => 500 },
+      createProposal({ baseVersion: 1 }),
+      evaluation({ metrics: { helpfulRate: 0.2, harmfulRate: 0.1, trials: 1, tokenDelta: 12 } }),
+      thresholds,
+    );
+
+    expect(decision).toEqual({
+      outcome: "rejected",
+      playbookId: "playbook-1",
+      proposalId: "proposal-1",
+      evaluationId: "evaluation-1",
+      fromVersion: 1,
+      toVersion: 1,
+    });
+
+    const saved = await store.get("playbook-1");
+    expect(saved).toEqual(createStructuredPlaybook());
+    expect(proposalStore.recordedEvaluations).toEqual([
+      evaluation({ metrics: { helpfulRate: 0.2, harmfulRate: 0.1, trials: 1, tokenDelta: 12 } }),
+    ]);
+  });
+
+  test("treats a rollback verdict as a rejected no-op and records the evaluation", async () => {
+    const store = createStructuredStore();
+    const proposalStore = createProposalStore();
+
+    const decision = await commitPromotion(
+      { structuredStore: store, proposalStore, clock: () => 500 },
+      createProposal({ baseVersion: 1 }),
+      evaluation({ verdict: "rollback" }),
+      thresholds,
+    );
+
+    expect(decision).toEqual({
+      outcome: "rejected",
+      playbookId: "playbook-1",
+      proposalId: "proposal-1",
+      evaluationId: "evaluation-1",
+      fromVersion: 1,
+      toVersion: 1,
+    });
+
+    const saved = await store.get("playbook-1");
+    expect(saved).toEqual(createStructuredPlaybook());
+    expect(proposalStore.recordedEvaluations).toEqual([evaluation({ verdict: "rollback" })]);
+  });
+
+  test("does not save a promoted version when evaluation recording fails", async () => {
+    const store = createStructuredStore();
+    const proposalWithAdd = createProposal({
+      baseVersion: 1,
+      operations: [{ kind: "add", section: "Existing", content: "newly promoted insight" }],
+    });
+
+    await expect(
+      commitPromotion(
+        {
+          structuredStore: store,
+          proposalStore: createFailingProposalStore(),
+          clock: () => 500,
+        },
+        proposalWithAdd,
+        evaluation(),
+        thresholds,
+      ),
+    ).rejects.toThrow(/evaluation write failed/i);
+
+    const saved = await store.get("playbook-1");
+    expect(saved).toEqual(createStructuredPlaybook());
+  });
+
+  test("throws when the structured playbook does not exist", async () => {
+    await expect(
+      commitPromotion(
+        { structuredStore: createStructuredStore(undefined), clock: () => 500 },
+        createProposal({ baseVersion: 1 }),
+        evaluation(),
+        thresholds,
+      ),
+    ).rejects.toThrow(/structured playbook not found/i);
+  });
+
+  test("throws on base-version mismatch", async () => {
+    const store = createStructuredStore(createStructuredPlaybook({ version: 2 }));
+
+    await expect(
+      commitPromotion(
+        { structuredStore: store, clock: () => 500 },
+        createProposal({ baseVersion: 1 }),
+        evaluation(),
+        thresholds,
+      ),
+    ).rejects.toThrow(/base version mismatch/i);
   });
 });
