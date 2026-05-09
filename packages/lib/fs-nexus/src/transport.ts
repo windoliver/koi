@@ -16,6 +16,19 @@ export function createHttpTransport(config: NexusFileSystemConfig): NexusTranspo
     retries: config.retries,
   });
 
+  // Mount mutation/inspection methods (addMount, removeMount, listMounts,
+  // describeMount) are deliberately NOT exposed on the HTTP transport.
+  // The local-bridge path goes through resolveFileSystemAsync which wraps
+  // the transport with overlap, protected-root, scope, read-only, and
+  // quarantine guards (see resolve-filesystem.ts:guardedTransport). The
+  // HTTP path returns transport: undefined from resolveFileSystemAsync,
+  // so the runtime never reaches a mutation API for HTTP sessions today.
+  // Adding raw RPC pass-throughs here would create a second mutation
+  // surface that bypasses every safety invariant the local-bridge path
+  // enforces — read-only/scoped sessions could mutate topology against
+  // the server regardless of the runtime's policy. If a future feature
+  // needs HTTP mount mutations, they must be wrapped with the same
+  // guarded-transport policy as the local-bridge path.
   return {
     kind: "http",
     call: base.call,
@@ -24,22 +37,5 @@ export function createHttpTransport(config: NexusFileSystemConfig): NexusTranspo
     // HTTP transport has no bridge subprocess — notifications are local-only.
     subscribe: (): (() => void) => (): void => {},
     submitAuthCode: (): void => {},
-    describeMount: async (path) => {
-      return base.call("describe_mount", { path });
-    },
-    addMount: async (uri, at) => {
-      return base.call("add_mount", {
-        uri,
-        ...(at !== undefined ? { at } : {}),
-      });
-    },
-    removeMount: async (path) => {
-      return base.call("remove_mount", { path });
-    },
-    listMounts: async () => {
-      const result = await base.call<{ readonly mounts?: readonly string[] }>("list_mounts", {});
-      if (!result.ok) return result;
-      return { ok: true, value: result.value.mounts ?? [] };
-    },
   };
 }
