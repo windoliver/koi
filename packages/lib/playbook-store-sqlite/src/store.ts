@@ -661,56 +661,16 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
       // Fall back to lineage snapshot only if the watermarks table has no
       // row yet (e.g. fresh playbook on a freshly-migrated v6 DB before
       // any save has populated the table for this id).
-      const watermarkRow = selectWatermarkTable.get(pb.id) as {
-        readonly max_step_index: number;
-      } | null;
-      let currentWatermark: number | null;
-      if (watermarkRow !== null) {
-        currentWatermark = watermarkRow.max_step_index;
-      } else {
-        const latestRow = selectLatestLineageSnapshot.get(pb.id) as {
-          readonly snapshot: string;
-        } | null;
-        if (latestRow !== null) {
-          const latestSnapshot = JSON.parse(latestRow.snapshot) as {
-            readonly lastReflectedStepIndex?: number;
-          };
-          currentWatermark = latestSnapshot.lastReflectedStepIndex ?? null;
-        } else {
-          currentWatermark = null;
-        }
-      }
+      const currentWatermark = resolveCurrentWatermark(
+        selectWatermarkTable.get(pb.id) as { readonly max_step_index: number } | null,
+        selectLatestLineageSnapshot.get(pb.id) as { readonly snapshot: string } | null,
+      );
       const incomingWatermark = pb.lastReflectedStepIndex ?? null;
-      const monotonicWatermark =
-        currentWatermark === null
-          ? incomingWatermark
-          : incomingWatermark === null
-            ? currentWatermark
-            : Math.max(currentWatermark, incomingWatermark);
-      // Per-session watermark map: merge incoming with current (load from
-      // latest snapshot if no head). Each session takes max(prior, incoming)
-      // so commits from session A cannot regress session B's replay
-      // position. The legacy scalar `lastReflectedStepIndex` is kept for
-      // backward compat as the max across sessions.
-      const currentSessionMapRow = selectLatestLineageSnapshot.get(pb.id) as {
-        readonly snapshot: string;
-      } | null;
-      let mergedSessionMap: Record<string, number> | undefined;
-      if (currentSessionMapRow !== null) {
-        const parsed = JSON.parse(currentSessionMapRow.snapshot) as {
-          readonly reflectedStepIndexBySession?: Readonly<Record<string, number>>;
-        };
-        if (parsed.reflectedStepIndexBySession !== undefined) {
-          mergedSessionMap = { ...parsed.reflectedStepIndexBySession };
-        }
-      }
-      if (pb.reflectedStepIndexBySession !== undefined) {
-        mergedSessionMap = mergedSessionMap ?? {};
-        for (const [sid, idx] of Object.entries(pb.reflectedStepIndexBySession)) {
-          const prior = mergedSessionMap[sid];
-          mergedSessionMap[sid] = prior === undefined || idx > prior ? idx : prior;
-        }
-      }
+      const monotonicWatermark = clampMonotonic(currentWatermark, incomingWatermark);
+      const mergedSessionMap = mergeSessionMaps(
+        selectLatestLineageSnapshot.get(pb.id) as { readonly snapshot: string } | null,
+        pb.reflectedStepIndexBySession,
+      );
       const {
         lastReflectedStepIndex: _w,
         reflectedStepIndexBySession: _m,
@@ -891,6 +851,59 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
     },
     lineageSupported: true,
   };
+}
+
+/**
+ * Resolve the current watermark for a structured playbook. Source of truth
+ * is `structured_playbook_watermarks` (survives both head-row loss and
+ * lineage immutability); fall back to the latest lineage snapshot only if
+ * the watermarks table has no row yet.
+ */
+function resolveCurrentWatermark(
+  watermarkRow: { readonly max_step_index: number } | null,
+  latestSnapshotRow: { readonly snapshot: string } | null,
+): number | null {
+  if (watermarkRow !== null) return watermarkRow.max_step_index;
+  if (latestSnapshotRow === null) return null;
+  const parsed = JSON.parse(latestSnapshotRow.snapshot) as {
+    readonly lastReflectedStepIndex?: number;
+  };
+  return parsed.lastReflectedStepIndex ?? null;
+}
+
+function clampMonotonic(current: number | null, incoming: number | null): number | null {
+  if (current === null) return incoming;
+  if (incoming === null) return current;
+  return Math.max(current, incoming);
+}
+
+/**
+ * Merge per-session replay watermarks from the latest stored snapshot with
+ * the incoming map. Each session takes max(prior, incoming) so a commit from
+ * session A cannot regress session B's replay position. Returns undefined
+ * when neither source has any data.
+ */
+function mergeSessionMaps(
+  latestSnapshotRow: { readonly snapshot: string } | null,
+  incoming: Readonly<Record<string, number>> | undefined,
+): Record<string, number> | undefined {
+  let merged: Record<string, number> | undefined;
+  if (latestSnapshotRow !== null) {
+    const parsed = JSON.parse(latestSnapshotRow.snapshot) as {
+      readonly reflectedStepIndexBySession?: Readonly<Record<string, number>>;
+    };
+    if (parsed.reflectedStepIndexBySession !== undefined) {
+      merged = { ...parsed.reflectedStepIndexBySession };
+    }
+  }
+  if (incoming !== undefined) {
+    merged = merged ?? {};
+    for (const [sid, idx] of Object.entries(incoming)) {
+      const prior = merged[sid];
+      merged[sid] = prior === undefined || idx > prior ? idx : prior;
+    }
+  }
+  return merged;
 }
 
 function rowToStructuredPlaybook(row: StructuredPlaybookRow): StructuredPlaybook {

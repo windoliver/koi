@@ -830,6 +830,37 @@ function migrateSessionsToV4(db: Database): void {
  *
  * No-op when the watermarks table already has rows for every known playbook.
  */
+function collectV6Watermarks(db: Database): Map<string, number> {
+  const watermarks = new Map<string, number>();
+  const headRows = db
+    .query("SELECT id, last_reflected_step_index FROM structured_playbooks")
+    .all() as readonly {
+    readonly id: string;
+    readonly last_reflected_step_index: number | null;
+  }[];
+  for (const row of headRows) {
+    if (row.last_reflected_step_index !== null) {
+      watermarks.set(row.id, row.last_reflected_step_index);
+    }
+  }
+  const lineageRows = db
+    .query("SELECT playbook_id, snapshot FROM structured_playbook_versions")
+    .all() as readonly { readonly playbook_id: string; readonly snapshot: string }[];
+  for (const row of lineageRows) {
+    try {
+      const parsed = JSON.parse(row.snapshot) as { lastReflectedStepIndex?: number };
+      const v = parsed.lastReflectedStepIndex;
+      if (typeof v === "number") {
+        const existing = watermarks.get(row.playbook_id);
+        watermarks.set(row.playbook_id, existing === undefined ? v : Math.max(existing, v));
+      }
+    } catch {
+      // Skip malformed snapshots — backfill is best-effort.
+    }
+  }
+  return watermarks;
+}
+
 function migrateWatermarksToV6(db: Database): void {
   const tableInfo = db
     .query(
@@ -843,33 +874,7 @@ function migrateWatermarksToV6(db: Database): void {
     )
     .get() as { readonly name: string } | null;
   if (lineageExists === null) return;
-  const lineageRows = db
-    .query("SELECT playbook_id, snapshot FROM structured_playbook_versions")
-    .all() as readonly { readonly playbook_id: string; readonly snapshot: string }[];
-  const headRows = db
-    .query("SELECT id, last_reflected_step_index FROM structured_playbooks")
-    .all() as readonly {
-    readonly id: string;
-    readonly last_reflected_step_index: number | null;
-  }[];
-  const watermarks = new Map<string, number>();
-  for (const row of headRows) {
-    if (row.last_reflected_step_index !== null) {
-      watermarks.set(row.id, row.last_reflected_step_index);
-    }
-  }
-  for (const row of lineageRows) {
-    try {
-      const parsed = JSON.parse(row.snapshot) as { lastReflectedStepIndex?: number };
-      const v = parsed.lastReflectedStepIndex;
-      if (typeof v === "number") {
-        const existing = watermarks.get(row.playbook_id);
-        watermarks.set(row.playbook_id, existing === undefined ? v : Math.max(existing, v));
-      }
-    } catch {
-      // Skip malformed snapshots — backfill is best-effort.
-    }
-  }
+  const watermarks = collectV6Watermarks(db);
   if (watermarks.size === 0) return;
   db.transaction(() => {
     const upsert = db.prepare(

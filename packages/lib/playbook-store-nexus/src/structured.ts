@@ -1,5 +1,5 @@
 import type { StructuredPlaybook, StructuredPlaybookStore } from "@koi/ace-types";
-import { extractReadContent } from "@koi/nexus-client";
+import { extractReadContent, type NexusTransport } from "@koi/nexus-client";
 
 import { deleteJson, encodeAceId, listChildren, readJson, validateAceId } from "./json-io.js";
 import { withPlaybookLock } from "./playbook-locks.js";
@@ -22,6 +22,102 @@ function canonicalJson(value: unknown): string {
     }
     return sorted;
   });
+}
+
+/**
+ * Pre-write guard for monotonic-version semantics. Returns `true` if the
+ * caller should short-circuit (idempotent byte-identical replay); throws on
+ * version regression, divergent same-version content, or missing etag for an
+ * existing head.
+ */
+function validateVersionGuard(
+  playbook: StructuredPlaybook,
+  current: StructuredPlaybook | undefined,
+  etag: string | undefined,
+  p: string,
+): boolean {
+  if (current === undefined) return false;
+  if (playbook.version < current.version) {
+    throw new Error(
+      `playbook ${playbook.id} cannot save version ${String(playbook.version)} below current version ${String(current.version)}`,
+    );
+  }
+  if (playbook.version === current.version) {
+    if (canonicalJson(playbook) === canonicalJson(current)) return true;
+    throw new Error(
+      `playbook ${playbook.id} cannot save divergent content at current version ${String(current.version)}`,
+    );
+  }
+  if (etag === undefined) {
+    throw new Error(
+      `playbook-store-nexus: read returned no etag for existing head at ${p} — refusing blind overwrite`,
+    );
+  }
+  return false;
+}
+
+async function writeWithCas(
+  transport: NexusTransport,
+  p: string,
+  playbook: StructuredPlaybook,
+  etag: string | undefined,
+  currentVersion: number | undefined,
+): Promise<void> {
+  const params: Record<string, unknown> = { path: p, content: JSON.stringify(playbook) };
+  if (etag !== undefined) params.if_match = etag;
+  const r = await transport.call<unknown>("write", params);
+  if (r.ok) return;
+  if (r.error.code === "CONFLICT") {
+    throw new Error(
+      `playbook ${playbook.id} concurrent write conflict at version ${String(currentVersion ?? "(initial)")}: ${r.error.message}`,
+    );
+  }
+  throw new Error(r.error.message);
+}
+
+interface CurrentHead {
+  readonly current: StructuredPlaybook | undefined;
+  readonly etag: string | undefined;
+}
+
+/**
+ * Read the current head with metadata for an etag-CAS save. Returns undefined
+ * `current` when the file does not exist yet. Decodes through
+ * `extractReadContent` so any documented Nexus envelope shape (plain string,
+ * `{__type__:"bytes",data:base64}`, nested-content wrapper) round-trips. Etag
+ * is read from either `metadata.etag` or top-level `etag` (transport
+ * wrappers surface it at either location).
+ */
+async function readCurrentHead(transport: NexusTransport, p: string): Promise<CurrentHead> {
+  const readResult = await transport.call<unknown>("read", { path: p, return_metadata: true });
+  if (!readResult.ok) {
+    if (readResult.error.code === "NOT_FOUND") return { current: undefined, etag: undefined };
+    throw new Error(readResult.error.message);
+  }
+  const raw = readResult.value as
+    | { content?: unknown; metadata?: { etag?: string }; etag?: string }
+    | undefined;
+  if (raw === undefined) {
+    throw new Error(`playbook-store-nexus: read returned no envelope at ${p}`);
+  }
+  const decoded = extractReadContent(raw);
+  if (!decoded.ok) {
+    throw new Error(
+      `playbook-store-nexus: read returned undecodable content at ${p} — refusing to overwrite a degraded head`,
+    );
+  }
+  if (decoded.value.length === 0) {
+    throw new Error(
+      `playbook-store-nexus: read returned empty content at ${p} — refusing to overwrite a degraded head`,
+    );
+  }
+  let current: StructuredPlaybook;
+  try {
+    current = JSON.parse(decoded.value) as StructuredPlaybook;
+  } catch (e) {
+    throw new Error(`playbook-store-nexus: parse error at ${p}`, { cause: e });
+  }
+  return { current, etag: raw.metadata?.etag ?? raw.etag };
 }
 
 export function createNexusStructuredPlaybookStore(
@@ -79,125 +175,15 @@ export function createNexusStructuredPlaybookStore(
     async save(playbook: StructuredPlaybook): Promise<void> {
       const v = validateAceId(playbook.id, "Structured Playbook ID");
       if (!v.ok) throw new Error(v.error.message);
-      // Acquire the per-playbook lock shared with recordProposal to serialise
-      // in-process save + baseVersion-check interleaving. See playbook-locks.ts.
       await withPlaybookLock(scope, playbook.id, async () => {
-        // Enforce monotonic version semantics required by the
-        // StructuredPlaybookStore contract (matches sqlite implementation).
-        //
-        // Cross-process safety: read the current file with metadata, capture
-        // its etag, then write back with if_match=etag. The Nexus backend
-        // returns CONFLICT (-32006) if the file changed between read and
-        // write, so concurrent promotions cannot both succeed at version
-        // N+1 — only the writer holding the etag of version N wins.
-        const readResult = await transport.call<unknown>("read", {
-          path: path(playbook.id),
-          return_metadata: true,
-        });
-        let etag: string | undefined;
-        let current: StructuredPlaybook | undefined;
-        if (readResult.ok) {
-          // Accept both documented envelope shapes: nested
-          // `metadata.etag` AND top-level `etag`. Different transport
-          // wrappers and backend versions surface the etag at either
-          // location; rejecting one shape would brick valid updates.
-          const raw = readResult.value as
-            | { content?: unknown; metadata?: { etag?: string }; etag?: string }
-            | undefined;
-          if (raw === undefined) {
-            throw new Error(
-              `playbook-store-nexus: read returned no envelope at ${path(playbook.id)}`,
-            );
-          }
-          // Decode through the canonical helper: it handles plain strings,
-          // `{__type__:"bytes",data:base64}` envelopes, and nested-content
-          // wrappers — all of which are valid Nexus read shapes. Rejecting
-          // anything but a top-level string would brick byte-encoded reads
-          // returned by compliant transports/wrappers.
-          const decoded = extractReadContent(raw);
-          if (!decoded.ok) {
-            throw new Error(
-              `playbook-store-nexus: read returned undecodable content at ${path(playbook.id)} — refusing to overwrite a degraded head`,
-            );
-          }
-          if (decoded.value.length === 0) {
-            throw new Error(
-              `playbook-store-nexus: read returned empty content at ${path(playbook.id)} — refusing to overwrite a degraded head`,
-            );
-          }
-          try {
-            current = JSON.parse(decoded.value) as StructuredPlaybook;
-          } catch (e) {
-            throw new Error(`playbook-store-nexus: parse error at ${path(playbook.id)}`, {
-              cause: e,
-            });
-          }
-          etag = raw.metadata?.etag ?? raw.etag;
-        } else if (readResult.error.code !== "NOT_FOUND") {
-          throw new Error(readResult.error.message);
-        }
-
-        if (current !== undefined) {
-          if (playbook.version < current.version) {
-            throw new Error(
-              `playbook ${playbook.id} cannot save version ${String(playbook.version)} below current version ${String(current.version)}`,
-            );
-          }
-          // Idempotent replay: byte-identical save at the same version is a
-          // no-op (caller is confirming an already-applied write under retry
-          // semantics). Short-circuit BEFORE the etag check so legitimate
-          // retries succeed even on transports with degraded metadata.
-          if (
-            playbook.version === current.version &&
-            canonicalJson(playbook) === canonicalJson(current)
-          ) {
-            return;
-          }
-          if (
-            playbook.version === current.version &&
-            canonicalJson(playbook) !== canonicalJson(current)
-          ) {
-            throw new Error(
-              `playbook ${playbook.id} cannot save divergent content at current version ${String(current.version)}`,
-            );
-          }
-          // Fail closed for real mutations: a successful read of an existing
-          // head MUST yield an etag for if_match CAS. Missing etag means the
-          // transport's metadata path is degraded — proceeding would silently
-          // overwrite blindly.
-          if (etag === undefined) {
-            throw new Error(
-              `playbook-store-nexus: read returned no etag for existing head at ${path(playbook.id)} — refusing blind overwrite`,
-            );
-          }
-        }
-
-        // Refuse to create on first save when fail-closed is enabled.
-        // The Nexus transport lacks create-only CAS, so two coordinators
-        // racing on the initial write would both succeed (last-writer-wins),
-        // silently losing one initial payload. Pre-provisioning eliminates
-        // the race by ensuring at most one create ever runs.
+        const { current, etag } = await readCurrentHead(transport, path(playbook.id));
+        if (validateVersionGuard(playbook, current, etag, path(playbook.id))) return;
         if (current === undefined && requirePreProvisioned) {
           throw new Error(
             `playbook-store-nexus: refusing to create playbook ${playbook.id} on first save (transport lacks create-only CAS). Pre-provision via single-coordinator path, or set requirePreProvisioned: false in deployments where single-writer is guaranteed.`,
           );
         }
-        const writeParams: Record<string, unknown> = {
-          path: path(playbook.id),
-          content: JSON.stringify(playbook),
-        };
-        if (etag !== undefined) {
-          writeParams.if_match = etag;
-        }
-        const writeResult = await transport.call<unknown>("write", writeParams);
-        if (!writeResult.ok) {
-          if (writeResult.error.code === "CONFLICT") {
-            throw new Error(
-              `playbook ${playbook.id} concurrent write conflict at version ${String(current?.version ?? "(initial)")}: ${writeResult.error.message}`,
-            );
-          }
-          throw new Error(writeResult.error.message);
-        }
+        await writeWithCas(transport, path(playbook.id), playbook, etag, current?.version);
       });
     },
 
