@@ -64,16 +64,14 @@ export function createDockerInstance(container: DockerContainer): SandboxInstanc
     writeFile: (path: string, content: Uint8Array): Promise<void> =>
       container.writeFile(path, content),
     destroy: async (): Promise<void> => {
-      // Attempt stop, but always proceed to remove for best-effort cleanup.
-      // If stop fails, we still try remove — then surface the stop error.
-      let stopError: unknown;
-      try {
-        await container.stop();
-      } catch (e: unknown) {
-        stopError = e;
-      }
+      // `docker rm -f` force-removes regardless of running state, so a
+      // separate `stop` is redundant. Calling stop first also breaks
+      // idempotency: a second destroy() would surface "docker stop failed"
+      // for an already-removed container instead of being a no-op.
       await container.remove();
-      if (stopError !== undefined) throw stopError;
     },
+    // Only surface detach when the container backend provides one (persistence path).
+    // L0 contract: detach pauses without removing so a later findOrCreate(scope) reattaches.
+    ...(container.detach !== undefined ? { detach: container.detach } : {}),
   };
 }

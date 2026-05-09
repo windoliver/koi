@@ -135,7 +135,7 @@ bun run test
 ### Prerequisites
 
 - Bun 1.3.x
-- If `bun install` fails at `lefthook install` because `core.hooksPath` is already set, run `lefthook install --force`
+- If you run `lefthook install` manually in a linked worktree, use `lefthook install --force`
 
 ### Toolchain
 
