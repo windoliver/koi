@@ -46,22 +46,6 @@ export interface MountDescriptionsState {
 }
 
 /**
- * Strict allow-list for mount identifiers that flow into the system prompt.
- * `path` must be an absolute Nexus-style path of `/`-separated segments where
- * each segment uses only `[A-Za-z0-9._-]`. `connector` must use the same
- * character class. Anything else is rejected so backend-supplied data
- * (`list_mounts`, `add_mount`) cannot smuggle instruction-bearing text or
- * structural punctuation into the highest-trust prompt layer.
- */
-const SAFE_PATH_RE = /^(\/[A-Za-z0-9._-]+)+$/;
-const SAFE_CONNECTOR_RE = /^[A-Za-z0-9._-]+$/;
-function isPromptSafeMountIdentifier(entry: MountDescription): boolean {
-  if (!SAFE_PATH_RE.test(entry.path)) return false;
-  if (!SAFE_CONNECTOR_RE.test(entry.connector)) return false;
-  return true;
-}
-
-/**
  * Filter mount entries against a session-disclosure scope (canonicalized
  * `/path` strings). When `scopePaths` is undefined or empty, no filtering is
  * applied. When set, only entries whose `path` falls within one of the
@@ -190,22 +174,40 @@ function escapeXmlAttr(value: string): string {
  * Operators that want to surface README content to the model should expose it
  * via tool output or a dedicated lower-trust context channel instead.
  */
+/**
+ * Replace any character outside the prompt-safe allowlist with `_`. Used
+ * in strict mode so a mounted connector whose identifier contains common
+ * characters like `@` or spaces (real-world OAuth account names, display
+ * names) is still surfaced to the model — just with non-allowlist
+ * characters replaced. This preserves model-visible existence of the
+ * mount while preventing untrusted text from carrying instruction-bearing
+ * characters into the highest-trust prompt layer.
+ *
+ * Path: keeps `/` segment separators; replaces other unsafe chars with
+ * `_`. Connector: replaces unsafe chars with `_` (no separators allowed).
+ */
+function sanitizePromptPath(value: string): string {
+  return value.replace(/[^A-Za-z0-9._\-/]/g, "_");
+}
+function sanitizePromptConnector(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]/g, "_");
+}
+
 function renderBlock(
   tag: "mounted_connectors" | "runtime_mounted_connectors",
   entries: readonly MountDescription[],
   strict: boolean,
 ): string | undefined {
-  // Apply prompt-safety filtering at the prompt boundary: entries with
-  // characters outside the allowlist are dropped from the system prompt
-  // only. They remain in the canonical state for /mounts and other
-  // operator-facing UIs.
-  const promptable = strict ? entries.filter(isPromptSafeMountIdentifier) : entries;
-  if (promptable.length === 0) return undefined;
-  const items = promptable
+  if (entries.length === 0) return undefined;
+  const items = entries
     .map((entry) => {
+      // Strict mode: render with non-allowlist characters replaced by `_`.
+      // Non-strict: pass identifiers through XML attribute escaping only.
+      const renderPath = strict ? sanitizePromptPath(entry.path) : entry.path;
+      const renderConnector = strict ? sanitizePromptConnector(entry.connector) : entry.connector;
       const attrs = [
-        `path="${escapeXmlAttr(entry.path)}"`,
-        `name="${escapeXmlAttr(entry.connector)}"`,
+        `path="${escapeXmlAttr(renderPath)}"`,
+        `name="${escapeXmlAttr(renderConnector)}"`,
       ];
       return `  <connector ${attrs.join(" ")} />`;
     })

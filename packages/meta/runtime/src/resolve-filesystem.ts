@@ -642,13 +642,32 @@ export async function resolveFileSystemAsync(
     // mountPoint silently bypasses the unmount/addMount guards.
     const canonicalActiveRoot =
       inferredMountPoint === undefined ? undefined : canonicalizeMountPath(inferredMountPoint);
+    // Two distinct concepts that were previously conflated:
+    //
+    //   protectedRoots — paths whose deletion or overlay would corrupt the
+    //   session (active backend root, scope root, glob-static-prefix). Used
+    //   ONLY by add/remove safety guards. The active backend root MUST be
+    //   here so /unmount of the active root is refused, but a fixed-root
+    //   session without filesystem scope is NOT scope-restricted: sibling
+    //   mounts under that root must remain visible to /mounts and the model.
+    //
+    //   disclosureScope — paths the session is allowed to see / advertise.
+    //   Used by listMounts / describeMount / mounts-cache filters,
+    //   seedManifestMountDescriptions, and effectiveScopePaths. Driven by
+    //   real scope inputs (scope.root + glob static prefixes), NEVER by the
+    //   active backend root alone, so an explicit fixed-root session
+    //   (no scope) sees every live mount as before.
     const protectedRoots: string[] = [];
+    const disclosureScope: string[] = [];
     if (canonicalActiveRoot !== undefined && canonicalActiveRoot.length > 0) {
       protectedRoots.push(canonicalActiveRoot);
     }
     if (scope !== undefined) {
       const scopeCanonical = canonicalizeMountPath(scope.root);
-      if (scopeCanonical.length > 0) protectedRoots.push(scopeCanonical);
+      if (scopeCanonical.length > 0) {
+        protectedRoots.push(scopeCanonical);
+        disclosureScope.push(scopeCanonical);
+      }
     }
     let hasUnprotectableScope = false;
     if (globScope !== undefined) {
@@ -658,6 +677,7 @@ export async function resolveFileSystemAsync(
         const canonical = canonicalizeMountPath(staticPrefix);
         if (canonical.length > 0) {
           protectedRoots.push(canonical);
+          disclosureScope.push(canonical);
         } else {
           // Wildcard-only allow pattern (e.g. "**/*.md", "*.txt") cannot be
           // reduced to a static namespace, so the addMount/removeMount
@@ -730,9 +750,13 @@ export async function resolveFileSystemAsync(
     // visibility filter. When protectedRoots is empty there is no scope
     // restriction (namespace-root + no scope), so every path is visible.
     const isPathVisibleInScope = (rawPath: string): boolean => {
-      if (protectedRoots.length === 0) return true;
+      // Visibility uses disclosureScope — NOT protectedRoots. The active
+      // backend root is in protectedRoots for safety, but a fixed-root
+      // session without explicit scope is not scope-restricted, so empty
+      // disclosureScope means "everything visible".
+      if (disclosureScope.length === 0) return true;
       const path = canonicalizeMountPath(rawPath);
-      for (const root of protectedRoots) {
+      for (const root of disclosureScope) {
         if (path === root || path.startsWith(`${root}/`) || root.startsWith(`${path}/`)) {
           return true;
         }
@@ -1158,7 +1182,11 @@ export async function resolveFileSystemAsync(
         // scoped session could enumerate every live mount via listMounts
         // or fetch README content for sibling mounts via describeMount.
         const innerListMounts = transport.listMounts;
-        if (innerListMounts !== undefined && (protectedRoots.length > 0 || hasUnprotectableScope)) {
+        // Visibility filtering uses disclosureScope, NOT protectedRoots. A
+        // fixed-root session without explicit scope has empty
+        // disclosureScope and must not filter listMounts/describeMount.
+        const hasVisibilityRestriction = disclosureScope.length > 0 || hasUnprotectableScope;
+        if (innerListMounts !== undefined && hasVisibilityRestriction) {
           wrapped.listMounts = async (): Promise<
             Result<readonly string[], import("@koi/core").KoiError>
           > => {
@@ -1172,10 +1200,7 @@ export async function resolveFileSystemAsync(
           };
         }
         const innerDescribeMount = transport.describeMount;
-        if (
-          innerDescribeMount !== undefined &&
-          (protectedRoots.length > 0 || hasUnprotectableScope)
-        ) {
+        if (innerDescribeMount !== undefined && hasVisibilityRestriction) {
           wrapped.describeMount = async (
             path: string,
           ): Promise<Result<MountDescription, import("@koi/core").KoiError>> => {
@@ -1200,7 +1225,7 @@ export async function resolveFileSystemAsync(
           get(): readonly string[] {
             const raw = transport.mounts ?? [];
             if (hasUnprotectableScope) return [];
-            if (protectedRoots.length === 0) return raw;
+            if (disclosureScope.length === 0) return raw;
             return raw.filter(isPathVisibleInScope);
           },
         });
@@ -1215,11 +1240,14 @@ export async function resolveFileSystemAsync(
     const UNPROTECTABLE_SCOPE_SENTINEL = "/__koi_unprotectable_scope_no_disclosure__";
     const seedMounts = hasUnprotectableScope
       ? []
-      : seedManifestMountDescriptions(transport, protectedRoots);
+      : seedManifestMountDescriptions(
+          transport,
+          disclosureScope.length > 0 ? disclosureScope : undefined,
+        );
     const seedScope = hasUnprotectableScope
       ? [UNPROTECTABLE_SCOPE_SENTINEL]
-      : protectedRoots.length > 0
-        ? protectedRoots
+      : disclosureScope.length > 0
+        ? disclosureScope
         : undefined;
     return {
       backend,
