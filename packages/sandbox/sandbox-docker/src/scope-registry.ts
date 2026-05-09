@@ -117,118 +117,119 @@ function isFsNotFound(e: unknown): boolean {
   return typeof e === "object" && e !== null && (e as { code?: string }).code === "ENOENT";
 }
 
-export function createFileScopeRegistry(opts?: { readonly dir?: string }): ScopeRegistry {
-  const dir = opts?.dir ?? defaultScopeRegistryDir();
+function scopeHash(scope: string): string {
+  return createHash("sha256").update(scope, "utf8").digest("hex");
+}
+function idHash(containerId: string): string {
+  return createHash("sha256").update(containerId, "utf8").digest("hex").slice(0, 32);
+}
+function entryPath(dir: string, scope: string, containerId: string): string {
+  // Filename encodes the (scope, containerId) pair so an unlink is an
+  // atomic compare-and-swap-by-id: a stale forgetIfMatches cannot delete
+  // a different process's freshly-recorded entry because that entry lives
+  // at a different path.
+  return join(dir, `${scopeHash(scope)}.${idHash(containerId)}.scope`);
+}
 
-  function scopeHash(scope: string): string {
-    return createHash("sha256").update(scope, "utf8").digest("hex");
+async function listEntries(dir: string, scope: string): Promise<readonly string[]> {
+  const prefix = `${scopeHash(scope)}.`;
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch (e: unknown) {
+    // Directory genuinely missing → no entries; other errors must surface
+    // so a permission fault on the state dir does not silently look empty.
+    if (isFsNotFound(e)) return [];
+    throw e;
   }
-  function idHash(containerId: string): string {
-    return createHash("sha256").update(containerId, "utf8").digest("hex").slice(0, 32);
-  }
-  function entryPath(scope: string, containerId: string): string {
-    // Filename encodes the (scope, containerId) pair so an unlink is an
-    // atomic compare-and-swap-by-id: a stale forgetIfMatches cannot delete
-    // a different process's freshly-recorded entry because that entry lives
-    // at a different path.
-    return join(dir, `${scopeHash(scope)}.${idHash(containerId)}.scope`);
-  }
-  function entryPattern(scope: string): string {
-    return `${scopeHash(scope)}.`;
-  }
+  return names.filter((n) => n.startsWith(prefix) && n.endsWith(".scope"));
+}
 
-  async function listEntries(scope: string): Promise<readonly string[]> {
-    const prefix = entryPattern(scope);
-    let names: string[];
+async function recordEntry(dir: string, scope: string, containerId: string): Promise<void> {
+  mkdirSync(dir, { recursive: true });
+  const target = entryPath(dir, scope, containerId);
+  const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
+  // Content is the raw container ID so lookup can recover it without
+  // reversing the hash. The filename hash is the CAS key; the content is
+  // the value.
+  await writeFile(tmp, containerId, { mode: 0o600 });
+  try {
+    await rename(tmp, target);
+  } catch (e: unknown) {
     try {
-      names = await readdir(dir);
+      await unlink(tmp);
+    } catch {
+      // ignore — best effort cleanup
+    }
+    throw e;
+  }
+  // Sweep stale (scope, otherId) entries left over from a prior record.
+  const stale = await listEntries(dir, scope);
+  const targetName = `${scopeHash(scope)}.${idHash(containerId)}.scope`;
+  for (const n of stale) {
+    if (n === targetName) continue;
+    try {
+      await unlink(join(dir, n));
     } catch (e: unknown) {
-      // Directory genuinely missing → no entries; other errors must surface
-      // so a permission fault on the state dir does not silently look empty.
-      if (isFsNotFound(e)) return [];
+      if (!isFsNotFound(e)) throw e;
+    }
+  }
+}
+
+async function lookupEntry(dir: string, scope: string): Promise<string | undefined> {
+  const entries = await listEntries(dir, scope);
+  // During a record() sweep multiple `<scopeHash>.<idHash>.scope` files may
+  // briefly exist — the new entry plus stale ones being unlinked. Iterate
+  // ALL matches and return the first successful read so a sweep-in-progress
+  // that deletes one candidate cannot make a legitimate fresh entry look
+  // absent. ENOENT on any single file means it was just swept; try the next.
+  for (const name of entries) {
+    try {
+      const raw = await readFile(join(dir, name), "utf-8");
+      const trimmed = raw.trim();
+      if (trimmed.length > 0) return trimmed;
+    } catch (e: unknown) {
+      if (isFsNotFound(e)) continue;
       throw e;
     }
-    return names.filter((n) => n.startsWith(prefix) && n.endsWith(".scope"));
   }
+  return undefined;
+}
 
+async function forgetAllEntries(dir: string, scope: string): Promise<void> {
+  for (const n of await listEntries(dir, scope)) {
+    try {
+      await unlink(join(dir, n));
+    } catch (e: unknown) {
+      if (!isFsNotFound(e)) throw e;
+    }
+  }
+}
+
+async function forgetEntryIfMatches(
+  dir: string,
+  scope: string,
+  expectedContainerId: string,
+): Promise<boolean> {
+  // Atomic CAS by filename: a different recorded id lives at a different
+  // path and our unlink does not touch it. ENOENT = no entry OR different
+  // id — both safely "did not match".
+  try {
+    await unlink(entryPath(dir, scope, expectedContainerId));
+    return true;
+  } catch (e: unknown) {
+    if (isFsNotFound(e)) return false;
+    throw e;
+  }
+}
+
+export function createFileScopeRegistry(opts?: { readonly dir?: string }): ScopeRegistry {
+  const dir = opts?.dir ?? defaultScopeRegistryDir();
   return {
-    record: async (scope, containerId): Promise<void> => {
-      mkdirSync(dir, { recursive: true });
-      const target = entryPath(scope, containerId);
-      const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
-      // Content is the raw container ID so lookup can recover it without
-      // reversing the hash. The filename hash is the CAS key; the content
-      // is the value.
-      await writeFile(tmp, containerId, { mode: 0o600 });
-      try {
-        await rename(tmp, target);
-      } catch (e: unknown) {
-        try {
-          await unlink(tmp);
-        } catch {
-          // ignore — best effort cleanup
-        }
-        throw e;
-      }
-      // Sweep stale (scope, otherId) entries left over from a prior record.
-      // Best effort: a concurrent peer's brand-new entry that lands between
-      // listEntries() and unlink() is racy here, but that's a same-scope
-      // double-record (already pathological — the deterministic --name
-      // ensures only one container exists per scope cluster-wide).
-      const stale = await listEntries(scope);
-      const targetName = `${scopeHash(scope)}.${idHash(containerId)}.scope`;
-      for (const n of stale) {
-        if (n === targetName) continue;
-        try {
-          await unlink(join(dir, n));
-        } catch (e: unknown) {
-          if (!isFsNotFound(e)) throw e;
-        }
-      }
-    },
-    lookup: async (scope): Promise<string | undefined> => {
-      const entries = await listEntries(scope);
-      if (entries.length === 0) return undefined;
-      // During a record() sweep multiple `<scopeHash>.<idHash>.scope` files
-      // may briefly exist — the new entry plus stale ones being unlinked.
-      // Iterate ALL matches and return the first successful read so a
-      // sweep-in-progress that deletes one candidate cannot make a
-      // legitimate fresh entry look absent. ENOENT on any single file
-      // means it was just swept; try the next.
-      for (const name of entries) {
-        try {
-          const raw = await readFile(join(dir, name), "utf-8");
-          const trimmed = raw.trim();
-          if (trimmed.length > 0) return trimmed;
-        } catch (e: unknown) {
-          if (isFsNotFound(e)) continue;
-          throw e;
-        }
-      }
-      return undefined;
-    },
-    forget: async (scope): Promise<void> => {
-      const entries = await listEntries(scope);
-      for (const n of entries) {
-        try {
-          await unlink(join(dir, n));
-        } catch (e: unknown) {
-          if (!isFsNotFound(e)) throw e;
-        }
-      }
-    },
-    forgetIfMatches: async (scope, expectedContainerId): Promise<boolean> => {
-      // Atomic CAS by filename: if another process recorded a DIFFERENT id
-      // for this scope, that entry lives at a different path and our
-      // unlink does not touch it. ENOENT means either no entry or a
-      // different id is recorded — both safely "did not match".
-      try {
-        await unlink(entryPath(scope, expectedContainerId));
-        return true;
-      } catch (e: unknown) {
-        if (isFsNotFound(e)) return false;
-        throw e;
-      }
-    },
+    record: (scope, containerId) => recordEntry(dir, scope, containerId),
+    lookup: (scope) => lookupEntry(dir, scope),
+    forget: (scope) => forgetAllEntries(dir, scope),
+    forgetIfMatches: (scope, expectedContainerId) =>
+      forgetEntryIfMatches(dir, scope, expectedContainerId),
   };
 }
