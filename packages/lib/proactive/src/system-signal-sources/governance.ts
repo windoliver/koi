@@ -24,6 +24,28 @@ export interface GovernanceSignalSourceConfig {
   readonly now?: (() => number) | undefined;
 }
 
+function coalesceThresholds(
+  thresholds: readonly GovernanceThreshold[],
+): GovernanceThreshold[] {
+  const coalesced = new Map<string, GovernanceThreshold>();
+
+  for (const threshold of thresholds) {
+    const key = `${threshold.sensor}:${threshold.direction}:${threshold.limit}`;
+    const previous = coalesced.get(key);
+    if (previous === undefined) {
+      coalesced.set(key, threshold);
+      continue;
+    }
+
+    coalesced.set(key, {
+      ...previous,
+      cooldownMs: Math.min(previous.cooldownMs ?? 0, threshold.cooldownMs ?? 0),
+    });
+  }
+
+  return [...coalesced.values()];
+}
+
 function findMatchingReadings(
   readings: GovernanceSnapshot["readings"],
   threshold: GovernanceThreshold,
@@ -62,6 +84,7 @@ export function createGovernanceSignalSource(
 ): SystemSignalSource {
   const pollIntervalMs = config.pollIntervalMs ?? 1000;
   const now = config.now ?? Date.now;
+  const normalizedThresholds = coalesceThresholds(thresholds);
 
   return {
     name: "governance",
@@ -73,22 +96,19 @@ export function createGovernanceSignalSource(
       }, options, now);
       const state = new Map<string, { alerting: boolean; lastEmittedAt: number }>();
       let inFlight = false;
-      let nextPollRequestId = 0;
-      let lastStartedPollRequestId = 0;
+      let pendingPollCount = 0;
 
       const drainPolls = async () => {
         if (closed || inFlight) return;
         inFlight = true;
         try {
-          while (!closed && lastStartedPollRequestId < nextPollRequestId) {
-            const pollRequestId = nextPollRequestId;
-            lastStartedPollRequestId = pollRequestId;
+          while (!closed && pendingPollCount > 0) {
+            pendingPollCount -= 1;
             const snapshot: GovernanceSnapshot = await controller.snapshot();
             if (closed) return;
-            if (pollRequestId !== nextPollRequestId) continue;
 
-            for (const [thresholdIndex, threshold] of thresholds.entries()) {
-              if (closed || pollRequestId !== nextPollRequestId) return;
+            for (const [thresholdIndex, threshold] of normalizedThresholds.entries()) {
+              if (closed) return;
 
               const reading = selectAlertingReading(
                 findMatchingReadings(snapshot.readings, threshold),
@@ -105,7 +125,7 @@ export function createGovernanceSignalSource(
                 reading !== undefined
               ) {
                 const emittedAt = now();
-                if (closed || pollRequestId !== nextPollRequestId) return;
+                if (closed) return;
                 emitter.emit({
                   kind: "governance",
                   sensor: threshold.sensor,
@@ -122,18 +142,18 @@ export function createGovernanceSignalSource(
             }
           }
         } catch (error) {
-          if (closed || lastStartedPollRequestId !== nextPollRequestId) return;
+          if (closed) return;
           safeCall(options?.onError, error);
         } finally {
           inFlight = false;
-          if (!closed && lastStartedPollRequestId < nextPollRequestId) {
+          if (!closed && pendingPollCount > 0) {
             void drainPolls();
           }
         }
       };
 
       const requestPoll = () => {
-        nextPollRequestId += 1;
+        pendingPollCount += 1;
         void drainPolls();
       };
 

@@ -183,7 +183,7 @@ describe("createGovernanceSignalSource", () => {
     ]);
   });
 
-  test("tracks thresholds with different cooldowns independently", async () => {
+  test("coalesces equivalent thresholds that differ only by cooldown", async () => {
     let now = 100;
     let current = 0.1;
     const controller = createController([
@@ -226,14 +226,6 @@ describe("createGovernanceSignalSource", () => {
 
     stop();
     expect(seen).toEqual([
-      {
-        kind: "governance",
-        sensor: "error_rate",
-        value: 0.4,
-        limit: 0.3,
-        direction: "above",
-        emittedAt: 110,
-      },
       {
         kind: "governance",
         sensor: "error_rate",
@@ -402,6 +394,71 @@ describe("createGovernanceSignalSource", () => {
         limit: 0.3,
         direction: "above",
         emittedAt: 450,
+      },
+    ]);
+  });
+
+  test("processes recovery before a newer re-alert request", async () => {
+    const recovery = createDeferred<GovernanceSnapshot>();
+    const snapshots = [
+      Promise.resolve({
+        timestamp: 700,
+        readings: [{ name: "error_rate", current: 0.4, limit: 1, utilization: 0.4 }],
+        healthy: true,
+        violations: [],
+      }),
+      recovery.promise,
+      Promise.resolve({
+        timestamp: 702,
+        readings: [{ name: "error_rate", current: 0.45, limit: 1, utilization: 0.45 }],
+        healthy: true,
+        violations: [],
+      }),
+    ];
+    const controller = {
+      ...createController([]),
+      snapshot: mock(async () => snapshots.shift() ?? snapshots[snapshots.length - 1]!),
+    } satisfies GovernanceController;
+
+    const source = createGovernanceSignalSource(
+      controller,
+      [{ sensor: "error_rate", limit: 0.3, direction: "above" }],
+      { pollIntervalMs: 1, now: () => 750 },
+    );
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal), { replay: true });
+    await new Promise((resolve) => queueMicrotask(resolve));
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    recovery.resolve({
+      timestamp: 701,
+      readings: [{ name: "error_rate", current: 0.1, limit: 1, utilization: 0.1 }],
+      healthy: true,
+      violations: [],
+    });
+    await recovery.promise;
+    await new Promise((resolve) => queueMicrotask(resolve));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => queueMicrotask(resolve));
+
+    stop();
+    expect(seen).toEqual([
+      {
+        kind: "governance",
+        sensor: "error_rate",
+        value: 0.4,
+        limit: 0.3,
+        direction: "above",
+        emittedAt: 750,
+      },
+      {
+        kind: "governance",
+        sensor: "error_rate",
+        value: 0.45,
+        limit: 0.3,
+        direction: "above",
+        emittedAt: 750,
       },
     ]);
   });
