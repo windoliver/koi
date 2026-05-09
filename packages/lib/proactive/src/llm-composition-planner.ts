@@ -314,6 +314,49 @@ function planContainsUnsupported(steps: readonly CompositionStep[]): boolean {
   return false;
 }
 
+// MVP-safe notify_user channels: the executor's default
+// allowedNotifyChannels is ["inbox"]. LLM plans naming any other channel
+// would deterministically fail-closed at execute time on a default host,
+// so they are routed through approval. Hosts that have wired additional
+// channels into the executor can override this allowlist via planner
+// config (parallel to the executor's allowedNotifyChannels option).
+const DEFAULT_PLANNER_SAFE_CHANNELS: readonly string[] = ["inbox"];
+
+// Schedule taskOption keys the shipped Temporal scheduler rejects up
+// front (see packages/exec/temporal/src/temporal-scheduler.ts schedule()).
+// LLM plans setting any of these on a create_schedule step will be
+// rejected as preCommitRejection at execute time. Auto-approving those
+// plans is a deterministic planner/runtime mismatch, so route them
+// through approval for the operator/policy to decide.
+const TEMPORAL_UNSUPPORTED_SCHEDULE_OPTION_KEYS: readonly string[] = [
+  "timeoutMs",
+  "maxRetries",
+  "delayMs",
+  "priority",
+  "metadata",
+  "idempotencyKey",
+];
+
+function planUsesUnsafeChannel(
+  steps: readonly CompositionStep[],
+  safeChannels: readonly string[],
+): boolean {
+  for (const step of steps) {
+    if (step.kind === "notify_user" && !safeChannels.includes(step.channel)) return true;
+  }
+  return false;
+}
+
+function planUsesUnsupportedScheduleOption(steps: readonly CompositionStep[]): boolean {
+  for (const step of steps) {
+    if (step.kind !== "create_schedule" || step.taskOptions === undefined) continue;
+    for (const key of TEMPORAL_UNSUPPORTED_SCHEDULE_OPTION_KEYS) {
+      if ((step.taskOptions as Record<string, unknown>)[key] !== undefined) return true;
+    }
+  }
+  return false;
+}
+
 function parseAdapterResponse(
   raw: string,
   trigger: CompositionTrigger,
@@ -370,6 +413,16 @@ function withComputedApproval(
   // no-op (unsupported-only). Either way a human/policy decision is
   // safer than auto-dispatch.
   if (planContainsUnsupported(plan.steps)) {
+    return { ...plan, requiresApproval: true };
+  }
+  // Plans naming a notify_user channel outside the safe set, or setting
+  // create_schedule taskOptions the default scheduler rejects, would
+  // deterministically fail-closed at execute time. Route through approval
+  // instead of auto-dispatching a plan we know will be rejected.
+  if (
+    planUsesUnsafeChannel(plan.steps, DEFAULT_PLANNER_SAFE_CHANNELS) ||
+    planUsesUnsupportedScheduleOption(plan.steps)
+  ) {
     return { ...plan, requiresApproval: true };
   }
   return {

@@ -166,6 +166,77 @@ describe("createLlmCompositionPlanner", () => {
     expect(plan.requiresApproval).toBe(true);
   });
 
+  test("LLM plan with notify_user channel outside the safe set is forced to approval", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "trigger-channel",
+            triggerEmittedAt: 1,
+            steps: [
+              { kind: "notify_user", channel: "slack", message: "hi", priority: "normal" },
+            ],
+            estimatedCost: 1,
+          });
+        },
+      },
+    });
+
+    const plan = await planner.plan(
+      {
+        id: "trigger-channel",
+        source: "test",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 1,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    expect(plan.requiresApproval).toBe(true);
+  });
+
+  test("LLM plan with create_schedule unsupported taskOptions is forced to approval", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "trigger-sched",
+            triggerEmittedAt: 1,
+            steps: [
+              {
+                kind: "create_schedule",
+                expression: "0 9 * * *",
+                agentId: "agent-1",
+                mode: "spawn",
+                input: { kind: "text", text: "daily" },
+                taskOptions: { maxRetries: 2 },
+              },
+            ],
+            estimatedCost: 1,
+          });
+        },
+      },
+    });
+
+    const plan = await planner.plan(
+      {
+        id: "trigger-sched",
+        source: "test",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 1,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    expect(plan.requiresApproval).toBe(true);
+  });
+
   test("LLM plan with unsupported-before-supported is forced to approval", async () => {
     const planner = createLlmCompositionPlanner({
       adapter: {
