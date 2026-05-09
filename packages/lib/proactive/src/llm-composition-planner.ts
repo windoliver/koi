@@ -337,6 +337,14 @@ const TEMPORAL_UNSUPPORTED_SCHEDULE_OPTION_KEYS: readonly string[] = [
   "idempotencyKey",
 ];
 
+// submit() throws synchronously on these option combinations (see
+// temporal-scheduler.ts submit()). Auto-approving plans that hit them
+// would deterministically fail at execute time.
+const TEMPORAL_UNSUPPORTED_SUBMIT_OPTION_KEYS: readonly string[] = [
+  "timeoutMs",
+  "maxRetries",
+];
+
 function planUsesUnsafeChannel(
   steps: readonly CompositionStep[],
   safeChannels: readonly string[],
@@ -352,6 +360,23 @@ function planUsesUnsupportedScheduleOption(steps: readonly CompositionStep[]): b
     if (step.kind !== "create_schedule" || step.taskOptions === undefined) continue;
     for (const key of TEMPORAL_UNSUPPORTED_SCHEDULE_OPTION_KEYS) {
       if ((step.taskOptions as Record<string, unknown>)[key] !== undefined) return true;
+    }
+  }
+  return false;
+}
+
+function planUsesUnsupportedSubmitOption(steps: readonly CompositionStep[]): boolean {
+  for (const step of steps) {
+    if (step.kind !== "submit_task" || step.taskOptions === undefined) continue;
+    for (const key of TEMPORAL_UNSUPPORTED_SUBMIT_OPTION_KEYS) {
+      if ((step.taskOptions as Record<string, unknown>)[key] !== undefined) return true;
+    }
+    // dispatch + delayMs is also rejected unconditionally.
+    if (
+      step.mode === "dispatch" &&
+      (step.taskOptions as Record<string, unknown>).delayMs !== undefined
+    ) {
+      return true;
     }
   }
   return false;
@@ -421,7 +446,8 @@ function withComputedApproval(
   // instead of auto-dispatching a plan we know will be rejected.
   if (
     planUsesUnsafeChannel(plan.steps, DEFAULT_PLANNER_SAFE_CHANNELS) ||
-    planUsesUnsupportedScheduleOption(plan.steps)
+    planUsesUnsupportedScheduleOption(plan.steps) ||
+    planUsesUnsupportedSubmitOption(plan.steps)
   ) {
     return { ...plan, requiresApproval: true };
   }

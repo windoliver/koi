@@ -91,7 +91,6 @@ function stepsForCapabilityGap(trigger: CompositionTrigger): readonly Compositio
 
 function stepsForThresholdCrossed(
   trigger: CompositionTrigger,
-  capabilities: CompositionCapabilities,
 ): readonly CompositionStep[] {
   if (
     trigger.moment.kind !== "threshold_crossed" ||
@@ -100,29 +99,20 @@ function stepsForThresholdCrossed(
   ) {
     return [];
   }
-  const steps: CompositionStep[] = [];
-  // notify_user FIRST so the operator-facing notification fires even when
-  // a later spawn_agent step is unsupported by the executor: the executor
-  // fail-closes on the first unsupported step, so any safe-to-run user
-  // notification must precede unsupported diagnostic spawning.
-  steps.push({
-    kind: "notify_user",
-    channel: "inbox",
-    message: "Error rate crossed its configured threshold.",
-    priority: "high",
-  });
-  if (hasAgentType(capabilities, "diagnostic")) {
-    steps.push({
-      kind: "spawn_agent",
-      agentType: "diagnostic",
-      input: {
-        kind: "text",
-        text: "Investigate elevated error_rate and summarize root causes.",
-      },
-      delivery: DEFAULT_DELIVERY_POLICY,
-    });
-  }
-  return steps;
+  // Emit only the safe operator-facing notification. The MVP executor
+  // fail-closes on spawn_agent, and the planner's approval gate would
+  // then route the entire mixed plan through approval — blocking even
+  // the safe notification. Until the executor supports diagnostic
+  // spawning, the rule planner intentionally drops that suffix so the
+  // notification continues to auto-deliver on the failure signal.
+  return [
+    {
+      kind: "notify_user",
+      channel: "inbox",
+      message: "Error rate crossed its configured threshold.",
+      priority: "high",
+    },
+  ];
 }
 
 function stepsForTaskTerminal(
@@ -178,7 +168,7 @@ function stepsForTrigger(
     case "capability_gap":
       return stepsForCapabilityGap(trigger);
     case "threshold_crossed":
-      return stepsForThresholdCrossed(trigger, capabilities);
+      return stepsForThresholdCrossed(trigger);
     case "task_terminal":
       return stepsForTaskTerminal(trigger, capabilities);
     case "frontier_changed":

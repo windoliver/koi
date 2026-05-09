@@ -59,17 +59,8 @@ describe("composition pipeline (signal → trigger → plan → approval)", () =
         message: "Error rate crossed its configured threshold.",
         priority: "high",
       },
-      {
-        kind: "spawn_agent",
-        agentType: "diagnostic",
-        input: {
-          kind: "text",
-          text: "Investigate elevated error_rate and summarize root causes.",
-        },
-        delivery: DEFAULT_DELIVERY_POLICY,
-      },
     ]);
-    expect(plan.requiresApproval).toBe(true);
+    expect(plan.requiresApproval).toBe(false);
   });
 
   test("schedule task:failed flows end-to-end into recovery spawn", async () => {

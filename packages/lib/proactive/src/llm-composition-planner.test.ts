@@ -119,20 +119,11 @@ describe("createLlmCompositionPlanner", () => {
         message: "Error rate crossed its configured threshold.",
         priority: "high",
       },
-      {
-        kind: "spawn_agent",
-        agentType: "diagnostic",
-        input: {
-          kind: "text",
-          text: "Investigate elevated error_rate and summarize root causes.",
-        },
-        delivery: DEFAULT_DELIVERY_POLICY,
-      },
     ]);
-    expect(plan.estimatedCost).toBe(6);
-    // Fallback plan contains spawn_agent (executor-unsupported), so the
-    // gate from the rule planner is preserved through reclassification.
-    expect(plan.requiresApproval).toBe(true);
+    // Rule planner emits only the safe notify step (diagnostic spawn
+    // dropped until executor supports it), so the fallback plan is
+    // auto-executable.
+    expect(plan.requiresApproval).toBe(false);
   });
 
   test("empty LLM plan forces requiresApproval=true (executor rejects empty non-approval)", async () => {
@@ -185,6 +176,44 @@ describe("createLlmCompositionPlanner", () => {
     const plan = await planner.plan(
       {
         id: "trigger-channel",
+        source: "test",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 1,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    expect(plan.requiresApproval).toBe(true);
+  });
+
+  test("LLM plan with submit_task unsupported taskOptions is forced to approval", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "trigger-submit",
+            triggerEmittedAt: 1,
+            steps: [
+              {
+                kind: "submit_task",
+                agentId: "agent-1",
+                mode: "spawn",
+                input: { kind: "text", text: "go" },
+                taskOptions: { maxRetries: 3 },
+              },
+            ],
+            estimatedCost: 1,
+          });
+        },
+      },
+    });
+
+    const plan = await planner.plan(
+      {
+        id: "trigger-submit",
         source: "test",
         confidence: 1,
         moment: { kind: "external_event", source: "x", eventType: "y" },
@@ -468,17 +497,10 @@ describe("createLlmCompositionPlanner", () => {
         message: "Error rate crossed its configured threshold.",
         priority: "high",
       },
-      {
-        kind: "spawn_agent",
-        agentType: "diagnostic",
-        input: {
-          kind: "text",
-          text: "Investigate elevated error_rate and summarize root causes.",
-        },
-        delivery: DEFAULT_DELIVERY_POLICY,
-      },
     ]);
-    expect(plan.estimatedCost).toBe(6);
+    // Outer LLM policy reclassifies: classifyNovelty=true +
+    // requireApprovalOnNovelty=true forces approval even though the
+    // fallback plan would auto-execute under the inner rule policy.
     expect(plan.requiresApproval).toBe(true);
   });
 
