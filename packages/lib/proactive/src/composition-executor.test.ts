@@ -686,21 +686,19 @@ describe("createCompositionExecutor", () => {
     await executor.execute(trigger(), plan);
     await executor.execute(trigger(), plan);
 
-    // Identical replays produce identical keys → downstream dedupe collapses.
-    const submitKey0 = (calls.submit[0] as readonly unknown[])[2] as { idempotencyKey: string };
-    const submitKey1 = (calls.submit[1] as readonly unknown[])[2] as { idempotencyKey: string };
-    expect(submitKey0.idempotencyKey).toBe(submitKey1.idempotencyKey);
-    expect(submitKey0.idempotencyKey).not.toContain(":"); // Temporal-safe.
-
     // schedule() must NOT carry idempotencyKey — backend rejects it.
     const scheduleOpts0 = (calls.schedule[0] as readonly unknown[])[3] as Record<string, unknown>;
     expect(scheduleOpts0).not.toHaveProperty("idempotencyKey");
 
-    // create_schedule and notify_user MUST short-circuit on replay via the
-    // executionLog — exactly one underlying side-effect call across both
-    // executions, even though both runs report the steps as executed.
+    // All three step kinds MUST short-circuit on replay via the
+    // executionLog — exactly one underlying side-effect call each across
+    // both executions, even though both runs report the steps as executed.
+    expect(calls.submit).toHaveLength(1);
     expect(calls.schedule).toHaveLength(1);
     expect(notifications).toHaveLength(1);
+
+    const submitKey = (calls.submit[0] as readonly unknown[])[2] as { idempotencyKey: string };
+    expect(submitKey.idempotencyKey).not.toContain(":"); // Temporal-safe.
   });
 
   test("create_schedule forwards taskOptions to the scheduler verbatim", async () => {
@@ -1296,10 +1294,17 @@ describe("createCompositionExecutor", () => {
   });
 
   test("two submit_task steps differing only in ignored idempotencyKey hash to the same key", async () => {
-    const { scheduler, calls } = schedulerStub();
-    const executor = createCompositionExecutor({
+    const { scheduler: schedulerA, calls: callsA } = schedulerStub();
+    const { scheduler: schedulerB, calls: callsB } = schedulerStub();
+    const executorA = createCompositionExecutor({
       agentId: agentId("agent-1"),
-      scheduler,
+      scheduler: schedulerA,
+      notify: async () => ({ delivered: true }),
+      executionLog: inMemoryExecutionLog().log,
+    });
+    const executorB = createCompositionExecutor({
+      agentId: agentId("agent-1"),
+      scheduler: schedulerB,
       notify: async () => ({ delivered: true }),
       executionLog: inMemoryExecutionLog().log,
     });
@@ -1321,11 +1326,11 @@ describe("createCompositionExecutor", () => {
       steps: [{ ...baseStep, taskOptions: { idempotencyKey: "beta" } }],
     };
 
-    await executor.execute(trigger(), planA);
-    await executor.execute(trigger(), planB);
+    await executorA.execute(trigger(), planA);
+    await executorB.execute(trigger(), planB);
 
-    const k0 = (calls.submit[0] as readonly unknown[])[2] as { idempotencyKey: string };
-    const k1 = (calls.submit[1] as readonly unknown[])[2] as { idempotencyKey: string };
+    const k0 = (callsA.submit[0] as readonly unknown[])[2] as { idempotencyKey: string };
+    const k1 = (callsB.submit[0] as readonly unknown[])[2] as { idempotencyKey: string };
     expect(k0.idempotencyKey).toBe(k1.idempotencyKey);
   });
 

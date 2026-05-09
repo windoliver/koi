@@ -1,6 +1,4 @@
 import {
-  isPreCommitRejection,
-  preCommitRejection,
   type AgentId,
   type CompositionExecutionError,
   type CompositionExecutionResult,
@@ -13,15 +11,17 @@ import {
   type DeliveryPolicy,
   type EngineInput,
   type ForgeDemandSignal,
+  isPreCommitRejection,
+  preCommitRejection,
   type SchedulerComponent,
 } from "@koi/core";
 
+export type { CompositionPreCommitRejection };
 // Re-export the L0 brand surface so consumers of @koi/proactive that
 // already import from this package continue to work; the canonical
 // definition now lives in @koi/core so any package can opt into the
 // contract without an L2-to-L2 import.
 export { isPreCommitRejection, preCommitRejection };
-export type { CompositionPreCommitRejection };
 
 export interface CompositionNotification {
   readonly channel: string;
@@ -414,8 +414,7 @@ export function createCompositionExecutor(
         };
       }
 
-      const allowedChannels =
-        context.allowedNotifyChannels ?? DEFAULT_ALLOWED_NOTIFY_CHANNELS;
+      const allowedChannels = context.allowedNotifyChannels ?? DEFAULT_ALLOWED_NOTIFY_CHANNELS;
 
       const stepResults: ExecutedStepResult[] = [];
 
@@ -475,11 +474,42 @@ export function createCompositionExecutor(
               // as duplicates. If a planner needs to influence dedupe, it
               // should do so via the canonicalized step content (which
               // already feeds `stepIdempotencyKey`).
+              //
+              // submit_task goes through the same atomic executionLog
+              // claim/record path as create_schedule and notify_user.
+              // scheduler.submit() backends are not all required to honor
+              // idempotencyKey natively (the in-process heap-backed
+              // scheduler ignores it), so the executionLog is the
+              // universal source of truth for "did this side effect
+              // already happen?".
+              const claimSubmit = await context.executionLog.claim(stepIdempotencyKey);
+              if (claimSubmit.kind === "complete") {
+                stepResults.push({ step, status: "executed", output: claimSubmit.output });
+                break;
+              }
+              if (claimSubmit.kind === "pending") {
+                return failedResult(trigger.id, stepResults, {
+                  step,
+                  status: "failed",
+                  error: {
+                    code: "STEP_FAILED",
+                    message:
+                      "Previous submit_task attempt is in indeterminate state " +
+                      `(claimed but not finalized); manual reconciliation required for key ${stepIdempotencyKey}`,
+                    stepKind: "submit_task",
+                    idempotencyKey: stepIdempotencyKey,
+                  },
+                });
+              }
+
+              claimedKey = stepIdempotencyKey;
+
               const { idempotencyKey: _ignored, ...submitOptions } = step.taskOptions ?? {};
               const output = await context.scheduler.submit(step.input, step.mode, {
                 ...submitOptions,
                 idempotencyKey: stepIdempotencyKey,
               });
+              await context.executionLog.record(stepIdempotencyKey, output);
               stepResults.push({ step, status: "executed", output });
               break;
             }
