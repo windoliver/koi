@@ -1,0 +1,38 @@
+{
+  "name": "@koi/nexus",
+  "description": "L3 Nexus composition wiring for the active v2 Nexus package set",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "bun ../../../scripts/run-tsup.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "koi": {
+    "optional": true
+  },
+  "dependencies": {
+    "@koi/audit-sink-nexus": "workspace:*",
+    "@koi/core": "workspace:*",
+    "@koi/fs-nexus": "workspace:*",
+    "@koi/handoff": "workspace:*",
+    "@koi/ipc-nexus": "workspace:*",
+    "@koi/nexus-client": "workspace:*",
+    "@koi/permissions-nexus": "workspace:*",
+    "@koi/playbook-store-nexus": "workspace:*",
+    "@koi/registry-nexus": "workspace:*",
+    "@koi/scheduler-nexus": "workspace:*",
+    "@koi/scratchpad-nexus": "workspace:*",
+    "@koi/search-nexus": "workspace:*",
+    "@koi/snapshot-store-nexus": "workspace:*",
+    "@koi/workspace-nexus": "workspace:*"
+  }
+}
