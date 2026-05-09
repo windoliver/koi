@@ -1,4 +1,5 @@
 import type { BrickArtifact, ForgeDemandSignal } from "@koi/core";
+import { brickId } from "@koi/core/brick-snapshot";
 import { createPolicyCacheMiddleware } from "@koi/middleware-policy-cache";
 import {
   type AutoHarnessConfig,
@@ -246,7 +247,11 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
   // gets a fresh attempt — exactly the recovery scenario operators need.
   // The session synthesis budget is preserved so a single change cannot
   // induce runaway re-synthesis.
-  config.notifier?.subscribe(() => {
+  // Capture the unsubscribe handle so stack `dispose()` can release it.
+  // Without this, recreating runtimes would leak a listener per stack —
+  // notifier events fan out to disposed closures, retaining sessionState
+  // and other captures indefinitely (R5 round 20 finding).
+  const completedTriggersUnsubscribe: (() => void) | undefined = config.notifier?.subscribe(() => {
     for (const s of sessionState.values()) {
       s.completedTriggers.clear();
     }
@@ -396,52 +401,20 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
       return nonRetriable();
     }
 
-    // Force lifecycle to "draft" before persistence. Verification produced a
-    // candidate but it has not yet cleared policy or approval — storing it
-    // as "active" would expose pre-approval bricks to any consumer reading
-    // the forge store (resolvers, dashboards, redeployment paths). The
-    // deploy stage is responsible for promoting the lifecycle once the
-    // artifact is actually live.
-    const artifact = { ...verification.artifact, lifecycle: "draft" as const };
-
-    // Refuse to save a pre-deploy draft under an id that already exists in
-    // the store. A buggy or compromised verifier could otherwise hand back
-    // an existing live brickId, and `forgeStore.save` would overwrite that
-    // record with our pre-approval draft. Later id-rewrite reconciliation
-    // would then delete the unrelated brick — a real data-loss path. Use
-    // `exists()` as a CAS-shaped check: if the id is already taken,
-    // surface as transient (the verifier can retry with a fresh id) and
-    // do not touch the store (R5 round 18 finding).
-    try {
-      const existsResult = await config.forgeStore.exists(artifact.id);
-      if (!existsResult.ok) {
-        reportError({
-          stage: "verify",
-          message: `forgeStore.exists check failed: ${existsResult.error.message}`,
-          koiError: existsResult.error,
-        });
-        return transient();
-      }
-      if (existsResult.value) {
-        reportError({
-          stage: "verify",
-          message:
-            `auto-harness refused pre-deploy save: artifact id ${artifact.id} ` +
-            "is already present in the forge store. Verifier must mint a fresh " +
-            "id (or a dedicated draft-namespace id) per synthesis run; reusing " +
-            "an existing id would overwrite the live record with a pre-approval " +
-            "draft and risk data loss on later id-rewrite reconciliation.",
-        });
-        return transient();
-      }
-    } catch (cause: unknown) {
-      reportError({
-        stage: "verify",
-        message: "forgeStore.exists threw",
-        cause,
-      });
-      return transient();
-    }
+    // Mint a guaranteed-unique draft id for the pre-deploy persist step.
+    // The TOCTOU between `exists()` and `save()` cannot enforce
+    // create-if-absent under concurrent syntheses (R5 round 20 finding):
+    // two pipelines can both observe `exists=false` for the same
+    // verifier-supplied id and both write, or one can race a legitimate
+    // writer between the two calls. Sidestep the race entirely by
+    // saving under a random draft-namespace id. A v4 UUID makes
+    // collision with any existing live or draft record statistically
+    // impossible regardless of what id the verifier minted, so a buggy
+    // or compromised verifier cannot overwrite an unrelated brick. The
+    // draft id is removed during post-deploy reconciliation; the
+    // deployed artifact persists under its authoritative id.
+    const draftId = brickId(`auto-harness-draft:${crypto.randomUUID()}`);
+    const artifact = { ...verification.artifact, id: draftId, lifecycle: "draft" as const };
 
     // Persist the verified artifact before any policy / approval / deploy
     // decisions. Persistence is a HARD GATE: if the artifact cannot be
@@ -753,6 +726,13 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
         sessionState.delete(sessionId);
       }
       emitEvent({ kind: "session.reset", message: "session synthesis state cleared" });
+    },
+    dispose: () => {
+      // Release the completedTriggers store-change subscription.
+      // policyCacheHandle.dispose() releases its own subscription
+      // separately; callers should invoke both during teardown.
+      completedTriggersUnsubscribe?.();
+      sessionState.clear();
     },
     maxSynthesesPerSession,
   };

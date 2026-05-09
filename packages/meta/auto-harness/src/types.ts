@@ -175,5 +175,14 @@ export interface AutoHarnessStack {
    * tracked session (and the legacy global counter) is reset.
    */
   readonly resetSession: (sessionId?: string) => void;
+  /**
+   * Release stack-owned subscriptions (notifier listener used to
+   * invalidate completedTriggers) and clear in-memory session state.
+   * Callers should invoke this alongside `policyCacheHandle.dispose()`
+   * during runtime teardown — otherwise notifier events fan out to
+   * disposed closures, retaining sessionState indefinitely
+   * (R5 round 20 finding).
+   */
+  readonly dispose: () => void;
   readonly maxSynthesesPerSession: number;
 }

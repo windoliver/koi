@@ -130,7 +130,7 @@ describe("createAutoHarnessStack", () => {
         action: "allow",
       }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async (artifact, _signal): Promise<AutoHarnessDeployResult> => ({
+      deployCandidate: async (_input, _signal): Promise<AutoHarnessDeployResult> => ({
         artifact,
         ok: true,
       }),
@@ -160,7 +160,7 @@ describe("createAutoHarnessStack", () => {
         action: "allow",
       }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async (artifact, _signal): Promise<AutoHarnessDeployResult> => ({
+      deployCandidate: async (_input, _signal): Promise<AutoHarnessDeployResult> => ({
         artifact,
         ok: true,
       }),
@@ -779,7 +779,7 @@ describe("createAutoHarnessStack", () => {
       verifyCandidate: async () => ({ ok: true, artifact }),
       evaluatePolicy: async () => ({ ok: true, action: "allow" }),
       requestDeploymentApproval: async () => true,
-      deployCandidate: async (artifact) => ({ ok: true, artifact }),
+      deployCandidate: async () => ({ ok: true, artifact }),
       onEvent: (event) => events.push(event),
     });
 
@@ -937,26 +937,28 @@ describe("createAutoHarnessStack", () => {
       verifyCandidate: async () => ({ ok: true, artifact }),
       evaluatePolicy: async () => {
         policyCalls += 1;
-        // Save must have happened before any further pipeline stage runs.
-        // The pre-deploy artifact is a structural clone with lifecycle
-        // forced to "draft", not the same reference returned from
-        // verifyCandidate, so compare structurally.
-        expect(saved.some((b) => b.id === artifact.id)).toBe(true);
+        // Pre-deploy save must have happened before any further pipeline
+        // stage runs. The pre-deploy save uses a random draft-namespace
+        // id (collision-proof) — assert one save happened, lifecycle is
+        // "draft", and the id carries the auto-harness-draft prefix.
+        expect(saved).toHaveLength(1);
+        expect(saved[0]?.lifecycle).toBe("draft");
+        expect(saved[0]?.id).toMatch(/^auto-harness-draft:/);
         return { ok: true, action: "allow" };
       },
       requestDeploymentApproval: async () => true,
-      deployCandidate: async (artifact) => ({ ok: true, artifact }),
+      // Real deployCandidate produces an authoritative artifact distinct
+      // from the draft input — return the original makeArtifact() id.
+      deployCandidate: async () => ({ ok: true, artifact }),
     });
 
     await stack.synthesizeHarness(makeSignal());
 
-    // Two saves: pre-deploy draft and post-deploy authoritative artifact.
-    // Both have the same id and content here (deployCandidate echoes the
-    // input artifact), but the pipeline persists both calls so the
-    // durable record reflects the live activation distinct from the
-    // pre-approval draft.
+    // Two saves: pre-deploy draft (random id, lifecycle "draft") and
+    // post-deploy authoritative artifact (original id).
     expect(saved).toHaveLength(2);
-    expect(saved[0]).toEqual(artifact);
+    expect(saved[0]?.id).toMatch(/^auto-harness-draft:/);
+    expect(saved[0]?.lifecycle).toBe("draft");
     expect(saved[1]).toEqual(artifact);
     expect(policyCalls).toBe(1);
   });
