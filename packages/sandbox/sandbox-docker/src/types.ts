@@ -67,20 +67,34 @@ export interface DockerCreateOpts {
 /** Lifecycle state of an existing container, normalized across docker versions. */
 export type DockerContainerState = "running" | "exited" | "stopped" | "dead" | "unknown";
 
+/** Inspect snapshot of an existing container — state plus declared labels. */
+export interface DockerContainerInfo {
+  readonly state: DockerContainerState;
+  readonly labels: Readonly<Record<string, string>>;
+}
+
 export interface DockerClient {
   readonly createContainer: (opts: DockerCreateOpts) => Promise<DockerContainer>;
   /**
    * Look up a container by exact label match. Returns the most recent matching
    * container (running preferred over stopped) or `undefined` when none exists.
    * Optional — clients without a persistence story omit this; the adapter
-   * treats persistence as unavailable when any of findContainer / inspectState
-   * / startContainer is missing.
+   * treats persistence as unavailable when any of findContainer /
+   * inspectContainer / startContainer is missing.
    */
   readonly findContainer?:
     | ((labels: Readonly<Record<string, string>>) => Promise<DockerContainer | undefined>)
     | undefined;
-  /** Inspect the lifecycle state of a container by id. */
-  readonly inspectState?: ((id: string) => Promise<DockerContainerState>) | undefined;
+  /**
+   * Inspect lifecycle state + labels of a container by id. Returns `undefined`
+   * when the container no longer exists (for example, racy removal between
+   * `findContainer` and `inspectContainer`). The adapter treats `undefined` as
+   * "create fresh" rather than throwing so a missing container does not block
+   * persistence resumption.
+   */
+  readonly inspectContainer?:
+    | ((id: string) => Promise<DockerContainerInfo | undefined>)
+    | undefined;
   /** Start a stopped container (no-op if already running). */
   readonly startContainer?: ((id: string) => Promise<void>) | undefined;
 }

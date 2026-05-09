@@ -872,40 +872,74 @@ describe("createDefaultDockerClient", () => {
   });
 
   // Persistence: inspectState maps docker State.Status to DockerContainerState.
-  test("inspectState: maps State.Status to DockerContainerState", async () => {
-    // Build a sequence of mocked outputs: running, exited, paused, dead, garbage.
-    const outputs = ["running", "exited", "paused", "dead", "weirdthing"];
+  test("inspectContainer: maps State.Status to DockerContainerState and parses labels", async () => {
+    // Each call returns "<status>\t<json-labels>". Cover the full status lattice.
+    const outputs = [
+      ["running", '{"a":"1"}'],
+      ["exited", "null"],
+      ["paused", "null"],
+      ["dead", "null"],
+      ["weirdthing", '{"k":"v"}'],
+    ];
     let i = 0;
     // @ts-expect-error — test stub
     const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) => {
-      const out = outputs[i] ?? "";
+      const [status, labels] = outputs[i] ?? ["", ""];
       i += 1;
-      return fakeProc({ stdout: `${out}\n`, stderr: "", exitCode: 0 });
+      return fakeProc({ stdout: `${status}\t${labels}\n`, stderr: "", exitCode: 0 });
     });
     try {
       const client = createDefaultDockerClient();
-      if (client.inspectState === undefined) throw new Error("inspectState must exist");
-      expect(await client.inspectState("c1")).toBe("running");
-      expect(await client.inspectState("c2")).toBe("exited");
-      expect(await client.inspectState("c3")).toBe("stopped");
-      expect(await client.inspectState("c4")).toBe("dead");
-      expect(await client.inspectState("c5")).toBe("unknown");
+      if (client.inspectContainer === undefined) {
+        throw new Error("inspectContainer must exist");
+      }
+      const r1 = await client.inspectContainer("c1");
+      expect(r1?.state).toBe("running");
+      expect(r1?.labels).toEqual({ a: "1" });
+      expect((await client.inspectContainer("c2"))?.state).toBe("exited");
+      expect((await client.inspectContainer("c3"))?.state).toBe("stopped");
+      expect((await client.inspectContainer("c4"))?.state).toBe("dead");
+      const r5 = await client.inspectContainer("c5");
+      expect(r5?.state).toBe("unknown");
+      expect(r5?.labels).toEqual({ k: "v" });
     } finally {
       spawnSpy.mockRestore();
     }
   });
 
-  // Persistence: inspectState returns "unknown" when docker inspect fails (container removed).
-  test("inspectState: returns 'unknown' when docker inspect fails", async () => {
+  // Persistence: inspectContainer returns undefined when docker inspect fails
+  // (container removed) so the adapter falls through to a fresh create.
+  test("inspectContainer: returns undefined when docker inspect fails", async () => {
     // @ts-expect-error — test stub
     const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) =>
       fakeProc({ stdout: "", stderr: "no such object", exitCode: 1 }),
     );
     try {
       const client = createDefaultDockerClient();
-      if (client.inspectState === undefined) throw new Error("inspectState must exist");
-      const state = await client.inspectState("missing");
-      expect(state).toBe("unknown");
+      if (client.inspectContainer === undefined) {
+        throw new Error("inspectContainer must exist");
+      }
+      const info = await client.inspectContainer("missing");
+      expect(info).toBeUndefined();
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  // Persistence: malformed labels JSON is treated as empty (won't crash adapter).
+  test("inspectContainer: malformed label JSON parses as empty record", async () => {
+    // @ts-expect-error — test stub
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) =>
+      fakeProc({ stdout: "running\t{not valid json\n", stderr: "", exitCode: 0 }),
+    );
+    try {
+      const client = createDefaultDockerClient();
+      if (client.inspectContainer === undefined) {
+        throw new Error("inspectContainer must exist");
+      }
+      const info = await client.inspectContainer("c1");
+      expect(info?.state).toBe("running");
+      expect(info?.labels).toEqual({});
     } finally {
       spawnSpy.mockRestore();
     }

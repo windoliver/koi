@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import type {
   DockerClient,
   DockerContainer,
+  DockerContainerInfo,
   DockerContainerState,
   DockerCreateOpts,
   DockerExecOpts,
@@ -309,6 +310,26 @@ function mapInspectStatus(raw: string): DockerContainerState {
   return "unknown";
 }
 
+/**
+ * Parse the JSON label payload emitted by `docker inspect ... {{json .Config.Labels}}`.
+ * Returns an empty record on any parse failure so a malformed daemon response
+ * cannot crash the adapter; the calling code treats "no recorded fingerprint"
+ * as a profile mismatch and fails closed.
+ */
+function safeParseLabels(s: string): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(s);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "string") out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 function buildExecArgs(id: string, cmd: string, execOpts: DockerExecOpts): readonly string[] {
   // `let` justified: args are built incrementally with optional flags
   const args: string[] = ["exec"];
@@ -428,12 +449,27 @@ export function createDefaultDockerClient(config?: DefaultDockerClientConfig): D
       if (id === undefined) return undefined;
       return makeContainer(id, env);
     },
-    inspectState: async (id: string): Promise<DockerContainerState> => {
-      const r = await runDocker(["inspect", "--format", "{{.State.Status}}", id], undefined, env);
-      // A missing/removed container reports a non-zero exit; treat as unknown
-      // so the adapter creates a fresh one rather than throwing.
-      if (r.exitCode !== 0) return "unknown";
-      return mapInspectStatus(r.stdout);
+    inspectContainer: async (id: string): Promise<DockerContainerInfo | undefined> => {
+      // Tab-separated output: "<status>\t<json-labels>". Using a literal tab
+      // keeps both fields parseable even when label values contain commas/spaces.
+      const r = await runDocker(
+        ["inspect", "--format", "{{.State.Status}}\t{{json .Config.Labels}}", id],
+        undefined,
+        env,
+      );
+      // Container removed between find and inspect → return undefined so the
+      // adapter falls through to a fresh create rather than throwing.
+      if (r.exitCode !== 0) return undefined;
+      const tab = r.stdout.indexOf("\t");
+      if (tab === -1) {
+        return { state: mapInspectStatus(r.stdout), labels: {} };
+      }
+      const statusRaw = r.stdout.slice(0, tab);
+      const labelsRaw = r.stdout.slice(tab + 1).trim();
+      // Docker emits the literal string "null" for an empty label set.
+      const labels: Record<string, string> =
+        labelsRaw === "" || labelsRaw === "null" ? {} : safeParseLabels(labelsRaw);
+      return { state: mapInspectStatus(statusRaw), labels };
     },
     startContainer: async (id: string): Promise<void> => {
       const r = await runDocker(["start", id], undefined, env);
