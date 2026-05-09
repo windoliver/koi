@@ -280,6 +280,15 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
       const drainTimeoutMs = config.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
       let drainTimedOut = false;
       const promise = (async (): Promise<void> => {
+        // Yield one microtask before sampling pending sets. Without this,
+        // wrappers invoked synchronously after `mw.onSessionEnd?.(ctx)` (a
+        // common host pattern: kick off teardown then issue a final tool
+        // call in the same sync frame) would not yet be registered in
+        // shutdownInFlight when the loop's first hasPending() check runs,
+        // so the loop would exit immediately and seal them out. The yield
+        // is harmless in steady state — the drain semantics below are
+        // unchanged.
+        await Promise.resolve();
         // Unified drain: loop until BOTH inFlight (started before closing)
         // and shutdownInFlight (started after closing) are empty under an
         // absolute deadline. Late wrappers are recorded into state.entries
@@ -405,21 +414,22 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
       next: ModelHandler,
     ): Promise<ModelResponse> {
       const state = getState(ctx.session);
-      const enriched = injectPlaybooks(request, state, maxInjectedTokens);
-      // After onSessionEnd starts, still inject playbooks (preserves
-      // behavior-shaping for shutdown model calls), skip trajectory
-      // recording (no entries past session end), but DO track the
-      // promise in shutdownInFlight so onSessionEnd's lifecycle barrier
-      // doesn't resolve before the late call settles. That keeps
-      // session-id reuse safe.
-      if (state?.closing === true || state?.closed === true) {
-        return trackInFlight(state, next(enriched));
+      // Hard-reject calls that arrive after the session is fully sealed
+      // (closed=true). At that point persistence has run and the slot is
+      // about to be deleted — there is nothing to drain or record onto.
+      if (state?.closed === true) {
+        return next(request);
       }
+      const enriched = injectPlaybooks(request, state, maxInjectedTokens);
       const startedAt = clock();
       const inner = (async (): Promise<ModelResponse> => {
         const outcome = await runWithOutcome(() => next(enriched));
         const durationMs = clock() - startedAt;
         const identifier = enriched.model ?? "unknown-model";
+        // Wrappers in the closing window also reach here: trackInFlight
+        // routes them to shutdownInFlight, the unified drain waits on
+        // them under drainTimeoutMs, and recordEntry runs while
+        // closed=false so the entry is captured before persistence.
         recordEntry(state, {
           turnIndex: ctx.turnIndex,
           timestamp: startedAt,
@@ -439,8 +449,8 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
       next: ToolHandler,
     ): Promise<ToolResponse> {
       const state = getState(ctx.session);
-      if (state?.closing === true || state?.closed === true) {
-        return trackInFlight(state, next(request));
+      if (state?.closed === true) {
+        return next(request);
       }
       const startedAt = clock();
       const inner = (async (): Promise<ToolResponse> => {

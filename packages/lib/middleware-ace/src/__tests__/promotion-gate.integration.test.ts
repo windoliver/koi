@@ -162,6 +162,56 @@ describe.each(adapters)("promotion-gate integration: %s", (label, mk) => {
     }
   });
 
+  test("commitPromotion: advances lastReflectedStepIndex watermark on promote", async () => {
+    const ctx = mk();
+    try {
+      await ctx.structuredStore.save(structuredPlaybook({ version: 1 }));
+      await ctx.proposalStore.recordProposal(proposal());
+
+      await commitPromotion(ctx, proposal(), evaluation(), thresholds);
+
+      const head = await ctx.structuredStore.get(PLAYBOOK_ID);
+      // Watermark advances to the trajectory window's toStepIndex so a
+      // restart cannot re-reflect the same window and re-promote.
+      expect(head?.lastReflectedStepIndex).toBe(1);
+    } finally {
+      ctx.cleanup?.();
+    }
+  });
+
+  test("commitPromotion: watermark is monotonic across successive commits", async () => {
+    const ctx = mk();
+    try {
+      await ctx.structuredStore.save(structuredPlaybook({ version: 1 }));
+      await ctx.proposalStore.recordProposal(proposal());
+      await commitPromotion(ctx, proposal(), evaluation(), thresholds);
+
+      // Second commit with a HIGHER watermark — must advance.
+      const p2 = proposal({
+        id: "p-second",
+        baseVersion: 2,
+        sourceTrajectoryRange: { sessionId: "sess", fromStepIndex: 1, toStepIndex: 5 },
+      });
+      const e2 = evaluation({ id: "e-second", proposalId: "p-second" });
+      await ctx.proposalStore.recordProposal(p2);
+      await commitPromotion(ctx, p2, e2, thresholds);
+      expect((await ctx.structuredStore.get(PLAYBOOK_ID))?.lastReflectedStepIndex).toBe(5);
+
+      // Third commit with a LOWER watermark — must NOT regress.
+      const p3 = proposal({
+        id: "p-third",
+        baseVersion: 3,
+        sourceTrajectoryRange: { sessionId: "sess", fromStepIndex: 0, toStepIndex: 2 },
+      });
+      const e3 = evaluation({ id: "e-third", proposalId: "p-third" });
+      await ctx.proposalStore.recordProposal(p3);
+      await commitPromotion(ctx, p3, e3, thresholds);
+      expect((await ctx.structuredStore.get(PLAYBOOK_ID))?.lastReflectedStepIndex).toBe(5);
+    } finally {
+      ctx.cleanup?.();
+    }
+  });
+
   test("commitPromotion: idempotent retry returns prior success when head provenance matches", async () => {
     const ctx = mk();
     try {
@@ -318,6 +368,37 @@ describe.each(adapters)("promotion-gate integration: %s", (label, mk) => {
         const head = await ctx.structuredStore.get(PLAYBOOK_ID);
         expect(head?.version).toBe(3);
       }
+    } finally {
+      ctx.cleanup?.();
+    }
+  });
+
+  test(`rollbackPromotion: ${label} advances watermark monotonically`, async () => {
+    const ctx = mk();
+    try {
+      if (label === "nexus") return; // lineage unsupported on this adapter
+      await ctx.structuredStore.save(structuredPlaybook({ version: 1 }));
+      // Promote with a high watermark so rollback must NOT regress it.
+      const p1 = proposal({
+        sourceTrajectoryRange: { sessionId: "sess", fromStepIndex: 0, toStepIndex: 7 },
+      });
+      await ctx.proposalStore.recordProposal(p1);
+      await commitPromotion(ctx, p1, evaluation(), thresholds);
+      expect((await ctx.structuredStore.get(PLAYBOOK_ID))?.lastReflectedStepIndex).toBe(7);
+
+      // Rollback with a lower toStepIndex — must keep watermark at 7
+      // (monotonic) AND advance to its own toStepIndex if it were higher.
+      const rbProposal = proposal({
+        id: "p-rb",
+        baseVersion: 2,
+        operations: [],
+        sourceTrajectoryRange: { sessionId: "sess", fromStepIndex: 0, toStepIndex: 3 },
+      });
+      const rbEval = evaluation({ id: "e-rb", proposalId: "p-rb", verdict: "rollback" });
+      await ctx.proposalStore.recordProposal(rbProposal);
+      await rollbackPromotion(ctx, rbProposal, 1, rbEval);
+      const head = await ctx.structuredStore.get(PLAYBOOK_ID);
+      expect(head?.lastReflectedStepIndex).toBe(7);
     } finally {
       ctx.cleanup?.();
     }

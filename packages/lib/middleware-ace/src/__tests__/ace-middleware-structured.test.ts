@@ -1117,7 +1117,7 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
     }
   });
 
-  test("new wrapToolCall during drain window is rejected (drain stays bounded)", async () => {
+  test("new wrapToolCall during drain window IS recorded (no audit hole)", async () => {
     const store = createSqlitePlaybookStore({ path: ":memory:" });
     try {
       await store.structuredPlaybooks.save(seedStructuredPlaybook());
@@ -1159,29 +1159,30 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
       const teardown = mw.onSessionEnd?.(ctx);
 
       // Tool call 2: starts AFTER onSessionEnd flipped `closing`. Must run
-      // (host contract) but NOT register in inFlight, NOT extend the drain,
-      // NOT add a trajectory entry.
+      // (host contract), is tracked in shutdownInFlight, drained by the
+      // unified drain loop, AND records a trajectory entry — closing the
+      // audit hole where post-closing side-effects ran invisibly.
       let secondCallRan = false;
       const toolCall2 = mw.wrapToolCall?.(t, { toolId: "second", input: {} }, async () => {
         secondCallRan = true;
         return { output: "post", isError: false };
       });
 
-      // Allow first to complete; teardown drains it and proceeds.
+      // Allow first to complete; teardown drains both before sealing.
       releaseFirst!();
       await toolCall1;
       await toolCall2;
       await teardown;
 
       expect(secondCallRan).toBe(true); // host contract: call still runs
-      // Reflector saw exactly the first entry (drained), not the second.
-      expect(observedEntryCount).toBe(1);
+      // Reflector saw BOTH entries — drain waited for the late call too.
+      expect(observedEntryCount).toBe(2);
     } finally {
       store.close();
     }
   });
 
-  test("late wrapToolCall after onSessionEnd starts is dropped (state closed)", async () => {
+  test("late wrapToolCall after onSessionEnd starts IS recorded (drained before seal)", async () => {
     const store = createSqlitePlaybookStore({ path: ":memory:" });
     try {
       await store.structuredPlaybooks.save(seedStructuredPlaybook());
@@ -1221,13 +1222,10 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
       // Trigger teardown but do not await — it will pause inside reflector.
       const teardown = mw.onSessionEnd?.(ctx);
 
-      // Fire a late wrapToolCall AFTER teardown started. With state.closed=true
-      // this entry must NOT be appended to state.entries; reflector should
-      // have observed exactly the 1 pre-end entry. Late calls still
-      // execute (and are tracked in shutdownInFlight for lifecycle safety),
-      // but their entries are intentionally not recorded — see #1715
-      // discussion: making them visible required reordering that broke
-      // the bounded-drain guarantee.
+      // Fire a late wrapToolCall AFTER teardown started. The unified drain
+      // tracks it in shutdownInFlight and waits for it before sealing
+      // closed=true, so its entry IS recorded — closes the audit hole
+      // where post-closing side-effects ran invisibly.
       await mw.wrapToolCall?.(t, { toolId: "late-search", input: {} }, async () => ({
         output: "late",
         isError: false,
@@ -1236,7 +1234,9 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
       releaseReflector();
       await teardown;
 
-      expect(observedEntryCount).toBe(1);
+      // Both the pre-teardown and the late call appear in the trajectory
+      // observed by the structured pipeline.
+      expect(observedEntryCount).toBe(2);
     } finally {
       store.close();
     }

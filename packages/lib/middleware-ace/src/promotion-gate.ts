@@ -399,6 +399,14 @@ export async function commitPromotion(
     ...nextBody,
     updatedAt: now,
     version: current.version + 1,
+    // Advance the reflection watermark so a retry / restart cannot
+    // re-reflect this trajectory window and re-promote the same evidence.
+    // The watermark is monotonic across all commit paths (promote and
+    // rollback both bump it) — never regress, never skip ahead.
+    lastReflectedStepIndex: maxWatermark(
+      current.lastReflectedStepIndex,
+      proposal.sourceTrajectoryRange.toStepIndex,
+    ),
     provenance: {
       sourceTrajectoryRange: proposal.sourceTrajectoryRange,
       proposalId: proposal.id,
@@ -426,6 +434,12 @@ export async function commitPromotion(
     fromVersion: current.version,
     toVersion: next.version,
   };
+}
+
+/** Monotonic max for the reflection watermark — undefined-safe. */
+function maxWatermark(prior: number | undefined, candidate: number): number {
+  if (prior === undefined) return candidate;
+  return candidate > prior ? candidate : prior;
 }
 
 export async function rollbackPromotion(
@@ -515,6 +529,14 @@ export async function rollbackPromotion(
     ...target,
     version: current.version + 1,
     updatedAt: now,
+    // Watermark monotonicity: even on rollback we must not regress the
+    // reflection watermark. The current head's watermark dominates
+    // because it has already been reflected past; the rollback target
+    // body is restored but its old watermark is replaced.
+    lastReflectedStepIndex: maxWatermark(
+      current.lastReflectedStepIndex,
+      proposal.sourceTrajectoryRange.toStepIndex,
+    ),
     provenance: {
       sourceTrajectoryRange: proposal.sourceTrajectoryRange,
       proposalId: proposal.id,
