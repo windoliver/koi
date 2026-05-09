@@ -50,7 +50,7 @@ describe("createRuleBasedCompositionPlanner", () => {
 
     expect(plan.steps).toEqual([{ kind: "forge_skill", demand: forgeDemand }]);
     expect(plan.estimatedCost).toBe(4);
-    expect(plan.requiresApproval).toBe(false);
+    expect(plan.requiresApproval).toBe(true);
   });
 
   test("plans diagnostic spawn for error_rate thresholds", async () => {
@@ -118,7 +118,7 @@ describe("createRuleBasedCompositionPlanner", () => {
         delivery: DEFAULT_DELIVERY_POLICY,
       },
     ]);
-    expect(plan.requiresApproval).toBe(false);
+    expect(plan.requiresApproval).toBe(true);
   });
 
   test("plans deferred frontier research for frontier changes", async () => {

@@ -189,6 +189,23 @@ function stepsForTrigger(
   }
 }
 
+// Step kinds the composition executor currently does not run; auto-
+// approving plans containing any of these would deterministically fail
+// at execute time. Force them through approval so unsupported automation
+// is gated rather than silently failing.
+const EXECUTOR_UNSUPPORTED_KINDS = new Set<string>([
+  "spawn_agent",
+  "forge_skill",
+  "tool_call",
+]);
+
+function planContainsUnsupported(steps: readonly CompositionStep[]): boolean {
+  for (const step of steps) {
+    if (EXECUTOR_UNSUPPORTED_KINDS.has(step.kind)) return true;
+  }
+  return false;
+}
+
 export function createRuleBasedCompositionPlanner(
   config: RuleBasedCompositionPlannerConfig = {},
 ): CompositionPlanner {
@@ -206,6 +223,7 @@ export function createRuleBasedCompositionPlanner(
         estimatedCost,
         requiresApproval:
           steps.length === 0 ||
+          planContainsUnsupported(steps) ||
           computeCompositionApproval(trigger, estimatedCost, approvalPolicy, {
             isNovel: classifyNovelty(trigger),
           }),

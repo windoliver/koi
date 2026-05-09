@@ -69,7 +69,7 @@ describe("composition pipeline (signal → trigger → plan → approval)", () =
         delivery: DEFAULT_DELIVERY_POLICY,
       },
     ]);
-    expect(plan.requiresApproval).toBe(false);
+    expect(plan.requiresApproval).toBe(true);
   });
 
   test("schedule task:failed flows end-to-end into recovery spawn", async () => {
@@ -95,7 +95,7 @@ describe("composition pipeline (signal → trigger → plan → approval)", () =
       kind: "spawn_agent",
       agentType: "recovery",
     });
-    expect(plan.requiresApproval).toBe(false);
+    expect(plan.requiresApproval).toBe(true);
   });
 
   test("schedule task:cancelled flows to a no-op plan that requires approval", async () => {

@@ -164,7 +164,7 @@ describe("createLlmCompositionPlanner", () => {
     expect(plan.requiresApproval).toBe(true);
   });
 
-  test("LLM step ordering is normalized so unsupported steps come last", async () => {
+  test("LLM plan with unsupported-before-supported is forced to approval", async () => {
     const planner = createLlmCompositionPlanner({
       adapter: {
         async plan(): Promise<string> {
@@ -202,8 +202,12 @@ describe("createLlmCompositionPlanner", () => {
       { tools: [], agents: [], schedules: [] },
     );
 
-    expect(plan.steps[0]?.kind).toBe("notify_user");
-    expect(plan.steps[1]?.kind).toBe("spawn_agent");
+    // Order is preserved (no semantic-changing reorder), but the plan is
+    // forced through approval so the unsupported leading step doesn't
+    // silently swallow the supported notification.
+    expect(plan.steps[0]?.kind).toBe("spawn_agent");
+    expect(plan.steps[1]?.kind).toBe("notify_user");
+    expect(plan.requiresApproval).toBe(true);
   });
 
   test("trigger-id mismatch falls back to the rule planner when configured", async () => {

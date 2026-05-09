@@ -294,26 +294,27 @@ const llmPlanSchema = z
   .passthrough();
 
 // Step kinds the executor currently does not run; the executor fail-closes
-// on the first such step, so any supported follow-up (notify_user,
-// submit_task, create_schedule) placed after one is silently dropped.
+// on the first such step.
 const EXECUTOR_UNSUPPORTED_KINDS = new Set<string>([
   "spawn_agent",
   "forge_skill",
   "tool_call",
 ]);
 
-// Stable-partition LLM-emitted steps so executor-supported steps come
-// before unsupported ones, preserving relative order within each group.
-// This keeps safe operator-facing actions (e.g. notify_user) from being
-// suppressed by an LLM choosing to lead with an unsupported diagnostic.
-function normalizeStepOrder(steps: readonly CompositionStep[]): readonly CompositionStep[] {
-  const supported: CompositionStep[] = [];
-  const unsupported: CompositionStep[] = [];
+// True when an unsupported step appears BEFORE any supported step. In that
+// case the executor will fail-closed on the unsupported step and never
+// reach the supported one. Reordering the plan would change semantics
+// (notifications could fire before the prerequisite analysis runs), so the
+// LLM planner instead routes such plans through approval — a human/policy
+// then decides whether to dispatch the supported suffix manually, drop the
+// plan, or wait for unsupported-step support.
+function hasUnsupportedBeforeSupported(steps: readonly CompositionStep[]): boolean {
+  let sawUnsupported = false;
   for (const step of steps) {
-    if (EXECUTOR_UNSUPPORTED_KINDS.has(step.kind)) unsupported.push(step);
-    else supported.push(step);
+    if (EXECUTOR_UNSUPPORTED_KINDS.has(step.kind)) sawUnsupported = true;
+    else if (sawUnsupported) return true;
   }
-  return [...supported, ...unsupported];
+  return false;
 }
 
 function parseAdapterResponse(
@@ -339,7 +340,7 @@ function parseAdapterResponse(
     return {
       triggerId: plan.triggerId,
       triggerEmittedAt: trigger.emittedAt,
-      steps: normalizeStepOrder(plan.steps as readonly CompositionStep[]),
+      steps: plan.steps as readonly CompositionStep[],
       estimatedCost: plan.estimatedCost,
     };
   } catch (error) {
@@ -363,6 +364,15 @@ function withComputedApproval(
   // Routing to approval lets a human/policy decide what to do instead of
   // surfacing as a planner/executor mismatch.
   if (plan.steps.length === 0) {
+    return { ...plan, requiresApproval: true };
+  }
+  // Plans where an executor-unsupported step (spawn_agent/forge_skill/
+  // tool_call) precedes a supported one are also forced to approval.
+  // The executor fail-closes on the first unsupported step, so without
+  // gating the supported suffix would silently drop. Reordering the plan
+  // would change semantics (notify before prerequisite ran), so we
+  // require human adjudication instead.
+  if (hasUnsupportedBeforeSupported(plan.steps)) {
     return { ...plan, requiresApproval: true };
   }
   return {
