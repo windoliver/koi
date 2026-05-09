@@ -301,18 +301,15 @@ const EXECUTOR_UNSUPPORTED_KINDS = new Set<string>([
   "tool_call",
 ]);
 
-// True when an unsupported step appears BEFORE any supported step. In that
-// case the executor will fail-closed on the unsupported step and never
-// reach the supported one. Reordering the plan would change semantics
-// (notifications could fire before the prerequisite analysis runs), so the
-// LLM planner instead routes such plans through approval — a human/policy
-// then decides whether to dispatch the supported suffix manually, drop the
-// plan, or wait for unsupported-step support.
-function hasUnsupportedBeforeSupported(steps: readonly CompositionStep[]): boolean {
-  let sawUnsupported = false;
+// True when ANY step in the plan is a kind the executor cannot run.
+// The executor fail-closes on the first such step, so a plan containing
+// any unsupported kind is at best partially executable and at worst a
+// pure no-op. Routing all such plans through approval is symmetric with
+// the rule planner's behavior and prevents the planner/executor mismatch
+// where an auto-approved plan deterministically fails at execute time.
+function planContainsUnsupported(steps: readonly CompositionStep[]): boolean {
   for (const step of steps) {
-    if (EXECUTOR_UNSUPPORTED_KINDS.has(step.kind)) sawUnsupported = true;
-    else if (sawUnsupported) return true;
+    if (EXECUTOR_UNSUPPORTED_KINDS.has(step.kind)) return true;
   }
   return false;
 }
@@ -366,13 +363,13 @@ function withComputedApproval(
   if (plan.steps.length === 0) {
     return { ...plan, requiresApproval: true };
   }
-  // Plans where an executor-unsupported step (spawn_agent/forge_skill/
-  // tool_call) precedes a supported one are also forced to approval.
-  // The executor fail-closes on the first unsupported step, so without
-  // gating the supported suffix would silently drop. Reordering the plan
-  // would change semantics (notify before prerequisite ran), so we
-  // require human adjudication instead.
-  if (hasUnsupportedBeforeSupported(plan.steps)) {
+  // Plans containing any executor-unsupported step (spawn_agent/forge_skill/
+  // tool_call) are forced to approval. The executor fail-closes on those
+  // kinds, so auto-executing would either silently drop a supported suffix
+  // (unsupported precedes supported) or return STATUS=unsupported as a
+  // no-op (unsupported-only). Either way a human/policy decision is
+  // safer than auto-dispatch.
+  if (planContainsUnsupported(plan.steps)) {
     return { ...plan, requiresApproval: true };
   }
   return {
@@ -399,7 +396,22 @@ export function createLlmCompositionPlanner(
       } catch (error) {
         if (config.fallbackToRulePlanner !== undefined && error instanceof AdapterPlanParseError) {
           const fallbackPlan = await config.fallbackToRulePlanner.plan(trigger, capabilities);
-          return withComputedApproval(fallbackPlan, trigger, approvalPolicy, isNovel);
+          // Reclassify under THIS planner's policy/novelty, but never
+          // weaken the fallback's gate: if the rule planner already
+          // required approval (e.g. unsupported steps present) keep it.
+          const reclassified = withComputedApproval(
+            { ...fallbackPlan, requiresApproval: undefined } as Omit<
+              CompositionPlan,
+              "requiresApproval"
+            >,
+            trigger,
+            approvalPolicy,
+            isNovel,
+          );
+          return {
+            ...reclassified,
+            requiresApproval: reclassified.requiresApproval || fallbackPlan.requiresApproval,
+          };
         }
         throw error;
       }

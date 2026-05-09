@@ -130,7 +130,9 @@ describe("createLlmCompositionPlanner", () => {
       },
     ]);
     expect(plan.estimatedCost).toBe(6);
-    expect(plan.requiresApproval).toBe(false);
+    // Fallback plan contains spawn_agent (executor-unsupported), so the
+    // gate from the rule planner is preserved through reclassification.
+    expect(plan.requiresApproval).toBe(true);
   });
 
   test("empty LLM plan forces requiresApproval=true (executor rejects empty non-approval)", async () => {
