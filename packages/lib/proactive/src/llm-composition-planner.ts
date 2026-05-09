@@ -33,6 +33,29 @@ export interface LlmCompositionPlannerConfig {
   readonly approvalPolicy?: CompositionApprovalPolicy | undefined;
   readonly classifyNovelty?: ((trigger: CompositionTrigger) => boolean) | undefined;
   readonly fallbackToRulePlanner?: CompositionPlanner | undefined;
+  /**
+   * notify_user channels the host has wired and considers safe to
+   * auto-deliver to. Plans naming any other channel are forced through
+   * approval. Mirrors the executor's `allowedNotifyChannels` config —
+   * pass the same set so the planner does not gate channels the
+   * executor would happily dispatch. Defaults to `["inbox"]`.
+   */
+  readonly safeNotifyChannels?: readonly string[] | undefined;
+  /**
+   * `submit_task.taskOptions` keys the configured scheduler backend
+   * rejects synchronously. Plans setting any of these are forced
+   * through approval since they would deterministically fail at execute
+   * time. Defaults to the shipped Temporal scheduler's reject list
+   * (`["timeoutMs", "maxRetries"]`); pass `[]` for backends that accept
+   * full TaskOptions.
+   */
+  readonly unsafeSubmitOptionKeys?: readonly string[] | undefined;
+  /**
+   * `create_schedule.taskOptions` keys the configured scheduler backend
+   * rejects synchronously. Defaults to the shipped Temporal scheduler's
+   * reject list. Pass `[]` for backends that accept full TaskOptions.
+   */
+  readonly unsafeScheduleOptionKeys?: readonly string[] | undefined;
 }
 
 const jsonValueSchema: z.ZodType<unknown> = z.lazy(() =>
@@ -355,24 +378,34 @@ function planUsesUnsafeChannel(
   return false;
 }
 
-function planUsesUnsupportedScheduleOption(steps: readonly CompositionStep[]): boolean {
+function planUsesUnsupportedScheduleOption(
+  steps: readonly CompositionStep[],
+  unsafeKeys: readonly string[],
+): boolean {
+  if (unsafeKeys.length === 0) return false;
   for (const step of steps) {
     if (step.kind !== "create_schedule" || step.taskOptions === undefined) continue;
-    for (const key of TEMPORAL_UNSUPPORTED_SCHEDULE_OPTION_KEYS) {
+    for (const key of unsafeKeys) {
       if ((step.taskOptions as Record<string, unknown>)[key] !== undefined) return true;
     }
   }
   return false;
 }
 
-function planUsesUnsupportedSubmitOption(steps: readonly CompositionStep[]): boolean {
+function planUsesUnsupportedSubmitOption(
+  steps: readonly CompositionStep[],
+  unsafeKeys: readonly string[],
+): boolean {
   for (const step of steps) {
     if (step.kind !== "submit_task" || step.taskOptions === undefined) continue;
-    for (const key of TEMPORAL_UNSUPPORTED_SUBMIT_OPTION_KEYS) {
+    for (const key of unsafeKeys) {
       if ((step.taskOptions as Record<string, unknown>)[key] !== undefined) return true;
     }
-    // dispatch + delayMs is also rejected unconditionally.
+    // dispatch + delayMs is also rejected unconditionally by Temporal.
+    // Only enforced when the caller has opted into Temporal-style gating
+    // (non-empty unsafeKeys) so non-Temporal backends are not affected.
     if (
+      unsafeKeys.length > 0 &&
       step.mode === "dispatch" &&
       (step.taskOptions as Record<string, unknown>).delayMs !== undefined
     ) {
@@ -416,11 +449,18 @@ function parseAdapterResponse(
   }
 }
 
+interface ApprovalGuards {
+  readonly safeChannels: readonly string[];
+  readonly unsafeSubmitKeys: readonly string[];
+  readonly unsafeScheduleKeys: readonly string[];
+}
+
 function withComputedApproval(
   plan: Omit<CompositionPlan, "requiresApproval">,
   trigger: CompositionTrigger,
   approvalPolicy: CompositionApprovalPolicy,
   isNovel: boolean,
+  guards: ApprovalGuards,
 ): CompositionPlan {
   // Empty plans are forced through the approval path. The executor rejects
   // zero-step non-approval plans as INVALID_PLAN, so without this guard an
@@ -445,9 +485,9 @@ function withComputedApproval(
   // deterministically fail-closed at execute time. Route through approval
   // instead of auto-dispatching a plan we know will be rejected.
   if (
-    planUsesUnsafeChannel(plan.steps, DEFAULT_PLANNER_SAFE_CHANNELS) ||
-    planUsesUnsupportedScheduleOption(plan.steps) ||
-    planUsesUnsupportedSubmitOption(plan.steps)
+    planUsesUnsafeChannel(plan.steps, guards.safeChannels) ||
+    planUsesUnsupportedScheduleOption(plan.steps, guards.unsafeScheduleKeys) ||
+    planUsesUnsupportedSubmitOption(plan.steps, guards.unsafeSubmitKeys)
   ) {
     return { ...plan, requiresApproval: true };
   }
@@ -464,6 +504,11 @@ export function createLlmCompositionPlanner(
 ): CompositionPlanner {
   const approvalPolicy = config.approvalPolicy ?? DEFAULT_COMPOSITION_APPROVAL_POLICY;
   const classifyNovelty = config.classifyNovelty ?? (() => false);
+  const guards: ApprovalGuards = {
+    safeChannels: config.safeNotifyChannels ?? DEFAULT_PLANNER_SAFE_CHANNELS,
+    unsafeSubmitKeys: config.unsafeSubmitOptionKeys ?? TEMPORAL_UNSUPPORTED_SUBMIT_OPTION_KEYS,
+    unsafeScheduleKeys: config.unsafeScheduleOptionKeys ?? TEMPORAL_UNSUPPORTED_SCHEDULE_OPTION_KEYS,
+  };
 
   return {
     async plan(trigger, capabilities): Promise<CompositionPlan> {
@@ -486,6 +531,7 @@ export function createLlmCompositionPlanner(
             trigger,
             approvalPolicy,
             isNovel,
+            guards,
           );
           return {
             ...reclassified,
@@ -495,7 +541,7 @@ export function createLlmCompositionPlanner(
         throw error;
       }
 
-      return withComputedApproval(parsed, trigger, approvalPolicy, isNovel);
+      return withComputedApproval(parsed, trigger, approvalPolicy, isNovel, guards);
     },
   };
 }

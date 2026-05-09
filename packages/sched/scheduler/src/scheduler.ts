@@ -30,7 +30,7 @@ import type {
   TaskScheduler,
   TaskStore,
 } from "@koi/core";
-import { type SchedulerConfig, scheduleId, taskId } from "@koi/core";
+import { preCommitRejection, type SchedulerConfig, scheduleId, taskId } from "@koi/core";
 import { Cron } from "croner";
 import type { Clock } from "./clock.js";
 import { SYSTEM_CLOCK } from "./clock.js";
@@ -446,7 +446,9 @@ export function createScheduler(
         const testJob = new Cron(expression, validationOptions);
         testJob.stop();
       } catch (e: unknown) {
-        throw new Error(`Invalid cron expression: "${expression}"`, { cause: e });
+        // Branded as composition pre-commit rejection so any composition
+        // executor reservation is released — no schedule was created.
+        throw preCommitRejection(`Invalid cron expression: "${expression}"`, e);
       }
 
       const id = generateScheduleId();

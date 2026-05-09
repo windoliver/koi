@@ -189,6 +189,50 @@ describe("createLlmCompositionPlanner", () => {
     expect(plan.requiresApproval).toBe(true);
   });
 
+  test("planner config can disable Temporal-style gating for non-Temporal backends", async () => {
+    const planner = createLlmCompositionPlanner({
+      adapter: {
+        async plan(): Promise<string> {
+          return JSON.stringify({
+            triggerId: "trigger-flex",
+            triggerEmittedAt: 1,
+            steps: [
+              {
+                kind: "submit_task",
+                agentId: "agent-1",
+                mode: "spawn",
+                input: { kind: "text", text: "go" },
+                taskOptions: { maxRetries: 3 },
+              },
+              { kind: "notify_user", channel: "slack", message: "x", priority: "normal" },
+            ],
+            estimatedCost: 1,
+          });
+        },
+      },
+      // In-process scheduler accepts maxRetries; host has wired the
+      // slack channel into the executor's allowedNotifyChannels.
+      unsafeSubmitOptionKeys: [],
+      unsafeScheduleOptionKeys: [],
+      safeNotifyChannels: ["inbox", "slack"],
+    });
+
+    const plan = await planner.plan(
+      {
+        id: "trigger-flex",
+        source: "test",
+        confidence: 1,
+        moment: { kind: "external_event", source: "x", eventType: "y" },
+        suggestedCapabilities: [],
+        context: {},
+        emittedAt: 1,
+      },
+      { tools: [], agents: [], schedules: [] },
+    );
+
+    expect(plan.requiresApproval).toBe(false);
+  });
+
   test("LLM plan with submit_task unsupported taskOptions is forced to approval", async () => {
     const planner = createLlmCompositionPlanner({
       adapter: {
