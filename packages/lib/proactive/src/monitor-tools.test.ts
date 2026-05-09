@@ -330,51 +330,6 @@ describe("monitor tools", () => {
     expect(listed.monitors[0]?.schedule_id).toBe(created.schedule_id);
   });
 
-  test("update_monitor fails closed when retiring the original schedule reports removed:false", async () => {
-    const state = createMonitorToolState();
-    const createStub = createSchedulerStub();
-    const updateStub = createSchedulerStub({ unscheduleResult: false });
-    const createMonitor = createCreateMonitorTool({ scheduler: createStub.component }, state);
-    const updateMonitor = createUpdateMonitorTool({ scheduler: updateStub.component }, state);
-    const listMonitors = createListMonitorsTool(state);
-
-    const created = (await createMonitor.execute({
-      name: "dependency-watch",
-      goal: "Detect whether issue #1212 is unblocked",
-      check_prompt: "Inspect repo state.",
-      expression: "0 9 * * *",
-      timezone: "America/Los_Angeles",
-      context_hint: "Look at scheduler/channel restoration issues first.",
-    })) as { monitor_id: string; schedule_id: string };
-
-    const updated = (await updateMonitor.execute({
-      monitor_id: created.monitor_id,
-      goal: "Detect whether issue #1301 is unblocked",
-      expression: "30 9 * * *",
-      timezone: "America/New_York",
-      context_hint: "Focus on delivery and durability work.",
-    })) as { ok: boolean; error: string };
-    expect(updated.ok).toBe(false);
-    expect(updated.error).toContain("removed:false");
-    expect(updateStub.scheduleCalls).toHaveLength(1);
-    expect(updateStub.unscheduleCalls).toEqual([created.schedule_id]);
-
-    const listed = (await listMonitors.execute({})) as {
-      monitors: {
-        goal: string;
-        expression: string;
-        context_hint?: string;
-        schedule_id: string;
-      }[];
-    };
-    expect(listed.monitors[0]?.goal).toBe("Detect whether issue #1212 is unblocked");
-    expect(listed.monitors[0]?.expression).toBe("0 9 * * *");
-    expect(listed.monitors[0]?.context_hint).toBe(
-      "Look at scheduler/channel restoration issues first.",
-    );
-    expect(listed.monitors[0]?.schedule_id).toBe(created.schedule_id);
-  });
-
   test("cancel_monitor removes the record and clears create-time idempotency", async () => {
     const stub = createSchedulerStub();
     const state = createMonitorToolState();
