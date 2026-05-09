@@ -766,6 +766,15 @@ export type RuntimeAutoHarnessConfig = Omit<BaseAutoHarnessConfig, "requestDeplo
 /** Runtime-facing auto-harness handle. */
 export interface RuntimeAutoHarnessHandle {
   readonly middleware: import("@koi/core").KoiMiddleware;
+  /**
+   * Observe-phase middleware that releases per-session ownership entries on
+   * normal `onSessionEnd`. Hosts that forward `synthesizeHarness` /
+   * `middleware` into a separately-composed live chain (e.g. the CLI splices
+   * the runtime's auto-harness handle into its own chain) MUST also splice
+   * this cleanup middleware. Without it, ownership entries accumulate until
+   * the hard cap rejects new attachments.
+   */
+  readonly cleanupMiddleware: import("@koi/core").KoiMiddleware;
   readonly synthesizeHarness: AutoHarnessStack["synthesizeHarness"];
   readonly resetSession: (sessionId?: string) => void;
   readonly maxSynthesesPerSession: number;

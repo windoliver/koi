@@ -150,7 +150,12 @@ import {
 } from "./middleware-registry.js";
 import type { PluginDiscoverySummary } from "./plugin-activation.js";
 import { loadPluginComponents } from "./plugin-activation.js";
-import { activateStacks, LATE_PHASE_HOST_KEYS, mergeStackContributions } from "./preset-stacks.js";
+import {
+  activateStacks,
+  DEFAULT_STACKS,
+  LATE_PHASE_HOST_KEYS,
+  mergeStackContributions,
+} from "./preset-stacks.js";
 import { enforceRequiredMiddleware } from "./required-middleware.js";
 import {
   buildCoreMiddleware,
@@ -4069,7 +4074,16 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // notifier. Until the forge preset exposes its store/notifier for
     // sharing, refuse the combined configuration so operators can't end up
     // with split-brain state (R5 round 11 finding).
-    const forgeStackActive = enabledStackIds === undefined || enabledStackIds.has("forge");
+    // Treat forge as active only when it's actually in the resolved stack
+    // set: explicit `config.stacks` includes it, OR it is present in
+    // DEFAULT_STACKS (the implicit-default set). Treating
+    // `enabledStackIds === undefined` as "forge active" was over-broad —
+    // DEFAULT_STACKS does not currently register the forge preset, so
+    // hosts using default config could not enable autoHarness at all.
+    const forgeStackActive =
+      enabledStackIds !== undefined
+        ? enabledStackIds.has("forge")
+        : DEFAULT_STACKS.some((s) => s.id === "forge");
     if (config.autoHarness !== undefined && forgeStackActive) {
       throw new Error(
         "createKoiRuntime: cannot enable `autoHarness` together with the " +
@@ -4157,7 +4171,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           ? [sharedRuntimeHandle.forgeDemand.middleware]
           : []),
         ...(sharedRuntimeHandle?.autoHarness !== undefined
-          ? [sharedRuntimeHandle.autoHarness.middleware]
+          ? [
+              sharedRuntimeHandle.autoHarness.middleware,
+              // Splice the cleanup observer too — without it, ownership
+              // entries accumulate across session attachments and the
+              // hard cap eventually rejects new sessions.
+              ...(sharedRuntimeHandle.autoHarness.cleanupMiddleware !== undefined
+                ? [sharedRuntimeHandle.autoHarness.cleanupMiddleware]
+                : []),
+            ]
           : []),
         ...auditPresetExtras,
         ...(governanceMw !== undefined ? [governanceMw] : []),

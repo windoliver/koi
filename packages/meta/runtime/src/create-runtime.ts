@@ -671,23 +671,16 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     // out-of-band, but no live dispatch path consults the cache. Real
     // adapters install the middleware unconditionally.
     const adapterHasTerminals = rawAdapter.terminals !== undefined;
-    const baseWithAutoHarness: readonly KoiMiddleware[] = (() => {
-      if (autoHarnessStack === undefined) return baseWithForgeDemand;
-      // Runtime invariants (caller policy-cache, policyVerifier, notifier)
-      // were validated up front before constructing the stack — see the
-      // pre-construction guards in this function. Reaching this branch
-      // means the caller satisfied them and the stack-owned policy-cache
-      // is the sole source of truth.
-      const withoutCallerPolicyCache = baseWithForgeDemand;
-      // Auto-cleanup observer: release per-session ownership entries on
-      // normal session end so a service processing many short-lived
-      // sessions does not slowly fill the ownership cap and start refusing
-      // new attachments. Hosts can still force cleanup via
-      // `runtime.autoHarness.resetSession(id)`, but the runtime's own
-      // session lifecycle reclaims the slot automatically (R5 round 13
-      // finding).
+    // Auto-cleanup observer: release per-session ownership entries on
+    // normal session end so a service processing many short-lived sessions
+    // does not slowly fill the ownership cap and start refusing new
+    // attachments. Defined at this scope so it can be exposed on the
+    // RuntimeAutoHarnessHandle for downstream composers (CLI/L3) that
+    // splice the auto-harness middleware into a separately-built chain.
+    const autoHarnessCleanupMiddleware: KoiMiddleware | undefined = (() => {
+      if (autoHarnessStack === undefined) return undefined;
       const stack = autoHarnessStack;
-      const autoHarnessCleanup: KoiMiddleware = {
+      return {
         name: "auto-harness-session-cleanup",
         phase: "observe",
         priority: 950,
@@ -698,9 +691,8 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
           // sessionId, each producing a distinct attachment; deleting all
           // matches when the first stream ends would tear down the
           // surviving streams' scoped handles and silently disable
-          // auto-harness for still-live traffic (R5 round 14 finding).
-          // Only reset the stack-side per-session state once the last
-          // attachment for this logical session has ended.
+          // auto-harness for still-live traffic. Only reset stack-side
+          // per-session state once the last attachment ends.
           let removed = false;
           let stillHasOthers = false;
           for (const entry of autoHarnessSessionEntries) {
@@ -718,14 +710,20 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
           }
         },
       };
-      // Only compose the stack-owned policy-cache when the adapter can carry
-      // intercept-phase middleware. Stub adapters (test-only) skip
-      // composition; the stack handle remains usable out-of-band. The
-      // cleanup observer is composed in both cases — it doesn't depend on
-      // intercept-phase composition.
+    })();
+    const baseWithAutoHarness: readonly KoiMiddleware[] = (() => {
+      if (autoHarnessStack === undefined) return baseWithForgeDemand;
+      // Runtime invariants validated above. Stack-owned policy-cache is
+      // the sole source of truth.
+      const withoutCallerPolicyCache = baseWithForgeDemand;
+      const cleanup = autoHarnessCleanupMiddleware;
       return adapterHasTerminals
-        ? [...withoutCallerPolicyCache, autoHarnessStack.policyCacheMiddleware, autoHarnessCleanup]
-        : [...withoutCallerPolicyCache, autoHarnessCleanup];
+        ? [
+            ...withoutCallerPolicyCache,
+            autoHarnessStack.policyCacheMiddleware,
+            ...(cleanup !== undefined ? [cleanup] : []),
+          ]
+        : [...withoutCallerPolicyCache, ...(cleanup !== undefined ? [cleanup] : [])];
     })();
 
     // Install exfiltration guard by default when: (1) not explicitly disabled,
@@ -1466,6 +1464,18 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
               // out-of-band, even though the middleware is not in the live
               // dispatch chain.
               middleware: installedPolicyCacheMiddleware ?? autoHarnessStack.policyCacheMiddleware,
+              // Cleanup observer is exposed so downstream composers (CLI/L3)
+              // that splice the auto-harness middleware into a separately-
+              // built chain also splice this. Without it, ownership entries
+              // accumulate per attachment and eventually trip the cap.
+              cleanupMiddleware:
+                autoHarnessCleanupMiddleware ??
+                ({
+                  name: "auto-harness-session-cleanup",
+                  phase: "observe",
+                  priority: 950,
+                  describeCapabilities: () => undefined,
+                } satisfies KoiMiddleware),
               synthesizeHarness: autoHarnessStack.synthesizeHarness,
               // Wrap to also drop session ownership entries — the stack
               // tracks budget/dedupe state but the runtime owns the

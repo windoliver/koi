@@ -246,6 +246,10 @@ describe("createKoiRuntime — assembly", () => {
     await expect(
       createKoiRuntime({
         ...makeConfig(),
+        // Explicitly include forge so the guard triggers — DEFAULT_STACKS
+        // does not currently include forge, so omitting `stacks` would
+        // not activate the conflicting preset.
+        stacks: ["forge"],
         autoHarness: {
           forgeStore: { save: async () => ({ ok: true as const, value: undefined }) } as never,
           policyVerifier: ((_e: unknown) => true) as never,
