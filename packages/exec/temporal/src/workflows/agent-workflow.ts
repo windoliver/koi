@@ -72,6 +72,13 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
             : `${workflowInfo().workflowId}:${workflowInfo().runId}`,
         )
       : (baseSessionId ?? makeSessionId(workflowInfo().workflowId));
+  // Scheduled spawns (cron firings via Temporal Schedules) must terminate so
+  // that the schedule's overlap policy (e.g. SKIP) sees the run as completed
+  // and the next firing can start. Long-lived dispatch workflows keep
+  // listening for signals; scheduled firings exit after draining their
+  // initial input + any signals that arrived during the turn.
+  const isScheduledFiring =
+    config.initialScheduledInput !== undefined || config.terminateWhenIdle === true;
   let stateRefs = config.stateRefs;
   const pendingMessages: IncomingMessage[] = [];
   let processingTurn = false;
@@ -98,12 +105,19 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
   }
 
   setHandler(messageSignal, (message: IncomingMessage) => {
+    // Scheduled firings ignore live signals: their work is fully described
+    // by initialScheduledInput. Without this, external senders targeting
+    // the stable schedule workflowId could keep the queue non-empty
+    // indefinitely and block subsequent cron ticks under SKIP overlap.
+    if (isScheduledFiring) return;
     pendingMessages.push(message);
   });
   setHandler(messagesSignal, (messages: readonly IncomingMessage[]) => {
+    if (isScheduledFiring) return;
     pendingMessages.push(...messages);
   });
   setHandler(scheduledInputSignal, (input: ScheduledInputPayload) => {
+    if (isScheduledFiring) return;
     enqueueScheduledInput(input);
   });
 
@@ -146,6 +160,13 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
         gatewayUrl: config.gatewayUrl,
         turnId,
         maxStopRetries: config.maxStopRetries,
+        // Scheduled firings auto-terminate when drained. A spawned child
+        // (launched with ABANDON parent close policy) could outlive the
+        // parent and overlap with the next cron tick, breaking SKIP/BUFFER
+        // serialization. Forbid spawn at activity layer: any spawn_requested
+        // becomes a non-retryable ApplicationFailure rather than starting a
+        // child the parent cannot wait on.
+        ...(isScheduledFiring ? { allowSpawn: false } : {}),
       });
     } finally {
       processingTurn = false;
@@ -154,6 +175,18 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
     stateRefs = result.updatedStateRefs;
 
     if (result.spawnChild !== undefined) {
+      // Scheduled firings cannot spawn children: the parent auto-terminates
+      // when its queue drains, but children are launched with ABANDON parent
+      // close policy, so the parent run could complete while a child is
+      // still active. Under SKIP/BUFFER overlap policies the next cron tick
+      // would then start concurrently with leftover child work, breaking
+      // schedule serialization. Reject spawn requests in this mode.
+      if (isScheduledFiring) {
+        throw new Error(
+          "Scheduled firings cannot spawn child workflows: the parent would " +
+            "auto-terminate before the child completes and break schedule overlap policy",
+        );
+      }
       const childConfig: WorkerWorkflowConfig = {
         ...result.spawnChild.childConfig,
         agentId: result.spawnChild.childAgentId,
@@ -182,6 +215,10 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
     // so this does not race with concurrent senders. Carried payload is
     // typically small (per-turn drain), bounded in practice by signal rate
     // and Temporal's per-arg size limit.
+    if (isScheduledFiring && pendingMessages.length === 0) {
+      break;
+    }
+
     if (workflowInfo().continueAsNewSuggested && !shutdownRequested) {
       const carryConfig: AgentWorkflowConfig = {
         ...config,
@@ -190,6 +227,10 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
         initialMessage: undefined,
         initialMessages: [...pendingMessages],
         initialScheduledInput: undefined,
+        // Preserve auto-terminate behavior: scheduled firings rotated via
+        // continueAsNew must still exit when drained, otherwise the next
+        // cron tick is blocked under SKIP overlap policy.
+        terminateWhenIdle: isScheduledFiring,
       };
       await continueAsNew<typeof agentWorkflow>(carryConfig);
     }

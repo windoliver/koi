@@ -127,6 +127,16 @@ export function createActivities(deps: ActivityDeps): {
               });
             }
           } else if (record.kind === "spawn_requested") {
+            // Scheduled firings forbid spawning: the parent auto-terminates
+            // when its queue drains, and a child launched with ABANDON
+            // parent close policy could outlive the parent, breaking schedule
+            // overlap. We drop the spawn (no startChild) but commit the turn
+            // normally — text deltas already streamed to the gateway must
+            // not be invalidated by a post-hoc throw, since the next cron
+            // tick would replay them and duplicate user-visible output.
+            if (input.allowSpawn === false) {
+              continue;
+            }
             const childAgentId = String(record.childAgentId ?? "");
             const description =
               typeof record.request?.description === "string" ? record.request.description : "";

@@ -15,6 +15,14 @@ export interface AgentWorkflowConfig {
   readonly initialMessages?: readonly IncomingMessage[] | undefined;
   readonly initialScheduledInput?: ScheduledInputPayload | undefined;
   readonly maxStopRetries?: number | undefined;
+  /**
+   * Auto-terminate this run after the pending queue drains. Set by scheduled
+   * spawns so each cron firing exits cleanly (so SKIP/BUFFER overlap policies
+   * see the run as completed). Survives continueAsNew rollovers — without
+   * this flag, history rotation on a scheduled firing would resurface as a
+   * long-lived workflow and block subsequent cron ticks.
+   */
+  readonly terminateWhenIdle?: boolean | undefined;
 }
 
 export interface AgentStateRefs {
@@ -28,6 +36,13 @@ export interface AgentTurnInput {
   readonly message: IncomingMessage;
   readonly stateRefs: AgentStateRefs;
   readonly gatewayUrl: string | undefined;
+  /**
+   * When false, the activity rejects any `spawn_requested` event from the
+   * engine with a non-retryable ApplicationFailure. Used by scheduled
+   * firings, which auto-terminate when drained and so cannot safely supervise
+   * a spawned child without breaking the schedule's overlap policy.
+   */
+  readonly allowSpawn?: boolean | undefined;
   /**
    * Stable turn identifier minted by the workflow. Survives Temporal activity
    * retries so streamed gateway frames (turnId + frameIndex) form a usable
