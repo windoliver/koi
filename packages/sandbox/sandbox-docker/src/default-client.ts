@@ -386,6 +386,12 @@ function makeContainer(id: string, env: Record<string, string>): DockerContainer
     remove: async (): Promise<void> => {
       const r = await runDocker(["rm", "-f", id], undefined, env);
       if (r.exitCode !== 0) {
+        // Idempotent on "no such container" — calling remove() twice (or
+        // racing with a peer's cleanup) must not error.
+        const blob = `${r.stderr}\n${r.stdout}`.toLowerCase();
+        if (blob.includes("no such container") || blob.includes("no such object")) {
+          return;
+        }
         throw new Error(`docker rm -f failed for ${id}`, { cause: r });
       }
     },
@@ -450,7 +456,12 @@ export function createDefaultDockerClient(config?: DefaultDockerClientConfig): D
       for (const [k, v] of Object.entries(labels)) {
         filterArgs.push("--filter", `label=${k}=${v}`);
       }
-      const r = await runDocker(["ps", "-a", "-q", ...filterArgs], undefined, env);
+      // `--no-trunc` forces full 64-char hex IDs. Without it docker emits
+      // 12-char short IDs which mismatch the full IDs returned by
+      // `docker create` and stored in the registry — the trust check
+      // (`expectedId !== existing.id`) would falsely reject our own
+      // container as a stranger.
+      const r = await runDocker(["ps", "-a", "-q", "--no-trunc", ...filterArgs], undefined, env);
       if (r.exitCode !== 0) {
         // Do NOT collapse a transient `docker ps` failure into "no matches".
         // findOrCreate would then proceed to fresh-create on the deterministic

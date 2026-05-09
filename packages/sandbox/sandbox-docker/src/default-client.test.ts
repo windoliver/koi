@@ -817,9 +817,12 @@ describe("createDefaultDockerClient", () => {
       const got = await client.findContainers({ "koi.sandbox.scope": "S" });
       expect(got.length).toBe(1);
       expect(got[0]?.id).toBe("id-1");
-      // Single ps -a -q query (args[0]=docker, args[1..3]=ps -a -q).
+      // Single ps -a -q --no-trunc query (args[0]=docker, args[1..4]=ps -a -q --no-trunc).
       expect(calls.length).toBe(1);
-      expect(calls[0]?.slice(1, 4)).toEqual(["ps", "-a", "-q"]);
+      expect(calls[0]?.slice(1, 5)).toEqual(["ps", "-a", "-q", "--no-trunc"]);
+      // --no-trunc is critical: short IDs would mismatch the full IDs from
+      // `docker create` and break the registry trust check.
+      expect(calls[0]).toContain("--no-trunc");
       expect(calls[0]).toContain("--filter");
       expect(calls[0]).toContain("label=koi.sandbox.scope=S");
     } finally {

@@ -38,7 +38,11 @@ describe("createDockerInstance", () => {
     expect(r.timedOut).toBe(false);
   });
 
-  test("destroy stops and removes the container", async () => {
+  test("destroy calls remove only — no separate stop", async () => {
+    // `docker rm -f` already force-kills running containers, so a separate
+    // stop step is redundant. Calling stop too would also break idempotency:
+    // a second destroy() would surface "docker stop failed" for an already-
+    // removed container instead of being a no-op.
     let stopped = 0;
     let removed = 0;
     const inst = createDockerInstance({
@@ -51,24 +55,24 @@ describe("createDockerInstance", () => {
       },
     });
     await inst.destroy();
-    expect(stopped).toBe(1);
+    expect(stopped).toBe(0);
     expect(removed).toBe(1);
   });
 
-  test("destroy calls remove even when stop throws, then re-throws stop error", async () => {
+  test("destroy is idempotent — second call when remove() is a no-op does not throw", async () => {
+    // Concrete client makes remove() a no-op on "no such container"; here we
+    // model that with a remove that always succeeds, proving destroy() can
+    // be invoked twice without error.
     let removed = 0;
     const inst = createDockerInstance({
       ...stubContainer({ exitCode: 0, stdout: "", stderr: "" }),
-      stop: async (): Promise<void> => {
-        throw new Error("docker stop failed for stub");
-      },
       remove: async (): Promise<void> => {
         removed += 1;
       },
     });
-    await expect(inst.destroy()).rejects.toThrow("docker stop failed for stub");
-    // remove must have been called despite stop throwing
-    expect(removed).toBe(1);
+    await inst.destroy();
+    await inst.destroy();
+    expect(removed).toBe(2);
   });
 
   test("readFile and writeFile proxy to the underlying container", async () => {
