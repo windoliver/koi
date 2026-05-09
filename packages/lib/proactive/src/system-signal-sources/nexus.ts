@@ -118,7 +118,8 @@ export function createNexusSignalSource(
             if (
               record.channel === "vfs" &&
               typeof record.event === "string" &&
-              typeof record.emittedAt === "number"
+              typeof record.emittedAt === "number" &&
+              Number.isFinite(record.emittedAt)
             ) {
               if (record.event === "write" || record.event === "delete") {
                 const path =
@@ -181,7 +182,9 @@ export function createNexusSignalSource(
               isValidTransitionPair(record.from, record.to) &&
               isTransitionReason(record.reason) &&
               typeof record.generation === "number" &&
+              Number.isFinite(record.generation) &&
               typeof record.emittedAt === "number"
+              && Number.isFinite(record.emittedAt)
             ) {
               emitter.emit({
                 kind: "agent_lifecycle",

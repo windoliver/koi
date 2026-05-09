@@ -94,6 +94,19 @@ describe("createGroveSignalSource", () => {
     ).toBe(true);
   });
 
+  test("rejects non-finite frontier improvement values", () => {
+    expect(
+      shouldAcceptGroveFrontierEvent("retrieval_quality", Number.NaN, {
+        minImprovement: 0.5,
+      }),
+    ).toBe(false);
+    expect(
+      shouldAcceptGroveFrontierEvent("retrieval_quality", Number.POSITIVE_INFINITY, {
+        minImprovement: 0.5,
+      }),
+    ).toBe(false);
+  });
+
   test("closed-aware grove handler suppresses buffered delivery after unsubscribe", () => {
     const seen: string[] = [];
     let closed = false;

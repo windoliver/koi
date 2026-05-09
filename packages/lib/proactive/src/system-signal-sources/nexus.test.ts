@@ -119,6 +119,49 @@ describe("createNexusSignalSource", () => {
     expect(seen).toEqual([]);
   });
 
+  test("drops lifecycle transitions with non-finite numeric fields", async () => {
+    let listener: ((event: unknown) => void) | undefined;
+    const source = createNexusSignalSource({
+      subscribe: (_channels, next) => {
+        listener = next;
+        return () => {};
+      },
+    });
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal));
+    listener?.({
+      channel: "agent",
+      event: "transition",
+      agentId: "agent-1",
+      from: "running",
+      to: "terminated",
+      reason: { kind: "error" },
+      generation: Number.POSITIVE_INFINITY,
+      emittedAt: 5,
+    });
+    listener?.({
+      channel: "agent",
+      event: "transition",
+      agentId: "agent-1",
+      from: "running",
+      to: "terminated",
+      reason: { kind: "error" },
+      generation: 2,
+      emittedAt: Number.NaN,
+    });
+    listener?.({
+      channel: "vfs",
+      event: "write",
+      path: "/tmp/non-finite.txt",
+      emittedAt: Number.POSITIVE_INFINITY,
+    });
+    await new Promise((resolve) => queueMicrotask(resolve));
+    stop();
+
+    expect(seen).toEqual([]);
+  });
+
   test("drops lifecycle transitions with invalid state pairs", async () => {
     let listener: ((event: unknown) => void) | undefined;
     const source = createNexusSignalSource({

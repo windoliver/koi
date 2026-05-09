@@ -24,6 +24,7 @@ export function shouldAcceptGroveFrontierEvent(
   config: Pick<GroveSignalSourceConfig, "metrics" | "minImprovement">,
 ): boolean {
   if (metric === undefined) return false;
+  if (improvement !== undefined && !Number.isFinite(improvement)) return false;
   if (config.metrics !== undefined && !config.metrics.includes(metric)) return false;
   if (
     config.minImprovement !== undefined &&
