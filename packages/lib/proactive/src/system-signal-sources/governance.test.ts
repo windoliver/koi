@@ -1,7 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { GovernanceController, GovernanceSnapshot, SystemSignal } from "@koi/core";
 import { createGovernanceSignalSource } from "./governance.js";
-import { matchesAnyPathFilter } from "./shared.js";
 
 function createController(readings: GovernanceSnapshot["readings"]): GovernanceController {
   return {
@@ -208,7 +207,30 @@ describe("createGovernanceSignalSource", () => {
     expect(onDisconnect).toHaveBeenCalledTimes(1);
   });
 
-  test("shared path filters default to match-all", () => {
-    expect(matchesAnyPathFilter("/workspace/anywhere", undefined)).toBe(true);
+  test("supports wildcard sensor thresholds through adapter matching", async () => {
+    const controller = createController([
+      { name: "error_rate_api", current: 0.41, limit: 1, utilization: 0.41 },
+    ]);
+    const source = createGovernanceSignalSource(
+      controller,
+      [{ sensor: "error_rate_*", limit: 0.3, direction: "above" }],
+      { now: () => 250 },
+    );
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal), { replay: true });
+    await new Promise((resolve) => queueMicrotask(resolve));
+
+    stop();
+    expect(seen).toEqual([
+      {
+        kind: "governance",
+        sensor: "error_rate_*",
+        value: 0.41,
+        limit: 0.3,
+        direction: "above",
+        emittedAt: 250,
+      },
+    ]);
   });
 });

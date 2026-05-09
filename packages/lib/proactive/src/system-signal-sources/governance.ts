@@ -5,7 +5,12 @@ import type {
   SystemSignal,
   SystemSignalSource,
 } from "@koi/core";
-import { createAsyncEmitter, createSubscriptionController, safeCall } from "./shared.js";
+import {
+  createAsyncEmitter,
+  createSubscriptionController,
+  matchesAnyPathFilter,
+  safeCall,
+} from "./shared.js";
 
 export interface GovernanceThreshold {
   readonly sensor: string;
@@ -46,7 +51,9 @@ export function createGovernanceSignalSource(
           const snapshot: GovernanceSnapshot = await controller.snapshot();
 
           for (const threshold of thresholds) {
-            const reading = snapshot.readings.find((entry) => entry.name === threshold.sensor);
+            const reading = snapshot.readings.find((entry) =>
+              matchesAnyPathFilter(entry.name, [threshold.sensor]),
+            );
             const nextAlerting = isAlerting(reading, threshold);
             const key = `${threshold.sensor}:${threshold.direction}:${threshold.limit}`;
             const previous = state.get(key) ?? { alerting: false, lastEmittedAt: -Infinity };
