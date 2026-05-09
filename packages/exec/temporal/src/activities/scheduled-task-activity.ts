@@ -22,14 +22,16 @@ export interface DefaultScheduledTaskActivityDeps {
     | ((workflowId: string, input: AgentWorkflowConfig) => Promise<void>)
     | undefined;
   readonly createWorkflowId?: (() => string) | undefined;
+  // Injectable clock so workflow-context callers supply a deterministic time source
+  // (Temporal sandboxes Date.now() in workflow context; tests can stub a fixed value).
+  readonly now?: (() => number) | undefined;
 }
 
 function materializeScheduledMessages(
   input: ScheduledTaskWorkflowArgs["input"],
   workflowId: string,
+  now: number,
 ): readonly IncomingMessage[] {
-  const now = Date.now();
-
   switch (input.kind) {
     case "text":
       return [
@@ -68,12 +70,13 @@ function materializeScheduledMessages(
 export function materializeScheduledAgentWorkflowConfig(
   args: ScheduledTaskWorkflowArgs,
   sessionId: string,
+  now: number,
 ): AgentWorkflowConfig {
   return {
     agentId: args.agentId,
     sessionId: sessionId as never,
     stateRefs: args.stateRefs,
-    initialMessages: materializeScheduledMessages(args.input, sessionId),
+    initialMessages: materializeScheduledMessages(args.input, sessionId, now),
     ...(args.input.maxStopRetries !== undefined
       ? { maxStopRetries: args.input.maxStopRetries }
       : {}),
@@ -83,11 +86,12 @@ export function materializeScheduledAgentWorkflowConfig(
 export function createDefaultScheduledTaskActivities(
   deps: DefaultScheduledTaskActivityDeps,
 ): ReturnType<typeof createScheduledTaskActivities> {
+  const now = deps.now ?? (() => Date.now());
   return createScheduledTaskActivities({
     async spawn(input: ScheduledTaskWorkflowArgs): Promise<string> {
       const workflowId =
         deps.createWorkflowId?.() ?? `scheduled:${String(input.agentId)}:${crypto.randomUUID()}`;
-      const config = materializeScheduledAgentWorkflowConfig(input, workflowId);
+      const config = materializeScheduledAgentWorkflowConfig(input, workflowId, now());
       if (deps.spawnAgentWorkflow !== undefined) {
         await deps.spawnAgentWorkflow(workflowId, config);
       } else {
@@ -96,9 +100,12 @@ export function createDefaultScheduledTaskActivities(
       return workflowId;
     },
     async dispatch(input: ScheduledTaskWorkflowArgs): Promise<void> {
-      await deps.runAgentWorkflow(
-        materializeScheduledAgentWorkflowConfig(input, String(input.agentId)),
-      );
+      // Per-firing session ID so repeated cron dispatches do not collide on materialized
+      // message IDs (e.g. "agentId:0"). Falls back to a uuid-suffixed agent namespace
+      // when no createWorkflowId is provided.
+      const sessionId =
+        deps.createWorkflowId?.() ?? `dispatch:${String(input.agentId)}:${crypto.randomUUID()}`;
+      await deps.runAgentWorkflow(materializeScheduledAgentWorkflowConfig(input, sessionId, now()));
     },
   });
 }

@@ -258,17 +258,24 @@ describe("dispatch mode", () => {
     expect(opts.workflowId).not.toBe(String(AGENT_ID));
   });
 
-  test("dispatch schedule uses sendSignal action not startWorkflow", async () => {
+  test("dispatch schedule uses startWorkflow action with mode=dispatch", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "dispatch");
     const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
     const opts = createArgs?.[1] as {
-      action: { type: string; signalName: string; workflowId: string };
+      action: { type: string; workflowType: string; args: readonly unknown[] };
     };
-    expect(opts.action.type).toBe("sendSignal");
-    expect(opts.action.signalName).toBe("scheduled-input");
-    expect(opts.action.workflowId).toBe(String(AGENT_ID));
+    // Temporal Schedules only support startWorkflow actions; dispatch firings start the
+    // scheduledTaskWorkflow wrapper which materializes messages with deterministic time
+    // and dispatches into the agent loop.
+    expect(opts.action.type).toBe("startWorkflow");
+    // Schedule path always targets the wrapper regardless of config.workflowType so the
+    // wrapper-arg shape is honored; config.workflowType (typically "agentWorkflow") is
+    // for direct submit, not cron.
+    expect(opts.action.workflowType).toBe("scheduledTaskWorkflow");
+    const wrapperArgs = opts.action.args[0] as { mode: string };
+    expect(wrapperArgs.mode).toBe("dispatch");
   });
 
   test("spawn schedule uses startWorkflow action", async () => {
@@ -540,18 +547,20 @@ describe("schedule / unschedule", () => {
     expect(s.activeSchedules).toBe(0);
   });
 
-  test("dispatch schedule uses scheduled-input signal with raw EngineInput (no baked message IDs)", async () => {
+  test("dispatch schedule wraps in startWorkflow with raw EngineInput template (no baked message IDs)", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "dispatch");
     const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
     const opts = createArgs?.[1] as {
-      action: { type: string; signalName: string; args: readonly unknown[] };
+      action: { type: string; args: readonly unknown[] };
     };
-    expect(opts.action.type).toBe("sendSignal");
-    expect(opts.action.signalName).toBe("scheduled-input");
-    // Raw EngineInput template passed so each firing materializes fresh message IDs/timestamps
-    expect(opts.action.args[0]).toEqual(TEXT_INPUT);
+    expect(opts.action.type).toBe("startWorkflow");
+    // Raw EngineInput template embedded in wrapper args so each firing materializes
+    // fresh message IDs/timestamps inside the scheduled-task workflow.
+    const wrapperArgs = opts.action.args[0] as { mode: string; input: unknown };
+    expect(wrapperArgs.mode).toBe("dispatch");
+    expect(wrapperArgs.input).toEqual(TEXT_INPUT);
   });
 
   test("dispatch schedule with multi-message input passes raw input without materialization", async () => {
@@ -568,7 +577,8 @@ describe("schedule / unschedule", () => {
     await scheduler.schedule("0 0 * * *", AGENT_ID, twoMessages, "dispatch");
     const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
     const opts = createArgs?.[1] as { action: { args: readonly unknown[] } };
-    expect(opts.action.args[0]).toEqual(twoMessages);
+    const wrapperArgs = opts.action.args[0] as { input: unknown };
+    expect(wrapperArgs.input).toEqual(twoMessages);
   });
 
   test("schedule() rejects timeoutMs to prevent false guarantee of enforcement", async () => {
@@ -1035,7 +1045,7 @@ describe("schedule — overlap and reuse policy", () => {
     await scheduler[Symbol.asyncDispose]();
   });
 
-  test("dispatch schedule does not set workflowIdReusePolicy", async () => {
+  test("dispatch schedule sets ALLOW_DUPLICATE workflowIdReusePolicy and SKIP overlap policy", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "dispatch");
@@ -1045,7 +1055,9 @@ describe("schedule — overlap and reuse policy", () => {
     const action = opts?.action as Record<string, unknown> | undefined;
     const policies = opts?.policies as Record<string, unknown> | undefined;
 
-    expect(action?.workflowIdReusePolicy).toBeUndefined();
+    // Dispatch now uses startWorkflow (same as spawn) so each cron firing creates a
+    // fresh wrapper workflow that materializes messages with deterministic time.
+    expect(action?.workflowIdReusePolicy).toBe("ALLOW_DUPLICATE");
     expect(policies?.overlapPolicy).toBe("SKIP");
 
     await scheduler[Symbol.asyncDispose]();

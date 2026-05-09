@@ -1843,46 +1843,32 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         paused: false,
       };
 
-      // spawn: startWorkflow on each cron firing. ScheduledSpawnArgs carries the
-      //   serialized payload; the workflow generates fresh IncomingMessage IDs and
-      //   timestamps at each execution to prevent duplicate idempotency keys.
-      // dispatch: "scheduled-input" signal with serialized payload so the workflow
-      //   signal handler creates a fresh IncomingMessage envelope per firing.
-      //   Distinct signal name prevents conflating one-shot direct signals ("message")
-      //   with recurring schedule-fired inputs.
-      let scheduleAction: Record<string, unknown>;
-      if (mode === "spawn") {
-        const workflowType = config.workflowType ?? SCHEDULED_TASK_WORKFLOW_NAME;
-        // Use snapshotPayload (the already-cloned/validated copy) so the remote schedule
-        // definition is byte-for-byte identical to the persisted local metadata.
-        // Using the original scheduledPayload risks split-brain if the caller mutates
-        // the input after schedule() is called or a client wrapper serializes lazily.
-        const spawnArgs: ScheduledTaskWorkflowArgs = {
-          mode: "spawn",
-          agentId,
-          stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
-          input: snapshotPayload,
-        };
-        scheduleAction = {
-          type: "startWorkflow",
-          workflowType,
-          taskQueue: config.taskQueue,
-          // Explicit workflowId so Temporal can apply overlap/reuse policies deterministically.
-          // The schedule ID is the stable base; Temporal's overlap policy governs concurrent firings.
-          workflowId: id,
-          // ALLOW_DUPLICATE lets each cron firing start a fresh workflow even if one with
-          // the same ID completed previously (unlike the default REJECT_DUPLICATE).
-          workflowIdReusePolicy: "ALLOW_DUPLICATE",
-          args: [spawnArgs],
-        };
-      } else {
-        scheduleAction = {
-          type: "sendSignal",
-          workflowId: String(agentId),
-          signalName: "scheduled-input",
-          args: [snapshotPayload], // same: use snapshot so remote and local payloads are identical
-        };
-      }
+      // Both spawn and dispatch firings use the startWorkflow action — Temporal Schedules
+      // do not support a sendSignal action, and even if they did, the signal name had no
+      // matching handler on the agent workflow side. The scheduledTaskWorkflow wrapper
+      // dispatches into the agent loop with workflow-deterministic timestamps per firing.
+      // Always target the wrapper workflow regardless of config.workflowType — the wrapper
+      // expects ScheduledTaskWorkflowArgs, but config.workflowType (used by direct submit)
+      // typically points at the bare agentWorkflow which would silently drop wrapper args.
+      const workflowType = SCHEDULED_TASK_WORKFLOW_NAME;
+      const wrapperArgs: ScheduledTaskWorkflowArgs = {
+        mode,
+        agentId,
+        stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+        input: snapshotPayload,
+      };
+      const scheduleAction: Record<string, unknown> = {
+        type: "startWorkflow",
+        workflowType,
+        taskQueue: config.taskQueue,
+        // Explicit workflowId so Temporal can apply overlap/reuse policies deterministically.
+        // The schedule ID is the stable base; Temporal's overlap policy governs concurrent firings.
+        workflowId: id,
+        // ALLOW_DUPLICATE lets each cron firing start a fresh workflow even if one with
+        // the same ID completed previously (unlike the default REJECT_DUPLICATE).
+        workflowIdReusePolicy: "ALLOW_DUPLICATE",
+        args: [wrapperArgs],
+      };
 
       // Two-phase pre-commit: durably record the schedule with its full metadata before
       // calling schedule.create() so crash recovery can reconstruct local state and make the

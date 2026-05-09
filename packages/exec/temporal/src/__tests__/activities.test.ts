@@ -220,11 +220,14 @@ describe("activity factories", () => {
   });
 
   test("default scheduled task activity materializes resume payloads for dispatch", async () => {
-    const seenConfigs: unknown[] = [];
+    const seenConfigs: Array<Record<string, unknown>> = [];
     const activities = createDefaultScheduledTaskActivities({
       runAgentWorkflow: async (config) => {
-        seenConfigs.push(config);
+        seenConfigs.push(config as unknown as Record<string, unknown>);
       },
+      // Deterministic session ID makes the resulting message-ID assertion stable while
+      // still proving the per-firing namespace plumbing (vs. the previous agentId reuse).
+      createWorkflowId: () => "dispatch:agent-1:fixed-firing-uuid",
     });
 
     await expect(
@@ -239,11 +242,11 @@ describe("activity factories", () => {
     expect(seenConfigs).toEqual([
       {
         agentId: "agent-1",
-        sessionId: "agent-1",
+        sessionId: "dispatch:agent-1:fixed-firing-uuid",
         stateRefs: { lastTurnId: "turn-3", turnsProcessed: 3 },
         initialMessages: [
           {
-            id: "agent-1:resume",
+            id: "dispatch:agent-1:fixed-firing-uuid:resume",
             senderId: "scheduler",
             content: [],
             timestamp: expect.any(Number),
