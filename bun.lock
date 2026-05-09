@@ -1345,6 +1345,19 @@
         "@koi/workspace-conformance": "workspace:*",
       },
     },
+    "packages/meta/auto-harness": {
+      "name": "@koi/auto-harness",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-policy": "workspace:*",
+        "@koi/forge-verifier": "workspace:*",
+        "@koi/harness-search": "workspace:*",
+        "@koi/harness-synth": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/middleware-policy-cache": "workspace:*",
+      },
+    },
     "packages/meta/cli": {
       "name": "@koi-agent/cli",
       "version": "0.1.0",
@@ -1359,6 +1372,7 @@
         "@koi/audit-sink-ndjson": "workspace:*",
         "@koi/audit-sink-nexus": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
+        "@koi/auto-harness": "workspace:*",
         "@koi/bash-ast": "workspace:*",
         "@koi/channel-cli": "workspace:*",
         "@koi/checkpoint": "workspace:*",
@@ -1508,6 +1522,7 @@
         "@koi/audit-sink-ndjson": "workspace:*",
         "@koi/audit-sink-nexus": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
+        "@koi/auto-harness": "workspace:*",
         "@koi/bash-ast": "workspace:*",
         "@koi/bash-security": "workspace:*",
         "@koi/browser-ext": "workspace:*",
@@ -2642,6 +2657,8 @@
     "@koi/audit-sink-nexus": ["@koi/audit-sink-nexus@workspace:packages/security/audit-sink-nexus"],
 
     "@koi/audit-sink-sqlite": ["@koi/audit-sink-sqlite@workspace:packages/security/audit-sink-sqlite"],
+
+    "@koi/auto-harness": ["@koi/auto-harness@workspace:packages/meta/auto-harness"],
 
     "@koi/bash-ast": ["@koi/bash-ast@workspace:packages/lib/bash-ast"],
 

@@ -3,6 +3,7 @@ import { createAgentMonitorMiddleware } from "@koi/agent-monitor";
 import { createAgentResolver } from "@koi/agent-runtime";
 import { createNdjsonAuditSink, validateNdjsonAuditSinkConfig } from "@koi/audit-sink-ndjson";
 import { createSqliteAuditSink, validateSqliteAuditSinkConfig } from "@koi/audit-sink-sqlite";
+import { createAutoHarnessStack } from "@koi/auto-harness";
 import { type Checkpoint, type CheckpointPayload, createCheckpoint } from "@koi/checkpoint";
 import type {
   ApprovalHandler,
@@ -15,6 +16,7 @@ import type {
   EngineEvent,
   EngineInput,
   FileSystemBackend,
+  ForgeDemandSignal,
   JsonObject,
   KoiMiddleware,
   ModelChunk,
@@ -112,6 +114,111 @@ const DEFAULT_AGENT_NAME = "koi-runtime";
  * 5. Apply stream timeout enforcement
  * 6. Return RuntimeHandle with store exposed
  */
+/**
+ * Per-session bookkeeping the runtime maintains alongside forge-demand to
+ * thread the session-scoped handle (and its `dismiss`) into auto-harness.
+ */
+interface AutoHarnessSessionEntry {
+  readonly sessionId: string;
+  /** Stable per-stream id from SessionContext.runId. Distinguishes
+   *  concurrent streams that share one logical sessionId, and lets
+   *  onSessionEnd remove all aliases of one logical attachment. */
+  readonly runId: string;
+  /** Owning agent id from SessionContext.agentId. Threaded into
+   *  AutoHarnessSessionContext.ownerAgentId so the synthesis pipeline
+   *  can reject any policyEntry whose agentId doesn't match the agent
+   *  that produced the demand signal (R5 round 19 finding). */
+  readonly agentId: string;
+  readonly scoped: {
+    readonly getSignals: () => readonly { readonly id: string }[];
+    readonly dismiss: (signalId: string) => void;
+  };
+}
+
+/**
+ * Wrap a caller-supplied `onDemand` callback so each demand signal is also
+ * fed into the auto-harness pipeline. The caller's callback runs first
+ * (isolated in try/catch — forge-demand swallows observer exceptions, so a
+ * throwing caller must not silently disable auto-harness for this signal).
+ *
+ * `sessionLookup` is consulted to identify which session owns the signal,
+ * threading the per-session budget and `dismiss` callback into the stack.
+ * Without a lookup, synthesis still runs — degraded (no per-session
+ * dismissal/dedupe) but not blocked.
+ */
+export function wrapOnDemandWithAutoHarness(
+  callerOnDemand: ((signal: ForgeDemandSignal) => void) | undefined,
+  stack: {
+    readonly synthesizeHarness: (
+      signal: ForgeDemandSignal,
+      session?: {
+        readonly sessionId: string;
+        readonly ownerAgentId?: string | undefined;
+        readonly dismiss?: () => void;
+      },
+    ) => Promise<unknown>;
+  },
+  sessionLookup?: () => readonly AutoHarnessSessionEntry[],
+): (signal: ForgeDemandSignal) => void {
+  return (signal: ForgeDemandSignal): void => {
+    // Resolve session ownership FIRST, before the caller callback runs.
+    // A host that stores the scoped handle and dismisses inside its own
+    // onDemand would otherwise remove the signal id before lookup, leaving
+    // owner undefined and silently degrading per-session isolation back to
+    // the shared global bucket.
+    let owner: AutoHarnessSessionEntry | undefined;
+    if (sessionLookup !== undefined) {
+      for (const entry of sessionLookup()) {
+        try {
+          if (entry.scoped.getSignals().some((s) => s.id === signal.id)) {
+            owner = entry;
+            break;
+          }
+        } catch {
+          // Skip broken scoped handles.
+        }
+      }
+    }
+
+    try {
+      callerOnDemand?.(signal);
+    } catch {
+      // Caller callback errors must not block auto-harness kickoff.
+    }
+
+    // Fail closed when no session owner can be resolved AND the runtime is
+    // operating in a session-aware configuration. Falling back to a missing
+    // session context routes the signal into the global bucket, where it
+    // would share dedupe state, retry budget, and dismiss behavior with
+    // unrelated traffic — exactly the cross-tenant interference per-session
+    // ownership exists to prevent (R5 round 10 finding). The signal is
+    // dropped here; forge-demand will re-fire after cooldown until the host
+    // either restores the session entry or resetSession is called.
+    if (sessionLookup !== undefined && owner === undefined) {
+      return;
+    }
+
+    const sessionCtx =
+      owner !== undefined
+        ? {
+            sessionId: owner.sessionId,
+            ownerAgentId: owner.agentId,
+            dismiss: () => {
+              try {
+                owner.scoped.dismiss(signal.id);
+              } catch {
+                // Dismiss is best-effort.
+              }
+            },
+          }
+        : undefined;
+
+    void stack.synthesizeHarness(signal, sessionCtx).catch(() => {
+      // synthesizeHarness is internally guarded.
+    });
+  };
+}
+
 export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   // Clock factory: creates a per-stream monotonic clock so concurrent sessions
   // don't push each other's timestamps into the future (see #1558).
@@ -240,6 +347,19 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   let lspCleanedUp = false;
   let checkpointCleanedUp = false;
   let filesystemCleanedUp = false;
+  let autoHarnessCleanedUp = false;
+  let autoHarnessStack: ReturnType<typeof createAutoHarnessStack> | undefined;
+  // Per-attachment ownership set for routing forge-demand signals to the
+  // session-scoped handle that owns them. Stored as a Set rather than a
+  // sessionId-keyed Map: multiple concurrent streams can share one logical
+  // `sessionId` (stable-session runtime mode), and each `onSessionAttached`
+  // delivers a distinct scoped handle. Keying by sessionId would overwrite
+  // older streams' handles, dropping their queued signals (R5 round 12
+  // finding). resetSession(id) and disposal iterate this set and remove
+  // matching entries. Bounded by a hard cap that fails attachment loudly
+  // instead of silently evicting live sessions.
+  const AUTO_HARNESS_SESSION_CAP = 1024;
+  const autoHarnessSessionEntries = new Set<AutoHarnessSessionEntry>();
 
   try {
     const baseMiddleware: readonly KoiMiddleware[] = [
@@ -321,6 +441,77 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     // healthTracker. Without auto-wiring, latency detection stays dormant
     // and we warn loudly so callers do not mistake "no signal" for
     // "no degradation".
+    // Runtime-level autoHarness invariants. These run BEFORE the package
+    // constructor so the runtime owns its public error contract — otherwise
+    // a missing notifier/verifier surfaces as the L3 package error and
+    // hosts never see the runtime's specific guidance. The caller-policy-
+    // cache check moved here so it fires together with the verifier/notifier
+    // checks; `baseWithForgeDemand` isn't ready yet, but `resolvedMiddleware`
+    // contains everything the caller passed in via `config.middleware`.
+    if (config.autoHarness !== undefined) {
+      if (resolvedMiddleware.some((mw) => mw.name === "policy-cache")) {
+        throw new Error(
+          "createRuntime: cannot enable `autoHarness` while a caller-supplied " +
+            "`policy-cache` middleware is present in the chain. The auto-harness " +
+            "stack owns its own policy-cache; we cannot migrate verified entries " +
+            "from another instance, and dropping it would silently discard " +
+            "live allow/deny policies. Remove the caller-side policy-cache and " +
+            "let auto-harness install the stack-owned cache.",
+        );
+      }
+      if (config.autoHarness.policyVerifier === undefined) {
+        throw new Error(
+          "createRuntime: `autoHarness.policyVerifier` is required when " +
+            "autoHarness is enabled. Without a verifier the stack-owned " +
+            "`policy-cache` middleware is composed into the chain but cannot " +
+            "be populated — successful auto-harness deployments would never " +
+            "become cache hits, and the same failing traffic would keep " +
+            "re-triggering synthesis. Supply " +
+            "`autoHarness.policyVerifier` (e.g., a function backed by your " +
+            "host's verified-set or a permissive verifier in test).",
+        );
+      }
+      if (config.autoHarness.notifier === undefined) {
+        throw new Error(
+          "createRuntime: `autoHarness.notifier` (StoreChangeNotifier) is " +
+            "required when autoHarness is enabled. Deployed policy-cache " +
+            "entries can outlive their backing brick if the cache has no " +
+            "invalidation source, leaving stale allow/deny decisions in " +
+            "place after the brick is updated, removed, or quarantined. " +
+            "Supply a notifier wired to your forge store's lifecycle " +
+            "events.",
+        );
+      }
+    }
+    autoHarnessStack =
+      config.autoHarness !== undefined
+        ? createAutoHarnessStack({
+            ...config.autoHarness,
+            requestDeploymentApproval: async (artifact, signal) => {
+              const decision = await config.requestApproval?.({
+                toolId: "auto-harness:deploy-candidate",
+                input: {
+                  artifactId: artifact.id,
+                  signalId: signal.id,
+                },
+                reason: "Approve deployment of an auto-generated harness candidate.",
+                metadata: {
+                  artifactId: artifact.id,
+                  signalId: signal.id,
+                },
+              });
+              // Only single-shot `allow` is honored. `always-allow` is
+              // explicitly rejected: every auto-harness deployment uses the
+              // same synthetic tool id, so a cached `always-allow` would
+              // silently authorize ALL future synthesized artifacts from a
+              // single approval. Per-candidate human review is the
+              // invariant — there is no compatible always-allow semantics
+              // here (R5 round 10 finding).
+              return decision?.kind === "allow";
+            },
+          })
+        : undefined;
+
     let forgeDemandHandle: ReturnType<typeof createForgeDemandDetector> | undefined;
     if (config.forgeDemand !== undefined) {
       const validated = validateForgeDemandConfig(config.forgeDemand);
@@ -396,10 +587,94 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       })();
       const autoHealthHandle =
         baseForgeConfig.healthTracker === undefined ? installedFeedbackLoopHandle : undefined;
-      const finalForgeConfig =
+      const baseConfigWithHealth =
         autoHealthHandle !== undefined
           ? { ...baseForgeConfig, healthTracker: autoHealthHandle }
           : baseForgeConfig;
+      // When auto-harness is also configured, splice synthesizeHarness into
+      // onDemand so detected demand signals automatically drive the
+      // verify→policy→approval→deploy pipeline. Caller's onDemand still runs;
+      // synthesis is fire-and-forget — failures surface via the auto-harness
+      // onError/onEvent callbacks, not by interrupting demand observation.
+      // We also wrap onSessionAttached to capture session-scoped handles, so
+      // the auto-harness pipeline can dismiss processed signals (preventing
+      // forge-demand from re-emitting after cooldown) and partition the
+      // per-session synthesis budget by sessionId (preventing tenant
+      // cross-talk in multi-session runtimes).
+      const finalForgeConfig =
+        autoHarnessStack !== undefined
+          ? {
+              ...baseConfigWithHealth,
+              onDemand: wrapOnDemandWithAutoHarness(
+                baseConfigWithHealth.onDemand,
+                autoHarnessStack,
+                () => Array.from(autoHarnessSessionEntries.values()),
+              ),
+              onSessionAttached: async (
+                sessionContext: SessionContext,
+                scoped: import("@koi/forge-demand").SessionScopedForgeDemandHandle,
+              ): Promise<void> => {
+                // Hard cap check FIRST, before invoking the caller callback.
+                // Forge-demand re-runs onSessionAttached on later traffic if
+                // it rejects, so a cap-exceeded throw AFTER the callback ran
+                // would replay host attach-time side effects (resource
+                // registration, bookkeeping, UI wiring) on every retry while
+                // never actually attaching ownership (R5 round 13 finding).
+                // Fail before the callback so the side effects never run.
+                // Dedupe by (sessionId, runId): forge-demand can deliver
+                // proxied/rebuilt SessionContext objects for the same
+                // logical stream multiple times, each producing a fresh
+                // attachment call. Without dedupe, those aliases pile up
+                // ownership entries that onSessionEnd cleans only one at
+                // a time, leaking entries until the cap rejects new
+                // attachments (R5 round 17 finding).
+                for (const existing of autoHarnessSessionEntries) {
+                  if (
+                    existing.sessionId === sessionContext.sessionId &&
+                    existing.runId === sessionContext.runId
+                  ) {
+                    // Already tracking this logical attachment — caller
+                    // callback was already run on the original attachment;
+                    // we still re-run it for the alias because forge-demand
+                    // expects the host's onSessionAttached to fire per
+                    // SessionContext object (proxied or not). Then bail
+                    // without inserting a duplicate entry.
+                    if (baseConfigWithHealth.onSessionAttached !== undefined) {
+                      await baseConfigWithHealth.onSessionAttached(sessionContext, scoped);
+                    }
+                    return;
+                  }
+                }
+                if (autoHarnessSessionEntries.size >= AUTO_HARNESS_SESSION_CAP) {
+                  throw new Error(
+                    `[auto-harness] session ownership cap (${AUTO_HARNESS_SESSION_CAP}) reached. ` +
+                      "Refusing new attachment to preserve live-session isolation. " +
+                      "Wire `runtime.autoHarness.resetSession(sessionId)` on " +
+                      "session end so attachment slots are released; the runtime " +
+                      "will not silently evict an active session into the global " +
+                      "bucket.",
+                  );
+                }
+                // Run the caller's `onSessionAttached` next. Only record
+                // ownership of the scoped handle after the host accepts the
+                // session. If the host throws or rejects, the session never
+                // became "attached" — recording ownership beforehand would
+                // let `wrapOnDemandWithAutoHarness` resolve, dismiss, and
+                // run synthesis for a session the host never owned, burning
+                // budget and triggering deploy side effects the real owner
+                // never observed (R5 round 6 finding).
+                if (baseConfigWithHealth.onSessionAttached !== undefined) {
+                  await baseConfigWithHealth.onSessionAttached(sessionContext, scoped);
+                }
+                autoHarnessSessionEntries.add({
+                  sessionId: sessionContext.sessionId,
+                  runId: sessionContext.runId,
+                  agentId: sessionContext.agentId,
+                  scoped,
+                });
+              },
+            }
+          : baseConfigWithHealth;
       if (finalForgeConfig.healthTracker === undefined) {
         console.warn(
           "[forge-demand] performance_degradation trigger is dormant: " +
@@ -423,11 +698,79 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
             forgeDemandHandle.middleware,
           ]
         : baseWithAce;
+    // Auto-harness wiring is a single source of truth: when configured, the
+    // stack-owned policy-cache middleware is the only `policy-cache` instance
+    // the runtime composes. Any caller-supplied `policy-cache` is dropped —
+    // otherwise registrations from successful deployments would land in the
+    // stack-owned hidden cache while the live chain dispatched against the
+    // caller's instance, silently masking promoted policies (R3 finding).
+    //
+    // On adapters without terminals (stub), the runtime cannot compose
+    // intercept-phase middleware and would otherwise throw. Skip installation
+    // — the stack's `synthesizeHarness` and `policyCacheHandle` remain usable
+    // out-of-band, but no live dispatch path consults the cache. Real
+    // adapters install the middleware unconditionally.
+    const adapterHasTerminals = rawAdapter.terminals !== undefined;
+    // Auto-cleanup observer: release per-session ownership entries on
+    // normal session end so a service processing many short-lived sessions
+    // does not slowly fill the ownership cap and start refusing new
+    // attachments. Defined at this scope so it can be exposed on the
+    // RuntimeAutoHarnessHandle for downstream composers (CLI/L3) that
+    // splice the auto-harness middleware into a separately-built chain.
+    const autoHarnessCleanupMiddleware: KoiMiddleware | undefined = (() => {
+      if (autoHarnessStack === undefined) return undefined;
+      const stack = autoHarnessStack;
+      return {
+        name: "auto-harness-session-cleanup",
+        phase: "observe",
+        priority: 950,
+        describeCapabilities: () => undefined,
+        onSessionEnd: async (ctx) => {
+          // Remove every entry for this logical attachment, identified by
+          // (sessionId, runId). One stream may have produced multiple
+          // alias entries via rebuilt/proxied SessionContext objects;
+          // deleting only one would leak the remaining aliases (R5 round
+          // 17 finding). Concurrent streams that share sessionId have
+          // distinct runIds, so this cleanup does not touch their entries.
+          let removedAny = false;
+          for (const entry of autoHarnessSessionEntries) {
+            if (entry.sessionId === ctx.sessionId && entry.runId === ctx.runId) {
+              autoHarnessSessionEntries.delete(entry);
+              removedAny = true;
+            }
+          }
+          // Reset stack-side per-session state only when the last
+          // attachment for this logical sessionId has ended.
+          if (removedAny) {
+            const stillHasOthers = Array.from(autoHarnessSessionEntries).some(
+              (e) => e.sessionId === ctx.sessionId,
+            );
+            if (!stillHasOthers) {
+              stack.resetSession(ctx.sessionId);
+            }
+          }
+        },
+      };
+    })();
+    const baseWithAutoHarness: readonly KoiMiddleware[] = (() => {
+      if (autoHarnessStack === undefined) return baseWithForgeDemand;
+      // Runtime invariants validated above. Stack-owned policy-cache is
+      // the sole source of truth.
+      const withoutCallerPolicyCache = baseWithForgeDemand;
+      const cleanup = autoHarnessCleanupMiddleware;
+      return adapterHasTerminals
+        ? [
+            ...withoutCallerPolicyCache,
+            autoHarnessStack.policyCacheMiddleware,
+            ...(cleanup !== undefined ? [cleanup] : []),
+          ]
+        : [...withoutCallerPolicyCache, ...(cleanup !== undefined ? [cleanup] : [])];
+    })();
 
     // Install exfiltration guard by default when: (1) not explicitly disabled,
     // (2) not already provided, and (3) the adapter has terminals so the intercept
     // phase won't be silently bypassed. Stub adapters have no terminals.
-    const providedNames = new Set(baseWithForgeDemand.map((mw) => mw.name));
+    const providedNames = new Set(baseWithAutoHarness.map((mw) => mw.name));
     const exfiltrationRequested =
       config.exfiltrationGuard !== false && !providedNames.has("exfiltration-guard");
     const canInstallExfiltrationGuard = rawAdapter.terminals !== undefined;
@@ -448,10 +791,10 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     const afterExfiltration: readonly KoiMiddleware[] =
       exfiltrationRequested && canInstallExfiltrationGuard
         ? [
-            ...baseWithForgeDemand,
+            ...baseWithAutoHarness,
             createExfiltrationGuardMiddleware(config.exfiltrationGuard ?? undefined),
           ]
-        : baseWithForgeDemand;
+        : baseWithAutoHarness;
 
     // Append model-router as the innermost model-call interceptor (after exfiltration
     // guard and semantic-retry) so each retry attempt independently benefits from
@@ -508,6 +851,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       agentMonitorMiddleware !== undefined
         ? [...middlewareBeforeMonitor, agentMonitorMiddleware]
         : middlewareBeforeMonitor;
+    const installedPolicyCacheMiddleware = middleware.find((mw) => mw.name === "policy-cache");
 
     const activityTimeoutConfig = resolveActivityTimeoutConfig(
       config.activityTimeout,
@@ -1151,6 +1495,49 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       memoryStore,
       forgeDemand:
         forgeDemandHandle !== undefined ? { middleware: forgeDemandHandle.middleware } : undefined,
+      autoHarness:
+        autoHarnessStack !== undefined
+          ? {
+              // The runtime composes stack-owned policy-cache as the single
+              // source of truth when the adapter supports intercept-phase
+              // middleware. On stub adapters the stack-owned reference is
+              // exposed so callers can drive `synthesizeHarness`/`register`
+              // out-of-band, even though the middleware is not in the live
+              // dispatch chain.
+              middleware: installedPolicyCacheMiddleware ?? autoHarnessStack.policyCacheMiddleware,
+              // Cleanup observer is exposed so downstream composers (CLI/L3)
+              // that splice the auto-harness middleware into a separately-
+              // built chain also splice this. Without it, ownership entries
+              // accumulate per attachment and eventually trip the cap.
+              cleanupMiddleware:
+                autoHarnessCleanupMiddleware ??
+                ({
+                  name: "auto-harness-session-cleanup",
+                  phase: "observe",
+                  priority: 950,
+                  describeCapabilities: () => undefined,
+                } satisfies KoiMiddleware),
+              synthesizeHarness: autoHarnessStack.synthesizeHarness,
+              // Wrap to also drop session ownership entries — the stack
+              // tracks budget/dedupe state but the runtime owns the
+              // forge-demand scoped-handle map and must clean it up.
+              resetSession: (sessionId?: string) => {
+                if (sessionId === undefined) {
+                  autoHarnessSessionEntries.clear();
+                } else {
+                  // Multiple concurrent streams can share one sessionId;
+                  // remove all entries that match.
+                  for (const entry of autoHarnessSessionEntries) {
+                    if (entry.sessionId === sessionId) {
+                      autoHarnessSessionEntries.delete(entry);
+                    }
+                  }
+                }
+                autoHarnessStack?.resetSession(sessionId);
+              },
+              maxSynthesesPerSession: autoHarnessStack.maxSynthesesPerSession,
+            }
+          : undefined,
       createDecisionLedger: decisionLedgerFactory,
       dispose: async () => {
         // Unsubscribe approval sink to prevent leak on long-lived permission handles
@@ -1316,6 +1703,12 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                 auditCleanedUp = true;
               })()
             : Promise.resolve(),
+          autoHarnessStack !== undefined && !autoHarnessCleanedUp
+            ? (async () => {
+                autoHarnessStack.policyCacheHandle.dispose();
+                autoHarnessCleanedUp = true;
+              })()
+            : Promise.resolve(),
           checkpointStore !== undefined && !checkpointCleanedUp
             ? (async () => {
                 checkpointStore.close();
@@ -1358,6 +1751,14 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       auditHandle.close().catch(() => {
         // best-effort cleanup during createRuntime error path
       });
+    }
+    if (autoHarnessStack !== undefined && !autoHarnessCleanedUp) {
+      try {
+        autoHarnessStack.policyCacheHandle.dispose();
+        autoHarnessCleanedUp = true;
+      } catch {
+        // best-effort cleanup during createRuntime error path
+      }
     }
     if (checkpointStore !== undefined && !checkpointCleanedUp) {
       try {

@@ -40,6 +40,7 @@
     "@koi/agent-runtime": "workspace:*",
     "@koi/agent-summary": "workspace:*",
     "@koi/artifacts": "workspace:*",
+    "@koi/auto-harness": "workspace:*",
     "@koi/audit-sink-ndjson": "workspace:*",
     "@koi/audit-sink-nexus": "workspace:*",
     "@koi/audit-sink-sqlite": "workspace:*",

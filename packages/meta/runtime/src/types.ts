@@ -8,6 +8,10 @@ import type {
 import type { ArtifactStore } from "@koi/artifacts";
 import type { NdjsonRotationConfig } from "@koi/audit-sink-ndjson";
 import type { SqliteRetentionConfig } from "@koi/audit-sink-sqlite";
+import type {
+  AutoHarnessStack,
+  AutoHarnessConfig as BaseAutoHarnessConfig,
+} from "@koi/auto-harness";
 import type { Checkpoint } from "@koi/checkpoint";
 import type {
   AgentResolver,
@@ -663,6 +667,13 @@ export interface RuntimeConfig {
    * wanting memory tools can use the in-memory preset or provide their own adapter.
    */
   readonly memoryFs?: MemoryStoreConfig | undefined;
+
+  /**
+   * Auto-harness pipeline configuration. When provided, wires
+   * `@koi/auto-harness` into the runtime with deployment approval delegated
+   * through `requestApproval`.
+   */
+  readonly autoHarness?: RuntimeAutoHarnessConfig | undefined;
 }
 
 /**
@@ -747,6 +758,26 @@ export interface RuntimeDebugInfo {
  */
 export interface RuntimeForgeDemandHandle {
   readonly middleware: import("@koi/core").KoiMiddleware;
+}
+
+/** Runtime-narrowed auto-harness config. */
+export type RuntimeAutoHarnessConfig = Omit<BaseAutoHarnessConfig, "requestDeploymentApproval">;
+
+/** Runtime-facing auto-harness handle. */
+export interface RuntimeAutoHarnessHandle {
+  readonly middleware: import("@koi/core").KoiMiddleware;
+  /**
+   * Observe-phase middleware that releases per-session ownership entries on
+   * normal `onSessionEnd`. Hosts that forward `synthesizeHarness` /
+   * `middleware` into a separately-composed live chain (e.g. the CLI splices
+   * the runtime's auto-harness handle into its own chain) MUST also splice
+   * this cleanup middleware. Without it, ownership entries accumulate until
+   * the hard cap rejects new attachments.
+   */
+  readonly cleanupMiddleware: import("@koi/core").KoiMiddleware;
+  readonly synthesizeHarness: AutoHarnessStack["synthesizeHarness"];
+  readonly resetSession: (sessionId?: string) => void;
+  readonly maxSynthesesPerSession: number;
 }
 
 /** The assembled runtime returned by createRuntime. */
@@ -923,6 +954,11 @@ export interface RuntimeHandle {
    * observed in the runtime — there is no cross-tenant aggregator.
    */
   readonly forgeDemand?: RuntimeForgeDemandHandle | undefined;
+
+  /**
+   * Auto-harness handle. Only populated when `config.autoHarness` is provided.
+   */
+  readonly autoHarness?: RuntimeAutoHarnessHandle | undefined;
 
   /** Dispose all resources. */
   readonly dispose: () => Promise<void>;

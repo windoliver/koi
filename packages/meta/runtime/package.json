@@ -16,6 +16,7 @@
     "@koi/agent-procfs": "workspace:*",
     "@koi/agent-runtime": "workspace:*",
     "@koi/agent-summary": "workspace:*",
+    "@koi/auto-harness": "workspace:*",
     "@koi/artifacts": "workspace:*",
     "@koi/artifacts-s3": "workspace:*",
     "@koi/browser-ext": "workspace:*",

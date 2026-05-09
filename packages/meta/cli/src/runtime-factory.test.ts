@@ -189,6 +189,92 @@ describe("createKoiRuntime — assembly", () => {
     expect(runtimeHandle.runtime).toBeDefined();
   });
 
+  test("passes autoHarness config through to createRuntime and preserves approval gating", async () => {
+    let deployed = false;
+    runtimeHandle = await createKoiRuntime({
+      ...makeConfig(),
+      // Disable the forge preset so auto-harness's caller-supplied store
+      // is the single source of truth (otherwise CLI fails closed on
+      // split-brain).
+      stacks: [],
+      approvalHandler: async () => ({ kind: "deny", reason: "no" }),
+      autoHarness: {
+        forgeStore: {
+          save: async () => ({ ok: true as const, value: undefined }),
+          exists: async () => ({ ok: true as const, value: false }),
+          remove: async () => ({ ok: true as const, value: undefined }),
+        } as never,
+        policyVerifier: ((_e: unknown) => true) as never,
+        notifier: { notify: () => {}, subscribe: () => () => {} },
+        generate: async () => "candidate-code",
+        verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-5" } as never }),
+        evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+        deployCandidate: async (artifact) => {
+          deployed = true;
+          return { ok: true, artifact };
+        },
+      },
+    });
+
+    expect(runtimeHandle.autoHarness).toBeDefined();
+    expect(typeof runtimeHandle.autoHarness?.synthesizeHarness).toBe("function");
+    expect(runtimeHandle.autoHarness?.middleware.name).toBe("policy-cache");
+
+    const result = await runtimeHandle.autoHarness?.synthesizeHarness({ id: "sig-5" } as never);
+    expect(result).toBeNull();
+    expect(deployed).toBe(false);
+  });
+
+  test("rejects caller-supplied policy-cache when autoHarness is enabled", async () => {
+    const providedPolicyCache = { name: "policy-cache" } as KoiMiddleware;
+
+    await expect(
+      createKoiRuntime({
+        ...makeConfig(),
+        stacks: [],
+        extraMiddleware: [providedPolicyCache],
+        autoHarness: {
+          forgeStore: {
+            save: async () => ({ ok: true as const, value: undefined }),
+            exists: async () => ({ ok: true as const, value: false }),
+            remove: async () => ({ ok: true as const, value: undefined }),
+          } as never,
+          policyVerifier: ((_e: unknown) => true) as never,
+          notifier: { notify: () => {}, subscribe: () => () => {} },
+          generate: async () => "candidate-code",
+          verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-6" } as never }),
+          evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+          deployCandidate: async (artifact) => ({ ok: true, artifact }),
+        },
+      }),
+    ).rejects.toThrow(/policy-cache/);
+  });
+
+  test("rejects autoHarness when the forge preset is active (split-brain forge store)", async () => {
+    await expect(
+      createKoiRuntime({
+        ...makeConfig(),
+        // Explicitly include forge so the guard triggers — DEFAULT_STACKS
+        // does not currently include forge, so omitting `stacks` would
+        // not activate the conflicting preset.
+        stacks: ["forge"],
+        autoHarness: {
+          forgeStore: {
+            save: async () => ({ ok: true as const, value: undefined }),
+            exists: async () => ({ ok: true as const, value: false }),
+            remove: async () => ({ ok: true as const, value: undefined }),
+          } as never,
+          policyVerifier: ((_e: unknown) => true) as never,
+          notifier: { notify: () => {}, subscribe: () => () => {} },
+          generate: async () => "candidate-code",
+          verifyCandidate: async () => ({ ok: true, artifact: { id: "brick-7" } as never }),
+          evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+          deployCandidate: async (artifact) => ({ ok: true, artifact }),
+        },
+      }),
+    ).rejects.toThrow(/forge/);
+  });
+
   test("returns a mutable transcript array", async () => {
     runtimeHandle = await createKoiRuntime(makeConfig());
     const { transcript } = runtimeHandle;

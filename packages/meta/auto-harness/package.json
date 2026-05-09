@@ -1,0 +1,31 @@
+{
+  "name": "@koi/auto-harness",
+  "description": "L3 composition wiring for auto-harness synthesis session controls and policy-cache attachment",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "bun ../../../scripts/run-tsup.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "koi": {
+    "optional": true
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/forge-policy": "workspace:*",
+    "@koi/forge-verifier": "workspace:*",
+    "@koi/harness-search": "workspace:*",
+    "@koi/harness-synth": "workspace:*",
+    "@koi/hash": "workspace:*",
+    "@koi/middleware-policy-cache": "workspace:*"
+  }
+}
