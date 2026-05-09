@@ -175,61 +175,33 @@ function escapeXmlAttr(value: string): string {
  * via tool output or a dedicated lower-trust context channel instead.
  */
 /**
- * Percent-encode any character outside the prompt-safe allowlist. Used in
- * strict mode so identifiers stay reversibly unique (no two different
- * paths can collapse to the same rendered string) while still preventing
- * untrusted text from carrying structural punctuation into the highest-
- * trust prompt layer.
+ * Render mount identity with XML-attribute escaping only. Earlier
+ * iterations attempted lossy `_` substitution and reversible percent-
+ * encoding for "strict" mode, but both broke path round-tripping: the
+ * model would see `/gmail/alice%40example.com` or `/gmail/alice_example.com`
+ * and issue tool calls against those paths, while the live mount stayed
+ * at `/gmail/alice@example.com`. Filesystem operations would then fail
+ * or hit the wrong target.
  *
- * Path: keeps `/` segment separators; percent-encodes everything else
- * outside [A-Za-z0-9._-]. Connector: same allowlist without separators.
- *
- * The encoding is the standard %HH form, so `@` -> `%40`, ` ` -> `%20`,
- * `+` -> `%2B`. Operators and the model can decode back to the canonical
- * mount path with URL-decoding semantics.
+ * Defense at this layer:
+ *   - escapeXmlAttr neutralizes `<`, `>`, `&`, `"` so identifiers cannot
+ *     break the surrounding XML structure or open new tags.
+ *   - The `strict` flag is retained on the API surface for backward
+ *     compatibility but no longer alters rendering. Connector trust
+ *     and the bridge's URI-scheme allowlist remain the boundary for
+ *     mount-name *content*; this layer only renders.
  */
-function percentEncodeSegment(segment: string): string {
-  let out = "";
-  for (let i = 0; i < segment.length; i++) {
-    const ch = segment.charAt(i);
-    if (/[A-Za-z0-9._-]/.test(ch)) {
-      out += ch;
-    } else {
-      const bytes = new TextEncoder().encode(ch);
-      for (const b of bytes) {
-        out += `%${b.toString(16).toUpperCase().padStart(2, "0")}`;
-      }
-    }
-  }
-  return out;
-}
-function sanitizePromptPath(value: string): string {
-  // Encode each `/`-separated segment independently so segment
-  // boundaries stay visible to the model.
-  return value
-    .split("/")
-    .map((seg) => percentEncodeSegment(seg))
-    .join("/");
-}
-function sanitizePromptConnector(value: string): string {
-  return percentEncodeSegment(value);
-}
-
 function renderBlock(
   tag: "mounted_connectors" | "runtime_mounted_connectors",
   entries: readonly MountDescription[],
-  strict: boolean,
+  _strict: boolean,
 ): string | undefined {
   if (entries.length === 0) return undefined;
   const items = entries
     .map((entry) => {
-      // Strict mode: render with non-allowlist characters replaced by `_`.
-      // Non-strict: pass identifiers through XML attribute escaping only.
-      const renderPath = strict ? sanitizePromptPath(entry.path) : entry.path;
-      const renderConnector = strict ? sanitizePromptConnector(entry.connector) : entry.connector;
       const attrs = [
-        `path="${escapeXmlAttr(renderPath)}"`,
-        `name="${escapeXmlAttr(renderConnector)}"`,
+        `path="${escapeXmlAttr(entry.path)}"`,
+        `name="${escapeXmlAttr(entry.connector)}"`,
       ];
       return `  <connector ${attrs.join(" ")} />`;
     })
