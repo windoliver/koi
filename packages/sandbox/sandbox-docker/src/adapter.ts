@@ -471,22 +471,26 @@ async function tryReuseWithRetry(
 }
 
 /**
- * Remove ALL containers carrying the scope label and forget the registry
- * entry. Returns true when any container was destroyed, false when nothing
- * matched.
+ * Remove the container WE OWN for a scope, then forget the registry entry.
+ * Returns true when the owned container was destroyed, false when no
+ * registry entry exists (nothing to destroy on our side).
  *
- * Removing every match (rather than just the first) is intentional: the
- * `tryReuse` ambiguity error explicitly tells operators that destroyScope
- * clears stale siblings for this scope. If we only removed one, a follow-up
- * findOrCreate could still encounter the leftover — leaving the scope
- * permanently poisoned.
+ * Ownership-gated: only the container ID we previously recorded via
+ * `scopeRegistry.record` is eligible for removal. Other label-matching
+ * containers (foreign peers, manually-created leftovers) are NOT touched —
+ * `destroyScope` is a recovery primitive, not a cluster-wide rm-by-label.
+ * Force-removing a stranger's container by virtue of a public label match
+ * would break the same trust boundary the registry exists to enforce.
+ *
+ * Foreign matches are surfaced as a typed VALIDATION error AFTER the
+ * owned container is removed, so the operator learns the scope label
+ * needs manual investigation without losing the recovery semantics for
+ * the part of the scope we actually owned.
  *
  * Stop is intentionally skipped: `container.remove()` uses `docker rm -f`
  * which force-kills running containers, so a separate `stop()` step is
  * redundant and previously caused destroyScope to surface failure for
- * already-stopped containers (where `docker stop` legitimately errors) even
- * after the remove succeeded. Authoritative outcome: only surface an error
- * if the container is still present after `remove()` failed.
+ * already-stopped containers (where `docker stop` legitimately errors).
  */
 async function doDestroyScope(
   client: DockerClient,
@@ -495,32 +499,60 @@ async function doDestroyScope(
 ): Promise<boolean> {
   const findContainers = client.findContainers;
   if (findContainers === undefined) return false;
+
+  const ownedId = await scopeRegistry.lookup(scope);
+  // Discover label-matching containers AFTER reading the registry so a
+  // transient `findContainers` failure doesn't leak into the no-owner
+  // fast-path below — `findContainers` now throws on docker-side faults.
   const matches = await findContainers({ [SCOPE_LABEL]: scope });
-  if (matches.length === 0) {
-    // Nothing to clean up on the daemon side; idempotently drop any stale
-    // registry entry so the next findOrCreate starts from a clean slate.
-    await scopeRegistry.forget(scope);
+
+  if (ownedId === undefined) {
+    // No registry entry → nothing of ours to remove. We deliberately do NOT
+    // touch label-matching strangers here; that would be a label-driven
+    // cluster delete and break the trust model. Surface ambiguity so the
+    // operator knows manual intervention is needed.
+    if (matches.length > 0) {
+      const error: KoiError = {
+        code: "VALIDATION",
+        message: `sandbox-docker: destroyScope("${scope}") found ${matches.length} container(s) carrying the scope label but no registry entry — refusing to delete containers we do not own; investigate via 'docker ps -a --filter label=${SCOPE_LABEL}=${scope}' and remove manually if appropriate`,
+        retryable: false,
+        context: {
+          scope,
+          unownedContainerIds: matches.map((c) => c.id),
+        },
+      };
+      throw new Error(error.message, { cause: error });
+    }
     return false;
   }
 
-  // `let` justified: capture the first failure across the loop so we attempt
-  // every cleanup before surfacing. Ownership is preserved if any remove
-  // fails — losing the registry entry while a container still exists would
-  // wedge findOrCreate (the survivor would be classified as a stranger).
-  let firstError: unknown;
-  for (const c of matches) {
+  const owned = matches.find((c) => c.id === ownedId);
+  const strangers = matches.filter((c) => c.id !== ownedId);
+
+  if (owned !== undefined) {
     try {
-      await c.remove();
+      await owned.remove();
     } catch (e: unknown) {
-      if (firstError === undefined) firstError = e;
+      // Preserve ownership: a future destroyScope must be able to retry.
+      throw e;
     }
   }
-  if (firstError !== undefined) {
-    // Partial failure: keep the registry entry so a future destroyScope
-    // (or operator-driven cleanup) can still trust the surviving container.
-    throw firstError;
+
+  if (strangers.length > 0) {
+    // Owned container is gone (either just removed or never present); the
+    // surviving label-matching containers are not ours to delete. Forget
+    // ownership so this scope is no longer tracked, but surface the
+    // ambiguity so the operator knows the label is still claimed.
+    await scopeRegistry.forget(scope);
+    const error: KoiError = {
+      code: "VALIDATION",
+      message: `sandbox-docker: destroyScope("${scope}") removed our recorded container but ${strangers.length} additional container(s) still carry the scope label — refusing to delete containers we do not own; investigate via 'docker ps -a --filter label=${SCOPE_LABEL}=${scope}' and remove manually if appropriate`,
+      retryable: false,
+      context: { scope, unownedContainerIds: strangers.map((c) => c.id) },
+    };
+    throw new Error(error.message, { cause: error });
   }
-  // Full success: drop ownership now that no containers remain.
+
   await scopeRegistry.forget(scope);
-  return true;
+  return owned !== undefined;
 }

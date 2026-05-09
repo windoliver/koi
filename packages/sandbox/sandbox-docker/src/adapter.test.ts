@@ -593,7 +593,7 @@ describe("createDockerAdapter", () => {
       },
     };
     const { client, scopeRegistry: reg } = persistentClient({
-      preexisting: { container: existing, state: "running", labels: {} },
+      preexisting: { container: existing, state: "running", labels: {}, scope: "scope-DROP" },
     });
     const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
@@ -668,9 +668,12 @@ describe("createDockerAdapter", () => {
     );
   });
 
-  // Persistence (ambiguity recovery): destroyScope removes ALL matches, not
-  // just the first — required by the ambiguity-recovery contract.
-  test("destroyScope removes every container that carries the scope label", async () => {
+  // Persistence (ownership): destroyScope only removes the registry-recorded
+  // container; foreign label-matching siblings are NOT touched (force-removing
+  // a stranger by virtue of a public label match would break the trust model
+  // the registry exists to enforce). Strangers surface as a typed ambiguity
+  // error so the operator knows manual investigation is needed.
+  test("destroyScope removes only the owned container and surfaces unowned siblings", async () => {
     const stops: string[] = [];
     const removes: string[] = [];
     function tagged(id: string): DockerContainer {
@@ -688,6 +691,7 @@ describe("createDockerAdapter", () => {
       };
     }
     const reg = createInMemoryScopeRegistry();
+    void reg.record("scope-MULTI", "a");
     const client: DockerClient = {
       createContainer: async (): Promise<DockerContainer> => tagged("never"),
       findContainers: async () => [tagged("a"), tagged("b"), tagged("c")],
@@ -697,11 +701,38 @@ describe("createDockerAdapter", () => {
     const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.destroyScope === undefined) throw new Error("destroyScope must exist");
-    const wasDestroyed = await r.value.destroyScope("scope-MULTI");
-    expect(wasDestroyed).toBe(true);
-    // Stop is intentionally NOT called — destroyScope force-removes via rm -f.
+    await expect(r.value.destroyScope("scope-MULTI")).rejects.toThrow(/containers we do not own/);
     expect(stops).toEqual([]);
-    expect(removes).toEqual(["a", "b", "c"]);
+    // Only the owned container is removed; b and c are untouched.
+    expect(removes).toEqual(["a"]);
+    // Ownership is forgotten because our recorded container is gone.
+    expect(await reg.lookup("scope-MULTI")).toBeUndefined();
+  });
+
+  // Persistence (no ownership): destroyScope refuses to delete label-matching
+  // strangers when there is no registry entry — destroyScope is a recovery
+  // primitive for OUR sandboxes, not a label-driven cluster `rm`.
+  test("destroyScope refuses to delete unowned containers when registry has no entry", async () => {
+    const removes: string[] = [];
+    const stranger: DockerContainer = {
+      ...fakeContainer("foreign"),
+      remove: async () => {
+        removes.push("foreign");
+      },
+    };
+    const reg = createInMemoryScopeRegistry();
+    const client: DockerClient = {
+      createContainer: async () => fakeContainer("never"),
+      findContainers: async () => [stranger],
+      inspectContainer: async () => undefined,
+      startContainer: async () => {},
+    };
+    const r = await createDockerAdapter({ client, scopeRegistry: reg });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.destroyScope === undefined) throw new Error("destroyScope must exist");
+    await expect(r.value.destroyScope("scope-FOREIGN")).rejects.toThrow(/containers we do not own/);
+    // Critical: stranger is NOT removed.
+    expect(removes).toEqual([]);
   });
 
   // Persistence (image drift): when resolveImageId returns a different ID for
@@ -929,19 +960,18 @@ describe("createDockerAdapter", () => {
   // (or `findOrCreate` after operator cleanup) can still trust the survivor.
   // Forgetting before remove succeeded would classify the survivor as a
   // stranger and permanently wedge the scope.
-  test("destroyScope preserves registry entry when a container.remove fails", async () => {
-    const a = fakeContainer("rm-ok");
-    const bFails: DockerContainer = {
-      ...fakeContainer("rm-fail"),
+  test("destroyScope preserves registry entry when the owned container.remove fails", async () => {
+    const owned: DockerContainer = {
+      ...fakeContainer("owned-fail"),
       remove: async () => {
         throw new Error("docker rm failed");
       },
     };
     const reg = createInMemoryScopeRegistry();
-    void reg.record("scope-PARTIAL", a.id);
+    void reg.record("scope-PARTIAL", owned.id);
     const client: DockerClient = {
       createContainer: async () => fakeContainer("never"),
-      findContainers: async () => [a, bFails],
+      findContainers: async () => [owned],
       inspectContainer: async () => ({ state: "running", labels: {} }),
       startContainer: async () => {},
     };
@@ -949,9 +979,9 @@ describe("createDockerAdapter", () => {
     if (!r.ok) throw new Error("setup failed");
     if (r.value.destroyScope === undefined) throw new Error("destroyScope must exist");
     await expect(r.value.destroyScope("scope-PARTIAL")).rejects.toThrow("docker rm failed");
-    // Critical: registry still holds the original ownership so the survivor
-    // is not classified as a stranger by a future findOrCreate.
-    expect(await reg.lookup("scope-PARTIAL")).toBe(a.id);
+    // Critical: registry still holds the recorded ID so the next destroyScope
+    // (or operator-driven cleanup) can still trust the surviving container.
+    expect(await reg.lookup("scope-PARTIAL")).toBe(owned.id);
   });
 
   // Persistence (transient inspect failure): a thrown inspectContainer must

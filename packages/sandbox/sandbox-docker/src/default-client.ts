@@ -451,7 +451,16 @@ export function createDefaultDockerClient(config?: DefaultDockerClientConfig): D
         filterArgs.push("--filter", `label=${k}=${v}`);
       }
       const r = await runDocker(["ps", "-a", "-q", ...filterArgs], undefined, env);
-      if (r.exitCode !== 0) return [];
+      if (r.exitCode !== 0) {
+        // Do NOT collapse a transient `docker ps` failure into "no matches".
+        // findOrCreate would then proceed to fresh-create on the deterministic
+        // --name (later colliding) or destroyScope would forget the registry
+        // entry — both turn a momentary daemon outage into a wedged scope.
+        throw new Error(
+          `docker ps failed: ${r.stderr.trim() || r.stdout.trim() || `exit ${r.exitCode}`}`,
+          { cause: r },
+        );
+      }
       const ids = r.stdout
         .split("\n")
         .map((x) => x.trim())

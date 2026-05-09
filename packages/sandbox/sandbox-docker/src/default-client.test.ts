@@ -864,6 +864,32 @@ describe("createDefaultDockerClient", () => {
     }
   });
 
+  // Persistence: a transient `docker ps` failure MUST throw — collapsing it
+  // into [] would let findOrCreate proceed to fresh-create on the
+  // deterministic --name and let destroyScope forget the registry entry,
+  // both turning a momentary daemon outage into a wedged scope.
+  test("findContainers: throws on docker ps failure instead of returning []", async () => {
+    // @ts-expect-error — test stub
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) =>
+      fakeProc({
+        stdout: "",
+        stderr: "Cannot connect to the Docker daemon",
+        exitCode: 1,
+      }),
+    );
+    try {
+      const client = createDefaultDockerClient();
+      if (client.findContainers === undefined) {
+        throw new Error("findContainers must exist");
+      }
+      await expect(client.findContainers({ "koi.sandbox.scope": "any" })).rejects.toThrow(
+        /docker ps failed/,
+      );
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
   // Persistence: resolveImageId returns the image content-addressed ID.
   test("resolveImageId: returns sha256 ID for a pulled image", async () => {
     const calls: string[][] = [];
