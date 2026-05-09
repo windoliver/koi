@@ -400,6 +400,8 @@ describe("createGovernanceSignalSource", () => {
 
   test("processes recovery before a newer re-alert request", async () => {
     const recovery = createDeferred<GovernanceSnapshot>();
+    const secondStarted = createDeferred<void>();
+    const thirdStarted = createDeferred<void>();
     const snapshots = [
       Promise.resolve({
         timestamp: 700,
@@ -415,52 +417,75 @@ describe("createGovernanceSignalSource", () => {
         violations: [],
       }),
     ];
+    let callCount = 0;
     const controller = {
       ...createController([]),
-      snapshot: mock(async () => snapshots.shift() ?? snapshots[snapshots.length - 1]!),
+      snapshot: mock(async () => {
+        callCount += 1;
+        if (callCount === 2) secondStarted.resolve();
+        if (callCount === 3) thirdStarted.resolve();
+        return snapshots.shift() ?? snapshots[snapshots.length - 1]!;
+      }),
     } satisfies GovernanceController;
+    let intervalCallback: (() => void) | undefined;
+    const originalSetInterval = globalThis.setInterval;
+    const originalClearInterval = globalThis.clearInterval;
+    globalThis.setInterval = ((callback: TimerHandler) => {
+      intervalCallback = callback as () => void;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval;
+    globalThis.clearInterval = (() => {}) as typeof clearInterval;
 
-    const source = createGovernanceSignalSource(
-      controller,
-      [{ sensor: "error_rate", limit: 0.3, direction: "above" }],
-      { pollIntervalMs: 1, now: () => 750 },
-    );
+    try {
+      const source = createGovernanceSignalSource(
+        controller,
+        [{ sensor: "error_rate", limit: 0.3, direction: "above" }],
+        { pollIntervalMs: 1, now: () => 750 },
+      );
 
-    const seen: SystemSignal[] = [];
-    const stop = source.watch((signal) => seen.push(signal), { replay: true });
-    await new Promise((resolve) => queueMicrotask(resolve));
+      const seen: SystemSignal[] = [];
+      const stop = source.watch((signal) => seen.push(signal), { replay: true });
+      await new Promise((resolve) => queueMicrotask(resolve));
 
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    recovery.resolve({
-      timestamp: 701,
-      readings: [{ name: "error_rate", current: 0.1, limit: 1, utilization: 0.1 }],
-      healthy: true,
-      violations: [],
-    });
-    await recovery.promise;
-    await new Promise((resolve) => queueMicrotask(resolve));
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    await new Promise((resolve) => queueMicrotask(resolve));
+      intervalCallback?.();
+      await secondStarted.promise;
 
-    stop();
-    expect(seen).toEqual([
-      {
-        kind: "governance",
-        sensor: "error_rate",
-        value: 0.4,
-        limit: 0.3,
-        direction: "above",
-        emittedAt: 750,
-      },
-      {
-        kind: "governance",
-        sensor: "error_rate",
-        value: 0.45,
-        limit: 0.3,
-        direction: "above",
-        emittedAt: 750,
-      },
-    ]);
+      intervalCallback?.();
+      recovery.resolve({
+        timestamp: 701,
+        readings: [{ name: "error_rate", current: 0.1, limit: 1, utilization: 0.1 }],
+        healthy: true,
+        violations: [],
+      });
+      await recovery.promise;
+      await thirdStarted.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise((resolve) => queueMicrotask(resolve));
+
+      stop();
+      expect(seen).toEqual([
+        {
+          kind: "governance",
+          sensor: "error_rate",
+          value: 0.4,
+          limit: 0.3,
+          direction: "above",
+          emittedAt: 750,
+        },
+        {
+          kind: "governance",
+          sensor: "error_rate",
+          value: 0.45,
+          limit: 0.3,
+          direction: "above",
+          emittedAt: 750,
+        },
+      ]);
+    } finally {
+      globalThis.setInterval = originalSetInterval;
+      globalThis.clearInterval = originalClearInterval;
+    }
   });
 
   test("does not re-enter snapshot while a poll is already in flight", async () => {
