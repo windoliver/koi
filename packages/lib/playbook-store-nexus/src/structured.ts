@@ -33,9 +33,13 @@ export function createNexusStructuredPlaybookStore(
   // createNexusPlaybookProposalStore pointing at the same backend so that
   // save/recordProposal interleaving is serialised across instances.
   const scope = config.lockScope ?? base;
-  // Fail-closed by default: refuse to create new playbooks unless the caller
-  // explicitly opts in to the unsafe path (see initial-create race below).
-  const requirePreProvisioned = config.requirePreProvisioned ?? true;
+  // Default open so fresh tenants can bootstrap their first structured
+  // playbook without a separate pre-provision step. Deployments that run
+  // multiple coordinators against the same Nexus namespace and need to
+  // close the initial-create race (transport lacks create-only CAS) can
+  // opt in by setting requirePreProvisioned: true and pre-provisioning
+  // via a single-writer path before any concurrent saves.
+  const requirePreProvisioned = config.requirePreProvisioned ?? false;
   const path = (id: string): string => `${dir}/${encodeAceId(id)}.json`;
 
   return {
@@ -94,8 +98,12 @@ export function createNexusStructuredPlaybookStore(
         let etag: string | undefined;
         let current: StructuredPlaybook | undefined;
         if (readResult.ok) {
+          // Accept both documented envelope shapes: nested
+          // `metadata.etag` AND top-level `etag`. Different transport
+          // wrappers and backend versions surface the etag at either
+          // location; rejecting one shape would brick valid updates.
           const raw = readResult.value as
-            | { content?: unknown; metadata?: { etag?: string } }
+            | { content?: unknown; metadata?: { etag?: string }; etag?: string }
             | undefined;
           // Fail closed if the path resolved but the content is missing,
           // empty, or not a string — a corrupted/protocol-shifted file must
@@ -117,7 +125,7 @@ export function createNexusStructuredPlaybookStore(
               cause: e,
             });
           }
-          etag = raw.metadata?.etag;
+          etag = raw.metadata?.etag ?? raw.etag;
         } else if (readResult.error.code !== "NOT_FOUND") {
           throw new Error(readResult.error.message);
         }
@@ -128,12 +136,31 @@ export function createNexusStructuredPlaybookStore(
               `playbook ${playbook.id} cannot save version ${String(playbook.version)} below current version ${String(current.version)}`,
             );
           }
+          // Idempotent replay: byte-identical save at the same version is a
+          // no-op (caller is confirming an already-applied write under retry
+          // semantics). Short-circuit BEFORE the etag check so legitimate
+          // retries succeed even on transports with degraded metadata.
+          if (
+            playbook.version === current.version &&
+            canonicalJson(playbook) === canonicalJson(current)
+          ) {
+            return;
+          }
           if (
             playbook.version === current.version &&
             canonicalJson(playbook) !== canonicalJson(current)
           ) {
             throw new Error(
               `playbook ${playbook.id} cannot save divergent content at current version ${String(current.version)}`,
+            );
+          }
+          // Fail closed for real mutations: a successful read of an existing
+          // head MUST yield an etag for if_match CAS. Missing etag means the
+          // transport's metadata path is degraded — proceeding would silently
+          // overwrite blindly.
+          if (etag === undefined) {
+            throw new Error(
+              `playbook-store-nexus: read returned no etag for existing head at ${path(playbook.id)} — refusing blind overwrite`,
             );
           }
         }

@@ -625,7 +625,7 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
           curator: stubCurator,
           evaluator: makeEvaluator("promote"),
           thresholds,
-          onError: () => hostileThenable as unknown as void,
+          onError: () => hostileThenable as unknown as undefined,
         },
       });
 
@@ -766,13 +766,428 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
     }
   });
 
+  test("in-flight wrapToolCall is drained (entry included) before teardown seals", async () => {
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+
+      // Block the tool call so it's still pending when onSessionEnd fires.
+      let releaseTool: () => void;
+      const toolBlocker = new Promise<void>((r) => {
+        releaseTool = r;
+      });
+      let observedEntryCount = -1;
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: async ({ trajectory }) => {
+            observedEntryCount = trajectory.length;
+            return reflection;
+          },
+          curator: stubCurator,
+          evaluator: makeEvaluator("reject"),
+          thresholds,
+        },
+      });
+
+      const ctx = sessionCtx("sess-inflight");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-inflight", 0);
+
+      // Start a tool call that won't resolve until we let it.
+      const toolCallPromise = mw.wrapToolCall?.(t, { toolId: "slow-tool", input: {} }, async () => {
+        await toolBlocker;
+        return { output: "ok", isError: false };
+      });
+
+      // Trigger teardown — must drain the in-flight tool before recording.
+      const teardown = mw.onSessionEnd?.(ctx);
+
+      // Allow the tool to complete. Its trajectory entry MUST be recorded
+      // before the structured pipeline sees the trajectory.
+      releaseTool!();
+      await toolCallPromise;
+      await teardown;
+
+      // The drained tool's entry was visible to the reflector.
+      expect(observedEntryCount).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("drain bounded by timeout — never-settling tool does not wedge teardown", async () => {
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    const originalError = console.error;
+    const logs: string[] = [];
+    console.error = (...args: unknown[]): void => {
+      logs.push(args.map(String).join(" "));
+    };
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+      let reflectorRan = false;
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        drainTimeoutMs: 50,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: async () => {
+            reflectorRan = true;
+            return reflection;
+          },
+          curator: async () => [],
+          evaluator: makeEvaluator("reject"),
+          thresholds,
+        },
+      });
+
+      const ctx = sessionCtx("sess-stuck");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-stuck", 0);
+
+      // First, a normal tool call that resolves — gives the trajectory at
+      // least one entry so the pipeline runs after drain.
+      await mw.wrapToolCall?.(t, { toolId: "ok", input: {} }, async () => ({
+        output: "ok",
+        isError: false,
+      }));
+
+      // Then a stuck tool that never resolves — must not wedge teardown.
+      const stuck = mw.wrapToolCall?.(
+        t,
+        { toolId: "stuck", input: {} },
+        () => new Promise<{ output: string; isError: boolean }>(() => {}),
+      );
+      void stuck;
+
+      const start = Date.now();
+      await mw.onSessionEnd?.(ctx);
+      const elapsed = Date.now() - start;
+
+      expect(elapsed).toBeLessThan(2000);
+      // On timeout: trajectory prefix (completed entries) is persisted, but
+      // the promotion pipeline is skipped — so reflector never runs.
+      expect(reflectorRan).toBe(false);
+      expect(logs.some((l) => /drain timed out/.test(l))).toBe(true);
+      expect(logs.some((l) => /skipping promotion pipeline/.test(l))).toBe(true);
+    } finally {
+      console.error = originalError;
+      store.close();
+    }
+  });
+
+  test("drain timeout persists completed trajectory prefix (drops only promotion)", async () => {
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    const appended: { readonly sessionId: string; readonly count: number }[] = [];
+    const trajectoryStore = {
+      append: async (sessionId: string, entries: readonly unknown[]): Promise<void> => {
+        appended.push({ sessionId, count: entries.length });
+      },
+      getSession: async (): Promise<readonly never[]> => [],
+      listSessions: async (): Promise<readonly string[]> => [],
+    };
+    const originalError = console.error;
+    console.error = (): void => {};
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+      let reflectorRan = false;
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        trajectoryStore,
+        clock: () => 1000,
+        drainTimeoutMs: 50,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: async () => {
+            reflectorRan = true;
+            return reflection;
+          },
+          curator: async () => [],
+          evaluator: makeEvaluator("reject"),
+          thresholds,
+        },
+      });
+
+      const ctx = sessionCtx("sess-prefix");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-prefix", 0);
+
+      await mw.wrapToolCall?.(t, { toolId: "ok", input: {} }, async () => ({
+        output: "ok",
+        isError: false,
+      }));
+
+      const stuck = mw.wrapToolCall?.(
+        t,
+        { toolId: "stuck", input: {} },
+        () => new Promise<{ output: string; isError: boolean }>(() => {}),
+      );
+      void stuck;
+
+      await mw.onSessionEnd?.(ctx);
+
+      // Trajectory prefix WAS persisted (one completed entry).
+      expect(appended).toHaveLength(1);
+      expect(appended[0]?.sessionId).toBe("sess-prefix");
+      expect(appended[0]?.count).toBe(1);
+      // Promotion pipeline was skipped on timeout.
+      expect(reflectorRan).toBe(false);
+    } finally {
+      console.error = originalError;
+      store.close();
+    }
+  });
+
+  test("shutdownInFlight late additions are awaited (loop drains until empty)", async () => {
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        drainTimeoutMs: 5000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: stubReflector,
+          curator: async () => [],
+          evaluator: makeEvaluator("reject"),
+          thresholds,
+        },
+      });
+
+      const ctx = sessionCtx("sess-late");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-late", 0);
+
+      // Block teardown's primary drain so the closing window is wide.
+      let releaseInitial: () => void = () => {};
+      const initialBlocker = new Promise<void>((r) => {
+        releaseInitial = r;
+      });
+      const initial = mw.wrapToolCall?.(t, { toolId: "init", input: {} }, async () => {
+        await initialBlocker;
+        return { output: "ok", isError: false };
+      });
+      void initial;
+
+      const teardown = mw.onSessionEnd?.(ctx);
+
+      // First closing-window call — registered in shutdownInFlight before the
+      // shutdown drain begins.
+      let firstSettled = false;
+      let releaseFirst: () => void = () => {};
+      const firstBlocker = new Promise<void>((r) => {
+        releaseFirst = r;
+      });
+      const first = mw
+        .wrapToolCall?.(t, { toolId: "first", input: {} }, async () => {
+          await firstBlocker;
+          return { output: "ok", isError: false };
+        })
+        .then(() => {
+          firstSettled = true;
+        });
+
+      // Release the initial blocker so primary drain completes and shutdown
+      // drain begins — first is now in shutdownInFlight.
+      releaseInitial();
+
+      // After a tick, register a SECOND closing-window call. This is the
+      // "late addition" — added after shutdown drain has already sampled.
+      let secondSettled = false;
+      let releaseSecond: () => void = () => {};
+      const secondBlocker = new Promise<void>((r) => {
+        releaseSecond = r;
+      });
+      void Promise.resolve().then(() => {
+        const second = mw
+          .wrapToolCall?.(t, { toolId: "second", input: {} }, async () => {
+            await secondBlocker;
+            return { output: "ok", isError: false };
+          })
+          .then(() => {
+            secondSettled = true;
+          });
+        // Release first ONLY after second is registered, so when shutdown
+        // drain awaits its snapshot, second is already pending.
+        Promise.resolve().then(() => {
+          releaseFirst();
+          // Then release second after another tick.
+          Promise.resolve()
+            .then(() => Promise.resolve())
+            .then(() => releaseSecond());
+        });
+        void second;
+      });
+
+      await teardown;
+      await first;
+
+      // Both wrappers must have settled before teardown resolved.
+      expect(firstSettled).toBe(true);
+      expect(secondSettled).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("closing-state model call still receives playbook injection", async () => {
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+      // Seed a flat playbook so the middleware injects content.
+      await store.playbooks.save({
+        id: "pb-inject",
+        title: "Active",
+        strategy: "must-see-this",
+        version: 1,
+        tags: [],
+        source: "curated",
+        confidence: 1,
+        createdAt: 0,
+        updatedAt: 0,
+        sessionCount: 0,
+      });
+
+      let releaseFirst: () => void;
+      const firstBlocker = new Promise<void>((r) => {
+        releaseFirst = r;
+      });
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: stubReflector,
+          curator: async () => [],
+          evaluator: makeEvaluator("reject"),
+          thresholds,
+        },
+      });
+
+      const ctx = sessionCtx("sess-inject-closing");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-inject-closing", 0);
+
+      // First tool blocks teardown's drain so we have a closing window.
+      const blocker = mw.wrapToolCall?.(t, { toolId: "block", input: {} }, async () => {
+        await firstBlocker;
+        return { output: "ok", isError: false };
+      });
+
+      const teardown = mw.onSessionEnd?.(ctx);
+
+      // Late model call during closing window — must still receive injection.
+      let observedSystemPrompt: string | undefined;
+      await mw.wrapModelCall?.(
+        t,
+        { model: "test-model", messages: [], systemPrompt: "base" },
+        async (req) => {
+          observedSystemPrompt = req.systemPrompt;
+          return { model: "test-model", content: "", finishReason: "stop" };
+        },
+      );
+
+      releaseFirst!();
+      await blocker;
+      await teardown;
+
+      // Late model call during closing must still see the injected playbook.
+      expect(observedSystemPrompt).toMatch(/Active Playbooks|must-see-this/i);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("new wrapToolCall during drain window is rejected (drain stays bounded)", async () => {
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+
+      // Block the FIRST tool call to keep drain in-flight.
+      let releaseFirst: () => void;
+      const firstBlocker = new Promise<void>((r) => {
+        releaseFirst = r;
+      });
+      let observedEntryCount = -1;
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: async ({ trajectory }) => {
+            observedEntryCount = trajectory.length;
+            return reflection;
+          },
+          curator: stubCurator,
+          evaluator: makeEvaluator("reject"),
+          thresholds,
+        },
+      });
+
+      const ctx = sessionCtx("sess-bounded");
+      await mw.onSessionStart?.(ctx);
+      const t = turnCtx("sess-bounded", 0);
+
+      // Tool call 1: in-flight when teardown starts → must be drained.
+      const toolCall1 = mw.wrapToolCall?.(t, { toolId: "first", input: {} }, async () => {
+        await firstBlocker;
+        return { output: "ok", isError: false };
+      });
+
+      const teardown = mw.onSessionEnd?.(ctx);
+
+      // Tool call 2: starts AFTER onSessionEnd flipped `closing`. Must run
+      // (host contract) but NOT register in inFlight, NOT extend the drain,
+      // NOT add a trajectory entry.
+      let secondCallRan = false;
+      const toolCall2 = mw.wrapToolCall?.(t, { toolId: "second", input: {} }, async () => {
+        secondCallRan = true;
+        return { output: "post", isError: false };
+      });
+
+      // Allow first to complete; teardown drains it and proceeds.
+      releaseFirst!();
+      await toolCall1;
+      await toolCall2;
+      await teardown;
+
+      expect(secondCallRan).toBe(true); // host contract: call still runs
+      // Reflector saw exactly the first entry (drained), not the second.
+      expect(observedEntryCount).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
   test("late wrapToolCall after onSessionEnd starts is dropped (state closed)", async () => {
     const store = createSqlitePlaybookStore({ path: ":memory:" });
     try {
       await store.structuredPlaybooks.save(seedStructuredPlaybook());
 
       // Block teardown's reflector so we have a window to fire late events.
-      let releaseReflector: () => void;
+      let releaseReflector: () => void = () => {};
       const reflectorBlocker = new Promise<void>((r) => {
         releaseReflector = r;
       });
@@ -814,7 +1229,7 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
         isError: false,
       }));
 
-      releaseReflector!();
+      releaseReflector();
       await teardown;
 
       expect(observedEntryCount).toBe(1);

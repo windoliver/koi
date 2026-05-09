@@ -50,6 +50,8 @@ const DEFAULT_MAX_INJECTED_TOKENS = 800;
 const DEFAULT_MIN_SCORE = 0.05;
 const DEFAULT_LAMBDA = 0.05;
 const DEFAULT_STRUCTURED_TOKEN_BUDGET = 2000;
+/** Default upper bound on how long onSessionEnd waits for in-flight wrappers. */
+const DEFAULT_DRAIN_TIMEOUT_MS = 5000;
 
 /** Reflector: LLM-backed (or stubbed) trajectory analyzer. */
 export type ReflectorFn = (input: {
@@ -144,6 +146,13 @@ export interface AceConfig {
    * (they target different stores).
    */
   readonly structuredPipeline?: AceStructuredPipelineConfig;
+  /**
+   * Maximum time `onSessionEnd` waits for in-flight model/tool wrappers to
+   * settle before sealing the session and proceeding with a partial
+   * trajectory. Default: 5000 ms. Pass `Number.POSITIVE_INFINITY` to
+   * disable the bound (not recommended in production).
+   */
+  readonly drainTimeoutMs?: number;
 }
 
 /** Per-session mutable state — entries accumulate, `playbooks` is the snapshot
@@ -161,12 +170,32 @@ interface AceSessionState {
    */
   teardownPromise?: Promise<void>;
   /**
-   * Set true at the start of teardown. recordEntry() ignores writes after
-   * this flips so late wrapToolCall / wrapModelCall callbacks cannot mutate
-   * `entries` mid-flush (which would otherwise produce partial-include /
-   * lost-event races).
+   * Set true the moment onSessionEnd begins — REJECTS new wrappers from
+   * starting (see wrapModelCall/wrapToolCall). Bounds the drain window so
+   * teardown cannot wait forever for caller-induced new work.
+   */
+  closing?: boolean;
+  /**
+   * Set true after the drain completes. recordEntry() ignores writes after
+   * this flips. (Wrappers registered before `closing` flipped finish
+   * normally during the drain.)
    */
   closed?: boolean;
+  /**
+   * Tracks model/tool wrappers that have started but not yet appended their
+   * trajectory entry. onSessionEnd awaits all of these before sealing the
+   * session so end-of-session model/tool work is included in the trajectory
+   * append + structured pipeline (no silent drop of in-flight results).
+   */
+  inFlight: Set<Promise<unknown>>;
+  /**
+   * Tracks model/tool wrappers that started AFTER `closing` flipped but
+   * before `teardownPromise` resolved. They are not added to the trajectory
+   * (would extend it past session end), but `teardownPromise` does not
+   * resolve until they settle so that lifecycle barrier remains valid for
+   * session-id reuse — no straggler from lifecycle N can overlap N+1.
+   */
+  shutdownInFlight: Set<Promise<unknown>>;
 }
 
 /**
@@ -188,10 +217,25 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
 
   function recordEntry(state: AceSessionState | undefined, entry: TrajectoryEntry): void {
     if (state === undefined) return;
-    // Drop late events after onSessionEnd has started teardown — preserves
-    // the snapshotted entries seen by trajectory append + structured pipeline.
+    // Drop late events after onSessionEnd has fully drained — preserves the
+    // snapshotted entries seen by trajectory append + structured pipeline.
     if (state.closed === true) return;
     state.entries = [...state.entries, entry];
+  }
+
+  /**
+   * Register an in-flight model/tool wrapper so onSessionEnd can drain it
+   * before sealing the session. The promise auto-removes itself from the
+   * tracking set on settle (success or failure) so it cannot leak.
+   */
+  function trackInFlight<T>(state: AceSessionState | undefined, promise: Promise<T>): Promise<T> {
+    if (state === undefined) return promise;
+    const set = state.closing === true ? state.shutdownInFlight : state.inFlight;
+    const tracked = promise.finally(() => {
+      set.delete(tracked);
+    });
+    set.add(tracked);
+    return tracked as Promise<T>;
   }
 
   return {
@@ -213,6 +257,8 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
         entries: [],
         playbooks,
         turnIndex: 0,
+        inFlight: new Set(),
+        shutdownInFlight: new Set(),
       });
     },
 
@@ -226,18 +272,55 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
       const state = sessions.get(ctx.sessionId);
       if (state === undefined) return;
       if (state.teardownPromise !== undefined) return state.teardownPromise;
-      if (state.entries.length === 0) {
-        sessions.delete(ctx.sessionId);
-        return;
-      }
-      // Close the state so any in-flight wrapToolCall/wrapModelCall callbacks
-      // arriving after this point cannot mutate `entries` mid-teardown.
-      state.closed = true;
+      // Mark closing IMMEDIATELY (synchronously) so any wrapper that fires
+      // between now and the drain loop becomes invisible to trajectory
+      // recording — bounds the drain window to wrappers already registered.
+      state.closing = true;
+      const drainSnapshot = Array.from(state.inFlight);
+      const drainTimeoutMs = config.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
+      let drainTimedOut = false;
       const promise = (async (): Promise<void> => {
+        // Drain only wrappers registered at teardown start. Bounded by
+        // drainTimeoutMs so a single stuck call cannot wedge teardown
+        // forever (caller can opt out of the bound by setting Infinity).
+        if (drainSnapshot.length > 0) {
+          const drainAll = Promise.allSettled(drainSnapshot);
+          if (drainTimeoutMs === Number.POSITIVE_INFINITY) {
+            await drainAll;
+          } else {
+            const timeout = new Promise<"timeout">((resolve) => {
+              setTimeout(() => resolve("timeout"), drainTimeoutMs).unref?.();
+            });
+            const outcome = await Promise.race([drainAll.then(() => "ok" as const), timeout]);
+            if (outcome === "timeout") {
+              drainTimedOut = true;
+              try {
+                console.error(
+                  `[ace] session teardown drain timed out after ${drainTimeoutMs}ms (sessionId=${ctx.sessionId}, pending=${state.inFlight.size}); persisting completed trajectory prefix only — skipping promotion pipeline to avoid baking conclusions from incomplete session`,
+                );
+              } catch {
+                // never block teardown on log failures
+              }
+            }
+          }
+        }
+        // Now seal: any callback arriving after this flip cannot mutate
+        // `entries` mid-teardown.
+        state.closed = true;
         try {
+          if (state.entries.length === 0) return;
+          // Trajectory append is ground-truth observability — safe to persist
+          // even on drain timeout because state.entries only contains entries
+          // from wrappers that already completed (trackInFlight only appends
+          // post-await). Hung wrappers contributed nothing and are absent.
           if (config.trajectoryStore !== undefined) {
             await config.trajectoryStore.append(ctx.sessionId, state.entries);
           }
+          // Skip downstream curation/consolidation/promotion on drain timeout:
+          // those derive learnings from what is presumed to be a complete
+          // session. Promoting playbooks from an incomplete trajectory risks
+          // baking in conclusions that the dropped suffix would have changed.
+          if (drainTimedOut) return;
           const stats = aggregateTrajectoryStats(state.entries);
           const candidates = curateTrajectorySummary(stats, 1, {
             minScore,
@@ -269,6 +352,51 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
             }
           }
         } finally {
+          // Lifecycle barrier: drain straggler model/tool wrappers that
+          // started during the closing window so a reused sessionId cannot
+          // overlap them with a fresh lifecycle. Loop on the set under an
+          // absolute deadline — a single snapshot would leak any wrapper
+          // added after the snapshot is taken (post-closing wrapModelCall /
+          // wrapToolCall calls still register in shutdownInFlight). On
+          // Infinity, loop until the set drains organically.
+          if (state.shutdownInFlight.size > 0) {
+            if (drainTimeoutMs === Number.POSITIVE_INFINITY) {
+              while (state.shutdownInFlight.size > 0) {
+                await Promise.allSettled(Array.from(state.shutdownInFlight));
+              }
+            } else {
+              const deadline = Date.now() + drainTimeoutMs;
+              let timedOut = false;
+              while (state.shutdownInFlight.size > 0) {
+                const remaining = deadline - Date.now();
+                if (remaining <= 0) {
+                  timedOut = true;
+                  break;
+                }
+                const snapshot = Array.from(state.shutdownInFlight);
+                const timeout = new Promise<"timeout">((resolve) => {
+                  setTimeout(() => resolve("timeout"), remaining).unref?.();
+                });
+                const outcome = await Promise.race([
+                  Promise.allSettled(snapshot).then(() => "ok" as const),
+                  timeout,
+                ]);
+                if (outcome === "timeout") {
+                  timedOut = true;
+                  break;
+                }
+              }
+              if (timedOut) {
+                try {
+                  console.error(
+                    `[ace] session shutdown drain timed out after ${drainTimeoutMs}ms (sessionId=${ctx.sessionId}, shutdown-pending=${state.shutdownInFlight.size}); leaving slot to expire — wrappers may outlive teardown`,
+                  );
+                } catch {
+                  // never block teardown on log failures
+                }
+              }
+            }
+          }
           // Only drop the slot if it still references US — a fresh
           // onSessionStart with the same sessionId may have replaced it.
           if (sessions.get(ctx.sessionId) === state) {
@@ -293,19 +421,31 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
     ): Promise<ModelResponse> {
       const state = getState(ctx.session);
       const enriched = injectPlaybooks(request, state, maxInjectedTokens);
+      // After onSessionEnd starts, still inject playbooks (preserves
+      // behavior-shaping for shutdown model calls), skip trajectory
+      // recording (no entries past session end), but DO track the
+      // promise in shutdownInFlight so onSessionEnd's lifecycle barrier
+      // doesn't resolve before the late call settles. That keeps
+      // session-id reuse safe.
+      if (state?.closing === true || state?.closed === true) {
+        return trackInFlight(state, next(enriched));
+      }
       const startedAt = clock();
-      const outcome = await runWithOutcome(() => next(enriched));
-      const durationMs = clock() - startedAt;
-      const identifier = enriched.model ?? "unknown-model";
-      recordEntry(state, {
-        turnIndex: ctx.turnIndex,
-        timestamp: startedAt,
-        kind: "model_call",
-        identifier,
-        outcome: outcome.outcome,
-        durationMs,
-      });
-      return outcome.unwrap();
+      const inner = (async (): Promise<ModelResponse> => {
+        const outcome = await runWithOutcome(() => next(enriched));
+        const durationMs = clock() - startedAt;
+        const identifier = enriched.model ?? "unknown-model";
+        recordEntry(state, {
+          turnIndex: ctx.turnIndex,
+          timestamp: startedAt,
+          kind: "model_call",
+          identifier,
+          outcome: outcome.outcome,
+          durationMs,
+        });
+        return outcome.unwrap();
+      })();
+      return trackInFlight(state, inner);
     },
 
     async wrapToolCall(
@@ -314,18 +454,24 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
       next: ToolHandler,
     ): Promise<ToolResponse> {
       const state = getState(ctx.session);
+      if (state?.closing === true || state?.closed === true) {
+        return trackInFlight(state, next(request));
+      }
       const startedAt = clock();
-      const outcome = await runWithOutcome(() => next(request));
-      const durationMs = clock() - startedAt;
-      recordEntry(state, {
-        turnIndex: state?.turnIndex ?? 0,
-        timestamp: startedAt,
-        kind: "tool_call",
-        identifier: request.toolId,
-        outcome: outcome.outcome,
-        durationMs,
-      });
-      return outcome.unwrap();
+      const inner = (async (): Promise<ToolResponse> => {
+        const outcome = await runWithOutcome(() => next(request));
+        const durationMs = clock() - startedAt;
+        recordEntry(state, {
+          turnIndex: state?.turnIndex ?? 0,
+          timestamp: startedAt,
+          kind: "tool_call",
+          identifier: request.toolId,
+          outcome: outcome.outcome,
+          durationMs,
+        });
+        return outcome.unwrap();
+      })();
+      return trackInFlight(state, inner);
     },
 
     describeCapabilities(ctx: TurnContext): CapabilityFragment | undefined {
