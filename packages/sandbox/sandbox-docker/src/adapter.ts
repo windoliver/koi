@@ -579,31 +579,34 @@ async function doDestroyScope(
   const owned = matches.find((c) => c.id === ownedId);
   const strangers = matches.filter((c) => c.id !== ownedId);
 
+  // Preflight: when foreign siblings exist alongside our owned container,
+  // fail closed BEFORE removing anything. Removing the owned container
+  // first would leave the scope wedged on the strangers and the operator
+  // would have lost their good sandbox to no benefit. The recovery path
+  // is documented as remove-mine + report-the-rest, not partial demolition.
+  if (strangers.length > 0) {
+    const error: KoiError = {
+      code: "VALIDATION",
+      message: `sandbox-docker: destroyScope("${scope}") found ${strangers.length} additional container(s) carrying the scope label besides our recorded one — refusing to remove the owned container while strangers remain (would leave the scope wedged); investigate via 'docker ps -a --filter label=${SCOPE_LABEL}=${scope}' and remove the strangers manually before retrying`,
+      retryable: false,
+      context: {
+        scope,
+        ownedContainerId: ownedId,
+        unownedContainerIds: strangers.map((c) => c.id),
+      },
+    };
+    throw new Error(error.message, { cause: error });
+  }
+
   if (owned !== undefined) {
     // Let any error propagate — ownership is preserved (we have not yet
     // touched the registry on this path) so a future destroyScope can retry.
     await owned.remove();
   }
 
-  if (strangers.length > 0) {
-    // Owned container is gone (either just removed or never present); the
-    // surviving label-matching containers are not ours to delete. CAS-
-    // forget by id so a peer's freshly-recorded replacement is preserved
-    // (a blind forget would erase it and silently re-classify the new
-    // owner's container as a stranger).
-    await scopeRegistry.forgetIfMatches(scope, ownedId);
-    const error: KoiError = {
-      code: "VALIDATION",
-      message: `sandbox-docker: destroyScope("${scope}") removed our recorded container but ${strangers.length} additional container(s) still carry the scope label — refusing to delete containers we do not own; investigate via 'docker ps -a --filter label=${SCOPE_LABEL}=${scope}' and remove manually if appropriate`,
-      retryable: false,
-      context: { scope, unownedContainerIds: strangers.map((c) => c.id) },
-    };
-    throw new Error(error.message, { cause: error });
-  }
-
   // CAS-forget: if a peer process recorded a replacement between our
   // initial lookup and this point (after we removed the old container),
-  // their record survives — only our own ownerships id is unlinked.
+  // their record survives — only our own ownership id is unlinked.
   await scopeRegistry.forgetIfMatches(scope, ownedId);
   return owned !== undefined;
 }

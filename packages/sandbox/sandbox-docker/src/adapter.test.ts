@@ -668,12 +668,12 @@ describe("createDockerAdapter", () => {
     );
   });
 
-  // Persistence (ownership): destroyScope only removes the registry-recorded
-  // container; foreign label-matching siblings are NOT touched (force-removing
-  // a stranger by virtue of a public label match would break the trust model
-  // the registry exists to enforce). Strangers surface as a typed ambiguity
-  // error so the operator knows manual investigation is needed.
-  test("destroyScope removes only the owned container and surfaces unowned siblings", async () => {
+  // Persistence (ownership): destroyScope preflight-checks for foreign
+  // siblings BEFORE removing the owned container — removing it first would
+  // delete good state while leaving the scope wedged on the strangers (the
+  // owner has lost their sandbox to no benefit). Fail closed with NO
+  // mutations so the operator can clean up manually before retrying.
+  test("destroyScope preflight refuses to remove owned container when foreign siblings exist", async () => {
     const stops: string[] = [];
     const removes: string[] = [];
     function tagged(id: string): DockerContainer {
@@ -701,12 +701,17 @@ describe("createDockerAdapter", () => {
     const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.destroyScope === undefined) throw new Error("destroyScope must exist");
-    await expect(r.value.destroyScope("scope-MULTI")).rejects.toThrow(/containers we do not own/);
+    await expect(r.value.destroyScope("scope-MULTI")).rejects.toThrow(
+      /refusing to remove the owned container while strangers remain/,
+    );
     expect(stops).toEqual([]);
-    // Only the owned container is removed; b and c are untouched.
-    expect(removes).toEqual(["a"]);
-    // Ownership is forgotten because our recorded container is gone.
-    expect(await reg.lookup("scope-MULTI")).toBeUndefined();
+    // Critical: NOTHING is removed when foreign siblings are present —
+    // partial demolition would erase the operator's good sandbox while
+    // still leaving the scope wedged on the strangers.
+    expect(removes).toEqual([]);
+    // Ownership is preserved so the operator's sandbox can be re-attached
+    // (or the scope can be retried) once the strangers are cleaned up.
+    expect(await reg.lookup("scope-MULTI")).toBe("a");
   });
 
   // Persistence (no ownership): destroyScope refuses to delete label-matching

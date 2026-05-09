@@ -189,20 +189,23 @@ export function createFileScopeRegistry(opts?: { readonly dir?: string }): Scope
     lookup: async (scope): Promise<string | undefined> => {
       const entries = await listEntries(scope);
       if (entries.length === 0) return undefined;
-      // Normal case: exactly one entry. During a record sweep there may
-      // briefly be more than one — pick any; the sweep will reduce it.
-      const first = entries[0];
-      if (first === undefined) return undefined;
-      try {
-        const raw = await readFile(join(dir, first), "utf-8");
-        const trimmed = raw.trim();
-        return trimmed.length > 0 ? trimmed : undefined;
-      } catch (e: unknown) {
-        // Race: file disappeared between readdir and readFile. Treat as
-        // absent. Other I/O faults still surface.
-        if (isFsNotFound(e)) return undefined;
-        throw e;
+      // During a record() sweep multiple `<scopeHash>.<idHash>.scope` files
+      // may briefly exist — the new entry plus stale ones being unlinked.
+      // Iterate ALL matches and return the first successful read so a
+      // sweep-in-progress that deletes one candidate cannot make a
+      // legitimate fresh entry look absent. ENOENT on any single file
+      // means it was just swept; try the next.
+      for (const name of entries) {
+        try {
+          const raw = await readFile(join(dir, name), "utf-8");
+          const trimmed = raw.trim();
+          if (trimmed.length > 0) return trimmed;
+        } catch (e: unknown) {
+          if (isFsNotFound(e)) continue;
+          throw e;
+        }
       }
+      return undefined;
     },
     forget: async (scope): Promise<void> => {
       const entries = await listEntries(scope);
