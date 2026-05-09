@@ -405,14 +405,36 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
               state.entries.slice(0, appendedLength),
             );
           }
-          // Phase 2: drain wrappers that arrived during the append, then
-          // append their delta so the durable trajectory matches state.entries
-          // BEFORE the learning pipelines run. Late entries that arrive after
-          // the first append must be visible to stats/promotion or those
-          // pipelines commit verdicts on an incomplete session.
-          if (await drainOnce()) {
+          // Phase 2: stabilize state.entries before the pipelines run by
+          // looping drain → re-check until the entry count holds steady
+          // for a full drain cycle. Bounded by both drainTimeoutMs (per
+          // call) and a hard iteration cap to prevent unbounded recursion
+          // if external callers keep firing wrappers. If we cannot
+          // stabilize, treat as drain timeout so pipelines are skipped —
+          // committing learning from a session that never settles risks
+          // baking in conclusions from an incomplete suffix.
+          const STABILIZE_MAX_ITERATIONS = 5;
+          let prevLen = -1;
+          let stabilizeIters = 0;
+          while (state.entries.length !== prevLen && stabilizeIters < STABILIZE_MAX_ITERATIONS) {
+            prevLen = state.entries.length;
+            if (await drainOnce()) {
+              drainTimedOut = true;
+              logDrainTimeout("post-append");
+              break;
+            }
+            stabilizeIters++;
+          }
+          if (
+            !drainTimedOut &&
+            state.entries.length !== prevLen &&
+            stabilizeIters >= STABILIZE_MAX_ITERATIONS
+          ) {
+            // Could not stabilize within the iteration cap — host is
+            // firing wrappers faster than we can drain them. Skip
+            // pipelines so they cannot promote from an incomplete snapshot.
             drainTimedOut = true;
-            logDrainTimeout("post-append");
+            logDrainTimeout("stabilize");
           }
           if (config.trajectoryStore !== undefined && state.entries.length > appendedLength) {
             await config.trajectoryStore.append(ctx.sessionId, state.entries.slice(appendedLength));
