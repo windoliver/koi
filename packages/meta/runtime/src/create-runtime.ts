@@ -693,14 +693,29 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         priority: 950,
         describeCapabilities: () => undefined,
         onSessionEnd: async (ctx) => {
+          // Remove ONE matching entry per onSessionEnd. Stable-session
+          // mode lets multiple concurrent streams share one logical
+          // sessionId, each producing a distinct attachment; deleting all
+          // matches when the first stream ends would tear down the
+          // surviving streams' scoped handles and silently disable
+          // auto-harness for still-live traffic (R5 round 14 finding).
+          // Only reset the stack-side per-session state once the last
+          // attachment for this logical session has ended.
+          let removed = false;
+          let stillHasOthers = false;
           for (const entry of autoHarnessSessionEntries) {
-            if (entry.sessionId === ctx.sessionId) {
+            if (entry.sessionId !== ctx.sessionId) continue;
+            if (!removed) {
               autoHarnessSessionEntries.delete(entry);
+              removed = true;
+            } else {
+              stillHasOthers = true;
+              break;
             }
           }
-          // Also reset stack-side per-session state (budgets, completed
-          // triggers) so a recycled sessionId starts fresh.
-          stack.resetSession(ctx.sessionId);
+          if (removed && !stillHasOthers) {
+            stack.resetSession(ctx.sessionId);
+          }
         },
       };
       // Only compose the stack-owned policy-cache when the adapter can carry

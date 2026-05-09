@@ -299,9 +299,12 @@ export function createAutoHarnessStack(config: AutoHarnessConfig): AutoHarnessSt
         signalId: signal.id,
         message: "session synthesis cap reached",
       });
-      // The signal will not be processed; dismiss it so forge-demand state
-      // doesn't accumulate unprocessable signals across cooldowns.
-      safeDismiss();
+      // Do NOT dismiss: capacity is consumed by in-flight pipelines, but
+      // a transient outcome will refund the slot. Permanently dismissing
+      // means a later refund cannot un-skip this signal — the unrelated
+      // signal would be lost forever (R5 round 14 finding). Leave it
+      // pending so forge-demand re-emits after cooldown when capacity has
+      // freed up.
       return null;
     }
     state.inFlightTriggers.add(triggerKey);
