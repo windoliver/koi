@@ -65,12 +65,13 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@temporalio/workflow": "1.16.1",
       },
       "devDependencies": {
         "@temporalio/client": "^1.11.0",
         "@temporalio/common": "1.16.1",
+        "@temporalio/testing": "1.16.1",
         "@temporalio/worker": "^1.11.0",
-        "@temporalio/workflow": "1.16.1",
       },
       "peerDependencies": {
         "@temporalio/client": ">=1.11.0",
@@ -3423,6 +3424,8 @@
     "@temporalio/nexus": ["@temporalio/nexus@1.16.1", "", { "dependencies": { "@temporalio/client": "1.16.1", "@temporalio/common": "1.16.1", "@temporalio/proto": "1.16.1", "long": "^5.2.3", "nexus-rpc": "^0.0.2" } }, "sha512-wFkHAtfbUoy3BFjXVuDKYZUodP7XAeqqBVlprty5/pf5AacAneE8tJHON6o1P1YJeoUZ8/8vIdCj/YcBjAvsYg=="],
 
     "@temporalio/proto": ["@temporalio/proto@1.16.1", "", { "dependencies": { "long": "^5.2.3", "protobufjs": "^7.2.5" } }, "sha512-P2BBtKkK9/6or4o5q2stz/56d8dBSkFfS3Bc4GFG24gtA+IZyQnRHRpuGYVwdE4FoVXZozv+dgky46Bv8qyHyQ=="],
+
+    "@temporalio/testing": ["@temporalio/testing@1.16.1", "", { "dependencies": { "@temporalio/activity": "1.16.1", "@temporalio/client": "1.16.1", "@temporalio/common": "1.16.1", "@temporalio/core-bridge": "1.16.1", "@temporalio/proto": "1.16.1", "@temporalio/worker": "1.16.1", "@temporalio/workflow": "1.16.1", "abort-controller": "^3.0.0" } }, "sha512-aOuBeVWb1bhovywGGHCKez4HUcWefjUSbxqSPO54jOg3kjvueyAIphZ3LQ+xc5f0p2mTCE49mEna0cLDCU5uoQ=="],
 
     "@temporalio/worker": ["@temporalio/worker@1.16.1", "", { "dependencies": { "@grpc/grpc-js": "^1.12.4", "@swc/core": "^1.3.102", "@temporalio/activity": "1.16.1", "@temporalio/client": "1.16.1", "@temporalio/common": "1.16.1", "@temporalio/core-bridge": "1.16.1", "@temporalio/nexus": "1.16.1", "@temporalio/proto": "1.16.1", "@temporalio/workflow": "1.16.1", "abort-controller": "^3.0.0", "heap-js": "^2.6.0", "memfs": "^4.6.0", "nexus-rpc": "^0.0.2", "proto3-json-serializer": "^2.0.0", "protobufjs": "^7.2.5", "rxjs": "^7.8.1", "source-map": "^0.7.4", "source-map-loader": "^4.0.2", "supports-color": "^8.1.1", "swc-loader": "^0.2.3", "unionfs": "^4.5.1", "webpack": "^5.104.1" } }, "sha512-cBE0qDXxlN7bheGAhooinEKljQERyd+hezuIwKvWVkwJUnZG/Ov0S8MAcJ/qcOO8Wikunhuk0MKwsj5pSd1gZg=="],
 

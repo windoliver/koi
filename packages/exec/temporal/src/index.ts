@@ -36,18 +36,36 @@ export type {
   AgentStateRefs,
   AgentWorkflowConfig,
   IncomingMessage,
+  RetryWorkflowArgs,
+  RetryWorkflowResult,
   ScheduledInputPayload,
   ScheduledSpawnArgs,
+  ScheduledTaskWorkflowArgs,
+  ScheduledTaskWorkflowResult,
   TemporalConfig,
 } from "./types.js";
 export { DEFAULT_TEMPORAL_CONFIG } from "./types.js";
-
 export {
   createTemporalWorker,
+  createTemporalWorkerFromBundle,
+  createWorkerBundle,
   type NativeConnectionLike,
   type WorkerAndConnection,
+  type WorkerBundle,
   type WorkerConfig,
   type WorkerCreateParams,
   type WorkerHandle,
   type WorkerLike,
 } from "./worker-factory.js";
+export {
+  AGENT_MESSAGE_SIGNAL,
+  AGENT_SHUTDOWN_SIGNAL,
+  AGENT_STATE_QUERY,
+  AGENT_STATUS_QUERY,
+  AGENT_WORKFLOW_NAME,
+  agentWorkflow,
+  RETRY_WORKFLOW_NAME,
+  retryWorkflow,
+  SCHEDULED_TASK_WORKFLOW_NAME,
+  scheduledTaskWorkflow,
+} from "./workflows/index.js";

@@ -29,7 +29,10 @@ import type {
   TaskRunRecord,
   TaskScheduler,
 } from "@koi/core";
-import type { IncomingMessage, ScheduledInputPayload, ScheduledSpawnArgs } from "./types.js";
+import type { IncomingMessage, ScheduledInputPayload, ScheduledTaskWorkflowArgs } from "./types.js";
+import { AGENT_WORKFLOW_NAME, SCHEDULED_TASK_WORKFLOW_NAME } from "./workflows/index.js";
+
+type MessageEngineInput = Extract<EngineInput, { readonly kind: "messages" }>;
 
 // ---------------------------------------------------------------------------
 // Durable state persistence (used when config.dbPath is set)
@@ -85,7 +88,6 @@ interface PersistedState {
 // Prevents false "live" detection when the OS reuses a PID from a crashed process:
 // a new process has a different token, so the old (pid, token) pair never matches.
 const PROCESS_SESSION_TOKEN = crypto.randomUUID();
-
 const VALID_TASK_STATUSES = new Set<string>([
   "pending",
   "running",
@@ -619,7 +621,7 @@ function mapEngineInputToMessages(input: EngineInput, taskId: string): readonly 
       ];
     case "messages":
       return input.messages.map(
-        (msg, i): IncomingMessage => ({
+        (msg: MessageEngineInput["messages"][number], i: number): IncomingMessage => ({
           id: `${taskId}:${i}`,
           senderId: msg.senderId,
           content: [...msg.content],
@@ -640,6 +642,8 @@ function mapEngineInputToMessages(input: EngineInput, taskId: string): readonly 
         },
       ];
   }
+
+  throw new Error(`Unsupported EngineInput kind: ${String((input as { kind?: unknown }).kind)}`);
 }
 
 function assertJsonSafeValue(value: unknown, path: string): void {
@@ -722,6 +726,8 @@ function mapEngineInputToScheduledPayload(input: EngineInput): ScheduledInputPay
     case "resume":
       return { ...base, kind: "resume", state: input.state };
   }
+
+  throw new Error(`Unsupported EngineInput kind: ${String((input as { kind?: unknown }).kind)}`);
 }
 
 export interface TemporalClientLike {
@@ -735,6 +741,13 @@ export interface TemporalClientLike {
       signalName: string,
       ...args: readonly unknown[]
     ) => Promise<void>;
+    // Atomic start-or-signal: starts the workflow with the given args if it is not
+    // running; otherwise signals the existing one. Required for dispatch — a bare
+    // signal() against a non-existent workflow fails, dropping scheduled work.
+    readonly signalWithStart: (
+      workflowType: string,
+      options: Record<string, unknown>,
+    ) => Promise<{ readonly workflowId: string }>;
     readonly cancel: (workflowId: string) => Promise<void>;
     readonly getResult: (workflowId: string) => Promise<unknown>;
   };
@@ -750,7 +763,7 @@ export interface TemporalClientLike {
 export interface TemporalSchedulerConfig {
   readonly client: TemporalClientLike;
   readonly taskQueue: string;
-  readonly workflowType: string;
+  readonly workflowType?: string | undefined;
   /**
    * Path to a JSON file for durable state persistence. When provided, task/schedule
    * state is written on each mutation and restored on startup, preserving management
@@ -1266,7 +1279,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       let targetWorkflowId: string = id;
       try {
         if (mode === "spawn") {
-          const handle = await config.client.workflow.start(config.workflowType, {
+          const workflowType = config.workflowType ?? AGENT_WORKFLOW_NAME;
+          const handle = await config.client.workflow.start(workflowType, {
             taskQueue: config.taskQueue,
             workflowId: id,
             // Idempotent spawns reuse a stable workflowId derived from idempotencyKey.
@@ -1292,11 +1306,31 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           });
           targetWorkflowId = handle.workflowId;
         } else {
-          // dispatch: target the long-running workflow for this agent.
-          // Send the whole batch in one signal so delivery is atomic — a partial message
-          // set cannot be observed and retries produce no duplicates.
+          // dispatch: target the long-running workflow for this agent. signalWithStart
+          // atomically starts the workflow (with empty initial messages) if not running,
+          // then delivers the message batch via the "messages" signal. This avoids the
+          // workflow-not-found failure that bare signal() would produce on first dispatch.
+          // Sending the whole batch in one signal keeps delivery atomic — a partial set
+          // cannot be observed and retries produce no duplicates.
           targetWorkflowId = String(agentId);
-          await config.client.workflow.signal(targetWorkflowId, "messages", messages);
+          const workflowType = config.workflowType ?? AGENT_WORKFLOW_NAME;
+          await config.client.workflow.signalWithStart(workflowType, {
+            taskQueue: config.taskQueue,
+            workflowId: targetWorkflowId,
+            signal: "messages",
+            signalArgs: [messages],
+            args: [
+              {
+                agentId,
+                sessionId: id,
+                stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+                initialMessages: [],
+                ...(snapshotInput.maxStopRetries !== undefined
+                  ? { maxStopRetries: snapshotInput.maxStopRetries }
+                  : {}),
+              },
+            ],
+          });
         }
       } catch (err: unknown) {
         const skipCancel = mode === "spawn" && options?.idempotencyKey !== undefined;
@@ -1809,44 +1843,32 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         paused: false,
       };
 
-      // spawn: startWorkflow on each cron firing. ScheduledSpawnArgs carries the
-      //   serialized payload; the workflow generates fresh IncomingMessage IDs and
-      //   timestamps at each execution to prevent duplicate idempotency keys.
-      // dispatch: "scheduled-input" signal with serialized payload so the workflow
-      //   signal handler creates a fresh IncomingMessage envelope per firing.
-      //   Distinct signal name prevents conflating one-shot direct signals ("message")
-      //   with recurring schedule-fired inputs.
-      let scheduleAction: Record<string, unknown>;
-      if (mode === "spawn") {
-        // Use snapshotPayload (the already-cloned/validated copy) so the remote schedule
-        // definition is byte-for-byte identical to the persisted local metadata.
-        // Using the original scheduledPayload risks split-brain if the caller mutates
-        // the input after schedule() is called or a client wrapper serializes lazily.
-        const spawnArgs: ScheduledSpawnArgs = {
-          agentId,
-          stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
-          input: snapshotPayload,
-        };
-        scheduleAction = {
-          type: "startWorkflow",
-          workflowType: config.workflowType,
-          taskQueue: config.taskQueue,
-          // Explicit workflowId so Temporal can apply overlap/reuse policies deterministically.
-          // The schedule ID is the stable base; Temporal's overlap policy governs concurrent firings.
-          workflowId: id,
-          // ALLOW_DUPLICATE lets each cron firing start a fresh workflow even if one with
-          // the same ID completed previously (unlike the default REJECT_DUPLICATE).
-          workflowIdReusePolicy: "ALLOW_DUPLICATE",
-          args: [spawnArgs],
-        };
-      } else {
-        scheduleAction = {
-          type: "sendSignal",
-          workflowId: String(agentId),
-          signalName: "scheduled-input",
-          args: [snapshotPayload], // same: use snapshot so remote and local payloads are identical
-        };
-      }
+      // Both spawn and dispatch firings use the startWorkflow action — Temporal Schedules
+      // do not support a sendSignal action, and even if they did, the signal name had no
+      // matching handler on the agent workflow side. The scheduledTaskWorkflow wrapper
+      // dispatches into the agent loop with workflow-deterministic timestamps per firing.
+      // Always target the wrapper workflow regardless of config.workflowType — the wrapper
+      // expects ScheduledTaskWorkflowArgs, but config.workflowType (used by direct submit)
+      // typically points at the bare agentWorkflow which would silently drop wrapper args.
+      const workflowType = SCHEDULED_TASK_WORKFLOW_NAME;
+      const wrapperArgs: ScheduledTaskWorkflowArgs = {
+        mode,
+        agentId,
+        stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+        input: snapshotPayload,
+      };
+      const scheduleAction: Record<string, unknown> = {
+        type: "startWorkflow",
+        workflowType,
+        taskQueue: config.taskQueue,
+        // Explicit workflowId so Temporal can apply overlap/reuse policies deterministically.
+        // The schedule ID is the stable base; Temporal's overlap policy governs concurrent firings.
+        workflowId: id,
+        // ALLOW_DUPLICATE lets each cron firing start a fresh workflow even if one with
+        // the same ID completed previously (unlike the default REJECT_DUPLICATE).
+        workflowIdReusePolicy: "ALLOW_DUPLICATE",
+        args: [wrapperArgs],
+      };
 
       // Two-phase pre-commit: durably record the schedule with its full metadata before
       // calling schedule.create() so crash recovery can reconstruct local state and make the

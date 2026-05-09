@@ -37,6 +37,29 @@ export interface ScheduledSpawnArgs {
   readonly input: ScheduledInputPayload;
 }
 
+export interface ScheduledTaskWorkflowArgs {
+  readonly mode: "spawn" | "dispatch";
+  readonly agentId: AgentId;
+  readonly stateRefs: AgentStateRefs;
+  readonly input: ScheduledInputPayload;
+}
+
+export type ScheduledTaskWorkflowResult =
+  | { readonly kind: "spawned"; readonly workflowId: string }
+  | { readonly kind: "dispatched" };
+
+export interface RetryWorkflowArgs {
+  readonly operation: "runAgentTurn" | "runScheduledTask";
+  readonly attempt: number;
+  readonly maxAttempts: number;
+  readonly backoffMs: number;
+  readonly payload: Record<string, unknown>;
+}
+
+export type RetryWorkflowResult =
+  | { readonly kind: "succeeded"; readonly attempts: number; readonly value: unknown }
+  | { readonly kind: "failed"; readonly attempts: number; readonly error: string };
+
 export interface AgentStateRefs {
   readonly lastTurnId: string | undefined;
   readonly turnsProcessed: number;

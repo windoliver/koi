@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { AgentId, EngineInput } from "@koi/core";
+import type { AgentId, EngineInput, ScheduledTask, SchedulerEvent, TaskRunRecord } from "@koi/core";
 import {
   createTemporalScheduler,
   type TemporalClientLike,
@@ -11,6 +11,7 @@ function makeMockClient(wfOverrides?: Partial<TemporalClientLike["workflow"]>): 
     workflow: {
       start: mock(async () => ({ workflowId: "wf-1" })),
       signal: mock(async () => undefined),
+      signalWithStart: mock(async () => ({ workflowId: "wf-1" })),
       cancel: mock(async () => undefined),
       // Required: completion tracking. Default never resolves (task stays running) unless overridden.
       getResult: mock(async () => new Promise<unknown>(() => {})),
@@ -73,17 +74,25 @@ describe("submit", () => {
     expect(client.workflow.start).toHaveBeenCalledTimes(1);
   });
 
+  test("scheduler defaults agent workflow type for direct spawn mode", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler({ client, taskQueue: "test-queue" });
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    const startArgs = (client.workflow.start as ReturnType<typeof mock>).mock.calls[0] as [string];
+    expect(startArgs[0]).toBe("agentWorkflow");
+  });
+
   test("signals the workflow with message", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
-    expect(client.workflow.signal).toHaveBeenCalledTimes(1);
+    expect(client.workflow.signalWithStart).toHaveBeenCalledTimes(1);
   });
 
   test("emits task:submitted event", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     const events: unknown[] = [];
-    scheduler.watch((e) => events.push(e));
+    scheduler.watch((e: SchedulerEvent) => events.push(e));
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
     expect((events[0] as { kind: string }).kind).toBe("task:submitted");
   });
@@ -114,6 +123,7 @@ describe("submit", () => {
     expect(msgs?.[0]?.content).toEqual([{ kind: "text", text: "hello" }]);
     // No separate signal sent for spawn mode
     expect(client.workflow.signal).not.toHaveBeenCalled();
+    expect(client.workflow.signalWithStart).not.toHaveBeenCalled();
   });
 
   test("preserves all ContentBlock types from messages EngineInput", async () => {
@@ -231,8 +241,10 @@ describe("dispatch mode", () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
-    const signalArgs = (client.workflow.signal as ReturnType<typeof mock>).mock.calls[0];
-    expect(signalArgs?.[0]).toBe(String(AGENT_ID));
+    const calls = (client.workflow.signalWithStart as ReturnType<typeof mock>).mock.calls;
+    const opts = calls[0]?.[1] as { workflowId: string; signal: string };
+    expect(opts.workflowId).toBe(String(AGENT_ID));
+    expect(opts.signal).toBe("messages");
   });
 
   test("spawn starts a new workflow with a unique id", async () => {
@@ -246,17 +258,24 @@ describe("dispatch mode", () => {
     expect(opts.workflowId).not.toBe(String(AGENT_ID));
   });
 
-  test("dispatch schedule uses sendSignal action not startWorkflow", async () => {
+  test("dispatch schedule uses startWorkflow action with mode=dispatch", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "dispatch");
     const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
     const opts = createArgs?.[1] as {
-      action: { type: string; signalName: string; workflowId: string };
+      action: { type: string; workflowType: string; args: readonly unknown[] };
     };
-    expect(opts.action.type).toBe("sendSignal");
-    expect(opts.action.signalName).toBe("scheduled-input");
-    expect(opts.action.workflowId).toBe(String(AGENT_ID));
+    // Temporal Schedules only support startWorkflow actions; dispatch firings start the
+    // scheduledTaskWorkflow wrapper which materializes messages with deterministic time
+    // and dispatches into the agent loop.
+    expect(opts.action.type).toBe("startWorkflow");
+    // Schedule path always targets the wrapper regardless of config.workflowType so the
+    // wrapper-arg shape is honored; config.workflowType (typically "agentWorkflow") is
+    // for direct submit, not cron.
+    expect(opts.action.workflowType).toBe("scheduledTaskWorkflow");
+    const wrapperArgs = opts.action.args[0] as { mode: string };
+    expect(wrapperArgs.mode).toBe("dispatch");
   });
 
   test("spawn schedule uses startWorkflow action", async () => {
@@ -266,6 +285,18 @@ describe("dispatch mode", () => {
     const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
     const opts = createArgs?.[1] as { action: { type: string } };
     expect(opts.action.type).toBe("startWorkflow");
+  });
+
+  test("spawn schedule defaults scheduled task workflow type when workflowType is omitted", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler({ client, taskQueue: "test-queue" });
+    await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn");
+    const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
+    const opts = createArgs?.[1] as {
+      action: { workflowType: string; args: readonly [{ mode: string }] };
+    };
+    expect(opts.action.workflowType).toBe("scheduledTaskWorkflow");
+    expect(opts.action.args[0].mode).toBe("spawn");
   });
 });
 
@@ -299,13 +330,14 @@ describe("rollback safety", () => {
   });
 
   test("dispatch signal failure — transport error (ECONNRESET) marks completed and does not throw", async () => {
-    // When workflow.signal() throws a transport-level error (connection reset, timeout, UNAVAILABLE),
-    // the signal MAY have been delivered — the client lost the ACK, not the signal. Rethrowing
-    // would let callers retry with a NEW task ID, duplicating the signal in the live workflow.
-    // Instead: write a durable delivered marker, treat delivery as optimistically successful,
-    // remove the task from the live map (same as confirmed delivery), and record in history.
+    // When workflow.signalWithStart() throws a transport-level error (connection reset,
+    // timeout, UNAVAILABLE), the signal MAY have been delivered — the client lost the
+    // ACK, not the signal. Rethrowing would let callers retry with a NEW task ID,
+    // duplicating the signal in the live workflow. Instead: write a durable delivered
+    // marker, treat delivery as optimistically successful, remove the task from the
+    // live map (same as confirmed delivery), and record in history.
     const client = makeMockClient({
-      signal: mock(async () => {
+      signalWithStart: mock(async () => {
         throw new Error("ECONNRESET: connection reset by peer");
       }),
     });
@@ -326,7 +358,7 @@ describe("rollback safety", () => {
     // When signal throws "not found", the signal was provably not enqueued — safe to fail+throw
     // without risk of duplicate delivery (the workflow does not exist).
     const client = makeMockClient({
-      signal: mock(async () => {
+      signalWithStart: mock(async () => {
         throw new Error("workflow not found");
       }),
     });
@@ -342,7 +374,7 @@ describe("rollback safety", () => {
   test("dispatch signal failure — auth/permission error marks failed and throws (not ambiguous)", async () => {
     // Auth failures are definite rejections — the signal was never enqueued. Surface the error.
     const client = makeMockClient({
-      signal: mock(async () => {
+      signalWithStart: mock(async () => {
         throw new Error("permission denied: unauthorized");
       }),
     });
@@ -358,12 +390,13 @@ describe("rollback safety", () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.submit(AGENT_ID, MESSAGES_INPUT, "dispatch");
-    const signalCalls = (client.workflow.signal as ReturnType<typeof mock>).mock.calls;
-    // Only one signal call for the entire batch
-    expect(signalCalls).toHaveLength(1);
-    expect(signalCalls[0]?.[1]).toBe("messages");
-    // The third arg is the messages array
-    const batch = signalCalls[0]?.[2] as readonly unknown[];
+    const calls = (client.workflow.signalWithStart as ReturnType<typeof mock>).mock.calls;
+    // Only one signalWithStart call for the entire batch
+    expect(calls).toHaveLength(1);
+    const opts = calls[0]?.[1] as { signal: string; signalArgs: readonly unknown[] };
+    expect(opts.signal).toBe("messages");
+    // signalArgs[0] is the messages array
+    const batch = opts.signalArgs?.[0] as readonly unknown[];
     expect(Array.isArray(batch)).toBe(true);
     expect(batch).toHaveLength(1);
   });
@@ -372,7 +405,7 @@ describe("rollback safety", () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     const events: string[] = [];
-    scheduler.watch((e) => events.push(e.kind));
+    scheduler.watch((e: SchedulerEvent) => events.push(e.kind));
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
     expect(events).toContain("task:submitted");
     const tasks = await scheduler.query({});
@@ -422,7 +455,7 @@ describe("cancel", () => {
   test("emits task:cancelled event", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     const events: unknown[] = [];
-    scheduler.watch((e) => events.push(e));
+    scheduler.watch((e: SchedulerEvent) => events.push(e));
     const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
     await scheduler.cancel(id);
     expect(events.some((e) => (e as { kind: string }).kind === "task:cancelled")).toBe(true);
@@ -467,7 +500,7 @@ describe("schedule / unschedule", () => {
   test("emits schedule:created event", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     const events: unknown[] = [];
-    scheduler.watch((e) => events.push(e));
+    scheduler.watch((e: SchedulerEvent) => events.push(e));
     await scheduler.schedule("*/5 * * * *", AGENT_ID, TEXT_INPUT, "dispatch");
     expect(events.some((e) => (e as { kind: string }).kind === "schedule:created")).toBe(true);
   });
@@ -514,18 +547,20 @@ describe("schedule / unschedule", () => {
     expect(s.activeSchedules).toBe(0);
   });
 
-  test("dispatch schedule uses scheduled-input signal with raw EngineInput (no baked message IDs)", async () => {
+  test("dispatch schedule wraps in startWorkflow with raw EngineInput template (no baked message IDs)", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "dispatch");
     const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
     const opts = createArgs?.[1] as {
-      action: { type: string; signalName: string; args: readonly unknown[] };
+      action: { type: string; args: readonly unknown[] };
     };
-    expect(opts.action.type).toBe("sendSignal");
-    expect(opts.action.signalName).toBe("scheduled-input");
-    // Raw EngineInput template passed so each firing materializes fresh message IDs/timestamps
-    expect(opts.action.args[0]).toEqual(TEXT_INPUT);
+    expect(opts.action.type).toBe("startWorkflow");
+    // Raw EngineInput template embedded in wrapper args so each firing materializes
+    // fresh message IDs/timestamps inside the scheduled-task workflow.
+    const wrapperArgs = opts.action.args[0] as { mode: string; input: unknown };
+    expect(wrapperArgs.mode).toBe("dispatch");
+    expect(wrapperArgs.input).toEqual(TEXT_INPUT);
   });
 
   test("dispatch schedule with multi-message input passes raw input without materialization", async () => {
@@ -542,7 +577,8 @@ describe("schedule / unschedule", () => {
     await scheduler.schedule("0 0 * * *", AGENT_ID, twoMessages, "dispatch");
     const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
     const opts = createArgs?.[1] as { action: { args: readonly unknown[] } };
-    expect(opts.action.args[0]).toEqual(twoMessages);
+    const wrapperArgs = opts.action.args[0] as { input: unknown };
+    expect(wrapperArgs.input).toEqual(twoMessages);
   });
 
   test("schedule() rejects timeoutMs to prevent false guarantee of enforcement", async () => {
@@ -706,7 +742,7 @@ describe("watch", () => {
   test("unsubscribe stops event delivery", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     const events: unknown[] = [];
-    const unsub = scheduler.watch((e) => events.push(e));
+    const unsub = scheduler.watch((e: SchedulerEvent) => events.push(e));
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
     expect(events).toHaveLength(1);
     unsub();
@@ -941,7 +977,7 @@ describe("state persistence (dbPath)", () => {
     });
     const events: string[] = [];
     const scheduler = createTemporalScheduler(makeConfig(client));
-    scheduler.watch((e) => events.push(e.kind));
+    scheduler.watch((e: SchedulerEvent) => events.push(e.kind));
 
     // submit() must NOT throw — returns the stable task ID for lifecycle tracking.
     const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn", {
@@ -976,7 +1012,7 @@ describe("asyncDispose — disposed guard", () => {
     const events: string[] = [];
 
     const scheduler = createTemporalScheduler(makeConfig(client));
-    scheduler.watch((e) => events.push(e.kind));
+    scheduler.watch((e: SchedulerEvent) => events.push(e.kind));
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
 
     // Dispose clears listeners and sets the disposed flag.
@@ -1009,7 +1045,7 @@ describe("schedule — overlap and reuse policy", () => {
     await scheduler[Symbol.asyncDispose]();
   });
 
-  test("dispatch schedule does not set workflowIdReusePolicy", async () => {
+  test("dispatch schedule sets ALLOW_DUPLICATE workflowIdReusePolicy and SKIP overlap policy", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "dispatch");
@@ -1019,7 +1055,9 @@ describe("schedule — overlap and reuse policy", () => {
     const action = opts?.action as Record<string, unknown> | undefined;
     const policies = opts?.policies as Record<string, unknown> | undefined;
 
-    expect(action?.workflowIdReusePolicy).toBeUndefined();
+    // Dispatch now uses startWorkflow (same as spawn) so each cron firing creates a
+    // fresh wrapper workflow that materializes messages with deterministic time.
+    expect(action?.workflowIdReusePolicy).toBe("ALLOW_DUPLICATE");
     expect(policies?.overlapPolicy).toBe("SKIP");
 
     await scheduler[Symbol.asyncDispose]();
@@ -1109,16 +1147,17 @@ describe("dispatch durability — post-signal persist failure emits task:failed 
         history: [],
       }),
     );
-    // The signal mock removes the dir to cause post-signal persist to fail.
+    // The signalWithStart mock removes the dir to cause post-signal persist to fail.
     const signalMock = mock(async () => {
       // Allow pre-commit persist to have already succeeded; now destroy the dir so the
       // post-signal persist write fails with ENOENT on the .tmp file.
       rmSync(dir, { recursive: true });
+      return { workflowId: "wf-1" };
     });
-    const client = makeMockClient({ signal: signalMock });
+    const client = makeMockClient({ signalWithStart: signalMock });
     const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
     const failedEvents: unknown[] = [];
-    scheduler.watch((ev) => {
+    scheduler.watch((ev: SchedulerEvent) => {
       if (ev.kind === "task:failed") failedEvents.push(ev);
     });
     // submit() dispatch: pre-commit succeeds, signal triggers dir removal, post-persist fails
@@ -1255,7 +1294,7 @@ describe("submit — input serialization guard (dbPath)", () => {
       /non-JSON-serializable/,
     );
     // Remote call must NOT have been made
-    expect(client.workflow.signal).not.toHaveBeenCalled();
+    expect(client.workflow.signalWithStart).not.toHaveBeenCalled();
     await scheduler[Symbol.asyncDispose]();
   });
 
@@ -1267,7 +1306,7 @@ describe("submit — input serialization guard (dbPath)", () => {
     await expect(scheduler.submit(AGENT_ID, fnInput, "dispatch")).rejects.toThrow(
       /non-JSON-serializable/,
     );
-    expect(client.workflow.signal).not.toHaveBeenCalled();
+    expect(client.workflow.signalWithStart).not.toHaveBeenCalled();
     await scheduler[Symbol.asyncDispose]();
   });
 
@@ -1371,7 +1410,7 @@ describe("two-phase pre-commit", () => {
       start: mock(async () => {
         // Inspect in-memory state mid-start — pre-commit must have already happened.
         pendingCount = ((await schedulerRef?.query({})) ?? []).filter(
-          (t) => t.status === "pending",
+          (t: ScheduledTask) => t.status === "pending",
         ).length;
         return { workflowId: "wf-1" };
       }),
@@ -1386,10 +1425,11 @@ describe("two-phase pre-commit", () => {
     let pendingCount = 0;
     let schedulerRef: ReturnType<typeof createTemporalScheduler> | undefined;
     const client = makeMockClient({
-      signal: mock(async () => {
+      signalWithStart: mock(async () => {
         pendingCount = ((await schedulerRef?.query({})) ?? []).filter(
-          (t) => t.status === "pending",
+          (t: ScheduledTask) => t.status === "pending",
         ).length;
+        return { workflowId: "wf-1" };
       }),
     });
     schedulerRef = createTemporalScheduler(makeConfig(client));
@@ -1407,6 +1447,7 @@ describe("two-phase pre-commit", () => {
       workflow: {
         start: mock(async () => ({ workflowId: "wf-1" })),
         signal: mock(async () => undefined),
+        signalWithStart: mock(async () => ({ workflowId: "wf-1" })),
         cancel: mock(async () => undefined),
         getResult: mock(async () => new Promise<unknown>(() => {})),
       },
@@ -1506,20 +1547,23 @@ describe("idempotencyKey", () => {
       idempotencyKey: "idem-1",
     });
     expect(id1).toBe(id2);
-    expect(client.workflow.signal).toHaveBeenCalledTimes(1);
+    expect(client.workflow.signalWithStart).toHaveBeenCalledTimes(1);
     await scheduler[Symbol.asyncDispose]();
   });
 
   test("dispatch: first signal message IDs derived from idempotencyKey", async () => {
     const signalArgs: unknown[][] = [];
     const client = makeMockClient({
-      signal: mock(async (...args: unknown[]) => {
+      signalWithStart: mock(async (...args: unknown[]) => {
         signalArgs.push(args as unknown[]);
+        return { workflowId: "wf-1" };
       }),
     });
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", { idempotencyKey: "idem-1" });
-    const msgs = signalArgs[0]?.[2] as Array<{ id: string }> | undefined;
+    // signalWithStart signature: (workflowType, options) where options.signalArgs[0] is the messages array.
+    const opts = signalArgs[0]?.[1] as { signalArgs?: readonly unknown[] } | undefined;
+    const msgs = opts?.signalArgs?.[0] as Array<{ id: string }> | undefined;
     expect(msgs?.[0]?.id).toBe(`${AGENT_ID}:dispatch:idem-1:0`);
     await scheduler[Symbol.asyncDispose]();
   });
@@ -1608,7 +1652,7 @@ describe("idempotent spawn — definite rejection throws immediately", () => {
     });
     const events: string[] = [];
     const scheduler = createTemporalScheduler(makeConfig(client));
-    scheduler.watch((e) => events.push(e.kind));
+    scheduler.watch((e: SchedulerEvent) => events.push(e.kind));
     await expect(
       scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn", { idempotencyKey: "perm-denied" }),
     ).rejects.toThrow("PERMISSION_DENIED");
@@ -1680,7 +1724,7 @@ describe("idempotencyKey — failed submissions allow retry", () => {
       idempotencyKey: "retry-key",
     });
     expect(id2).toBe(id);
-    expect(client.workflow.signal).toHaveBeenCalledTimes(1); // no duplicate signal
+    expect(client.workflow.signalWithStart).toHaveBeenCalledTimes(1); // no duplicate signal
     await scheduler[Symbol.asyncDispose]();
   });
 
@@ -1690,7 +1734,7 @@ describe("idempotencyKey — failed submissions allow retry", () => {
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", { idempotencyKey: "ok-key" });
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", { idempotencyKey: "ok-key" });
     // Second call must not produce a second signal
-    expect(client.workflow.signal).toHaveBeenCalledTimes(1);
+    expect(client.workflow.signalWithStart).toHaveBeenCalledTimes(1);
     await scheduler[Symbol.asyncDispose]();
   });
 });
@@ -1719,7 +1763,7 @@ describe("idempotencyKey — cancel-then-retry spawn records completion", () => 
     await new Promise((r) => setTimeout(r, 20));
     // The completion must be recorded — cancelledTaskIds was cleared on retry
     const tasks = await scheduler.query({});
-    const completedTask = tasks.find((t) => t.id === id2);
+    const completedTask = tasks.find((t: ScheduledTask) => t.id === id2);
     expect(completedTask?.status ?? "completed").toBe("completed");
     await scheduler[Symbol.asyncDispose]();
   });
@@ -1775,11 +1819,11 @@ describe("dispatch deliveredDispatchIds — prevents duplicate signal after rest
     // Second scheduler: should see the deliveredDispatchIds and mark task as completed (not failed)
     const s2 = createTemporalScheduler({ ...makeConfig(client), dbPath });
     const hist = await s2.history({});
-    const record = hist.find((r) => r.taskId === taskId);
+    const record = hist.find((r: TaskRunRecord) => r.taskId === taskId);
     expect(record?.status).toBe("completed");
     // Second submit with same key must be a no-op (task is completed — not retried)
     await s2.submit(AGENT_ID, TEXT_INPUT, "dispatch", { idempotencyKey: "dedup-key" });
-    expect(client.workflow.signal).toHaveBeenCalledTimes(1); // only the first one from s1
+    expect(client.workflow.signalWithStart).toHaveBeenCalledTimes(1); // only the first one from s1
     rmSync(dir, { recursive: true });
     await s2[Symbol.asyncDispose]();
   });
@@ -1886,6 +1930,7 @@ describe("schedule() — create error path retains pending marker on failed dele
       workflow: {
         start: mock(async () => ({ workflowId: "wf-1" })),
         signal: mock(async () => undefined),
+        signalWithStart: mock(async () => ({ workflowId: "wf-1" })),
         cancel: mock(async () => undefined),
         getResult: mock(async () => new Promise<unknown>(() => {})),
       },
@@ -1938,6 +1983,7 @@ describe("schedule() — create error path retains pending marker on failed dele
       workflow: {
         start: mock(async () => ({ workflowId: "wf-1" })),
         signal: mock(async () => undefined),
+        signalWithStart: mock(async () => ({ workflowId: "wf-1" })),
         cancel: mock(async () => undefined),
         getResult: mock(async () => new Promise<unknown>(() => {})),
       },
@@ -2003,6 +2049,7 @@ describe("pending-schedule cleanup — query-first, no blind deletion", () => {
       workflow: {
         start: mock(async () => ({ workflowId: "wf-1" })),
         signal: mock(async () => undefined),
+        signalWithStart: mock(async () => ({ workflowId: "wf-1" })),
         cancel: mock(async () => undefined),
         getResult: mock(async () => new Promise<unknown>(() => {})),
       },
@@ -2048,6 +2095,7 @@ describe("pending-schedule cleanup — query-first, no blind deletion", () => {
       workflow: {
         start: mock(async () => ({ workflowId: "wf-1" })),
         signal: mock(async () => undefined),
+        signalWithStart: mock(async () => ({ workflowId: "wf-1" })),
         cancel: mock(async () => undefined),
         getResult: mock(async () => new Promise<unknown>(() => {})),
       },
@@ -2093,6 +2141,7 @@ describe("pending-schedule cleanup — query-first, no blind deletion", () => {
       workflow: {
         start: mock(async () => ({ workflowId: "wf-1" })),
         signal: mock(async () => undefined),
+        signalWithStart: mock(async () => ({ workflowId: "wf-1" })),
         cancel: mock(async () => undefined),
         getResult: mock(async () => new Promise<unknown>(() => {})),
       },
@@ -2123,6 +2172,7 @@ describe("schedule() — idempotent on create failure", () => {
       workflow: {
         start: mock(async () => ({ workflowId: "wf-1" })),
         signal: mock(async () => undefined),
+        signalWithStart: mock(async () => ({ workflowId: "wf-1" })),
         cancel: mock(async () => undefined),
         getResult: mock(async () => new Promise<unknown>(() => {})),
       },

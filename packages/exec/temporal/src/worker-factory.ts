@@ -34,6 +34,18 @@ export interface WorkerCreateParams {
   readonly activities: Record<string, (...args: readonly unknown[]) => unknown>;
 }
 
+export interface WorkerBundle {
+  readonly workflowsPath: string;
+  readonly activities: Record<string, (...args: readonly unknown[]) => unknown>;
+}
+
+export function createWorkerBundle(
+  workflowsPath: string,
+  activities: Record<string, (...args: readonly unknown[]) => unknown>,
+): WorkerBundle {
+  return { workflowsPath, activities };
+}
+
 export interface WorkerAndConnection {
   readonly worker: WorkerLike;
   readonly connection: NativeConnectionLike;
@@ -180,4 +192,14 @@ export async function createTemporalWorker(
       await connection.close();
     },
   };
+}
+
+export function createTemporalWorkerFromBundle(
+  config: WorkerConfig,
+  bundle: WorkerBundle,
+  createWorkerFn: (
+    params: WorkerCreateParams,
+  ) => Promise<WorkerAndConnection> = defaultCreateWorker,
+): Promise<WorkerHandle> {
+  return createTemporalWorker(config, bundle.activities, bundle.workflowsPath, createWorkerFn);
 }

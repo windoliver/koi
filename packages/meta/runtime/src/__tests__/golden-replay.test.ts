@@ -14329,6 +14329,7 @@ describe("Golden: @koi/temporal", () => {
       workflow: {
         start: mock(async () => ({ workflowId })),
         signal: mock(async () => {}),
+        signalWithStart: mock(async () => ({ workflowId })),
         cancel: cancelMock,
         getResult: mock(async () => undefined),
       },
