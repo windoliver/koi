@@ -3,6 +3,26 @@ import type { SystemSignal } from "@koi/core";
 import { createGroveSignalSource } from "./grove.js";
 
 describe("createGroveSignalSource", () => {
+  test("uses groveUrl as the transport target passed to the event source factory", () => {
+    let targetUrl: string | undefined;
+    const source = createGroveSignalSource({
+      groveUrl: "http://localhost:4515",
+      eventSourceFactory: (url) => {
+        targetUrl = url;
+        return {
+          close() {},
+          onmessage: null,
+          onerror: null,
+        };
+      },
+    });
+
+    const stop = source.watch(() => {});
+    stop();
+
+    expect(targetUrl).toBe("http://localhost:4515");
+  });
+
   test("ignores unsupported frontier events instead of inventing signals", async () => {
     let onMessage: ((event: MessageEvent<string>) => void) | undefined;
     const source = createGroveSignalSource({
@@ -55,6 +75,38 @@ describe("createGroveSignalSource", () => {
     stop();
 
     expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  test("filters frontier updates below the configured minImprovement", async () => {
+    let onMessage: ((event: MessageEvent<string>) => void) | undefined;
+    const source = createGroveSignalSource({
+      groveUrl: "http://localhost:4515",
+      minImprovement: 0.5,
+      eventSourceFactory: () =>
+        ({
+          close() {},
+          set onmessage(fn) {
+            onMessage = fn ?? undefined;
+          },
+          set onerror(_fn) {},
+        }) as never,
+    });
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal));
+    onMessage?.(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "frontier_changed",
+          metric: "retrieval_quality",
+          improvement: 0.22,
+        }),
+      }),
+    );
+    await new Promise((resolve) => queueMicrotask(resolve));
+    stop();
+
+    expect(seen).toEqual([]);
   });
 
   test("forwards upstream errors and disconnects cleanly", () => {

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type { SystemSignal } from "@koi/core";
 import { createNexusSignalSource } from "./nexus.js";
 
@@ -82,6 +82,39 @@ describe("createNexusSignalSource", () => {
     ]);
   });
 
+  test("maps delete events into vfs signals", async () => {
+    let listener: ((event: unknown) => void) | undefined;
+    const source = createNexusSignalSource({
+      channels: ["vfs"],
+      subscribe: (_channels, next) => {
+        listener = next;
+        return () => {};
+      },
+    });
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal));
+    listener?.({
+      channel: "vfs",
+      event: "delete",
+      path: "/tmp/dead.txt",
+      zoneId: "zone-2",
+      emittedAt: 12,
+    });
+    await new Promise((resolve) => queueMicrotask(resolve));
+    stop();
+
+    expect(seen).toEqual([
+      {
+        kind: "vfs",
+        event: "delete",
+        path: "/tmp/dead.txt",
+        zoneId: "zone-2",
+        emittedAt: 12,
+      },
+    ]);
+  });
+
   test("maps rename events into vfs rename signals", async () => {
     let listener: ((event: unknown) => void) | undefined;
     const source = createNexusSignalSource({
@@ -117,5 +150,62 @@ describe("createNexusSignalSource", () => {
         emittedAt: 11,
       },
     ]);
+  });
+
+  test("forwards subscription listener errors and stays subscribed", async () => {
+    let listener: ((event: unknown) => void) | undefined;
+    const source = createNexusSignalSource({
+      subscribe: (_channels, next) => {
+        listener = next;
+        return () => {};
+      },
+    });
+
+    const seen: SystemSignal[] = [];
+    const onError = mock(() => {});
+    const stop = source.watch((signal) => seen.push(signal), { onError });
+    listener?.(
+      Object.defineProperty({}, "channel", {
+        get() {
+          throw new Error("bad event");
+        },
+      }),
+    );
+    listener?.({
+      channel: "vfs",
+      event: "write",
+      path: "/tmp/recovered.txt",
+      emittedAt: 13,
+    });
+    await new Promise((resolve) => queueMicrotask(resolve));
+    stop();
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual([
+      {
+        kind: "vfs",
+        event: "write",
+        path: "/tmp/recovered.txt",
+        emittedAt: 13,
+      },
+    ]);
+  });
+
+  test("unsubscribe detaches the underlying listener and disconnect fires once", () => {
+    let cleanupCalls = 0;
+    const source = createNexusSignalSource({
+      subscribe: (_channels, _next) => () => {
+        cleanupCalls += 1;
+      },
+    });
+
+    const onDisconnect = mock(() => {});
+    const stop = source.watch(() => {}, { onDisconnect });
+
+    stop();
+    stop();
+
+    expect(cleanupCalls).toBe(1);
+    expect(onDisconnect).toHaveBeenCalledTimes(1);
   });
 });
