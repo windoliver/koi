@@ -134,14 +134,13 @@ describe("activity factories", () => {
     });
   });
 
-  test("default retry activity routes scheduled task operations through the scheduled-task handler", async () => {
+  test("default retry activity rejects runScheduledTask because it requires workflow context", async () => {
     const activities = createDefaultRetryActivities({
       runAgentTurn: async () => ({
         turnId: "turn-1",
         updatedStateRefs: { lastTurnId: "turn-1", turnsProcessed: 1 },
         next: { kind: "complete" },
       }),
-      runScheduledTask: async () => ({ kind: "spawned", workflowId: "wf-123" }),
     });
 
     const result = await activities.runRetriedOperation({
@@ -154,10 +153,10 @@ describe("activity factories", () => {
       },
     });
 
-    expect(result).toEqual({
-      kind: "succeeded",
-      value: { kind: "spawned", workflowId: "wf-123" },
-    });
+    expect(result.kind).toBe("failed");
+    if (result.kind === "failed") {
+      expect(result.error).toContain("runScheduledTask");
+    }
   });
 
   test("scheduled task activity returns the built execution", async () => {

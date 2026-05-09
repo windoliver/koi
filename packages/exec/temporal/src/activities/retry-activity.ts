@@ -1,9 +1,4 @@
-import type {
-  AgentWorkflowConfig,
-  RetryWorkflowArgs,
-  ScheduledTaskWorkflowArgs,
-  ScheduledTaskWorkflowResult,
-} from "../types.js";
+import type { AgentWorkflowConfig, RetryWorkflowArgs } from "../types.js";
 import type { AgentTurnResult } from "./agent-activity.js";
 
 export interface RetryActivityInput {
@@ -29,9 +24,6 @@ export interface RetryActivityDeps {
 
 export interface DefaultRetryActivityDeps {
   readonly runAgentTurn: (input: AgentWorkflowConfig) => Promise<AgentTurnResult>;
-  readonly runScheduledTask: (
-    input: ScheduledTaskWorkflowArgs,
-  ) => Promise<ScheduledTaskWorkflowResult>;
 }
 
 function normalizeRetryValue(value: unknown): RetryActivitySerializableValue {
@@ -89,12 +81,15 @@ export function createDefaultRetryActivities(
 ): ReturnType<typeof createRetryActivities> {
   return createRetryActivities({
     async runOperation(input: RetryActivityInput): Promise<unknown> {
-      switch (input.operation) {
-        case "runAgentTurn":
-          return deps.runAgentTurn(input.payload as unknown as AgentWorkflowConfig);
-        case "runScheduledTask":
-          return deps.runScheduledTask(input.payload as unknown as ScheduledTaskWorkflowArgs);
+      if (input.operation === "runAgentTurn") {
+        return deps.runAgentTurn(input.payload as unknown as AgentWorkflowConfig);
       }
+      // runScheduledTask invokes @temporalio/workflow APIs (startChild) and is therefore
+      // unsafe from activity context. retryWorkflow handles that operation as a child
+      // workflow directly.
+      throw new Error(
+        `retry-activity cannot execute workflow operation '${input.operation}' from activity context`,
+      );
     },
   });
 }

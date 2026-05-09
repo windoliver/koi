@@ -741,6 +741,13 @@ export interface TemporalClientLike {
       signalName: string,
       ...args: readonly unknown[]
     ) => Promise<void>;
+    // Atomic start-or-signal: starts the workflow with the given args if it is not
+    // running; otherwise signals the existing one. Required for dispatch — a bare
+    // signal() against a non-existent workflow fails, dropping scheduled work.
+    readonly signalWithStart: (
+      workflowType: string,
+      options: Record<string, unknown>,
+    ) => Promise<{ readonly workflowId: string }>;
     readonly cancel: (workflowId: string) => Promise<void>;
     readonly getResult: (workflowId: string) => Promise<unknown>;
   };
@@ -1299,11 +1306,31 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           });
           targetWorkflowId = handle.workflowId;
         } else {
-          // dispatch: target the long-running workflow for this agent.
-          // Send the whole batch in one signal so delivery is atomic — a partial message
-          // set cannot be observed and retries produce no duplicates.
+          // dispatch: target the long-running workflow for this agent. signalWithStart
+          // atomically starts the workflow (with empty initial messages) if not running,
+          // then delivers the message batch via the "messages" signal. This avoids the
+          // workflow-not-found failure that bare signal() would produce on first dispatch.
+          // Sending the whole batch in one signal keeps delivery atomic — a partial set
+          // cannot be observed and retries produce no duplicates.
           targetWorkflowId = String(agentId);
-          await config.client.workflow.signal(targetWorkflowId, "messages", messages);
+          const workflowType = config.workflowType ?? AGENT_WORKFLOW_NAME;
+          await config.client.workflow.signalWithStart(workflowType, {
+            taskQueue: config.taskQueue,
+            workflowId: targetWorkflowId,
+            signal: "messages",
+            signalArgs: [messages],
+            args: [
+              {
+                agentId,
+                sessionId: id,
+                stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+                initialMessages: [],
+                ...(snapshotInput.maxStopRetries !== undefined
+                  ? { maxStopRetries: snapshotInput.maxStopRetries }
+                  : {}),
+              },
+            ],
+          });
         }
       } catch (err: unknown) {
         const skipCancel = mode === "spawn" && options?.idempotencyKey !== undefined;
