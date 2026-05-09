@@ -335,18 +335,17 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   let filesystemCleanedUp = false;
   let autoHarnessCleanedUp = false;
   let autoHarnessStack: ReturnType<typeof createAutoHarnessStack> | undefined;
-  // Per-session ownership map for routing forge-demand signals to the
-  // session-scoped handle that owns them. Cleared via `resetSession(id)`
-  // and on full disposal. Bounded with a generous FIFO cap so a host
-  // that forgets to call `resetSession` cannot leak entries indefinitely
-  // or drive O(n) ownership lookups against an unbounded map. Hitting
-  // the cap is a host-discipline failure — the warn surfaces it instead
-  // of failing silently. The cap is intentionally generous (1024) so
-  // healthy short-session hosts never trip it; long-running multi-tenant
-  // hosts MUST wire `resetSession` rather than relying on FIFO eviction.
+  // Per-attachment ownership set for routing forge-demand signals to the
+  // session-scoped handle that owns them. Stored as a Set rather than a
+  // sessionId-keyed Map: multiple concurrent streams can share one logical
+  // `sessionId` (stable-session runtime mode), and each `onSessionAttached`
+  // delivers a distinct scoped handle. Keying by sessionId would overwrite
+  // older streams' handles, dropping their queued signals (R5 round 12
+  // finding). resetSession(id) and disposal iterate this set and remove
+  // matching entries. Bounded by a hard cap that fails attachment loudly
+  // instead of silently evicting live sessions.
   const AUTO_HARNESS_SESSION_CAP = 1024;
-  const autoHarnessSessionEntries = new Map<string, AutoHarnessSessionEntry>();
-  let autoHarnessSessionCapWarned = false;
+  const autoHarnessSessionEntries = new Set<AutoHarnessSessionEntry>();
 
   try {
     const baseMiddleware: readonly KoiMiddleware[] = [
@@ -612,34 +611,29 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                 if (baseConfigWithHealth.onSessionAttached !== undefined) {
                   await baseConfigWithHealth.onSessionAttached(sessionContext, scoped);
                 }
-                autoHarnessSessionEntries.set(sessionContext.sessionId, {
+                // Hard cap: refuse new attachments once the ownership set
+                // is full instead of silently evicting live sessions. A
+                // FIFO eviction would disable auto-harness for the oldest
+                // tenant — they would still be live but their signals would
+                // fail-close in the wrap, causing repeated re-emission of
+                // the same failures (R5 round 12 finding). The cap is large
+                // enough that healthy short-session hosts never trip it;
+                // long-running hosts MUST wire `resetSession(id)` on
+                // legitimate session end.
+                if (autoHarnessSessionEntries.size >= AUTO_HARNESS_SESSION_CAP) {
+                  throw new Error(
+                    `[auto-harness] session ownership cap (${AUTO_HARNESS_SESSION_CAP}) reached. ` +
+                      "Refusing new attachment to preserve live-session isolation. " +
+                      "Wire `runtime.autoHarness.resetSession(sessionId)` on " +
+                      "session end so attachment slots are released; the runtime " +
+                      "will not silently evict an active session into the global " +
+                      "bucket.",
+                  );
+                }
+                autoHarnessSessionEntries.add({
                   sessionId: sessionContext.sessionId,
                   scoped,
                 });
-                // Bounded retention: when a host forgets to call
-                // `resetSession(id)`, evict the oldest entry by insertion
-                // order to keep ownership lookups O(cap) and prevent
-                // unbounded memory growth. Warn once so the failure mode is
-                // observable — silent FIFO would let a long-lived host
-                // collapse per-session isolation back to the global bucket
-                // without notice. The cap is generous enough that healthy
-                // short-session hosts never reach it.
-                if (autoHarnessSessionEntries.size > AUTO_HARNESS_SESSION_CAP) {
-                  const oldestKey = autoHarnessSessionEntries.keys().next().value;
-                  if (oldestKey !== undefined) {
-                    autoHarnessSessionEntries.delete(oldestKey);
-                  }
-                  if (!autoHarnessSessionCapWarned) {
-                    autoHarnessSessionCapWarned = true;
-                    console.warn(
-                      `[auto-harness] session ownership map exceeded ${AUTO_HARNESS_SESSION_CAP} entries — ` +
-                        "evicting oldest by insertion order. Wire " +
-                        "`runtime.autoHarness.resetSession(sessionId)` on " +
-                        "session end to prevent silent collapse of per-session " +
-                        "isolation back to the global bucket.",
-                    );
-                  }
-                }
               },
             }
           : baseConfigWithHealth;
@@ -1441,7 +1435,13 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                 if (sessionId === undefined) {
                   autoHarnessSessionEntries.clear();
                 } else {
-                  autoHarnessSessionEntries.delete(sessionId);
+                  // Multiple concurrent streams can share one sessionId;
+                  // remove all entries that match.
+                  for (const entry of autoHarnessSessionEntries) {
+                    if (entry.sessionId === sessionId) {
+                      autoHarnessSessionEntries.delete(entry);
+                    }
+                  }
                 }
                 autoHarnessStack?.resetSession(sessionId);
               },
