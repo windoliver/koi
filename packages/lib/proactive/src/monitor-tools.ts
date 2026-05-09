@@ -47,29 +47,15 @@ const createMonitorSchema = z.object({
     ),
 });
 
-const updateMonitorSchema = z
-  .object({
-    monitor_id: z
-      .string()
-      .min(1, "monitor_id is required")
-      .describe("Monitor identifier to update."),
-    name: z.string().min(1).optional().describe("Replacement monitor name."),
-    goal: z.string().min(1).optional().describe("Replacement monitor goal."),
-    check_prompt: z.string().min(1).optional().describe("Replacement monitor instructions."),
-    expression: z.string().min(1).optional().describe("Replacement cron expression."),
-    timezone: z.string().min(1).optional().describe("Replacement cron timezone."),
-    context_hint: z.string().min(1).optional().describe("Replacement optional context hint."),
-  })
-  .refine(
-    (value) =>
-      value.name !== undefined ||
-      value.goal !== undefined ||
-      value.check_prompt !== undefined ||
-      value.expression !== undefined ||
-      value.timezone !== undefined ||
-      value.context_hint !== undefined,
-    "At least one updatable field must be provided",
-  );
+const updateMonitorSchema = z.object({
+  monitor_id: z.string().min(1, "monitor_id is required").describe("Monitor identifier to update."),
+  name: z.string().min(1).optional().describe("Replacement monitor name."),
+  goal: z.string().min(1).optional().describe("Replacement monitor goal."),
+  check_prompt: z.string().min(1).optional().describe("Replacement monitor instructions."),
+  expression: z.string().min(1).optional().describe("Replacement cron expression."),
+  timezone: z.string().min(1).optional().describe("Replacement cron timezone."),
+  context_hint: z.string().min(1).optional().describe("Replacement optional context hint."),
+});
 
 const cancelMonitorSchema = z.object({
   monitor_id: z.string().min(1, "monitor_id is required").describe("Monitor identifier to cancel."),
@@ -201,14 +187,17 @@ function listMonitorView(record: MonitorRecord): {
   readonly expression: string;
   readonly context_hint?: string;
 } {
-  return {
+  const out = {
     monitor_id: record.monitorId,
     schedule_id: record.scheduleId,
     name: record.name,
     goal: record.goal,
     expression: record.expression,
-    context_hint: record.contextHint,
   };
+  if (record.contextHint !== undefined) {
+    return { ...out, context_hint: record.contextHint };
+  }
+  return out;
 }
 
 export function createCreateMonitorTool(
