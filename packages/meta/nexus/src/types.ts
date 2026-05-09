@@ -18,6 +18,22 @@ export interface NexusGlobalBackends {
   readonly scheduler?: unknown;
 }
 
+export interface GlobalBackendFlags {
+  readonly registry?: boolean;
+  readonly permissions?: boolean;
+  readonly audit?: boolean;
+  readonly search?: boolean;
+  readonly scheduler?: boolean;
+}
+
+export interface GlobalBackendFactories {
+  readonly registry: () => Promise<unknown>;
+  readonly permissions: () => unknown;
+  readonly audit: () => unknown;
+  readonly search: () => unknown;
+  readonly scheduler: () => unknown;
+}
+
 export interface NexusBundle {
   readonly backends: NexusGlobalBackends;
   readonly providers: readonly unknown[];
