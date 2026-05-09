@@ -994,3 +994,355 @@ describe("createAutoHarnessStack", () => {
     expect(errors.some((e) => e.message.includes("forgeStore.save failed"))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Round 9–10 corner cases: ownerAgentId binding, post-deploy partial-success,
+// agent-trigger fingerprint, random draft id, dispose() teardown.
+// ---------------------------------------------------------------------------
+describe("createAutoHarnessStack — round 9/10 corner cases", () => {
+  test("rejects policyEntry whose agentId does not match session.ownerAgentId", async () => {
+    const errors: AutoHarnessError[] = [];
+    const registered: unknown[] = [];
+    const artifact = makeArtifact();
+    const stack = createAutoHarnessStack({
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
+      policyVerifier: (() => async () => ({ ok: true as const, value: undefined })) as never,
+      notifier: makeNotifier(),
+      generate: async () => "candidate-code",
+      verifyCandidate: async () => ({ ok: true, artifact }),
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async (a) => ({
+        ok: true,
+        artifact: a,
+        policyEntry: {
+          brickId: a.id,
+          toolId: "search",
+          scope: "agent" as const,
+          // Attacker / buggy deployCandidate: agentId for an UNRELATED agent.
+          agentId: "agent-victim",
+          execute: () => ({ action: "allow" as const }),
+        },
+      }),
+      onError: (error) => errors.push(error),
+    });
+
+    const handle = stack.policyCacheHandle as unknown as {
+      register: (entry: unknown) => { readonly ok: true; readonly value: undefined };
+    };
+    handle.register = (entry) => {
+      registered.push(entry);
+      return { ok: true as const, value: undefined };
+    };
+
+    const result = await stack.synthesizeHarness(makeSignal(), {
+      sessionId: "s-owner",
+      ownerAgentId: "agent-owner",
+    });
+
+    // Live deploy DID succeed; result returns deployed artifact (not null).
+    expect(result).not.toBeNull();
+    // BUT the policy entry was refused — never registered into the cache.
+    expect(registered).toHaveLength(0);
+    expect(errors.some((e) => e.stage === "register-policy")).toBe(true);
+    expect(errors.some((e) => e.message.includes("does not match the owning agent"))).toBe(true);
+  });
+
+  test("accepts policyEntry whose agentId matches session.ownerAgentId", async () => {
+    const registered: unknown[] = [];
+    const artifact = makeArtifact();
+    const stack = createAutoHarnessStack({
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
+      policyVerifier: (() => async () => ({ ok: true as const, value: undefined })) as never,
+      notifier: makeNotifier(),
+      generate: async () => "candidate-code",
+      verifyCandidate: async () => ({ ok: true, artifact }),
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async (a) => ({
+        ok: true,
+        artifact: a,
+        policyEntry: {
+          brickId: a.id,
+          toolId: "search",
+          scope: "agent" as const,
+          agentId: "agent-owner",
+          execute: () => ({ action: "allow" as const }),
+        },
+      }),
+    });
+
+    const handle = stack.policyCacheHandle as unknown as {
+      register: (entry: unknown) => { readonly ok: true; readonly value: undefined };
+    };
+    handle.register = (entry) => {
+      registered.push(entry);
+      return { ok: true as const, value: undefined };
+    };
+
+    await stack.synthesizeHarness(makeSignal(), {
+      sessionId: "s-owner",
+      ownerAgentId: "agent-owner",
+    });
+
+    expect(registered).toHaveLength(1);
+  });
+
+  test("returns deployed artifact (not null) when post-deploy save fails", async () => {
+    const errors: AutoHarnessError[] = [];
+    let saveCalls = 0;
+    const artifact = makeArtifact();
+    const stack = createAutoHarnessStack({
+      forgeStore: {
+        save: async () => {
+          saveCalls += 1;
+          // First save (pre-deploy draft) succeeds; second save (post-deploy
+          // authoritative artifact) fails — live deploy already committed.
+          if (saveCalls === 1) return { ok: true as const, value: undefined };
+          return {
+            ok: false as const,
+            error: {
+              code: "STORAGE",
+              message: "disk full",
+              retryable: false,
+            } as never,
+          };
+        },
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
+      generate: async () => "candidate-code",
+      verifyCandidate: async () => ({ ok: true, artifact }),
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async () => ({ ok: true, artifact }),
+      onError: (error) => errors.push(error),
+    });
+
+    const result = await stack.synthesizeHarness(makeSignal());
+
+    // Caller sees the deployed artifact, NOT null — retry would duplicate
+    // activation against an already-live state.
+    expect(result).toEqual(artifact);
+    expect(errors.some((e) => e.message.includes("post-deploy"))).toBe(true);
+  });
+
+  test("returns pre-deploy draft when deployCandidate succeeds without an authoritative artifact", async () => {
+    const errors: AutoHarnessError[] = [];
+    const artifact = makeArtifact();
+    const stack = createAutoHarnessStack({
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
+      generate: async () => "candidate-code",
+      verifyCandidate: async () => ({ ok: true, artifact }),
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      // ok: true but missing artifact — live deploy may have committed.
+      deployCandidate: async () => ({ ok: true }) as never,
+      onError: (error) => errors.push(error),
+    });
+
+    const result = await stack.synthesizeHarness(makeSignal());
+
+    // Caller gets the pre-deploy draft so they don't redeploy; the
+    // reported error tells them to reconcile.
+    expect(result).not.toBeNull();
+    expect(result?.id).toMatch(/^auto-harness-draft:/);
+    expect(errors.some((e) => e.message.includes("Manual reconciliation"))).toBe(true);
+  });
+
+  test("agent_repeated_failure dedupes per (agentType, brickId) — distinct bricks bypass each other", async () => {
+    const generated: string[] = [];
+    const artifact = makeArtifact();
+    const stack = createAutoHarnessStack({
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
+      generate: async (prompt) => {
+        generated.push(prompt);
+        return "candidate-code";
+      },
+      verifyCandidate: async () => ({ ok: true, artifact }),
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async () => ({ ok: true, artifact }),
+    });
+
+    const sigA: ForgeDemandSignal = {
+      ...makeSignal(),
+      id: "agent-repeat-A",
+      trigger: {
+        kind: "agent_repeated_failure",
+        agentType: "researcher",
+        brickId: "brick-A" as never,
+        errorRate: 0.5,
+      },
+    } as ForgeDemandSignal;
+    const sigB: ForgeDemandSignal = {
+      ...makeSignal(),
+      id: "agent-repeat-B",
+      trigger: {
+        kind: "agent_repeated_failure",
+        agentType: "researcher",
+        brickId: "brick-B" as never,
+        errorRate: 0.5,
+      },
+    } as ForgeDemandSignal;
+
+    // Same agentType but DIFFERENT brickId — must run independent pipelines.
+    await stack.synthesizeHarness(sigA, { sessionId: "s1" });
+    await stack.synthesizeHarness(sigB, { sessionId: "s1" });
+
+    expect(generated).toHaveLength(2);
+  });
+
+  test("each pre-deploy save uses a unique draft id even when verifier returns the same id", async () => {
+    const savedIds: string[] = [];
+    // Verifier returns the SAME id on every call — would have collided
+    // under the old TOCTOU exists() logic.
+    const fixedArtifact = makeArtifact();
+    const stack = createAutoHarnessStack({
+      forgeStore: {
+        save: async (b: BrickArtifact) => {
+          savedIds.push(b.id as string);
+          return { ok: true as const, value: undefined };
+        },
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
+      generate: async () => "candidate-code",
+      verifyCandidate: async () => ({ ok: true, artifact: fixedArtifact }),
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async () => ({ ok: true, artifact: fixedArtifact }),
+    });
+
+    const sig1: ForgeDemandSignal = {
+      ...makeSignal(),
+      id: "sig-1",
+      trigger: { kind: "repeated_failure", toolName: "tool-1", count: 3 },
+    } as ForgeDemandSignal;
+    const sig2: ForgeDemandSignal = {
+      ...makeSignal(),
+      id: "sig-2",
+      trigger: { kind: "repeated_failure", toolName: "tool-2", count: 3 },
+    } as ForgeDemandSignal;
+
+    await stack.synthesizeHarness(sig1, { sessionId: "s1" });
+    await stack.synthesizeHarness(sig2, { sessionId: "s1" });
+
+    // 4 saves total: 2 drafts (random ids) + 2 post-deploy authoritative.
+    expect(savedIds).toHaveLength(4);
+    const draftIds = savedIds.filter((id) => id.startsWith("auto-harness-draft:"));
+    expect(draftIds).toHaveLength(2);
+    expect(new Set(draftIds).size).toBe(2);
+  });
+
+  test("dispose() releases the completedTriggers notifier subscription", () => {
+    let unsubscribed = 0;
+    const notifier: StoreChangeNotifier = {
+      notify: () => {},
+      subscribe: () => () => {
+        unsubscribed += 1;
+      },
+    };
+    const stack = createAutoHarnessStack({
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
+      notifier,
+      generate: async () => "x",
+      verifyCandidate: async () => ({ ok: false, artifact: null, reason: "stop" }),
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async (a) => ({ ok: true, artifact: a }),
+    });
+
+    expect(unsubscribed).toBe(0);
+    stack.dispose();
+    // stack.dispose() releases ONLY the completedTriggers subscription;
+    // policyCacheHandle.dispose() releases its own separately.
+    expect(unsubscribed).toBe(1);
+    stack.policyCacheHandle.dispose();
+    expect(unsubscribed).toBe(2);
+  });
+
+  test("dispose() is idempotent and safe to call when notifier is omitted", () => {
+    const stack = createAutoHarnessStack({
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
+      generate: async () => "x",
+      verifyCandidate: async () => ({ ok: false, artifact: null, reason: "stop" }),
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async (a) => ({ ok: true, artifact: a }),
+    });
+
+    expect(() => stack.dispose()).not.toThrow();
+    expect(() => stack.dispose()).not.toThrow();
+  });
+
+  test("ownerAgentId omitted falls through to the looser non-empty-string agentId check", async () => {
+    const registered: unknown[] = [];
+    const artifact = makeArtifact();
+    const stack = createAutoHarnessStack({
+      forgeStore: {
+        save: async () => ({ ok: true as const, value: undefined }),
+        exists: async () => ({ ok: true as const, value: false }),
+        remove: async () => ({ ok: true as const, value: undefined }),
+      } as never,
+      policyVerifier: (() => async () => ({ ok: true as const, value: undefined })) as never,
+      notifier: makeNotifier(),
+      generate: async () => "candidate-code",
+      verifyCandidate: async () => ({ ok: true, artifact }),
+      evaluatePolicy: async () => ({ ok: true, action: "allow" }),
+      requestDeploymentApproval: async () => true,
+      deployCandidate: async (a) => ({
+        ok: true,
+        artifact: a,
+        policyEntry: {
+          brickId: a.id,
+          toolId: "search",
+          scope: "agent" as const,
+          agentId: "agent-anything",
+          execute: () => ({ action: "allow" as const }),
+        },
+      }),
+    });
+
+    const handle = stack.policyCacheHandle as unknown as {
+      register: (entry: unknown) => { readonly ok: true; readonly value: undefined };
+    };
+    handle.register = (entry) => {
+      registered.push(entry);
+      return { ok: true as const, value: undefined };
+    };
+
+    // No session at all (out-of-band caller / stub adapter).
+    await stack.synthesizeHarness(makeSignal());
+    // Session without ownerAgentId.
+    await stack.synthesizeHarness({ ...makeSignal(), id: "sig-no-owner" } as ForgeDemandSignal, {
+      sessionId: "s-no-owner",
+    });
+
+    expect(registered).toHaveLength(2);
+  });
+});

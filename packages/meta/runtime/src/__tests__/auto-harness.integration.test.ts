@@ -192,4 +192,62 @@ describe("wrapOnDemandWithAutoHarness", () => {
     await Promise.resolve();
     await Promise.resolve();
   });
+
+  test("threads ownerAgentId from session lookup into synthesizeHarness session context", async () => {
+    const captured: Array<{ readonly sessionId: string; readonly ownerAgentId?: string }> = [];
+
+    const wrapped = wrapOnDemandWithAutoHarness(
+      undefined,
+      {
+        synthesizeHarness: async (_signal, session) => {
+          if (session !== undefined) {
+            captured.push({
+              sessionId: session.sessionId,
+              ...(session.ownerAgentId !== undefined && { ownerAgentId: session.ownerAgentId }),
+            });
+          }
+          return null;
+        },
+      },
+      () => [
+        {
+          sessionId: "session-7",
+          runId: "run-7",
+          agentId: "agent-owner-7",
+          scoped: {
+            getSignals: () => [{ id: "sig-with-owner" }],
+            dismiss: () => {},
+          },
+        },
+      ],
+    );
+
+    wrapped(makeDemandSignal("sig-with-owner"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(captured).toEqual([{ sessionId: "session-7", ownerAgentId: "agent-owner-7" }]);
+  });
+
+  test("fails closed (drops signal) when sessionLookup is configured but no owner matches", async () => {
+    const synthesizeCalls: string[] = [];
+
+    const wrapped = wrapOnDemandWithAutoHarness(
+      undefined,
+      {
+        synthesizeHarness: async (signal) => {
+          synthesizeCalls.push(signal.id);
+          return null;
+        },
+      },
+      // Lookup configured but no entry owns the incoming signal id.
+      () => [],
+    );
+
+    wrapped(makeDemandSignal("orphan-sig"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(synthesizeCalls).toEqual([]);
+  });
 });
