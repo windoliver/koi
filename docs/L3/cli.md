@@ -161,6 +161,22 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
   Path validation rejects absolute paths and `..` escape via symlink-aware
   `realpathSync` containment.
 
+- **ACE promotion gate hardening (#1715 follow-up)**: the underlying
+  `@koi/middleware-ace` + `@koi/playbook-store-sqlite` packages received correctness
+  fixes that affect every CLI session that opts into ACE. No CLI surface change —
+  no new flags, manifest fields, or commands. Behavioral changes a CLI operator
+  will observe: (1) `koi tui` resumes correctly across sessions sharing a structured
+  playbook (per-session replay watermarks no longer overwrite each other);
+  (2) crash-then-resume during a structured commit either re-applies the
+  byte-identical proposal idempotently or fails closed with a clear error if the
+  retry payload diverges from what was persisted; (3) the sqlite playbook database
+  auto-migrates from schema v7 to v8 on first open by a CLI built from this
+  branch — the new `reflected_step_index_by_session` column is added in place,
+  legacy rows continue to read with the scalar `lastReflectedStepIndex` only.
+  Operators must set an explicit `requirePreProvisioned: true|false` on any
+  `createNexusStructuredPlaybookStore` call (no default); CLI flows continue to
+  use the sqlite adapter and are unaffected.
+
 - **`@koi/governance-scope` wired (#1882 gov-15)**: CLI manifest gains `network:`
   and `credentials:` blocks. The TUI command translates these into compiled scope
   objects (`compileScopedFs`, `createScopedFetcher`, `createScopedCredentials`)
