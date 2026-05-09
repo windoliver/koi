@@ -1,14 +1,8 @@
 import {
-  // @ts-expect-error — getExternalWorkflowHandle/uuid4/ParentClosePolicy/inWorkflowContext
-  // are exported at runtime from @temporalio/workflow but their type declarations are
-  // dropped from index.d.ts in 1.16.x. See retry-workflow.ts for the same workaround.
   getExternalWorkflowHandle as getExternalWorkflowHandleUntyped,
-  // @ts-expect-error
   inWorkflowContext as inWorkflowContextUntyped,
-  // @ts-expect-error
   ParentClosePolicy as ParentClosePolicyUntyped,
   startChild,
-  // @ts-expect-error
   uuid4 as uuid4Untyped,
 } from "@temporalio/workflow";
 import { materializeScheduledAgentWorkflowConfig } from "../activities/scheduled-task-activity.js";

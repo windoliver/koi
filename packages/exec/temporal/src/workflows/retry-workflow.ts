@@ -1,8 +1,5 @@
 import {
   startChild,
-  // @ts-expect-error — workflowInfo is exported at runtime from @temporalio/workflow but
-  // its type declaration is dropped from index.d.ts in 1.16.x (export * from './workflow' is
-  // present, yet only a subset of names surface to callers). Type the result locally instead.
   workflowInfo as workflowInfoUntyped,
   sleep as workflowSleep,
 } from "@temporalio/workflow";

@@ -1,11 +1,6 @@
 import {
-  // @ts-expect-error — defineSignal/setHandler/inWorkflowContext are exported at runtime
-  // from @temporalio/workflow but their type declarations are dropped from index.d.ts in
-  // 1.16.x. Type the results locally instead. See retry-workflow.ts for the same pattern.
   defineSignal as defineSignalUntyped,
-  // @ts-expect-error
   inWorkflowContext as inWorkflowContextUntyped,
-  // @ts-expect-error
   setHandler as setHandlerUntyped,
 } from "@temporalio/workflow";
 import {

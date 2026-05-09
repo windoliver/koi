@@ -1,4 +1,5 @@
 // biome-ignore-all lint/suspicious/noExplicitAny: ambient fixture intentionally uses permissive placeholders
+export {};
 declare module "@koi/core" {
   export type AgentId = string;
   export type ContentBlock = any;
