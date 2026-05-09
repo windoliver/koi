@@ -338,6 +338,14 @@ export async function commitPromotion(
         );
       }
       await deps.proposalStore.recordProposal(proposal);
+    } else if (!proposalsEqual(existing, proposal)) {
+      // Stale retry / id collision: the persisted proposal under this id
+      // has a different payload than the one the evaluator just judged.
+      // Recording the evaluation under the reused id would attach audit
+      // to the wrong proposal body. Fail closed.
+      throw new Error(
+        `ACE promotion gate: refusing to record reject evaluation for proposal ${proposal.id}; persisted proposal payload differs from the evaluated payload (id reuse or stale retry)`,
+      );
     }
     await deps.proposalStore.recordEvaluation(evaluation);
 
@@ -368,6 +376,15 @@ export async function commitPromotion(
       throw new Error(
         `ACE promotion gate: idempotent commit retry for proposal ${proposal.id} reuses the same ID but the persisted payload differs from the retry payload. ID collision or mutated retry — refusing false-success acknowledgment`,
       );
+    }
+    const getEvaluation = deps.proposalStore.getEvaluation;
+    if (getEvaluation !== undefined) {
+      const priorEvaluation = await getEvaluation(evaluation.id);
+      if (priorEvaluation !== undefined && !evaluationsEqual(priorEvaluation, evaluation)) {
+        throw new Error(
+          `ACE promotion gate: idempotent commit retry for evaluation ${evaluation.id} reuses the same ID but the persisted payload differs (verdict/metrics drift). Refusing false-success acknowledgment`,
+        );
+      }
     }
     return {
       outcome: "promoted",
@@ -519,6 +536,16 @@ function proposalsEqual(a: PlaybookProposal, b: PlaybookProposal): boolean {
   return stableStringify(a.operations) === stableStringify(b.operations);
 }
 
+/** Compare two evaluations on audit-relevant fields. Stable JSON for
+ * metrics so adapter round-trips that canonicalize key order still match. */
+function evaluationsEqual(a: PlaybookEvaluation, b: PlaybookEvaluation): boolean {
+  if (a.id !== b.id) return false;
+  if (a.proposalId !== b.proposalId) return false;
+  if (a.verdict !== b.verdict) return false;
+  if (a.evaluatedAt !== b.evaluatedAt) return false;
+  return stableStringify(a.metrics) === stableStringify(b.metrics);
+}
+
 /**
  * Compare two structured playbooks by content (ignoring version, updatedAt,
  * and provenance, which are necessarily different on a rollback-restored
@@ -595,6 +622,21 @@ export async function rollbackPromotion(
       throw new Error(
         `ACE promotion gate: idempotent rollback retry for proposal ${proposal.id} on ${proposal.playbookId} requested target version ${targetVersion}, but current head content does not match that snapshot. Prior rollback may have restored a different version`,
       );
+    }
+    const priorProposal = await deps.proposalStore.getProposal(proposal.id);
+    if (priorProposal === undefined || !proposalsEqual(priorProposal, proposal)) {
+      throw new Error(
+        `ACE promotion gate: idempotent rollback retry for proposal ${proposal.id} reuses the same ID but the persisted payload differs. Refusing false-success acknowledgment`,
+      );
+    }
+    const getEvaluation = deps.proposalStore.getEvaluation;
+    if (getEvaluation !== undefined) {
+      const priorEvaluation = await getEvaluation(evaluation.id);
+      if (priorEvaluation !== undefined && !evaluationsEqual(priorEvaluation, evaluation)) {
+        throw new Error(
+          `ACE promotion gate: idempotent rollback retry for evaluation ${evaluation.id} reuses the same ID but the persisted payload differs. Refusing false-success acknowledgment`,
+        );
+      }
     }
     return {
       outcome: "rolled_back",

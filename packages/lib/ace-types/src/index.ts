@@ -273,4 +273,9 @@ export interface PlaybookProposalStore {
   readonly recordEvaluation: (evaluation: PlaybookEvaluation) => Promise<void>;
   readonly getProposal: (id: string) => Promise<PlaybookProposal | undefined>;
   readonly listProposals: (playbookId: string) => Promise<readonly PlaybookProposal[]>;
+  /** Optional read path for evaluations. When present, the promotion gate
+   *  uses it to verify byte-equivalence on idempotent retries so that
+   *  reusing an evaluation id with mutated metrics/verdict cannot be
+   *  acknowledged as a successful prior commit. */
+  readonly getEvaluation?: (id: string) => Promise<PlaybookEvaluation | undefined>;
 }

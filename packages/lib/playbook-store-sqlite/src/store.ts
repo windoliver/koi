@@ -1199,6 +1199,29 @@ function createProposalStore(db: Database): PlaybookProposalStore {
       const rows = selectByPlaybook.all(playbookId) as readonly ProposalRow[];
       return rows.map(rowToProposal);
     },
+    getEvaluation: async (id) => {
+      const row = db
+        .query(
+          "SELECT id, verdict, metrics, notes, proposal_id, evaluated_at FROM playbook_evaluations WHERE id = ?",
+        )
+        .get(id) as {
+        readonly id: string;
+        readonly verdict: string;
+        readonly metrics: string;
+        readonly notes: string | null;
+        readonly proposal_id: string;
+        readonly evaluated_at: number;
+      } | null;
+      if (row === null) return undefined;
+      return {
+        id: row.id,
+        proposalId: row.proposal_id,
+        verdict: row.verdict as PlaybookEvaluation["verdict"],
+        metrics: JSON.parse(row.metrics) as PlaybookEvaluation["metrics"],
+        ...(row.notes !== null ? { notes: row.notes } : {}),
+        evaluatedAt: row.evaluated_at,
+      };
+    },
   };
 }
 
@@ -1215,12 +1238,6 @@ function rowToProposal(row: ProposalRow): PlaybookProposal {
     createdAt: row.created_at,
   };
 }
-
-// PlaybookEvaluation type-check: schema retains evaluation rows for audit.
-// Currently no public reader; getEvaluation is intentionally not exposed
-// until a downstream consumer needs it. The unused import keeps the type
-// surface visible for future expansion.
-type _EvaluationRetained = PlaybookEvaluation;
 
 // ---------------------------------------------------------------------------
 // Helpers
