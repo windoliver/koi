@@ -161,6 +161,28 @@ export interface CompositionExecutionContext {
    */
   readonly allowedNotifyChannels?: readonly string[] | undefined;
   /**
+   * Allowlist of tool names the executor will dispatch `tool_call` steps
+   * to. When provided, a step whose `toolName` is outside this set is
+   * rejected as INVALID_PLAN BEFORE the execution-log claim and BEFORE
+   * the toolCall handler is invoked — so a planner-controlled (LLM)
+   * tool name cannot reach a host that wires a permissive resolver.
+   * Omitted → the wired `toolCall` handler is the only authorization.
+   */
+  readonly allowedToolNames?: readonly string[] | undefined;
+  /**
+   * Allowlist of agent types the executor will dispatch `spawn_agent`
+   * steps to. Same semantics as `allowedToolNames`. Omitted → the wired
+   * `spawn` handler is the only authorization.
+   */
+  readonly allowedAgentTypes?: readonly string[] | undefined;
+  /**
+   * Allowlist of brick kinds the executor will accept for `forge_skill`
+   * steps (matched against `step.demand.suggestedBrickKind`). Same
+   * semantics as `allowedToolNames`. Omitted → the wired `forge` handler
+   * is the only authorization.
+   */
+  readonly allowedForgeBrickKinds?: readonly string[] | undefined;
+  /**
    * Optional governance config — confidence/budget/delegation/rate-limit/
    * novelty checks. When provided, the executor evaluates the gate before
    * dispatching steps and returns `requires_approval` (with the failing
@@ -451,22 +473,48 @@ export function createCompositionExecutor(
     trigger: CompositionTrigger,
     plan: CompositionPlan,
     result: CompositionExecutionResult,
+    committedNewWork: boolean,
+    acquiredSessionSlot: boolean,
   ): Promise<CompositionExecutionResult> {
-    if (result.status === "executed") {
-      if (context.sessionId !== undefined && context.sessionRate !== undefined) {
-        try {
-          await context.sessionRate.increment(context.sessionId);
-        } catch {
-          /* tracker hiccups must not invalidate a successful execution */
-        }
+    // Any execution that committed at least one fresh side effect must
+    // consume session/novelty budget — even if a LATER step failed or
+    // was unsupported. Otherwise a plan like [notify_user, fail_step]
+    // could repeatedly emit notifications without ever touching the
+    // session cap. Pure replay-only runs (every step short-circuited
+    // via executionLog complete) still skip the bookkeeping.
+    const committedFreshSideEffect = committedNewWork;
+
+    // Atomic-acquire path: when the gate consumed a slot via tryAcquire,
+    // release it ONLY on pure replay (no fresh side effect at all). Partial
+    // commits keep the slot — the host still saw real autonomous work,
+    // even though a later step failed. The non-atomic fallback path was
+    // removed because it raced under concurrent execute() calls; the gate
+    // now fails closed when tryAcquire is missing.
+    if (
+      acquiredSessionSlot &&
+      !committedFreshSideEffect &&
+      context.sessionId !== undefined &&
+      context.sessionRate?.release !== undefined
+    ) {
+      try {
+        await context.sessionRate.release(context.sessionId);
+      } catch {
+        /* release failure is observability-only */
       }
-      if (context.governance !== undefined && context.novelty !== undefined) {
-        const keyFn = context.governance.patternKey ?? defaultPatternKey;
-        try {
-          await context.novelty.recordSuccess(keyFn(trigger));
-        } catch {
-          /* tracker hiccups must not invalidate a successful execution */
-        }
+    }
+    // Novelty credit is stricter than session-rate accounting: only fully
+    // successful executions count toward auto-approval. Partial commits
+    // (notify_user followed by an unsupported step, etc.) still load the
+    // session budget — they really happened — but they do not "validate"
+    // the pattern, since the operator never saw the full intended
+    // automation succeed end-to-end.
+    const fullySuccessful = result.status === "executed" && committedNewWork;
+    if (fullySuccessful && context.governance !== undefined && context.novelty !== undefined) {
+      const keyFn = context.governance.patternKey ?? defaultPatternKey;
+      try {
+        await context.novelty.recordSuccess(keyFn(trigger, plan, context.agentId));
+      } catch {
+        /* tracker hiccups must not invalidate a successful execution */
       }
     }
     if (recorder?.record !== undefined) {
@@ -482,6 +530,7 @@ export function createCompositionExecutor(
   async function runPlan(
     trigger: CompositionTrigger,
     plan: CompositionPlan,
+    state: { committedNewWork: boolean; acquiredSessionSlot: boolean },
   ): Promise<CompositionExecutionResult> {
     if (plan.triggerId !== trigger.id) {
       return {
@@ -513,6 +562,13 @@ export function createCompositionExecutor(
       };
     }
 
+    // CompositionGap is emitted ONLY from real execution attempts (in the
+    // step loop below). Pre-emitting gaps for approval-gated or
+    // governance-denied plans would let unapproved planner-authored
+    // payloads (especially LLM plans) mutate the capability-feedback /
+    // ForgeDemand pipeline without a human ever validating them. Hosts
+    // that want gap telemetry from denied plans should scan plans
+    // themselves in a separate OutcomeRecorder hook.
     if (plan.requiresApproval) return approvalRequired(trigger);
 
     // 5-component governance gate (confidence/budget/delegation/rate-limit/
@@ -520,16 +576,43 @@ export function createCompositionExecutor(
     // win, but BEFORE step dispatch so a denied plan never commits side
     // effects. Skipped entirely when no governance config is wired.
     if (context.governance !== undefined) {
-      const decision = await evaluateCompositionGate({
-        trigger,
-        plan,
-        agentId: context.agentId,
-        governance: context.governance,
-        sessionId: context.sessionId,
-        sessionRate: context.sessionRate,
-        novelty: context.novelty,
-      });
+      // Backend failures (delegationCheck / tryAcquire / successCount
+      // throwing) are converted to a structured `failed` result so
+      // execute() always resolves to a CompositionExecutionResult — never
+      // rejects. If a session slot was acquired before the throw, attempt
+      // best-effort release here so the quota isn't permanently burned.
+      let decision: Awaited<ReturnType<typeof evaluateCompositionGate>>;
+      try {
+        decision = await evaluateCompositionGate({
+          trigger,
+          plan,
+          agentId: context.agentId,
+          governance: context.governance,
+          sessionId: context.sessionId,
+          sessionRate: context.sessionRate,
+          novelty: context.novelty,
+        });
+      } catch (cause) {
+        if (context.sessionId !== undefined && context.sessionRate?.release !== undefined) {
+          try {
+            await context.sessionRate.release(context.sessionId);
+          } catch {
+            /* release failure is observability-only */
+          }
+        }
+        return {
+          triggerId: trigger.id,
+          status: "failed",
+          stepResults: [],
+          executedCount: 0,
+          error: {
+            code: "STEP_FAILED",
+            message: `governance evaluation threw: ${cause instanceof Error ? cause.message : String(cause)}`,
+          },
+        };
+      }
       if (!decision.allowed) return approvalRequired(trigger, decision.reason);
+      state.acquiredSessionSlot = decision.acquiredSessionSlot;
     }
 
     // Empty non-approval plans are almost always a planner bug — silently
@@ -643,6 +726,8 @@ export function createCompositionExecutor(
               ...submitOptions,
               idempotencyKey: stepIdempotencyKey,
             });
+            state.committedNewWork = true;
+
             await context.executionLog.record(stepIdempotencyKey, output);
             stepResults.push({ step, status: "executed", output });
             break;
@@ -710,8 +795,14 @@ export function createCompositionExecutor(
             // claim and the caller can retry with corrected input.
             // Plain `Error` throws remain ambiguous and leave the claim
             // pending for operator reconciliation.
+            // Strip planner-supplied idempotencyKey: scheduler.schedule()
+            // backends do not accept it (Temporal rejects it synchronously)
+            // and the executor's executionLog is the universal source of
+            // truth for dedupe — mirrors the same handling in submit_task.
+            const { idempotencyKey: _ignoredScheduleKey, ...scheduleTaskOptions } =
+              step.taskOptions ?? {};
             const scheduleOptions: Record<string, unknown> = {
-              ...(step.taskOptions ?? {}),
+              ...scheduleTaskOptions,
               ...(step.timezone === undefined ? {} : { timezone: step.timezone }),
             };
             const output = await context.scheduler.schedule(
@@ -722,6 +813,8 @@ export function createCompositionExecutor(
                 ? undefined
                 : (scheduleOptions as Parameters<typeof context.scheduler.schedule>[3]),
             );
+            state.committedNewWork = true;
+
             await context.executionLog.record(stepIdempotencyKey, output);
             stepResults.push({ step, status: "executed", output });
             break;
@@ -778,6 +871,8 @@ export function createCompositionExecutor(
               priority: step.priority,
               idempotencyKey: stepIdempotencyKey,
             });
+            state.committedNewWork = true;
+
             await context.executionLog.record(stepIdempotencyKey, notifyOutput);
             stepResults.push({ step, status: "executed", output: notifyOutput });
             break;
@@ -787,6 +882,20 @@ export function createCompositionExecutor(
             if (context.spawn === undefined) {
               await emitGap(trigger, step);
               return unsupportedResult(trigger.id, stepResults, stepUnsupported(step));
+            }
+            if (
+              context.allowedAgentTypes !== undefined &&
+              !context.allowedAgentTypes.includes(step.agentType)
+            ) {
+              return failedResult(trigger.id, stepResults, {
+                step,
+                status: "failed",
+                error: {
+                  code: "INVALID_PLAN",
+                  message: `spawn_agent agentType "${step.agentType}" is not in the allowlist [${context.allowedAgentTypes.join(", ")}]`,
+                  stepKind: "spawn_agent",
+                },
+              });
             }
             const claim = await context.executionLog.claim(stepIdempotencyKey);
             if (claim.kind === "complete") {
@@ -814,6 +923,8 @@ export function createCompositionExecutor(
               delivery: step.delivery,
               idempotencyKey: stepIdempotencyKey,
             });
+            state.committedNewWork = true;
+
             await context.executionLog.record(stepIdempotencyKey, output);
             stepResults.push({ step, status: "executed", output });
             break;
@@ -823,6 +934,20 @@ export function createCompositionExecutor(
             if (context.forge === undefined) {
               await emitGap(trigger, step);
               return unsupportedResult(trigger.id, stepResults, stepUnsupported(step));
+            }
+            if (
+              context.allowedForgeBrickKinds !== undefined &&
+              !context.allowedForgeBrickKinds.includes(step.demand.suggestedBrickKind)
+            ) {
+              return failedResult(trigger.id, stepResults, {
+                step,
+                status: "failed",
+                error: {
+                  code: "INVALID_PLAN",
+                  message: `forge_skill suggestedBrickKind "${step.demand.suggestedBrickKind}" is not in the allowlist [${context.allowedForgeBrickKinds.join(", ")}]`,
+                  stepKind: "forge_skill",
+                },
+              });
             }
             const claim = await context.executionLog.claim(stepIdempotencyKey);
             if (claim.kind === "complete") {
@@ -848,6 +973,8 @@ export function createCompositionExecutor(
               demand: step.demand,
               idempotencyKey: stepIdempotencyKey,
             });
+            state.committedNewWork = true;
+
             await context.executionLog.record(stepIdempotencyKey, output);
             stepResults.push({ step, status: "executed", output });
             break;
@@ -857,6 +984,20 @@ export function createCompositionExecutor(
             if (context.toolCall === undefined) {
               await emitGap(trigger, step);
               return unsupportedResult(trigger.id, stepResults, stepUnsupported(step));
+            }
+            if (
+              context.allowedToolNames !== undefined &&
+              !context.allowedToolNames.includes(step.toolName)
+            ) {
+              return failedResult(trigger.id, stepResults, {
+                step,
+                status: "failed",
+                error: {
+                  code: "INVALID_PLAN",
+                  message: `tool_call toolName "${step.toolName}" is not in the allowlist [${context.allowedToolNames.join(", ")}]`,
+                  stepKind: "tool_call",
+                },
+              });
             }
             const claim = await context.executionLog.claim(stepIdempotencyKey);
             if (claim.kind === "complete") {
@@ -883,6 +1024,8 @@ export function createCompositionExecutor(
               input: step.input,
               idempotencyKey: stepIdempotencyKey,
             });
+            state.committedNewWork = true;
+
             await context.executionLog.record(stepIdempotencyKey, output);
             stepResults.push({ step, status: "executed", output });
             break;
@@ -938,8 +1081,9 @@ export function createCompositionExecutor(
       trigger: CompositionTrigger,
       plan: CompositionPlan,
     ): Promise<CompositionExecutionResult> {
-      const result = await runPlan(trigger, plan);
-      return finalize(trigger, plan, result);
+      const state = { committedNewWork: false, acquiredSessionSlot: false };
+      const result = await runPlan(trigger, plan, state);
+      return finalize(trigger, plan, result, state.committedNewWork, state.acquiredSessionSlot);
     },
   };
 }

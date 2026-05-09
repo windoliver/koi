@@ -17,6 +17,7 @@ import {
   DEFAULT_COMPOSITION_GOVERNANCE,
   defaultPatternKey,
   evaluateCompositionGate,
+  extractCapabilityGapsFromPlan,
   inferCompositionGap,
   inferMissingCapabilities,
   inMemoryNoveltyTracker,
@@ -137,10 +138,10 @@ describe("evaluateCompositionGate (unit)", () => {
       novelty,
     };
     expect((await evaluateCompositionGate(args)).allowed).toBe(false);
-    await novelty.recordSuccess(defaultPatternKey(t));
-    await novelty.recordSuccess(defaultPatternKey(t));
+    await novelty.recordSuccess(defaultPatternKey(t, notifyPlan(), aid));
+    await novelty.recordSuccess(defaultPatternKey(t, notifyPlan(), aid));
     expect((await evaluateCompositionGate(args)).allowed).toBe(false);
-    await novelty.recordSuccess(defaultPatternKey(t));
+    await novelty.recordSuccess(defaultPatternKey(t, notifyPlan(), aid));
     expect((await evaluateCompositionGate(args)).allowed).toBe(true);
   });
 
@@ -203,6 +204,51 @@ describe("inferMissingCapabilities", () => {
         priority: "low",
       }),
     ).toEqual(["channel:slack"]);
+  });
+});
+
+describe("extractCapabilityGapsFromPlan", () => {
+  test("returns one gap per step whose required capability isn't wired", () => {
+    const t = trig({ id: "t-extract", emittedAt: 5000 });
+    const plan: CompositionPlan = {
+      triggerId: "t-extract",
+      triggerEmittedAt: 5000,
+      estimatedCost: 0,
+      requiresApproval: false,
+      steps: [
+        { kind: "tool_call", toolName: "summarize", input: {} },
+        { kind: "tool_call", toolName: "ocr", input: {} }, // wired
+        {
+          kind: "spawn_agent",
+          agentType: "researcher",
+          input: {} as never,
+          delivery: "fire_and_forget" as never,
+        },
+        { kind: "notify_user", channel: "inbox", message: "x", priority: "normal" }, // not a gap source
+      ],
+    };
+    const gaps = extractCapabilityGapsFromPlan({
+      trigger: t,
+      plan,
+      wiredCapabilities: { tools: ["ocr"], agents: [] },
+      now: 6000,
+    });
+    expect(gaps).toHaveLength(2);
+    expect(gaps.map((g) => g.missingCapabilities)).toEqual([
+      ["tool:summarize"],
+      ["agent:researcher"],
+    ]);
+    expect(gaps[0]?.firstSeen).toBe(6000);
+  });
+
+  test("returns empty when every step's capability is wired", () => {
+    const gaps = extractCapabilityGapsFromPlan({
+      trigger: trig(),
+      plan: notifyPlan(),
+      wiredCapabilities: {},
+      now: 1,
+    });
+    expect(gaps).toEqual([]);
   });
 });
 
@@ -300,8 +346,8 @@ describe("createCompositionExecutor governance integration", () => {
 
     // Manually seed 2 prior successes to flip the gate
     const t = trig();
-    await novelty.recordSuccess(defaultPatternKey(t));
-    await novelty.recordSuccess(defaultPatternKey(t));
+    await novelty.recordSuccess(defaultPatternKey(t, notifyPlan(), aid));
+    await novelty.recordSuccess(defaultPatternKey(t, notifyPlan(), aid));
     const r2 = await exec.execute(t, notifyPlan());
     expect(r2.status).toBe("executed");
   });
@@ -395,6 +441,312 @@ describe("createCompositionExecutor governance integration", () => {
     const r = await exec.execute(trig(), notifyPlan({ requiresApproval: true }));
     expect(r.status).toBe("requires_approval");
     expect(seen).toEqual([]);
+  });
+
+  test("replay-only execution does not increment session rate or novelty", async () => {
+    const sessionRate = inMemorySessionRateTracker();
+    const novelty = inMemoryNoveltyTracker();
+    const sharedLog = inMemoryCompositionExecutionLog();
+    const exec = createCompositionExecutor(
+      ctxBase({
+        executionLog: sharedLog,
+        sessionId: "s-replay",
+        sessionRate,
+        novelty,
+        governance: {
+          autoApproveConfidenceThreshold: 0,
+          novelPatternRequiresApproval: false,
+        },
+      }),
+    );
+    // First execute commits new work → counters bump.
+    const r1 = await exec.execute(trig(), notifyPlan());
+    expect(r1.status).toBe("executed");
+    expect(await sessionRate.count("s-replay")).toBe(1);
+    expect(await novelty.successCount(defaultPatternKey(trig(), notifyPlan(), aid))).toBe(1);
+
+    // Re-execute the same trigger+plan → executionLog short-circuits each
+    // step, no fresh side effect committed → counters MUST NOT bump.
+    const r2 = await exec.execute(trig(), notifyPlan());
+    expect(r2.status).toBe("executed");
+    expect(await sessionRate.count("s-replay")).toBe(1);
+    expect(await novelty.successCount(defaultPatternKey(trig(), notifyPlan(), aid))).toBe(1);
+  });
+
+  test("approval-gated and governance-denied plans do NOT emit gaps (trust boundary)", async () => {
+    const gaps: CompositionGap[] = [];
+    const recorder = { recordGap: (g: CompositionGap) => void gaps.push(g) };
+    // plan.requiresApproval=true → no execution attempt, no gap emission.
+    const execA = createCompositionExecutor(ctxBase({ outcomeRecorder: recorder }));
+    const planRequiresApproval: CompositionPlan = {
+      triggerId: "trig-1",
+      triggerEmittedAt: 1000,
+      estimatedCost: 0,
+      requiresApproval: true,
+      steps: [{ kind: "tool_call", toolName: "summarize", input: {} }],
+    };
+    expect((await execA.execute(trig(), planRequiresApproval)).status).toBe("requires_approval");
+    // Governance gate denies → no execution attempt, no gap emission.
+    const execB = createCompositionExecutor(
+      ctxBase({
+        outcomeRecorder: recorder,
+        governance: {
+          autoApproveConfidenceThreshold: 0.99,
+          novelPatternRequiresApproval: false,
+        },
+      }),
+    );
+    const planUnsupported: CompositionPlan = {
+      triggerId: "trig-1",
+      triggerEmittedAt: 1000,
+      estimatedCost: 0,
+      requiresApproval: false,
+      steps: [
+        {
+          kind: "spawn_agent",
+          agentType: "research",
+          input: {} as never,
+          delivery: "fire_and_forget" as never,
+        },
+      ],
+    };
+    expect((await execB.execute(trig({ confidence: 0.1 }), planUnsupported)).status).toBe(
+      "requires_approval",
+    );
+    // No gap recorded for either denied plan — only real execution attempts
+    // can mutate the capability-gap feedback pipeline.
+    expect(gaps).toHaveLength(0);
+  });
+
+  test("concurrent execute() calls cannot oversubscribe maxCompositionsPerSession", async () => {
+    const sessionRate = inMemorySessionRateTracker();
+    const exec = createCompositionExecutor(
+      ctxBase({
+        sessionId: "concurrent-s",
+        sessionRate,
+        governance: {
+          maxCompositionsPerSession: 3,
+          autoApproveConfidenceThreshold: 0,
+          novelPatternRequiresApproval: false,
+        },
+      }),
+    );
+    // Fire 10 concurrent execute() calls with distinct triggers; only 3
+    // should pass governance — the rest get requires_approval.
+    const results = await Promise.all(
+      Array.from({ length: 10 }, (_, i) =>
+        exec.execute(
+          trig({ id: `t-${i}`, emittedAt: 1000 + i }),
+          notifyPlan({ triggerId: `t-${i}`, triggerEmittedAt: 1000 + i }),
+        ),
+      ),
+    );
+    const executed = results.filter((r) => r.status === "executed").length;
+    const denied = results.filter((r) => r.status === "requires_approval").length;
+    expect(executed).toBe(3);
+    expect(denied).toBe(7);
+    expect(await sessionRate.count("concurrent-s")).toBe(3);
+  });
+
+  test("default novelty key distinguishes plans with the same step kinds but different payloads", () => {
+    const t = trig();
+    const planA = notifyPlan({
+      steps: [{ kind: "notify_user", channel: "inbox", message: "alpha", priority: "normal" }],
+    });
+    const planB = notifyPlan({
+      steps: [{ kind: "notify_user", channel: "inbox", message: "beta", priority: "normal" }],
+    });
+    const keyA = defaultPatternKey(t, planA);
+    const keyB = defaultPatternKey(t, planB);
+    expect(keyA).not.toBe(keyB);
+  });
+
+  // Note: tryAcquire and release are now both required at the type level
+  // (SessionRateTracker interface). Trackers missing either field fail
+  // TypeScript compilation, so the previous "fails closed at gate"
+  // runtime test is no longer reachable from typed code.
+
+  test("default novelty key includes moment-specific discriminators", () => {
+    expect(
+      defaultPatternKey(
+        trig({
+          moment: {
+            kind: "threshold_crossed",
+            sensor: "errors",
+            value: 1,
+            limit: 0,
+            direction: "above",
+          },
+        }),
+      ),
+    ).toBe("*|test|threshold_crossed|errors|above");
+    // Different sensor on same moment kind → different bucket.
+    expect(
+      defaultPatternKey(
+        trig({
+          moment: {
+            kind: "threshold_crossed",
+            sensor: "latency",
+            value: 1,
+            limit: 0,
+            direction: "above",
+          },
+        }),
+      ),
+    ).not.toBe(
+      defaultPatternKey(
+        trig({
+          moment: {
+            kind: "threshold_crossed",
+            sensor: "errors",
+            value: 1,
+            limit: 0,
+            direction: "above",
+          },
+        }),
+      ),
+    );
+    expect(
+      defaultPatternKey(
+        trig({ moment: { kind: "task_terminal", taskId: "tk" as never, outcome: "completed" } }),
+      ),
+    ).toBe("*|test|task_terminal|completed");
+  });
+
+  test("partial commit (notify_user then unsupported step) still consumes session + novelty budget", async () => {
+    const sessionRate = inMemorySessionRateTracker();
+    const novelty = inMemoryNoveltyTracker();
+    const exec = createCompositionExecutor(
+      ctxBase({
+        sessionId: "partial-s",
+        sessionRate,
+        novelty,
+        governance: {
+          maxCompositionsPerSession: 5,
+          autoApproveConfidenceThreshold: 0,
+          novelPatternRequiresApproval: false,
+        },
+      }),
+    );
+    const plan: CompositionPlan = {
+      triggerId: "trig-1",
+      triggerEmittedAt: 1000,
+      estimatedCost: 0,
+      requiresApproval: false,
+      steps: [
+        { kind: "notify_user", channel: "inbox", message: "hi", priority: "normal" },
+        // tool_call with no handler → unsupported (later step fails)
+        { kind: "tool_call", toolName: "missing", input: {} },
+      ],
+    };
+    const result = await exec.execute(trig(), plan);
+    expect(result.status).toBe("unsupported");
+    // Session rate: a fresh side effect (notify_user) committed —
+    // governance MUST consume budget so a buggy plan can't repeatedly
+    // send notifications without ever hitting the cap.
+    expect(await sessionRate.count("partial-s")).toBe(1);
+    // Novelty: stricter — a partial run does NOT validate the pattern
+    // for auto-approval. Only fully successful executions bump novelty
+    // credit so unsupported plans can't age into auto-approval.
+    expect(await novelty.successCount(defaultPatternKey(trig(), plan, aid))).toBe(0);
+  });
+
+  test("governance backend throw converts to failed result and releases acquired slot", async () => {
+    const sessionRate = inMemorySessionRateTracker();
+    const exec = createCompositionExecutor(
+      ctxBase({
+        sessionId: "throw-s",
+        sessionRate,
+        novelty: {
+          successCount: () => {
+            throw new Error("backend down");
+          },
+          recordSuccess: () => {},
+        },
+        governance: {
+          maxCompositionsPerSession: 5,
+          autoApproveConfidenceThreshold: 0,
+          novelPatternRequiresApproval: true,
+          novelPatternAutoApproveAfter: 99,
+        },
+      }),
+    );
+    // tryAcquire happens first and consumes a slot (count goes to 1).
+    // Then novelty.successCount throws → execute() must return a
+    // structured failed result AND release the slot back to 0.
+    const result = await exec.execute(trig(), notifyPlan());
+    expect(result.status).toBe("failed");
+    if (result.status === "failed") {
+      expect(result.error.message).toMatch(/governance evaluation threw/);
+    }
+    // The slot acquired pre-throw was released.
+    expect(await sessionRate.count("throw-s")).toBe(0);
+  });
+
+  test("post-commit executionLog.record failure does NOT refund the session slot", async () => {
+    const sessionRate = inMemorySessionRateTracker();
+    const log = {
+      claim: () => ({ kind: "claimed" as const }),
+      record: () => {
+        throw new Error("log backend down");
+      },
+      release: () => {},
+    };
+    const exec = createCompositionExecutor(
+      ctxBase({
+        executionLog: log,
+        sessionId: "post-commit-s",
+        sessionRate,
+        governance: {
+          maxCompositionsPerSession: 1,
+          autoApproveConfidenceThreshold: 0,
+          novelPatternRequiresApproval: false,
+        },
+      }),
+    );
+    const result = await exec.execute(trig(), notifyPlan());
+    expect(result.status).toBe("failed");
+    // Side effect (notify_user) committed before record() threw — the
+    // session slot must remain consumed so that another execute() does
+    // not happily send a second notification under the same cap.
+    expect(await sessionRate.count("post-commit-s")).toBe(1);
+  });
+
+  test("allowedToolNames rejects out-of-allowlist tool_call before claim", async () => {
+    let toolCalled = false;
+    const exec = createCompositionExecutor(
+      ctxBase({
+        toolCall: async () => {
+          toolCalled = true;
+          return {};
+        },
+        allowedToolNames: ["safe-tool"],
+      }),
+    );
+    const plan: CompositionPlan = {
+      triggerId: "trig-1",
+      triggerEmittedAt: 1000,
+      estimatedCost: 0,
+      requiresApproval: false,
+      steps: [{ kind: "tool_call", toolName: "dangerous-tool", input: {} }],
+    };
+    const r = await exec.execute(trig(), plan);
+    expect(r.status).toBe("failed");
+    if (r.status === "failed") {
+      expect(r.error.code).toBe("INVALID_PLAN");
+      expect(r.error.message).toMatch(/dangerous-tool/);
+    }
+    expect(toolCalled).toBe(false);
+  });
+
+  test("novelty key includes agentId — different agents do NOT share approval credit", () => {
+    const t = trig();
+    const p = notifyPlan();
+    const k1 = defaultPatternKey(t, p, "agent:a" as AgentId);
+    const k2 = defaultPatternKey(t, p, "agent:b" as AgentId);
+    expect(k1).not.toBe(k2);
+    expect(k1.startsWith("agent:a|")).toBe(true);
+    expect(k2.startsWith("agent:b|")).toBe(true);
   });
 
   test("ambiguous executionLog handler short-circuits when claim returns 'pending'", async () => {

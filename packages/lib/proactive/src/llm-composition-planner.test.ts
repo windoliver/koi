@@ -1,9 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  type AgentDefinition,
-  agentId,
-  type CompositionTrigger,
-} from "@koi/core";
+import { type AgentDefinition, agentId, type CompositionTrigger } from "@koi/core";
 import { createLlmCompositionPlanner } from "./llm-composition-planner.js";
 import { createRuleBasedCompositionPlanner } from "./rule-based-composition-planner.js";
 

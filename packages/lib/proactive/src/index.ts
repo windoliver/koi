@@ -33,6 +33,7 @@ export {
   DEFAULT_COMPOSITION_GOVERNANCE,
   defaultPatternKey,
   evaluateCompositionGate,
+  extractCapabilityGapsFromPlan,
   type GateDecision,
   inferCompositionGap,
   inferMissingCapabilities,

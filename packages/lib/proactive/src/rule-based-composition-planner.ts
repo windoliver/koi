@@ -89,9 +89,7 @@ function stepsForCapabilityGap(trigger: CompositionTrigger): readonly Compositio
   return forgeDemand === undefined ? [] : [{ kind: "forge_skill", demand: forgeDemand }];
 }
 
-function stepsForThresholdCrossed(
-  trigger: CompositionTrigger,
-): readonly CompositionStep[] {
+function stepsForThresholdCrossed(trigger: CompositionTrigger): readonly CompositionStep[] {
   if (
     trigger.moment.kind !== "threshold_crossed" ||
     trigger.moment.sensor !== "error_rate" ||
@@ -183,11 +181,7 @@ function stepsForTrigger(
 // approving plans containing any of these would deterministically fail
 // at execute time. Force them through approval so unsupported automation
 // is gated rather than silently failing.
-const EXECUTOR_UNSUPPORTED_KINDS = new Set<string>([
-  "spawn_agent",
-  "forge_skill",
-  "tool_call",
-]);
+const EXECUTOR_UNSUPPORTED_KINDS = new Set<string>(["spawn_agent", "forge_skill", "tool_call"]);
 
 function planContainsUnsupported(steps: readonly CompositionStep[]): boolean {
   for (const step of steps) {

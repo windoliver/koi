@@ -98,6 +98,15 @@ interface CompositionExecutionResultBase<
  * duplication and realm boundaries — any package can import this
  * constant and produce a recognized rejection without needing a
  * direct dependency between throw-site and check-site.
+ *
+ * Trust boundary: handlers wired into the executor (scheduler, notify,
+ * spawn, forge, toolCall) are TRUSTED code chosen by the host. They
+ * already have full access to `preCommitRejection()` via this module, so
+ * "forging" the brand is equivalent to calling the factory — no privilege
+ * escalation. The brand exists to distinguish deliberate
+ * `throw preCommitRejection(...)` from accidental `throw new Error(...)`,
+ * not to defend against adversarial in-process callers. Hosts MUST treat
+ * handler wiring as a trusted-configuration boundary.
  */
 export const COMPOSITION_PRE_COMMIT_BRAND_KEY = "@koi/proactive/preCommitRejection" as const;
 export const COMPOSITION_PRE_COMMIT_BRAND: unique symbol = Symbol.for(
