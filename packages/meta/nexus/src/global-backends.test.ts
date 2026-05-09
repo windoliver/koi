@@ -1,26 +1,48 @@
 import { describe, expect, mock, test } from "bun:test";
 
+const mockCreateNexusRegistry = mock(async () => ({ kind: "registry" }));
+const mockCreateNexusPermissionBackend = mock(() => ({ kind: "permissions" }));
+const mockCreateNexusAuditSink = mock(() => ({ kind: "audit" }));
+const mockCreateNexusSearch = mock(() => ({ kind: "search" }));
+const mockCreateNexusSchedulerBackends = mock(() => ({ kind: "scheduler" }));
+
 mock.module("@koi/registry-nexus", () => ({
-  createNexusRegistry: mock(async () => ({ kind: "registry" })),
+  createNexusRegistry: mockCreateNexusRegistry,
 }));
 
 mock.module("@koi/permissions-nexus", () => ({
-  createNexusPermissionBackend: mock(() => ({ kind: "permissions" })),
+  createNexusPermissionBackend: mockCreateNexusPermissionBackend,
 }));
 
 mock.module("@koi/audit-sink-nexus", () => ({
-  createNexusAuditSink: mock(() => ({ kind: "audit" })),
+  createNexusAuditSink: mockCreateNexusAuditSink,
 }));
 
 mock.module("@koi/search-nexus", () => ({
-  createNexusSearch: mock(() => ({ kind: "search" })),
+  createNexusSearch: mockCreateNexusSearch,
 }));
 
 mock.module("@koi/scheduler-nexus", () => ({
-  createNexusSchedulerBackends: mock(() => ({ kind: "scheduler" })),
+  createNexusSchedulerBackends: mockCreateNexusSchedulerBackends,
 }));
 
 describe("createGlobalBackends", () => {
+  test("exports the live v2 singleton creators without archive-only names", async () => {
+    const { liveGlobalBackendImports } = await import(
+      `./global-backends.js?cacheBust=${Date.now()}-${Math.random()}`
+    );
+
+    expect(liveGlobalBackendImports).toEqual({
+      registry: mockCreateNexusRegistry,
+      permissions: mockCreateNexusPermissionBackend,
+      audit: mockCreateNexusAuditSink,
+      search: mockCreateNexusSearch,
+      scheduler: mockCreateNexusSchedulerBackends,
+    });
+    expect("pay" in liveGlobalBackendImports).toBe(false);
+    expect("nameService" in liveGlobalBackendImports).toBe(false);
+  });
+
   test("only wires live v2 singleton packages and omits archive-only names", async () => {
     const { createGlobalBackends } = await import(
       `./global-backends.js?cacheBust=${Date.now()}-${Math.random()}`
