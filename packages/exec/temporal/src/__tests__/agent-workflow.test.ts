@@ -72,36 +72,51 @@ describe("agent workflow module", () => {
         timestamp: 4,
       },
     ];
+    let agentTurnCount = 0;
     const runAgentTurn = mock(async (input: AgentTurnInput): Promise<AgentTurnResult> => {
       if (input.agentId === ("agent-1" as AgentTurnInput["agentId"])) {
-        stateSnapshots.push(input.stateRefs);
-        currentStatus =
-          (handlers.get(STATUS_QUERY_NAME)?.() as string | undefined) ?? currentStatus;
-        handlers.get(MESSAGE_SIGNAL_NAME)?.(liveMessage);
-        handlers.get(MESSAGES_SIGNAL_NAME)?.(batchMessages);
-        pendingDuringTurn =
-          (handlers.get(PENDING_COUNT_QUERY_NAME)?.() as number | undefined) ?? pendingDuringTurn;
-        handlers.get(SHUTDOWN_SIGNAL_NAME)?.({ reason: "operator-requested" });
+        agentTurnCount++;
+        if (agentTurnCount === 1) {
+          stateSnapshots.push(input.stateRefs);
+          currentStatus =
+            (handlers.get(STATUS_QUERY_NAME)?.() as string | undefined) ?? currentStatus;
+          handlers.get(MESSAGE_SIGNAL_NAME)?.(liveMessage);
+          handlers.get(MESSAGES_SIGNAL_NAME)?.(batchMessages);
+          pendingDuringTurn =
+            (handlers.get(PENDING_COUNT_QUERY_NAME)?.() as number | undefined) ?? pendingDuringTurn;
+          handlers.get(SHUTDOWN_SIGNAL_NAME)?.({ reason: "operator-requested" });
 
+          return {
+            turnId: "turn-1",
+            blocks: [],
+            updatedStateRefs: {
+              lastTurnId: "turn-1",
+              turnsProcessed: input.stateRefs.turnsProcessed + 1,
+            },
+            spawnChild: {
+              childAgentId: "child-1" as AgentTurnResult["spawnChild"] extends infer T
+                ? T extends { childAgentId: infer U }
+                  ? U
+                  : never
+                : never,
+              childConfig: {
+                stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+                initialMessage: liveMessage,
+                maxStopRetries: 2,
+              },
+            },
+          };
+        }
+        // Drain turns: after shutdown, the workflow drains queued messages
+        // before exiting. These turns return simple no-op results.
         return {
-          turnId: "turn-1",
+          turnId: `drain-${agentTurnCount}`,
           blocks: [],
           updatedStateRefs: {
-            lastTurnId: "turn-1",
+            lastTurnId: `drain-${agentTurnCount}`,
             turnsProcessed: input.stateRefs.turnsProcessed + 1,
           },
-          spawnChild: {
-            childAgentId: "child-1" as AgentTurnResult["spawnChild"] extends infer T
-              ? T extends { childAgentId: infer U }
-                ? U
-                : never
-              : never,
-            childConfig: {
-              stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
-              initialMessage: liveMessage,
-              maxStopRetries: 2,
-            },
-          },
+          spawnChild: undefined,
         };
       }
 
@@ -178,19 +193,25 @@ describe("agent workflow module", () => {
         PENDING_COUNT_QUERY_NAME,
       ]);
       expect(proxyActivitiesCalls).toHaveLength(1);
-      expect(runAgentTurn).toHaveBeenCalledTimes(1);
+      // Drain semantics: initial turn + 3 batched messages queued during it.
+      // Shutdown only breaks the loop after the queue drains, so accepted
+      // messages are not silently lost.
+      expect(runAgentTurn).toHaveBeenCalledTimes(4);
       expect(runAgentTurn.mock.calls[0]?.[0]?.message).toEqual(initialMessage);
       expect(runAgentTurn.mock.calls[0]?.[0]?.gatewayUrl).toBe("ws://gateway");
       expect(runAgentTurn.mock.calls[0]?.[0]?.maxStopRetries).toBe(7);
+      expect(runAgentTurn.mock.calls[1]?.[0]?.message).toEqual(liveMessage);
+      expect(runAgentTurn.mock.calls[2]?.[0]?.message).toEqual(batchMessages[0]);
+      expect(runAgentTurn.mock.calls[3]?.[0]?.message).toEqual(batchMessages[1]);
       expect(stateSnapshots).toEqual([{ lastTurnId: undefined, turnsProcessed: 0 }]);
       expect(currentStatus).toBe("working");
       expect(pendingDuringTurn).toBe(3);
       expect(handlers.get(STATUS_QUERY_NAME)?.()).toBe("shutting_down");
       expect(handlers.get(STATE_QUERY_NAME)?.()).toEqual({
-        lastTurnId: "turn-1",
-        turnsProcessed: 1,
+        lastTurnId: "drain-4",
+        turnsProcessed: 4,
       });
-      expect(handlers.get(PENDING_COUNT_QUERY_NAME)?.()).toBe(3);
+      expect(handlers.get(PENDING_COUNT_QUERY_NAME)?.()).toBe(0);
       expect(startChildCalls).toEqual([
         {
           workflowType: "workerWorkflow",
@@ -229,8 +250,8 @@ describe("agent workflow module", () => {
         lastTurnId: "turn-worker",
         turnsProcessed: 5,
       });
-      expect(runAgentTurn).toHaveBeenCalledTimes(2);
-      expect(runAgentTurn.mock.calls[1]?.[0]).toEqual({
+      expect(runAgentTurn).toHaveBeenCalledTimes(5);
+      expect(runAgentTurn.mock.calls[4]?.[0]).toEqual({
         agentId: "child-9" as AgentTurnInput["agentId"],
         sessionId: "session-9" as AgentTurnInput["sessionId"],
         message: {

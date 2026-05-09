@@ -109,15 +109,18 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
     // by initialScheduledInput. Without this, external senders targeting
     // the stable schedule workflowId could keep the queue non-empty
     // indefinitely and block subsequent cron ticks under SKIP overlap.
-    if (isScheduledFiring) return;
+    // Once shutdown is requested, stop accepting new work so the drain loop
+    // can terminate (otherwise a steady signal stream would extend the run
+    // past shutdown indefinitely).
+    if (isScheduledFiring || shutdownRequested) return;
     pendingMessages.push(message);
   });
   setHandler(messagesSignal, (messages: readonly IncomingMessage[]) => {
-    if (isScheduledFiring) return;
+    if (isScheduledFiring || shutdownRequested) return;
     pendingMessages.push(...messages);
   });
   setHandler(scheduledInputSignal, (input: ScheduledInputPayload) => {
-    if (isScheduledFiring) return;
+    if (isScheduledFiring || shutdownRequested) return;
     enqueueScheduledInput(input);
   });
 
@@ -136,7 +139,14 @@ export async function agentWorkflow(config: AgentWorkflowConfig): Promise<void> 
   while (true) {
     await condition(() => pendingMessages.length > 0 || shutdownRequested);
 
-    if (shutdownRequested) {
+    // Drain on shutdown: process already-queued messages before exiting so
+    // that signals accepted at the transport layer are not silently lost.
+    // The signal handlers above stop accepting NEW work for scheduled
+    // firings, so this loop terminates cleanly: queue can only shrink once
+    // shutdown is set on a long-lived workflow (live senders are expected
+    // to stop targeting it), and is bounded by initialScheduledInput +
+    // initialMessages on a scheduled firing.
+    if (shutdownRequested && pendingMessages.length === 0) {
       break;
     }
 

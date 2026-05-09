@@ -24,18 +24,33 @@ export interface ActivityCacheKey {
   readonly credentialScope: string;
 }
 
-export interface GatewayStreamFrame {
-  readonly kind: "agent:text_delta";
-  readonly delta: string;
-  readonly sessionId: string;
-  /**
-   * Stable turn identifier. Combined with `frameIndex` it forms an idempotency
-   * key consumers can use to dedupe replayed deltas when the activity retries.
-   */
-  readonly turnId: string;
-  /** Monotonically increasing index of this frame within `turnId`, starting at 0. */
-  readonly frameIndex: number;
-}
+export type GatewayStreamFrame =
+  | {
+      readonly kind: "agent:text_delta";
+      readonly delta: string;
+      readonly sessionId: string;
+      /**
+       * Stable turn identifier. Combined with `frameIndex` it forms an idempotency
+       * key consumers can use to dedupe replayed deltas when the activity retries.
+       */
+      readonly turnId: string;
+      /** Monotonically increasing index of this frame within `turnId`, starting at 0. */
+      readonly frameIndex: number;
+    }
+  | {
+      /**
+       * Emitted when the engine requested a child spawn but the activity is
+       * running in a no-spawn mode (e.g. scheduled firings). Gives operators
+       * a durable observable signal for the dropped delegation; the turn
+       * itself commits normally.
+       */
+      readonly kind: "agent:spawn_dropped";
+      readonly sessionId: string;
+      readonly turnId: string;
+      readonly frameIndex: number;
+      readonly reason: string;
+      readonly childAgentId: string;
+    };
 
 export interface ActivityDeps {
   readonly engineCache: {
@@ -135,6 +150,14 @@ export function createActivities(deps: ActivityDeps): {
             // not be invalidated by a post-hoc throw, since the next cron
             // tick would replay them and duplicate user-visible output.
             if (input.allowSpawn === false) {
+              await deps.sendGatewayFrame(input.agentId, {
+                kind: "agent:spawn_dropped",
+                sessionId: input.sessionId,
+                turnId,
+                frameIndex: frameIndex++,
+                reason: "scheduled-firing-no-spawn",
+                childAgentId: String(record.childAgentId ?? ""),
+              });
               continue;
             }
             const childAgentId = String(record.childAgentId ?? "");
