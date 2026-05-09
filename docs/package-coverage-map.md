@@ -20,7 +20,7 @@ Current snapshot:
 | meta | 3 | 109 | 3 |
 | mm | 12 | 54 | 12 |
 | net | 10 | 91 | 10 |
-| sandbox | 12 | 65 | 12 |
+| sandbox | 12 | 67 | 12 |
 | sched | 5 | 22 | 5 |
 | security | 20 | 109 | 20 |
 | ui | 2 | 57 | 2 |
@@ -233,7 +233,7 @@ Each line shows package name, package directory, package description, test-file 
 - `@koi/sandbox-cloudflare` (packages/sandbox/sandbox-cloudflare) - Cloudflare Workers EdgeFunctionAdapter — durable per-(ownerId, operationId) dedupe via Durable Objects. Tests: 11. Docs: docs/L2/sandbox-cloudflare.md.
 - `@koi/sandbox-conformance` (packages/sandbox/sandbox-conformance) - Shared bun:test conformance suite for SandboxAdapter implementations. Tests: 5. Docs: docs/L2/sandbox-conformance.md.
 - `@koi/sandbox-daytona` (packages/sandbox/sandbox-daytona) - Daytona hosted-cloud SandboxAdapter for managed workspace execution. Tests: 3. Docs: docs/L2/sandbox-daytona.md.
-- `@koi/sandbox-docker` (packages/sandbox/sandbox-docker) - Docker-backed SandboxAdapter for containerized command execution. Tests: 10. Docs: docs/L2/sandbox-docker.md.
+- `@koi/sandbox-docker` (packages/sandbox/sandbox-docker) - Docker-backed SandboxAdapter for containerized command execution. Tests: 12. Docs: docs/L2/sandbox-docker.md.
 - `@koi/sandbox-e2b` (packages/sandbox/sandbox-e2b) - E2B hosted-cloud SandboxAdapter for remote microVM execution. Tests: 4. Docs: docs/L2/sandbox-e2b.md.
 - `@koi/sandbox-executor` (packages/sandbox/sandbox-executor) - Subprocess-backed SandboxExecutor for isolated code execution. Tests: 2. Docs: docs/L2/sandbox-executor.md.
 - `@koi/sandbox-ipc` (packages/sandbox/sandbox-ipc) - Structured host-worker IPC bridge for sandboxed code execution. Tests: 6. Docs: docs/L2/sandbox-ipc.md.
