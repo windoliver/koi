@@ -316,7 +316,7 @@ describe("createDockerAdapter", () => {
       scopeRegistry: reg,
       events,
     } = persistentClient({
-      preexisting: { container: dead, state: "dead" },
+      preexisting: { container: dead, state: "dead", scope: "scope-D" },
     });
     const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
@@ -785,10 +785,12 @@ describe("createDockerAdapter", () => {
   });
 
   // Security: a peer-process container with the right scope/hash labels but
-  // an ID NOT in our registry must NOT be reattached to. The adapter falls
-  // through to a fresh create — i.e. it treats the unverified container as
-  // if it didn't exist for reuse purposes.
-  test("findOrCreate refuses to reattach to a label-matching container that is not in our registry", async () => {
+  // an ID NOT in our registry must NOT be reattached to AND we must NOT
+  // create a second labeled container alongside it (which would later trip
+  // the multi-match ambiguity path and wedge the scope behind manual
+  // cleanup). Fail closed immediately so the operator gets one actionable
+  // error rather than a delayed DoS.
+  test("findOrCreate fails closed when a label-matching container is not in our registry", async () => {
     const stranger = fakeContainer("stranger");
     const reg = createInMemoryScopeRegistry();
     // Registry intentionally empty — simulates a peer with daemon access who
@@ -809,9 +811,9 @@ describe("createDockerAdapter", () => {
     const r = await createDockerAdapter({ client, scopeRegistry: reg });
     if (!r.ok) throw new Error("setup failed");
     if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
-    await r.value.findOrCreate("scope-SPOOF", PROFILE);
-    // Adapter created a fresh container instead of attaching to the stranger.
-    expect(createCalls).toBe(1);
+    await expect(r.value.findOrCreate("scope-SPOOF", PROFILE)).rejects.toThrow(/we do not own/);
+    // Critical: we did NOT create a second labeled container.
+    expect(createCalls).toBe(0);
   });
 
   // Security: dead container in the way must be auto-removed before retry, so
@@ -932,14 +934,21 @@ describe("createDockerAdapter", () => {
       },
       forget: reg.forget,
     };
+    // Realistic loser race: pre-create sees no matches (winner hasn't
+    // created yet), createContainer throws name-conflict (winner won the
+    // race), post-conflict findContainers now sees the winner. The
+    // post-conflict retry must wait for the winner's record() to land
+    // rather than treating "no entry yet" as a hard stranger failure.
+    let createAttempted = false;
     const client: DockerClient = {
       createContainer: async () => {
+        createAttempted = true;
         const err = Object.assign(new Error("name taken"), {
           code: DOCKER_NAME_CONFLICT_CODE,
         });
         throw err;
       },
-      findContainers: async () => [winner],
+      findContainers: async () => (createAttempted ? [winner] : []),
       inspectContainer: async () => ({
         state: "running",
         labels: { "koi.sandbox.profile-hash": PROFILE_HASH },

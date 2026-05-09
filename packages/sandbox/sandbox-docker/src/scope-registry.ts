@@ -94,6 +94,10 @@ export function defaultScopeRegistryDir(): string {
  *
  * Tolerates missing files and read errors by treating the entry as absent.
  */
+function isFsNotFound(e: unknown): boolean {
+  return typeof e === "object" && e !== null && (e as { code?: string }).code === "ENOENT";
+}
+
 export function createFileScopeRegistry(opts?: { readonly dir?: string }): ScopeRegistry {
   const dir = opts?.dir ?? defaultScopeRegistryDir();
 
@@ -127,16 +131,23 @@ export function createFileScopeRegistry(opts?: { readonly dir?: string }): Scope
         const raw = await readFile(pathFor(scope), "utf-8");
         const trimmed = raw.trim();
         return trimmed.length > 0 ? trimmed : undefined;
-      } catch {
-        // Missing file or any read error → entry absent.
-        return undefined;
+      } catch (e: unknown) {
+        // Only treat "file does not exist" as absence. Permission errors or
+        // other I/O faults must surface — silently returning undefined would
+        // make an owned container look unowned and let findOrCreate create a
+        // duplicate (or destroyScope refuse to clean up a real survivor).
+        if (isFsNotFound(e)) return undefined;
+        throw e;
       }
     },
     forget: async (scope): Promise<void> => {
       try {
         await unlink(pathFor(scope));
-      } catch {
-        // Idempotent: missing file is success.
+      } catch (e: unknown) {
+        // Idempotent for missing files only. Other errors (e.g. EPERM, EBUSY)
+        // must surface so callers know the registry mutation didn't land.
+        if (isFsNotFound(e)) return;
+        throw e;
       }
     },
   };

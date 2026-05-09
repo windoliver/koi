@@ -248,6 +248,10 @@ async function doFindOrCreate(
     fingerprint,
     scope,
     scopeRegistry,
+    // Pre-create: refuse to make a duplicate scope-labeled container if any
+    // unowned label match exists. This is the trust-boundary check that
+    // blocks delayed-DoS via label squatting.
+    unownedAction: "throw",
   });
   if (reused !== undefined) return reused;
 
@@ -303,6 +307,10 @@ async function doFindOrCreate(
         fingerprint,
         scope,
         scopeRegistry,
+        // Post-conflict retry: the winner peer's `record()` may not have
+        // landed yet, so a missing entry is recoverable — keep retrying
+        // rather than failing closed on the first miss.
+        unownedAction: "skip",
       },
       { attempts: 5, delayMs: 100 },
     );
@@ -353,6 +361,15 @@ async function tryReuse(args: {
   readonly fingerprint: string;
   readonly scope: string;
   readonly scopeRegistry: ScopeRegistry;
+  /**
+   * What to do when a label-matching container exists but the registry has
+   * no entry for the scope.
+   * - "throw": fail closed (pre-create path — refuse to make a duplicate
+   *   scope-labeled container alongside a stranger).
+   * - "skip": return undefined so the caller's retry loop can wait for the
+   *   winner peer's `record()` to land (post-name-conflict path).
+   */
+  readonly unownedAction: "throw" | "skip";
 }): Promise<SandboxInstance | undefined> {
   const {
     findContainers,
@@ -391,8 +408,38 @@ async function tryReuse(args: {
   // to our private registry, so an ID mismatch (or a missing registry entry)
   // means the matched container is not ours.
   const expectedId = await scopeRegistry.lookup(scope);
-  if (expectedId === undefined || expectedId !== existing.id) {
+  if (expectedId === undefined) {
+    if (args.unownedAction === "throw") {
+      // A label-matching container exists but no registry entry → not ours.
+      // Returning undefined here would let `doFindOrCreate` proceed to
+      // fresh-create and produce a SECOND container carrying the same scope
+      // label — which the next call would trip on the multi-match ambiguity
+      // path, wedging the scope behind manual cleanup. Fail closed now so
+      // the operator gets one actionable error instead of a delayed DoS.
+      const error: KoiError = {
+        code: "VALIDATION",
+        message: `sandbox-docker: scope "${scope}" is already claimed by container ${existing.id} which we do not own (no registry entry); refusing to create a duplicate scope-labeled container — investigate via 'docker ps -a --filter label=${SCOPE_LABEL}=${scope}' and remove manually if appropriate`,
+        retryable: false,
+        context: { scope, existingContainerId: existing.id },
+      };
+      throw new Error(error.message, { cause: error });
+    }
+    // unownedAction === "skip": let the caller decide. Used by the post-name-
+    // conflict retry loop where the winner peer's `record()` may not have
+    // landed yet, so a temporarily-missing entry is recoverable not fatal.
     return undefined;
+  }
+  if (expectedId !== existing.id) {
+    // Definitive stranger: we recorded a different ID, so the daemon-side
+    // scope-labeled container is not ours. Always fail closed — no retry
+    // window can change this.
+    const error: KoiError = {
+      code: "VALIDATION",
+      message: `sandbox-docker: scope "${scope}" is claimed by container ${existing.id} but we recorded ${expectedId} — refusing to attach to an unverified container; investigate via 'docker ps -a --filter label=${SCOPE_LABEL}=${scope}' and remove manually if appropriate`,
+      retryable: false,
+      context: { scope, existingContainerId: existing.id, recordedContainerId: expectedId },
+    };
+    throw new Error(error.message, { cause: error });
   }
 
   const info = await inspectContainer(existing.id);

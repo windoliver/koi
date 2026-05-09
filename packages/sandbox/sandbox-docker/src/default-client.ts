@@ -476,7 +476,20 @@ export function createDefaultDockerClient(config?: DefaultDockerClientConfig): D
         undefined,
         env,
       );
-      if (r.exitCode !== 0) return undefined;
+      if (r.exitCode !== 0) {
+        // Differentiate "image not pulled locally" (legitimate degraded path
+        // — fingerprint falls back to the tag string) from "daemon hiccup"
+        // (must throw so drift detection is not silently disabled and the
+        // adapter doesn't reattach to a container running the old rootfs).
+        const blob = `${r.stderr}\n${r.stdout}`.toLowerCase();
+        if (blob.includes("no such image") || blob.includes("no such object")) {
+          return undefined;
+        }
+        throw new Error(
+          `docker image inspect failed for ${imageRef}: ${r.stderr.trim() || r.stdout.trim() || `exit ${r.exitCode}`}`,
+          { cause: r },
+        );
+      }
       const id = r.stdout.trim();
       return id.length > 0 ? id : undefined;
     },
