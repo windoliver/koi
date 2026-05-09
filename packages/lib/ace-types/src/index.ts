@@ -82,8 +82,17 @@ export interface StructuredPlaybook {
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly sessionCount: number;
-  /** Watermark: highest stepIndex that has been reflected on. */
+  /** Legacy scalar watermark — max stepIndex reflected on across ANY
+   *  session. Retained for backward compatibility; new logic should read
+   *  `reflectedStepIndexBySession` instead. Will read as
+   *  `max(reflectedStepIndexBySession values)` for stores that maintain
+   *  both fields. */
   readonly lastReflectedStepIndex?: number;
+  /** Per-session replay watermark map: highest reflected stepIndex per
+   *  session lineage. Replaces the single scalar above so playbooks shared
+   *  across sessions cannot have one session's commits overwrite another
+   *  session's replay position. Absent on legacy rows. */
+  readonly reflectedStepIndexBySession?: Readonly<Record<string, number>>;
   /** Monotonic version. Bumped on every committed mutation. */
   readonly version: number;
   /** Provenance for the most recent commit (omitted for v0 / seeded entries). */

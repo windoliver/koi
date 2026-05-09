@@ -77,8 +77,13 @@ function stripServerNormalizedFields(snapshotJson: string): string {
     const parsed = JSON.parse(snapshotJson) as {
       provenance?: { committedAt?: number };
       lastReflectedStepIndex?: number;
+      reflectedStepIndexBySession?: Readonly<Record<string, number>>;
     };
-    const { lastReflectedStepIndex: _w, ...withoutWatermark } = parsed;
+    const {
+      lastReflectedStepIndex: _w,
+      reflectedStepIndexBySession: _m,
+      ...withoutWatermark
+    } = parsed;
     if (withoutWatermark.provenance !== undefined) {
       const { committedAt: _ignored, ...rest } = withoutWatermark.provenance;
       if (Object.keys(rest).length === 0) {
@@ -560,6 +565,7 @@ interface StructuredPlaybookRow {
   readonly updated_at: number;
   readonly session_count: number;
   readonly last_reflected_step_index: number | null;
+  readonly reflected_step_index_by_session: string | null;
   readonly version: number;
   readonly provenance: string | null;
 }
@@ -568,8 +574,8 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
   const upsertCurrent = db.prepare(`
     INSERT OR REPLACE INTO structured_playbooks
       (id, title, sections, tags, source, created_at, updated_at, session_count,
-       last_reflected_step_index, version, provenance)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       last_reflected_step_index, reflected_step_index_by_session, version, provenance)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertVersion = db.prepare(`
     INSERT INTO structured_playbook_versions (playbook_id, version, snapshot, committed_at)
@@ -681,10 +687,42 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
           : incomingWatermark === null
             ? currentWatermark
             : Math.max(currentWatermark, incomingWatermark);
-      const { lastReflectedStepIndex: _w, provenance: _p, ...rest } = pb;
+      // Per-session watermark map: merge incoming with current (load from
+      // latest snapshot if no head). Each session takes max(prior, incoming)
+      // so commits from session A cannot regress session B's replay
+      // position. The legacy scalar `lastReflectedStepIndex` is kept for
+      // backward compat as the max across sessions.
+      const currentSessionMapRow = selectLatestLineageSnapshot.get(pb.id) as {
+        readonly snapshot: string;
+      } | null;
+      let mergedSessionMap: Record<string, number> | undefined;
+      if (currentSessionMapRow !== null) {
+        const parsed = JSON.parse(currentSessionMapRow.snapshot) as {
+          readonly reflectedStepIndexBySession?: Readonly<Record<string, number>>;
+        };
+        if (parsed.reflectedStepIndexBySession !== undefined) {
+          mergedSessionMap = { ...parsed.reflectedStepIndexBySession };
+        }
+      }
+      if (pb.reflectedStepIndexBySession !== undefined) {
+        mergedSessionMap = mergedSessionMap ?? {};
+        for (const [sid, idx] of Object.entries(pb.reflectedStepIndexBySession)) {
+          const prior = mergedSessionMap[sid];
+          mergedSessionMap[sid] = prior === undefined || idx > prior ? idx : prior;
+        }
+      }
+      const {
+        lastReflectedStepIndex: _w,
+        reflectedStepIndexBySession: _m,
+        provenance: _p,
+        ...rest
+      } = pb;
       const normalized: StructuredPlaybook = {
         ...rest,
         ...(monotonicWatermark !== null ? { lastReflectedStepIndex: monotonicWatermark } : {}),
+        ...(mergedSessionMap !== undefined
+          ? { reflectedStepIndexBySession: mergedSessionMap }
+          : {}),
         ...(normalizedProvenance !== undefined ? { provenance: normalizedProvenance } : {}),
       };
       const snapshot = canonicalJson(normalized);
@@ -746,6 +784,9 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
             stored.updatedAt,
             stored.sessionCount,
             promotedWatermark,
+            stored.reflectedStepIndexBySession !== undefined
+              ? canonicalJson(stored.reflectedStepIndexBySession)
+              : null,
             stored.version,
             stored.provenance !== undefined ? canonicalJson(stored.provenance) : null,
           );
@@ -765,6 +806,7 @@ function createStructuredPlaybookStore(db: Database): SqlitePlaybookStore["struc
         pb.updatedAt,
         pb.sessionCount,
         monotonicWatermark,
+        mergedSessionMap !== undefined ? canonicalJson(mergedSessionMap) : null,
         pb.version,
         normalizedProvenance !== undefined ? canonicalJson(normalizedProvenance) : null,
       );
@@ -862,14 +904,26 @@ function rowToStructuredPlaybook(row: StructuredPlaybookRow): StructuredPlaybook
     updatedAt: row.updated_at,
     sessionCount: row.session_count,
     version: row.version,
-  } satisfies Omit<StructuredPlaybook, "lastReflectedStepIndex" | "provenance">;
+  } satisfies Omit<
+    StructuredPlaybook,
+    "lastReflectedStepIndex" | "reflectedStepIndexBySession" | "provenance"
+  >;
   const withWatermark =
     row.last_reflected_step_index !== null
       ? { ...base, lastReflectedStepIndex: row.last_reflected_step_index }
       : base;
+  const withSessionMap =
+    row.reflected_step_index_by_session !== null
+      ? {
+          ...withWatermark,
+          reflectedStepIndexBySession: JSON.parse(row.reflected_step_index_by_session) as Readonly<
+            Record<string, number>
+          >,
+        }
+      : withWatermark;
   return row.provenance !== null
-    ? { ...withWatermark, provenance: JSON.parse(row.provenance) as PlaybookProvenance }
-    : withWatermark;
+    ? { ...withSessionMap, provenance: JSON.parse(row.provenance) as PlaybookProvenance }
+    : withSessionMap;
 }
 
 // ---------------------------------------------------------------------------

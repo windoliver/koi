@@ -57,7 +57,7 @@ import type { Database } from "bun:sqlite";
  *     .last_reflected_step_index, snapshot.lastReflectedStepIndex)
  *     across all known versions.
  */
-const CURRENT_SCHEMA_VERSION = 7;
+const CURRENT_SCHEMA_VERSION = 8;
 
 export function applyPragmas(db: Database, durability: "process" | "os"): void {
   db.run("PRAGMA journal_mode = WAL");
@@ -150,6 +150,7 @@ export function applySchema(db: Database): void {
       updated_at                INTEGER NOT NULL,
       session_count             INTEGER NOT NULL,
       last_reflected_step_index INTEGER,
+      reflected_step_index_by_session TEXT,
       version                   INTEGER NOT NULL,
       provenance                TEXT
     )
@@ -239,6 +240,7 @@ export function applySchema(db: Database): void {
   migrateSessionTimestampsToV5(db);
   migrateWatermarksToV6(db);
   migrateStoreIdentityToV7(db);
+  migratePerSessionWatermarkToV8(db);
   if (fromVersion < CURRENT_SCHEMA_VERSION) {
     db.run(`PRAGMA user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
   }
@@ -252,6 +254,24 @@ export function applySchema(db: Database): void {
  * (round 7 finding). Without it, `createSqlitePlaybookStore({ create: true })`
  * would silently fabricate a fresh store on resume.
  */
+/**
+ * v8: per-session replay watermark. Adds
+ * `structured_playbooks.reflected_step_index_by_session TEXT` (JSON map of
+ * sessionId → highest reflected stepIndex). Replaces the single-scalar
+ * `last_reflected_step_index` column for correctness (alternating sessions
+ * can no longer overwrite each other's replay positions). The legacy
+ * scalar column is retained as `max(map values)` for backward compatibility
+ * with consumers that have not migrated.
+ */
+function migratePerSessionWatermarkToV8(db: Database): void {
+  const cols = db.query("PRAGMA table_info(structured_playbooks)").all() as readonly {
+    readonly name: string;
+  }[];
+  if (!cols.some((c) => c.name === "reflected_step_index_by_session")) {
+    db.run("ALTER TABLE structured_playbooks ADD COLUMN reflected_step_index_by_session TEXT");
+  }
+}
+
 function migrateStoreIdentityToV7(db: Database): void {
   db.run(`
     CREATE TABLE IF NOT EXISTS store_identity (

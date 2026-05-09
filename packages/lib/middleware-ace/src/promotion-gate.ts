@@ -431,20 +431,22 @@ export async function commitPromotion(
 
   const now = deps.clock?.() ?? Date.now();
   const nextBody = applyProposalOperations(current, proposal, now);
-  // Advance the reflection watermark so a retry / restart cannot
-  // re-reflect this trajectory window and re-promote the same evidence.
-  // TrajectoryRange is half-open `[from, to)` — highest reflected step is
-  // `to - 1`. Empty windows preserve the prior watermark.
-  const newWatermark = highestReflectedStepIndex(
-    current.lastReflectedStepIndex,
+  // Advance per-session replay watermarks: each session's index is tracked
+  // independently so a commit from session B cannot overwrite session A's
+  // replay position. The legacy scalar `lastReflectedStepIndex` is derived
+  // as max(map values) for backward compatibility with consumers that have
+  // not migrated to the per-session map.
+  const newSessionMap = mergeReflectedStepIndexes(
+    current.reflectedStepIndexBySession,
     proposal.sourceTrajectoryRange,
-    current.provenance?.sourceTrajectoryRange.sessionId,
   );
+  const newScalar = scalarFromSessionMap(newSessionMap);
   const next: StructuredPlaybook = {
     ...nextBody,
     updatedAt: now,
     version: current.version + 1,
-    ...(newWatermark !== undefined ? { lastReflectedStepIndex: newWatermark } : {}),
+    ...(newScalar !== undefined ? { lastReflectedStepIndex: newScalar } : {}),
+    ...(newSessionMap !== undefined ? { reflectedStepIndexBySession: newSessionMap } : {}),
     provenance: {
       sourceTrajectoryRange: proposal.sourceTrajectoryRange,
       proposalId: proposal.id,
@@ -488,23 +490,34 @@ export async function commitPromotion(
  * the prior watermark belongs to an unrelated trajectory stream and
  * cannot suppress fresh work.
  */
-function highestReflectedStepIndex(
-  prior: number | undefined,
+/** Merge a half-open trajectory range into a per-session watermark map.
+ *  Returns a new map where range.sessionId is set to max(prior, to-1).
+ *  Empty windows preserve the prior map. */
+function mergeReflectedStepIndexes(
+  prior: Readonly<Record<string, number>> | undefined,
   range: {
     readonly sessionId: string;
     readonly fromStepIndex: number;
     readonly toStepIndex: number;
   },
-  priorSessionId: string | undefined,
-): number | undefined {
-  if (range.toStepIndex <= range.fromStepIndex) return prior; // empty window
+): Readonly<Record<string, number>> | undefined {
+  if (range.toStepIndex <= range.fromStepIndex) return prior;
   const candidate = range.toStepIndex - 1;
-  if (prior === undefined) return candidate;
-  // Cross-session: prior is from a different trajectory stream. Reset to
-  // candidate so new-session work is not suppressed by old-session indexes.
-  if (priorSessionId !== range.sessionId) return candidate;
-  // Same session: monotonic clamp.
-  return candidate > prior ? candidate : prior;
+  const priorForSession = prior?.[range.sessionId];
+  const next =
+    priorForSession === undefined || candidate > priorForSession ? candidate : priorForSession;
+  return { ...(prior ?? {}), [range.sessionId]: next };
+}
+
+function scalarFromSessionMap(
+  map: Readonly<Record<string, number>> | undefined,
+): number | undefined {
+  if (map === undefined) return undefined;
+  let max: number | undefined;
+  for (const v of Object.values(map)) {
+    if (max === undefined || v > max) max = v;
+  }
+  return max;
 }
 
 /**
@@ -681,19 +694,22 @@ export async function rollbackPromotion(
   }
 
   const now = deps.clock?.() ?? Date.now();
-  // Watermark monotonicity on rollback: half-open range, highest step is
-  // `to - 1`; current head's watermark dominates if higher; empty window
-  // preserves prior.
-  const rollbackWatermark = highestReflectedStepIndex(
-    current.lastReflectedStepIndex,
+  // Watermark monotonicity on rollback uses the same per-session map as
+  // commit: the rollback proposal's sessionId gets max(prior, to-1); other
+  // sessions' positions are preserved. Empty window preserves prior.
+  const rollbackSessionMap = mergeReflectedStepIndexes(
+    current.reflectedStepIndexBySession,
     proposal.sourceTrajectoryRange,
-    current.provenance?.sourceTrajectoryRange.sessionId,
   );
+  const rollbackScalar = scalarFromSessionMap(rollbackSessionMap);
   const restored: StructuredPlaybook = {
     ...target,
     version: current.version + 1,
     updatedAt: now,
-    ...(rollbackWatermark !== undefined ? { lastReflectedStepIndex: rollbackWatermark } : {}),
+    ...(rollbackScalar !== undefined ? { lastReflectedStepIndex: rollbackScalar } : {}),
+    ...(rollbackSessionMap !== undefined
+      ? { reflectedStepIndexBySession: rollbackSessionMap }
+      : {}),
     provenance: {
       sourceTrajectoryRange: proposal.sourceTrajectoryRange,
       proposalId: proposal.id,

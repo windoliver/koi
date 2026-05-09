@@ -247,6 +247,57 @@ describe.each(adapters)("promotion-gate integration: %s", (label, mk) => {
     }
   });
 
+  test("commitPromotion: per-session watermarks preserved across alternating sessions", async () => {
+    const ctx = mk();
+    try {
+      await ctx.structuredStore.save(structuredPlaybook({ version: 1 }));
+
+      // Session A advances to step 5 (range [0, 6))
+      const pA = proposal({
+        id: "p-a1",
+        baseVersion: 1,
+        sourceTrajectoryRange: { sessionId: "sess-A", fromStepIndex: 0, toStepIndex: 6 },
+      });
+      const eA = evaluation({ id: "e-a1", proposalId: "p-a1" });
+      await ctx.proposalStore.recordProposal(pA);
+      await commitPromotion(ctx, pA, eA, thresholds);
+
+      // Session B commits with its own range [0, 3). Per-session map
+      // tracks both; legacy scalar shows max.
+      const pB = proposal({
+        id: "p-b1",
+        baseVersion: 2,
+        sourceTrajectoryRange: { sessionId: "sess-B", fromStepIndex: 0, toStepIndex: 3 },
+      });
+      const eB = evaluation({ id: "e-b1", proposalId: "p-b1" });
+      await ctx.proposalStore.recordProposal(pB);
+      await commitPromotion(ctx, pB, eB, thresholds);
+
+      const after2 = await ctx.structuredStore.get(PLAYBOOK_ID);
+      expect(after2?.reflectedStepIndexBySession?.["sess-A"]).toBe(5);
+      expect(after2?.reflectedStepIndexBySession?.["sess-B"]).toBe(2);
+      expect(after2?.lastReflectedStepIndex).toBe(5);
+
+      // Session A resumes from its real position (range [6, 8)) — must
+      // not be reset by session B's lower index.
+      const pA2 = proposal({
+        id: "p-a2",
+        baseVersion: 3,
+        sourceTrajectoryRange: { sessionId: "sess-A", fromStepIndex: 6, toStepIndex: 8 },
+      });
+      const eA2 = evaluation({ id: "e-a2", proposalId: "p-a2" });
+      await ctx.proposalStore.recordProposal(pA2);
+      await commitPromotion(ctx, pA2, eA2, thresholds);
+
+      const after3 = await ctx.structuredStore.get(PLAYBOOK_ID);
+      expect(after3?.reflectedStepIndexBySession?.["sess-A"]).toBe(7);
+      expect(after3?.reflectedStepIndexBySession?.["sess-B"]).toBe(2);
+      expect(after3?.lastReflectedStepIndex).toBe(7);
+    } finally {
+      ctx.cleanup?.();
+    }
+  });
+
   test("commitPromotion: idempotent retry returns prior success when head provenance matches", async () => {
     const ctx = mk();
     try {
