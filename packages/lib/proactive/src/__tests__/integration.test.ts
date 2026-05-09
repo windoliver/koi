@@ -9,7 +9,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import type {
   Agent,
   AgentId,
@@ -28,6 +28,8 @@ import {
   type FakeClock,
 } from "../../../../sched/scheduler/src/index.js";
 import { createProactiveToolsProvider } from "../provider.js";
+
+setDefaultTimeout(15_000);
 
 interface Harness {
   readonly scheduler: TaskScheduler;
@@ -136,6 +138,32 @@ async function drain(clock: FakeClock, ms: number): Promise<void> {
   clock.tick(ms);
   for (let i = 0; i < 5; i++) {
     await new Promise<void>((r) => clock.setTimeout(r, 0));
+  }
+}
+
+function cronExpressionAt(when: Date): string {
+  return `${when.getSeconds()} ${when.getMinutes()} ${when.getHours()} ${when.getDate()} ${
+    when.getMonth() + 1
+  } *`;
+}
+
+function futureCronExpression(offsetMs: number): string {
+  const nextWholeSecond = Math.ceil(Date.now() / 1_000) * 1_000;
+  return cronExpressionAt(new Date(nextWholeSecond + offsetMs));
+}
+
+async function waitForMonitorDispatch(
+  harness: Harness,
+  expectedCount: number,
+  timeoutMs: number,
+): Promise<void> {
+  const startedAt = Date.now();
+  while (harness.dispatched.length < expectedCount) {
+    if (Date.now() - startedAt > timeoutMs) {
+      break;
+    }
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
+    await drain(harness.clock, 1);
   }
 }
 
@@ -260,14 +288,14 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
     expect(liveAfter.some((s: { readonly id: string }) => s.id === r.schedule_id)).toBe(false);
   });
 
-  test("7. create_monitor schedules a live monitor and list_monitors returns its summary", async () => {
+  test("7. create_monitor dispatches the synthesized monitor wake text and lists its summary", async () => {
     const tools = await attachTools(h.schedulerComponent, h.aid);
+    const expression = futureCronExpression(2_000);
     const created = (await tools.createMonitor.execute({
       name: "dependency-watch",
       goal: "Detect whether issue #1212 is unblocked",
       check_prompt: "Inspect repo and GitHub state, then decide whether follow-up is warranted.",
-      expression: "0 9 * * *",
-      timezone: "America/Los_Angeles",
+      expression,
       context_hint: "Look at scheduler/channel restoration issues first.",
     })) as { ok: boolean; monitor_id: string; schedule_id: string };
 
@@ -291,7 +319,7 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
         schedule_id: created.schedule_id,
         name: "dependency-watch",
         goal: "Detect whether issue #1212 is unblocked",
-        expression: "0 9 * * *",
+        expression,
         context_hint: "Look at scheduler/channel restoration issues first.",
       },
     ]);
@@ -299,24 +327,37 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
     const live = await h.scheduler.querySchedules(h.aid);
     expect(live).toHaveLength(1);
     expect(live.some((schedule) => schedule.id === created.schedule_id)).toBe(true);
+
+    await waitForMonitorDispatch(h, 1, 4_000);
+    expect(h.dispatched).toEqual([
+      {
+        kind: "text",
+        text: [
+          "Monitor check: dependency-watch",
+          "Goal: Detect whether issue #1212 is unblocked",
+          "Check: Inspect repo and GitHub state, then decide whether follow-up is warranted.",
+          "Context: Look at scheduler/channel restoration issues first.",
+        ].join("\n"),
+      },
+    ]);
   });
 
-  test("8. update_monitor rotates the live schedule and keeps only the updated monitor", async () => {
+  test("8. update_monitor rotates the live schedule and later dispatches only the updated monitor text", async () => {
     const tools = await attachTools(h.schedulerComponent, h.aid);
+    const initialExpression = futureCronExpression(5_000);
     const created = (await tools.createMonitor.execute({
       name: "dependency-watch",
       goal: "Detect whether issue #1212 is unblocked",
       check_prompt: "Inspect repo state.",
-      expression: "0 9 * * *",
-      timezone: "America/Los_Angeles",
+      expression: initialExpression,
     })) as { monitor_id: string; schedule_id: string };
 
+    const updatedExpression = futureCronExpression(2_000);
     const updated = (await tools.updateMonitor.execute({
       monitor_id: created.monitor_id,
       goal: "Detect whether issue #1301 is unblocked",
       check_prompt: "Inspect delivery and durability state.",
-      expression: "30 9 * * *",
-      timezone: "America/New_York",
+      expression: updatedExpression,
       context_hint: "Focus on proactive delivery blockers first.",
     })) as { ok: boolean; monitor_id: string; schedule_id: string };
 
@@ -337,22 +378,39 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
     expect(listed.monitors[0]?.monitor_id).toBe(created.monitor_id);
     expect(listed.monitors[0]?.schedule_id).toBe(updated.schedule_id);
     expect(listed.monitors[0]?.goal).toBe("Detect whether issue #1301 is unblocked");
-    expect(listed.monitors[0]?.expression).toBe("30 9 * * *");
+    expect(listed.monitors[0]?.expression).toBe(updatedExpression);
     expect(listed.monitors[0]?.context_hint).toBe("Focus on proactive delivery blockers first.");
 
     const live = await h.scheduler.querySchedules(h.aid);
     expect(live).toHaveLength(1);
     expect(live.some((schedule) => schedule.id === updated.schedule_id)).toBe(true);
     expect(live.some((schedule) => schedule.id === created.schedule_id)).toBe(false);
+
+    await waitForMonitorDispatch(h, 1, 4_000);
+    expect(h.dispatched).toEqual([
+      {
+        kind: "text",
+        text: [
+          "Monitor check: dependency-watch",
+          "Goal: Detect whether issue #1301 is unblocked",
+          "Check: Inspect delivery and durability state.",
+          "Context: Focus on proactive delivery blockers first.",
+        ].join("\n"),
+      },
+    ]);
+
+    await waitForMonitorDispatch(h, 2, 4_500);
+    expect(h.dispatched).toHaveLength(1);
   });
 
-  test("9. cancel_monitor removes the listed monitor and unschedules future runs", async () => {
+  test("9. cancel_monitor removes the listed monitor and suppresses future monitor dispatches", async () => {
     const tools = await attachTools(h.schedulerComponent, h.aid);
+    const expression = futureCronExpression(2_000);
     const created = (await tools.createMonitor.execute({
       name: "dependency-watch",
       goal: "Detect whether issue #1212 is unblocked",
       check_prompt: "Inspect repo state.",
-      expression: "0 9 * * *",
+      expression,
     })) as { monitor_id: string; schedule_id: string };
 
     const cancelled = (await tools.cancelMonitor.execute({
@@ -366,6 +424,9 @@ describe("@koi/proactive integration with @koi/scheduler", () => {
 
     const live = await h.scheduler.querySchedules(h.aid);
     expect(live.some((schedule) => schedule.id === created.schedule_id)).toBe(false);
+
+    await waitForMonitorDispatch(h, 1, 3_500);
+    expect(h.dispatched).toHaveLength(0);
   });
 
   test("10. provider reattach against fresh scheduler — sleep heals via query, cron freshens per attach", async () => {
