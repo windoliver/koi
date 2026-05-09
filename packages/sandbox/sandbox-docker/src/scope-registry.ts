@@ -1,7 +1,8 @@
-import { mkdirSync, readFileSync } from "node:fs";
-import { rename, unlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 /**
  * Per-scope ownership ledger consulted by `findOrCreate` before reattaching.
@@ -21,9 +22,7 @@ import { dirname, join } from "node:path";
  * error rather than blindly attach to a stranger.
  *
  * Implementations must be safe to call from multiple async tasks within one
- * process. Cross-process safety relies on atomic file writes (temp + rename)
- * for the file-backed implementation; readers may briefly observe stale
- * state, but never partial writes.
+ * process AND across processes sharing the same backing store.
  */
 export interface ScopeRegistry {
   /** Record the container ID we created for a scope. Overwrites any prior entry. */
@@ -53,118 +52,92 @@ export function createInMemoryScopeRegistry(): ScopeRegistry {
   };
 }
 
-interface RegistryFile {
-  readonly version: 1;
-  readonly scopes: Record<string, { readonly containerId: string }>;
-}
-
 /**
- * Resolve the default scope-registry path:
- *   ${KOI_SANDBOX_DOCKER_STATE_DIR}/scopes.json, falling back to
- *   ${XDG_STATE_HOME ?? ~/.local/state}/koi-sandbox-docker/scopes.json.
+ * Resolve the default scope-registry directory:
+ *   ${KOI_SANDBOX_DOCKER_STATE_DIR}/scopes, falling back to
+ *   ${XDG_STATE_HOME ?? ~/.local/state}/koi-sandbox-docker/scopes.
+ *
+ * Each scope is stored as its own file inside this directory so concurrent
+ * writes to different scopes never touch the same bytes — eliminating the
+ * cross-process read-modify-write race that a single combined ledger would
+ * have.
  */
-export function defaultScopeRegistryPath(): string {
+export function defaultScopeRegistryDir(): string {
   const overrideDir = process.env.KOI_SANDBOX_DOCKER_STATE_DIR;
   if (overrideDir !== undefined && overrideDir.length > 0) {
-    return join(overrideDir, "scopes.json");
+    return join(overrideDir, "scopes");
   }
   const xdg = process.env.XDG_STATE_HOME;
   const baseDir = xdg !== undefined && xdg.length > 0 ? xdg : join(homedir(), ".local", "state");
-  return join(baseDir, "koi-sandbox-docker", "scopes.json");
+  return join(baseDir, "koi-sandbox-docker", "scopes");
 }
 
 /**
- * File-backed registry. Reads the JSON ledger on each lookup so a peer
- * process's recent writes are visible. Writes are atomic via temp-file +
- * rename, so a crash mid-write leaves either the old or the new file —
- * never a half-written one. Within one process, an async chain serializes
- * mutations so concurrent record/forget calls cannot lose updates.
+ * File-backed registry using a per-scope file layout. Each scope key is
+ * hashed (sha256, hex) and stored at `<dir>/<hash>.scope` containing the
+ * container ID as plain text.
  *
- * Tolerates missing files and parse errors by treating the registry as
- * empty — better availability than failing a fresh sandbox bootstrap on
- * a corrupted state file.
+ * Why per-scope files (not a single JSON ledger): a single combined ledger
+ * requires read-modify-write on every record/forget. Two cooperating
+ * processes touching different scopes would race — both read the old file,
+ * both write back, last writer silently drops the other's entry, and a
+ * legitimate container ends up unverified by the registry.
+ *
+ * With one file per scope, concurrent writes for different scopes never
+ * touch the same bytes; writes for the same scope are serialized by the
+ * adapter's per-scope async serializer (intra-process) and by Docker's
+ * deterministic --name conflict + retry (cross-process), so the file system
+ * never sees competing writers for the same scope file.
+ *
+ * Writes are atomic via temp-file + rename, so a crash mid-write leaves
+ * either the old file or the new file — never a half-written one.
+ *
+ * Tolerates missing files and read errors by treating the entry as absent.
  */
-export function createFileScopeRegistry(opts?: { readonly path?: string }): ScopeRegistry {
-  const filePath = opts?.path ?? defaultScopeRegistryPath();
+export function createFileScopeRegistry(opts?: { readonly dir?: string }): ScopeRegistry {
+  const dir = opts?.dir ?? defaultScopeRegistryDir();
 
-  // `let` justified: the in-process write chain is mutated as we serialize
-  // record/forget calls. Concurrent reads do not pass through this chain —
-  // they re-read the file directly so a peer's writes are visible quickly.
-  let writeChain: Promise<unknown> = Promise.resolve();
-
-  function readFileSync_(): RegistryFile {
-    try {
-      const raw = readFileSync(filePath, "utf-8");
-      const parsed: unknown = JSON.parse(raw);
-      if (
-        parsed === null ||
-        typeof parsed !== "object" ||
-        (parsed as { version?: unknown }).version !== 1
-      ) {
-        return { version: 1, scopes: {} };
-      }
-      const scopes = (parsed as { scopes?: unknown }).scopes;
-      if (scopes === null || typeof scopes !== "object") {
-        return { version: 1, scopes: {} };
-      }
-      const out: Record<string, { readonly containerId: string }> = {};
-      for (const [k, v] of Object.entries(scopes as Record<string, unknown>)) {
-        if (
-          v !== null &&
-          typeof v === "object" &&
-          typeof (v as { containerId?: unknown }).containerId === "string"
-        ) {
-          out[k] = { containerId: (v as { containerId: string }).containerId };
-        }
-      }
-      return { version: 1, scopes: out };
-    } catch {
-      // Missing file or parse error → empty registry. A corrupted file should
-      // not block sandbox bootstrap; the next successful write replaces it.
-      return { version: 1, scopes: {} };
-    }
-  }
-
-  async function writeAtomic(next: RegistryFile): Promise<void> {
-    mkdirSync(dirname(filePath), { recursive: true });
-    const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tmp, JSON.stringify(next, null, 2), { mode: 0o600 });
-    try {
-      await rename(tmp, filePath);
-    } catch (e: unknown) {
-      // Best effort: don't leak the temp file on rename failure.
-      try {
-        await unlink(tmp);
-      } catch {
-        // ignore
-      }
-      throw e;
-    }
-  }
-
-  function enqueue<T>(fn: () => Promise<T>): Promise<T> {
-    const next = writeChain.then(fn, fn);
-    writeChain = next.catch(() => undefined);
-    return next as Promise<T>;
+  function pathFor(scope: string): string {
+    // Hash so arbitrary scope strings (containing slashes, colons, etc.)
+    // become safe filenames. Scope strings are not secrets; the hash is
+    // about path safety, not confidentiality.
+    const hash = createHash("sha256").update(scope, "utf8").digest("hex");
+    return join(dir, `${hash}.scope`);
   }
 
   return {
-    record: (scope, containerId): Promise<void> =>
-      enqueue(async () => {
-        const cur = readFileSync_();
-        const nextScopes = { ...cur.scopes, [scope]: { containerId } };
-        await writeAtomic({ version: 1, scopes: nextScopes });
-      }),
-    lookup: async (scope): Promise<string | undefined> => {
-      const cur = readFileSync_();
-      return cur.scopes[scope]?.containerId;
+    record: async (scope, containerId): Promise<void> => {
+      mkdirSync(dir, { recursive: true });
+      const target = pathFor(scope);
+      const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
+      await writeFile(tmp, containerId, { mode: 0o600 });
+      try {
+        await rename(tmp, target);
+      } catch (e: unknown) {
+        try {
+          await unlink(tmp);
+        } catch {
+          // ignore — best effort cleanup
+        }
+        throw e;
+      }
     },
-    forget: (scope): Promise<void> =>
-      enqueue(async () => {
-        const cur = readFileSync_();
-        if (!(scope in cur.scopes)) return;
-        const { [scope]: _dropped, ...rest } = cur.scopes;
-        await writeAtomic({ version: 1, scopes: rest });
-      }),
+    lookup: async (scope): Promise<string | undefined> => {
+      try {
+        const raw = await readFile(pathFor(scope), "utf-8");
+        const trimmed = raw.trim();
+        return trimmed.length > 0 ? trimmed : undefined;
+      } catch {
+        // Missing file or any read error → entry absent.
+        return undefined;
+      }
+    },
+    forget: async (scope): Promise<void> => {
+      try {
+        await unlink(pathFor(scope));
+      } catch {
+        // Idempotent: missing file is success.
+      }
+    },
   };
 }

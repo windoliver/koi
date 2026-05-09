@@ -265,7 +265,22 @@ async function doFindOrCreate(
     // Record the ID we received so subsequent reuse trusts only this exact
     // container (forgery-resistant: the registry is private to this process /
     // host, not a label set anyone with daemon access can write).
-    await scopeRegistry.record(scope, container.id);
+    try {
+      await scopeRegistry.record(scope, container.id);
+    } catch (recordErr: unknown) {
+      // The registry write failed (disk full, perms, transient I/O). The
+      // container exists and holds the deterministic --name, so without this
+      // cleanup the scope would wedge: every subsequent findOrCreate would
+      // see the name conflict but find no matching registry entry and
+      // refuse to attach (security correct, availability bad). Roll back
+      // the create so the next attempt starts from a clean slate.
+      try {
+        await container.remove();
+      } catch {
+        // Best effort: surface the original record error either way.
+      }
+      throw recordErr;
+    }
     return createDockerInstance(container);
   } catch (e: unknown) {
     if (!isDockerNameConflictError(e)) throw e;
@@ -273,15 +288,24 @@ async function doFindOrCreate(
     // squatting on the deterministic name. Decide which by consulting the
     // registry: only reattach if the surviving container's ID matches a
     // value WE previously recorded.
-    const winner = await tryReuse({
-      findContainers,
-      inspectContainer,
-      startContainer,
-      scopeLabels,
-      fingerprint,
-      scope,
-      scopeRegistry,
-    });
+    //
+    // Important: a peer process that won the race may not have called
+    // `scopeRegistry.record` yet — there is a non-zero window between
+    // `createContainer` returning on the winner and the winner's record()
+    // landing on disk. Bounded retry covers that window without forcing
+    // the legitimate loser into a false-positive "stranger" failure.
+    const winner = await tryReuseWithRetry(
+      {
+        findContainers,
+        inspectContainer,
+        startContainer,
+        scopeLabels,
+        fingerprint,
+        scope,
+        scopeRegistry,
+      },
+      { attempts: 5, delayMs: 100 },
+    );
     if (winner !== undefined) return winner;
     // Name was taken but the surviving container is not one we own. Refuse
     // to attach to a stranger and surface the original conflict so the
@@ -418,6 +442,32 @@ async function tryReuse(args: {
   // exited or stopped → resume in place.
   await startContainer(existing.id);
   return createDockerInstance(existing);
+}
+
+/**
+ * Wrap `tryReuse` with bounded retries — used after losing the deterministic
+ * name-conflict race so the winner has time to land its `scopeRegistry.record`
+ * write. Without retry, a perfectly legitimate loser would see "container
+ * exists but registry doesn't know it" and falsely reject the winner.
+ *
+ * Bounded so a genuine stranger (label squatter, leftover from a peer with
+ * its own registry) still surfaces the security failure quickly instead of
+ * stalling indefinitely.
+ */
+async function tryReuseWithRetry(
+  args: Parameters<typeof tryReuse>[0],
+  policy: { readonly attempts: number; readonly delayMs: number },
+): Promise<SandboxInstance | undefined> {
+  for (let i = 0; i < policy.attempts; i++) {
+    const out = await tryReuse(args);
+    if (out !== undefined) return out;
+    if (i < policy.attempts - 1) {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, policy.delayMs);
+      });
+    }
+  }
+  return undefined;
 }
 
 /**

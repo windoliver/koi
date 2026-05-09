@@ -4,7 +4,7 @@ export { detectDocker } from "./detect.js";
 export {
   createFileScopeRegistry,
   createInMemoryScopeRegistry,
-  defaultScopeRegistryPath,
+  defaultScopeRegistryDir,
   type ScopeRegistry,
 } from "./scope-registry.js";
 export {

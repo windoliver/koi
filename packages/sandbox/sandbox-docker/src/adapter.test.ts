@@ -849,4 +849,78 @@ describe("createDockerAdapter", () => {
     expect(inst).toBeDefined();
     expect(attempts).toBe(2);
   });
+
+  // Persistence (record failure): if scopeRegistry.record throws after a
+  // successful create, the just-created container must be removed so the
+  // deterministic --name is freed and the scope does not wedge permanently.
+  test("findOrCreate removes the container if scopeRegistry.record fails", async () => {
+    const created = fakeContainer("about-to-be-rolled-back");
+    let removed = false;
+    const trackedContainer: DockerContainer = {
+      ...created,
+      remove: async () => {
+        removed = true;
+      },
+    };
+    const failingRegistry: ScopeRegistry = {
+      record: async () => {
+        throw new Error("disk full");
+      },
+      lookup: async () => undefined,
+      forget: async () => {},
+    };
+    const client: DockerClient = {
+      createContainer: async () => trackedContainer,
+      findContainers: async () => [],
+      inspectContainer: async () => undefined,
+      startContainer: async () => {},
+    };
+    const r = await createDockerAdapter({ client, scopeRegistry: failingRegistry });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
+    await expect(r.value.findOrCreate("scope-RECFAIL", PROFILE)).rejects.toThrow("disk full");
+    // Critical: the deterministic --name must be released for the next caller.
+    expect(removed).toBe(true);
+  });
+
+  // Persistence (loser-race retry): a peer process won the deterministic-name
+  // race and will record the winner ID shortly. The loser must retry the
+  // registry-trust check long enough for the winner's record to land instead
+  // of immediately false-positive failing as "stranger container".
+  test("findOrCreate retries the trust check so the winner's record can land", async () => {
+    const winner = fakeContainer("winner-c1");
+    const reg = createInMemoryScopeRegistry();
+    let lookups = 0;
+    const trackingReg: ScopeRegistry = {
+      record: reg.record,
+      lookup: async (scope) => {
+        lookups += 1;
+        // Simulate the winner's record landing on the 3rd lookup attempt.
+        if (lookups === 3) await reg.record("scope-LOSER", winner.id);
+        return reg.lookup(scope);
+      },
+      forget: reg.forget,
+    };
+    const client: DockerClient = {
+      createContainer: async () => {
+        const err = Object.assign(new Error("name taken"), {
+          code: DOCKER_NAME_CONFLICT_CODE,
+        });
+        throw err;
+      },
+      findContainers: async () => [winner],
+      inspectContainer: async () => ({
+        state: "running",
+        labels: { "koi.sandbox.profile-hash": PROFILE_HASH },
+      }),
+      startContainer: async () => {},
+    };
+    const r = await createDockerAdapter({ client, scopeRegistry: trackingReg });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
+    const inst = await r.value.findOrCreate("scope-LOSER", PROFILE);
+    expect(inst).toBeDefined();
+    // First call (pre-create) + retries until winner's record landed.
+    expect(lookups).toBeGreaterThanOrEqual(3);
+  });
 });
