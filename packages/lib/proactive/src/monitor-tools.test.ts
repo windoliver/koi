@@ -182,7 +182,7 @@ describe("monitor tools", () => {
         "Goal: Detect whether issue #1212 is unblocked",
         "Check: Inspect repo and GitHub state, then decide whether follow-up is warranted.",
         "Context: Look at scheduler/channel restoration issues first.",
-      ].join("\\n"),
+      ].join("\n"),
     );
   });
 });
