@@ -245,6 +245,26 @@ describe("createGovernanceSignalSource", () => {
     expect(seen).toEqual([]);
   });
 
+  test("stop prevents an already-queued governance microtask from reaching the handler", async () => {
+    const controller = createController([
+      { name: "error_rate", current: 0.4, limit: 1, utilization: 0.4 },
+    ]);
+    const source = createGovernanceSignalSource(
+      controller,
+      [{ sensor: "error_rate", limit: 0.3, direction: "above" }],
+      { now: () => 320 },
+    );
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal), { replay: true });
+
+    await Promise.resolve();
+    stop();
+    await new Promise((resolve) => queueMicrotask(resolve));
+
+    expect(seen).toEqual([]);
+  });
+
   test("ignores stale overlapping poll completions", async () => {
     const first = createDeferred<GovernanceSnapshot>();
     const snapshots = [
@@ -282,6 +302,36 @@ describe("createGovernanceSignalSource", () => {
 
     stop();
     expect(seen).toEqual([]);
+  });
+
+  test("does not re-enter snapshot while a poll is already in flight", async () => {
+    const deferred = createDeferred<GovernanceSnapshot>();
+    const snapshot = mock(async () => deferred.promise);
+    const controller = {
+      ...createController([]),
+      snapshot,
+    } satisfies GovernanceController;
+
+    const source = createGovernanceSignalSource(
+      controller,
+      [{ sensor: "error_rate", limit: 0.3, direction: "above" }],
+      { pollIntervalMs: 1, now: () => 500 },
+    );
+
+    const stop = source.watch(() => {}, { replay: true });
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    stop();
+    deferred.resolve({
+      timestamp: 500,
+      readings: [],
+      healthy: true,
+      violations: [],
+    });
+    await deferred.promise;
+
+    expect(snapshot).toHaveBeenCalledTimes(1);
   });
 
   test("supports wildcard sensor thresholds through adapter matching", async () => {

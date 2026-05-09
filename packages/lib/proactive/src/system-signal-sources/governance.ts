@@ -66,61 +66,81 @@ export function createGovernanceSignalSource(
   return {
     name: "governance",
     watch(handler, options) {
-      const emitter = createAsyncEmitter(handler, options, now);
-      const state = new Map<string, { alerting: boolean; lastEmittedAt: number }>();
       let closed = false;
-      let latestPollId = 0;
+      const emitter = createAsyncEmitter((signal) => {
+        if (closed) return;
+        handler(signal);
+      }, options, now);
+      const state = new Map<string, { alerting: boolean; lastEmittedAt: number }>();
+      let inFlight = false;
+      let nextPollRequestId = 0;
+      let lastStartedPollRequestId = 0;
 
-      const poll = async () => {
-        const pollId = ++latestPollId;
-
+      const drainPolls = async () => {
+        if (closed || inFlight) return;
+        inFlight = true;
         try {
-          const snapshot: GovernanceSnapshot = await controller.snapshot();
-          if (closed || pollId !== latestPollId) return;
+          while (!closed && lastStartedPollRequestId < nextPollRequestId) {
+            const pollRequestId = nextPollRequestId;
+            lastStartedPollRequestId = pollRequestId;
+            const snapshot: GovernanceSnapshot = await controller.snapshot();
+            if (closed) return;
+            if (pollRequestId !== nextPollRequestId) continue;
 
-          for (const threshold of thresholds) {
-            if (closed || pollId !== latestPollId) return;
+            for (const threshold of thresholds) {
+              if (closed || pollRequestId !== nextPollRequestId) return;
 
-            const reading = selectAlertingReading(
-              findMatchingReadings(snapshot.readings, threshold),
-              threshold,
-            );
-            const nextAlerting = isAlerting(reading, threshold);
-            const key = `${threshold.sensor}:${threshold.direction}:${threshold.limit}`;
-            const previous = state.get(key) ?? { alerting: false, lastEmittedAt: -Infinity };
+              const reading = selectAlertingReading(
+                findMatchingReadings(snapshot.readings, threshold),
+                threshold,
+              );
+              const nextAlerting = isAlerting(reading, threshold);
+              const key = `${threshold.sensor}:${threshold.direction}:${threshold.limit}`;
+              const previous = state.get(key) ?? { alerting: false, lastEmittedAt: -Infinity };
 
-            if (
-              nextAlerting &&
-              previous.alerting === false &&
-              now() - previous.lastEmittedAt >= (threshold.cooldownMs ?? 0) &&
-              reading !== undefined
-            ) {
-              const emittedAt = now();
-              if (closed || pollId !== latestPollId) return;
-              emitter.emit({
-                kind: "governance",
-                sensor: threshold.sensor,
-                value: reading.current,
-                limit: threshold.limit,
-                direction: threshold.direction,
-                emittedAt,
-              } satisfies SystemSignal);
-              state.set(key, { alerting: true, lastEmittedAt: emittedAt });
-              continue;
+              if (
+                nextAlerting &&
+                previous.alerting === false &&
+                now() - previous.lastEmittedAt >= (threshold.cooldownMs ?? 0) &&
+                reading !== undefined
+              ) {
+                const emittedAt = now();
+                if (closed || pollRequestId !== nextPollRequestId) return;
+                emitter.emit({
+                  kind: "governance",
+                  sensor: threshold.sensor,
+                  value: reading.current,
+                  limit: threshold.limit,
+                  direction: threshold.direction,
+                  emittedAt,
+                } satisfies SystemSignal);
+                state.set(key, { alerting: true, lastEmittedAt: emittedAt });
+                continue;
+              }
+
+              state.set(key, { alerting: nextAlerting, lastEmittedAt: previous.lastEmittedAt });
             }
-
-            state.set(key, { alerting: nextAlerting, lastEmittedAt: previous.lastEmittedAt });
           }
         } catch (error) {
-          if (closed || pollId !== latestPollId) return;
+          if (closed || lastStartedPollRequestId !== nextPollRequestId) return;
           safeCall(options?.onError, error);
+        } finally {
+          inFlight = false;
+          if (!closed && lastStartedPollRequestId < nextPollRequestId) {
+            void drainPolls();
+          }
         }
       };
 
-      if (options?.replay === true) void poll();
+      const requestPoll = () => {
+        nextPollRequestId += 1;
+        void drainPolls();
+      };
+
+      if (options?.replay === true) requestPoll();
 
       const timer = setInterval(() => {
-        void poll();
+        requestPoll();
       }, pollIntervalMs);
 
       const subscription = createSubscriptionController(() => {
