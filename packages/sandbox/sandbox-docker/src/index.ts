@@ -7,6 +7,7 @@ export {
   type DockerContainer,
   type DockerContainerInfo,
   type DockerContainerState,
+  type DockerCreateOpts,
   type DockerExecOpts,
   type DockerExecResult,
   type DockerNameConflictError,

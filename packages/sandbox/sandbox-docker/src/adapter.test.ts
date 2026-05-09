@@ -69,9 +69,9 @@ function persistentClient(opts: {
       }
       return opts.onCreate?.(createOpts) ?? fakeContainer(`new-${events.createCalls.length}`);
     },
-    findContainer: async () => {
+    findContainers: async () => {
       events.findCalls += 1;
-      return opts.preexisting?.container;
+      return opts.preexisting === undefined ? [] : [opts.preexisting.container];
     },
     inspectContainer: async () =>
       opts.preexisting === undefined
@@ -355,10 +355,10 @@ describe("createDockerAdapter", () => {
         order.push(`create-end-${createCalls.length - 1}`);
         return fakeContainer(`new-${createCalls.length}`);
       },
-      findContainer: async () => {
+      findContainers: async () => {
         order.push(`find-${findCount}`);
         findCount += 1;
-        return undefined;
+        return [];
       },
       inspectContainer: async () => undefined,
       startContainer: async () => {},
@@ -395,11 +395,11 @@ describe("createDockerAdapter", () => {
         order.push("create-end");
         return fakeContainer(`new-${order.length}`);
       },
-      findContainer: async () => {
+      findContainers: async () => {
         const tag = `find-${findCount}`;
         findCount += 1;
         order.push(tag);
-        return undefined;
+        return [];
       },
       inspectContainer: async () => undefined,
       startContainer: async () => {},
@@ -437,11 +437,11 @@ describe("createDockerAdapter", () => {
         } as const);
         throw e;
       },
-      findContainer: async () => {
+      findContainers: async () => {
         findCount += 1;
         // First find: nothing (we believed we needed to create). Second find
         // (after the conflict): the rival's container.
-        return findCount === 1 ? undefined : winner;
+        return findCount === 1 ? [] : [winner];
       },
       inspectContainer: async () => ({
         state: "running",
@@ -472,7 +472,7 @@ describe("createDockerAdapter", () => {
       },
       // Never find anything — simulates a squatter (non-koi container with the
       // same deterministic name).
-      findContainer: async () => undefined,
+      findContainers: async () => [],
       inspectContainer: async () => undefined,
       startContainer: async () => {},
     };
@@ -556,6 +556,107 @@ describe("createDockerAdapter", () => {
     await expect(r.value.findOrCreate("scope-RECOVER", PROFILE)).rejects.toThrow(/destroyScope/);
   });
 
+  // Persistence (ambiguity): more than one container carrying the scope label
+  // must fail closed and direct the operator at destroyScope.
+  test("findOrCreate fails closed when multiple containers carry the same scope label", async () => {
+    const a = fakeContainer("dup-a");
+    const b = fakeContainer("dup-b");
+    const client: DockerClient = {
+      createContainer: async (): Promise<DockerContainer> => fakeContainer("never"),
+      findContainers: async () => [a, b],
+      inspectContainer: async () => ({
+        state: "running",
+        labels: { "koi.sandbox.profile-hash": PROFILE_HASH },
+      }),
+      startContainer: async () => {},
+    };
+    const r = await createDockerAdapter({ client });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
+    await expect(r.value.findOrCreate("scope-DUP", PROFILE)).rejects.toThrow(
+      /matches 2 containers/,
+    );
+  });
+
+  // Persistence (ambiguity recovery): destroyScope removes ALL matches, not
+  // just the first — required by the ambiguity-recovery contract.
+  test("destroyScope removes every container that carries the scope label", async () => {
+    const stops: string[] = [];
+    const removes: string[] = [];
+    function tagged(id: string): DockerContainer {
+      return {
+        id,
+        exec: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+        readFile: async () => new Uint8Array(),
+        writeFile: async () => {},
+        stop: async () => {
+          stops.push(id);
+        },
+        remove: async () => {
+          removes.push(id);
+        },
+      };
+    }
+    const client: DockerClient = {
+      createContainer: async (): Promise<DockerContainer> => tagged("never"),
+      findContainers: async () => [tagged("a"), tagged("b"), tagged("c")],
+      inspectContainer: async () => undefined,
+      startContainer: async () => {},
+    };
+    const r = await createDockerAdapter({ client });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.destroyScope === undefined) throw new Error("destroyScope must exist");
+    const wasDestroyed = await r.value.destroyScope("scope-MULTI");
+    expect(wasDestroyed).toBe(true);
+    expect(stops).toEqual(["a", "b", "c"]);
+    expect(removes).toEqual(["a", "b", "c"]);
+  });
+
+  // Persistence (image drift): when resolveImageId returns a different ID for
+  // the same tag (e.g. `:latest` repointed at new content), the recomputed
+  // fingerprint must differ from the recorded one and reuse must fail closed.
+  test("findOrCreate fails closed when image-id changes behind a stable tag", async () => {
+    // Recorded fingerprint = (PROFILE, "ubuntu:22.04", "sha256:OLD").
+    const recordedFingerprint = computeProfileFingerprint(PROFILE, "ubuntu:22.04", "sha256:OLD");
+    const existing = fakeContainer("rebuilt");
+    const client: DockerClient = {
+      createContainer: async (): Promise<DockerContainer> => fakeContainer("never"),
+      findContainers: async () => [existing],
+      inspectContainer: async () => ({
+        state: "running",
+        labels: { "koi.sandbox.profile-hash": recordedFingerprint },
+      }),
+      startContainer: async () => {},
+      // Daemon now resolves the same tag to a different content-addressed ID.
+      resolveImageId: async () => "sha256:NEW",
+    };
+    const r = await createDockerAdapter({ client });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
+    await expect(r.value.findOrCreate("scope-IMG", PROFILE)).rejects.toThrow(/different profile/i);
+  });
+
+  // Persistence (image drift): same image-id ⇒ reuse succeeds (no spurious drift).
+  test("findOrCreate reuses container when image-id matches the recorded fingerprint", async () => {
+    const recordedFingerprint = computeProfileFingerprint(PROFILE, "ubuntu:22.04", "sha256:STABLE");
+    const existing = fakeContainer("stable");
+    const client: DockerClient = {
+      createContainer: async (): Promise<DockerContainer> => fakeContainer("never"),
+      findContainers: async () => [existing],
+      inspectContainer: async () => ({
+        state: "running",
+        labels: { "koi.sandbox.profile-hash": recordedFingerprint },
+      }),
+      startContainer: async () => {},
+      resolveImageId: async () => "sha256:STABLE",
+    };
+    const r = await createDockerAdapter({ client });
+    if (!r.ok) throw new Error("setup failed");
+    if (r.value.findOrCreate === undefined) throw new Error("findOrCreate must exist");
+    const inst = await r.value.findOrCreate("scope-IMG-OK", PROFILE);
+    expect(inst).toBeDefined();
+  });
+
   // Persistence (race): if the first call rejects, the chain must not deadlock the second.
   test("findOrCreate keeps the per-scope chain alive after a rejection", async () => {
     let attempts = 0;
@@ -565,7 +666,7 @@ describe("createDockerAdapter", () => {
         if (attempts === 1) throw new Error("synthetic create failure");
         return fakeContainer("recovered");
       },
-      findContainer: async () => undefined,
+      findContainers: async () => [],
       inspectContainer: async () => undefined,
       startContainer: async () => {},
     };

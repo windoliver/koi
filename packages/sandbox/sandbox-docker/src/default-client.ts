@@ -439,28 +439,37 @@ export function createDefaultDockerClient(config?: DefaultDockerClientConfig): D
       }
       return makeContainer(id, env);
     },
-    findContainer: async (
+    findContainers: async (
       labels: Readonly<Record<string, string>>,
-    ): Promise<DockerContainer | undefined> => {
-      // Build --filter label=K=V flags from the supplied label set.
+    ): Promise<readonly DockerContainer[]> => {
+      // Build --filter label=K=V flags from the supplied label set. We query
+      // `docker ps -a` (all states) once and return every match — the adapter
+      // needs to detect ambiguous scopes (more than one container carrying the
+      // same scope label) and clean them all up via destroyScope.
       const filterArgs: string[] = [];
       for (const [k, v] of Object.entries(labels)) {
         filterArgs.push("--filter", `label=${k}=${v}`);
       }
-      // Prefer running containers (so resume is faster). If none, fall back to all.
-      const psArgsRunning = ["ps", "-q", ...filterArgs];
-      const psArgsAll = ["ps", "-a", "-q", ...filterArgs];
-      const running = await runDocker(psArgsRunning, undefined, env);
-      const idsRaw =
-        running.exitCode === 0 && running.stdout.trim().length > 0
-          ? running.stdout
-          : (await runDocker(psArgsAll, undefined, env)).stdout;
-      const id = idsRaw
+      const r = await runDocker(["ps", "-a", "-q", ...filterArgs], undefined, env);
+      if (r.exitCode !== 0) return [];
+      const ids = r.stdout
         .split("\n")
         .map((x) => x.trim())
-        .find((x) => x.length > 0);
-      if (id === undefined) return undefined;
-      return makeContainer(id, env);
+        .filter((x) => x.length > 0);
+      return ids.map((id) => makeContainer(id, env));
+    },
+    resolveImageId: async (imageRef: string): Promise<string | undefined> => {
+      // `docker image inspect` resolves a tag/digest to its content-addressed ID
+      // without contacting a registry. Returns undefined when the image is not
+      // pulled locally — the adapter degrades to (image-string, profile) only.
+      const r = await runDocker(
+        ["image", "inspect", "--format", "{{.Id}}", imageRef],
+        undefined,
+        env,
+      );
+      if (r.exitCode !== 0) return undefined;
+      const id = r.stdout.trim();
+      return id.length > 0 ? id : undefined;
     },
     inspectContainer: async (id: string): Promise<DockerContainerInfo | undefined> => {
       // Tab-separated output: "<status>\t<json-labels>". Using a literal tab

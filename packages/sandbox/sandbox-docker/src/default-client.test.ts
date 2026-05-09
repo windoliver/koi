@@ -801,25 +801,25 @@ describe("createDefaultDockerClient", () => {
     }
   });
 
-  // Persistence: findContainer prefers running containers, returns first id.
-  test("findContainer: returns first running id when present", async () => {
+  // Persistence: findContainers returns all matching ids (single match → array of one).
+  test("findContainers: returns all matching ids via single ps -a -q query", async () => {
     const calls: string[][] = [];
     // @ts-expect-error — test stub
     const spawnSpy = spyOn(Bun, "spawn").mockImplementation((args: string[]) => {
       calls.push(args);
-      // First call (running ps): return a single id. args[1]="ps", args[2]="-q".
-      if (args[1] === "ps" && args[2] === "-q") {
-        return fakeProc({ stdout: "running-1\n", stderr: "", exitCode: 0 });
-      }
-      return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
+      return fakeProc({ stdout: "id-1\n", stderr: "", exitCode: 0 });
     });
     try {
       const client = createDefaultDockerClient();
-      if (client.findContainer === undefined) throw new Error("findContainer must exist");
-      const got = await client.findContainer({ "koi.sandbox.scope": "S" });
-      expect(got?.id).toBe("running-1");
-      // First call was the running-only ps query (args[0]=docker).
-      expect(calls[0]?.slice(1, 3)).toEqual(["ps", "-q"]);
+      if (client.findContainers === undefined) {
+        throw new Error("findContainers must exist");
+      }
+      const got = await client.findContainers({ "koi.sandbox.scope": "S" });
+      expect(got.length).toBe(1);
+      expect(got[0]?.id).toBe("id-1");
+      // Single ps -a -q query (args[0]=docker, args[1..3]=ps -a -q).
+      expect(calls.length).toBe(1);
+      expect(calls[0]?.slice(1, 4)).toEqual(["ps", "-a", "-q"]);
       expect(calls[0]).toContain("--filter");
       expect(calls[0]).toContain("label=koi.sandbox.scope=S");
     } finally {
@@ -827,45 +827,83 @@ describe("createDefaultDockerClient", () => {
     }
   });
 
-  // Persistence: findContainer falls back to -a when no running match exists.
-  test("findContainer: falls back to ps -a when running result is empty", async () => {
-    const calls: string[][] = [];
+  // Persistence: findContainers returns multiple matches when the daemon
+  // reports them — the adapter detects ambiguity from this list.
+  test("findContainers: returns every matching id when more than one exists", async () => {
     // @ts-expect-error — test stub
-    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((args: string[]) => {
-      calls.push(args);
-      // running query → empty.
-      if (args[1] === "ps" && args[2] === "-q" && !args.includes("-a")) {
-        return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
-      }
-      // -a query → returns id.
-      if (args[1] === "ps" && args.includes("-a")) {
-        return fakeProc({ stdout: "stopped-1\n", stderr: "", exitCode: 0 });
-      }
-      return fakeProc({ stdout: "", stderr: "", exitCode: 0 });
-    });
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) =>
+      fakeProc({ stdout: "a\nb\nc\n", stderr: "", exitCode: 0 }),
+    );
     try {
       const client = createDefaultDockerClient();
-      if (client.findContainer === undefined) throw new Error("findContainer must exist");
-      const got = await client.findContainer({ "koi.sandbox.scope": "S" });
-      expect(got?.id).toBe("stopped-1");
-      expect(calls.length).toBe(2);
-      expect(calls[1]?.slice(1, 4)).toEqual(["ps", "-a", "-q"]);
+      if (client.findContainers === undefined) {
+        throw new Error("findContainers must exist");
+      }
+      const got = await client.findContainers({ "koi.sandbox.scope": "S" });
+      expect(got.map((c) => c.id)).toEqual(["a", "b", "c"]);
     } finally {
       spawnSpy.mockRestore();
     }
   });
 
-  // Persistence: findContainer returns undefined when nothing matches.
-  test("findContainer: returns undefined when no container matches", async () => {
+  // Persistence: findContainers returns [] when nothing matches or on error.
+  test("findContainers: returns empty array when no container matches", async () => {
     // @ts-expect-error — test stub
     const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) =>
       fakeProc({ stdout: "", stderr: "", exitCode: 0 }),
     );
     try {
       const client = createDefaultDockerClient();
-      if (client.findContainer === undefined) throw new Error("findContainer must exist");
-      const got = await client.findContainer({ "koi.sandbox.scope": "missing" });
-      expect(got).toBeUndefined();
+      if (client.findContainers === undefined) {
+        throw new Error("findContainers must exist");
+      }
+      const got = await client.findContainers({ "koi.sandbox.scope": "missing" });
+      expect(got).toEqual([]);
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  // Persistence: resolveImageId returns the image content-addressed ID.
+  test("resolveImageId: returns sha256 ID for a pulled image", async () => {
+    const calls: string[][] = [];
+    // @ts-expect-error — test stub
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((args: string[]) => {
+      calls.push(args);
+      return fakeProc({
+        stdout: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+        stderr: "",
+        exitCode: 0,
+      });
+    });
+    try {
+      const client = createDefaultDockerClient();
+      if (client.resolveImageId === undefined) {
+        throw new Error("resolveImageId must exist");
+      }
+      const id = await client.resolveImageId("ubuntu:22.04");
+      expect(id).toBe("sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+      // Verifies the docker subcommand is `image inspect ... <ref>`.
+      expect(calls[0]?.slice(1, 4)).toEqual(["image", "inspect", "--format"]);
+      expect(calls[0]).toContain("ubuntu:22.04");
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  // Persistence: resolveImageId returns undefined when image is not pulled locally.
+  test("resolveImageId: returns undefined when docker image inspect fails", async () => {
+    // @ts-expect-error — test stub
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_args: string[]) =>
+      fakeProc({ stdout: "", stderr: "no such image", exitCode: 1 }),
+    );
+    try {
+      const client = createDefaultDockerClient();
+      if (client.resolveImageId === undefined) {
+        throw new Error("resolveImageId must exist");
+      }
+      const id = await client.resolveImageId("missing:tag");
+      expect(id).toBeUndefined();
     } finally {
       spawnSpy.mockRestore();
     }

@@ -70,7 +70,7 @@ function buildCapabilities(client: DockerClient): {
   readonly canPersist: boolean;
 } {
   const canPersist =
-    client.findContainer !== undefined &&
+    client.findContainers !== undefined &&
     client.inspectContainer !== undefined &&
     client.startContainer !== undefined;
   const supports: ReadonlySet<AdapterCapability> = new Set<AdapterCapability>(
@@ -195,11 +195,11 @@ async function doFindOrCreate(
   profile: SandboxProfile,
 ): Promise<SandboxInstance> {
   // We've already checked canPersist; the local assertions are sanity checks.
-  const findContainer = client.findContainer;
+  const findContainers = client.findContainers;
   const inspectContainer = client.inspectContainer;
   const startContainer = client.startContainer;
   if (
-    findContainer === undefined ||
+    findContainers === undefined ||
     inspectContainer === undefined ||
     startContainer === undefined
   ) {
@@ -213,7 +213,14 @@ async function doFindOrCreate(
     throw new Error(`Invalid profile: ${mapping.error.message}`, { cause: mapping.error });
   }
 
-  const fingerprint = computeProfileFingerprint(profile, image);
+  // Resolve image to its immutable content-addressed ID so the fingerprint
+  // covers tag→digest changes (e.g. `my-image:latest` repointed at new content).
+  // Optional: when the client doesn't expose resolveImageId or returns
+  // undefined (image not pulled locally), we degrade to (image-string, profile)
+  // only — the rest of the flow still works.
+  const imageId =
+    client.resolveImageId !== undefined ? await client.resolveImageId(image) : undefined;
+  const fingerprint = computeProfileFingerprint(profile, image, imageId);
   const scopeLabels: Readonly<Record<string, string>> = { [SCOPE_LABEL]: scope };
   const containerName = deriveScopeContainerName(scope);
 
@@ -221,7 +228,7 @@ async function doFindOrCreate(
   // exists, reattach". The same logic also runs after a name-conflict retry
   // below, so we factor it out.
   const reused = await tryReuse(
-    findContainer,
+    findContainers,
     inspectContainer,
     startContainer,
     scopeLabels,
@@ -250,7 +257,7 @@ async function doFindOrCreate(
     // stale profile still surfaces a VALIDATION error rather than silently
     // attaching to it.
     const winner = await tryReuse(
-      findContainer,
+      findContainers,
       inspectContainer,
       startContainer,
       scopeLabels,
@@ -270,21 +277,44 @@ async function doFindOrCreate(
  * success, `undefined` when nothing usable exists (no-find, dead, or vanished
  * between find and inspect — the caller should fall through to create).
  *
- * Throws a typed VALIDATION error when a reusable container exists but its
- * recorded profile fingerprint differs from the request — this is the
- * fail-closed branch that prevents silent policy drift.
+ * Throws a typed VALIDATION error when:
+ *   - more than one container carries the scope label (ambiguity → operator
+ *     must clean up via destroyScope), or
+ *   - the matched container's recorded profile fingerprint differs from the
+ *     request (drift → operator must destroyScope or pick a new scope).
  */
 async function tryReuse(
-  findContainer: NonNullable<DockerClient["findContainer"]>,
+  findContainers: NonNullable<DockerClient["findContainers"]>,
   inspectContainer: NonNullable<DockerClient["inspectContainer"]>,
   startContainer: NonNullable<DockerClient["startContainer"]>,
   scopeLabels: Readonly<Record<string, string>>,
   fingerprint: string,
   scope: string,
 ): Promise<SandboxInstance | undefined> {
-  const existing = await findContainer(scopeLabels);
-  if (existing === undefined) return undefined;
+  const matches = await findContainers(scopeLabels);
+  if (matches.length === 0) return undefined;
 
+  if (matches.length > 1) {
+    // Ambiguity: two or more containers share the scope label. This shouldn't
+    // happen under normal operation (deterministic --name + per-scope serializer
+    // prevent it within a single adapter; the daemon prevents cross-process
+    // duplicates of the named container) but can arise from manual cloning,
+    // direct docker commands, or a label being applied out-of-band. Fail closed
+    // and direct the operator at the recovery path.
+    const error: KoiError = {
+      code: "VALIDATION",
+      message: `sandbox-docker: scope "${scope}" matches ${matches.length} containers (expected 1); call adapter.destroyScope("${scope}") to remove ALL stale containers for this scope, then retry findOrCreate`,
+      retryable: false,
+      context: {
+        scope,
+        ambiguousContainerIds: matches.map((c) => c.id),
+      },
+    };
+    throw new Error(error.message, { cause: error });
+  }
+
+  const existing = matches[0];
+  if (existing === undefined) return undefined;
   const info = await inspectContainer(existing.id);
   // info === undefined: container vanished between find and inspect.
   // "dead"/"unknown": cannot be reattached. In all three cases the prior
@@ -323,26 +353,37 @@ async function tryReuse(
 }
 
 /**
- * Stop and remove the scoped container, if any. Returns true when something
- * was destroyed, false when no scope-labeled container existed. Best-effort:
- * a partial failure (e.g. stop succeeds but remove fails) propagates so the
- * caller can decide whether to retry.
+ * Stop and remove ALL containers carrying the scope label. Returns true when
+ * any container was destroyed, false when nothing matched.
+ *
+ * Removing every match (rather than just the first) is intentional: the
+ * `tryReuse` ambiguity error explicitly tells operators that destroyScope
+ * clears stale siblings for this scope. If we only removed one, a follow-up
+ * findOrCreate could still encounter the leftover — leaving the scope
+ * permanently poisoned. Best-effort: each container's stop/remove failure is
+ * captured; after attempting them all we surface the first error.
  */
 async function doDestroyScope(client: DockerClient, scope: string): Promise<boolean> {
-  const findContainer = client.findContainer;
-  if (findContainer === undefined) return false;
-  const existing = await findContainer({ [SCOPE_LABEL]: scope });
-  if (existing === undefined) return false;
-  // Best-effort stop; container.remove uses `rm -f` so it tears down running
-  // containers too. If stop fails we still attempt remove and surface the
-  // first error after cleanup.
-  let stopError: unknown;
-  try {
-    await existing.stop();
-  } catch (e: unknown) {
-    stopError = e;
+  const findContainers = client.findContainers;
+  if (findContainers === undefined) return false;
+  const matches = await findContainers({ [SCOPE_LABEL]: scope });
+  if (matches.length === 0) return false;
+
+  // `let` justified: capture the first failure across the loop so we attempt
+  // every cleanup before surfacing.
+  let firstError: unknown;
+  for (const c of matches) {
+    try {
+      await c.stop();
+    } catch (e: unknown) {
+      if (firstError === undefined) firstError = e;
+    }
+    try {
+      await c.remove();
+    } catch (e: unknown) {
+      if (firstError === undefined) firstError = e;
+    }
   }
-  await existing.remove();
-  if (stopError !== undefined) throw stopError;
+  if (firstError !== undefined) throw firstError;
   return true;
 }

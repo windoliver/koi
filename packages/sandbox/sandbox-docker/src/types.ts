@@ -104,19 +104,23 @@ export interface DockerContainerInfo {
 export interface DockerClient {
   readonly createContainer: (opts: DockerCreateOpts) => Promise<DockerContainer>;
   /**
-   * Look up a container by exact label match. Returns the most recent matching
-   * container (running preferred over stopped) or `undefined` when none exists.
+   * Enumerate ALL containers matching the given label set. Returns an empty
+   * array when none match. Returning the full list (instead of just the
+   * "first" match) lets the persistence adapter detect ambiguous scopes —
+   * two containers carrying the same scope label is a recoverable invariant
+   * violation rather than a silent split-brain.
+   *
    * Optional — clients without a persistence story omit this; the adapter
-   * treats persistence as unavailable when any of findContainer /
+   * treats persistence as unavailable when any of findContainers /
    * inspectContainer / startContainer is missing.
    */
-  readonly findContainer?:
-    | ((labels: Readonly<Record<string, string>>) => Promise<DockerContainer | undefined>)
+  readonly findContainers?:
+    | ((labels: Readonly<Record<string, string>>) => Promise<readonly DockerContainer[]>)
     | undefined;
   /**
    * Inspect lifecycle state + labels of a container by id. Returns `undefined`
    * when the container no longer exists (for example, racy removal between
-   * `findContainer` and `inspectContainer`). The adapter treats `undefined` as
+   * `findContainers` and `inspectContainer`). The adapter treats `undefined` as
    * "create fresh" rather than throwing so a missing container does not block
    * persistence resumption.
    */
@@ -125,6 +129,22 @@ export interface DockerClient {
     | undefined;
   /** Start a stopped container (no-op if already running). */
   readonly startContainer?: ((id: string) => Promise<void>) | undefined;
+  /**
+   * Resolve a Docker image reference (`name:tag` or digest) to its immutable
+   * content-addressed image ID (e.g. `sha256:abc...`). Returns `undefined`
+   * when the image is not pulled locally and cannot be resolved without a
+   * network call — the adapter treats undefined as "skip image-ID drift
+   * check" so an offline or unknown image does not block persistence.
+   *
+   * The persistence path includes this ID in the profile fingerprint so a
+   * mutable tag (`my-image:latest`) repointed at new content invalidates the
+   * stored fingerprint and triggers fail-closed drift detection — instead of
+   * silently reattaching to a container running the old root filesystem.
+   *
+   * Optional. When absent, the fingerprint covers (image-string, profile)
+   * only and version skew behind a mutable tag will not be detected.
+   */
+  readonly resolveImageId?: ((imageRef: string) => Promise<string | undefined>) | undefined;
 }
 
 export interface DockerAdapterConfig {
