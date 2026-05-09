@@ -158,6 +158,13 @@ export interface AceConfig {
 /** Per-session mutable state — entries accumulate, `playbooks` is the snapshot
  *  loaded on session start (refreshed after consolidation). */
 interface AceSessionState {
+  /**
+   * Lifecycle nonce: pinned at onSessionStart and re-checked by every
+   * wrapper before mutating state. Prevents delayed callbacks from a
+   * prior lifecycle (host reused sessionId) from contaminating a fresh
+   * session's entries/turnIndex via the shared sessions map.
+   */
+  readonly lifecycleId: string;
   entries: readonly TrajectoryEntry[];
   playbooks: readonly Playbook[];
   turnIndex: number;
@@ -211,8 +218,17 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
 
   const sessions = new Map<string, AceSessionState>();
 
+  /**
+   * Lifecycle-aware state lookup. `runId` pins a single onSessionStart →
+   * onSessionEnd lifecycle. If the slot has been replaced by a fresh
+   * lifecycle (same sessionId, new runId), refuse the lookup so a delayed
+   * wrapper from the old lifecycle cannot leak entries into the new one.
+   */
   function getState(ctx: SessionContext): AceSessionState | undefined {
-    return sessions.get(ctx.sessionId);
+    const slot = sessions.get(ctx.sessionId);
+    if (slot === undefined) return undefined;
+    if (slot.lifecycleId !== ctx.runId) return undefined;
+    return slot;
   }
 
   function recordEntry(state: AceSessionState | undefined, entry: TrajectoryEntry): void {
@@ -254,6 +270,10 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
       }
       const playbooks = await config.playbookStore.list();
       sessions.set(ctx.sessionId, {
+        // Pin this lifecycle: any wrapper / onSessionEnd from a prior
+        // lifecycle (same sessionId, different runId) will fail the
+        // identity check and become a no-op rather than mutating us.
+        lifecycleId: ctx.runId,
         entries: [],
         playbooks,
         turnIndex: 0,
@@ -269,8 +289,14 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
       // stored on the state object itself — keying dedupe by `sessionId`
       // alone would let a still-running teardown shadow a fresh lifecycle
       // (same id, new onSessionStart) and silently drop the new session.
-      const state = sessions.get(ctx.sessionId);
-      if (state === undefined) return;
+      const slot = sessions.get(ctx.sessionId);
+      if (slot === undefined) return;
+      // Lifecycle identity check: a stale onSessionEnd from a prior
+      // lifecycle must NOT trigger teardown of a fresh state with the
+      // same sessionId. If runId mismatches, this end belongs to a dead
+      // lifecycle whose state was already replaced.
+      if (slot.lifecycleId !== ctx.runId) return;
+      const state = slot;
       if (state.teardownPromise !== undefined) return state.teardownPromise;
       // Mark closing IMMEDIATELY (synchronously). Wrappers that arrive
       // after this flip route to shutdownInFlight and are still drained

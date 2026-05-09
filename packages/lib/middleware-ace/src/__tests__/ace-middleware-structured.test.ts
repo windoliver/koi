@@ -688,6 +688,98 @@ describe("createAceMiddleware × promotion gate (sqlite, no LLM)", () => {
     }
   });
 
+  test("lifecycle nonce: stale wrapToolCall from a prior runId does not contaminate the new session", async () => {
+    // Regression: wrappers must verify lifecycle identity (runId), not
+    // just sessionId. Without this, a delayed callback from a dead
+    // lifecycle whose state was replaced under the same sessionId would
+    // record into the new session's entries, contaminating its
+    // trajectory/promotion data.
+    const store = createSqlitePlaybookStore({ path: ":memory:" });
+    try {
+      await store.structuredPlaybooks.save(seedStructuredPlaybook());
+      let observedEntryCount = -1;
+
+      const mw = createAceMiddleware({
+        playbookStore: store.playbooks,
+        clock: () => 1000,
+        structuredPipeline: {
+          structuredStore: store.structuredPlaybooks,
+          proposalStore: store.proposals,
+          playbookId: PLAYBOOK_ID,
+          reflector: async ({ trajectory }) => {
+            observedEntryCount = trajectory.length;
+            return reflection;
+          },
+          curator: async () => [],
+          evaluator: makeEvaluator("reject"),
+          thresholds,
+        },
+      });
+
+      // Two contexts share the same sessionId but have different runIds.
+      const sid = "sess-shared";
+      const oldCtx: SessionContext = {
+        sessionId: sessionId(sid),
+        runId: runId("run-OLD"),
+        agentId: "agent-1",
+        metadata: {},
+      };
+      const newCtx: SessionContext = {
+        sessionId: sessionId(sid),
+        runId: runId("run-NEW"),
+        agentId: "agent-1",
+        metadata: {},
+      };
+
+      // Run the OLD lifecycle to completion.
+      await mw.onSessionStart?.(oldCtx);
+      const oldT: TurnContext = {
+        session: oldCtx,
+        turnIndex: 0,
+        turnId: turnId(oldCtx.runId, 0),
+        messages: [],
+        metadata: {},
+      };
+      await mw.wrapToolCall?.(oldT, { toolId: "old", input: {} }, async () => ({
+        output: "old",
+        isError: false,
+      }));
+      await mw.onSessionEnd?.(oldCtx);
+
+      // Start the NEW lifecycle (same sessionId, different runId).
+      await mw.onSessionStart?.(newCtx);
+
+      // A delayed wrapToolCall from the OLD context fires AFTER the new
+      // lifecycle is installed. Its entry must NOT land in the new
+      // session's trajectory.
+      await mw.wrapToolCall?.(oldT, { toolId: "stale-old", input: {} }, async () => ({
+        output: "stale",
+        isError: false,
+      }));
+
+      // A new-context call should still record normally.
+      const newT: TurnContext = {
+        session: newCtx,
+        turnIndex: 0,
+        turnId: turnId(newCtx.runId, 0),
+        messages: [],
+        metadata: {},
+      };
+      await mw.wrapToolCall?.(newT, { toolId: "new", input: {} }, async () => ({
+        output: "new",
+        isError: false,
+      }));
+
+      await mw.onSessionEnd?.(newCtx);
+
+      // Reflector saw exactly one entry from the new lifecycle — the
+      // stale-old wrapper was dropped at the lifecycle boundary.
+      expect(observedEntryCount).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
   test("session-id reuse: onSessionStart serializes — second lifecycle waits for first teardown", async () => {
     const store = createSqlitePlaybookStore({ path: ":memory:" });
     try {
