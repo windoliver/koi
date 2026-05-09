@@ -27,22 +27,10 @@
 
 import type { Agent, AttachResult, ComponentProvider, SkippedComponent, Tool } from "@koi/core";
 import { COMPONENT_PRIORITY, SCHEDULER, toolToken } from "@koi/core";
-import { createCancelSleepTool } from "./cancel-sleep-tool.js";
-import {
-  type CronToolState,
-  createCancelScheduleTool,
-  createCronToolState,
-  createScheduleCronTool,
-} from "./cron-tools.js";
-import {
-  createCancelMonitorTool,
-  createCreateMonitorTool,
-  createListMonitorsTool,
-  createMonitorToolState,
-  createUpdateMonitorTool,
-  type MonitorToolState,
-} from "./monitor-tools.js";
-import { createSleepTool, createSleepToolState, type SleepToolState } from "./sleep-tool.js";
+import { assembleProactiveTools } from "./create-proactive-tools.js";
+import { createCronToolState } from "./cron-tools.js";
+import { createMonitorToolState } from "./monitor-tools.js";
+import { createSleepToolState, type SleepToolState } from "./sleep-tool.js";
 import type { ProactiveToolsConfig, ProactiveToolsProviderConfig } from "./types.js";
 
 export function createProactiveToolsProvider(
@@ -58,24 +46,6 @@ export function createProactiveToolsProvider(
     const fresh = createSleepToolState();
     sleepSlots.set(pid, fresh);
     return fresh;
-  }
-
-  function buildTools(
-    toolConfig: ProactiveToolsConfig,
-    sleepState: SleepToolState,
-    cronState: CronToolState,
-    monitorState: MonitorToolState,
-  ): readonly Tool[] {
-    return [
-      createSleepTool(toolConfig, sleepState),
-      createCancelSleepTool(toolConfig, sleepState),
-      createScheduleCronTool(toolConfig, cronState),
-      createCancelScheduleTool(toolConfig, cronState),
-      createCreateMonitorTool(toolConfig, monitorState),
-      createListMonitorsTool(monitorState),
-      createUpdateMonitorTool(toolConfig, monitorState),
-      createCancelMonitorTool(toolConfig, monitorState),
-    ];
   }
 
   return {
@@ -124,7 +94,7 @@ export function createProactiveToolsProvider(
       // Monitor state is also intentionally per-attach: monitor metadata is
       // process-local and should reset when the agent is reassembled.
       const monitorState = createMonitorToolState();
-      const tools = buildTools(toolConfig, sleepState, cronState, monitorState);
+      const tools = assembleProactiveTools(toolConfig, { sleepState, cronState, monitorState });
       const entries: (readonly [string, Tool])[] = tools.map(
         (t) => [toolToken(t.descriptor.name) as string, t] as const,
       );
