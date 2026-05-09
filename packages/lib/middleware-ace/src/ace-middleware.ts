@@ -829,8 +829,13 @@ async function runStructuredPipeline(
   if (evaluation.verdict === "rollback") {
     const resolveRollbackTarget = pipe.resolveRollbackTarget;
     if (resolveRollbackTarget === undefined) {
-      // No handler wired: declined-by-config. Distinct from "handler ran and
-      // chose to decline" and from "rollback commit failed downstream".
+      // No handler wired: declined-by-config. Persist the evaluation BEFORE
+      // surfacing the decline so the audit trail records what the evaluator
+      // decided — losing this evidence on a rollback verdict (the most
+      // safety-critical outcome) would let retries regenerate the same
+      // proposal with no stored explanation of the prior decision.
+      // Idempotent on byte-identical retry by the proposal-store contract.
+      await runStage("rollback-decline", () => pipe.proposalStore.recordEvaluation(evaluation));
       throw new StagedPipelineError(
         "rollback-decline",
         new Error(
@@ -842,7 +847,9 @@ async function runStructuredPipeline(
       resolveRollbackTarget({ proposal, evaluation, playbookBefore: playbook }),
     );
     if (targetVersion === null) {
-      // Handler ran and explicitly declined.
+      // Handler ran and explicitly declined. Same audit-trail rationale —
+      // record the evaluation before surfacing the decline.
+      await runStage("rollback-decline", () => pipe.proposalStore.recordEvaluation(evaluation));
       throw new StagedPipelineError(
         "rollback-decline",
         new Error("resolveRollbackTarget returned null; head unchanged"),

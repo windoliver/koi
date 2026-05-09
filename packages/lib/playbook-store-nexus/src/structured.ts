@@ -1,4 +1,5 @@
 import type { StructuredPlaybook, StructuredPlaybookStore } from "@koi/ace-types";
+import { extractReadContent } from "@koi/nexus-client";
 
 import { deleteJson, encodeAceId, listChildren, readJson, validateAceId } from "./json-io.js";
 import { withPlaybookLock } from "./playbook-locks.js";
@@ -105,21 +106,29 @@ export function createNexusStructuredPlaybookStore(
           const raw = readResult.value as
             | { content?: unknown; metadata?: { etag?: string }; etag?: string }
             | undefined;
-          // Fail closed if the path resolved but the content is missing,
-          // empty, or not a string — a corrupted/protocol-shifted file must
-          // not be silently overwritten and lose the prior head.
           if (raw === undefined) {
             throw new Error(
               `playbook-store-nexus: read returned no envelope at ${path(playbook.id)}`,
             );
           }
-          if (typeof raw.content !== "string" || raw.content.length === 0) {
+          // Decode through the canonical helper: it handles plain strings,
+          // `{__type__:"bytes",data:base64}` envelopes, and nested-content
+          // wrappers — all of which are valid Nexus read shapes. Rejecting
+          // anything but a top-level string would brick byte-encoded reads
+          // returned by compliant transports/wrappers.
+          const decoded = extractReadContent(raw);
+          if (!decoded.ok) {
             throw new Error(
-              `playbook-store-nexus: read returned empty/non-string content at ${path(playbook.id)} — refusing to overwrite a degraded head`,
+              `playbook-store-nexus: read returned undecodable content at ${path(playbook.id)} — refusing to overwrite a degraded head`,
+            );
+          }
+          if (decoded.value.length === 0) {
+            throw new Error(
+              `playbook-store-nexus: read returned empty content at ${path(playbook.id)} — refusing to overwrite a degraded head`,
             );
           }
           try {
-            current = JSON.parse(raw.content) as StructuredPlaybook;
+            current = JSON.parse(decoded.value) as StructuredPlaybook;
           } catch (e) {
             throw new Error(`playbook-store-nexus: parse error at ${path(playbook.id)}`, {
               cause: e,

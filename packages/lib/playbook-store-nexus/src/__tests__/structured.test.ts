@@ -370,6 +370,62 @@ describe("createNexusStructuredPlaybookStore", () => {
     }
   });
 
+  test("byte-envelope read response is decoded for CAS update (no false degraded-head)", async () => {
+    // Compliant Nexus transports may return reads as a flat or nested
+    // bytes envelope (`{__type__:"bytes", data: base64}`). The structured
+    // store MUST decode through the canonical extractReadContent helper
+    // rather than assuming top-level string content, otherwise updates
+    // against valid byte-encoded reads throw and brick the playbook.
+    const baseTransport = createFakeNexusTransport();
+    const seed = createNexusStructuredPlaybookStore({
+      transport: baseTransport,
+      requirePreProvisioned: false,
+    });
+    await seed.save(spb("byteenv"));
+
+    const byteEnvTransport: FsNexusTransport = {
+      call: async <T>(
+        method: string,
+        params: Record<string, unknown>,
+      ): Promise<Result<T, KoiError>> => {
+        const r = await baseTransport.call<T>(method, params);
+        if (
+          r.ok &&
+          method === "read" &&
+          typeof params.path === "string" &&
+          params.path.includes("/structured/")
+        ) {
+          const v = r.value as { content?: unknown; metadata?: { etag?: string } } | undefined;
+          if (v !== undefined && typeof v.content === "string") {
+            // Re-wrap content as a base64 bytes envelope.
+            const data = Buffer.from(v.content, "utf-8").toString("base64");
+            return {
+              ok: true,
+              value: {
+                content: { __type__: "bytes", data },
+                metadata: v.metadata,
+              } as T,
+            };
+          }
+        }
+        return r;
+      },
+      subscribe: baseTransport.subscribe.bind(baseTransport),
+      submitAuthCode: baseTransport.submitAuthCode.bind(baseTransport),
+      close: baseTransport.close.bind(baseTransport),
+    };
+    const byteEnvStore = createNexusStructuredPlaybookStore({
+      transport: byteEnvTransport,
+      requirePreProvisioned: false,
+    });
+    await expect(
+      byteEnvStore.save({ ...spb("byteenv"), version: 2, title: "v2" }),
+    ).resolves.toBeUndefined();
+    const got = await byteEnvStore.get("byteenv");
+    expect(got?.version).toBe(2);
+    expect(got?.title).toBe("v2");
+  });
+
   test("requirePreProvisioned: false allows initial create (explicit opt-in for proven single-writer)", async () => {
     const transport = createFakeNexusTransport();
     try {
