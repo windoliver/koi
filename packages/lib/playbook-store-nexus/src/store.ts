@@ -14,13 +14,14 @@ import { createNexusPlaybookStore } from "./playbook.js";
 import { createNexusPlaybookProposalStore } from "./proposal.js";
 import { createNexusStructuredPlaybookStore } from "./structured.js";
 import { createNexusTrajectoryStore } from "./trajectory.js";
-import type { NexusPlaybookStoreConfig } from "./types.js";
+import type { NexusStructuredStoreConfig } from "./types.js";
 
 export interface NexusPlaybookStoreBundle {
   readonly playbooks: PlaybookStore;
   readonly structuredPlaybooks: Required<
     Pick<StructuredPlaybookStore, "get" | "list" | "save" | "remove" | "getVersion">
-  >;
+  > &
+    Pick<StructuredPlaybookStore, "lineageSupported">;
   readonly trajectories: TrajectoryStore;
   readonly proposals: PlaybookProposalStore;
   /** Stable identity for resume guards — derived from basePath. */
@@ -36,7 +37,7 @@ const noopGetVersion = async (
 ): Promise<StructuredPlaybook | undefined> => undefined;
 
 export function createPlaybookStoreNexus(
-  config: NexusPlaybookStoreConfig,
+  config: NexusStructuredStoreConfig,
 ): NexusPlaybookStoreBundle {
   const base = config.basePath ?? DEFAULT_BASE;
   const structured = createNexusStructuredPlaybookStore(config);
@@ -48,6 +49,10 @@ export function createPlaybookStoreNexus(
       save: structured.save,
       remove: structured.remove,
       getVersion: structured.getVersion ?? noopGetVersion,
+      // Preserve the lineage-capability flag so middleware fail-closed checks
+      // (e.g. ACE rollback path) reject Nexus before attempting commits.
+      // Default to false here — Nexus has no version history.
+      lineageSupported: structured.lineageSupported ?? false,
     },
     trajectories: createNexusTrajectoryStore(config),
     proposals: createNexusPlaybookProposalStore(config),

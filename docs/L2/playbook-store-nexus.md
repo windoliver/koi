@@ -76,7 +76,7 @@ Contract parity verified by `src/__tests__/{playbook,structured,trajectory,propo
 | Store | Behavior | sqlite | nexus | Notes |
 |---|---|---|---|---|
 | `PlaybookStore` | `save` same id, same version, different content | Throws "already committed with different content" (version-CAS) | Last-write-wins (overwrites silently) | Callers must not rely on CAS protection with nexus backend |
-| `StructuredPlaybookStore` | `save` out-of-order version (e.g., v2 after v3) | Rejected (append-only CAS) | Accepted (last-write-wins) | Nexus can "roll back" version, sqlite cannot |
+| `StructuredPlaybookStore` | `save` out-of-order version (e.g., v2 after v3) | Rejected (append-only CAS) | Rejected (etag CAS via `if_match` since #1715) | **Breaking change in #1715:** Nexus no longer accepts last-write-wins downgrades. Cross-process safety is enforced by transport-level conditional writes (`if_match` on the etag returned by `read`). Callers that previously relied on replaying an older snapshot to "roll back" must use `rollbackPromotion()` (sqlite only) or write a new monotonic version. |
 | `StructuredPlaybookStore` | `getVersion(id, n)` | Returns historical version `n` from lineage table | Always returns `undefined` | #1469 tracks lineage support |
 | `TrajectoryStore` | `listSessions({ before: N })` | Filters by last-activity timestamp — sessions with activity >= `before` excluded | Ignores `before` entirely; returns all sessions | Callers needing cursor-based pagination must use sqlite or add client-side filtering |
 | `TrajectoryStore` | `listSessions` return order | Descending by last activity timestamp | Filesystem-glob order (undefined) | Sort the result if stable order matters |

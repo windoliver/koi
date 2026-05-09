@@ -82,8 +82,17 @@ export interface StructuredPlaybook {
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly sessionCount: number;
-  /** Watermark: highest stepIndex that has been reflected on. */
+  /** Legacy scalar watermark — max stepIndex reflected on across ANY
+   *  session. Retained for backward compatibility; new logic should read
+   *  `reflectedStepIndexBySession` instead. Will read as
+   *  `max(reflectedStepIndexBySession values)` for stores that maintain
+   *  both fields. */
   readonly lastReflectedStepIndex?: number;
+  /** Per-session replay watermark map: highest reflected stepIndex per
+   *  session lineage. Replaces the single scalar above so playbooks shared
+   *  across sessions cannot have one session's commits overwrite another
+   *  session's replay position. Absent on legacy rows. */
+  readonly reflectedStepIndexBySession?: Readonly<Record<string, number>>;
   /** Monotonic version. Bumped on every committed mutation. */
   readonly version: number;
   /** Provenance for the most recent commit (omitted for v0 / seeded entries). */
@@ -258,6 +267,13 @@ export interface StructuredPlaybookStore {
   /** Fetch a prior version (for rollback). Implementations without lineage
    *  return `undefined`. */
   readonly getVersion?: (id: string, version: number) => Promise<StructuredPlaybook | undefined>;
+  /** Capability flag: true when the adapter actually maintains a version
+   *  lineage table (i.e. `getVersion` can resolve any historical version,
+   *  not just the current head). Stub implementations whose `getVersion`
+   *  always returns `undefined` MUST leave this `false` or undefined so
+   *  features like rollback can fail closed at the capability boundary
+   *  rather than at a misleading version-not-found. */
+  readonly lineageSupported?: boolean;
 }
 
 /** Append-only log of proposals + their evaluations (immutable lineage). */
@@ -266,4 +282,9 @@ export interface PlaybookProposalStore {
   readonly recordEvaluation: (evaluation: PlaybookEvaluation) => Promise<void>;
   readonly getProposal: (id: string) => Promise<PlaybookProposal | undefined>;
   readonly listProposals: (playbookId: string) => Promise<readonly PlaybookProposal[]>;
+  /** Optional read path for evaluations. When present, the promotion gate
+   *  uses it to verify byte-equivalence on idempotent retries so that
+   *  reusing an evaluation id with mutated metrics/verdict cannot be
+   *  acknowledged as a successful prior commit. */
+  readonly getEvaluation?: (id: string) => Promise<PlaybookEvaluation | undefined>;
 }

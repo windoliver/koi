@@ -8,6 +8,9 @@
   "references": [
     { "path": "../ace-types" },
     { "path": "../../kernel/core" },
-    { "path": "../../mm/token-estimator" }
+    { "path": "../../mm/token-estimator" },
+    { "path": "../fs-nexus" },
+    { "path": "../playbook-store-nexus" },
+    { "path": "../playbook-store-sqlite" }
   ]
 }

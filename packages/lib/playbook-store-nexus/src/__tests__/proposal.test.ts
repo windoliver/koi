@@ -82,7 +82,10 @@ function makeProposalWithBase(
 function newStores() {
   const transport = createFakeNexusTransport();
   const proposal = createNexusPlaybookProposalStore({ transport });
-  const structured = createNexusStructuredPlaybookStore({ transport });
+  const structured = createNexusStructuredPlaybookStore({
+    transport,
+    requirePreProvisioned: false,
+  });
   return { proposal, structured };
 }
 
@@ -305,7 +308,10 @@ describe("createNexusPlaybookProposalStore", () => {
 
   test("recordProposal with matching baseVersion succeeds", async () => {
     const transport = createFakeNexusTransport();
-    const spbStore = createNexusStructuredPlaybookStore({ transport });
+    const spbStore = createNexusStructuredPlaybookStore({
+      transport,
+      requirePreProvisioned: false,
+    });
     const proposalStore = createNexusPlaybookProposalStore({ transport });
     await spbStore.save(makeStructuredPlaybook("pb-ver5", 5));
     // baseVersion=5 matches saved version=5 → should succeed
@@ -316,7 +322,10 @@ describe("createNexusPlaybookProposalStore", () => {
 
   test("recordProposal with stale baseVersion throws containing 'version'", async () => {
     const transport = createFakeNexusTransport();
-    const spbStore = createNexusStructuredPlaybookStore({ transport });
+    const spbStore = createNexusStructuredPlaybookStore({
+      transport,
+      requirePreProvisioned: false,
+    });
     const proposalStore = createNexusPlaybookProposalStore({ transport });
     await spbStore.save(makeStructuredPlaybook("pb-stale", 5));
     // baseVersion=4 is stale vs current version=5 → must throw
@@ -476,7 +485,10 @@ describe("createNexusPlaybookProposalStore", () => {
     // "not exists", and both writing — the second overwrites the first silently.
     // With module-level locks they share the registry and serialize.
     const transport = createFakeNexusTransport();
-    const structured = createNexusStructuredPlaybookStore({ transport });
+    const structured = createNexusStructuredPlaybookStore({
+      transport,
+      requirePreProvisioned: false,
+    });
     await structured.save(makeStructuredPlaybook("pb-cross", 1));
     const storeA = createNexusPlaybookProposalStore({ transport });
     const storeB = createNexusPlaybookProposalStore({ transport });
@@ -509,7 +521,10 @@ describe("createNexusPlaybookProposalStore", () => {
     // Scenario: proposal is written normally, then a transport wrapper injects
     // EXTERNAL on the read call during listProposals. The loop must throw.
     const baseTransport = createFakeNexusTransport();
-    const spbStore = createNexusStructuredPlaybookStore({ transport: baseTransport });
+    const spbStore = createNexusStructuredPlaybookStore({
+      transport: baseTransport,
+      requirePreProvisioned: false,
+    });
     const proposalStoreBase = createNexusPlaybookProposalStore({ transport: baseTransport });
     await spbStore.save(makeStructuredPlaybook("pb-lp-err", 1));
     await proposalStoreBase.recordProposal(makeProposal("p-lp-err", "pb-lp-err"));
@@ -647,6 +662,7 @@ describe("createNexusPlaybookProposalStore", () => {
     const spbStore = createNexusStructuredPlaybookStore({
       transport: baseTransport,
       lockScope: "shared-proposal-backend",
+      requirePreProvisioned: false,
     });
     await spbStore.save(makeStructuredPlaybook("pb-wrapper-proposal", 1));
 

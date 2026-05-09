@@ -9,4 +9,4 @@ export { createNexusPlaybookProposalStore } from "./proposal.js";
 export { createPlaybookStoreNexus, type NexusPlaybookStoreBundle } from "./store.js";
 export { createNexusStructuredPlaybookStore } from "./structured.js";
 export { createNexusTrajectoryStore } from "./trajectory.js";
-export type { NexusPlaybookStoreConfig } from "./types.js";
+export type { NexusPlaybookStoreConfig, NexusStructuredStoreConfig } from "./types.js";

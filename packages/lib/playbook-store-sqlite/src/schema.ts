@@ -57,7 +57,7 @@ import type { Database } from "bun:sqlite";
  *     .last_reflected_step_index, snapshot.lastReflectedStepIndex)
  *     across all known versions.
  */
-const CURRENT_SCHEMA_VERSION = 7;
+const CURRENT_SCHEMA_VERSION = 8;
 
 export function applyPragmas(db: Database, durability: "process" | "os"): void {
   db.run("PRAGMA journal_mode = WAL");
@@ -150,6 +150,7 @@ export function applySchema(db: Database): void {
       updated_at                INTEGER NOT NULL,
       session_count             INTEGER NOT NULL,
       last_reflected_step_index INTEGER,
+      reflected_step_index_by_session TEXT,
       version                   INTEGER NOT NULL,
       provenance                TEXT
     )
@@ -239,6 +240,7 @@ export function applySchema(db: Database): void {
   migrateSessionTimestampsToV5(db);
   migrateWatermarksToV6(db);
   migrateStoreIdentityToV7(db);
+  migratePerSessionWatermarkToV8(db);
   if (fromVersion < CURRENT_SCHEMA_VERSION) {
     db.run(`PRAGMA user_version = ${String(CURRENT_SCHEMA_VERSION)}`);
   }
@@ -252,6 +254,24 @@ export function applySchema(db: Database): void {
  * (round 7 finding). Without it, `createSqlitePlaybookStore({ create: true })`
  * would silently fabricate a fresh store on resume.
  */
+/**
+ * v8: per-session replay watermark. Adds
+ * `structured_playbooks.reflected_step_index_by_session TEXT` (JSON map of
+ * sessionId → highest reflected stepIndex). Replaces the single-scalar
+ * `last_reflected_step_index` column for correctness (alternating sessions
+ * can no longer overwrite each other's replay positions). The legacy
+ * scalar column is retained as `max(map values)` for backward compatibility
+ * with consumers that have not migrated.
+ */
+function migratePerSessionWatermarkToV8(db: Database): void {
+  const cols = db.query("PRAGMA table_info(structured_playbooks)").all() as readonly {
+    readonly name: string;
+  }[];
+  if (!cols.some((c) => c.name === "reflected_step_index_by_session")) {
+    db.run("ALTER TABLE structured_playbooks ADD COLUMN reflected_step_index_by_session TEXT");
+  }
+}
+
 function migrateStoreIdentityToV7(db: Database): void {
   db.run(`
     CREATE TABLE IF NOT EXISTS store_identity (
@@ -810,6 +830,37 @@ function migrateSessionsToV4(db: Database): void {
  *
  * No-op when the watermarks table already has rows for every known playbook.
  */
+function collectV6Watermarks(db: Database): Map<string, number> {
+  const watermarks = new Map<string, number>();
+  const headRows = db
+    .query("SELECT id, last_reflected_step_index FROM structured_playbooks")
+    .all() as readonly {
+    readonly id: string;
+    readonly last_reflected_step_index: number | null;
+  }[];
+  for (const row of headRows) {
+    if (row.last_reflected_step_index !== null) {
+      watermarks.set(row.id, row.last_reflected_step_index);
+    }
+  }
+  const lineageRows = db
+    .query("SELECT playbook_id, snapshot FROM structured_playbook_versions")
+    .all() as readonly { readonly playbook_id: string; readonly snapshot: string }[];
+  for (const row of lineageRows) {
+    try {
+      const parsed = JSON.parse(row.snapshot) as { lastReflectedStepIndex?: number };
+      const v = parsed.lastReflectedStepIndex;
+      if (typeof v === "number") {
+        const existing = watermarks.get(row.playbook_id);
+        watermarks.set(row.playbook_id, existing === undefined ? v : Math.max(existing, v));
+      }
+    } catch {
+      // Skip malformed snapshots — backfill is best-effort.
+    }
+  }
+  return watermarks;
+}
+
 function migrateWatermarksToV6(db: Database): void {
   const tableInfo = db
     .query(
@@ -823,33 +874,7 @@ function migrateWatermarksToV6(db: Database): void {
     )
     .get() as { readonly name: string } | null;
   if (lineageExists === null) return;
-  const lineageRows = db
-    .query("SELECT playbook_id, snapshot FROM structured_playbook_versions")
-    .all() as readonly { readonly playbook_id: string; readonly snapshot: string }[];
-  const headRows = db
-    .query("SELECT id, last_reflected_step_index FROM structured_playbooks")
-    .all() as readonly {
-    readonly id: string;
-    readonly last_reflected_step_index: number | null;
-  }[];
-  const watermarks = new Map<string, number>();
-  for (const row of headRows) {
-    if (row.last_reflected_step_index !== null) {
-      watermarks.set(row.id, row.last_reflected_step_index);
-    }
-  }
-  for (const row of lineageRows) {
-    try {
-      const parsed = JSON.parse(row.snapshot) as { lastReflectedStepIndex?: number };
-      const v = parsed.lastReflectedStepIndex;
-      if (typeof v === "number") {
-        const existing = watermarks.get(row.playbook_id);
-        watermarks.set(row.playbook_id, existing === undefined ? v : Math.max(existing, v));
-      }
-    } catch {
-      // Skip malformed snapshots — backfill is best-effort.
-    }
-  }
+  const watermarks = collectV6Watermarks(db);
   if (watermarks.size === 0) return;
   db.transaction(() => {
     const upsert = db.prepare(
