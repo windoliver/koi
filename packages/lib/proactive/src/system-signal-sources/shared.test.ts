@@ -31,7 +31,9 @@ describe("createAsyncEmitter", () => {
     let now = 100;
     const seen: number[] = [];
     const emitter = createAsyncEmitter(
-      (value) => seen.push(value.emittedAt),
+      (value) => {
+        if ("emittedAt" in value) seen.push(value.emittedAt);
+      },
       { sampleRateMs: 50 },
       () => now,
     );
@@ -55,6 +57,7 @@ describe("createAsyncEmitter", () => {
     const seen: number[] = [];
     const emitter = createAsyncEmitter(
       (value) => {
+        if (!("emittedAt" in value)) return;
         seen.push(value.emittedAt);
         if (value.emittedAt === 100) now = 140;
       },
@@ -102,11 +105,7 @@ describe("matchesAnyPathFilter", () => {
   });
 
   test("supports simple wildcard suffix matching", () => {
-    expect(matchesAnyPathFilter("/workspace/docs/a.md", ["/workspace/docs/*"])).toBe(
-      true,
-    );
-    expect(matchesAnyPathFilter("/workspace/src/a.ts", ["/workspace/docs/*"])).toBe(
-      false,
-    );
+    expect(matchesAnyPathFilter("/workspace/docs/a.md", ["/workspace/docs/*"])).toBe(true);
+    expect(matchesAnyPathFilter("/workspace/src/a.ts", ["/workspace/docs/*"])).toBe(false);
   });
 });

@@ -1,9 +1,5 @@
 import type { SystemSignalSource } from "@koi/core";
-import {
-  createAsyncEmitter,
-  createSubscriptionController,
-  safeCall,
-} from "./shared.js";
+import { createAsyncEmitter, createSubscriptionController, safeCall } from "./shared.js";
 
 export interface GroveEventSourceLike {
   close: () => void;
@@ -46,9 +42,7 @@ export function createClosedAwareGroveHandler<T>(
   };
 }
 
-export function createGroveSignalSource(
-  config: GroveSignalSourceConfig,
-): SystemSignalSource {
+export function createGroveSignalSource(config: GroveSignalSourceConfig): SystemSignalSource {
   return {
     name: "grove",
     watch(handler, options) {
@@ -67,12 +61,9 @@ export function createGroveSignalSource(
           const payload = JSON.parse(event.data) as Record<string, unknown>;
           if (payload.type !== "frontier_changed") return;
 
-          const metric =
-            typeof payload.metric === "string" ? payload.metric : undefined;
+          const metric = typeof payload.metric === "string" ? payload.metric : undefined;
           const improvement =
-            typeof payload.improvement === "number"
-              ? payload.improvement
-              : undefined;
+            typeof payload.improvement === "number" ? payload.improvement : undefined;
 
           if (!shouldAcceptGroveFrontierEvent(metric, improvement, config)) {
             return;

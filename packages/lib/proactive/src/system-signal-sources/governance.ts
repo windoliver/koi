@@ -24,9 +24,7 @@ export interface GovernanceSignalSourceConfig {
   readonly now?: (() => number) | undefined;
 }
 
-function coalesceThresholds(
-  thresholds: readonly GovernanceThreshold[],
-): GovernanceThreshold[] {
+function coalesceThresholds(thresholds: readonly GovernanceThreshold[]): GovernanceThreshold[] {
   const coalesced = new Map<string, GovernanceThreshold>();
 
   for (const threshold of thresholds) {
@@ -91,10 +89,14 @@ export function createGovernanceSignalSource(
     watch(handler, options) {
       let closed = false;
       let lastAcceptedDeliveryAt = -Infinity;
-      const emitter = createAsyncEmitter((signal) => {
-        if (closed) return;
-        handler(signal);
-      }, { ...options, sampleRateMs: undefined }, now);
+      const emitter = createAsyncEmitter(
+        (signal) => {
+          if (closed) return;
+          handler(signal);
+        },
+        { ...options, sampleRateMs: undefined },
+        now,
+      );
       const state = new Map<string, { alerting: boolean; lastEmittedAt: number }>();
       let inFlight = false;
       let pollRequested = false;

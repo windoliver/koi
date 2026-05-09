@@ -2,6 +2,10 @@ import { describe, expect, mock, test } from "bun:test";
 import type { GovernanceController, GovernanceSnapshot, SystemSignal } from "@koi/core";
 import { createGovernanceSignalSource } from "./governance.js";
 
+type MutableGovernanceController = {
+  -readonly [K in keyof GovernanceController]: GovernanceController[K];
+};
+
 function createController(readings: GovernanceSnapshot["readings"]): GovernanceController {
   return {
     check: async () => ({ ok: true }),
@@ -27,10 +31,23 @@ function createDeferred<T>() {
   return { promise, resolve };
 }
 
+function sequenceSnapshots(
+  snapshots: readonly Promise<GovernanceSnapshot>[],
+): () => Promise<GovernanceSnapshot> {
+  let index = 0;
+  return async () => {
+    const snapshot = snapshots[Math.min(index++, snapshots.length - 1)];
+    if (snapshot === undefined) {
+      throw new Error("expected at least one snapshot");
+    }
+    return snapshot;
+  };
+}
+
 describe("createGovernanceSignalSource", () => {
   test("emits only on threshold crossing", async () => {
     let current = 0.1;
-    const controller = createController([
+    const controller: MutableGovernanceController = createController([
       { name: "error_rate", current, limit: 1, utilization: current },
     ]);
     controller.snapshot = async () => ({
@@ -68,7 +85,7 @@ describe("createGovernanceSignalSource", () => {
   });
 
   test("replay emits an already-alerting threshold immediately", async () => {
-    const controller = createController([
+    const controller: MutableGovernanceController = createController([
       { name: "context_occupancy", current: 0.92, limit: 1, utilization: 0.92 },
     ]);
     const source = createGovernanceSignalSource(
@@ -118,7 +135,7 @@ describe("createGovernanceSignalSource", () => {
   test("enforces cooldown before emitting a new crossing", async () => {
     let now = 100;
     let current = 0.1;
-    const controller = createController([
+    const controller: MutableGovernanceController = createController([
       { name: "error_rate", current, limit: 1, utilization: current },
     ]);
     controller.snapshot = async () => ({
@@ -186,7 +203,7 @@ describe("createGovernanceSignalSource", () => {
   test("coalesces equivalent thresholds that differ only by cooldown", async () => {
     let now = 100;
     let current = 0.1;
-    const controller = createController([
+    const controller: MutableGovernanceController = createController([
       { name: "error_rate", current, limit: 1, utilization: current },
     ]);
     controller.snapshot = async () => ({
@@ -308,7 +325,7 @@ describe("createGovernanceSignalSource", () => {
   });
 
   test("stop prevents an already-queued governance microtask from reaching the handler", async () => {
-    const controller = createController([
+    const controller: MutableGovernanceController = createController([
       { name: "error_rate", current: 0.4, limit: 1, utilization: 0.4 },
     ]);
     const source = createGovernanceSignalSource(
@@ -329,6 +346,9 @@ describe("createGovernanceSignalSource", () => {
 
   test("ignores stale overlapping poll completions", async () => {
     const first = createDeferred<GovernanceSnapshot>();
+    const secondStarted = createDeferred<void>();
+    const thirdStarted = createDeferred<void>();
+    const fourthStarted = createDeferred<void>();
     const snapshots = [
       Promise.resolve({
         timestamp: 390,
@@ -350,52 +370,80 @@ describe("createGovernanceSignalSource", () => {
         violations: [],
       }),
     ];
+    const nextSnapshot = sequenceSnapshots(snapshots);
+    let callCount = 0;
     const controller = {
       ...createController([]),
-      snapshot: mock(async () => snapshots.shift() ?? snapshots[snapshots.length - 1]!),
+      snapshot: mock(async () => {
+        callCount += 1;
+        if (callCount === 2) secondStarted.resolve();
+        if (callCount === 3) thirdStarted.resolve();
+        if (callCount === 4) fourthStarted.resolve();
+        return nextSnapshot();
+      }),
     } satisfies GovernanceController;
+    let intervalCallback: (() => void) | undefined;
+    const originalSetInterval = globalThis.setInterval;
+    const originalClearInterval = globalThis.clearInterval;
+    globalThis.setInterval = ((callback: Parameters<typeof setInterval>[0]) => {
+      intervalCallback = callback as () => void;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval;
+    globalThis.clearInterval = (() => {}) as typeof clearInterval;
 
-    const source = createGovernanceSignalSource(
-      controller,
-      [{ sensor: "error_rate", limit: 0.3, direction: "above" }],
-      { pollIntervalMs: 1, now: () => 450 },
-    );
+    try {
+      const source = createGovernanceSignalSource(
+        controller,
+        [{ sensor: "error_rate", limit: 0.3, direction: "above" }],
+        { pollIntervalMs: 1, now: () => 450 },
+      );
 
-    const seen: SystemSignal[] = [];
-    const stop = source.watch((signal) => seen.push(signal), { replay: true });
-    await new Promise((resolve) => queueMicrotask(resolve));
+      const seen: SystemSignal[] = [];
+      const stop = source.watch((signal) => seen.push(signal), { replay: true });
+      await new Promise((resolve) => queueMicrotask(resolve));
 
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    first.resolve({
-      timestamp: 400,
-      readings: [{ name: "error_rate", current: 0.4, limit: 1, utilization: 0.4 }],
-      healthy: true,
-      violations: [],
-    });
-    await first.promise;
-    await new Promise((resolve) => queueMicrotask(resolve));
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    await new Promise((resolve) => queueMicrotask(resolve));
+      intervalCallback?.();
+      await secondStarted.promise;
+      intervalCallback?.();
+      first.resolve({
+        timestamp: 400,
+        readings: [{ name: "error_rate", current: 0.4, limit: 1, utilization: 0.4 }],
+        healthy: true,
+        violations: [],
+      });
+      await first.promise;
+      await thirdStarted.promise;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => queueMicrotask(resolve));
 
-    stop();
-    expect(seen).toEqual([
-      {
-        kind: "governance",
-        sensor: "error_rate",
-        value: 0.4,
-        limit: 0.3,
-        direction: "above",
-        emittedAt: 450,
-      },
-      {
-        kind: "governance",
-        sensor: "error_rate",
-        value: 0.45,
-        limit: 0.3,
-        direction: "above",
-        emittedAt: 450,
-      },
-    ]);
+      intervalCallback?.();
+      await fourthStarted.promise;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => queueMicrotask(resolve));
+
+      stop();
+      expect(seen).toEqual([
+        {
+          kind: "governance",
+          sensor: "error_rate",
+          value: 0.4,
+          limit: 0.3,
+          direction: "above",
+          emittedAt: 450,
+        },
+        {
+          kind: "governance",
+          sensor: "error_rate",
+          value: 0.45,
+          limit: 0.3,
+          direction: "above",
+          emittedAt: 450,
+        },
+      ]);
+    } finally {
+      globalThis.setInterval = originalSetInterval;
+      globalThis.clearInterval = originalClearInterval;
+    }
   });
 
   test("processes recovery before a newer re-alert request", async () => {
@@ -417,6 +465,7 @@ describe("createGovernanceSignalSource", () => {
         violations: [],
       }),
     ];
+    const nextSnapshot = sequenceSnapshots(snapshots);
     let callCount = 0;
     const controller = {
       ...createController([]),
@@ -424,13 +473,13 @@ describe("createGovernanceSignalSource", () => {
         callCount += 1;
         if (callCount === 2) secondStarted.resolve();
         if (callCount === 3) thirdStarted.resolve();
-        return snapshots.shift() ?? snapshots[snapshots.length - 1]!;
+        return nextSnapshot();
       }),
     } satisfies GovernanceController;
     let intervalCallback: (() => void) | undefined;
     const originalSetInterval = globalThis.setInterval;
     const originalClearInterval = globalThis.clearInterval;
-    globalThis.setInterval = ((callback: TimerHandler) => {
+    globalThis.setInterval = ((callback: Parameters<typeof setInterval>[0]) => {
       intervalCallback = callback as () => void;
       return 1 as unknown as ReturnType<typeof setInterval>;
     }) as typeof setInterval;
@@ -459,6 +508,7 @@ describe("createGovernanceSignalSource", () => {
       });
       await recovery.promise;
       await thirdStarted.promise;
+      await new Promise((resolve) => setTimeout(resolve, 0));
       await Promise.resolve();
       await Promise.resolve();
       await new Promise((resolve) => queueMicrotask(resolve));
@@ -520,7 +570,7 @@ describe("createGovernanceSignalSource", () => {
   });
 
   test("supports wildcard sensor thresholds through adapter matching", async () => {
-    const controller = createController([
+    const controller: MutableGovernanceController = createController([
       { name: "error_rate_api", current: 0.41, limit: 1, utilization: 0.41 },
     ]);
     const source = createGovernanceSignalSource(
@@ -547,7 +597,7 @@ describe("createGovernanceSignalSource", () => {
   });
 
   test("wildcard thresholds choose an alerting match beyond the first reading", async () => {
-    const controller = createController([
+    const controller: MutableGovernanceController = createController([
       { name: "error_rate_api", current: 0.1, limit: 1, utilization: 0.1 },
       { name: "error_rate_worker", current: 0.52, limit: 1, utilization: 0.52 },
     ]);
@@ -575,7 +625,7 @@ describe("createGovernanceSignalSource", () => {
   });
 
   test("below-direction wildcard thresholds choose the lowest alerting match", async () => {
-    const controller = createController([
+    const controller: MutableGovernanceController = createController([
       { name: "context_occupancy_api", current: 0.4, limit: 1, utilization: 0.4 },
       { name: "context_occupancy_worker", current: 0.2, limit: 1, utilization: 0.2 },
       { name: "context_occupancy_cache", current: 0.7, limit: 1, utilization: 0.7 },
@@ -607,7 +657,7 @@ describe("createGovernanceSignalSource", () => {
     let now = 100;
     let errorRate = 0.1;
     let contextOccupancy = 0.1;
-    const controller = createController([
+    const controller: MutableGovernanceController = createController([
       { name: "error_rate", current: errorRate, limit: 1, utilization: errorRate },
       {
         name: "context_occupancy",

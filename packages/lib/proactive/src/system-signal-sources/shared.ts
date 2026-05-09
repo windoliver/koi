@@ -28,9 +28,7 @@ export interface SubscriptionController {
   readonly unsubscribe: () => void;
 }
 
-export function createSubscriptionController(
-  onClose: () => void,
-): SubscriptionController {
+export function createSubscriptionController(onClose: () => void): SubscriptionController {
   let closed = false;
 
   return {

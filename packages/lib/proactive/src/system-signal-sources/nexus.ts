@@ -1,9 +1,5 @@
-import type {
-  ProcessState,
-  SystemSignal,
-  SystemSignalSource,
-  TransitionReason,
-} from "@koi/core";
+import type { ProcessState, SystemSignal, SystemSignalSource, TransitionReason } from "@koi/core";
+import { agentId, zoneId } from "@koi/core";
 import {
   createAsyncEmitter,
   createSubscriptionController,
@@ -32,15 +28,14 @@ const VALID_PROCESS_STATES: ReadonlySet<ProcessState> = new Set([
   "terminated",
 ]);
 
-const VALID_TRANSITIONS: Readonly<Record<ProcessState, readonly ProcessState[]>> =
-  Object.freeze({
-    created: ["running", "terminated"] as const,
-    running: ["waiting", "suspended", "idle", "terminated"] as const,
-    waiting: ["running", "suspended", "terminated"] as const,
-    suspended: ["running", "terminated"] as const,
-    idle: ["running", "terminated"] as const,
-    terminated: [] as const,
-  });
+const VALID_TRANSITIONS: Readonly<Record<ProcessState, readonly ProcessState[]>> = Object.freeze({
+  created: ["running", "terminated"] as const,
+  running: ["waiting", "suspended", "idle", "terminated"] as const,
+  waiting: ["running", "suspended", "terminated"] as const,
+  suspended: ["running", "terminated"] as const,
+  idle: ["running", "terminated"] as const,
+  terminated: [] as const,
+});
 
 function isProcessState(value: string): value is ProcessState {
   return VALID_PROCESS_STATES.has(value as ProcessState);
@@ -96,14 +91,10 @@ function matchesRenamePathFilter(
   to: string,
   filters: readonly string[] | undefined,
 ): boolean {
-  return (
-    matchesAnyPathFilter(from, filters) || matchesAnyPathFilter(to, filters)
-  );
+  return matchesAnyPathFilter(from, filters) || matchesAnyPathFilter(to, filters);
 }
 
-export function createNexusSignalSource(
-  config: NexusSignalSourceConfig,
-): SystemSignalSource {
+export function createNexusSignalSource(config: NexusSignalSourceConfig): SystemSignalSource {
   return {
     name: "nexus",
     watch(handler, options) {
@@ -125,12 +116,8 @@ export function createNexusSignalSource(
               Number.isFinite(record.emittedAt)
             ) {
               if (record.event === "write" || record.event === "delete") {
-                const path =
-                  typeof record.path === "string" ? record.path : undefined;
-                if (
-                  path === undefined ||
-                  !matchesAnyPathFilter(path, config.pathFilters)
-                ) {
+                const path = typeof record.path === "string" ? record.path : undefined;
+                if (path === undefined || !matchesAnyPathFilter(path, config.pathFilters)) {
                   return;
                 }
 
@@ -138,8 +125,7 @@ export function createNexusSignalSource(
                   kind: "vfs",
                   event: record.event,
                   path,
-                  zoneId:
-                    typeof record.zoneId === "string" ? record.zoneId : undefined,
+                  zoneId: typeof record.zoneId === "string" ? zoneId(record.zoneId) : undefined,
                   emittedAt: record.emittedAt,
                 } satisfies SystemSignal);
               }
@@ -149,13 +135,7 @@ export function createNexusSignalSource(
                 typeof record.from === "string" &&
                 typeof record.to === "string"
               ) {
-                if (
-                  !matchesRenamePathFilter(
-                    record.from,
-                    record.to,
-                    config.pathFilters,
-                  )
-                ) {
+                if (!matchesRenamePathFilter(record.from, record.to, config.pathFilters)) {
                   return;
                 }
 
@@ -165,8 +145,7 @@ export function createNexusSignalSource(
                   path: record.from,
                   from: record.from,
                   to: record.to,
-                  zoneId:
-                    typeof record.zoneId === "string" ? record.zoneId : undefined,
+                  zoneId: typeof record.zoneId === "string" ? zoneId(record.zoneId) : undefined,
                   emittedAt: record.emittedAt,
                 } satisfies SystemSignal);
               }
@@ -188,12 +167,12 @@ export function createNexusSignalSource(
               Number.isFinite(record.generation) &&
               Number.isInteger(record.generation) &&
               record.generation >= 0 &&
-              typeof record.emittedAt === "number"
-              && Number.isFinite(record.emittedAt)
+              typeof record.emittedAt === "number" &&
+              Number.isFinite(record.emittedAt)
             ) {
               emitter.emit({
                 kind: "agent_lifecycle",
-                agentId: record.agentId,
+                agentId: agentId(record.agentId),
                 from: record.from,
                 to: record.to,
                 reason: record.reason,

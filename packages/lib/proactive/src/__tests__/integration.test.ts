@@ -45,7 +45,7 @@ function buildHarness(): Harness {
   const scheduler = createScheduler(
     { ...DEFAULT_SCHEDULER_CONFIG, pollIntervalMs: 1 },
     createSqliteTaskStore(db),
-    async (_a, inp) => {
+    async (_a: AgentId, inp: EngineInput) => {
       dispatched.push(inp);
     },
     clock,

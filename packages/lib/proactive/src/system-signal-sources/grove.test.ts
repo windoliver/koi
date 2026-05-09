@@ -3,6 +3,7 @@ import type { SystemSignal } from "@koi/core";
 import {
   createClosedAwareGroveHandler,
   createGroveSignalSource,
+  type GroveEventSourceLike,
   shouldAcceptGroveFrontierEvent,
 } from "./grove.js";
 
@@ -34,11 +35,11 @@ describe("createGroveSignalSource", () => {
       eventSourceFactory: () =>
         ({
           close() {},
-          set onmessage(fn) {
+          set onmessage(fn: GroveEventSourceLike["onmessage"]) {
             onMessage = fn ?? undefined;
           },
-          set onerror(_fn) {},
-        }) as never,
+          set onerror(_fn: GroveEventSourceLike["onerror"]) {},
+        }) satisfies GroveEventSourceLike,
     });
 
     const seen: SystemSignal[] = [];
@@ -65,11 +66,11 @@ describe("createGroveSignalSource", () => {
       eventSourceFactory: () =>
         ({
           close() {},
-          set onmessage(fn) {
+          set onmessage(fn: GroveEventSourceLike["onmessage"]) {
             onMessage = fn ?? undefined;
           },
-          set onerror(_fn) {},
-        }) as never,
+          set onerror(_fn: GroveEventSourceLike["onerror"]) {},
+        }) satisfies GroveEventSourceLike,
     });
 
     const onError = mock(() => {});
@@ -132,13 +133,13 @@ describe("createGroveSignalSource", () => {
       eventSourceFactory: () =>
         ({
           close() {},
-          set onmessage(fn) {
+          set onmessage(fn: GroveEventSourceLike["onmessage"]) {
             onMessage = fn ?? undefined;
           },
-          set onerror(fn) {
+          set onerror(fn: GroveEventSourceLike["onerror"]) {
             onErrorEvent = fn ?? undefined;
           },
-        }) as never,
+        }) satisfies GroveEventSourceLike,
     });
 
     const onError = mock(() => {});
@@ -164,11 +165,11 @@ describe("createGroveSignalSource", () => {
           close() {
             closed += 1;
           },
-          set onmessage(_fn) {},
-          set onerror(fn) {
+          set onmessage(_fn: GroveEventSourceLike["onmessage"]) {},
+          set onerror(fn: GroveEventSourceLike["onerror"]) {
             onErrorEvent = fn ?? undefined;
           },
-        }) as never,
+        }) satisfies GroveEventSourceLike,
     });
 
     const onError = mock(() => {});

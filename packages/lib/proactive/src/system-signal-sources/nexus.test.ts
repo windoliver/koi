@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { SystemSignal } from "@koi/core";
+import { agentId, zoneId } from "@koi/core";
 import { createNexusSignalSource } from "./nexus.js";
 
 describe("createNexusSignalSource", () => {
@@ -32,7 +33,7 @@ describe("createNexusSignalSource", () => {
         kind: "vfs",
         event: "write",
         path: "/tmp/a.txt",
-        zoneId: "zone-1",
+        zoneId: zoneId("zone-1"),
         emittedAt: 10,
       },
     ]);
@@ -72,7 +73,7 @@ describe("createNexusSignalSource", () => {
     expect(seen).toEqual([
       {
         kind: "agent_lifecycle",
-        agentId: "agent-1",
+        agentId: agentId("agent-1"),
         from: "running",
         to: "terminated",
         reason: { kind: "error" },
@@ -109,7 +110,7 @@ describe("createNexusSignalSource", () => {
     expect(seen).toEqual([
       {
         kind: "agent_lifecycle",
-        agentId: "agent-1",
+        agentId: agentId("agent-1"),
         from: "running",
         to: "terminated",
         reason: { kind: "error", cause: undefined },
@@ -310,7 +311,7 @@ describe("createNexusSignalSource", () => {
         kind: "vfs",
         event: "delete",
         path: "/tmp/dead.txt",
-        zoneId: "zone-2",
+        zoneId: zoneId("zone-2"),
         emittedAt: 12,
       },
     ]);
@@ -346,7 +347,7 @@ describe("createNexusSignalSource", () => {
         path: "/tmp/old.txt",
         from: "/tmp/old.txt",
         to: "/tmp/new.txt",
-        zoneId: "zone-1",
+        zoneId: zoneId("zone-1"),
         emittedAt: 11,
       },
     ]);
