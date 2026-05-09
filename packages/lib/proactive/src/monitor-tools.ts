@@ -411,7 +411,18 @@ export function createUpdateMonitorTool(
       }
 
       try {
-        await scheduler.unschedule(scheduleId(current.scheduleId));
+        const removed = await scheduler.unschedule(scheduleId(current.scheduleId));
+        if (!removed) {
+          try {
+            await scheduler.unschedule(scheduleId(newScheduleId));
+          } catch {
+            // Best-effort compensation only. Preserve the original local record either way.
+          }
+          return {
+            ok: false,
+            error: "Failed to retire previous monitor schedule",
+          };
+        }
       } catch (e: unknown) {
         return {
           ok: false,
@@ -469,7 +480,10 @@ export function createCancelMonitorTool(
       }
 
       try {
-        await scheduler.unschedule(scheduleId(record.scheduleId));
+        const removed = await scheduler.unschedule(scheduleId(record.scheduleId));
+        if (!removed) {
+          return { ok: true, removed: false };
+        }
       } catch (e: unknown) {
         return {
           ok: false,
