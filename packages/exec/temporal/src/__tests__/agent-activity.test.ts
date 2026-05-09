@@ -268,6 +268,236 @@ describe("createActivities", () => {
     });
     expect(getOrCreate.mock.calls[0]?.[0]).not.toEqual(getOrCreate.mock.calls[1]?.[0]);
   });
+
+  // ---------- Spawn validation corner cases ----------
+
+  const baseDeps = (
+    runFn: () => AsyncIterable<unknown>,
+    sendGatewayFrame?: ActivityDeps["sendGatewayFrame"],
+  ) => ({
+    engineCache: {
+      getOrCreate: async () => ({ run: () => runFn() }),
+    },
+    sendGatewayFrame: sendGatewayFrame ?? (async () => {}),
+    createEngineInput: () => ({ kind: "text", text: "hi" }) as const,
+    computeCacheKey: () => ({ manifestHash: "m", forgeGeneration: 1, credentialScope: "" }),
+    getCreateKoiOptions: async () => ({ manifest: {}, adapter: {} }),
+  });
+
+  const callTurn = async (
+    deps: ReturnType<typeof baseDeps>,
+    overrides: Partial<Parameters<ReturnType<typeof createActivities>["runAgentTurn"]>[0]> = {},
+    // biome-ignore lint/suspicious/noExplicitAny: test ergonomics
+  ): Promise<any> => {
+    const { runAgentTurn } = createActivities(deps);
+    return runAgentTurn({
+      agentId: "agent-1" as never,
+      sessionId: "session-1" as never,
+      message: { id: "m1", senderId: "u1", content: [], timestamp: 0 },
+      stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+      gatewayUrl: undefined,
+      turnId: "t1",
+      ...overrides,
+    });
+  };
+
+  test("additionalTools: [] is accepted (no-op)", async () => {
+    const result = await callTurn(
+      baseDeps(async function* () {
+        yield {
+          kind: "spawn_requested",
+          childAgentId: "child-1",
+          request: { description: "x", additionalTools: [] },
+        };
+      }),
+    );
+    expect(result.spawnChild?.childAgentId).toBe("child-1");
+    expect(result.droppedSpawns).toBeUndefined();
+  });
+
+  test("additionalTools: [{...}] is dropped with observable signal", async () => {
+    const sendGatewayFrame = mock<ActivityDeps["sendGatewayFrame"]>(async () => {});
+    const result = await callTurn(
+      baseDeps(async function* () {
+        yield {
+          kind: "spawn_requested",
+          childAgentId: "child-1",
+          request: { description: "x", additionalTools: [{ name: "tool" }] },
+        };
+      }, sendGatewayFrame),
+    );
+    expect(result.spawnChild).toBeUndefined();
+    expect(result.droppedSpawns).toEqual([
+      { childAgentId: "child-1", reason: "unsupported-spawn-field:additionalTools" },
+    ]);
+    expect(sendGatewayFrame.mock.calls[0]?.[1]).toMatchObject({
+      kind: "agent:spawn_dropped",
+      reason: "unsupported-spawn-field:additionalTools",
+    });
+  });
+
+  test("outputSchema is dropped (structured-output not supported on Temporal path)", async () => {
+    const result = await callTurn(
+      baseDeps(async function* () {
+        yield {
+          kind: "spawn_requested",
+          childAgentId: "child-1",
+          request: { description: "x", outputSchema: { type: "object" } },
+        };
+      }),
+    );
+    expect(result.spawnChild).toBeUndefined();
+    expect(result.droppedSpawns?.[0]?.reason).toBe("unsupported-spawn-field:outputSchema");
+  });
+
+  test("text_delta before unsupported spawn streams cleanly, no throw", async () => {
+    const sendGatewayFrame = mock<ActivityDeps["sendGatewayFrame"]>(async () => {});
+    const result = await callTurn(
+      baseDeps(async function* () {
+        yield { kind: "text_delta", delta: "hello " };
+        yield {
+          kind: "spawn_requested",
+          childAgentId: "child-1",
+          request: { description: "x", manifest: { id: "y" } },
+        };
+      }, sendGatewayFrame),
+      { gatewayUrl: "ws://gw" },
+    );
+    expect(result.blocks).toEqual([{ kind: "text", text: "hello " }]);
+    expect(result.droppedSpawns?.[0]?.reason).toBe("unsupported-spawn-field:manifest");
+    expect(sendGatewayFrame.mock.calls[0]?.[1]?.kind).toBe("agent:text_delta");
+    expect(sendGatewayFrame.mock.calls[1]?.[1]?.kind).toBe("agent:spawn_dropped");
+  });
+
+  test("timeoutMs: 0 disables deadline (no absoluteDeadlineMs synthesized)", async () => {
+    const result = await callTurn(
+      baseDeps(async function* () {
+        yield {
+          kind: "spawn_requested",
+          childAgentId: "child-1",
+          request: { description: "x", timeoutMs: 0 },
+        };
+      }),
+    );
+    expect(result.spawnChild?.childConfig.absoluteDeadlineMs).toBeUndefined();
+  });
+
+  test("timeoutMs > 0 snapshots absoluteDeadlineMs at capture time", async () => {
+    const before = Date.now();
+    const result = await callTurn(
+      baseDeps(async function* () {
+        yield {
+          kind: "spawn_requested",
+          childAgentId: "child-1",
+          request: { description: "x", timeoutMs: 5000 },
+        };
+      }),
+    );
+    const captured = result.spawnChild?.childConfig.absoluteDeadlineMs as number;
+    expect(captured).toBeGreaterThanOrEqual(before + 5000);
+    expect(captured).toBeLessThanOrEqual(Date.now() + 5000);
+  });
+
+  test("absoluteDeadlineMs wins over timeoutMs", async () => {
+    const result = await callTurn(
+      baseDeps(async function* () {
+        yield {
+          kind: "spawn_requested",
+          childAgentId: "child-1",
+          request: { description: "x", timeoutMs: 5000, absoluteDeadlineMs: 9999 },
+        };
+      }),
+    );
+    expect(result.spawnChild?.childConfig.absoluteDeadlineMs).toBe(9999);
+  });
+
+  test("spawn context with Date is rejected (deep JSON validation)", async () => {
+    await expect(
+      callTurn(
+        baseDeps(async function* () {
+          yield {
+            kind: "spawn_requested",
+            childAgentId: "child-1",
+            request: { description: "x", context: { when: new Date() } },
+          };
+        }),
+      ),
+    ).rejects.toMatchObject({ name: "ApplicationFailure" });
+  });
+
+  test("allowSpawn: false drops spawn with scheduled-firing reason", async () => {
+    const result = await callTurn(
+      baseDeps(async function* () {
+        yield {
+          kind: "spawn_requested",
+          childAgentId: "child-1",
+          request: { description: "x" },
+        };
+      }),
+      { allowSpawn: false },
+    );
+    expect(result.spawnChild).toBeUndefined();
+    expect(result.droppedSpawns).toEqual([
+      { childAgentId: "child-1", reason: "scheduled-firing-no-spawn" },
+    ]);
+  });
+
+  test("parent credentials are NOT propagated to spawned child", async () => {
+    const result = await callTurn(
+      baseDeps(async function* () {
+        yield {
+          kind: "spawn_requested",
+          childAgentId: "child-1",
+          request: { description: "x" },
+        };
+      }),
+      {
+        nexusApiKey: "parent-secret" as never,
+        delegationId: "parent-deleg" as never,
+      },
+    );
+    expect(result.spawnChild?.childConfig.nexusApiKey).toBeUndefined();
+    expect(result.spawnChild?.childConfig.delegationId).toBeUndefined();
+  });
+
+  test("agentName and taskIndex are accepted (correlation-only, ignored)", async () => {
+    const result = await callTurn(
+      baseDeps(async function* () {
+        yield {
+          kind: "spawn_requested",
+          childAgentId: "child-1",
+          request: {
+            description: "x",
+            agentName: "researcher",
+            taskIndex: 3,
+            taskId: "task-9",
+          },
+        };
+      }),
+    );
+    expect(result.spawnChild?.childAgentId).toBe("child-1");
+    expect(result.droppedSpawns).toBeUndefined();
+  });
+
+  test("multiple drops in one turn are all recorded", async () => {
+    const result = await callTurn(
+      baseDeps(async function* () {
+        yield {
+          kind: "spawn_requested",
+          childAgentId: "child-1",
+          request: { description: "x", outputSchema: {} },
+        };
+        yield {
+          kind: "spawn_requested",
+          childAgentId: "child-2",
+          request: { description: "y", manifest: { id: "z" } },
+        };
+      }),
+    );
+    expect(result.droppedSpawns).toHaveLength(2);
+    expect(result.droppedSpawns?.[0]?.childAgentId).toBe("child-1");
+    expect(result.droppedSpawns?.[1]?.childAgentId).toBe("child-2");
+  });
 });
 
 describe("index re-exports", () => {
