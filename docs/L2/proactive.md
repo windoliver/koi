@@ -1,8 +1,8 @@
 # @koi/proactive
 
 Proactive / autonomous tool surfaces — thin LLM-callable wrappers over `@koi/scheduler`
-that let an agent put itself to sleep, wake itself up, and register recurring (cron)
-self-dispatches.
+that let an agent put itself to sleep, wake itself up, register recurring (cron)
+self-dispatches, and manage lightweight process-local monitors.
 
 ## Layer
 
@@ -18,9 +18,10 @@ agent to express its own temporal autonomy:
 
 - pause execution and request a delayed wake-up
 - register a recurring cron-driven self-dispatch
-- list and cancel its own cron schedules
+- cancel its own cron schedules
+- create, list, update, and cancel recurring monitors backed by cron schedules
 
-All four tools are thin facades over `SchedulerComponent` (the agent-facing subset of
+All proactive tools are thin facades over `SchedulerComponent` (the agent-facing subset of
 `TaskScheduler` exposed through the `SCHEDULER` component token). The package itself
 holds no state, owns no lifecycle, and reaches no I/O.
 
@@ -40,7 +41,7 @@ infrastructure here.
 ## Public API
 
 ```typescript
-// Core factory — returns the four tools as a frozen array
+// Core factory — returns the eight proactive tools as a frozen array
 createProactiveTools(config: ProactiveToolsConfig): readonly Tool[]
 
 // ComponentProvider for ECS assembly
@@ -75,6 +76,10 @@ interface ProactiveToolsProviderConfig {
 | `cancel_sleep` | `task_id` | `{ ok: true, removed }` |
 | `schedule_cron` | `expression`, `wake_message?`, `timezone?`, `idempotency_key?` | `{ ok: true, schedule_id, deduped? }` |
 | `cancel_schedule` | `schedule_id` | `{ ok: true, removed }` |
+| `create_monitor` | `name`, `goal`, `check_prompt`, `expression`, `timezone?`, `context_hint?`, `idempotency_key?` | `{ ok: true, monitor_id, schedule_id, deduped? }` |
+| `list_monitors` | none | `{ ok: true, monitors: MonitorSummary[] }` |
+| `update_monitor` | `monitor_id`, patch fields from `create_monitor` except `idempotency_key` | `{ ok: true, monitor_id, schedule_id }` |
+| `cancel_monitor` | `monitor_id` | `{ ok: true, removed }` |
 
 Listing existing schedules is intentionally **not** exposed: the L0
 `SchedulerComponent` does not currently surface a per-agent
@@ -116,6 +121,35 @@ agent was waiting on completed early, was retried via another path, etc.). Retur
 Calls `SchedulerComponent.unschedule(scheduleId)`. Returns the scheduler's boolean
 removal flag inside `{ ok: true, removed }`. Unknown IDs return `removed: false`
 (idempotent — safe to retry).
+
+### Monitor tools
+
+`create_monitor`, `list_monitors`, `update_monitor`, and `cancel_monitor` layer a
+small in-memory monitor registry on top of recurring scheduler entries. A monitor stores
+human-meaningful fields (`name`, `goal`, `check_prompt`, `expression`, optional
+`timezone`, optional `context_hint`) and schedules a recurring `"dispatch"` wake whose
+text is derived from those fields.
+
+`list_monitors` returns summary data only: `monitor_id`, `schedule_id`, `name`, `goal`,
+`expression`, and optional `context_hint`. It intentionally does **not** expose
+`check_prompt`, notification delivery state, or execution history. This package slice
+does not record monitor runs, acknowledgements, or any other durable audit trail.
+
+`update_monitor` uses patch semantics: omitted fields keep their prior values. Under the
+hood it creates a replacement schedule, swaps the stored monitor record to the new
+`schedule_id`, and then retires the previous schedule. `cancel_monitor` removes the
+monitor record and unschedules the backing cron entry.
+
+**State limits:** monitor state is process-local and attach-local. The registry lives in
+plain in-memory maps owned by the current tool set, so a fresh process start, restart,
+or provider reattach begins with an empty monitor list unless the caller recreates those
+monitors. There is no durable monitor registry in `@koi/proactive`.
+
+**`idempotency_key` scope:** `create_monitor` supports best-effort dedupe only within the
+same process state. Replaying the same key with identical monitor fields returns the
+original `monitor_id` and `schedule_id` with `deduped: true`; reusing the key with
+different fields fails closed. Failed creations clear the reservation so a retry can
+start fresh. This guarantee does not survive restart or reattach.
 
 ### Idempotency (`idempotency_key`)
 
@@ -186,9 +220,10 @@ prefer to do their own wiring.
 ### Tools are mostly stateless
 
 `sleep`, `cancel_sleep`, and `cancel_schedule` capture only the injected
-`SchedulerComponent` and config. `schedule_cron` and `cancel_schedule` share an
-in-memory `Map<idempotency_key, schedule_id>` for retry-safe registration (see
-"Cron idempotency" below). That map is the only mutable state in this package.
+`SchedulerComponent` and config. `schedule_cron` / `cancel_schedule` share a
+same-process idempotency map, and the monitor tools share process-local monitor state
+for create/list/update/cancel. None of this state is durable across restart or
+reattach.
 
 ### Wake message is text, not a structured envelope
 
