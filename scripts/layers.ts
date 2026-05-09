@@ -149,6 +149,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
  * L3 packages may depend on any layer.
  */
 export const L3_PACKAGES: ReadonlySet<string> = new Set([
+  "@koi/autonomous",
   "@koi/auto-harness",
   "@koi/cli",
   "@koi-agent/cli",
