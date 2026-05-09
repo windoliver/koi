@@ -43,6 +43,16 @@
         "playwright": "^1.49.0",
       },
     },
+    "packages/exec/code-executor": {
+      "name": "@koi/code-executor",
+      "version": "0.1.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/sandbox-executor": "workspace:*",
+      },
+    },
     "packages/exec/hook-prompt": {
       "name": "@koi/hook-prompt",
       "version": "0.0.0",
@@ -1515,6 +1525,7 @@
         "@koi/channel-web": "workspace:*",
         "@koi/channel-whatsapp": "workspace:*",
         "@koi/checkpoint": "workspace:*",
+        "@koi/code-executor": "workspace:*",
         "@koi/context-manager": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/cost-aggregator": "workspace:*",
@@ -2674,6 +2685,8 @@
     "@koi/channel-whatsapp": ["@koi/channel-whatsapp@workspace:packages/lib/channel-whatsapp"],
 
     "@koi/checkpoint": ["@koi/checkpoint@workspace:packages/lib/checkpoint"],
+
+    "@koi/code-executor": ["@koi/code-executor@workspace:packages/exec/code-executor"],
 
     "@koi/config": ["@koi/config@workspace:packages/lib/config"],
 

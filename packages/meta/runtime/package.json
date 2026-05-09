@@ -141,6 +141,7 @@
     "@koi/bash-ast": "workspace:*",
     "@koi/bash-security": "workspace:*",
     "@koi/tools-bash": "workspace:*",
+    "@koi/code-executor": "workspace:*",
     "@koi/sandbox-cloudflare": "workspace:*",
     "@koi/sandbox-conformance": "workspace:*",
     "@koi/sandbox-docker": "workspace:*",

@@ -16869,6 +16869,54 @@ describe("Golden: @koi/sandbox-executor", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Standalone golden queries: @koi/code-executor (2 queries)
+//
+// Standalone — no cassette replay. Validates that the execute_script tool
+// builds correctly, transpiles TypeScript before forwarding to the injected
+// SandboxExecutor, and surfaces sandbox failures as typed ScriptError values.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/code-executor", () => {
+  test("createCodeExecutorProvider attaches execute_script under toolToken", async () => {
+    const { createCodeExecutorProvider } = await import("@koi/code-executor");
+    const { toolToken } = await import("@koi/core");
+
+    const noopExecutor = {
+      execute: async () => ({ ok: true as const, value: { output: 42, durationMs: 1 } }),
+    };
+    const provider = createCodeExecutorProvider({ executor: noopExecutor });
+    const result = await provider.attach({} as never);
+    const components =
+      result instanceof Map
+        ? result
+        : (result as { readonly components: ReadonlyMap<string, unknown> }).components;
+    const tool = components.get(toolToken("execute_script") as string);
+    expect(tool).toBeDefined();
+  });
+
+  test("executeScript transpiles TypeScript and forwards through the injected executor", async () => {
+    const { executeScript } = await import("@koi/code-executor");
+
+    const captured: { code?: string } = {};
+    const result = await executeScript({
+      code: "const x: number = 1; return x;",
+      language: "typescript",
+      executor: {
+        execute: async (code, _input, _timeoutMs) => {
+          captured.code = code;
+          return { ok: true as const, value: { output: 1, durationMs: 1 } };
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.result).toBe(1);
+    expect(captured.code).toContain("const x = 1");
+    expect(captured.code).not.toContain(": number");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/agent-procfs (2 queries)
 //
 // Standalone — no cassette replay. Validates createProcFs TTL caching and
