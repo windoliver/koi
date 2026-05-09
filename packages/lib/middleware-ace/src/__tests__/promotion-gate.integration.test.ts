@@ -171,9 +171,42 @@ describe.each(adapters)("promotion-gate integration: %s", (label, mk) => {
       await commitPromotion(ctx, proposal(), evaluation(), thresholds);
 
       const head = await ctx.structuredStore.get(PLAYBOOK_ID);
-      // Watermark advances to the trajectory window's toStepIndex so a
-      // restart cannot re-reflect the same window and re-promote.
-      expect(head?.lastReflectedStepIndex).toBe(1);
+      // TrajectoryRange is half-open `[from, to)` — for `[0, 1)` the
+      // highest reflected step index is 0. Storing `1` would skip one
+      // real step on resume-from-watermark logic.
+      expect(head?.lastReflectedStepIndex).toBe(0);
+    } finally {
+      ctx.cleanup?.();
+    }
+  });
+
+  test("commitPromotion: empty trajectory window preserves prior watermark", async () => {
+    // Regression: an empty range `[0, 0)` reflects no steps and must NOT
+    // advance the watermark — storing 0 (or -1) for a zero-step window
+    // would either skip a real step on resume or violate monotonicity
+    // against a prior watermark of undefined → 0.
+    const ctx = mk();
+    try {
+      await ctx.structuredStore.save(structuredPlaybook({ version: 1 }));
+
+      // First commit: real range [0, 3) → watermark 2.
+      const p1 = proposal({
+        sourceTrajectoryRange: { sessionId: "sess", fromStepIndex: 0, toStepIndex: 3 },
+      });
+      await ctx.proposalStore.recordProposal(p1);
+      await commitPromotion(ctx, p1, evaluation(), thresholds);
+      expect((await ctx.structuredStore.get(PLAYBOOK_ID))?.lastReflectedStepIndex).toBe(2);
+
+      // Second commit: empty range [3, 3) → watermark must STAY at 2.
+      const p2 = proposal({
+        id: "p-empty",
+        baseVersion: 2,
+        sourceTrajectoryRange: { sessionId: "sess", fromStepIndex: 3, toStepIndex: 3 },
+      });
+      const e2 = evaluation({ id: "e-empty", proposalId: "p-empty" });
+      await ctx.proposalStore.recordProposal(p2);
+      await commitPromotion(ctx, p2, e2, thresholds);
+      expect((await ctx.structuredStore.get(PLAYBOOK_ID))?.lastReflectedStepIndex).toBe(2);
     } finally {
       ctx.cleanup?.();
     }
@@ -186,7 +219,8 @@ describe.each(adapters)("promotion-gate integration: %s", (label, mk) => {
       await ctx.proposalStore.recordProposal(proposal());
       await commitPromotion(ctx, proposal(), evaluation(), thresholds);
 
-      // Second commit with a HIGHER watermark — must advance.
+      // Second commit with a HIGHER watermark — must advance. Range
+      // [1, 5) → highest reflected step is 4.
       const p2 = proposal({
         id: "p-second",
         baseVersion: 2,
@@ -195,9 +229,10 @@ describe.each(adapters)("promotion-gate integration: %s", (label, mk) => {
       const e2 = evaluation({ id: "e-second", proposalId: "p-second" });
       await ctx.proposalStore.recordProposal(p2);
       await commitPromotion(ctx, p2, e2, thresholds);
-      expect((await ctx.structuredStore.get(PLAYBOOK_ID))?.lastReflectedStepIndex).toBe(5);
+      expect((await ctx.structuredStore.get(PLAYBOOK_ID))?.lastReflectedStepIndex).toBe(4);
 
-      // Third commit with a LOWER watermark — must NOT regress.
+      // Third commit with a LOWER watermark — must NOT regress. Range
+      // [0, 2) → candidate watermark would be 1, but prior is 4.
       const p3 = proposal({
         id: "p-third",
         baseVersion: 3,
@@ -206,7 +241,7 @@ describe.each(adapters)("promotion-gate integration: %s", (label, mk) => {
       const e3 = evaluation({ id: "e-third", proposalId: "p-third" });
       await ctx.proposalStore.recordProposal(p3);
       await commitPromotion(ctx, p3, e3, thresholds);
-      expect((await ctx.structuredStore.get(PLAYBOOK_ID))?.lastReflectedStepIndex).toBe(5);
+      expect((await ctx.structuredStore.get(PLAYBOOK_ID))?.lastReflectedStepIndex).toBe(4);
     } finally {
       ctx.cleanup?.();
     }
@@ -392,10 +427,11 @@ describe.each(adapters)("promotion-gate integration: %s", (label, mk) => {
       });
       await ctx.proposalStore.recordProposal(p1);
       await commitPromotion(ctx, p1, evaluation(), thresholds);
-      expect((await ctx.structuredStore.get(PLAYBOOK_ID))?.lastReflectedStepIndex).toBe(7);
+      // Range [0, 7) → highest reflected step is 6.
+      expect((await ctx.structuredStore.get(PLAYBOOK_ID))?.lastReflectedStepIndex).toBe(6);
 
-      // Rollback with a lower toStepIndex — must keep watermark at 7
-      // (monotonic) AND advance to its own toStepIndex if it were higher.
+      // Rollback with a lower toStepIndex — must keep watermark at 6
+      // (monotonic). Range [0, 3) → candidate watermark is 2, prior is 6.
       const rbProposal = proposal({
         id: "p-rb",
         baseVersion: 2,
@@ -406,7 +442,7 @@ describe.each(adapters)("promotion-gate integration: %s", (label, mk) => {
       await ctx.proposalStore.recordProposal(rbProposal);
       await rollbackPromotion(ctx, rbProposal, 1, rbEval);
       const head = await ctx.structuredStore.get(PLAYBOOK_ID);
-      expect(head?.lastReflectedStepIndex).toBe(7);
+      expect(head?.lastReflectedStepIndex).toBe(6);
     } finally {
       ctx.cleanup?.();
     }

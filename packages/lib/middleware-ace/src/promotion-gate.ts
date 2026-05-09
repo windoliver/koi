@@ -404,18 +404,19 @@ export async function commitPromotion(
 
   const now = deps.clock?.() ?? Date.now();
   const nextBody = applyProposalOperations(current, proposal, now);
+  // Advance the reflection watermark so a retry / restart cannot
+  // re-reflect this trajectory window and re-promote the same evidence.
+  // TrajectoryRange is half-open `[from, to)` — highest reflected step is
+  // `to - 1`. Empty windows preserve the prior watermark.
+  const newWatermark = highestReflectedStepIndex(
+    current.lastReflectedStepIndex,
+    proposal.sourceTrajectoryRange,
+  );
   const next: StructuredPlaybook = {
     ...nextBody,
     updatedAt: now,
     version: current.version + 1,
-    // Advance the reflection watermark so a retry / restart cannot
-    // re-reflect this trajectory window and re-promote the same evidence.
-    // The watermark is monotonic across all commit paths (promote and
-    // rollback both bump it) — never regress, never skip ahead.
-    lastReflectedStepIndex: maxWatermark(
-      current.lastReflectedStepIndex,
-      proposal.sourceTrajectoryRange.toStepIndex,
-    ),
+    ...(newWatermark !== undefined ? { lastReflectedStepIndex: newWatermark } : {}),
     provenance: {
       sourceTrajectoryRange: proposal.sourceTrajectoryRange,
       proposalId: proposal.id,
@@ -445,8 +446,21 @@ export async function commitPromotion(
   };
 }
 
-/** Monotonic max for the reflection watermark — undefined-safe. */
-function maxWatermark(prior: number | undefined, candidate: number): number {
+/**
+ * Compute the new reflection watermark from a half-open trajectory range.
+ *
+ * `TrajectoryRange` is half-open `[from, to)`, so the highest reflected
+ * step index is `to - 1`. Empty ranges (`to === from`) contribute no new
+ * coverage and must not regress the prior watermark.
+ *
+ * The watermark is monotonic across all commit paths; never regress.
+ */
+function highestReflectedStepIndex(
+  prior: number | undefined,
+  range: { readonly fromStepIndex: number; readonly toStepIndex: number },
+): number | undefined {
+  if (range.toStepIndex <= range.fromStepIndex) return prior; // empty window
+  const candidate = range.toStepIndex - 1;
   if (prior === undefined) return candidate;
   return candidate > prior ? candidate : prior;
 }
@@ -538,18 +552,18 @@ export async function rollbackPromotion(
   }
 
   const now = deps.clock?.() ?? Date.now();
+  // Watermark monotonicity on rollback: half-open range, highest step is
+  // `to - 1`; current head's watermark dominates if higher; empty window
+  // preserves prior.
+  const rollbackWatermark = highestReflectedStepIndex(
+    current.lastReflectedStepIndex,
+    proposal.sourceTrajectoryRange,
+  );
   const restored: StructuredPlaybook = {
     ...target,
     version: current.version + 1,
     updatedAt: now,
-    // Watermark monotonicity: even on rollback we must not regress the
-    // reflection watermark. The current head's watermark dominates
-    // because it has already been reflected past; the rollback target
-    // body is restored but its old watermark is replaced.
-    lastReflectedStepIndex: maxWatermark(
-      current.lastReflectedStepIndex,
-      proposal.sourceTrajectoryRange.toStepIndex,
-    ),
+    ...(rollbackWatermark !== undefined ? { lastReflectedStepIndex: rollbackWatermark } : {}),
     provenance: {
       sourceTrajectoryRange: proposal.sourceTrajectoryRange,
       proposalId: proposal.id,
