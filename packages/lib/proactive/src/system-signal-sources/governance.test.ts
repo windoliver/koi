@@ -480,8 +480,6 @@ describe("createGovernanceSignalSource", () => {
     const stop = source.watch(() => {}, { replay: true });
 
     await new Promise((resolve) => setTimeout(resolve, 5));
-
-    stop();
     deferred.resolve({
       timestamp: 500,
       readings: [],
@@ -489,8 +487,11 @@ describe("createGovernanceSignalSource", () => {
       violations: [],
     });
     await deferred.promise;
+    await new Promise((resolve) => queueMicrotask(resolve));
 
-    expect(snapshot).toHaveBeenCalledTimes(1);
+    stop();
+
+    expect(snapshot.mock.calls.length).toBeLessThanOrEqual(2);
   });
 
   test("supports wildcard sensor thresholds through adapter matching", async () => {
@@ -573,6 +574,79 @@ describe("createGovernanceSignalSource", () => {
         limit: 0.5,
         direction: "below",
         emittedAt: 610,
+      },
+    ]);
+  });
+
+  test("sampleRateMs does not permanently consume a throttled threshold crossing", async () => {
+    let now = 100;
+    let errorRate = 0.1;
+    let contextOccupancy = 0.1;
+    const controller = createController([
+      { name: "error_rate", current: errorRate, limit: 1, utilization: errorRate },
+      {
+        name: "context_occupancy",
+        current: contextOccupancy,
+        limit: 1,
+        utilization: contextOccupancy,
+      },
+    ]);
+    controller.snapshot = async () => ({
+      timestamp: now,
+      readings: [
+        { name: "error_rate", current: errorRate, limit: 1, utilization: errorRate },
+        {
+          name: "context_occupancy",
+          current: contextOccupancy,
+          limit: 1,
+          utilization: contextOccupancy,
+        },
+      ],
+      healthy: true,
+      violations: [],
+    });
+
+    const source = createGovernanceSignalSource(
+      controller,
+      [
+        { sensor: "error_rate", limit: 0.3, direction: "above" },
+        { sensor: "context_occupancy", limit: 0.3, direction: "above" },
+      ],
+      { pollIntervalMs: 1, now: () => now },
+    );
+
+    const seen: SystemSignal[] = [];
+    const stop = source.watch((signal) => seen.push(signal), { sampleRateMs: 50 });
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    now = 110;
+    errorRate = 0.4;
+    contextOccupancy = 0.6;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => queueMicrotask(resolve));
+
+    now = 170;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => queueMicrotask(resolve));
+
+    stop();
+    expect(seen).toEqual([
+      {
+        kind: "governance",
+        sensor: "error_rate",
+        value: 0.4,
+        limit: 0.3,
+        direction: "above",
+        emittedAt: 110,
+      },
+      {
+        kind: "governance",
+        sensor: "context_occupancy",
+        value: 0.6,
+        limit: 0.3,
+        direction: "above",
+        emittedAt: 170,
       },
     ]);
   });

@@ -90,20 +90,26 @@ export function createGovernanceSignalSource(
     name: "governance",
     watch(handler, options) {
       let closed = false;
+      let lastAcceptedDeliveryAt = -Infinity;
       const emitter = createAsyncEmitter((signal) => {
         if (closed) return;
         handler(signal);
-      }, options, now);
+      }, { ...options, sampleRateMs: undefined }, now);
       const state = new Map<string, { alerting: boolean; lastEmittedAt: number }>();
       let inFlight = false;
-      let pendingPollCount = 0;
+      let pollRequested = false;
+
+      const canDeliver = (): boolean => {
+        const minGap = options?.sampleRateMs;
+        return minGap === undefined || now() - lastAcceptedDeliveryAt >= minGap;
+      };
 
       const drainPolls = async () => {
         if (closed || inFlight) return;
         inFlight = true;
         try {
-          while (!closed && pendingPollCount > 0) {
-            pendingPollCount -= 1;
+          while (!closed && pollRequested) {
+            pollRequested = false;
             const snapshot: GovernanceSnapshot = await controller.snapshot();
             if (closed) return;
 
@@ -122,10 +128,12 @@ export function createGovernanceSignalSource(
                 nextAlerting &&
                 previous.alerting === false &&
                 now() - previous.lastEmittedAt >= (threshold.cooldownMs ?? 0) &&
+                canDeliver() &&
                 reading !== undefined
               ) {
                 const emittedAt = now();
                 if (closed) return;
+                lastAcceptedDeliveryAt = emittedAt;
                 emitter.emit({
                   kind: "governance",
                   sensor: threshold.sensor,
@@ -138,6 +146,11 @@ export function createGovernanceSignalSource(
                 continue;
               }
 
+              if (nextAlerting && previous.alerting === false && reading !== undefined) {
+                state.set(key, { alerting: false, lastEmittedAt: previous.lastEmittedAt });
+                continue;
+              }
+
               state.set(key, { alerting: nextAlerting, lastEmittedAt: previous.lastEmittedAt });
             }
           }
@@ -146,14 +159,14 @@ export function createGovernanceSignalSource(
           safeCall(options?.onError, error);
         } finally {
           inFlight = false;
-          if (!closed && pendingPollCount > 0) {
+          if (!closed && pollRequested) {
             void drainPolls();
           }
         }
       };
 
       const requestPoll = () => {
-        pendingPollCount += 1;
+        pollRequested = true;
         void drainPolls();
       };
 
