@@ -600,26 +600,13 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                 sessionContext: SessionContext,
                 scoped: import("@koi/forge-demand").SessionScopedForgeDemandHandle,
               ): Promise<void> => {
-                // Run the caller's `onSessionAttached` FIRST. Only record
-                // ownership of the scoped handle after the host accepts the
-                // session. If the host throws or rejects, the session never
-                // became "attached" — recording ownership beforehand would
-                // let `wrapOnDemandWithAutoHarness` resolve, dismiss, and
-                // run synthesis for a session the host never owned, burning
-                // budget and triggering deploy side effects the real owner
-                // never observed (R5 round 6 finding).
-                if (baseConfigWithHealth.onSessionAttached !== undefined) {
-                  await baseConfigWithHealth.onSessionAttached(sessionContext, scoped);
-                }
-                // Hard cap: refuse new attachments once the ownership set
-                // is full instead of silently evicting live sessions. A
-                // FIFO eviction would disable auto-harness for the oldest
-                // tenant — they would still be live but their signals would
-                // fail-close in the wrap, causing repeated re-emission of
-                // the same failures (R5 round 12 finding). The cap is large
-                // enough that healthy short-session hosts never trip it;
-                // long-running hosts MUST wire `resetSession(id)` on
-                // legitimate session end.
+                // Hard cap check FIRST, before invoking the caller callback.
+                // Forge-demand re-runs onSessionAttached on later traffic if
+                // it rejects, so a cap-exceeded throw AFTER the callback ran
+                // would replay host attach-time side effects (resource
+                // registration, bookkeeping, UI wiring) on every retry while
+                // never actually attaching ownership (R5 round 13 finding).
+                // Fail before the callback so the side effects never run.
                 if (autoHarnessSessionEntries.size >= AUTO_HARNESS_SESSION_CAP) {
                   throw new Error(
                     `[auto-harness] session ownership cap (${AUTO_HARNESS_SESSION_CAP}) reached. ` +
@@ -629,6 +616,17 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
                       "will not silently evict an active session into the global " +
                       "bucket.",
                   );
+                }
+                // Run the caller's `onSessionAttached` next. Only record
+                // ownership of the scoped handle after the host accepts the
+                // session. If the host throws or rejects, the session never
+                // became "attached" — recording ownership beforehand would
+                // let `wrapOnDemandWithAutoHarness` resolve, dismiss, and
+                // run synthesis for a session the host never owned, burning
+                // budget and triggering deploy side effects the real owner
+                // never observed (R5 round 6 finding).
+                if (baseConfigWithHealth.onSessionAttached !== undefined) {
+                  await baseConfigWithHealth.onSessionAttached(sessionContext, scoped);
                 }
                 autoHarnessSessionEntries.add({
                   sessionId: sessionContext.sessionId,
@@ -681,12 +679,38 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       // means the caller satisfied them and the stack-owned policy-cache
       // is the sole source of truth.
       const withoutCallerPolicyCache = baseWithForgeDemand;
+      // Auto-cleanup observer: release per-session ownership entries on
+      // normal session end so a service processing many short-lived
+      // sessions does not slowly fill the ownership cap and start refusing
+      // new attachments. Hosts can still force cleanup via
+      // `runtime.autoHarness.resetSession(id)`, but the runtime's own
+      // session lifecycle reclaims the slot automatically (R5 round 13
+      // finding).
+      const stack = autoHarnessStack;
+      const autoHarnessCleanup: KoiMiddleware = {
+        name: "auto-harness-session-cleanup",
+        phase: "observe",
+        priority: 950,
+        describeCapabilities: () => undefined,
+        onSessionEnd: async (ctx) => {
+          for (const entry of autoHarnessSessionEntries) {
+            if (entry.sessionId === ctx.sessionId) {
+              autoHarnessSessionEntries.delete(entry);
+            }
+          }
+          // Also reset stack-side per-session state (budgets, completed
+          // triggers) so a recycled sessionId starts fresh.
+          stack.resetSession(ctx.sessionId);
+        },
+      };
       // Only compose the stack-owned policy-cache when the adapter can carry
       // intercept-phase middleware. Stub adapters (test-only) skip
-      // composition; the stack handle remains usable out-of-band.
+      // composition; the stack handle remains usable out-of-band. The
+      // cleanup observer is composed in both cases — it doesn't depend on
+      // intercept-phase composition.
       return adapterHasTerminals
-        ? [...withoutCallerPolicyCache, autoHarnessStack.policyCacheMiddleware]
-        : withoutCallerPolicyCache;
+        ? [...withoutCallerPolicyCache, autoHarnessStack.policyCacheMiddleware, autoHarnessCleanup]
+        : [...withoutCallerPolicyCache, autoHarnessCleanup];
     })();
 
     // Install exfiltration guard by default when: (1) not explicitly disabled,
